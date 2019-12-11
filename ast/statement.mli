@@ -2,7 +2,6 @@
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree. *)
-open Core
 
 module Assign : sig
   type t = {
@@ -15,9 +14,7 @@ module Assign : sig
 
   val is_static_attribute_initialization : t -> bool
 
-  val location_sensitive_hash_fold : t Hash.folder
-
-  val location_sensitive_compare : t -> t -> int
+  val location_insensitive_compare : t -> t -> int
 end
 
 module Import : sig
@@ -41,9 +38,7 @@ module Raise : sig
   }
   [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
-  val location_sensitive_hash_fold : t Hash.folder
-
-  val location_sensitive_compare : t -> t -> int
+  val location_insensitive_compare : t -> t -> int
 end
 
 module Return : sig
@@ -53,9 +48,7 @@ module Return : sig
   }
   [@@deriving compare, eq, sexp, show, hash]
 
-  val location_sensitive_hash_fold : t Hash.folder
-
-  val location_sensitive_compare : t -> t -> int
+  val location_insensitive_compare : t -> t -> int
 end
 
 module rec Assert : sig
@@ -69,9 +62,7 @@ module rec Assert : sig
       | While
     [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
-    val location_sensitive_hash_fold : t Hash.folder
-
-    val location_sensitive_compare : t -> t -> int
+    val location_insensitive_compare : t -> t -> int
   end
 
   type t = {
@@ -81,9 +72,7 @@ module rec Assert : sig
   }
   [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
-  val location_sensitive_hash_fold : t Hash.folder
-
-  val location_sensitive_compare : t -> t -> int
+  val location_insensitive_compare : t -> t -> int
 end
 
 and Attribute : sig
@@ -105,18 +94,24 @@ and Attribute : sig
   }
   [@@deriving compare, eq, sexp, show, hash]
 
+  type method_ = {
+    signatures: Define.Signature.t list;
+    static: bool;
+    final: bool;
+  }
+  [@@deriving compare, eq, sexp, show, hash]
+
+  type property = {
+    async: bool;
+    class_property: bool;
+    kind: property_kind;
+  }
+  [@@deriving compare, eq, sexp, show, hash]
+
   type kind =
     | Simple of simple
-    | Method of {
-        signatures: Define.Signature.t list;
-        static: bool;
-        final: bool;
-      }
-    | Property of {
-        async: bool;
-        class_property: bool;
-        kind: property_kind;
-      }
+    | Method of method_
+    | Property of property
   [@@deriving compare, eq, sexp, show, hash]
 
   type attribute = {
@@ -126,6 +121,10 @@ and Attribute : sig
   [@@deriving compare, eq, sexp, show, hash]
 
   type t = attribute Node.t [@@deriving compare, eq, sexp, show, hash]
+
+  val location_insensitive_compare : t -> t -> int
+
+  val location_insensitive_compare_kind : kind -> kind -> int
 end
 
 and Class : sig
@@ -138,9 +137,7 @@ and Class : sig
   }
   [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
-  val location_sensitive_hash_fold : t Hash.folder
-
-  val location_sensitive_compare : t -> t -> int
+  val location_insensitive_compare : t -> t -> int
 
   val constructors : ?in_test:bool -> t -> Define.t list
 
@@ -189,9 +186,7 @@ and Define : sig
     }
     [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
-    val location_sensitive_hash_fold : t Hash.folder
-
-    val location_sensitive_compare : t -> t -> int
+    val location_insensitive_compare : t -> t -> int
 
     val create_toplevel : qualifier:Reference.t option -> t
 
@@ -260,9 +255,7 @@ and Define : sig
   }
   [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
-  val location_sensitive_hash_fold : t Hash.folder
-
-  val location_sensitive_compare : t -> t -> int
+  val location_insensitive_compare : t -> t -> int
 
   val create_toplevel : qualifier:Reference.t option -> statements:Statement.t list -> t
 
@@ -333,9 +326,7 @@ and For : sig
 
   val preamble : t -> Statement.t
 
-  val location_sensitive_hash_fold : t Hash.folder
-
-  val location_sensitive_compare : t -> t -> int
+  val location_insensitive_compare : t -> t -> int
 end
 
 and If : sig
@@ -346,9 +337,7 @@ and If : sig
   }
   [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
-  val location_sensitive_hash_fold : t Hash.folder
-
-  val location_sensitive_compare : t -> t -> int
+  val location_insensitive_compare : t -> t -> int
 end
 
 and Try : sig
@@ -360,9 +349,7 @@ and Try : sig
     }
     [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
-    val location_sensitive_hash_fold : t Hash.folder
-
-    val location_sensitive_compare : t -> t -> int
+    val location_insensitive_compare : t -> t -> int
   end
 
   type t = {
@@ -375,9 +362,7 @@ and Try : sig
 
   val preamble : Handler.t -> Statement.t list
 
-  val location_sensitive_hash_fold : t Hash.folder
-
-  val location_sensitive_compare : t -> t -> int
+  val location_insensitive_compare : t -> t -> int
 end
 
 and While : sig
@@ -388,9 +373,7 @@ and While : sig
   }
   [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
-  val location_sensitive_hash_fold : t Hash.folder
-
-  val location_sensitive_compare : t -> t -> int
+  val location_insensitive_compare : t -> t -> int
 end
 
 and With : sig
@@ -403,9 +386,7 @@ and With : sig
 
   val preamble : t -> Statement.t list
 
-  val location_sensitive_hash_fold : t Hash.folder
-
-  val location_sensitive_compare : t -> t -> int
+  val location_insensitive_compare : t -> t -> int
 end
 
 and Statement : sig
@@ -435,9 +416,7 @@ and Statement : sig
 
   type t = statement Node.t [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
-  val location_sensitive_hash_fold : t Hash.folder
-
-  val location_sensitive_compare : t -> t -> int
+  val location_insensitive_compare : t -> t -> int
 
   val assume : ?origin:Assert.Origin.t -> Expression.t -> t
 
@@ -452,6 +431,4 @@ type statement = Statement.statement [@@deriving compare, eq, sexp, show, hash, 
 
 type t = Statement.t [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
-val location_sensitive_hash_fold : t Hash.folder
-
-val location_sensitive_compare : t -> t -> int
+val location_insensitive_compare : t -> t -> int

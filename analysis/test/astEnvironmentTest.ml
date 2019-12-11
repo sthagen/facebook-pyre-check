@@ -273,11 +273,9 @@ let test_ast_change _ =
     let handle = "test.py" in
     let old_source = Test.parse ~handle old_source in
     let new_source = Test.parse ~handle new_source in
-    let compare_changed =
-      not (Int.equal 0 (Source.location_sensitive_compare old_source new_source))
-    in
+    let compare_changed = not (Int.equal 0 (Source.compare old_source new_source)) in
     let hash_changed =
-      let hash_source source = Hash.run Source.location_sensitive_hash_fold source in
+      let hash_source source = Hash.run Source.hash_fold_t source in
       not (Int.equal (hash_source old_source) (hash_source new_source))
     in
     assert_equal
@@ -719,9 +717,12 @@ let test_parse_repository context =
       |> List.sort ~compare:(fun (left_handle, _) (right_handle, _) ->
              String.compare left_handle right_handle)
     in
-    let equal (expected_handle, expected_source) (handle, { Ast.Source.statements; _ }) =
-      String.equal expected_handle handle
-      && Ast.Source.equal expected_source { expected_source with Ast.Source.statements }
+    let equal
+        (expected_handle, { Ast.Source.statements = expected_source; _ })
+        (handle, { Ast.Source.statements; _ })
+      =
+      let equal left right = Statement.location_insensitive_compare left right = 0 in
+      String.equal expected_handle handle && List.equal equal expected_source statements
     in
     let printer (handle, source) = Format.sprintf "%s: %s" handle (Ast.Source.show source) in
     let expected =

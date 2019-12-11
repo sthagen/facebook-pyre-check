@@ -379,6 +379,7 @@ module Request = struct
     | DocumentChange of File.t
     | SaveDocument of Path.t
     | GetServerUuid
+    | ShowStatusRequest of LanguageServer.Types.ShowStatusParameters.t
     | StopRequest
     | TypeCheckRequest of Path.t list
     | TypeCoverageRequest of {
@@ -392,14 +393,12 @@ module Request = struct
     | PersistentSocket of Unix.File_descr.t
     | NewConnectionSocket of Unix.File_descr.t
     | FileNotifier
-    | Background
     | JSONSocket of Unix.File_descr.t
 
   let origin_name = function
     | PersistentSocket _ -> "Persistent client"
     | NewConnectionSocket _ -> "New connection"
     | FileNotifier -> "File notifier"
-    | Background -> "Background"
     | JSONSocket _ -> "JSONSocket"
 
 
@@ -412,6 +411,7 @@ module Request = struct
     | TypeCheckRequest [] -> "TypeCheck"
     | TypeCheckRequest _ -> "IncrementalCheck"
     | TypeQueryRequest _ -> "TypeQuery"
+    | ShowStatusRequest _ -> "ShowStatusRequest"
     | StopRequest -> "Stop"
     | ClientShutdownRequest _ -> "ClientConnection"
     | GetDefinitionRequest _ -> "GetDefinition"

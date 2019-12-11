@@ -14,11 +14,13 @@ let assert_expression_equal =
   assert_equal ~printer:Expression.show ~pp_diff:(diff ~print:Expression.pp)
 
 
+let location_insensitive_equal left right = Expression.location_insensitive_compare left right = 0
+
 let test_negate _ =
   let assert_negate ~expected ~negated =
     assert_equal
       ~printer:Expression.show
-      ~cmp:Expression.equal
+      ~cmp:location_insensitive_equal
       (parse_single_expression expected)
       (negate (parse_single_expression negated))
   in
@@ -293,18 +295,16 @@ let test_pp _ =
 
 
 let test_equality _ =
-  let compare_two_locations left right =
-    let full_printer ({ Node.location; _ } as expression) =
-      Format.asprintf "%s/%a" (Location.Reference.show location) Expression.pp expression
-    in
+  let compare_two_locations left right equal compare_equal hash_equal =
     let value = Expression.Name (Name.Identifier "some_string") in
     let expression_left = Node.create ~location:left value in
     let expression_right = Node.create ~location:right value in
-    assert_equal ~cmp:Expression.equal ~printer:full_printer expression_left expression_right;
-    assert_equal
-      ~printer:Int.to_string
-      (Expression.hash expression_left)
-      (Expression.hash expression_right)
+    let assert_bool_equal = assert_equal ~cmp:Bool.equal ~printer:Bool.to_string in
+    assert_bool_equal (Expression.equal expression_left expression_right) equal;
+    assert_bool_equal (Expression.compare expression_left expression_right = 0) compare_equal;
+    assert_bool_equal
+      (Expression.hash expression_left = Expression.hash expression_right)
+      hash_equal
   in
   let location_1 =
     {
@@ -320,16 +320,17 @@ let test_equality _ =
       Location.stop = { Location.line = 12; column = 7 };
     }
   in
-  compare_two_locations Location.Reference.any location_1;
-  compare_two_locations Location.Reference.any location_2;
-  compare_two_locations location_1 location_2
+  compare_two_locations location_1 location_1 true true true;
+  compare_two_locations Location.Reference.any location_1 false false false;
+  compare_two_locations Location.Reference.any location_2 false false false;
+  compare_two_locations location_1 location_2 false false false
 
 
 let test_delocalize _ =
   let assert_delocalized source expected =
     assert_equal
       ~printer:Expression.show
-      ~cmp:Expression.equal
+      ~cmp:location_insensitive_equal
       (parse_single_expression expected)
       (parse_single_expression source |> delocalize)
   in
@@ -346,7 +347,7 @@ let test_delocalize _ =
   let assert_delocalize_qualified source expected =
     assert_equal
       ~printer:Expression.show
-      ~cmp:Expression.equal
+      ~cmp:location_insensitive_equal
       (parse_single_expression expected)
       (parse_single_expression source |> delocalize_qualified)
   in
@@ -362,9 +363,10 @@ let test_comparison_operator_override _ =
     in
     assert_equal
       ~printer:(function
-        | Some expression -> Expression.show expression
+        | Some expression ->
+            Node.sexp_of_t Expression.sexp_of_expression expression |> Sexp.to_string_hum
         | _ -> "None")
-      ~cmp:(Option.equal Expression.equal)
+      ~cmp:(Option.equal (fun left right -> Expression.location_insensitive_compare left right = 0))
       (expected >>| parse_single_expression ~coerce_special_methods:true)
       (ComparisonOperator.override operator)
   in

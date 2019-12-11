@@ -251,6 +251,7 @@ module Request : sig
     | DocumentChange of File.t
     | SaveDocument of Path.t
     | GetServerUuid
+    | ShowStatusRequest of LanguageServer.Types.ShowStatusParameters.t
     | StopRequest
     | TypeCheckRequest of Path.t list
     | TypeCoverageRequest of {
@@ -264,7 +265,6 @@ module Request : sig
     | PersistentSocket of Unix.File_descr.t
     | NewConnectionSocket of Unix.File_descr.t
     | FileNotifier
-    | Background
     | JSONSocket of Unix.File_descr.t
 
   val origin_name : origin -> string

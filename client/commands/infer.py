@@ -350,16 +350,21 @@ def annotate_path(arguments, stub_path: str, file_path: str) -> None:
     except Exception as error:
         LOG.warning("Failed to annotate {}".format(file_path))
         if arguments.debug_infer:
-            LOG.debug("Error: {}".format(error))
+            LOG.warning("\tError: {}".format(error))
 
 
-def annotate_paths(arguments, formatter: Optional[str], stubs, type_directory) -> None:
+def annotate_paths(
+    root, arguments, formatter: Optional[str], stubs, type_directory
+) -> None:
     if arguments.in_place != []:
         stubs = filter_paths(arguments, stubs, type_directory)
 
     for stub in stubs:
         stub_path = stub.path(type_directory)
-        file_path = str(stub.path(Path(""))).rstrip("i")
+        if root:
+            file_path = str(stub.path(Path(root))).rstrip("i")
+        else:
+            file_path = str(stub.path(Path(""))).rstrip("i")
         annotate_path(arguments, stub_path, file_path)
     if formatter:
         subprocess.call(formatter, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -414,6 +419,7 @@ class Infer(Reporting):
         self._json: bool = arguments.json
         self._annotate_from_existing_stubs: bool = arguments.annotate_from_existing_stubs
         self._debug_infer: bool = arguments.debug_infer
+        self._ignore_infer: List[str] = self._configuration.ignore_infer
 
     @classmethod
     def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
@@ -493,7 +499,13 @@ class Infer(Reporting):
             write_stubs_to_disk(self._arguments, stubs, type_directory)
             if self._arguments.in_place is not None:
                 LOG.info("Annotating files")
-                annotate_paths(self._arguments, self._formatter, stubs, type_directory)
+                annotate_paths(
+                    self._configuration.local_configuration_root,
+                    self._arguments,
+                    self._formatter,
+                    stubs,
+                    type_directory,
+                )
 
         return self
 
@@ -508,6 +520,8 @@ class Infer(Reporting):
         )
         if search_path:
             flags.extend(["-search-path", ",".join(search_path)])
+        if len(self._ignore_infer) > 0:
+            flags.extend(["-ignore-infer", ";".join(self._ignore_infer)])
         return flags
 
     def _errors_from_stdin(self) -> Result:
