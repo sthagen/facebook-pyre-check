@@ -359,11 +359,13 @@ let qualify
             aliases = Map.set aliases ~key:name ~data:(global_alias ~qualifier ~name);
             skip = Set.add skip location;
           }
-      | Class { Class.name; _ } ->
+      | Class { Class.name = { Node.value = name; _ }; _ } ->
           { scope with aliases = Map.set aliases ~key:name ~data:(global_alias ~qualifier ~name) }
-      | Define { Define.signature = { name; _ }; _ } when is_in_function ->
+      | Define { Define.signature = { name = { Node.value = name; _ }; _ }; _ } when is_in_function
+        ->
           qualify_function_name ~scope name |> fst
-      | Define { Define.signature = { name; _ }; _ } when not is_in_function ->
+      | Define { Define.signature = { name = { Node.value = name; _ }; _ }; _ }
+        when not is_in_function ->
           { scope with aliases = Map.set aliases ~key:name ~data:(global_alias ~qualifier ~name) }
       | If { If.body; orelse; _ } ->
           let scope = explore_scope ~scope body in
@@ -638,7 +640,15 @@ let qualify
           ({ qualifier; _ } as original_scope)
           ( {
               Define.signature =
-                { name; parameters; decorators; return_annotation; parent; nesting_define; _ };
+                {
+                  name = { Node.value = name; location = name_location };
+                  parameters;
+                  decorators;
+                  return_annotation;
+                  parent;
+                  nesting_define;
+                  _;
+                };
               body;
               _;
             } as define )
@@ -669,7 +679,7 @@ let qualify
         let signature =
           {
             define.signature with
-            name;
+            name = { Node.value = name; location = name_location };
             parameters;
             decorators;
             return_annotation;
@@ -679,7 +689,10 @@ let qualify
         in
         original_scope_with_alias, { define with signature; body }
       in
-      let qualify_class ({ Class.name; bases; body; decorators; _ } as definition) =
+      let qualify_class
+          ( { Class.name = { Node.value = name; location }; bases; body; decorators; _ } as
+          definition )
+        =
         let scope = { scope with is_top_level = false } in
         let qualify_base ({ Call.Argument.value; _ } as argument) =
           {
@@ -700,8 +713,17 @@ let qualify
             let scope, statement =
               match value with
               | Statement.Define
-                  ( { signature = { name; parameters; return_annotation; decorators; _ }; _ } as
-                  define ) ->
+                  ( {
+                      signature =
+                        {
+                          name = { Node.value = name; location = name_location };
+                          parameters;
+                          return_annotation;
+                          decorators;
+                          _;
+                        };
+                      _;
+                    } as define ) ->
                   let _, define = qualify_define original_scope define in
                   let _, parameters = qualify_parameters ~scope parameters in
                   let return_annotation =
@@ -722,7 +744,8 @@ let qualify
                   let signature =
                     {
                       define.signature with
-                      name = qualify_reference ~scope name;
+                      name =
+                        { Node.value = qualify_reference ~scope name; location = name_location };
                       parameters;
                       decorators;
                       return_annotation;
@@ -738,7 +761,7 @@ let qualify
         {
           definition with
           (* Ignore aliases, imports, etc. when declaring a class name. *)
-          Class.name = Reference.combine scope.qualifier name;
+          Class.name = { Node.location; value = Reference.combine scope.qualifier name };
           bases = List.map bases ~f:qualify_base;
           body;
           decorators;
@@ -768,7 +791,7 @@ let qualify
                 message;
                 origin;
               } )
-      | Class ({ name; _ } as definition) ->
+      | Class ({ name = { Node.value = name; _ }; _ } as definition) ->
           let scope =
             {
               scope with
@@ -1405,8 +1428,12 @@ let defines
 
 
     let predicate = function
-      | { Node.location; value = Statement.Class { Class.name; body; _ }; _ } when include_toplevels
-        ->
+      | {
+          Node.location;
+          value = Statement.Class { Class.name = { Node.value = name; _ }; body; _ };
+          _;
+        }
+        when include_toplevels ->
           Define.create_class_toplevel ~parent:name ~statements:body
           |> Node.create ~location
           |> Option.some
@@ -1527,7 +1554,7 @@ let replace_mypy_extensions_stub
     in
     let replace_typed_dictionary_define = function
       | { Node.location; value = Statement.Define { signature = { name; _ }; _ } }
-        when String.equal (Reference.show name) "TypedDict" ->
+        when String.equal (Reference.show (Node.value name)) "TypedDict" ->
           typed_dictionary_stub ~location
       | statement -> statement
     in
@@ -1691,7 +1718,7 @@ let expand_typed_dictionary_declarations
             ~total:(extract_totality argument_tail)
       | Class
           {
-            name = class_name;
+            name = { Node.value = class_name; _ };
             bases =
               {
                 Call.Argument.name = None;
@@ -1928,7 +1955,7 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
           {
             signature =
               {
-                name = Reference.create ~prefix:parent name;
+                name = Node.create ~location (Reference.create ~prefix:parent name);
                 parameters = self_parameter :: parameters;
                 decorators = [];
                 docstring = None;
@@ -1958,8 +1985,12 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
     in
     let value =
       match value with
-      | Statement.Assign { Assign.target = { Node.value = Name name; _ }; value = expression; _ }
-        -> (
+      | Statement.Assign
+          {
+            Assign.target = { Node.value = Name name; location = target_location };
+            value = expression;
+            _;
+          } -> (
           let name = name_to_reference name >>| Reference.delocalize in
           match extract_attributes expression, name with
           | Some attributes, Some name
@@ -1969,14 +2000,14 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
               let attributes = tuple_attributes ~parent:name ~location attributes in
               Statement.Class
                 {
-                  Class.name;
+                  Class.name = Node.create ~location:target_location name;
                   bases = [tuple_base ~location];
                   body = constructors @ attributes;
                   decorators = [];
                   docstring = None;
                 }
           | _ -> value )
-      | Class ({ Class.name; bases; body; _ } as original) ->
+      | Class ({ Class.name = { Node.value = name; _ }; bases; body; _ } as original) ->
           let is_named_tuple_primitive = function
             | {
                 Call.Argument.value =
@@ -2033,7 +2064,7 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                             Statement.Define { Define.signature = { Define.Signature.name; _ }; _ };
                           _;
                         } ->
-                          String.equal (Reference.last name) generated_name
+                          String.equal (Reference.last (Node.value name)) generated_name
                       | _ -> false
                     in
                     if
@@ -2094,7 +2125,10 @@ let expand_new_types ({ Source.statements; source_path = { SourcePath.qualifier;
                         [
                           {
                             Call.Argument.value =
-                              { Node.value = String { StringLiteral.value = name; _ }; _ };
+                              {
+                                Node.value = String { StringLiteral.value = name; _ };
+                                location = name_location;
+                              };
                             _;
                           };
                           ( {
@@ -2114,7 +2148,7 @@ let expand_new_types ({ Source.statements; source_path = { SourcePath.qualifier;
               {
                 signature =
                   {
-                    name = Reference.create ~prefix:name "__init__";
+                    name = Node.create ~location (Reference.create ~prefix:name "__init__");
                     parameters =
                       [
                         Parameter.create ~location ~name:"self" ();
@@ -2136,7 +2170,7 @@ let expand_new_types ({ Source.statements; source_path = { SourcePath.qualifier;
           in
           Statement.Class
             {
-              Class.name;
+              Class.name = Node.create ~location:name_location name;
               bases = [base_argument];
               body = [constructor];
               decorators = [];
@@ -2155,7 +2189,13 @@ let populate_nesting_defines ({ Source.statements; _ } as source) =
     match statement with
     | {
      Node.location;
-     value = Define { Define.signature = { Define.Signature.name; _ } as signature; captures; body };
+     value =
+       Define
+         {
+           Define.signature = { Define.Signature.name = { Node.value = name; _ }; _ } as signature;
+           captures;
+           body;
+         };
     } ->
         let signature = { signature with Define.Signature.nesting_define } in
         let body = transform_statements ~nesting_define:(Some name) body in

@@ -389,7 +389,7 @@ let missing_builtin_classes, missing_typing_classes, missing_typing_extensions_c
       }
     in
     {
-      Class.name = Reference.create name;
+      Class.name = Node.create_with_default_location (Reference.create name);
       bases = List.map bases ~f:create_base @ List.map metaclasses ~f:create_metaclass;
       body;
       decorators = [];
@@ -460,7 +460,7 @@ let register_class_definitions ({ Source.source_path = { SourcePath.qualifier; _
     | _ -> classes
   in
   let register new_annotations { Node.location; value = { Class.name; _ } as definition } =
-    let primitive = Reference.show name in
+    let primitive = Reference.show (Node.value name) in
     let definition =
       match primitive with
       | "type" ->
@@ -476,7 +476,9 @@ let register_class_definitions ({ Source.source_path = { SourcePath.qualifier; _
                 {
                   signature =
                     {
-                      name = Reference.create "typing.GenericMeta.__getitem__";
+                      name =
+                        Reference.create "typing.GenericMeta.__getitem__"
+                        |> Node.create_with_default_location;
                       parameters =
                         [
                           { Parameter.name = "cls"; value = None; annotation = None }
@@ -581,7 +583,7 @@ let collect_unannotated_globals { Source.statements; source_path = { SourcePath.
         in
         List.rev_append (List.map ~f:import_to_global imports) globals
     | Define { Define.signature = { Define.Signature.name; _ } as signature; _ } ->
-        (name, Define [Node.create signature ~location]) :: globals
+        (Node.value name, Define [Node.create signature ~location]) :: globals
     | If { If.body; orelse; _ } ->
         (* TODO(T28732125): Properly take an intersection here. *)
         List.fold ~init:globals ~f:(visit_statement ~qualifier) (body @ orelse)
@@ -634,7 +636,7 @@ let collect_typecheck_units { Source.statements; _ } =
   (* TODO (T57944324): Support checking classes that are nested inside function bodies *)
   let rec collect_from_statement ~ignore_class sofar { Node.value; location } =
     match value with
-    | Statement.Class { Class.name; body; _ } ->
+    | Statement.Class { Class.name = { Node.value = name; _ }; body; _ } ->
         if ignore_class then (
           Log.debug
             "Dropping the body of class %a as it is nested inside a function"
@@ -696,7 +698,7 @@ let collect_defines ({ Source.source_path = { SourcePath.qualifier; is_external;
       let definitions =
         let table = Reference.Table.create () in
         let process_define ({ Node.value = define; _ } as define_node) =
-          let define_name = Define.name define in
+          let define_name = Define.name define |> Node.value in
           let sibling =
             let open FunctionDefinition.Sibling in
             if Define.is_overloaded_function define then

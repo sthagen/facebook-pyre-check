@@ -335,7 +335,7 @@ end
 
 and Class : sig
   type t = {
-    name: Reference.t;
+    name: Reference.t Node.t;
     bases: Expression.Call.Argument.t list;
     body: Statement.t list;
     decorators: Expression.t list;
@@ -375,7 +375,7 @@ and Class : sig
     Attribute.t Identifier.SerializableMap.t
 end = struct
   type t = {
-    name: Reference.t;
+    name: Reference.t Node.t;
     bases: Expression.Call.Argument.t list;
     body: Statement.t list;
     decorators: Expression.t list;
@@ -386,7 +386,7 @@ end = struct
   type class_t = t [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
   let location_insensitive_compare left right =
-    match [%compare: Reference.t] left.name right.name with
+    match Node.location_insensitive_compare [%compare: Reference.t] left.name right.name with
     | x when not (Int.equal x 0) -> x
     | _ -> (
         match
@@ -478,7 +478,7 @@ end = struct
     List.exists decorators ~f:is_frozen_dataclass
 
 
-  let explicitly_assigned_attributes ({ name; body; _ } as definition) =
+  let explicitly_assigned_attributes ({ name = { Node.value = name; _ }; body; _ } as definition) =
     let assigned_attributes map { Node.location; value } =
       let open Expression in
       match value with
@@ -585,7 +585,11 @@ end = struct
 
     let create
         ~location
-        ({ Define.signature = { name; return_annotation; parameters; parent; _ }; _ } as define)
+        ( {
+            Define.signature =
+              { name = { Node.value = name; _ }; return_annotation; parameters; parent; _ };
+            _;
+          } as define )
       =
       let inspect_decorators name =
         let async = Define.is_async define in
@@ -625,7 +629,7 @@ end = struct
     }
     [@@deriving compare, eq, sexp, show, hash]
 
-    let create ({ name; body; _ } as definition) =
+    let create ({ name = { Node.value = name; _ }; body; _ } as definition) =
       let merge _ left right =
         match right with
         | None -> left
@@ -718,7 +722,8 @@ end = struct
           let callable_attributes map { Node.location; value } =
             match value with
             | Statement.Define
-                ({ Define.signature = { name = target; _ } as signature; _ } as define) ->
+                ( { Define.signature = { name = { Node.value = target; _ }; _ } as signature; _ } as
+                define ) ->
                 Attribute.name (Expression.from_reference ~location target) ~parent:name
                 >>| (fun name ->
                       let attribute =
@@ -758,7 +763,7 @@ end = struct
         let class_attributes =
           let callable_attributes map { Node.location; value } =
             match value with
-            | Statement.Class { name; _ } ->
+            | Statement.Class { name = { Node.value = name; _ }; _ } ->
                 let open Expression in
                 let annotation =
                   let meta_annotation =
@@ -943,7 +948,7 @@ end
 and Define : sig
   module Signature : sig
     type t = {
-      name: Reference.t;
+      name: Reference.t Node.t;
       parameters: Expression.Parameter.t list;
       decorators: Expression.t list;
       docstring: string option;
@@ -1031,7 +1036,7 @@ and Define : sig
 
   val create_class_toplevel : parent:Reference.t -> statements:Statement.t list -> t
 
-  val name : t -> Reference.t
+  val name : t -> Reference.t Node.t
 
   val unqualified_name : t -> Identifier.t
 
@@ -1089,7 +1094,7 @@ and Define : sig
 end = struct
   module Signature = struct
     type t = {
-      name: Reference.t;
+      name: Reference.t Node.t;
       parameters: Expression.Parameter.t list;
       decorators: Expression.t list;
       docstring: string option;
@@ -1103,7 +1108,7 @@ end = struct
     [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
     let location_insensitive_compare left right =
-      match [%compare: Reference.t] left.name right.name with
+      match Node.location_insensitive_compare [%compare: Reference.t] left.name right.name with
       | x when not (Int.equal x 0) -> x
       | _ -> (
           match
@@ -1149,7 +1154,7 @@ end = struct
 
     let create_toplevel ~qualifier =
       {
-        name = Reference.create ?prefix:qualifier "$toplevel";
+        name = Reference.create ?prefix:qualifier "$toplevel" |> Node.create_with_default_location;
         parameters = [];
         decorators = [];
         docstring = None;
@@ -1163,7 +1168,8 @@ end = struct
 
     let create_class_toplevel ~parent =
       {
-        name = Reference.create ~prefix:parent "$class_toplevel";
+        name =
+          Reference.create ~prefix:parent "$class_toplevel" |> Node.create_with_default_location;
         parameters = [];
         decorators = [];
         docstring = None;
@@ -1175,7 +1181,7 @@ end = struct
       }
 
 
-    let unqualified_name { name; _ } = Reference.last name
+    let unqualified_name { name; _ } = Reference.last (Node.value name)
 
     let self_identifier { parameters; _ } =
       match parameters with
@@ -1598,7 +1604,7 @@ end = struct
                       { signature = { name = callee; parent = Some parent; _ }; body; _ };
                   _;
                 }
-                when Reference.equal callee (Reference.create ~prefix:parent name) ->
+                when Reference.equal (Node.value callee) (Reference.create ~prefix:parent name) ->
                   Some body
               | _ -> None
             in
@@ -2296,7 +2302,7 @@ module PrettyPrinter = struct
       pp_decorators
       decorators
       Reference.pp
-      name
+      (Node.value name)
       Expression.pp_expression_argument_list
       bases
       pp_statement_list
@@ -2327,7 +2333,7 @@ module PrettyPrinter = struct
       parent
       (if Option.is_some parent then "#" else "")
       Reference.pp
-      name
+      (Node.value name)
       Expression.pp_expression_parameter_list
       parameters
       return_annotation

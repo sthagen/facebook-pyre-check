@@ -208,6 +208,9 @@ let test_node_visitor _ =
       | Visit.Parameter _ ->
           increment state "parameter";
           state
+      | Visit.Reference _ ->
+          increment state "reference";
+          state
       | Visit.Substring _ ->
           increment state "substring";
           state
@@ -233,12 +236,19 @@ let test_node_visitor _ =
         foo(x = 2)
       |}
   in
-  assert_counts source ["expression", 9; "statement", 4; "parameter", 1; "identifier", 2];
+  assert_counts
+    source
+    ["expression", 9; "statement", 4; "parameter", 1; "identifier", 2; "reference", 1];
   let source = parse {|
         f"foo"
         f'foo' 'bar'
       |} in
-  assert_counts source ["expression", 2; "statement", 2; "substring", 3]
+  assert_counts source ["expression", 2; "statement", 2; "substring", 3];
+  let source = parse {|
+        class C:
+          x = 1
+      |} in
+  assert_counts source ["expression", 2; "reference", 1]
 
 
 let test_statement_visitor _ =
