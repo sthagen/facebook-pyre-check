@@ -348,7 +348,9 @@ class RunnerTest(unittest.TestCase):
             CommandInput(
                 Path("old_root"), "pyre profile --profile-output=cold_start_phases"
             ),
+            CommandInput(Path("old_root"), "mkdir -p foo"),
             CommandInput(Path("old_root"), f"tee {handle_a}", content_a),
+            CommandInput(Path("old_root"), "mkdir -p foo"),
             CommandInput(Path("old_root"), f"tee {handle_b}", content_b),
             CommandInput(Path("old_root"), f"rm -f {handle_c}"),
             CommandInput(Path("old_root"), f"rm -f {handle_d}"),
@@ -458,13 +460,17 @@ class RunnerTest(unittest.TestCase):
 
         expected_commands = [
             CommandInput(Path("."), "mktemp -d"),
+            CommandInput(Path("/mock/tmp"), "tee .watchmanconfig", "{}"),
             CommandInput(
                 Path("/mock/tmp"),
                 "tee .pyre_configuration",
                 '{ "source_directories": [ "." ] }',
             ),
+            CommandInput(Path("/mock/tmp"), "mkdir -p foo"),
             CommandInput(Path("/mock/tmp"), f"tee {handle_a}", content_a),
+            CommandInput(Path("/mock/tmp"), "mkdir -p foo"),
             CommandInput(Path("/mock/tmp"), f"tee {handle_b}", content_b),
+            CommandInput(Path("/mock/tmp"), "watchman watch ."),
             CommandInput(
                 Path("/mock/tmp"), "pyre  --no-saved-state --enable-profiling restart"
             ),
@@ -482,6 +488,7 @@ class RunnerTest(unittest.TestCase):
             CommandInput(
                 Path("/mock/tmp"), "pyre  --output=json --noninteractive check"
             ),
+            CommandInput(Path("/mock/tmp"), "watchman watch-del ."),
             CommandInput(Path("."), "rm -rf /mock/tmp"),
         ]
 
@@ -490,6 +497,8 @@ class RunnerTest(unittest.TestCase):
                 return CommandOutput(return_code=0, stdout="/mock/tmp", stderr="")
             elif " profile" in command_input.command:
                 return CommandOutput(return_code=0, stdout="[{}, {}, {}]", stderr="")
+            elif "watchman watch" in command_input.command:
+                return CommandOutput(return_code=0, stdout="{}", stderr="")
             else:
                 return CommandOutput(return_code=0, stdout="", stderr="")
 
