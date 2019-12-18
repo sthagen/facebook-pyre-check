@@ -1066,7 +1066,7 @@ module State (Context : Context) = struct
       let resolution_fixpoint =
         let postcondition = Resolution.annotations resolution in
         let key = [%hash: int * int] (Cfg.entry_index, 0) in
-        LocalAnnotationMap.set resolution_fixpoint ~key ~postcondition
+        LocalAnnotationMap.set_statement resolution_fixpoint ~key ~postcondition
       in
       { state with resolution; resolution_fixpoint }
     in
@@ -1417,7 +1417,9 @@ module State (Context : Context) = struct
       let { state; resolved = value_resolved; _ } = forward_expression ~state ~expression:value in
       Type.weaken_literals key_resolved, Type.weaken_literals value_resolved, state
     in
-    let forward_generator ~state ~generator:({ Comprehension.Generator.conditions; _ } as generator)
+    let forward_generator
+        ~state
+        ~generator:({ Comprehension.Generator.conditions; target; _ } as generator)
       =
       (* Propagate the target type information. *)
       let iterator =
@@ -1425,9 +1427,18 @@ module State (Context : Context) = struct
         |> Node.create ~location
       in
       let state =
-        let { errors; _ } = state in
-        let ({ errors = iterator_errors; _ } as state) =
+        let { errors; resolution; resolution_fixpoint; _ } = state in
+        let ({ errors = iterator_errors; resolution = iterator_resolution; _ } as state) =
           forward_statement ~state:{ state with errors = ErrorMap.Map.empty } ~statement:iterator
+        in
+        let precondition = Resolution.annotations resolution in
+        let postcondition = Resolution.annotations iterator_resolution in
+        let resolution_fixpoint =
+          LocalAnnotationMap.set_expression
+            ~key:target.Node.location
+            ~precondition
+            ~postcondition
+            resolution_fixpoint
         in
         (* Don't throw Incompatible Variable errors on the generated iterator assign; we are
            temporarily minting a variable in a new scope and old annotations should be ignored. *)
@@ -1443,7 +1454,7 @@ module State (Context : Context) = struct
             iterator_errors
             errors
         in
-        { state with errors }
+        { state with errors; resolution_fixpoint }
       in
       List.map conditions ~f:Statement.assume
       |> List.fold ~init:state ~f:(fun state statement -> forward_statement ~state ~statement)
@@ -1647,7 +1658,7 @@ module State (Context : Context) = struct
           | Type.Union annotations -> List.map annotations ~f:callable |> Option.all
           | annotation -> callable annotation >>| fun callable -> [callable]
         in
-        Context.Builder.add_callee ~global_resolution ~target ~callables ~dynamic ~callee;
+        Context.Builder.add_callee ~global_resolution ~target ~callables ~arguments ~dynamic ~callee;
         let signature callable =
           let signature =
             GlobalResolution.signature_select
@@ -2062,7 +2073,8 @@ module State (Context : Context) = struct
         {
           callee = { Node.value = Name (Name.Identifier "isinstance"); _ } as callee;
           arguments =
-            [{ Call.Argument.value = expression; _ }; { Call.Argument.value = annotations; _ }];
+            [{ Call.Argument.value = expression; _ }; { Call.Argument.value = annotations; _ }] as
+            arguments;
         } ->
         let callables =
           let { resolved; _ } = forward_expression ~state ~expression:callee in
@@ -2070,7 +2082,13 @@ module State (Context : Context) = struct
           | Type.Callable callable -> Some [callable]
           | _ -> None
         in
-        Context.Builder.add_callee ~global_resolution ~target:None ~callables ~dynamic:false ~callee;
+        Context.Builder.add_callee
+          ~global_resolution
+          ~target:None
+          ~callables
+          ~arguments
+          ~dynamic:false
+          ~callee;
 
         (* Be angelic and compute errors using the typeshed annotation for isinstance. *)
 
@@ -4789,7 +4807,7 @@ module State (Context : Context) = struct
         | Some key, { resolution = post_resolution; _ } ->
             let precondition = Resolution.annotations resolution in
             let postcondition = Resolution.annotations post_resolution in
-            LocalAnnotationMap.set resolution_fixpoint ~key ~precondition ~postcondition
+            LocalAnnotationMap.set_statement resolution_fixpoint ~key ~precondition ~postcondition
         | None, _ -> resolution_fixpoint
       in
       { state with resolution_fixpoint }
@@ -4860,7 +4878,8 @@ let resolution_with_key ~global_resolution ~local_annotations ~parent ~key =
   let annotations =
     match key, local_annotations with
     | Some key, Some map ->
-        LocalAnnotationMap.get_precondition map key |> Option.value ~default:Reference.Map.empty
+        LocalAnnotationMap.get_statement_precondition map key
+        |> Option.value ~default:Reference.Map.empty
     | _ -> Reference.Map.empty
   in
   resolution global_resolution ~annotations () |> Resolution.with_parent ~parent

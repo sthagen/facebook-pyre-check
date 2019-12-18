@@ -25,18 +25,27 @@ module NodeVisitor = struct
   type t = {
     pre_resolution: Resolution.t;
     post_resolution: Resolution.t;
+    resolution_lookup: LocalAnnotationMap.t;
+    global_resolution: GlobalResolution.t;
     annotations_lookup: annotation_lookup;
     definitions_lookup: definition_lookup;
   }
 
   let node_base
       ~postcondition
-      ({ pre_resolution; post_resolution; annotations_lookup; definitions_lookup } as state)
+      ( {
+          pre_resolution;
+          post_resolution;
+          resolution_lookup;
+          global_resolution;
+          annotations_lookup;
+          definitions_lookup;
+        } as state )
       node
     =
     let rec annotate_expression ({ Node.location; value } as expression) =
       let resolution = if postcondition then post_resolution else pre_resolution in
-      let resolve ~expression =
+      let resolve ~resolution ~expression =
         try
           let annotation = Resolution.resolve_to_annotation resolution expression in
           let original = Annotation.original annotation in
@@ -75,7 +84,7 @@ module NodeVisitor = struct
             | Some definition -> Some definition
             | None ->
                 (* Resolve prefix to check if this is a method. *)
-                resolve ~expression:base
+                resolve ~resolution ~expression:base
                 >>| Type.class_name
                 >>| (fun prefix -> Reference.create ~prefix attribute)
                 >>= find_definition )
@@ -92,18 +101,56 @@ module NodeVisitor = struct
         store_lookup ~table:annotations_lookup ~location ~data:annotation
       in
       let store_definition location data = store_lookup ~table:definitions_lookup ~location ~data in
-      resolve ~expression >>| store_annotation location |> ignore;
+      resolve ~resolution ~expression >>| store_annotation location |> ignore;
       resolve_definition ~expression >>| store_definition location |> ignore;
+      let annotate_nested_scope_expression ~annotations ({ Node.location; _ } as expression) =
+        let resolution = TypeCheck.resolution global_resolution ~annotations () in
+        resolve ~resolution ~expression >>| store_annotation location |> ignore
+      in
       match value with
       | Call { arguments; _ } ->
           let annotate_argument_name { Call.Argument.name; value = { Node.location; _ } as value } =
-            match name, resolve ~expression:value with
+            match name, resolve ~resolution ~expression:value with
             | Some { Node.location = { Location.start; _ }; _ }, Some annotation ->
                 let location = { location with Location.start } in
                 store_annotation location annotation
             | _ -> ()
           in
           List.iter ~f:annotate_argument_name arguments
+      | DictionaryComprehension { element = { key; value }; generators; _ } ->
+          let store_generator_annotation { Comprehension.Generator.target; iterator; conditions; _ }
+            =
+            let annotations =
+              LocalAnnotationMap.get_expression_postcondition resolution_lookup target.Node.location
+              |> Option.value ~default:Reference.Map.empty
+            in
+            let annotate_expression expression =
+              annotate_nested_scope_expression ~annotations expression |> ignore
+            in
+            annotate_expression key;
+            annotate_expression value;
+            annotate_expression target;
+            annotate_expression iterator;
+            List.iter ~f:annotate_expression conditions
+          in
+          List.iter ~f:store_generator_annotation generators
+      | ListComprehension { element; generators; _ }
+      | SetComprehension { element; generators; _ } ->
+          let store_generator_annotation { Comprehension.Generator.target; iterator; conditions; _ }
+            =
+            let annotations =
+              LocalAnnotationMap.get_expression_postcondition resolution_lookup target.Node.location
+              |> Option.value ~default:Reference.Map.empty
+            in
+            let annotate_expression expression =
+              annotate_nested_scope_expression ~annotations expression |> ignore
+            in
+            annotate_expression element;
+            annotate_expression target;
+            annotate_expression iterator;
+            List.iter ~f:annotate_expression conditions
+          in
+          List.iter ~f:store_generator_annotation generators
       | _ -> ()
     in
     match node with
@@ -217,9 +264,9 @@ let create_of_source type_environment source =
     let walk_statement node_id statement_index statement =
       let pre_annotations, post_annotations =
         let key = [%hash: int * int] (node_id, statement_index) in
-        ( LocalAnnotationMap.get_precondition annotation_lookup key
+        ( LocalAnnotationMap.get_statement_precondition annotation_lookup key
           |> Option.value ~default:Reference.Map.empty,
-          LocalAnnotationMap.get_postcondition annotation_lookup key
+          LocalAnnotationMap.get_statement_postcondition annotation_lookup key
           |> Option.value ~default:Reference.Map.empty )
       in
       let pre_resolution = TypeCheck.resolution global_resolution ~annotations:pre_annotations () in
@@ -235,7 +282,14 @@ let create_of_source type_environment source =
         | _ -> statement
       in
       Visit.visit
-        { NodeVisitor.pre_resolution; post_resolution; annotations_lookup; definitions_lookup }
+        {
+          NodeVisitor.pre_resolution;
+          post_resolution;
+          resolution_lookup = annotation_lookup;
+          global_resolution;
+          annotations_lookup;
+          definitions_lookup;
+        }
         (Source.create [statement])
       |> ignore
     in

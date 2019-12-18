@@ -380,7 +380,7 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
 
     and analyze_call ~resolution location ~taint ~state callee arguments =
       let ({ Call.callee; arguments } as call_expression) =
-        Annotated.Call.redirect_special_calls ~resolution { Call.callee; arguments }
+        Interprocedural.CallResolution.redirect_special_calls ~resolution { Call.callee; arguments }
       in
       match AccessPath.get_global ~resolution callee, Node.value callee with
       | _, Name (Name.Identifier "super") -> (
@@ -471,10 +471,15 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
       log "analyze_expression: %a" Expression.pp_expression expression;
       match expression with
       | Await expression -> analyze_expression ~resolution ~taint ~state ~expression
-      | BooleanOperator { left; operator = _; right }
-      | ComparisonOperator { left; operator = _; right } ->
+      | BooleanOperator { left; operator = _; right } ->
           analyze_expression ~resolution ~taint ~state ~expression:right
           |> fun state -> analyze_expression ~resolution ~taint ~state ~expression:left
+      | ComparisonOperator ({ left; operator = _; right } as comparison) -> (
+          match ComparisonOperator.override comparison with
+          | Some override -> analyze_expression ~resolution ~taint ~state ~expression:override
+          | None ->
+              analyze_expression ~resolution ~taint ~state ~expression:right
+              |> fun state -> analyze_expression ~resolution ~taint ~state ~expression:left )
       | Call
           {
             callee =
