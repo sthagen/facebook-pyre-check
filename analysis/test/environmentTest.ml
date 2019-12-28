@@ -64,10 +64,13 @@ let order_and_environment ~context source =
   ( {
       TypeOrder.handler = GlobalResolution.class_hierarchy global_resolution;
       constructor = (fun _ ~protocol_assumptions:_ -> None);
-      attributes = (fun _ ~protocol_assumptions:_ ~callable_assumptions:_ -> None);
+      attributes = (fun _ ~assumptions:_ -> None);
       is_protocol = (fun _ ~protocol_assumptions:_ -> false);
-      protocol_assumptions = Assumptions.ProtocolAssumptions.empty;
-      callable_assumptions = Assumptions.CallableAssumptions.empty;
+      assumptions =
+        {
+          protocol_assumptions = Assumptions.ProtocolAssumptions.empty;
+          callable_assumptions = Assumptions.CallableAssumptions.empty;
+        };
     },
     environment )
 
@@ -79,12 +82,6 @@ let class_definition environment =
 let parse_annotation environment =
   (* Allow untracked because we're not calling all of populate *)
   GlobalResolution.create environment |> GlobalResolution.parse_annotation ~allow_untracked:true
-
-
-let create_location path start_line start_column end_line end_column =
-  let start = { Location.line = start_line; column = start_column } in
-  let stop = { Location.line = end_line; column = end_column } in
-  { Location.path; start; stop }
 
 
 let test_register_aliases context =

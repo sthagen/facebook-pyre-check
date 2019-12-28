@@ -130,32 +130,23 @@ end
 module Set = Caml.Set.Make (Key)
 module OverrideSet = Caml.Set.Make (OverrideKey)
 
-let get_definition ~resolution = function
-  | `Function name when String.is_suffix name ~suffix:".$toplevel" ->
-      String.drop_suffix name 10
-      |> Reference.create
-      |> AstEnvironment.ReadOnly.get_source (GlobalResolution.ast_environment resolution)
-      >>| Source.top_level_define_node
+let get_module_and_definition ~resolution = function
   | `Function name ->
       Reference.create name
-      |> GlobalResolution.function_definitions resolution
-      >>= List.find ~f:(fun { Node.value; _ } -> not (Define.is_overloaded_function value))
-  | `Method { class_name; method_name } when String.equal method_name "$class_toplevel" -> (
-      Reference.create class_name
-      |> GlobalResolution.class_definitions resolution
-      >>= List.hd
-      |> function
-      | Some { Node.location; value = { Class.name = { Node.value = name; _ }; body; _ }; _ } ->
-          Define.create_class_toplevel ~parent:name ~statements:body
-          |> Node.create ~location
-          |> Option.some
-      | None -> None )
+      |> GlobalResolution.function_definition resolution
+      >>= fun ({ UnannotatedGlobalEnvironment.FunctionDefinition.qualifier; _ } as definitions) ->
+      UnannotatedGlobalEnvironment.FunctionDefinition.all_bodies definitions
+      |> List.find ~f:(fun { Node.value; _ } -> not (Define.is_overloaded_function value))
+      >>= fun body -> Some (qualifier, body)
   | `Method { class_name; method_name } ->
-      Reference.create class_name
-      |> GlobalResolution.class_definitions resolution
-      >>= List.hd
-      >>| Node.value
-      >>= Class.find_define ~method_name
+      let define_name =
+        Reference.combine (Reference.create class_name) (Reference.create method_name)
+      in
+      GlobalResolution.function_definition resolution define_name
+      >>= fun ({ UnannotatedGlobalEnvironment.FunctionDefinition.qualifier; _ } as definitions) ->
+      UnannotatedGlobalEnvironment.FunctionDefinition.all_bodies definitions
+      |> List.hd
+      >>= fun body -> Some (qualifier, body)
 
 
 let resolve_method ~resolution ~class_type ~method_name =
