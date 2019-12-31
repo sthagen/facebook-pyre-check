@@ -11,6 +11,7 @@ import os
 import signal
 import sys
 from multiprocessing import Event
+from pathlib import Path
 from typing import Any, Dict, List, NamedTuple
 
 from .filesystem import acquire_lock, remove_if_exists
@@ -92,6 +93,7 @@ class WatchmanSubscriber(object):
 
         # Die silently if unable to acquire the lock.
         with acquire_lock(lock_path, blocking=False):
+            LOG.debug("Acquired lock on %s", lock_path)
             file_handler = logging.FileHandler(
                 os.path.join(self._base_path, "%s.log" % self._name), mode="w"
             )
@@ -133,6 +135,7 @@ class WatchmanSubscriber(object):
         """We double-fork here to detach the daemon process from the parent.
            If we were to just fork the child as a daemon, we'd have to worry about the
            parent process exiting zombifying the daemon."""
+        LOG.debug("Daemonizing the %s.", self._name)
         if os.fork() == 0:
             pid = os.fork()
             if pid == 0:
@@ -149,3 +152,18 @@ class WatchmanSubscriber(object):
                     sys.exit(1)
             else:
                 sys.exit(0)
+
+    @staticmethod
+    def stop_subscriber(base_path: str, subscriber_name: str) -> None:
+        try:
+            pid_path = Path(base_path, "{}.pid".format(subscriber_name))
+            pid = int(pid_path.read_text())
+            os.kill(pid, signal.SIGINT)
+            LOG.info("Stopped the %s with pid %d.", subscriber_name, pid)
+        except FileNotFoundError:
+            LOG.debug(f"Could not stop the {subscriber_name} because it was not found.")
+        except (OSError, ValueError) as exception:
+            LOG.info(
+                f"Could not stop the {subscriber_name} "
+                f"because of exception `{exception}`."
+            )

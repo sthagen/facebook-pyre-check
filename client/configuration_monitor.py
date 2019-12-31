@@ -22,11 +22,12 @@ LOG: Logger = logging.getLogger(__name__)
 class ConfigurationMonitor(WatchmanSubscriber):
     """
         The ConfigurationMonitor watches only for .pyre_configuration(.local)
-        files, and will kill the corresponding server and ProjectFileMonitor
-        when a configuration changes.
-        Logs are found in .pyre/configuration_monitor/configuration_monitor.log
-        To kill a  monitor, get pid from
-        .pyre/configuration_monitor/configuration_monitor.pid ; kill <pid>.
+        files, and will kill the corresponding server when a configuration changes.
+        Logs are found in
+        .pyre/<local-root>/configuration_monitor/configuration_monitor.log
+        To kill a monitor, get pid from
+        .pyre/<local-root>/configuration_monitor/configuration_monitor.pid
+        and kill <pid>.
     """
 
     def __init__(
@@ -38,8 +39,7 @@ class ConfigurationMonitor(WatchmanSubscriber):
         original_directory: str,
         local_configuration_root: Optional[str],
     ) -> None:
-        base_path = os.path.join(project_root, ".pyre")
-        super(ConfigurationMonitor, self).__init__(base_path)
+        super(ConfigurationMonitor, self).__init__(self.base_path(configuration))
         self._arguments = arguments
         self._configuration = configuration
         self._analysis_directory = analysis_directory
@@ -47,9 +47,15 @@ class ConfigurationMonitor(WatchmanSubscriber):
         self._original_directory = original_directory
         self._local_configuration_root = local_configuration_root
 
+    NAME = "configuration_monitor"
+
     @property
     def _name(self) -> str:
-        return "configuration_monitor"
+        return ConfigurationMonitor.NAME
+
+    @staticmethod
+    def base_path(configuration: Configuration) -> str:
+        return os.path.join(configuration.log_directory, ConfigurationMonitor.NAME)
 
     @property
     def _subscriptions(self) -> List[Subscription]:
