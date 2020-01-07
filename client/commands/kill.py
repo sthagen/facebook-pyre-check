@@ -65,9 +65,10 @@ class Kill(Command):
             pass
 
     def _delete_caches(self) -> None:
+        root_log_directory = Path(self._current_directory, LOG_DIRECTORY)
         # If a resource cache exists, delete it to remove corrupted artifacts.
         try:
-            shutil.rmtree(os.path.join(self._log_directory, "resource_cache"))
+            shutil.rmtree(str(root_log_directory / "resource_cache"))
         except OSError:
             pass
         # If a buck builder cache exists, also remove it.
@@ -119,6 +120,13 @@ class Kill(Command):
             self._delete_linked_path(path)
 
     def _run(self) -> None:
+        explicit_local = self._arguments.local_configuration
+        if explicit_local:
+            LOG.warning(
+                "Pyre kill will terminate all running servers. Specifying local path `{}` is unnecessary.".format(
+                    explicit_local
+                )
+            )
         self._kill_binary_processes()
         self._delete_server_files()
 
