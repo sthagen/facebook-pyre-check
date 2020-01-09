@@ -38,7 +38,7 @@ let expand_string_annotations ({ Source.source_path = { SourcePath.relative; _ }
 
     let transform_children _ _ = true
 
-    let rec transform_string_annotation_expression relative =
+    let transform_string_annotation_expression relative =
       let rec transform_expression
           ( {
               Node.location =
@@ -1358,7 +1358,7 @@ let expand_implicit_returns source =
               | Some { Node.value = Return _; _ } -> define
               | Some statement ->
                   let rec get_last statement =
-                    let rec get_last_in_block last_statement statement_block =
+                    let get_last_in_block last_statement statement_block =
                       match last_statement, List.rev statement_block with
                       | None, last_statement_in_block :: _ -> get_last last_statement_in_block
                       | _ -> last_statement
@@ -1737,7 +1737,6 @@ let expand_typed_dictionary_declarations
               :: bases_tail;
             body;
             decorators = _;
-            docstring = _;
           } ->
           let string_literal identifier =
             Expression.String { value = identifier; kind = StringLiteral.String }
@@ -1950,7 +1949,6 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                 name = Node.create ~location (Reference.create ~prefix:parent name);
                 parameters = self_parameter :: parameters;
                 decorators = [];
-                docstring = None;
                 return_annotation = Some return_annotation;
                 async = false;
                 generator = false;
@@ -1996,7 +1994,6 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                   bases = [tuple_base ~location];
                   body = constructors @ attributes;
                   decorators = [];
-                  docstring = None;
                 }
           | _ -> value )
       | Class ({ Class.name = { Node.value = name; _ }; bases; body; _ } as original) ->
@@ -2147,7 +2144,6 @@ let expand_new_types ({ Source.statements; source_path = { SourcePath.qualifier;
                         Parameter.create ~location ~annotation:base ~name:"input" ();
                       ];
                     decorators = [];
-                    docstring = None;
                     return_annotation =
                       Some (Node.create ~location (Expression.Name (Name.Identifier "None")));
                     async = false;
@@ -2166,7 +2162,6 @@ let expand_new_types ({ Source.statements; source_path = { SourcePath.qualifier;
               bases = [base_argument];
               body = [constructor];
               decorators = [];
-              docstring = None;
             }
       | _ -> value
     in

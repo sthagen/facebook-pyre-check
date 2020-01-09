@@ -11,7 +11,7 @@ import shutil
 import sys
 import time
 import traceback
-from typing import Optional, Type  # noqa
+from typing import Optional
 
 from . import (
     buck,
@@ -21,18 +21,12 @@ from . import (
     log,
     log_statistics,
 )
-from .commands import (  # noqa
-    Command,
-    ExitCode,
-    IncrementalStyle,
-    ProfileOutput,
-    reporting,
-)
+from .commands import CommandParser, ExitCode
 from .exceptions import EnvironmentException
 from .version import __version__
 
 
-LOG = logging.getLogger(__name__)  # type: logging.Logger
+LOG: logging.Logger = logging.getLogger(__name__)
 
 
 def main() -> int:
@@ -81,7 +75,7 @@ def main() -> int:
             LOG.warning("Defaulting to non-incremental check.")
             arguments.command = commands.Check
 
-    command: Optional[Command] = None
+    command: Optional[CommandParser] = None
     client_exception_message = ""
     # Having this as a fails-by-default helps flag unexpected exit
     # from exception flows.
@@ -99,7 +93,7 @@ def main() -> int:
         original_directory = os.getcwd()
         # TODO(T57959968): Stop changing the directory in the client
         os.chdir(find_project_root(original_directory))
-        command = arguments.command(arguments, original_directory)
+        command: CommandParser = arguments.command(arguments, original_directory)
 
         log.initialize(command.noninteractive, command.log_directory)
         exit_code = command.run().exit_code()
@@ -128,8 +122,8 @@ def main() -> int:
             LOG.error(client_exception_message)
         log.cleanup()
         if command:
-            command.analysis_directory.cleanup()
-            configuration = command._configuration
+            command.cleanup()
+            configuration = command.configuration
             if configuration and configuration.logger:
                 log_statistics(
                     "perfpipe_pyre_usage",

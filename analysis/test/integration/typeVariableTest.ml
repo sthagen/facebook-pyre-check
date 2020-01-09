@@ -237,6 +237,19 @@ let test_check_unbounded_variables context =
           return str(modified)
   |}
     [];
+  assert_type_errors
+    {|
+      from typing import TypeVar, List, Generic
+      T_bound_int = TypeVar('T_bound_int', bound=int)
+      class G(Generic[T_bound_int]):
+        pass
+      T = TypeVar('T')
+      def foo(a: G[List[T]]) -> T: ...
+    |}
+    [
+      "Invalid type parameters [24]: Type parameter `List[Variable[T]]` violates constraints on \
+       `Variable[T_bound_int (bound to int)]` in generic type `G`.";
+    ];
   ()
 
 
@@ -1435,11 +1448,13 @@ let test_map context =
      from pyre_extensions.type_variable_operators import Map
      Ts = ListVariadic("Ts")
      def bad(x: List[Map[List, Ts]]) -> None:
-      pass
+       reveal_type(x)
+       pass
      |}
     [
       "Invalid type parameters [24]: Concrete type parameter `Variable[_T]` expected, but a \
        variadic type parameter `Map[list, test.Ts]` was given for generic type list.";
+      "Revealed type [-1]: Revealed type for `x` is `List[typing.Any]`.";
     ];
 
   ()

@@ -537,7 +537,9 @@ module State (Context : Context) = struct
         |> Option.value ~default:[]
       in
       let type_variables_of_define signature =
-        let parser = GlobalResolution.annotation_parser global_resolution in
+        let parser =
+          GlobalResolution.annotation_parser ~allow_invalid_type_parameters:true global_resolution
+        in
         let define_variables =
           Node.create signature ~location
           |> AnnotatedCallable.create_overload ~parser
@@ -1430,7 +1432,7 @@ module State (Context : Context) = struct
 
   and forward_expression ~state:({ resolution; _ } as state) ~expression:{ Node.location; value } =
     let global_resolution = Resolution.global_resolution resolution in
-    let rec forward_entry ~state ~entry:{ Dictionary.Entry.key; value } =
+    let forward_entry ~state ~entry:{ Dictionary.Entry.key; value } =
       let { state; resolved = key_resolved; _ } = forward_expression ~state ~expression:key in
       let { state; resolved = value_resolved; _ } = forward_expression ~state ~expression:value in
       Type.weaken_literals key_resolved, Type.weaken_literals value_resolved, state
@@ -1562,15 +1564,18 @@ module State (Context : Context) = struct
               >>| (fun parameters -> List.length parameters == 1)
               |> Option.value ~default:false
             in
+            let create_annotation signature =
+              Annotation.create_immutable
+                ~global:true
+                ~original:(Some Type.Top)
+                (Type.Callable.Overload.return_annotation signature)
+            in
             match getattr with
-            | Some (Callable { overloads = [signature]; _ })
-            | Some (Callable { implementation = signature; _ })
-              when correct_getattr_arity signature ->
-                Some
-                  (Annotation.create_immutable
-                     ~global:true
-                     ~original:(Some Type.Top)
-                     (Type.Callable.Overload.return_annotation signature))
+            | Some (Callable { overloads = [signature]; _ }) when correct_getattr_arity signature ->
+                Some (create_annotation signature)
+            | Some (Callable { implementation = signature; _ }) when correct_getattr_arity signature
+              ->
+                Some (create_annotation signature)
             | _ -> None )
         | _ -> None
       in
@@ -2681,8 +2686,7 @@ module State (Context : Context) = struct
                 in
                 { state; resolved = Type.Top; resolved_annotation = None; base = None }
           else (* Attribute access. *)
-            let rec find_attribute ({ Type.instantiated; class_attributes; class_name } as resolved)
-              =
+            let find_attribute ({ Type.instantiated; class_attributes; class_name } as resolved) =
               let name = attribute in
               match
                 GlobalResolution.attribute_from_class_name

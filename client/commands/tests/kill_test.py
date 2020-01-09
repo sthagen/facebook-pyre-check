@@ -3,17 +3,17 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import os  # noqa
-import shutil  # noqa
+import os
+import shutil
 import signal
 import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, call, patch
 
-import psutil  # noqa
+import psutil
 
-from ... import commands  # noqa
+from ... import commands
 from .. import kill
 from ..kill import Kill, _get_process_name
 
@@ -135,8 +135,7 @@ class KillTest(unittest.TestCase):
         kill_command._configuration = Mock()
         kill_command._run()
 
-        delete_caches.assert_not_called()
-
+        delete_caches.assert_called_once()
         kill_binary_processes.assert_called_once()
         kill_client_processes.assert_called_once()
         delete_server_files.assert_called_once()
@@ -144,7 +143,7 @@ class KillTest(unittest.TestCase):
         kill_command._arguments = Mock(with_fire=True)
         kill_command._run()
 
-        delete_caches.assert_called_once()
+        self.assertEqual(delete_caches.call_count, 2)
         self.assertEqual(kill_binary_processes.call_count, 2)
         self.assertEqual(kill_client_processes.call_count, 2)
         self.assertEqual(delete_server_files.call_count, 2)
