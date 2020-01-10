@@ -8,7 +8,7 @@
 import ast
 import logging
 from dataclasses import dataclass
-from typing import Callable, Iterable, List, Set, Tuple, Union
+from typing import Callable, Iterable, List, Optional, Set, Tuple, Union
 
 from .generator_specifications import DecoratorAnnotationSpecification
 from .model import FunctionDefinitionModel, Model
@@ -21,11 +21,20 @@ FunctionDefinition = Union[ast.FunctionDef, ast.AsyncFunctionDef]
 
 
 class AnnotatedFreeFunctionWithDecoratorGenerator(ModelGenerator):
-    def _annotate_fns(
+    def __init__(
         self,
-        annotation_specification: DecoratorAnnotationSpecification,
-        root: str,
-        path: str,
+        root: Optional[str] = None,
+        annotation_specifications: Optional[
+            List[DecoratorAnnotationSpecification]
+        ] = None,
+    ) -> None:
+        self.root: str = root or Configuration.root
+        self.annotation_specifications: List[DecoratorAnnotationSpecification] = (
+            annotation_specifications or Configuration.annotation_specifications
+        )
+
+    def _annotate_functions(
+        self, annotation_specification: DecoratorAnnotationSpecification, path: str
     ) -> Iterable[Model]:
 
         found_functions: Set[FunctionDefinition] = set()
@@ -145,7 +154,7 @@ class AnnotatedFreeFunctionWithDecoratorGenerator(ModelGenerator):
         visitor = FreeFunctionVisitor(annotation_specification.decorator)
         visitor.visit(module)
 
-        module_qualifier = qualifier(root, path)
+        module_qualifier = qualifier(self.root, path)
 
         models: Set[FunctionDefinitionModel] = set()
         for found_function in found_functions:
@@ -170,17 +179,15 @@ class AnnotatedFreeFunctionWithDecoratorGenerator(ModelGenerator):
     def compute_models(
         self, functions_to_model: Iterable[Callable[..., object]]
     ) -> Iterable[Model]:
-        annotated_fns = set()
+        annotated_functions = set()
 
-        for path in find_all_paths():
-            for annotation_specification in Configuration.annotation_specifications:
-                annotated_fns.update(
-                    self._annotate_fns(
-                        annotation_specification, Configuration.root, path
-                    )
+        for path in find_all_paths(self.root):
+            for annotation_specification in self.annotation_specifications:
+                annotated_functions.update(
+                    self._annotate_functions(annotation_specification, path)
                 )
 
-        return sorted(annotated_fns)
+        return sorted(annotated_functions)
 
 
 Registry.register(

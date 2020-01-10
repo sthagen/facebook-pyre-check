@@ -880,10 +880,12 @@ module State (Context : Context) = struct
                       state, Annotation.create annotation
                   | None -> state, Annotation.create resolved )
               | _ -> (
-                  let annotation_and_state =
+                  let state, parsed_annotation =
                     annotation
                     >>| parse_and_check_annotation ~state ~bind_variables:false
                     >>| add_variance_error
+                    >>| (fun (state, annotation) -> state, Some annotation)
+                    |> Option.value ~default:(state, None)
                   in
                   let contains_prohibited_any parsed_annotation =
                     let contains_literal_any =
@@ -891,20 +893,26 @@ module State (Context : Context) = struct
                     in
                     contains_literal_any && Type.contains_prohibited_any parsed_annotation
                   in
-                  match annotation_and_state, value with
-                  | Some (_, annotation), Some value when Type.contains_final annotation ->
-                      let { resolved = value_annotation; _ } =
-                        forward_expression ~state ~expression:value
-                      in
+                  let value_annotation =
+                    value
+                    >>| (fun expression -> forward_expression ~state ~expression)
+                    >>| fun { resolved; _ } -> resolved
+                  in
+                  let state =
+                    match parsed_annotation, value_annotation with
+                    | Some annotation, Some value_annotation ->
+                        add_incompatible_variable_error ~state annotation value_annotation
+                    | _ -> state
+                  in
+                  match parsed_annotation, value_annotation with
+                  | Some annotation, Some value_annotation when Type.contains_final annotation ->
                       ( add_final_parameter_annotation_error ~state,
                         Annotation.create_immutable
                           ~global:false
                           ~original:(Some annotation)
                           value_annotation )
-                  | Some (_, annotation), Some value when contains_prohibited_any annotation ->
-                      let { resolved = value_annotation; _ } =
-                        forward_expression ~state ~expression:value
-                      in
+                  | Some annotation, Some value_annotation when contains_prohibited_any annotation
+                    ->
                       ( add_missing_parameter_annotation_error
                           ~state
                           ~given_annotation:(Some annotation)
@@ -913,33 +921,23 @@ module State (Context : Context) = struct
                           ~global:false
                           ~original:(Some annotation)
                           value_annotation )
-                  | Some (_, annotation), _ when Type.contains_final annotation ->
+                  | Some annotation, _ when Type.contains_final annotation ->
                       ( add_final_parameter_annotation_error ~state,
                         Annotation.create_immutable ~global:false annotation )
-                  | Some (_, annotation), None when contains_prohibited_any annotation ->
+                  | Some annotation, None when contains_prohibited_any annotation ->
                       ( add_missing_parameter_annotation_error
                           ~state
                           ~given_annotation:(Some annotation)
                           None,
                         Annotation.create_immutable ~global:false annotation )
-                  | Some (state, annotation), value ->
-                      let state =
-                        value
-                        >>| (fun value -> forward_expression ~state ~expression:value)
-                        >>| (fun { resolved; _ } -> resolved)
-                        >>| add_incompatible_variable_error ~state annotation
-                        |> Option.value ~default:state
-                      in
+                  | Some annotation, _ ->
                       state, Annotation.create_immutable ~global:false annotation
-                  | None, Some value ->
-                      let { resolved = annotation; _ } =
-                        forward_expression ~state ~expression:value
-                      in
+                  | None, Some value_annotation ->
                       ( add_missing_parameter_annotation_error
                           ~state
                           ~given_annotation:None
-                          (Some annotation),
-                        Annotation.create annotation )
+                          (Some value_annotation),
+                        Annotation.create value_annotation )
                   | None, None ->
                       ( add_missing_parameter_annotation_error ~state ~given_annotation:None None,
                         Annotation.create Type.Any ) )
@@ -1669,7 +1667,7 @@ module State (Context : Context) = struct
         | _ -> None
       in
       let signatures =
-        let callables =
+        let callables, arguments, was_operator_inverted =
           let callable = function
             | meta when Type.is_meta meta -> (
                 let backup = find_method ~parent:meta ~name:"__call__" in
@@ -1699,30 +1697,32 @@ module State (Context : Context) = struct
             | resolved -> find_method ~parent:resolved ~name:"__call__"
           in
           match resolved with
-          | Type.Union annotations -> List.map annotations ~f:callable |> Option.all
+          | Type.Union annotations ->
+              List.map annotations ~f:callable |> Option.all, arguments, false
+          | Type.Variable { constraints = Type.Variable.Bound parent; _ } ->
+              ( ( match parent with
+                | Type.Callable callable -> Some [callable]
+                | _ -> None ),
+                arguments,
+                false )
           | Type.Top -> (
               match Node.value callee, arguments with
-              | Expression.Name (Attribute { base; attribute; _ }), [{ Call.Argument.value; _ }]
-                -> (
-                  let arguments = [{ Call.Argument.value = base; name = None }] in
+              | Expression.Name (Attribute { base; attribute; _ }), [{ Call.Argument.value; _ }] ->
+                  let inverted_arguments = [{ Call.Argument.value = base; name = None }] in
                   inverse_operator attribute
                   >>= (fun name -> find_method ~parent:(Resolution.resolve resolution value) ~name)
-                  >>= fun found_callable ->
-                  let resolved_base = Resolution.resolve resolution base in
-                  if Type.is_any resolved_base || Type.is_unbound resolved_base then
-                    callable resolved >>| fun callable -> [callable]
-                  else
-                    match
-                      GlobalResolution.signature_select
-                        ~arguments
-                        ~global_resolution:(Resolution.global_resolution resolution)
-                        ~resolve:(Resolution.resolve resolution)
-                        ~callable:found_callable
-                    with
-                    | Found callable -> Some [callable]
-                    | _ -> None )
-              | _ -> None )
-          | annotation -> callable annotation >>| fun callable -> [callable]
+                  >>= (fun found_callable ->
+                        let resolved_base = Resolution.resolve resolution base in
+                        if Type.is_any resolved_base || Type.is_unbound resolved_base then
+                          callable resolved >>| fun callable -> [callable], arguments, false
+                        else
+                          Some ([found_callable], inverted_arguments, true))
+                  |> Option.value_map
+                       ~default:(None, arguments, false)
+                       ~f:(fun (callables, arguments, was_operator_inverted) ->
+                         Some callables, arguments, was_operator_inverted)
+              | _ -> None, arguments, false )
+          | annotation -> (callable annotation >>| fun callable -> [callable]), arguments, false
         in
         Context.Builder.add_callee
           ~global_resolution
@@ -1745,7 +1745,8 @@ module State (Context : Context) = struct
               match Node.value callee, callable, arguments with
               | ( Name (Name.Attribute { base; _ }),
                   { Type.Callable.kind = Type.Callable.Named name; _ },
-                  [{ Call.Argument.value; _ }] ) ->
+                  [{ Call.Argument.value; _ }] )
+                when not was_operator_inverted ->
                   let arguments = [{ Call.Argument.value = base; name = None }] in
                   inverse_operator (Reference.last name)
                   >>= (fun name -> find_method ~parent:(Resolution.resolve resolution value) ~name)
@@ -3147,7 +3148,7 @@ module State (Context : Context) = struct
           match original_annotation with
           | None -> value_is_type
           | Some annotation ->
-              Type.is_type_alias annotation
+              (Type.is_type_alias annotation && Define.is_toplevel define)
               || Type.is_meta annotation
                  && Type.is_typed_dictionary (Type.single_parameter annotation)
         in
@@ -3160,18 +3161,18 @@ module State (Context : Context) = struct
           let resolved = Type.remove_undeclared resolved in
           (* TODO(T35601774): We need to suppress subscript related errors on generic classes. *)
           if is_type_alias then
-            let errors =
+            let add_annotation_errors errors =
               add_invalid_type_parameters_errors
                 ~resolution:global_resolution
                 ~location
-                ~errors:state.errors
+                ~errors
                 parsed
               |> fst
               |> fun errors ->
               add_untracked_annotation_errors ~resolution:global_resolution ~location ~errors parsed
               |> fst
             in
-            let errors =
+            let add_type_variable_errors errors =
               match parsed with
               | Variable variable when Type.Variable.Unary.contains_subvariable variable ->
                   let kind =
@@ -3185,6 +3186,7 @@ module State (Context : Context) = struct
                   |> ErrorMap.add ~errors
               | _ -> errors
             in
+            let errors = state.errors |> add_annotation_errors |> add_type_variable_errors in
             { state with resolution; errors }, resolved
           else
             new_state, resolved
@@ -3372,11 +3374,22 @@ module State (Context : Context) = struct
                                  })
                       | _ -> state
                     in
+                    let check_nested_explicit_type_alias state =
+                      match name, original_annotation with
+                      | Name.Identifier identifier, Some annotation
+                        when Type.is_type_alias annotation && not (Define.is_toplevel define) ->
+                          emit_error
+                            ~state
+                            ~location
+                            ~kind:(Error.InvalidType (NestedAlias identifier))
+                      | _ -> state
+                    in
                     check_final_reassignment state
                     |> check_assign_class_variable_on_instance
                     |> check_final_is_outermost_qualifier
                     |> check_is_readonly_property
                     |> check_undefined_attribute_target
+                    |> check_nested_explicit_type_alias
                 | _ -> state
               in
               let expected, is_immutable =
