@@ -191,12 +191,15 @@ let process_type_query_request
             >>| GlobalResolution.generics ~resolution:global_resolution
           in
           match generics, annotation with
-          | Some (Type.OrderedTypes.Concrete generics), Type.Primitive primitive
-            when not (List.is_empty generics) ->
+          | Some generics, Type.Primitive primitive
+            when (not (List.is_empty generics))
+                 && List.for_all generics ~f:(function
+                        | Type.Parameter.Single _ -> true
+                        | _ -> false) ->
               Type.Parametric
                 {
                   name = primitive;
-                  parameters = Type.OrderedTypes.Concrete (List.map generics ~f:(fun _ -> Type.Any));
+                  parameters = List.map generics ~f:(fun _ -> Type.Parameter.Single Type.Any);
                 }
           | _ -> annotation
         else
@@ -529,6 +532,7 @@ let process_type_query_request
           (Timer.stop timer |> Time.Span.to_sec)
           path;
         TypeQuery.Response (TypeQuery.Path (Path.create_absolute path))
+    | TypeQuery.Help help_list -> TypeQuery.Response (TypeQuery.Help help_list)
     | TypeQuery.IsCompatibleWith (left, right) ->
         (* We need a special version of parse_and_validate to handle the "unknown" type that
            Monkeycheck may send us *)
@@ -631,7 +635,7 @@ let process_type_query_request
               let parser = GlobalResolution.annotation_parser global_resolution in
               let { Type.Callable.annotation; parameters; _ } =
                 Node.create signature ~location
-                |> Analysis.Annotated.Callable.create_overload ~parser
+                |> Analysis.Annotated.Callable.create_overload_without_applying_decorators ~parser
               in
               match parameters with
               | Type.Callable.Defined parameters ->
@@ -1074,8 +1078,8 @@ let rec process
           LookupCache.evict_path ~state ~configuration path;
           let check_on_save =
             Mutex.critical_section connections.lock ~f:(fun () ->
-                let { file_notifiers; _ } = !(connections.connections) in
-                List.is_empty file_notifiers)
+                let { json_sockets; _ } = !(connections.connections) in
+                List.is_empty json_sockets)
           in
           if check_on_save then
             let configuration = { configuration with include_hints = true } in

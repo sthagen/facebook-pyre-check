@@ -65,30 +65,73 @@ let produce_global_annotation attribute_resolution name ~track_dependencies =
         let create_overload
             {
               Node.location;
-              Node.value =
-                { Define.Signature.name = { Node.value = name; _ }; parent; _ } as signature;
+              Node.value = { Define.Signature.name = { Node.value = name; _ }; _ } as signature;
             }
           =
-          let parent =
-            if Define.Signature.is_class_method signature then
-              parent >>| Reference.show >>| (fun name -> Type.Primitive name) >>| Type.meta
-            else
-              None
+          let overload =
+            AttributeResolution.ReadOnly.create_overload
+              attribute_resolution
+              ?dependency
+              (Node.create signature ~location)
           in
-          Node.create ~location signature
-          |> AttributeResolution.ReadOnly.apply_decorators ?dependency attribute_resolution
-          |> (fun overload -> [Define.Signature.is_overloaded_function signature, overload])
-          |> AttributeResolution.ReadOnly.create_callable
-               attribute_resolution
-               ?dependency
-               ~parent
-               ~name:(Reference.show name)
+          if Define.Signature.is_overloaded_function signature then
+            {
+              Type.Callable.kind = Named name;
+              implementation =
+                { annotation = Type.Top; parameters = Undefined; define_location = None };
+              overloads = [overload];
+              implicit = None;
+            }
+          else
+            {
+              Type.Callable.kind = Named name;
+              implementation = overload;
+              overloads = [];
+              implicit = None;
+            }
         in
+
         List.map defines ~f:create_overload
         |> Type.Callable.from_overloads
         >>| (fun callable -> Type.Callable callable)
         >>| Annotation.create_immutable ~global:true
         >>| Node.create ~location:(Node.location head)
+    | SimpleAssign
+        {
+          explicit_annotation = None;
+          value =
+            {
+              Node.value =
+                Call
+                  {
+                    callee =
+                      {
+                        value =
+                          Name
+                            (Attribute
+                              {
+                                base = { Node.value = Name (Identifier "typing"); _ };
+                                attribute = "TypeAlias";
+                                _;
+                              });
+                        _;
+                      };
+                    _;
+                  };
+              _;
+            };
+          target_location = location;
+        } ->
+        Ast.Expression.Expression.Name (Expression.create_name_from_reference ~location name)
+        |> Node.create ~location
+        |> AttributeResolution.ReadOnly.parse_annotation
+             ~allow_invalid_type_parameters:true
+             ?dependency
+             attribute_resolution
+        |> Type.meta
+        |> Annotation.create_immutable ~global:true
+        |> Node.create ~location
+        |> Option.some
     | SimpleAssign { explicit_annotation; value; target_location } ->
         let explicit_annotation =
           explicit_annotation

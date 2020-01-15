@@ -8,9 +8,9 @@
 import logging
 from abc import ABC
 from importlib import import_module
-from typing import Any, Callable, Iterable, Optional, Type
+from typing import Any, Callable, Iterable, NamedTuple, Optional, Type
 
-from .model_generator import Configuration, ModelGenerator
+from .model_generator import Configuration
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -19,44 +19,40 @@ LOG: logging.Logger = logging.getLogger(__name__)
 DynamicURLType = Type[Any]
 
 
-class ViewGenerator(ModelGenerator, ABC):
-    def __init__(
-        self,
-        urls_module: Optional[str] = None,
-        url_resolver_type: Optional[DynamicURLType] = None,
-        url_pattern_type: Optional[DynamicURLType] = None,
-    ) -> None:
-        super().__init__()
-        self.urls_module: Optional[str] = urls_module or Configuration.urls_module
-        self.url_resolver_type: DynamicURLType = (
-            url_resolver_type or Configuration.url_resolver_type
+class DjangoUrls(NamedTuple):
+    urls_module: str
+    url_resolver_type: DynamicURLType
+    url_pattern_type: DynamicURLType
+
+
+def django_urls_from_configuration() -> Optional[DjangoUrls]:
+    urls_module = Configuration.urls_module
+    if urls_module is not None:
+        return DjangoUrls(
+            urls_module=urls_module,
+            url_resolver_type=Configuration.url_resolver_type,
+            url_pattern_type=Configuration.url_pattern_type,
         )
-        self.url_pattern_type: DynamicURLType = (
-            url_pattern_type or Configuration.url_pattern_type
-        )
+    return None
 
-    def gather_functions_to_model(self) -> Iterable[Callable[..., object]]:
-        urls_module = self.urls_module
-        if urls_module is None:
-            LOG.warning(f"No url module supplied, can't generate view models.")
-            return []
 
-        LOG.info(f"Getting all URLs from `{urls_module}`")
-        urls_module = import_module(urls_module)
-        functions_to_model = []
+def get_all_views(django_urls: DjangoUrls) -> Iterable[Callable[..., object]]:
+    LOG.info(f"Getting all URLs from `{django_urls.urls_module}`")
+    imported_urls_module = import_module(django_urls.urls_module)
+    functions_to_model = []
 
-        # pyre-ignore: Too dynamic.
-        def visit_all_patterns(url_patterns: Iterable[Any]) -> None:
-            for pattern in url_patterns:
-                if isinstance(pattern, self.url_resolver_type):
-                    # TODO(T47152686): Fix the pyre bug that causes us to miss the
-                    # nested function.
-                    visit_all_patterns(pattern.url_patterns)
-                elif isinstance(pattern, self.url_pattern_type):
-                    functions_to_model.append(pattern.callback)
-                else:
-                    raise TypeError("pattern is not url resolver or url pattern.")
+    # pyre-ignore: Too dynamic.
+    def visit_all_patterns(url_patterns: Iterable[Any]) -> None:
+        for pattern in url_patterns:
+            if isinstance(pattern, django_urls.url_resolver_type):
+                # TODO(T47152686): Fix the pyre bug that causes us to miss the
+                # nested function.
+                visit_all_patterns(pattern.url_patterns)
+            elif isinstance(pattern, django_urls.url_pattern_type):
+                functions_to_model.append(pattern.callback)
+            else:
+                raise TypeError("pattern is not url resolver or url pattern.")
 
-        # pyre-ignore: Too dynamic.
-        visit_all_patterns(urls_module.urlpatterns)
-        return functions_to_model
+    # pyre-ignore: Too dynamic.
+    visit_all_patterns(imported_urls_module.urlpatterns)
+    return functions_to_model

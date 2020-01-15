@@ -36,7 +36,7 @@ let test_return_annotation context =
           nesting_define = None;
         }
       in
-      Callable.return_annotation ~signature ~parser
+      Callable.return_annotation_without_applying_decorators ~signature ~parser
     in
     assert_equal ~printer:Type.show ~cmp:Type.equal expected return_annotation
   in
@@ -49,7 +49,7 @@ let test_return_annotation context =
     ~return_annotation:(Some (Type.expression Type.integer))
     ~async:true
     ~generator:false
-    (Type.coroutine (Concrete [Type.Any; Type.Any; Type.integer]));
+    (Type.coroutine [Single Type.Any; Single Type.Any; Single Type.integer]);
   assert_return_annotation
     ~return_annotation:(Some (Type.expression Type.integer))
     ~async:true
@@ -77,7 +77,7 @@ let test_create_overload context =
       |> Test.parse_single_define
       |> (fun { Define.signature; _ } -> signature)
       |> Node.create_with_default_location
-      |> Callable.create_overload ~parser )
+      |> Callable.create_overload_without_applying_decorators ~parser )
   in
   assert_overload
     {|

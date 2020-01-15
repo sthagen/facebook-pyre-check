@@ -8,7 +8,7 @@ module Daemon = Daemon
 
 type t
 
-val create : configuration:Configuration.Analysis.t -> ?bucket_multiplier:int -> unit -> t
+val create : configuration:Configuration.Analysis.t -> unit -> t
 
 val run_process : configuration:Configuration.Analysis.t -> (unit -> 'result) -> 'result
 
@@ -34,8 +34,6 @@ val iter
 val single_job : t -> f:('a -> 'b) -> 'a -> 'b
 
 val is_parallel : t -> bool
-
-val with_parallel : is_parallel:bool -> t -> t
 
 val workers : t -> Worker.t list
 

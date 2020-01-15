@@ -294,7 +294,6 @@ let test_check_global_refinement context =
           reveal_type(MY_GLOBAL)
     |}
     ["Revealed type [-1]: Revealed type for `MY_GLOBAL` is `typing.Optional[int]`."];
-
   assert_type_errors
     {|
       x: typing.Optional[int] = 1
@@ -317,7 +316,6 @@ let test_check_local_refinement context =
           reveal_type(x)
     |}
     ["Revealed type [-1]: Revealed type for `x` is `typing.Optional[int]` (inferred: `int`)."];
-
   assert_type_errors
     {|
       class FakeTest(unittest.TestCase):
@@ -326,7 +324,6 @@ let test_check_local_refinement context =
           reveal_type(x)
     |}
     ["Revealed type [-1]: Revealed type for `x` is `typing.Optional[int]` (inferred: `int`)."];
-
   assert_type_errors
     {|
       x: typing.Optional[int] = 1
@@ -340,7 +337,6 @@ let test_check_local_refinement context =
           reveal_type(x)
     |}
     ["Revealed type [-1]: Revealed type for `x` is `typing_extensions.Literal[1]`."];
-
   assert_type_errors
     {|
       def foo() -> None:
@@ -349,7 +345,6 @@ let test_check_local_refinement context =
           reveal_type(x)
     |}
     ["Revealed type [-1]: Revealed type for `x` is `typing.Optional[int]` (inferred: `int`)."];
-
   assert_type_errors
     {|
       def foo(x: typing.Optional[str]) -> typing.Optional[str]:
@@ -370,7 +365,6 @@ let test_check_isinstance context =
           reveal_type(x)
     |}
     ["Revealed type [-1]: Revealed type for `x` is `int`."];
-
   assert_type_errors
     {|
       MY_GLOBAL: typing.Union[int, str] = 1
@@ -380,7 +374,6 @@ let test_check_isinstance context =
           reveal_type(MY_GLOBAL)
     |}
     ["Revealed type [-1]: Revealed type for `MY_GLOBAL` is `typing.Union[int, str]`."];
-
   assert_type_errors
     {|
       class Foo:
@@ -406,7 +399,6 @@ let test_assert_contains_none context =
       "Revealed type [-1]: Revealed type for `x` is `typing.List[typing.Optional[int]]` (inferred: \
        `typing.List[int]`).";
     ];
-
   assert_type_errors
     {|
       def bar(i: typing.Optional[int]) -> bool:
@@ -421,6 +413,103 @@ let test_assert_contains_none context =
     ["Revealed type [-1]: Revealed type for `y` is `typing.List[int]`."]
 
 
+let test_check_callable context =
+  let assert_type_errors = assert_type_errors ~context in
+  assert_type_errors
+    {|
+      from typing import Dict, Optional
+      class CallableClass:
+        def __call__(self, x:int) -> str:
+          return "A"
+      def foo(x: Dict[int, Optional[CallableClass]]) -> None:
+        ret = x[0]
+        if callable(ret):
+          reveal_type(ret)
+    |}
+    ["Revealed type [-1]: Revealed type for `ret` is `CallableClass`."];
+  assert_type_errors
+    {|
+      from typing import Dict, Callable, Optional
+      def foo(x: Dict[int, Optional[Callable[[], int]]]) -> None:
+        ret = x[0]
+        if callable(ret):
+          reveal_type(ret)
+        reveal_type(ret)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `ret` is `typing.Callable[[], int]`.";
+      "Revealed type [-1]: Revealed type for `ret` is `Optional[typing.Callable[[], int]]`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Union, Callable
+      def foo(x: Union[Callable[[], int], int]) -> None:
+        if callable(x):
+          reveal_type(x)
+        reveal_type(x)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `x` is `typing.Callable[[], int]`.";
+      "Revealed type [-1]: Revealed type for `x` is `Union[typing.Callable[[], int], int]`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Union, Type
+      class Constructable:
+        def __init__(self, x:int) -> None:
+          return
+      def foo(x: Union[int, Type[Constructable]]) -> None:
+        if callable(x):
+          reveal_type(x)
+        else:
+          reveal_type(x)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `x` is `Type[Constructable]`.";
+      "Revealed type [-1]: Revealed type for `x` is `int`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Union, Callable
+      def foo(x: Union[Callable[[int], str], int]) -> None:
+        if not callable(x):
+          reveal_type(x)
+        else:
+          reveal_type(x)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `x` is `int`.";
+      "Revealed type [-1]: Revealed type for `x` is `typing.Callable[[int], str]`.";
+    ];
+  (* Look into bottoming callable expressions *)
+  assert_type_errors
+    {|
+      from typing import Callable
+      def foo(x: Callable[[], int]) -> None:
+        if callable(x):
+          reveal_type(x)
+        else:
+          reveal_type(x)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `x` is `typing.Callable[[], int]`.";
+      "Revealed type [-1]: Revealed type for `x` is `typing.Callable[[], int]`.";
+    ];
+  assert_type_errors
+    {|
+      def foo(x:int) -> None:
+        if callable(x):
+          reveal_type(x)
+        else:
+          reveal_type(x)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `x` is `typing.Callable[..., object]`.";
+      "Revealed type [-1]: Revealed type for `x` is `int`.";
+    ];
+  ()
+
+
 let () =
   "assert_is_not_none"
   >::: [
@@ -429,5 +518,6 @@ let () =
          "check_local_refinement" >:: test_check_local_refinement;
          "check_isinstance" >:: test_check_isinstance;
          "check_assert_contains_none" >:: test_assert_contains_none;
+         "check_callable" >:: test_check_callable;
        ]
   |> Test.run

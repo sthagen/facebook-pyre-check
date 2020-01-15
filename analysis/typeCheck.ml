@@ -106,7 +106,7 @@ module State (Context : Context) = struct
     let expected =
       let parser = GlobalResolution.annotation_parser global_resolution in
       let { Node.value = { Define.signature; _ }; _ } = Context.define in
-      Annotated.Callable.return_annotation ~signature ~parser
+      Annotated.Callable.return_annotation_without_applying_decorators ~signature ~parser
     in
     let annotations =
       let annotation_to_string (name, annotation) =
@@ -468,7 +468,7 @@ module State (Context : Context) = struct
   let type_of_signature ~resolution ~location signature =
     let global_resolution = Resolution.global_resolution resolution in
     Node.create signature ~location
-    |> GlobalResolution.apply_decorators ~resolution:global_resolution
+    |> GlobalResolution.create_overload ~resolution:global_resolution
     |> Type.Callable.create_from_implementation
 
 
@@ -478,18 +478,15 @@ module State (Context : Context) = struct
     let variables = GlobalResolution.variables global_resolution parent_name in
     match variables with
     | None
-    | Some (Unaries []) ->
+    | Some [] ->
         parent_type
-    | Some (Unaries variables) ->
-        let variables = List.map variables ~f:(fun variable -> Type.Variable variable) in
-        Type.Parametric { name = parent_name; parameters = Concrete variables }
-    | Some (Concatenation concatenation) ->
-        let concatenation =
-          let open Type.OrderedTypes.Concatenation in
-          map_middle concatenation ~f:Middle.create_bare
-          |> map_head_and_tail ~f:(fun variable -> Type.Variable variable)
+    | Some variables ->
+        let variables =
+          List.map variables ~f:(function
+              | Unary variable -> Type.Parameter.Single (Type.Variable variable)
+              | ListVariadic variadic -> Group (Type.Variable.Variadic.List.self_reference variadic))
         in
-        Type.Parametric { name = parent_name; parameters = Concatenation concatenation }
+        Type.Parametric { name = parent_name; parameters = variables }
     | exception _ -> parent_type
 
 
@@ -512,7 +509,7 @@ module State (Context : Context) = struct
     (* Add type variables *)
     let outer_scope_variables, current_scope_variables =
       let type_variables_of_class class_name =
-        let unarize unaries =
+        let unarize unary =
           let fix_invalid_parameters_in_bounds unary =
             match
               GlobalResolution.check_invalid_type_parameters global_resolution (Type.Variable unary)
@@ -520,19 +517,15 @@ module State (Context : Context) = struct
             | _, Type.Variable unary -> unary
             | _ -> failwith "did not transform"
           in
-          List.map unaries ~f:fix_invalid_parameters_in_bounds
-          |> List.map ~f:(fun unary -> Type.Variable.Unary unary)
+          fix_invalid_parameters_in_bounds unary |> fun unary -> Type.Variable.Unary unary
         in
         let extract = function
-          | ClassHierarchy.Unaries unaries -> unarize unaries
-          | ClassHierarchy.Concatenation concatenation ->
-              unarize (Type.OrderedTypes.Concatenation.head concatenation)
-              @ [Type.Variable.ListVariadic (Type.OrderedTypes.Concatenation.middle concatenation)]
-              @ unarize (Type.OrderedTypes.Concatenation.tail concatenation)
+          | ClassHierarchy.Variable.Unary unary -> unarize unary
+          | ListVariadic variadic -> Type.Variable.ListVariadic variadic
         in
         Reference.show class_name
         |> GlobalResolution.variables global_resolution
-        >>| extract
+        >>| List.map ~f:extract
         |> Option.value ~default:[]
       in
       let type_variables_of_define signature =
@@ -541,7 +534,7 @@ module State (Context : Context) = struct
         in
         let define_variables =
           Node.create signature ~location
-          |> AnnotatedCallable.create_overload ~parser
+          |> AnnotatedCallable.create_overload_without_applying_decorators ~parser
           |> (fun { parameters; _ } -> Type.Callable.create ~parameters ~annotation:Type.Top ())
           |> Type.Variable.all_free_variables
           |> List.dedup_and_sort ~compare:Type.Variable.compare
@@ -640,7 +633,7 @@ module State (Context : Context) = struct
         let return_annotation =
           let annotation =
             let parser = GlobalResolution.annotation_parser global_resolution in
-            Annotated.Callable.return_annotation ~signature ~parser
+            Annotated.Callable.return_annotation_without_applying_decorators ~signature ~parser
           in
           if async then
             Type.coroutine_value annotation |> Option.value ~default:Type.Top
@@ -1101,7 +1094,7 @@ module State (Context : Context) = struct
             | _ -> false
           in
           match parsed with
-          | Type.Parametric { name = "type"; parameters = Concrete [Type.Any] } ->
+          | Type.Parametric { name = "type"; parameters = [Single Type.Any] } ->
               (* Inheriting from type makes you a metaclass, and we don't want to
                * suggest that instead you need to use typing.Type[Something] *)
               state
@@ -1502,7 +1495,7 @@ module State (Context : Context) = struct
               match
                 GlobalResolution.join global_resolution new_resolved (Type.iterable Type.Bottom)
               with
-              | Type.Parametric { parameters = Concrete [parameter]; _ } -> parameter
+              | Type.Parametric { parameters = [Single parameter]; _ } -> parameter
               | _ -> Type.Any
             in
             {
@@ -2289,7 +2282,7 @@ module State (Context : Context) = struct
               | _ -> None, false
           in
           match resolved_callee with
-          | Type.Parametric { name = "type"; parameters = Concrete [Type.Union resolved_callees] }
+          | Type.Parametric { name = "type"; parameters = [Single (Type.Union resolved_callees)] }
             ->
               let forward_inner_callable (state, annotations) inner_resolved_callee =
                 let target, dynamic = target_and_dynamic inner_resolved_callee in
@@ -3017,7 +3010,7 @@ module State (Context : Context) = struct
       let return_annotation =
         let annotation =
           let parser = GlobalResolution.annotation_parser global_resolution in
-          Annotated.Callable.return_annotation ~signature ~parser
+          Annotated.Callable.return_annotation_without_applying_decorators ~signature ~parser
         in
         if async then
           Type.coroutine_value annotation |> Option.value ~default:Type.Top
@@ -3228,7 +3221,7 @@ module State (Context : Context) = struct
                 (* TODO (T56720048): Stop joining with iterable bottom *)
                 GlobalResolution.join global_resolution annotation (Type.iterable Type.Bottom)
                 |> function
-                | Type.Parametric { parameters = Concrete [parameter]; _ } -> parameter
+                | Type.Parametric { parameters = [Single parameter]; _ } -> parameter
                 | _ -> Type.Top )
           in
           let nonuniform_sequence_parameters annotation =
@@ -3410,7 +3403,7 @@ module State (Context : Context) = struct
                 (* Special-casing to avoid throwing errors *)
                 let open Type in
                 match expected with
-                | Parametric { name = "type"; parameters = Concrete [parameter] }
+                | Parametric { name = "type"; parameters = [Single parameter] }
                   when is_typed_dictionary parameter ->
                     is_unknown resolved
                 | _ -> false
@@ -4020,6 +4013,31 @@ module State (Context : Context) = struct
                     Annotation.create consistent_with_boundary |> set_local reference
             in
             { state with resolution }
+        | Call
+            {
+              callee = { Node.value = Name (Name.Identifier "callable"); _ };
+              arguments = [{ Call.Argument.name = None; value = { Node.value = Name name; _ } }];
+            }
+          when is_simple_name name ->
+            let set_local reference annotation =
+              Resolution.set_local resolution ~reference ~annotation
+            in
+            let resolution =
+              match refinable_annotation name with
+              | Some (reference, existing_annotation) ->
+                  let undefined =
+                    Type.Callable.create ~parameters:Undefined ~annotation:Type.object_primitive ()
+                  in
+                  let { consistent_with_boundary; _ } =
+                    partition (Annotation.annotation existing_annotation) ~boundary:undefined
+                  in
+                  if Type.equal consistent_with_boundary Type.Bottom then
+                    Annotation.create undefined |> set_local reference
+                  else
+                    Annotation.create consistent_with_boundary |> set_local reference
+              | _ -> resolution
+            in
+            { state with resolution }
         | ComparisonOperator
             {
               left =
@@ -4094,6 +4112,41 @@ module State (Context : Context) = struct
             | _, { Node.value = Name name; _ } when is_simple_name name ->
                 { state with resolution = resolve ~reference:(name_to_reference_exn name) }
             | _ -> state )
+        | UnaryOperator
+            {
+              UnaryOperator.operator = UnaryOperator.Not;
+              operand =
+                {
+                  Node.value =
+                    Call
+                      {
+                        callee = { Node.value = Name (Name.Identifier "callable"); _ };
+                        arguments =
+                          [{ Call.Argument.name = None; value = { Node.value = Name name; _ } }];
+                      };
+                  _;
+                };
+            }
+          when is_simple_name name ->
+            let resolution =
+              match refinable_annotation name with
+              | Some (reference, existing_annotation) ->
+                  let { not_consistent_with_boundary; _ } =
+                    partition
+                      (Annotation.annotation existing_annotation)
+                      ~boundary:
+                        (Type.Callable.create
+                           ~parameters:Undefined
+                           ~annotation:Type.object_primitive
+                           ())
+                  in
+                  not_consistent_with_boundary
+                  >>| Annotation.create
+                  >>| (fun annotation -> Resolution.set_local resolution ~reference ~annotation)
+                  |> Option.value ~default:resolution
+              | _ -> resolution
+            in
+            { state with resolution }
         | Call
             {
               callee = { Node.value = Name (Name.Identifier "all"); _ };
@@ -4106,7 +4159,7 @@ module State (Context : Context) = struct
               | Some
                   {
                     Annotation.annotation =
-                      Type.Parametric { name; parameters = Concrete [Type.Optional parameter] } as
+                      Type.Parametric { name; parameters = [Single (Type.Optional parameter)] } as
                       annotation;
                     _;
                   }
@@ -4119,7 +4172,7 @@ module State (Context : Context) = struct
                     ~reference
                     ~annotation:
                       (Annotation.create
-                         (Type.Parametric { name; parameters = Concrete [parameter] }))
+                         (Type.Parametric { name; parameters = [Single parameter] }))
               | _ -> resolution
             in
             { state with resolution }
@@ -4279,7 +4332,7 @@ module State (Context : Context) = struct
                            })
                       ~define:Context.define
                     |> emit_raw_error ~state:{ state with bottom = true }
-                | Type.Parametric { name = "list"; parameters = Concrete [Type.Optional parameter] }
+                | Type.Parametric { name = "list"; parameters = [Single (Type.Optional parameter)] }
                   ->
                     let resolution =
                       Resolution.set_local
@@ -4396,7 +4449,7 @@ module State (Context : Context) = struct
         let { state; resolved; _ } = forward_expression ~state ~expression:return in
         let actual =
           match GlobalResolution.join global_resolution resolved (Type.iterator Type.Bottom) with
-          | Type.Parametric { name = "typing.Iterator"; parameters = Concrete [parameter] } ->
+          | Type.Parametric { name = "typing.Iterator"; parameters = [Single parameter] } ->
               Type.generator parameter
           | annotation -> Type.generator annotation
         in
@@ -4435,17 +4488,22 @@ module State (Context : Context) = struct
             | _, _ -> state
           in
           match GlobalResolution.parse_annotation global_resolution base with
-          | Type.Parametric { name; parameters = Concrete extended_parameters }
-            when not (String.equal name "typing.Generic") -> (
-              let actual_parameters =
-                match GlobalResolution.variables global_resolution name with
-                | Some (ClassHierarchy.Unaries variables) ->
-                    List.map variables ~f:(fun variable -> Type.Variable variable)
-                | _ -> []
-              in
-              match List.fold2 extended_parameters actual_parameters ~init:state ~f:check_pair with
-              | Ok state -> state
-              | Unequal_lengths -> state )
+          | Type.Parametric { name; parameters = extended_parameters }
+            when not (String.equal name "typing.Generic") ->
+              Type.Parameter.all_singles extended_parameters
+              >>| (fun extended_parameters ->
+                    let actual_parameters =
+                      GlobalResolution.variables global_resolution name
+                      >>= ClassHierarchy.Variable.all_unary
+                      >>| List.map ~f:(fun unary -> Type.Variable unary)
+                      |> Option.value ~default:[]
+                    in
+                    match
+                      List.fold2 extended_parameters actual_parameters ~init:state ~f:check_pair
+                    with
+                    | Ok state -> state
+                    | Unequal_lengths -> state)
+              |> Option.value ~default:state
           | _ -> state
         in
         List.fold bases ~f:check_base ~init:state

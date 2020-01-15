@@ -5,37 +5,48 @@
 
 # pyre-strict
 
-from typing import Callable, Iterable
+from typing import Callable, Iterable, List, Optional
 
+from .function_tainter import taint_functions
 from .inspect_parser import extract_qualified_name
 from .model import CallableModel, Model
-from .model_generator import Configuration, Registry
-from .view_generator import ViewGenerator
+from .model_generator import Configuration, ModelGenerator, Registry
+from .view_generator import DjangoUrls, django_urls_from_configuration, get_all_views
 
 
-class RequestSpecificDataGenerator(ViewGenerator):
+class RequestSpecificDataGenerator(ModelGenerator):
+    def __init__(
+        self,
+        django_urls: Optional[DjangoUrls] = None,
+        whitelisted_views: Optional[List[str]] = None,
+        whitelisted_classes: Optional[List[str]] = None,
+    ) -> None:
+        self.django_urls: Optional[
+            DjangoUrls
+        ] = django_urls or django_urls_from_configuration()
+        self.whitelisted_views: List[
+            str
+        ] = whitelisted_views or Configuration.whitelisted_views
+        self.whitelisted_classes: List[str] = (
+            whitelisted_classes or Configuration.whitelisted_classes
+        )
+
+    def gather_functions_to_model(self) -> Iterable[Callable[..., object]]:
+        django_urls = self.django_urls
+        if django_urls is None:
+            return []
+        return get_all_views(django_urls)
+
     def compute_models(
         self, functions_to_model: Iterable[Callable[..., object]]
     ) -> Iterable[Model]:
-        view_models = set()
-        for view_function in functions_to_model:
-            qualified_name = extract_qualified_name(view_function)
-            if qualified_name in Configuration.whitelisted_views:
-                continue
-            taint_kind = "TaintSource[RequestSpecificData]"
-            try:
-                model = CallableModel(
-                    arg=taint_kind,
-                    vararg=taint_kind,
-                    kwarg=taint_kind,
-                    callable_object=view_function,
-                    whitelisted_parameters=Configuration.whitelisted_classes,
-                )
-                view_models.add(model)
-            except ValueError:
-                pass
-
-        return sorted(view_models)
+        taint_annotation = "TaintSource[RequestSpecificData]"
+        return taint_functions(
+            functions_to_model,
+            taint_annotation=taint_annotation,
+            whitelisted_views=self.whitelisted_views,
+            whitelisted_classes=self.whitelisted_classes,
+        )
 
 
 Registry.register(

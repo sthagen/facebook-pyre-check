@@ -35,32 +35,24 @@ class ViewGeneratorTest(unittest.TestCase):
         class Urls:
             urlpatterns = [SecondUrls(), Url(7)]
 
-        class TestGenerator(view_generator.ViewGenerator):
-            def compute_models(
-                self, functions_to_model: Iterable[Callable[..., object]]
-            ) -> Iterable[Model]:
-                return []
-
         with patch(f"{view_generator.__name__}.import_module", return_value=Urls):
-            views = TestGenerator(
-                urls_module="urls", url_pattern_type=Url, url_resolver_type=Resolver
-            ).gather_functions_to_model()
+            views = view_generator.get_all_views(
+                view_generator.DjangoUrls(
+                    urls_module="urls", url_pattern_type=Url, url_resolver_type=Resolver
+                )
+            )
             values = [view() for view in views]
             self.assertEqual(values, [1, 2, 3, 4, 5, 6, 7])
 
-            views = TestGenerator(urls_module=None).gather_functions_to_model()
-            values = [view() for view in views]
-            self.assertEqual(values, [])
-
-        with patch(f"{view_generator.__name__}.import_module", return_value=Urls):
-            model_generator.Configuration.urls_module = "urls"
-            model_generator.Configuration.url_pattern_type = Url
-            model_generator.Configuration.url_resolver_type = Resolver
-            views = TestGenerator().gather_functions_to_model()
-            values = [view() for view in views]
-            self.assertEqual(values, [1, 2, 3, 4, 5, 6, 7])
-
-            model_generator.Configuration.urls_module = None
-            views = TestGenerator().gather_functions_to_model()
-            values = [view() for view in views]
-            self.assertEqual(values, [])
+        with patch.object(view_generator, "Configuration") as configuration:
+            configuration.urls_module = None
+            configuration.url_resolver_type = Resolver
+            configuration.url_pattern_type = Url
+            self.assertEqual(view_generator.django_urls_from_configuration(), None)
+            configuration.urls_module = "urls"
+            self.assertEqual(
+                view_generator.django_urls_from_configuration(),
+                view_generator.DjangoUrls(
+                    urls_module="urls", url_resolver_type=Resolver, url_pattern_type=Url
+                ),
+            )

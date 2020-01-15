@@ -20,16 +20,16 @@ type annotation_parser = {
     Type.Variable.Variadic.Parameters.t option;
 }
 
-let return_annotation
+let return_annotation_without_applying_decorators
     ~signature:({ Define.Signature.return_annotation; async; generator; _ } as signature)
     ~parser:{ parse_annotation; _ }
   =
   let annotation = Option.value_map return_annotation ~f:parse_annotation ~default:Type.Top in
   if async && not generator then
-    Type.coroutine (Concrete [Type.Any; Type.Any; annotation])
+    Type.coroutine [Single Type.Any; Single Type.Any; Single annotation]
   else if Define.Signature.is_coroutine signature then
     match annotation with
-    | Type.Parametric { name = "typing.Generator"; parameters = Concrete [_; _; return_annotation] }
+    | Type.Parametric { name = "typing.Generator"; parameters = [_; _; Single return_annotation] }
       ->
         Type.awaitable return_annotation
     | _ -> Type.Top
@@ -37,7 +37,7 @@ let return_annotation
     annotation
 
 
-let create_overload
+let create_overload_without_applying_decorators
     ~parser:
       ( {
           parse_annotation;
@@ -89,4 +89,8 @@ let create_overload
     in
     List.map parameters ~f:parameter |> Parameter.create |> parse_parameters
   in
-  { annotation = return_annotation ~signature ~parser; parameters; define_location = Some location }
+  {
+    annotation = return_annotation_without_applying_decorators ~signature ~parser;
+    parameters;
+    define_location = Some location;
+  }

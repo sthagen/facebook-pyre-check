@@ -11,13 +11,9 @@ open Expression
 open Statement
 open Test
 module StatementClass = Class
-module StatementAttribute = Attribute
-module StatementDefine = Define
-module Class = Annotated.Class
-module Attribute = Annotated.Attribute
 module Argument = Call.Argument
 
-let ( !! ) concretes = Type.OrderedTypes.Concrete concretes
+let ( !! ) concretes = List.map concretes ~f:(fun single -> Type.Parameter.Single single)
 
 let value option = Option.value_exn option
 

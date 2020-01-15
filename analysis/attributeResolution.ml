@@ -20,9 +20,13 @@ module TypeParameterValidationTypes = struct
         actual: Type.t;
         expected: Type.Variable.Unary.t;
       }
-    | UnexpectedVariadic of {
+    | UnexpectedGroup of {
         actual: Type.OrderedTypes.t;
-        expected: Type.Variable.Unary.t list;
+        expected: Type.Variable.Unary.t;
+      }
+    | UnexpectedSingle of {
+        actual: Type.t;
+        expected: Type.Variable.Variadic.List.t;
       }
   [@@deriving compare, eq, sexp, show, hash]
 
@@ -223,8 +227,8 @@ let rec weaken_mutable_literals resolve ~expression ~resolved ~expected ~compara
       else
         resolved_type
   | ( Some { Node.value = Expression.List items; _ },
-      Type.Parametric { name = "list"; parameters = Concrete [actual_item_type] },
-      Type.Parametric { name = "list"; parameters = Concrete [expected_item_type] } ) ->
+      Type.Parametric { name = "list"; parameters = [Single actual_item_type] },
+      Type.Parametric { name = "list"; parameters = [Single expected_item_type] } ) ->
       let weakened_item_type =
         Type.union
           (List.map
@@ -242,13 +246,13 @@ let rec weaken_mutable_literals resolve ~expression ~resolved ~expected ~compara
       else
         Type.list weakened_item_type
   | ( Some { Node.value = Expression.ListComprehension _; _ },
-      Type.Parametric { name = "list"; parameters = Concrete [actual] },
-      Type.Parametric { name = "list"; parameters = Concrete [expected_parameter] } )
+      Type.Parametric { name = "list"; parameters = [Single actual] },
+      Type.Parametric { name = "list"; parameters = [Single expected_parameter] } )
     when comparator ~left:actual ~right:expected_parameter ->
       expected
   | ( Some { Node.value = Expression.Set items; _ },
-      Type.Parametric { name = "set"; parameters = Concrete [actual_item_type] },
-      Type.Parametric { name = "set"; parameters = Concrete [expected_item_type] } ) ->
+      Type.Parametric { name = "set"; parameters = [Single actual_item_type] },
+      Type.Parametric { name = "set"; parameters = [Single expected_item_type] } ) ->
       let weakened_item_type =
         Type.union
           (List.map
@@ -266,8 +270,8 @@ let rec weaken_mutable_literals resolve ~expression ~resolved ~expected ~compara
       else
         Type.set weakened_item_type
   | ( Some { Node.value = Expression.SetComprehension _; _ },
-      Type.Parametric { name = "set"; parameters = Concrete [actual] },
-      Type.Parametric { name = "set"; parameters = Concrete [expected_parameter] } )
+      Type.Parametric { name = "set"; parameters = [Single actual] },
+      Type.Parametric { name = "set"; parameters = [Single expected_parameter] } )
     when comparator ~left:actual ~right:expected_parameter ->
       expected
   | ( Some { Node.value = Expression.Dictionary { entries; keywords = [] }; _ },
@@ -317,8 +321,8 @@ let rec weaken_mutable_literals resolve ~expression ~resolved ~expected ~compara
   | Some { Node.value = Expression.Dictionary { entries; _ }; _ }, _, _ ->
       weaken_dictionary_entries resolve ~resolved ~expected ~comparator ~entries
   | ( Some { Node.value = Expression.DictionaryComprehension _; _ },
-      Type.Parametric { name = "dict"; parameters = Concrete [actual_key; actual_value] },
-      Type.Parametric { name = "dict"; parameters = Concrete [expected_key; expected_value] } )
+      Type.Parametric { name = "dict"; parameters = [Single actual_key; Single actual_value] },
+      Type.Parametric { name = "dict"; parameters = [Single expected_key; Single expected_value] } )
     when comparator ~left:actual_key ~right:expected_key
          && comparator ~left:actual_value ~right:expected_value ->
       expected
@@ -330,9 +334,10 @@ and weaken_dictionary_entries resolve ~resolved ~expected ~comparator ~entries =
   | _ -> (
       match resolved, expected with
       | ( Type.Parametric
-            { name = "dict"; parameters = Concrete [actual_key_type; actual_value_type] },
+            { name = "dict"; parameters = [Single actual_key_type; Single actual_value_type] },
           Type.Parametric
-            { name = "dict"; parameters = Concrete [expected_key_type; expected_value_type] } ) ->
+            { name = "dict"; parameters = [Single expected_key_type; Single expected_value_type] } )
+        ->
           let weakened_key_type =
             Type.union
               (List.map
@@ -591,10 +596,8 @@ module Implementation = struct
                         |> Annotation.original
                         |> function
                         | Type.Parametric
-                            {
-                              name = "dataclasses.InitVar";
-                              parameters = Concrete [single_parameter];
-                            } ->
+                            { name = "dataclasses.InitVar"; parameters = [Single single_parameter] }
+                          ->
                             single_parameter
                         | annotation -> annotation
                       in
@@ -767,7 +770,7 @@ module Implementation = struct
       assumptions:Assumptions.t ->
       class_metadata_environment:ClassMetadataEnvironment.ReadOnly.t ->
       ?target:ClassSummary.t Node.t ->
-      ?parameters:Type.t Type.OrderedTypes.record ->
+      ?parameters:Type.Parameter.t list ->
       ClassSummary.t Node.t ->
       ?dependency:SharedMemoryKeys.dependency ->
       instantiated:Type.t ->
@@ -777,27 +780,19 @@ module Implementation = struct
       class_metadata_environment:ClassMetadataEnvironment.ReadOnly.t ->
       ?dependency:SharedMemoryKeys.dependency ->
       ClassSummary.t Node.t ->
-      Type.t Type.OrderedTypes.record;
+      Type.Parameter.t list;
     resolve_literal:
       assumptions:Assumptions.t ->
       class_metadata_environment:ClassMetadataEnvironment.ReadOnly.t ->
       ?dependency:SharedMemoryKeys.dependency ->
       Expression.expression Node.t ->
       Type.t;
-    apply_decorators:
+    create_overload:
       assumptions:Assumptions.t ->
       class_metadata_environment:ClassMetadataEnvironment.ReadOnly.t ->
       ?dependency:SharedMemoryKeys.dependency ->
       Define.Signature.t Node.t ->
       Type.t Type.Callable.overload;
-    create_callable:
-      assumptions:Assumptions.t ->
-      class_metadata_environment:ClassMetadataEnvironment.ReadOnly.t ->
-      ?dependency:SharedMemoryKeys.dependency ->
-      parent:Type.t option ->
-      name:string ->
-      (bool * Type.t Type.Callable.overload) list ->
-      Type.t Type.Callable.record;
     signature_select:
       assumptions:Assumptions.t ->
       class_metadata_environment:ClassMetadataEnvironment.ReadOnly.t ->
@@ -920,23 +915,22 @@ module Implementation = struct
             | "typing.Final"
             | "typing_extensions.Final"
             | "typing.Optional" ->
-                ClassHierarchy.Unaries [Type.Variable.Unary.create "T"]
+                [ClassHierarchy.Variable.Unary (Type.Variable.Unary.create "T")]
             | _ ->
                 ClassHierarchyEnvironment.ReadOnly.variables
                   (class_hierarchy_environment class_metadata_environment)
                   ?dependency
                   name
-                |> Option.value ~default:(ClassHierarchy.Unaries [])
+                |> Option.value ~default:[]
           in
           let invalid_type_parameters ~name ~given =
             let generics = generics_for_name name in
-            let open ClassHierarchy in
-            match generics, given with
-            | Unaries generics, Type.OrderedTypes.Concrete given -> (
-                match List.zip generics given with
-                | Ok [] -> Type.Primitive name, sofar
-                | Ok paired ->
-                    let check_parameter (generic, given) =
+            match ClassHierarchy.Variable.zip_on_parameters ~parameters:given generics with
+            | Some [] -> Type.Primitive name, sofar
+            | Some paired ->
+                let check_parameter (given, generic) =
+                  match generic, given with
+                  | ClassHierarchy.Variable.Unary generic, Type.Parameter.Single given ->
                       let invalid =
                         let order =
                           full_order ?dependency class_metadata_environment ~assumptions
@@ -950,47 +944,45 @@ module Implementation = struct
                         |> Option.is_none
                       in
                       if invalid then
-                        ( Type.Any,
+                        ( Type.Parameter.Single Type.Any,
                           Some
                             {
                               name;
                               kind = ViolateConstraints { actual = given; expected = generic };
                             } )
                       else
-                        given, None
-                    in
-                    List.map paired ~f:check_parameter
-                    |> List.unzip
-                    |> fun (parameters, errors) ->
-                    ( Type.parametric name (Concrete parameters),
-                      List.filter_map errors ~f:Fn.id @ sofar )
-                | Unequal_lengths ->
-                    let mismatch =
-                      {
-                        name;
-                        kind =
-                          IncorrectNumberOfParameters
-                            { actual = List.length given; expected = List.length generics };
-                      }
-                    in
-                    ( Type.parametric name (Concrete (List.map generics ~f:(fun _ -> Type.Any))),
-                      mismatch :: sofar ) )
-            | Concatenation _, Any -> Type.parametric name given, sofar
-            | Unaries generics, Concatenation _
-            | Unaries generics, Any ->
-                let mismatch =
-                  { name; kind = UnexpectedVariadic { expected = generics; actual = given } }
+                        Type.Parameter.Single given, None
+                  | Unary expected, Type.Parameter.Group actual ->
+                      Single Any, Some { name; kind = UnexpectedGroup { expected; actual } }
+                  | ListVariadic expected, Single actual ->
+                      Group Any, Some { name; kind = UnexpectedSingle { expected; actual } }
+                  | ListVariadic _, Group _ ->
+                      (* TODO(T47346673): accept w/ new kind of validation *)
+                      given, None
                 in
-                ( Type.parametric name (Concrete (List.map generics ~f:(fun _ -> Type.Any))),
+                List.map paired ~f:check_parameter
+                |> List.unzip
+                |> fun (parameters, errors) ->
+                Type.parametric name parameters, List.filter_map errors ~f:Fn.id @ sofar
+            | None ->
+                let mismatch =
+                  {
+                    name;
+                    kind =
+                      IncorrectNumberOfParameters
+                        { actual = List.length given; expected = List.length generics };
+                  }
+                in
+                ( Type.parametric
+                    name
+                    (List.map generics ~f:(function
+                        | ClassHierarchy.Variable.Unary _ -> Type.Parameter.Single Type.Any
+                        | ListVariadic _ -> Group Any)),
                   mismatch :: sofar )
-            | Concatenation _, Concatenation _
-            | Concatenation _, Concrete _ ->
-                (* TODO(T47346673): accept w/ new kind of validation *)
-                Type.parametric name given, sofar
           in
           match annotation with
           | Type.Primitive ("typing.Final" | "typing_extensions.Final") -> annotation, sofar
-          | Type.Primitive name -> invalid_type_parameters ~name ~given:(Concrete [])
+          | Type.Primitive name -> invalid_type_parameters ~name ~given:[]
           (* natural variadics *)
           | Type.Parametric { name = "typing.Protocol"; _ }
           | Type.Parametric { name = "typing.Generic"; _ } ->
@@ -1215,7 +1207,7 @@ module Implementation = struct
 
 
   let create_attribute
-      { parse_annotation; resolve_literal; apply_decorators; create_callable; generics; _ }
+      { parse_annotation; resolve_literal; create_overload; generics; full_order; _ }
       ~assumptions
       ~class_metadata_environment
       ?dependency
@@ -1314,14 +1306,15 @@ module Implementation = struct
           annotation, original, value, class_attribute, visibility
       | Method { signatures; final; _ } ->
           (* Handle Callables *)
-          let annotation =
+          let callable =
             let instantiated =
               match instantiated with
               | Some instantiated -> instantiated
               | None -> class_annotation
             in
             match signatures with
-            | ({ Define.Signature.name = { Node.value = name; _ }; _ } as define) :: _ as defines ->
+            | ({ Define.Signature.name = { Node.value = name; _ }; _ } as define) :: _ as defines
+              -> (
                 let parent =
                   if
                     Define.Signature.is_class_method define
@@ -1337,48 +1330,131 @@ module Implementation = struct
                   else
                     Some instantiated
                 in
-                let apply_decorators define =
-                  ( Define.Signature.is_overloaded_function define,
-                    apply_decorators
-                      ~class_metadata_environment
-                      ~assumptions
-                      ?dependency
-                      (Node.create define ~location) )
+                let open Type.Callable in
+                let overloads =
+                  let create_overload define =
+                    ( Define.Signature.is_overloaded_function define,
+                      create_overload
+                        ~class_metadata_environment
+                        ~assumptions
+                        ?dependency
+                        (Node.create define ~location) )
+                  in
+                  List.map defines ~f:create_overload
                 in
-                List.map defines ~f:apply_decorators
-                |> create_callable
-                     ~class_metadata_environment
-                     ~assumptions
-                     ?dependency
-                     ~parent
-                     ~name:(Reference.show name)
-                |> fun callable -> Some (Type.Callable callable)
+                let implementation, overloads =
+                  let to_signature (implementation, overloads) (is_overload, signature) =
+                    if is_overload then
+                      implementation, signature :: overloads
+                    else
+                      signature, overloads
+                  in
+                  List.fold
+                    ~init:
+                      ( {
+                          annotation = Type.Top;
+                          parameters = Type.Callable.Undefined;
+                          define_location = None;
+                        },
+                        [] )
+                    ~f:to_signature
+                    overloads
+                in
+                let callable = { kind = Named name; implementation; overloads; implicit = None } in
+                match parent with
+                | Some parent when String.equal (Reference.last name) "__new__" ->
+                    (* Special case __new__ because it is the only static method with one of its
+                       parameters implicitly annotated. *)
+                    let { Type.Callable.kind; implementation; overloads; implicit } = callable in
+                    let add_class_annotation
+                        { Type.Callable.annotation; parameters; define_location }
+                      =
+                      let parameters =
+                        match parameters with
+                        | Defined
+                            (Named { Type.Callable.Parameter.name; annotation = Type.Top; default }
+                            :: parameters) ->
+                            Defined (Named { name; annotation = parent; default } :: parameters)
+                        | _ -> parameters
+                      in
+                      { Type.Callable.annotation; parameters; define_location }
+                    in
+                    {
+                      Type.Callable.kind;
+                      implementation = add_class_annotation implementation;
+                      overloads = List.map overloads ~f:add_class_annotation;
+                      implicit;
+                    }
+                | Some parent ->
+                    let { Type.Callable.kind; implementation; overloads; implicit } =
+                      match implementation, overloads with
+                      | { parameters = Defined (Named { name; annotation; _ } :: _); _ }, _ -> (
+                          let callable =
+                            let implicit = { implicit_annotation = parent; name } in
+                            { callable with implicit = Some implicit }
+                          in
+                          let order =
+                            full_order ?dependency class_metadata_environment ~assumptions
+                          in
+                          let solution =
+                            try
+                              TypeOrder.solve_less_or_equal
+                                order
+                                ~left:parent
+                                ~right:annotation
+                                ~constraints:TypeConstraints.empty
+                              |> List.filter_map ~f:(TypeOrder.OrderedConstraints.solve ~order)
+                              |> List.hd
+                              |> Option.value ~default:TypeConstraints.Solution.empty
+                            with
+                            | ClassHierarchy.Untracked _ -> TypeConstraints.Solution.empty
+                          in
+                          let instantiated =
+                            TypeConstraints.Solution.instantiate solution (Type.Callable callable)
+                          in
+                          match instantiated with
+                          | Type.Callable callable -> callable
+                          | _ -> callable )
+                      (* We also need to set the implicit up correctly for overload-only methods. *)
+                      | _, { parameters = Defined (Named { name; _ } :: _); _ } :: _ ->
+                          let implicit = { implicit_annotation = parent; name } in
+                          { callable with implicit = Some implicit }
+                      | _ -> callable
+                    in
+                    let drop_self { Type.Callable.annotation; parameters; define_location } =
+                      let parameters =
+                        match parameters with
+                        | Type.Callable.Defined (_ :: parameters) ->
+                            Type.Callable.Defined parameters
+                        | _ -> parameters
+                      in
+                      { Type.Callable.annotation; parameters; define_location }
+                    in
+                    {
+                      Type.Callable.kind;
+                      implementation = drop_self implementation;
+                      overloads = List.map overloads ~f:drop_self;
+                      implicit;
+                    }
+                | None -> callable )
             | [] -> failwith "impossible"
           in
           (* Special cases *)
-          let annotation =
-            match instantiated, attribute_name, annotation with
-            | ( Some (Type.TypedDictionary { fields; total; _ }),
-                method_name,
-                Some (Type.Callable callable) ) ->
+          let callable =
+            match instantiated, attribute_name, callable with
+            | Some (Type.TypedDictionary { fields; total; _ }), method_name, callable ->
                 Type.TypedDictionary.special_overloads ~fields ~method_name ~total
                 >>| (fun overloads ->
-                      Some
-                        (Type.Callable
-                           {
-                             callable with
-                             implementation =
-                               {
-                                 annotation = Type.Top;
-                                 parameters = Undefined;
-                                 define_location = None;
-                               };
-                             overloads;
-                           }))
-                |> Option.value ~default:annotation
+                      {
+                        callable with
+                        implementation =
+                          { annotation = Type.Top; parameters = Undefined; define_location = None };
+                        overloads;
+                      })
+                |> Option.value ~default:callable
             | ( Some (Type.Tuple (Bounded (Concrete members))),
                 "__getitem__",
-                Some (Type.Callable ({ overloads; _ } as callable)) ) ->
+                ({ overloads; _ } as callable) ) ->
                 let overload index member =
                   {
                     Type.Callable.annotation = member;
@@ -1392,19 +1468,19 @@ module Implementation = struct
                   }
                 in
                 let overloads = List.mapi ~f:overload members @ overloads in
-                Some (Type.Callable { callable with overloads })
-            | ( Some (Parametric { name = "type"; parameters = Concrete [Type.Primitive name] }),
+                { callable with overloads }
+            | ( Some (Parametric { name = "type"; parameters = [Single (Type.Primitive name)] }),
                 "__getitem__",
-                Some (Type.Callable ({ kind = Named callable_name; _ } as callable)) )
+                ({ kind = Named callable_name; _ } as callable) )
               when String.equal (Reference.show callable_name) "typing.GenericMeta.__getitem__" ->
                 let implementation =
                   let generics =
                     class_definition class_metadata_environment (Type.Primitive name) ~dependency
                     >>| generics ?dependency ~class_metadata_environment ~assumptions
-                    |> Option.value ~default:(Type.OrderedTypes.Concrete [])
+                    |> Option.value ~default:[]
                   in
-                  match generics with
-                  | Concrete generics ->
+                  match Type.Parameter.all_singles generics with
+                  | Some generics ->
                       let parameters =
                         let create_parameter annotation =
                           Type.Callable.Parameter.Anonymous
@@ -1418,7 +1494,13 @@ module Implementation = struct
                       in
                       {
                         Type.Callable.annotation =
-                          Type.meta (Type.Parametric { name; parameters = Concrete generics });
+                          Type.meta
+                            (Type.Parametric
+                               {
+                                 name;
+                                 parameters =
+                                   List.map generics ~f:(fun single -> Type.Parameter.Single single);
+                               });
                         parameters = Defined parameters;
                         define_location = None;
                       }
@@ -1432,17 +1514,16 @@ module Implementation = struct
                         define_location = None;
                       }
                 in
-                Some (Type.Callable { callable with implementation; overloads = [] })
-            | _ -> annotation
+                { callable with implementation; overloads = [] }
+            | _ -> callable
           in
-          let annotation = Option.value annotation ~default:Type.Top in
           let visibility =
             if final then
               AnnotatedAttribute.ReadOnly (Refinable { overridable = false })
             else
               ReadWrite
           in
-          annotation, annotation, None, default_class_attribute, visibility
+          Type.Callable callable, Type.Callable callable, None, default_class_attribute, visibility
       | Property { kind; class_property; _ } ->
           let annotation, original, visibility =
             match kind with
@@ -1479,12 +1560,13 @@ module Implementation = struct
                 |> Type.Set.of_list
               in
               let generics =
-                match generics parent ?dependency ~class_metadata_environment ~assumptions with
-                | Concrete generics -> Type.Set.of_list generics
-                | _ ->
-                    (* TODO(T44676629): This case should be handled when we re-do this handling *)
-                    Type.Set.empty
+                generics parent ?dependency ~class_metadata_environment ~assumptions
+                |> Type.Parameter.all_singles
+                >>| Type.Set.of_list
+                (* TODO(T44676629): This case should be handled when we re-do this handling *)
+                |> Option.value ~default:Type.Set.empty
               in
+
               Set.diff variables generics |> Set.to_list
             in
             if not (List.is_empty free_variables) then
@@ -1694,8 +1776,8 @@ module Implementation = struct
       >>= ClassHierarchyEnvironment.ReadOnly.variables
             (class_hierarchy_environment class_metadata_environment)
             ?dependency
-            ~default:(Some (ClassHierarchy.Unaries []))
-      >>| ClassHierarchy.equal_variables (ClassHierarchy.Unaries [])
+            ~default:(Some [])
+      >>| List.is_empty
       |> Option.value ~default:false
     in
     let order = full_order ?dependency class_metadata_environment ~assumptions in
@@ -1799,7 +1881,7 @@ module Implementation = struct
     | _ -> Type.Any
 
 
-  let apply_decorators
+  let create_overload
       { full_order; parse_annotation; resolve_literal; signature_select; _ }
       ~assumptions
       ~class_metadata_environment
@@ -1831,7 +1913,7 @@ module Implementation = struct
                 let order = full_order ?dependency class_metadata_environment ~assumptions in
                 try TypeOrder.join order annotation (Type.async_iterator Type.Bottom) with
                 | ClassHierarchy.Untracked _ ->
-                    (* Apply_decorators gets called when building the environment, which is unsound
+                    (* create_overload gets called when building the environment, which is unsound
                        and can raise. *)
                     Type.Any
               in
@@ -1841,7 +1923,7 @@ module Implementation = struct
                   Type.Callable.annotation =
                     Type.parametric
                       "typing.AsyncContextManager"
-                      (Concrete [Type.single_parameter joined]);
+                      [Single (Type.single_parameter joined)];
                 }
               else
                 overload
@@ -1980,108 +2062,11 @@ module Implementation = struct
             ?dependency;
       }
     in
-    let init = Node.create signature ~location |> AnnotatedCallable.create_overload ~parser in
+    let init =
+      Node.create signature ~location
+      |> AnnotatedCallable.create_overload_without_applying_decorators ~parser
+    in
     decorators |> List.rev |> List.fold ~init ~f:apply_decorator
-
-
-  let create_callable
-      { full_order; _ }
-      ~assumptions
-      ~class_metadata_environment
-      ?dependency
-      ~parent
-      ~name
-      overloads
-    =
-    let open Type.Callable in
-    let implementation, overloads =
-      let to_signature (implementation, overloads) (is_overload, signature) =
-        if is_overload then
-          implementation, signature :: overloads
-        else
-          signature, overloads
-      in
-      List.fold
-        ~init:
-          ( { annotation = Type.Top; parameters = Type.Callable.Undefined; define_location = None },
-            [] )
-        ~f:to_signature
-        overloads
-    in
-    let callable =
-      { kind = Named (Reference.create name); implementation; overloads; implicit = None }
-    in
-    match parent with
-    | Some parent when String.equal (Reference.last (Reference.create name)) "__new__" ->
-        (* Special case __new__ because it is the only static method with one of its parameters
-           implicitly annotated. *)
-        let { Type.Callable.kind; implementation; overloads; implicit } = callable in
-        let add_class_annotation { Type.Callable.annotation; parameters; define_location } =
-          let parameters =
-            match parameters with
-            | Defined
-                (Named { Type.Callable.Parameter.name; annotation = Type.Top; default }
-                :: parameters) ->
-                Defined (Named { name; annotation = parent; default } :: parameters)
-            | _ -> parameters
-          in
-          { Type.Callable.annotation; parameters; define_location }
-        in
-        {
-          Type.Callable.kind;
-          implementation = add_class_annotation implementation;
-          overloads = List.map overloads ~f:add_class_annotation;
-          implicit;
-        }
-    | Some parent ->
-        let { Type.Callable.kind; implementation; overloads; implicit } =
-          match implementation, overloads with
-          | { parameters = Defined (Named { name; annotation; _ } :: _); _ }, _ -> (
-              let callable =
-                let implicit = { implicit_annotation = parent; name } in
-                { callable with implicit = Some implicit }
-              in
-              let order = full_order ?dependency class_metadata_environment ~assumptions in
-              let solution =
-                try
-                  TypeOrder.solve_less_or_equal
-                    order
-                    ~left:parent
-                    ~right:annotation
-                    ~constraints:TypeConstraints.empty
-                  |> List.filter_map ~f:(TypeOrder.OrderedConstraints.solve ~order)
-                  |> List.hd
-                  |> Option.value ~default:TypeConstraints.Solution.empty
-                with
-                | ClassHierarchy.Untracked _ -> TypeConstraints.Solution.empty
-              in
-              let instantiated =
-                TypeConstraints.Solution.instantiate solution (Type.Callable callable)
-              in
-              match instantiated with
-              | Type.Callable callable -> callable
-              | _ -> callable )
-          (* We also need to set the implicit up correctly for overload-only methods. *)
-          | _, { parameters = Defined (Named { name; _ } :: _); _ } :: _ ->
-              let implicit = { implicit_annotation = parent; name } in
-              { callable with implicit = Some implicit }
-          | _ -> callable
-        in
-        let drop_self { Type.Callable.annotation; parameters; define_location } =
-          let parameters =
-            match parameters with
-            | Type.Callable.Defined (_ :: parameters) -> Type.Callable.Defined parameters
-            | _ -> parameters
-          in
-          { Type.Callable.annotation; parameters; define_location }
-        in
-        {
-          Type.Callable.kind;
-          implementation = drop_self implementation;
-          overloads = List.map overloads ~f:drop_self;
-          implicit;
-        }
-    | None -> callable
 
 
   let signature_select
@@ -2490,7 +2475,7 @@ module Implementation = struct
                       let solve_against =
                         Type.parametric
                           "typing.Mapping"
-                          (Concrete [Type.string; Type.Variable synthetic_variable])
+                          [Single Type.string; Single (Type.Variable synthetic_variable)]
                       in
                       solution_based_extraction ~create_error ~synthetic_variable ~solve_against
                   | SingleStar ->
@@ -2568,7 +2553,7 @@ module Implementation = struct
          implementation =
            {
              parameters = Defined parameters;
-             annotation = Type.Parametric { parameters = Concrete [key_type; _]; _ };
+             annotation = Type.Parametric { parameters = [Single key_type; _]; _ };
              _;
            };
          _;
@@ -2741,16 +2726,14 @@ module Implementation = struct
           (* Tuples are special. *)
           if String.equal name "tuple" then
             match generics with
-            | Type.OrderedTypes.Concrete [tuple_variable] ->
-                Type.Tuple (Type.Unbounded tuple_variable)
+            | [Single tuple_variable] -> Type.Tuple (Type.Unbounded tuple_variable)
             | _ -> Type.Tuple (Type.Unbounded Type.Any)
           else
             let backup = Type.Parametric { name; parameters = generics } in
             match instantiated, generics with
-            | _, Concrete [] -> instantiated
+            | _, [] -> instantiated
             | Type.Primitive instantiated_name, _ when String.equal instantiated_name name -> backup
-            | ( Type.Parametric { parameters = Concrete parameters; name = instantiated_name },
-                Concrete generics )
+            | Type.Parametric { parameters; name = instantiated_name }, generics
               when String.equal instantiated_name name
                    && List.length parameters <> List.length generics ->
                 backup
@@ -2842,8 +2825,7 @@ let make_open_recurser ~given_attribute_table ~given_parse_annotation =
       constraints;
       generics;
       resolve_literal;
-      apply_decorators;
-      create_callable;
+      create_overload;
       signature_select;
       resolve_mutable_literals;
       constraints_solution_exists;
@@ -2859,8 +2841,7 @@ let make_open_recurser ~given_attribute_table ~given_parse_annotation =
   and constraints ~assumptions = Implementation.constraints open_recurser ~assumptions
   and generics ~assumptions = Implementation.generics open_recurser ~assumptions
   and resolve_literal ~assumptions = Implementation.resolve_literal open_recurser ~assumptions
-  and apply_decorators ~assumptions = Implementation.apply_decorators open_recurser ~assumptions
-  and create_callable ~assumptions = Implementation.create_callable open_recurser ~assumptions
+  and create_overload ~assumptions = Implementation.create_overload open_recurser ~assumptions
   and signature_select ~assumptions = Implementation.signature_select open_recurser ~assumptions
   and resolve_mutable_literals ~assumptions =
     Implementation.resolve_mutable_literals open_recurser ~assumptions
@@ -3124,9 +3105,7 @@ module ReadOnly = struct
 
   let resolve_literal = add_both_caches_and_empty_assumptions Implementation.resolve_literal
 
-  let apply_decorators = add_both_caches_and_empty_assumptions Implementation.apply_decorators
-
-  let create_callable = add_both_caches_and_empty_assumptions Implementation.create_callable
+  let create_overload = add_both_caches_and_empty_assumptions Implementation.create_overload
 
   let resolve_mutable_literals =
     add_both_caches_and_empty_assumptions Implementation.resolve_mutable_literals
