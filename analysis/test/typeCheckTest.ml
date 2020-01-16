@@ -911,6 +911,51 @@ let test_forward_expression context =
   assert_forward ~errors:(`Undefined 1) "yield undefined" (Type.generator Type.Top);
   assert_forward "yield" (Type.generator Type.none);
 
+  (* Meta-types *)
+  assert_forward "typing.Optional[int]" (Type.meta (Type.optional Type.integer));
+  assert_forward
+    "typing.Callable[[int, str], int]"
+    (Type.meta (Type.Callable.create ~annotation:Type.integer ()));
+  assert_forward "typing_extensions.Literal[1, 2, 3]" (Type.meta Type.Any);
+  assert_forward
+    "typing.ClassVar[int]"
+    (Type.meta (Type.parametric "typing.ClassVar" [Single Type.integer]));
+  assert_forward "typing.Union[int, str]" (Type.meta Type.Any);
+  (* Variadic meta-types *)
+  assert_forward
+    ~environment:
+      {|
+    from typing import Generic, Tuple, List
+    Ts = pyre_extensions.ListVariadic("Ts")
+    class MyVariadic(Generic[Ts]):
+      pass
+  |}
+    "test.MyVariadic[int]"
+    (Type.meta (Type.parametric "test.MyVariadic" [Group (Concrete [Type.integer])]));
+  assert_forward
+    ~environment:
+      {|
+    from typing import Generic, Tuple, List
+    Ts = pyre_extensions.ListVariadic("Ts")
+    class MyVariadic(Generic[Ts]):
+      pass
+  |}
+    "test.MyVariadic[int, str]"
+    (Type.meta (Type.parametric "test.MyVariadic" [Group (Concrete [Type.integer; Type.string])]));
+  (* We'd like for this to return typing.Type[MyVariadic[int, [bool, float]]], but we lose track of
+     the inner types of the lists, since they're not tuples. *)
+  assert_forward
+    ~environment:
+      {|
+    from typing import Generic, Tuple, List, TypeVar
+    T = TypeVar("T")
+    Ts = pyre_extensions.ListVariadic("Ts")
+    class MyVariadic(Generic[T, Ts]):
+      pass
+  |}
+    "test.MyVariadic[int, [bool, float]]"
+    (Type.meta (Type.parametric "test.MyVariadic" [Single Type.integer; Group Any]));
+
   (* Resolved annotation field. *)
   let assert_annotation ?(precondition = []) ?(environment = "") expression annotation =
     let expression =

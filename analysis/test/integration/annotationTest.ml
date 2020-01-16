@@ -952,6 +952,34 @@ let test_check_incomplete_annotations context =
     |} []
 
 
+let test_check_incomplete_callable context =
+  let assert_type_errors = assert_type_errors ~context in
+  assert_type_errors
+    {|
+      def foo(x: int) -> str:
+        return "foo"
+      bar: typing.Callable[[int], bool] = foo
+    |}
+    [
+      "Incompatible variable type [9]: bar is declared to have type `typing.Callable[[int], bool]` \
+       but is used as type `typing.Callable(foo)[[Named(x, int)], str]`.";
+    ];
+  assert_type_errors
+    {|
+      def foo(x: int) -> str:
+        return "foo"
+      bar: typing.Callable[[int]] = foo
+
+      def baz(x: typing.Callable[[int]]) -> typing.Callable[[int]]: ...
+    |}
+    [
+      "Invalid type [31]: Expression `typing.Callable[[int]]` is not a valid type.";
+      "Invalid type [31]: Expression `typing.Callable[[int]]` is not a valid type.";
+      "Invalid type [31]: Expression `typing.Callable[[int]]` is not a valid type.";
+    ];
+  ()
+
+
 let test_check_refinement context =
   let assert_type_errors = assert_type_errors ~context in
   assert_type_errors
@@ -1246,8 +1274,7 @@ let test_check_aliases context =
       MyAlias = typing.Union[int, UndefinedName]
     |}
     [
-      "Missing global annotation [5]: Globally accessible variable `MyAlias` has type \
-       `typing.Type[typing.Union[...]]` but no type is specified.";
+      "Missing global annotation [5]: Globally accessible variable `MyAlias` has no type specified.";
       "Undefined name [18]: Global name `UndefinedName` is not defined, or there is at least one \
        control flow path that doesn't define `UndefinedName`.";
     ];
@@ -1273,10 +1300,7 @@ let test_check_aliases context =
       import typing
       MyAlias = typing.Union[int, 3]
     |}
-    [
-      "Missing global annotation [5]: Globally accessible variable `MyAlias` has type \
-       `typing.Type[typing.Union[...]]` but no type is specified.";
-    ];
+    ["Missing global annotation [5]: Globally accessible variable `MyAlias` has no type specified."];
   assert_type_errors
     ~context
     {|
@@ -1367,6 +1391,7 @@ let () =
          "check_analysis_failure" >:: test_check_analysis_failure;
          "check_immutable_annotations" >:: test_check_immutable_annotations;
          "check_incomplete_annotations" >:: test_check_incomplete_annotations;
+         "check_incomplete_callable" >:: test_check_incomplete_callable;
          "check_refinement" >:: test_check_refinement;
          "check_aliases" >:: test_check_aliases;
          "check_final_type" >:: test_final_type;

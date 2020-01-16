@@ -124,7 +124,10 @@ and invalid_assignment_kind =
 and invalid_type_kind =
   | FinalNested of Type.t
   | FinalParameter of Identifier.t
-  | InvalidType of Type.t
+  | InvalidType of {
+      annotation: Type.t;
+      expected: string;
+    }
   | NestedAlias of Identifier.t
   | NestedTypeVariables of Type.Variable.t
 
@@ -897,8 +900,14 @@ let messages ~concise ~signature location kind =
           ]
       | FinalParameter name ->
           [Format.asprintf "Parameter `%a` cannot be annotated with Final." pp_identifier name]
-      | InvalidType annotation ->
-          [Format.asprintf "Expression `%a` is not a valid type." pp_type annotation]
+      | InvalidType { annotation; expected } ->
+          if String.is_empty expected then
+            [Format.asprintf "Expression `%a` is not a valid type." pp_type annotation]
+          else
+            [
+              Format.asprintf "Expression `%a` is not a valid type." pp_type annotation;
+              Format.asprintf "Expected %s." expected;
+            ]
       | NestedAlias name ->
           [
             Format.asprintf
@@ -1283,13 +1292,10 @@ let messages ~concise ~signature location kind =
       [Format.asprintf "Captured variable `%a` is not annotated." Identifier.pp_sanitized name]
   | MissingCaptureAnnotation name ->
       [
-        Format.asprintf
-          "Captured variable `%a` is not annotated and will be treated as having type `Any` in \
-           this function. Consider annotating the variable where it is first defined in the outer \
-           function, or passing the variable from the outer function to the inner function as an \
-           additional argument."
-          Identifier.pp_sanitized
-          name;
+        Format.asprintf "Captured variable `%a` is not annotated." Identifier.pp_sanitized name;
+        "It will be treated as having type `Any` in this function. Consider annotating the \
+         variable where it is first defined in the outer function, or passing the variable from \
+         the outer function to the inner function as an additional argument.";
       ]
   | MissingGlobalAnnotation { given_annotation; _ } when concise ->
       if Option.value_map given_annotation ~f:Type.is_any ~default:false then
@@ -1718,10 +1724,11 @@ let messages ~concise ~signature location kind =
   | UndefinedImport reference ->
       [
         Format.asprintf
-          "Could not find a module corresponding to import `%a`. (For common reasons, see \
-           https://pyre-check.org/docs/error-types.html#pyre-errors-1821-undefined-name-undefined-import)"
+          "Could not find a module corresponding to import `%a`."
           pp_reference
           reference;
+        "For common reasons, see \
+         https://pyre-check.org/docs/error-types.html#pyre-errors-1821-undefined-name-undefined-import";
       ]
   | UndefinedType annotation ->
       [Format.asprintf "Annotation `%a` is not defined as a type." pp_type annotation]
@@ -1966,7 +1973,7 @@ let due_to_analysis_limitations { kind; _ } =
   | InvalidArgument
       (ListVariadicVariable { mismatch = NotDefiniteTuple { annotation = actual; _ }; _ })
   | InvalidException { annotation = actual; _ }
-  | InvalidType (InvalidType actual)
+  | InvalidType (InvalidType { annotation = actual; _ })
   | InvalidType (FinalNested actual)
   | NotCallable actual
   | ProhibitedAny { missing_annotation = { given_annotation = Some actual; _ }; _ }
@@ -2098,7 +2105,8 @@ let less_or_equal ~resolution left right =
   | InvalidType (FinalParameter left), InvalidType (FinalParameter right)
   | InvalidType (NestedAlias left), InvalidType (NestedAlias right) ->
       Identifier.equal left right
-  | InvalidType (InvalidType left), InvalidType (InvalidType right)
+  | ( InvalidType (InvalidType { annotation = left; _ }),
+      InvalidType (InvalidType { annotation = right; _ }) )
   | InvalidType (FinalNested left), InvalidType (FinalNested right) ->
       GlobalResolution.less_or_equal resolution ~left ~right
   | InvalidTypeParameters left, InvalidTypeParameters right ->
@@ -2463,8 +2471,10 @@ let join ~resolution left right =
             annotation =
               Option.merge ~f:(GlobalResolution.join resolution) left.annotation right.annotation;
           }
-    | InvalidType (InvalidType left), InvalidType (InvalidType right) when Type.equal left right ->
-        InvalidType (InvalidType left)
+    | ( InvalidType (InvalidType { annotation = left; expected }),
+        InvalidType (InvalidType { annotation = right; _ }) )
+      when Type.equal left right ->
+        InvalidType (InvalidType { annotation = left; expected })
     | ( InvalidTypeVariable { annotation = left; origin = left_origin },
         InvalidTypeVariable { annotation = right; origin = right_origin } )
       when Type.Variable.equal left right && equal_type_variable_origin left_origin right_origin ->
@@ -2996,7 +3006,8 @@ let dequalify
         InvalidException { expression; annotation = dequalify annotation }
     | InvalidMethodSignature ({ annotation; _ } as kind) ->
         InvalidMethodSignature { kind with annotation = annotation >>| dequalify }
-    | InvalidType (InvalidType annotation) -> InvalidType (InvalidType (dequalify annotation))
+    | InvalidType (InvalidType { annotation; expected }) ->
+        InvalidType (InvalidType { annotation = dequalify annotation; expected })
     | InvalidType (FinalNested annotation) -> InvalidType (FinalNested (dequalify annotation))
     | InvalidType (FinalParameter name) -> InvalidType (FinalParameter name)
     | InvalidType (NestedAlias name) -> InvalidType (NestedAlias name)
