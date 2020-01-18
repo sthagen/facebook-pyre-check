@@ -222,6 +222,12 @@ let parse_raw_sources ~configuration ~scheduler ~ast_environment source_paths =
   in
   Scheduler.map_reduce
     scheduler
+    ~policy:
+      (Scheduler.Policy.fixed_chunk_count
+         ~minimum_chunks_per_worker:1
+         ~minimum_chunk_size:100
+         ~preferred_chunks_per_worker:5
+         ())
     ~configuration
     ~initial:RawParseResult.empty
     ~map:(fun _ -> List.fold ~init:RawParseResult.empty ~f:parse_and_categorize)
@@ -329,7 +335,17 @@ let process_sources ~configuration ~scheduler ~preprocessing_state ~ast_environm
     in
     List.iter ~f:process
   in
-  Scheduler.iter scheduler ~configuration ~f:process_sources_job ~inputs:qualifiers
+  Scheduler.iter
+    scheduler
+    ~policy:
+      (Scheduler.Policy.fixed_chunk_count
+         ~minimum_chunks_per_worker:1
+         ~minimum_chunk_size:100
+         ~preferred_chunks_per_worker:5
+         ())
+    ~configuration
+    ~f:process_sources_job
+    ~inputs:qualifiers
 
 
 type parse_sources_result = {

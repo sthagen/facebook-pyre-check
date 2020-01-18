@@ -260,7 +260,40 @@ let test_check_assign context =
     [
       "Incompatible variable type [9]: kwargs is declared to have type `typing.Dict[str, str]` but \
        is used as type `typing.Dict[str, int]`.";
-    ]
+    ];
+  assert_type_errors
+    {|
+      from typing import Dict, Union
+      D = Dict[str, Union[str, int]]
+      def foo(x: D) -> None:
+        reveal_type(x)
+    |}
+    ["Revealed type [-1]: Revealed type for `x` is `Dict[str, Union[int, str]]`."];
+
+  assert_default_type_errors
+    {|
+       from typing import Any
+       class A:
+         pass
+       class B:
+         def __getattr_(self, name: str) -> Any: ...
+       class C:
+         def __setattr__(self, name: str, value: Any) -> None: ...
+       class D(C):
+         pass
+     
+       def derp(a: A, b: B, c: C, d: D) -> None:
+         a.foo = 42
+         b.foo = 43
+         c.foo = 44
+         d.foo = 45
+    |}
+    [
+      "Undefined attribute [16]: `A` has no attribute `foo`.";
+      "Undefined attribute [16]: `B` has no attribute `foo`.";
+      "Undefined attribute [16]: `D` has no attribute `foo`.";
+    ];
+  ()
 
 
 let () = "assign" >::: ["check_assign" >:: test_check_assign] |> Test.run

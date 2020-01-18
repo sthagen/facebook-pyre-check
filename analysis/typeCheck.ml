@@ -3370,20 +3370,57 @@ module State (Context : Context) = struct
                       match resolved_base, attribute with
                       | Some parent, Some (attribute, name)
                         when not (Annotated.Attribute.defined attribute) ->
-                          emit_error
-                            ~state
-                            ~location
-                            ~kind:
-                              (Error.UndefinedAttribute
-                                 {
-                                   attribute = name;
-                                   origin =
-                                     Error.Class
-                                       {
-                                         annotation = parent;
-                                         class_attribute = Type.is_meta resolved;
-                                       };
-                                 })
+                          (* Check if __setattr__ method is defined to accept value of type `Any` *)
+                          let is_setattr_any_defined =
+                            let attribute =
+                              match Type.resolve_class parent with
+                              | Some [{ instantiated; class_name; _ }] ->
+                                  GlobalResolution.attribute_from_class_name
+                                    class_name
+                                    ~class_attributes:false
+                                    ~transitive:false
+                                    ~resolution:global_resolution
+                                    ~name:"__setattr__"
+                                    ~instantiated
+                              | _ -> None
+                            in
+                            match attribute with
+                            | Some attribute when Annotated.Attribute.defined attribute -> (
+                                match
+                                  Annotated.Attribute.annotation attribute |> Annotation.annotation
+                                with
+                                | Type.Callable
+                                    {
+                                      implementation =
+                                        {
+                                          Type.Callable.parameters =
+                                            Type.Callable.Defined (_ :: value_parameter :: _);
+                                          _;
+                                        };
+                                      _;
+                                    } ->
+                                    Type.Callable.Parameter.annotation value_parameter
+                                    |> Option.value_map ~default:false ~f:Type.is_any
+                                | _ -> false )
+                            | _ -> false
+                          in
+                          if not is_setattr_any_defined then
+                            emit_error
+                              ~state
+                              ~location
+                              ~kind:
+                                (Error.UndefinedAttribute
+                                   {
+                                     attribute = name;
+                                     origin =
+                                       Error.Class
+                                         {
+                                           annotation = parent;
+                                           class_attribute = Type.is_meta resolved;
+                                         };
+                                   })
+                          else
+                            state
                       | _ -> state
                     in
                     let check_nested_explicit_type_alias state =
@@ -3424,13 +3461,17 @@ module State (Context : Context) = struct
                 | _ -> false
               in
               let state =
+                let resolved =
+                  match resolved with
+                  | Type.Parametric _ -> Type.weaken_literals resolved
+                  | _ -> resolved
+                in
                 let is_valid_enumeration_assignment =
                   let parent_annotation =
                     match parent with
                     | None -> Type.Top
                     | Some reference -> Type.Primitive (Reference.show reference)
                   in
-                  let resolved = Type.weaken_literals resolved in
                   let compatible =
                     if explicit then
                       GlobalResolution.less_or_equal
@@ -5319,8 +5360,13 @@ let run_on_defines ~scheduler ~configuration ~environment ?call_graph_builder de
   let _ =
     Scheduler.map_reduce
       scheduler
+      ~policy:
+        (Scheduler.Policy.fixed_chunk_size
+           ~mininum_chunk_size:10
+           ~minimum_chunks_per_worker:2
+           ~preferred_chunk_size:500
+           ())
       ~configuration
-      ~bucket_size:500
       ~initial:0
       ~map
       ~reduce
@@ -5347,8 +5393,13 @@ let legacy_run_on_modules ~scheduler ~configuration ~environment ?call_graph_bui
     in
     Scheduler.map_reduce
       scheduler
+      ~policy:
+        (Scheduler.Policy.fixed_chunk_count
+           ~minimum_chunks_per_worker:1
+           ~minimum_chunk_size:100
+           ~preferred_chunks_per_worker:5
+           ())
       ~configuration
-      ~bucket_size:75
       ~initial:[]
       ~map
       ~reduce:List.append
