@@ -76,6 +76,8 @@ module ReadOnly = struct
 
   let ast_environment { ast_environment; _ } = ast_environment
 
+  let unannotated_global_environment = Fn.id
+
   let class_exists { class_exists; _ } = class_exists
 
   let all_classes { all_classes; _ } = all_classes ()
@@ -859,7 +861,12 @@ let update_this_and_all_preceding_environments
   let update () =
     Scheduler.iter
       scheduler
-      ~policy:(Scheduler.Policy.legacy_fixed_chunk_count ())
+      ~policy:
+        (Scheduler.Policy.fixed_chunk_count
+           ~minimum_chunks_per_worker:1
+           ~minimum_chunk_size:100
+           ~preferred_chunks_per_worker:5
+           ())
       ~configuration
       ~f:map
       ~inputs:modified_qualifiers
