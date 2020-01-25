@@ -2961,6 +2961,8 @@ module ParseAnnotationCache = struct
     module KeySet = SharedMemoryKeys.ParseAnnotationKey.Set
     module HashableKey = SharedMemoryKeys.ParseAnnotationKey
 
+    let lazy_incremental = false
+
     let produce_value
         class_metadata_environment
         ( {
@@ -3042,6 +3044,8 @@ module Cache = ManagedCache.Make (struct
   module KeySet = SharedMemoryKeys.AttributeTableKey.Set
   module HashableKey = SharedMemoryKeys.AttributeTableKey
 
+  let lazy_incremental = true
+
   let produce_value
       parse_annotation_cache
       ( {
@@ -3055,35 +3059,50 @@ module Cache = ManagedCache.Make (struct
         } as key )
       ~track_dependencies
     =
-    let open_recurser_with_parse_annotation_cache =
-      make_open_recurser
-        ~given_attribute_table:Implementation.attribute_table
-        ~given_parse_annotation:
-          (ParseAnnotationCache.ReadOnly.cached_parse_annotation parse_annotation_cache)
-    in
     let dependency =
       if track_dependencies then Some (SharedMemoryKeys.AttributeTable key) else None
     in
     let class_metadata_environment =
       ParseAnnotationCache.ReadOnly.upstream_environment parse_annotation_cache
     in
-    UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
-      (unannotated_global_environment class_metadata_environment)
-      ?dependency
-      name
-    >>| fun definition ->
-    ( definition,
-      Implementation.attribute_table
-        open_recurser_with_parse_annotation_cache
-        ~transitive
-        ~class_attributes
-        ~include_generated_attributes
-        ~special_method
-        ?instantiated
+    let unannotated_global_environment =
+      unannotated_global_environment class_metadata_environment
+    in
+    let instantiated_contains_untracked =
+      instantiated
+      >>| UnannotatedGlobalEnvironment.ReadOnly.contains_untracked
+            unannotated_global_environment
+            ?dependency
+      |> Option.value ~default:false
+    in
+    (* TypeCheck/AnnotatedGlobalEnvironment won't actually call this with any untracked types, but
+       recalculation could give us one, leading to a crash *)
+    if instantiated_contains_untracked then
+      None
+    else
+      let open_recurser_with_parse_annotation_cache =
+        make_open_recurser
+          ~given_attribute_table:Implementation.attribute_table
+          ~given_parse_annotation:
+            (ParseAnnotationCache.ReadOnly.cached_parse_annotation parse_annotation_cache)
+      in
+      UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
+        unannotated_global_environment
         ?dependency
-        ~class_metadata_environment
-        ~assumptions
-        definition )
+        name
+      >>| fun definition ->
+      ( definition,
+        Implementation.attribute_table
+          open_recurser_with_parse_annotation_cache
+          ~transitive
+          ~class_attributes
+          ~include_generated_attributes
+          ~special_method
+          ?instantiated
+          ?dependency
+          ~class_metadata_environment
+          ~assumptions
+          definition )
 
 
   let filter_upstream_dependency = function

@@ -2,23 +2,17 @@
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
-from typing import Optional
+from typing import List, Optional
 
 from . import upgrade_core
 
 
-class VersionControl:
-    @staticmethod
-    def commit_message(directory: str, summary_override: Optional[str] = None) -> str:
-        return ""
-
-    @staticmethod
-    def submit_changes(submit: bool, message: str) -> None:
-        pass
+class ExternalVersionControl(upgrade_core.VersionControl):
+    pass
 
 
 def main() -> None:
-    version_control = VersionControl()
+    version_control = ExternalVersionControl()
     upgrade_core.run(version_control)
 
 

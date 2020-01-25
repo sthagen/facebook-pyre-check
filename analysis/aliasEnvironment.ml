@@ -80,13 +80,12 @@ module UnresolvedAlias = struct
                   (EmptyStubEnvironment.ReadOnly.unannotated_global_environment
                      empty_stub_environment)
                   primitive
-                || Option.is_some
-                     (AstEnvironment.ReadOnly.get_module_metadata
-                        ( EmptyStubEnvironment.ReadOnly.unannotated_global_environment
-                            empty_stub_environment
-                        |> UnannotatedGlobalEnvironment.ReadOnly.ast_environment )
-                        ?dependency
-                        (Reference.create primitive))
+                || AstEnvironment.ReadOnly.module_exists
+                     ( EmptyStubEnvironment.ReadOnly.unannotated_global_environment
+                         empty_stub_environment
+                     |> UnannotatedGlobalEnvironment.ReadOnly.ast_environment )
+                     ?dependency
+                     (Reference.create primitive)
               then
                 (), annotation
               else
@@ -318,6 +317,8 @@ module Aliases = Environment.EnvironmentTable.NoCache (struct
 
   module TriggerSet = Reference.Set
 
+  let lazy_incremental = false
+
   let produce_value = produce_alias
 
   let filter_upstream_dependency = function
@@ -392,13 +393,10 @@ module ReadOnly = struct
         in
         Type.instantiate parsed ~constraints
     in
-    let contains_untracked annotation =
-      let is_tracked =
-        UnannotatedGlobalEnvironment.ReadOnly.class_exists
-          (unannotated_global_environment environment)
-          ?dependency
-      in
-      List.exists ~f:(fun annotation -> not (is_tracked annotation)) (Type.elements annotation)
+    let contains_untracked =
+      UnannotatedGlobalEnvironment.ReadOnly.contains_untracked
+        (unannotated_global_environment environment)
+        ?dependency
     in
     if contains_untracked annotation && not allow_untracked then
       Type.Top

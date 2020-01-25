@@ -25,37 +25,10 @@ from .get_graphql_sources import GraphQLSourceGenerator  # noqa
 from .get_request_specific_data import RequestSpecificDataGenerator  # noqa
 from .get_REST_api_sources import RESTApiSourceGenerator  # noqa
 from .model import Model
-from .model_generator import Configuration, ModelGenerator, Registry
+from .model_generator import ModelGenerator
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ConfigurationArguments:
-    """
-    When adding new configuration options, make sure to add a default value for
-    them for backwards compatibility. We construct ConfigurationArguments objects
-    outside the current directory, and adding a non-optional argument will break those.
-    """
-
-    annotation_specifications: List[DecoratorAnnotationSpecification]
-    whitelisted_views: List[str]
-    whitelisted_classes: List[str]
-    # pyre-ignore[4]: Too dynamic.
-    url_resolver_type: Type[Any]
-    # pyre-ignore[4]: Too dynamic.
-    url_pattern_type: Type[Any]
-    root: str
-    stub_root: Optional[str]
-    # pyre-ignore[4]: Too dynamic.
-    graphql_object_type: Type[Any]
-    urls_module: Optional[str]
-    graphql_module: List[str]
-    blacklisted_global_directories: Set[str]
-    blacklisted_globals: Set[str]
-    logger: Optional[str] = None
-    classes_to_taint: Optional[List[str]] = None
 
 
 @dataclass
@@ -146,39 +119,3 @@ def run_generators(
                 logger=logger_executable,
             )
     _report_results(generated_models, arguments.output_directory)
-
-
-def run_from_global_state(
-    generation_arguments: GenerationArguments,
-    configuration_arguments: ConfigurationArguments,
-) -> None:
-    # Set up all global state :(
-    Configuration.annotation_specifications = (
-        configuration_arguments.annotation_specifications
-    )
-    Configuration.whitelisted_views = configuration_arguments.whitelisted_views
-    Configuration.whitelisted_classes = configuration_arguments.whitelisted_classes
-    Configuration.url_resolver_type = configuration_arguments.url_resolver_type
-    Configuration.url_pattern_type = configuration_arguments.url_pattern_type
-    Configuration.root = configuration_arguments.root
-    Configuration.stub_root = configuration_arguments.stub_root
-    Configuration.graphql_object_type = configuration_arguments.graphql_object_type
-    Configuration.urls_module = configuration_arguments.urls_module
-    Configuration.graphql_module = configuration_arguments.graphql_module
-    Configuration.blacklisted_global_directories = (
-        configuration_arguments.blacklisted_global_directories
-    )
-    Configuration.blacklisted_globals = configuration_arguments.blacklisted_globals
-    Configuration.logger = configuration_arguments.logger
-
-    Configuration.classes_to_taint = configuration_arguments.classes_to_taint
-
-    modes = generation_arguments.mode or Registry.default_generators
-
-    logging.basicConfig(
-        format="%(asctime)s %(levelname)s %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        level=logging.DEBUG if generation_arguments.verbose else logging.INFO,
-    )
-    models = Registry.generate_models(modes, logger=configuration_arguments.logger)
-    _report_results(models, generation_arguments.output_directory)

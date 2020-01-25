@@ -101,10 +101,19 @@ class Initialize(CommandParser):
 
     def _get_local_configuration(self) -> Dict[str, Any]:
         configuration: Dict[str, Any] = {}
-        targets = log.get_input(
-            "Which buck target(s) should pyre analyze? (//target:a,//target/b/...)\n"
-        )
-        configuration["targets"] = [target.strip() for target in targets.split(",")]
+        using_targets = log.get_yes_no_input("Is your project built with Buck?")
+        if using_targets:
+            targets = log.get_input(
+                "Which buck target(s) should pyre analyze? (//target:a, //target/b/...)\n"
+            )
+            configuration["targets"] = [target.strip() for target in targets.split(",")]
+        else:
+            source_directories = log.get_input(
+                "Which directory(ies) should pyre analyze?\n"
+            )
+            configuration["source_directories"] = [
+                directory.strip() for directory in source_directories.split(",")
+            ]
         continuous = log.get_yes_no_input(
             "Would you like to enable Pyre's continuous integration for your changes?"
         )
@@ -126,9 +135,11 @@ class Initialize(CommandParser):
         configuration_path = os.path.join(self._original_directory, CONFIGURATION_FILE)
         if os.path.isfile(configuration_path):
             if self._local:
-                error = "Local configurations must be created in subdirectories of `{}`"
-                "as it already contains a `.pyre_configuration`.".format(
-                    self._original_directory
+                error = (
+                    "Local configurations must be created in subdirectories of `{}`"
+                    "as it already contains a `.pyre_configuration`.".format(
+                        self._original_directory
+                    )
                 )
             else:
                 error = "A pyre configuration already exists at `{}`.".format(

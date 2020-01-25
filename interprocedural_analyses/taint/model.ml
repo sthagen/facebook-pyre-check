@@ -1035,8 +1035,7 @@ let create ~resolution ?path ~configuration ~verify ~rule_filter source =
           if Reference.length name > 1 then
             Reference.head name
             |> (fun head -> Option.value_exn head)
-            |> GlobalResolution.module_definition global_resolution
-            |> Option.is_none
+            |> fun reference -> not (GlobalResolution.module_exists global_resolution reference)
           else
             false
         in
@@ -1237,7 +1236,7 @@ let infer_class_models ~environment =
             List.foldi ~f:fold_taint ~init:BackwardState.empty attributes;
           sink_taint = BackwardState.empty;
         };
-      mode = SkipAnalysis;
+      mode = Normal;
     }
   in
   (* We always generate a special `_fields` attribute for NamedTuples which is a tuple containing
@@ -1270,7 +1269,7 @@ let infer_class_models ~environment =
                     List.foldi ~f:fold_taint ~init:BackwardState.empty attributes;
                   sink_taint = BackwardState.empty;
                 };
-              mode = SkipAnalysis;
+              mode = Normal;
             }
       | _ -> None
   in

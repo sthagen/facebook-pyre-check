@@ -431,23 +431,17 @@ let test_updates context =
           let actual =
             UnannotatedGlobalEnvironment.ReadOnly.get_define read_only define_name ~dependency
           in
-          let cmp left right =
-            Int.equal
-              0
-              (Option.compare UnannotatedGlobalEnvironment.FunctionDefinition.compare left right)
-          in
+          let cmp left right = Int.equal 0 (Option.compare FunctionDefinition.compare left right) in
           let print format definition =
             Format.fprintf
               format
               "%s"
-              (Sexp.to_string_hum
-                 [%message (definition : UnannotatedGlobalEnvironment.FunctionDefinition.t option)])
+              (Sexp.to_string_hum [%message (definition : FunctionDefinition.t option)])
           in
           assert_equal
             ~cmp
             ~printer:(fun definition ->
-              Sexp.to_string_hum
-                [%message (definition : UnannotatedGlobalEnvironment.FunctionDefinition.t option)])
+              Sexp.to_string_hum [%message (definition : FunctionDefinition.t option)])
             ~pp_diff:(diff ~print)
             expectation
             actual
@@ -600,7 +594,6 @@ let test_updates context =
     ~expected_triggers:[]
     ();
 
-  (* TODO(T53500184): need to add an existence-only dependency "kind" *)
   assert_updates
     ~original_source:{|
       class Foo:
@@ -611,7 +604,7 @@ let test_updates context =
         x: str
     |}
     ~middle_actions:[`Mem ("test.Foo", dependency, true)]
-    ~expected_triggers:[dependency]
+    ~expected_triggers:[]
     ();
 
   (* all_classes *)
@@ -1478,7 +1471,7 @@ let test_updates context =
       ~middle_actions:
         [
           (let definition =
-             let open UnannotatedGlobalEnvironment.FunctionDefinition in
+             let open FunctionDefinition in
              let siblings = [{ Sibling.kind = Sibling.Kind.Overload; body = first_overload }] in
              { body = Some body; siblings; qualifier = !&"test" }
            in
@@ -1488,7 +1481,7 @@ let test_updates context =
       ~post_actions:
         [
           (let definition =
-             let open UnannotatedGlobalEnvironment.FunctionDefinition in
+             let open FunctionDefinition in
              let siblings =
                [
                  { Sibling.kind = Sibling.Kind.Overload; body = first_overload };
@@ -1520,7 +1513,7 @@ let test_updates context =
     ~post_actions:
       [
         (let definition =
-           let open UnannotatedGlobalEnvironment.FunctionDefinition in
+           let open FunctionDefinition in
            let create_elipsis ~start ~stop () =
              node ~start ~stop (Statement.Expression (node ~start ~stop Expression.Ellipsis))
            in

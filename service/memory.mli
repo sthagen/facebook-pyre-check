@@ -164,6 +164,12 @@ module DependencyKey : sig
   module Make (Key : KeyType) : S with type t = Key.t
 end
 
+module DependencyKind : sig
+  type t =
+    | Get
+    | Mem
+end
+
 module DependencyTrackedTableWithCache
     (Key : KeyType)
     (DependencyKey : DependencyKey.S)
@@ -178,13 +184,20 @@ module DependencyTrackedTableWithCache
 
   val get : ?dependency:DependencyKey.t -> key -> t option
 
-  val add_dependency : key -> DependencyKey.t -> unit
+  val mem : ?dependency:DependencyKey.t -> key -> bool
 
-  val get_dependents : key -> DependencyKey.KeySet.t
+  val add_dependency : kind:DependencyKind.t -> key -> DependencyKey.t -> unit
+
+  val get_dependents : kind:DependencyKind.t -> key -> DependencyKey.KeySet.t
 
   val get_all_dependents : KeySet.t -> DependencyKey.KeySet.t
 
   val add_to_transaction
+    :  DependencyKey.Transaction.t ->
+    keys:KeySet.t ->
+    DependencyKey.Transaction.t
+
+  val add_pessimistic_transaction
     :  DependencyKey.Transaction.t ->
     keys:KeySet.t ->
     DependencyKey.Transaction.t
@@ -202,15 +215,22 @@ module DependencyTrackedTableNoCache
        and module KeySet = Set.Make(Key)
        and module KeyMap = MyMap.Make(Key)
 
-  val add_dependency : key -> DependencyKey.t -> unit
+  val add_dependency : kind:DependencyKind.t -> key -> DependencyKey.t -> unit
 
   val get : ?dependency:DependencyKey.t -> key -> t option
 
-  val get_dependents : key -> DependencyKey.KeySet.t
+  val mem : ?dependency:DependencyKey.t -> key -> bool
+
+  val get_dependents : kind:DependencyKind.t -> key -> DependencyKey.KeySet.t
 
   val get_all_dependents : KeySet.t -> DependencyKey.KeySet.t
 
   val add_to_transaction
+    :  DependencyKey.Transaction.t ->
+    keys:KeySet.t ->
+    DependencyKey.Transaction.t
+
+  val add_pessimistic_transaction
     :  DependencyKey.Transaction.t ->
     keys:KeySet.t ->
     DependencyKey.Transaction.t

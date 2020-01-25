@@ -14,10 +14,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, call, mock_open, patch
 
 from .. import errors, postprocess, upgrade, upgrade_core
-from ..upgrade import VersionControl
+from ..upgrade import ExternalVersionControl
 
 
-VERSION_CONTROL = VersionControl()
+VERSION_CONTROL = ExternalVersionControl()
 
 
 class FixmeAllTest(unittest.TestCase):
@@ -30,7 +30,9 @@ class FixmeAllTest(unittest.TestCase):
         arguments.sandcastle = None
         arguments.push_blocking_only = None
 
-        def configuration_lists_equal(expected_configurations, actual_configurations):
+        def configuration_lists_equal(
+            expected_configurations, actual_configurations
+        ) -> bool:
             if len(expected_configurations) != len(actual_configurations):
                 print(
                     "Expected {} configurations, got {} configurations".format(
@@ -174,7 +176,7 @@ class FixmeAllTest(unittest.TestCase):
     @patch("%s.errors_from_stdin" % upgrade_core.__name__)
     @patch("%s.run_global_version_update" % upgrade_core.__name__)
     @patch("%s.fix" % upgrade_core.__name__)
-    @patch("%s.VersionControl.submit_changes" % upgrade.__name__)
+    @patch("%s.ExternalVersionControl.submit_changes" % upgrade.__name__)
     def test_upgrade_project(
         self,
         submit_changes,
@@ -272,7 +274,7 @@ class FixmeAllTest(unittest.TestCase):
     @patch.object(upgrade_core.Configuration, "get_errors")
     @patch("%s.run_global_version_update" % upgrade_core.__name__)
     @patch("%s.fix" % upgrade_core.__name__)
-    @patch("%s.VersionControl.submit_changes" % upgrade.__name__)
+    @patch("%s.ExternalVersionControl.submit_changes" % upgrade.__name__)
     def test_run_fixme_all(
         self,
         submit_changes,
@@ -427,7 +429,7 @@ def bar(x: str) -> str:
         }
         """
 
-        def generate_sandcastle_command(binary_hash, paths, push_blocking):
+        def generate_sandcastle_command(binary_hash, paths, push_blocking) -> bytes:
             command = json.loads(command_json)
             if binary_hash:
                 command["args"]["hash"] = binary_hash
@@ -480,7 +482,7 @@ class FixmeSingleTest(unittest.TestCase):
     @patch.object(upgrade_core.Configuration, "remove_version")
     @patch.object(upgrade_core.Configuration, "get_errors")
     @patch("%s.fix" % upgrade_core.__name__)
-    @patch("%s.VersionControl.submit_changes" % upgrade.__name__)
+    @patch("%s.ExternalVersionControl.submit_changes" % upgrade.__name__)
     def test_run_fixme_single(
         self,
         submit_changes,
@@ -542,7 +544,7 @@ class FixmeTest(unittest.TestCase):
     @patch.object(Path, "read_text")
     @patch("%s.errors_from_run" % upgrade_core.__name__)
     @patch("%s.errors_from_stdin" % upgrade_core.__name__)
-    @patch("%s.VersionControl.submit_changes" % upgrade.__name__)
+    @patch("%s.ExternalVersionControl.submit_changes" % upgrade.__name__)
     def test_run_fixme(
         self, submit_changes, stdin_errors, run_errors, path_read_text, subprocess
     ) -> None:
@@ -603,7 +605,9 @@ class FixmeTest(unittest.TestCase):
             stdin_errors.return_value = pyre_errors
             run_errors.return_value = pyre_errors
             path_read_text.return_value = "1\n2"
-            upgrade_core.run_fixme(arguments, VERSION_CONTROL)
+            version_control_with_linters = ExternalVersionControl()
+            version_control_with_linters.LINTERS_TO_SKIP = ["TESTLINTER"]
+            upgrade_core.run_fixme(arguments, version_control_with_linters)
             calls = [
                 call("# pyre-fixme[1]: description\n1\n2"),
                 call("# pyre-fixme[1]: description\n1\n2"),
@@ -616,12 +620,24 @@ class FixmeTest(unittest.TestCase):
                         "lint",
                         "--never-apply-patches",
                         "--enforce-lint-clean",
+                        "--skip",
+                        "TESTLINTER",
                         "--output",
                         "none",
                     ]
                 ),
                 call().returncode.__bool__(),
-                call(["arc", "lint", "--apply-patches", "--output", "none"]),
+                call(
+                    [
+                        "arc",
+                        "lint",
+                        "--apply-patches",
+                        "--skip",
+                        "TESTLINTER",
+                        "--output",
+                        "none",
+                    ]
+                ),
             ]
             subprocess.assert_has_calls(calls)
         arguments.run = False
@@ -1015,7 +1031,7 @@ class FixmeTargetsTest(unittest.TestCase):
         return_value=Path(".pyre_configuration"),
     )
     @patch("%s.run_fixme_targets_file" % upgrade_core.__name__)
-    @patch("%s.VersionControl.submit_changes" % upgrade.__name__)
+    @patch("%s.ExternalVersionControl.submit_changes" % upgrade.__name__)
     def test_run_fixme_targets(
         self, submit_changes, fix_file, find_configuration, subprocess
     ) -> None:
@@ -1048,7 +1064,7 @@ class FixmeTargetsTest(unittest.TestCase):
         subprocess.return_value = grep_return
         upgrade_core.run_fixme_targets(arguments, VERSION_CONTROL)
         fix_file.assert_called_once_with(
-            arguments, Path("."), "a/b", ["derp", "herp", "merp"]
+            arguments, Path("."), "a/b", ["derp", "herp", "merp"], VERSION_CONTROL
         )
         submit_changes.assert_called_once_with(
             arguments.submit, VERSION_CONTROL.commit_message(". (TARGETS)")
@@ -1073,7 +1089,7 @@ class FixmeTargetsTest(unittest.TestCase):
             stdout=-1,
         )
         fix_file.assert_called_once_with(
-            arguments, Path("."), "a/b", ["derp", "herp", "merp"]
+            arguments, Path("."), "a/b", ["derp", "herp", "merp"], VERSION_CONTROL
         )
         submit_changes.assert_called_once_with(
             arguments.submit, VERSION_CONTROL.commit_message("derp (TARGETS)")
@@ -1092,14 +1108,14 @@ class FixmeTargetsTest(unittest.TestCase):
         buck_return.stderr = b"stderr"
         subprocess.return_value = buck_return
         upgrade_core.run_fixme_targets_file(
-            arguments, Path("."), "a/b", ["derp", "herp"]
+            arguments, Path("."), "a/b", ["derp", "herp"], VERSION_CONTROL
         )
         fix.assert_not_called()
 
         buck_return.returncode = 0
         subprocess.return_value = buck_return
         upgrade_core.run_fixme_targets_file(
-            arguments, Path("."), "a/b", ["derp", "herp"]
+            arguments, Path("."), "a/b", ["derp", "herp"], VERSION_CONTROL
         )
         fix.assert_not_called()
 
@@ -1164,7 +1180,7 @@ anonymous parameter to call `merp` but got `Optional[str]`.
             },
         ]
         upgrade_core.run_fixme_targets_file(
-            arguments, Path("."), "a/b", ["derp", "herp"]
+            arguments, Path("."), "a/b", ["derp", "herp"], VERSION_CONTROL
         )
         fix.assert_called_once_with(arguments, expected_errors)
 
@@ -1195,7 +1211,7 @@ class DecodeTest(unittest.TestCase):
 
 class UpdateGlobalVersionTest(unittest.TestCase):
     @patch("subprocess.run")
-    @patch("%s.VersionControl.submit_changes" % upgrade.__name__)
+    @patch("%s.ExternalVersionControl.submit_changes" % upgrade.__name__)
     @patch.object(
         upgrade_core.Configuration, "find_project_configuration", return_value="/root"
     )
@@ -1261,6 +1277,7 @@ class UpdateGlobalVersionTest(unittest.TestCase):
                     "global configuration",
                     summary_override="Automatic upgrade to hash `abcd`",
                 ),
+                ignore_failures=True,
             )
         # Push blocking argument: Since the push blocking only argument is only used
         # when gathering local configurations (mocked here), this is a no-op.
@@ -1303,6 +1320,7 @@ class UpdateGlobalVersionTest(unittest.TestCase):
                     "global configuration",
                     summary_override="Automatic upgrade to hash `abcd`",
                 ),
+                ignore_failures=True,
             )
 
         # paths passed from arguments will override the local configuration list

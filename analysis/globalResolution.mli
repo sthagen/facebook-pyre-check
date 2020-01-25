@@ -24,10 +24,7 @@ val class_definition : t -> Type.t -> ClassSummary.t Node.t option
 
 val define_body : t -> Reference.t -> Define.t Node.t option
 
-val function_definition
-  :  t ->
-  Reference.t ->
-  UnannotatedGlobalEnvironment.FunctionDefinition.t option
+val function_definition : t -> Reference.t -> FunctionDefinition.t option
 
 val solve_ordered_types_less_or_equal
   :  t ->
@@ -105,7 +102,7 @@ val unannotated_global_environment : t -> UnannotatedGlobalEnvironment.ReadOnly.
 
 val aliases : t -> Type.Primitive.t -> Type.alias option
 
-val module_definition : t -> Reference.t -> Module.t option
+val module_exists : t -> Reference.t -> bool
 
 val class_metadata : t -> Type.t -> ClassMetadataEnvironment.class_metadata option
 

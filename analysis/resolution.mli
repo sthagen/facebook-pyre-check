@@ -9,7 +9,7 @@ type t [@@deriving show]
 
 val create
   :  global_resolution:GlobalResolution.t ->
-  annotations:Annotation.t Reference.Map.t ->
+  annotation_store:RefinementUnit.t Reference.Map.t ->
   resolve:(resolution:t -> Expression.t -> Annotation.t) ->
   resolve_assignment:(resolution:t -> Statement.Assign.t -> t) ->
   ?parent:Reference.t ->
@@ -18,7 +18,21 @@ val create
 
 val set_local : t -> reference:Reference.t -> annotation:Annotation.t -> t
 
+val set_local_with_attributes
+  :  t ->
+  object_reference:Reference.t ->
+  attribute_path:Reference.t ->
+  annotation:Annotation.t ->
+  t
+
 val get_local : ?global_fallback:bool -> reference:Reference.t -> t -> Annotation.t option
+
+val get_local_with_attributes
+  :  ?global_fallback:bool ->
+  object_reference:Reference.t ->
+  attribute_path:Reference.t ->
+  t ->
+  Annotation.t option
 
 val unset_local : t -> reference:Reference.t -> t
 
@@ -30,9 +44,9 @@ val type_variable_exists : t -> variable:Type.Variable.t -> bool
 
 val all_type_variables_in_scope : t -> Type.Variable.t list
 
-val annotations : t -> Annotation.t Reference.Map.t
+val annotation_store : t -> RefinementUnit.t Reference.Map.t
 
-val with_annotations : t -> annotations:Annotation.t Reference.Map.t -> t
+val with_annotation_store : t -> annotation_store:RefinementUnit.t Reference.Map.t -> t
 
 val parent : t -> Reference.t option
 

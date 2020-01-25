@@ -268,12 +268,18 @@ type tar_structure = {
   dependencies_path: Pyre.Path.t;
 }
 
-let create_temporary_directory () =
+let with_temporary_directory f =
   let open Pyre in
   let root = Filename.temp_dir "pyre" "saved_state" |> Path.create_absolute in
   let table_path = Path.create_relative ~root ~relative:"table" in
   let dependencies_path = Path.create_relative ~root ~relative:"deps" in
-  { directory = root; table_path; dependencies_path }
+  let finally () =
+    Core.Unix.remove (Path.absolute table_path);
+    Core.Unix.remove (Path.absolute dependencies_path);
+    Core.Unix.remove (Path.absolute root)
+  in
+  Core.Exn.protect ~f:(fun () -> f { directory = root; table_path; dependencies_path }) ~finally;
+  ()
 
 
 let run_tar arguments =
@@ -288,23 +294,27 @@ let run_tar arguments =
 let save_shared_memory ~path =
   let open Pyre in
   SharedMemory.collect `aggressive;
-  let { directory; table_path; dependencies_path } = create_temporary_directory () in
-  SharedMem.save_table (Path.absolute table_path);
-  let _edges_count : bytes =
-    SharedMem.save_dep_table_sqlite (Path.absolute dependencies_path) "0.0.0"
+  let save { directory; table_path; dependencies_path } =
+    SharedMem.save_table (Path.absolute table_path);
+    let _edges_count : bytes =
+      SharedMem.save_dep_table_sqlite (Path.absolute dependencies_path) "0.0.0"
+    in
+    run_tar ["cf"; path; "-C"; Path.absolute directory; "."]
   in
-  run_tar ["cf"; path; "-C"; Path.absolute directory; "."]
+  with_temporary_directory save
 
 
 let load_shared_memory ~path =
   let open Pyre in
-  let { directory; table_path; dependencies_path } = create_temporary_directory () in
-  run_tar ["xf"; path; "-C"; Path.absolute directory];
-  SharedMem.load_table (Path.absolute table_path);
-  let _edges_count : bytes =
-    SharedMem.load_dep_table_sqlite (Path.absolute dependencies_path) true
+  let load { directory; table_path; dependencies_path } =
+    run_tar ["xf"; path; "-C"; Path.absolute directory];
+    SharedMem.load_table (Path.absolute table_path);
+    let _edges_count : bytes =
+      SharedMem.load_dep_table_sqlite (Path.absolute dependencies_path) true
+    in
+    ()
   in
-  ()
+  with_temporary_directory load
 
 
 external pyre_reset : unit -> unit = "pyre_reset"
@@ -511,6 +521,12 @@ module DependencyKey = struct
   end
 end
 
+module DependencyKind = struct
+  type t =
+    | Get
+    | Mem
+end
+
 module DependencyTracking = struct
   module type TableType = sig
     include NoCache.S
@@ -519,12 +535,13 @@ module DependencyTracking = struct
   end
 
   module Make (DependencyKey : DependencyKey.S) (Table : TableType) = struct
-    let add_dependency key value =
-      DependencyKey.encode value |> DependencyGraph.add (Dependency.make (Table.Value.prefix, key))
+    let add_dependency ~(kind : DependencyKind.t) (key : Table.key) (value : DependencyKey.t) =
+      DependencyKey.encode value
+      |> DependencyGraph.add (Dependency.make (Table.Value.prefix, key, kind))
 
 
-    let get_dependents key =
-      DependencyGraph.get (Dependency.make (Table.Value.prefix, key))
+    let get_dependents ~(kind : DependencyKind.t) (key : Table.key) =
+      DependencyGraph.get (Dependency.make (Table.Value.prefix, key, kind))
       |> DependencySet.fold ~init:DependencyKey.KeySet.empty ~f:(fun sofar encoded ->
              match DependencyKey.decode encoded with
              | Some decoded -> DependencyKey.KeySet.add decoded sofar
@@ -532,14 +549,22 @@ module DependencyTracking = struct
 
 
     let get_all_dependents keys =
-      Table.KeySet.elements keys
-      |> List.map ~f:get_dependents
-      |> List.fold ~init:DependencyKey.KeySet.empty ~f:DependencyKey.KeySet.union
+      let keys = Table.KeySet.elements keys in
+      let init =
+        List.map keys ~f:(get_dependents ~kind:Get)
+        |> List.fold ~init:DependencyKey.KeySet.empty ~f:DependencyKey.KeySet.union
+      in
+      List.map keys ~f:(get_dependents ~kind:Mem) |> List.fold ~init ~f:DependencyKey.KeySet.union
 
 
     let get ?dependency key =
-      Option.iter dependency ~f:(add_dependency key);
+      Option.iter dependency ~f:(add_dependency key ~kind:Get);
       Table.get key
+
+
+    let mem ?dependency key =
+      Option.iter dependency ~f:(add_dependency key ~kind:Mem);
+      Table.mem key
 
 
     let deprecate_keys = Table.oldify_batch
@@ -550,16 +575,23 @@ module DependencyTracking = struct
       Table.remove_old_batch keys;
 
       let add_dependency key sofar =
-        let value_has_changed key =
+        let value_has_changed, presence_has_changed =
           match Table.KeyMap.find key old_key_map, Table.KeyMap.find key new_key_map with
-          | None, None -> false
+          | None, None -> false, false
           | Some old_value, Some new_value ->
-              not (Int.equal 0 (Table.Value.compare old_value new_value))
-          | _ -> true
+              not (Int.equal 0 (Table.Value.compare old_value new_value)), false
+          | None, Some _
+          | Some _, None ->
+              true, true
         in
-        if value_has_changed key then
-          let dependencies = get_dependents key in
-          DependencyKey.KeySet.union dependencies sofar
+        let sofar =
+          if value_has_changed then
+            get_dependents ~kind:Get key |> DependencyKey.KeySet.union sofar
+          else
+            sofar
+        in
+        if presence_has_changed then
+          get_dependents ~kind:Mem key |> DependencyKey.KeySet.union sofar
         else
           sofar
       in
@@ -572,6 +604,15 @@ module DependencyTracking = struct
         {
           before = (fun () -> deprecate_keys keys);
           after = (fun () -> dependencies_since_last_deprecate keys);
+        }
+
+
+    let add_pessimistic_transaction (transaction : DependencyKey.Transaction.t) ~keys =
+      DependencyKey.Transaction.add
+        transaction
+        {
+          before = (fun () -> Table.remove_batch keys);
+          after = (fun () -> get_all_dependents keys);
         }
   end
 end
