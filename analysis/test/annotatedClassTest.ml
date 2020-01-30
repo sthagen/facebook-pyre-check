@@ -19,8 +19,6 @@ module Argument = Call.Argument
 
 let ( !! ) concretes = List.map concretes ~f:(fun single -> Type.Parameter.Single single)
 
-let value option = Option.value_exn option
-
 let last_statement_exn = function
   | { Source.statements; _ } when List.length statements > 0 -> List.last_exn statements
   | _ -> failwith "Could not parse last statement"
@@ -407,12 +405,12 @@ let test_class_attributes context =
     let attribute_list_equal =
       let equal left right =
         Attribute.name left = Attribute.name right
-        && Type.equal (Attribute.parent left) (Attribute.parent right)
+        && String.equal (Attribute.parent left) (Attribute.parent right)
       in
       List.equal equal
     in
     let print_attributes attributes =
-      let print_attribute { Node.value = { Annotated.Attribute.name; _ }; _ } = name in
+      let print_attribute = Annotated.Attribute.name in
       List.map attributes ~f:print_attribute |> String.concat ~sep:", "
     in
     assert_equal
@@ -495,45 +493,47 @@ let test_class_attributes context =
         ~resolution
         ~name:attribute_name
         ~instantiated
-      >>| Node.value
     in
     let cmp =
       let equal left right =
-        Attribute.equal_attribute
-          { left with value = Node.create_with_default_location Expression.True }
-          { right with value = Node.create_with_default_location Expression.True }
-        && Expression.location_insensitive_compare left.value right.value = 0
+        let without_locations attribute =
+          Attribute.with_value attribute ~value:(Node.create_with_default_location Expression.True)
+          |> Attribute.with_location ~location:Location.any
+        in
+        Attribute.equal (without_locations left) (without_locations right)
+        && Expression.location_insensitive_compare (Attribute.value left) (Attribute.value right)
+           = 0
       in
       Option.equal equal
     in
-    let printer = Option.value_map ~default:"None" ~f:Attribute.show_attribute in
+    let printer = Option.value_map ~default:"None" ~f:Attribute.show in
     assert_equal ~cmp ~printer expected_attribute actual_attribute
   in
   let create_expected_attribute
       ?(property = false)
       ?(visibility = Attribute.ReadWrite)
-      ?(parent = Type.Primitive "test.Attributes")
+      ?(parent = "test.Attributes")
       ?(initialized = true)
       name
       callable
     =
     let annotation = parse_callable callable in
     Some
-      {
-        Class.Attribute.annotation;
-        original_annotation = annotation;
-        abstract = false;
-        async = false;
-        class_attribute = false;
-        defined = true;
-        initialized;
-        name;
-        parent;
-        property;
-        visibility;
-        static = false;
-        value = Node.create_with_default_location Expression.Ellipsis;
-      }
+      (Annotated.Attribute.create
+         ~annotation
+         ~original_annotation:annotation
+         ~abstract:false
+         ~async:false
+         ~class_attribute:false
+         ~defined:true
+         ~initialized
+         ~name
+         ~parent
+         ~property
+         ~visibility
+         ~static:false
+         ~value:(Node.create_with_default_location Expression.Ellipsis)
+         ~location:Location.any)
   in
   assert_attribute
     ~parent
@@ -555,7 +555,7 @@ let test_class_attributes context =
     ~attribute_name:"implicit"
     ~expected_attribute:
       (create_expected_attribute
-         ~parent:(Type.Primitive "test.Metaclass")
+         ~parent:"test.Metaclass"
          "implicit"
          "typing.Callable('test.Metaclass.implicit')[[], int]");
   assert_attribute
@@ -704,36 +704,12 @@ let test_fallback_attribute context =
 
 let test_constraints context =
   let assert_constraints ~target ~instantiated ?parameters source expected =
-    let { ScratchProject.BuiltGlobalEnvironment.ast_environment; global_environment; _ } =
+    let { ScratchProject.BuiltGlobalEnvironment.global_environment; _ } =
       ScratchProject.setup ~context ["test.py", source] |> ScratchProject.build_global_environment
     in
     let resolution = GlobalResolution.create global_environment in
-    let source =
-      AstEnvironment.ReadOnly.get_source
-        (AstEnvironment.read_only ast_environment)
-        (Reference.create "test")
-    in
-    let source = Option.value_exn source in
-    let target =
-      let { Source.statements; _ } = source in
-      let target = function
-        | { Node.location; value = Statement.Class ({ StatementClass.name; _ } as definition) }
-          when Reference.show (Node.value name) = target ->
-            Some
-              ( { Node.location; value = definition }
-              |> Node.map ~f:ClassSummary.create
-              |> Class.create )
-        | _ -> None
-      in
-      List.find_map ~f:target statements |> value
-    in
     let constraints =
-      last_statement_exn source
-      |> (function
-           | { Node.location; value = Statement.Class definition; _ } ->
-               Node.create ~location definition |> Node.map ~f:ClassSummary.create |> Class.create
-           | _ -> failwith "Last statement was not a class")
-      |> GlobalResolution.constraints ~target ~resolution ?parameters ~instantiated
+      GlobalResolution.constraints ~target ~resolution ?parameters ~instantiated ()
     in
     let expected =
       List.map expected ~f:(fun (variable, value) -> Type.Variable.UnaryPair (variable, value))
@@ -1141,7 +1117,7 @@ let test_overrides context =
   let overrides = Class.overrides definition ~resolution ~name:"foo" in
   assert_is_some overrides;
   assert_equal ~cmp:String.equal (Attribute.name (Option.value_exn overrides)) "foo";
-  assert_equal (Option.value_exn overrides |> Attribute.parent |> Type.show) "test.Foo"
+  assert_equal (Option.value_exn overrides |> Attribute.parent) "test.Foo"
 
 
 let test_implicit_attributes context =

@@ -5,12 +5,15 @@
 
 import argparse
 import functools
+import json
 import logging
 from pathlib import Path
-from typing import List, NamedTuple
+from typing import List, NamedTuple, Optional
 
-from .. import LOG_DIRECTORY, find_project_root
-from .command import Command
+from .. import LOG_DIRECTORY, find_project_root, log
+from ..analysis_directory import AnalysisDirectory
+from ..configuration import Configuration
+from .command import JSON, Command
 from .stop import Stop
 
 
@@ -40,6 +43,18 @@ class ServerDetails(NamedTuple):
 class Servers(Command):
     NAME: str = "servers"
 
+    def __init__(
+        self,
+        arguments: argparse.Namespace,
+        original_directory: str,
+        configuration: Optional[Configuration] = None,
+        analysis_directory: Optional[AnalysisDirectory] = None,
+    ) -> None:
+        super(Servers, self).__init__(
+            arguments, original_directory, configuration, analysis_directory
+        )
+        self._subcommand: Optional[str] = arguments.servers_subcommand
+
     @classmethod
     def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
         servers_parser = parser.add_parser(
@@ -60,18 +75,30 @@ class Servers(Command):
         return Path(find_project_root(str(Path.cwd())), LOG_DIRECTORY)
 
     @staticmethod
-    def _print_server_details(all_server_details: List[ServerDetails]) -> None:
-        print("Pyre servers: <pid> <server-root>")
-        for details in all_server_details:
-            print(
-                "{:<{column_one_width}} {}".format(
-                    details.pid,
-                    ROOT_PLACEHOLDER_NAME
-                    if details.local_root == "."
-                    else details.local_root,
-                    column_one_width=PID_MAXIMUM_WIDTH,
+    def _print_server_details(
+        all_server_details: List[ServerDetails], output_format: str
+    ) -> None:
+        server_details = [
+            {
+                "pid": details.pid,
+                "name": details.local_root
+                if details.local_root != "."
+                else ROOT_PLACEHOLDER_NAME,
+            }
+            for details in all_server_details
+        ]
+        if output_format == JSON:
+            log.stdout.write(json.dumps(server_details))
+        else:
+            log.stdout.write("Pyre servers:\n<pid> <server-root>")
+            for details in server_details:
+                log.stdout.write(
+                    "{:<{column_one_width}} {}".format(
+                        details["pid"],
+                        details["name"],
+                        column_one_width=PID_MAXIMUM_WIDTH,
+                    )
                 )
-            )
 
     @staticmethod
     def _find_servers() -> List[Path]:
@@ -95,8 +122,8 @@ class Servers(Command):
             key=lambda details: details.local_root,
         )
 
-        subcommand = self._arguments.servers_subcommand
+        subcommand = self._subcommand
         if subcommand == "list" or subcommand is None:
-            self._print_server_details(all_server_details)
+            self._print_server_details(all_server_details, self._output)
         elif subcommand == "stop":
             self._stop_servers(all_server_details)

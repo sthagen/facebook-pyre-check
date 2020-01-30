@@ -239,9 +239,12 @@ let process_type_query_request
         in
         TypeQuery.Response (TypeQuery.Errors errors)
     | TypeQuery.Attributes annotation ->
-        let to_attribute
-            { Node.value = { Annotated.Class.Attribute.name; annotation; property; _ }; _ }
-          =
+        let to_attribute attribute =
+          let name = Annotated.Class.Attribute.name attribute in
+          let annotation =
+            Annotated.Class.Attribute.annotation attribute |> Annotation.annotation
+          in
+          let property = Annotated.Class.Attribute.property attribute in
           let kind =
             if property then
               TypeQuery.Property
@@ -586,21 +589,14 @@ let process_type_query_request
         GlobalResolution.meet global_resolution left right
         |> fun annotation -> TypeQuery.Response (TypeQuery.Type annotation)
     | TypeQuery.Methods annotation ->
-        let to_method = function
-          | {
-              Node.value =
-                {
-                  Annotated.Attribute.annotation =
-                    Callable
-                      {
-                        implementation = { annotation; parameters = Defined parameters; _ };
-                        kind = Named name;
-                        _;
-                      };
-                  _;
-                };
-              _;
-            } ->
+        let to_method attribute =
+          match Annotated.Attribute.annotation attribute |> Annotation.annotation with
+          | Callable
+              {
+                implementation = { annotation; parameters = Defined parameters; _ };
+                kind = Named name;
+                _;
+              } ->
               let parameters =
                 parameters
                 |> List.filter_map ~f:Type.Callable.Parameter.annotation
@@ -1156,6 +1152,10 @@ let rec process
     | Analysis.ClassHierarchy.Untracked annotation ->
         log_request_error ~error:(Format.sprintf "Untracked %s" (Type.show annotation));
         { state; response = None }
+    | Worker.Worker_exited_abnormally (pid, status) ->
+        Statistics.log_worker_exception ~pid status ~origin:"server";
+        Mutex.critical_section connections.lock ~f:(fun () ->
+            Operations.stop ~reason:"Worker exited abnormally" ~configuration:server_configuration)
     | uncaught_exception ->
         let should_stop =
           match request with

@@ -160,7 +160,7 @@ module AttributeReadOnly : sig
     Expression.expression Node.t ->
     Type.t
 
-  val summary_and_attribute_table
+  val attribute_table
     :  t ->
     transitive:bool ->
     class_attributes:bool ->
@@ -169,7 +169,7 @@ module AttributeReadOnly : sig
     ?instantiated:Type.t ->
     ?dependency:SharedMemoryKeys.dependency ->
     string ->
-    (ClassSummary.t Node.t * AnnotatedAttribute.Table.t) option
+    AnnotatedAttribute.Table.t option
 
   val create_attribute
     :  t ->
@@ -180,17 +180,17 @@ module AttributeReadOnly : sig
     ?inherited:bool ->
     ?default_class_attribute:bool ->
     Attribute.attribute Node.t ->
-    AnnotatedAttribute.attribute Node.t
+    AnnotatedAttribute.t
 
   val metaclass : t -> ?dependency:SharedMemoryKeys.dependency -> ClassSummary.t Node.t -> Type.t
 
   val constraints
     :  t ->
-    ?target:ClassSummary.t Node.t ->
+    target:Type.Primitive.t ->
     ?parameters:Type.Parameter.t list ->
-    ClassSummary.t Node.t ->
     ?dependency:SharedMemoryKeys.dependency ->
     instantiated:Type.t ->
+    unit ->
     TypeConstraints.Solution.t
 
   val resolve_literal

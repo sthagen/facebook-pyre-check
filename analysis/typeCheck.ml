@@ -1140,12 +1140,9 @@ module State (Context : Context) = struct
                     ~name:(StatementDefine.unqualified_name define)
                   >>| fun overridden_attribute ->
                   let errors =
-                    match overridden_attribute with
-                    | {
-                     Node.value = { visibility = ReadOnly (Refinable { overridable = false }); _ };
-                     _;
-                    } ->
-                        let parent = overridden_attribute |> Attribute.parent |> Type.show in
+                    match AnnotatedAttribute.visibility overridden_attribute with
+                    | ReadOnly (Refinable { overridable = false }) ->
+                        let parent = overridden_attribute |> Attribute.parent in
                         let error =
                           Error.create
                             ~location:(Location.with_module ~qualifier:Context.qualifier location)
@@ -1162,7 +1159,7 @@ module State (Context : Context) = struct
                            (Attribute.static overridden_attribute)
                            (StatementDefine.is_static_method define))
                     then
-                      let parent = overridden_attribute |> Attribute.parent |> Type.show in
+                      let parent = overridden_attribute |> Attribute.parent in
                       let decorator =
                         if Attribute.static overridden_attribute then
                           Error.StaticSuper
@@ -1212,9 +1209,7 @@ module State (Context : Context) = struct
                                    {
                                      overridden_method = StatementDefine.unqualified_name define;
                                      parent =
-                                       Attribute.parent overridden_attribute
-                                       |> Type.show
-                                       |> Reference.create;
+                                       Attribute.parent overridden_attribute |> Reference.create;
                                      override_kind = Method;
                                      override =
                                        Error.WeakenedPostcondition
@@ -1275,7 +1270,6 @@ module State (Context : Context) = struct
                                                StatementDefine.unqualified_name define;
                                              parent =
                                                Attribute.parent overridden_attribute
-                                               |> Type.show
                                                |> Reference.create;
                                              override_kind = Method;
                                              override =
@@ -1320,7 +1314,6 @@ module State (Context : Context) = struct
                                            override_kind = Method;
                                            parent =
                                              Attribute.parent overridden_attribute
-                                             |> Type.show
                                              |> Reference.create;
                                            override =
                                              Error.StrengthenedPrecondition
@@ -3280,19 +3273,15 @@ module State (Context : Context) = struct
                           ~kind:(Error.InvalidAssignment (FinalAttribute reference))
                       in
                       let read_only_non_property_attribute =
-                        match attribute >>| fst >>| Node.value with
-                        | Some
-                            {
-                              AnnotatedAttribute.visibility = ReadOnly _;
-                              property = false;
-                              value = { Node.value = Expression.Ellipsis; _ };
-                              _;
-                            }
+                        let open AnnotatedAttribute in
+                        let relevant_properties attribute =
+                          visibility attribute, property attribute, value attribute
+                        in
+                        match attribute >>| fst >>| relevant_properties with
+                        | Some (ReadOnly _, false, { Node.value = Expression.Ellipsis; _ })
                           when Define.is_constructor define ->
                             false
-                        | Some { AnnotatedAttribute.visibility = ReadOnly _; property = false; _ }
-                          ->
-                            true
+                        | Some (ReadOnly _, false, _) -> true
                         | _ -> false
                       in
                       if read_only_non_property_attribute && Option.is_none original_annotation then
@@ -3303,19 +3292,12 @@ module State (Context : Context) = struct
                         state
                     in
                     let check_assign_class_variable_on_instance state =
-                      match resolved_base, attribute with
-                      | ( Some parent,
-                          Some
-                            ( {
-                                Node.value =
-                                  {
-                                    Annotated.Attribute.class_attribute = true;
-                                    name = class_variable;
-                                    _;
-                                  };
-                                _;
-                              },
-                              _ ) )
+                      match
+                        ( resolved_base,
+                          attribute >>| fst >>| Annotated.Attribute.class_attribute,
+                          attribute >>| fst >>| Annotated.Attribute.name )
+                      with
+                      | Some parent, Some true, Some class_variable
                         when Option.is_none original_annotation && not (Type.is_meta parent) ->
                           emit_error
                             ~state
@@ -3338,15 +3320,11 @@ module State (Context : Context) = struct
                       |> Option.value ~default:state
                     in
                     let check_is_readonly_property state =
-                      match attribute with
-                      | Some
-                          ( {
-                              Node.value =
-                                { Annotated.Attribute.visibility = ReadOnly _; property = true; _ };
-                              _;
-                            },
-                            _ )
-                        when Option.is_none original_annotation ->
+                      match
+                        ( attribute >>| fst >>| Annotated.Attribute.visibility,
+                          attribute >>| fst >>| Annotated.Attribute.property )
+                      with
+                      | Some (ReadOnly _), Some true when Option.is_none original_annotation ->
                           emit_error
                             ~state
                             ~location
@@ -3496,7 +3474,7 @@ module State (Context : Context) = struct
                 | Some (attribute, name), _ when is_incompatible ->
                     Error.IncompatibleAttributeType
                       {
-                        parent = Attribute.parent attribute;
+                        parent = Primitive (Attribute.parent attribute);
                         incompatible_type =
                           {
                             Error.name = Reference.create name;
@@ -3566,15 +3544,14 @@ module State (Context : Context) = struct
                   else
                     Some resolved, [instantiate location]
                 in
-                let is_illegal_attribute_annotation
-                    { Node.value = { AnnotatedClass.Attribute.parent = attribute_parent; _ }; _ }
-                  =
+                let is_illegal_attribute_annotation attribute =
+                  let attribute_parent = AnnotatedAttribute.parent attribute in
                   let parent_annotation =
                     match define_parent with
                     | None -> Type.Top
                     | Some reference -> Type.Primitive (Reference.show reference)
                   in
-                  explicit && not (Type.equal parent_annotation attribute_parent)
+                  explicit && not (Type.equal parent_annotation (Primitive attribute_parent))
                 in
                 let parent_class =
                   match name with
@@ -3711,7 +3688,7 @@ module State (Context : Context) = struct
                             ~kind:
                               (Error.MissingAttributeAnnotation
                                  {
-                                   parent = Annotated.Attribute.parent attribute;
+                                   parent = Primitive (Annotated.Attribute.parent attribute);
                                    missing_annotation =
                                      {
                                        Error.name = reference;
@@ -3984,11 +3961,13 @@ module State (Context : Context) = struct
                       ~instantiated:parent
                       ~transitive:true
               in
-              match attribute with
-              | Some
-                  ( { Node.value = { visibility = ReadOnly (Refinable _); defined = true; _ }; _ }
-                  as attribute ) ->
-                  Some (reference, Annotation.make_local (AnnotatedAttribute.annotation attribute))
+              match
+                ( attribute >>| AnnotatedAttribute.visibility,
+                  attribute >>| AnnotatedAttribute.defined,
+                  attribute >>| AnnotatedAttribute.annotation )
+              with
+              | Some (ReadOnly (Refinable _)), Some true, Some annotation ->
+                  Some (reference, Annotation.make_local annotation)
               | _ -> None )
           | _ -> None
         in
@@ -4631,9 +4610,9 @@ module State (Context : Context) = struct
                     (Reference.show (AnnotatedClass.name definition))
                   |> Option.value ~default:[]
                 in
-                let is_uninitialized
-                    ({ Node.value = { AnnotatedAttribute.name; initialized; _ }; _ } as attribute)
-                  =
+                let is_uninitialized attribute =
+                  let name = Annotated.Attribute.name attribute in
+                  let initialized = Annotated.Attribute.initialized attribute in
                   let implicitly_initialized name =
                     Identifier.SerializableMap.mem name implicit_attributes
                   in
@@ -4641,7 +4620,11 @@ module State (Context : Context) = struct
                   && (not (implicitly_initialized name))
                   && not (is_dynamically_initialized attribute)
                 in
-                let add_to_map sofar { Node.value = { AnnotatedAttribute.name; annotation; _ }; _ } =
+                let add_to_map sofar attribute =
+                  let annotation =
+                    Annotated.Attribute.annotation attribute |> Annotation.annotation
+                  in
+                  let name = Annotated.Attribute.name attribute in
                   match String.Map.add sofar ~key:name ~data:(annotation, definition) with
                   | `Ok map -> map
                   | `Duplicate -> sofar
@@ -4658,13 +4641,12 @@ module State (Context : Context) = struct
                     (Reference.show (AnnotatedClass.name definition))
                   |> Option.value ~default:[]
                 in
-                let is_initialized
-                    { Node.value = { AnnotatedAttribute.initialized; property; _ }; _ }
-                  =
+                let is_initialized attribute =
                   (* TODO(T54083014): Don't error on properties overriding attributes, even if they
                      are read-only and therefore not marked as initialized on the attribute object.
                      We should error in the future that this is an inconsistent override. *)
-                  initialized || property
+                  Annotated.Attribute.initialized attribute
+                  || Annotated.Attribute.property attribute
                 in
                 List.filter attributes ~f:is_initialized
                 |> List.map ~f:AnnotatedAttribute.name
@@ -4796,13 +4778,19 @@ module State (Context : Context) = struct
               ~include_generated_attributes:false
               ~resolution:global_resolution
               (Reference.show (AnnotatedClass.name definition))
-            >>| List.filter_map
-                  ~f:(fun { Node.value = { AnnotatedAttribute.name; annotation; _ }; location } ->
+            >>| List.filter_map ~f:(fun attribute ->
+                    let annotation =
+                      Annotated.Attribute.annotation attribute |> Annotation.annotation
+                    in
+                    let name = Annotated.Attribute.name attribute in
+                    let location = Annotated.Attribute.location attribute in
                     let actual = annotation in
-                    let check_override
-                        ( { Node.value = { Attribute.annotation; name; visibility; _ }; _ } as
-                        overridden_attribute )
-                      =
+                    let check_override overridden_attribute =
+                      let annotation =
+                        Annotated.Attribute.annotation overridden_attribute |> Annotation.annotation
+                      in
+                      let name = Annotated.Attribute.name overridden_attribute in
+                      let visibility = Annotated.Attribute.visibility overridden_attribute in
                       let expected = annotation in
                       let overridable =
                         match visibility with
@@ -4827,10 +4815,7 @@ module State (Context : Context) = struct
                             Error.InconsistentOverride
                               {
                                 overridden_method = name;
-                                parent =
-                                  Attribute.parent overridden_attribute
-                                  |> Type.show
-                                  |> Reference.create;
+                                parent = Attribute.parent overridden_attribute |> Reference.create;
                                 override_kind = Attribute;
                                 override =
                                   Error.WeakenedPostcondition

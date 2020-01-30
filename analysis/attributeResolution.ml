@@ -514,10 +514,8 @@ module Implementation = struct
               let methods =
                 if init && not (already_in_table "__init__") then
                   let parameters =
-                    let extract_dataclass_field_arguments
-                        { Node.value = { AnnotatedAttribute.value; _ }; _ }
-                      =
-                      match value with
+                    let extract_dataclass_field_arguments attribute =
+                      match AnnotatedAttribute.value attribute with
                       | {
                        Node.value =
                          Expression.Call
@@ -559,10 +557,9 @@ module Implementation = struct
                       | Some arguments -> not (List.exists arguments ~f:is_disable_init)
                       | _ -> true
                     in
-                    let extract_init_value
-                        ( { Node.value = { AnnotatedAttribute.initialized; value; _ }; _ } as
-                        attribute )
-                      =
+                    let extract_init_value attribute =
+                      let initialized = AnnotatedAttribute.initialized attribute in
+                      let value = AnnotatedAttribute.value attribute in
                       let get_default_value { Call.Argument.name; value } =
                         match name with
                         | Some { Node.value = parameter_name; _ } ->
@@ -633,7 +630,9 @@ module Implementation = struct
                     in
                     let parent_attributes parent =
                       let compare_by_location left right =
-                        Ast.Location.compare (Node.location left) (Node.location right)
+                        Ast.Location.compare
+                          (AnnotatedAttribute.location left)
+                          (AnnotatedAttribute.location right)
                       in
                       AnnotatedAttribute.Table.to_list parent
                       |> List.sort ~compare:compare_by_location
@@ -684,22 +683,21 @@ module Implementation = struct
               methods
             in
             let make_attribute (attribute_name, annotation) =
-              Node.create_with_default_location
-                {
-                  AnnotatedAttribute.annotation;
-                  original_annotation = annotation;
-                  abstract = false;
-                  async = false;
-                  class_attribute = false;
-                  defined = true;
-                  initialized = true;
-                  name = attribute_name;
-                  parent = Type.Primitive (Reference.show name);
-                  visibility = ReadWrite;
-                  static = false;
-                  property = false;
-                  value = Node.create_with_default_location Expression.Ellipsis;
-                }
+              AnnotatedAttribute.create
+                ~location:Location.any
+                ~annotation
+                ~original_annotation:annotation
+                ~abstract:false
+                ~async:false
+                ~class_attribute:false
+                ~defined:true
+                ~initialized:true
+                ~name:attribute_name
+                ~parent:(Reference.show name)
+                ~visibility:ReadWrite
+                ~static:false
+                ~property:false
+                ~value:(Node.create_with_default_location Expression.Ellipsis)
             in
             List.map generated_methods ~f:make_attribute
       in
@@ -759,7 +757,7 @@ module Implementation = struct
       ?inherited:bool ->
       ?default_class_attribute:bool ->
       Attribute.attribute Node.t ->
-      AnnotatedAttribute.attribute Node.t;
+      AnnotatedAttribute.t;
     metaclass:
       assumptions:Assumptions.t ->
       class_metadata_environment:ClassMetadataEnvironment.ReadOnly.t ->
@@ -769,11 +767,11 @@ module Implementation = struct
     constraints:
       assumptions:Assumptions.t ->
       class_metadata_environment:ClassMetadataEnvironment.ReadOnly.t ->
-      ?target:ClassSummary.t Node.t ->
+      target:Type.Primitive.t ->
       ?parameters:Type.Parameter.t list ->
-      ClassSummary.t Node.t ->
       ?dependency:SharedMemoryKeys.dependency ->
       instantiated:Type.t ->
+      unit ->
       TypeConstraints.Solution.t;
     resolve_literal:
       assumptions:Assumptions.t ->
@@ -1073,42 +1071,40 @@ module Implementation = struct
           let annotation = Type.Callable.create ~annotation:Type.none () in
           AnnotatedAttribute.Table.add
             table
-            (Node.create_with_default_location
-               {
-                 AnnotatedAttribute.annotation;
-                 original_annotation = annotation;
-                 abstract = false;
-                 async = false;
-                 class_attribute = false;
-                 defined = true;
-                 initialized = true;
-                 name = "__init__";
-                 parent = Primitive (Reference.show name);
-                 visibility = ReadWrite;
-                 static = true;
-                 property = false;
-                 value = Node.create_with_default_location Expression.Expression.Ellipsis;
-               });
+            (AnnotatedAttribute.create
+               ~location:Location.any
+               ~annotation
+               ~original_annotation:annotation
+               ~abstract:false
+               ~async:false
+               ~class_attribute:false
+               ~defined:true
+               ~initialized:true
+               ~name:"__init__"
+               ~parent:(Reference.show name)
+               ~visibility:ReadWrite
+               ~static:true
+               ~property:false
+               ~value:(Node.create_with_default_location Expression.Expression.Ellipsis));
           if Option.is_none (AnnotatedAttribute.Table.lookup_name table "__getattr__") then
             let annotation = Type.Callable.create ~annotation:Type.Any () in
             AnnotatedAttribute.Table.add
               table
-              (Node.create_with_default_location
-                 {
-                   AnnotatedAttribute.annotation;
-                   original_annotation = annotation;
-                   abstract = false;
-                   async = false;
-                   class_attribute = false;
-                   defined = true;
-                   initialized = true;
-                   name = "__getattr__";
-                   parent = Primitive (Reference.show name);
-                   visibility = ReadWrite;
-                   static = true;
-                   property = false;
-                   value = Node.create_with_default_location Expression.Expression.Ellipsis;
-                 }) )
+              (AnnotatedAttribute.create
+                 ~location:Location.any
+                 ~annotation
+                 ~original_annotation:annotation
+                 ~abstract:false
+                 ~async:false
+                 ~class_attribute:false
+                 ~defined:true
+                 ~initialized:true
+                 ~name:"__getattr__"
+                 ~parent:(Reference.show name)
+                 ~visibility:ReadWrite
+                 ~static:true
+                 ~property:false
+                 ~value:(Node.create_with_default_location Expression.Expression.Ellipsis)) )
       in
       add_actual ();
       if
@@ -1178,17 +1174,14 @@ module Implementation = struct
            ~class_attributes:false
            ~table);
     let instantiate ~instantiated attribute =
-      AnnotatedAttribute.parent attribute
-      |> class_definition class_metadata_environment ~dependency
-      >>| fun target ->
       let solution =
         constraints
           ?dependency
-          ~target
+          ~target:(AnnotatedAttribute.parent attribute)
           ~instantiated
           ~class_metadata_environment
           ~assumptions
-          definition
+          ()
       in
       AnnotatedAttribute.instantiate
         ~constraints:(fun annotation ->
@@ -1196,7 +1189,7 @@ module Implementation = struct
         attribute
     in
     Option.iter original_instantiated ~f:(fun instantiated ->
-        AnnotatedAttribute.Table.filter_map table ~f:(instantiate ~instantiated));
+        AnnotatedAttribute.Table.map table ~f:(instantiate ~instantiated));
     table
 
 
@@ -1644,46 +1637,41 @@ module Implementation = struct
           in
           annotation, original, None, class_property, visibility
     in
-    {
-      Node.location;
-      value =
-        {
-          AnnotatedAttribute.annotation;
-          original_annotation;
-          visibility;
-          abstract =
-            ( match kind with
-            | Method { signatures; _ } ->
-                List.exists signatures ~f:Define.Signature.is_abstract_method
-            | _ -> false );
-          async =
-            ( match kind with
-            | Property { async; _ } -> async
-            | _ -> false );
-          class_attribute;
-          defined;
-          initialized =
-            ( match kind with
-            | Simple { value = Some { Node.value = Ellipsis; _ }; _ }
-            | Simple { value = None; _ } ->
-                false
-            | Simple { value = Some _; _ }
-            | Method _
-            | Property _ ->
-                true );
-          name = attribute_name;
-          parent = class_annotation;
-          static =
-            ( match kind with
-            | Method { static; _ } -> static
-            | _ -> false );
-          property =
-            ( match kind with
-            | Property _ -> true
-            | _ -> false );
-          value = Option.value value ~default:(Node.create Expression.Expression.Ellipsis ~location);
-        };
-    }
+    AnnotatedAttribute.create
+      ~location
+      ~annotation
+      ~original_annotation
+      ~visibility
+      ~abstract:
+        ( match kind with
+        | Method { signatures; _ } -> List.exists signatures ~f:Define.Signature.is_abstract_method
+        | _ -> false )
+      ~async:
+        ( match kind with
+        | Property { async; _ } -> async
+        | _ -> false )
+      ~class_attribute
+      ~defined
+      ~initialized:
+        ( match kind with
+        | Simple { value = Some { Node.value = Ellipsis; _ }; _ }
+        | Simple { value = None; _ } ->
+            false
+        | Simple { value = Some _; _ }
+        | Method _
+        | Property _ ->
+            true )
+      ~name:attribute_name
+      ~parent:(Reference.show (class_name parent))
+      ~static:
+        ( match kind with
+        | Method { static; _ } -> static
+        | _ -> false )
+      ~property:
+        ( match kind with
+        | Property _ -> true
+        | _ -> false )
+      ~value:(Option.value value ~default:(Node.create Expression.Expression.Ellipsis ~location))
 
 
   let metaclass
@@ -1759,13 +1747,12 @@ module Implementation = struct
       { full_order; _ }
       ~assumptions
       ~class_metadata_environment
-      ?target
+      ~target
       ?parameters
-      definition
       ?dependency
       ~instantiated
+      ()
     =
-    let target = Option.value ~default:definition target in
     let parameters =
       match parameters with
       | None ->
@@ -1773,17 +1760,12 @@ module Implementation = struct
             (ClassMetadataEnvironment.ReadOnly.class_hierarchy_environment
                class_metadata_environment)
             ?dependency
-            (Reference.show (class_name target))
+            target
           >>| List.map ~f:ClassHierarchy.Variable.to_parameter
           |> Option.value ~default:[]
       | Some parameters -> parameters
     in
-    let right =
-      let target = class_annotation target in
-      match target with
-      | Primitive name -> Type.parametric name parameters
-      | _ -> target
-    in
+    let right = Type.parametric target parameters in
     match instantiated, right with
     | Type.Primitive name, Parametric { name = right_name; _ } when String.equal name right_name ->
         (* TODO(T42259381) This special case is only necessary because constructor calls attributes
@@ -2849,7 +2831,7 @@ module Implementation = struct
         ~class_attributes:false
         ~include_generated_attributes:true
         ?special_method:None
-        ?instantiated:(Some instantiated)
+        ?instantiated:(Some return_annotation)
         ?dependency
         definition
         ~class_metadata_environment
@@ -2859,7 +2841,7 @@ module Implementation = struct
         match AnnotatedAttribute.Table.lookup_name attribute_table name with
         | Some attribute ->
             ( AnnotatedAttribute.annotation attribute |> Annotation.annotation,
-              AnnotatedAttribute.parent attribute )
+              Type.Primitive (AnnotatedAttribute.parent attribute) )
         | None -> Type.Top, class_annotation definition
       in
       signature, definition_index parent
@@ -3032,7 +3014,7 @@ module Cache = ManagedCache.Make (struct
   module Key = SharedMemoryKeys.AttributeTableKey
 
   module Value = struct
-    type t = (ClassSummary.t Node.t * AnnotatedAttribute.Table.t) option [@@deriving compare]
+    type t = AnnotatedAttribute.Table.t option [@@deriving compare]
 
     let prefix = Prefix.make ()
 
@@ -3090,19 +3072,16 @@ module Cache = ManagedCache.Make (struct
         unannotated_global_environment
         ?dependency
         name
-      >>| fun definition ->
-      ( definition,
-        Implementation.attribute_table
-          open_recurser_with_parse_annotation_cache
-          ~transitive
-          ~class_attributes
-          ~include_generated_attributes
-          ~special_method
-          ?instantiated
-          ?dependency
-          ~class_metadata_environment
-          ~assumptions
-          definition )
+      >>| Implementation.attribute_table
+            open_recurser_with_parse_annotation_cache
+            ~transitive
+            ~class_attributes
+            ~include_generated_attributes
+            ~special_method
+            ?instantiated
+            ?dependency
+            ~class_metadata_environment
+            ~assumptions
 
 
   let filter_upstream_dependency = function
@@ -3122,7 +3101,7 @@ module ReadOnly = struct
     ParseAnnotationCache.ReadOnly.upstream_environment (upstream_environment read_only)
 
 
-  let summary_and_attribute_table
+  let attribute_table
       read_only
       ~transitive
       ~class_attributes
@@ -3175,7 +3154,6 @@ module ReadOnly = struct
         instantiated;
         assumptions;
       }
-    >>| snd
     |> Option.value ~default:(AnnotatedAttribute.Table.create ())
 
 

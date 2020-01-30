@@ -326,35 +326,44 @@ let attribute_from_class_name
     ~name
     ~instantiated
   =
-  let access (({ Node.location; _ } as summary), table) =
+  let access table =
     match AnnotatedAttribute.Table.lookup_name table name with
-    | Some attribute -> attribute
-    | None ->
-        AttributeResolution.ReadOnly.create_attribute
-          ?dependency
-          (attribute_resolution resolution)
-          ~parent:summary
-          ~defined:false
-          ~default_class_attribute:class_attributes
-          {
-            Node.location;
-            value =
+    | Some attribute -> Some attribute
+    | None -> (
+        match
+          UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
+            (unannotated_global_environment resolution)
+            ?dependency
+            class_name
+        with
+        | Some ({ Node.location; _ } as summary) ->
+            AttributeResolution.ReadOnly.create_attribute
+              ?dependency
+              (attribute_resolution resolution)
+              ~parent:summary
+              ~defined:false
+              ~default_class_attribute:class_attributes
               {
-                Attribute.name;
-                kind =
-                  Simple
-                    {
-                      annotation = None;
-                      value = None;
-                      primitive = true;
-                      toplevel = true;
-                      frozen = false;
-                      implicit = false;
-                    };
-              };
-          }
+                Node.location;
+                value =
+                  {
+                    Attribute.name;
+                    kind =
+                      Simple
+                        {
+                          annotation = None;
+                          value = None;
+                          primitive = true;
+                          toplevel = true;
+                          frozen = false;
+                          implicit = false;
+                        };
+                  };
+              }
+            |> Option.some
+        | None -> None )
   in
-  AttributeResolution.ReadOnly.summary_and_attribute_table
+  AttributeResolution.ReadOnly.attribute_table
     ~instantiated
     ~transitive
     ~class_attributes
@@ -363,7 +372,7 @@ let attribute_from_class_name
     ?dependency
     (attribute_resolution resolution)
     class_name
-  >>| access
+  >>= access
 
 
 let attribute_from_annotation resolution ~parent:annotation ~name =
@@ -427,12 +436,6 @@ let superclasses ~resolution:({ dependency; _ } as resolution) =
   ClassMetadataEnvironment.ReadOnly.superclasses ?dependency (class_metadata_environment resolution)
 
 
-let summary_and_attribute_table ~resolution:({ dependency; _ } as resolution) =
-  AttributeResolution.ReadOnly.summary_and_attribute_table
-    ?dependency
-    (attribute_resolution resolution)
-
-
 let attributes
     ~resolution:({ dependency; _ } as resolution)
     ?(transitive = false)
@@ -441,7 +444,7 @@ let attributes
     ?instantiated
     name
   =
-  AttributeResolution.ReadOnly.summary_and_attribute_table
+  AttributeResolution.ReadOnly.attribute_table
     (attribute_resolution resolution)
     ~transitive
     ~class_attributes
@@ -449,7 +452,6 @@ let attributes
     ?instantiated
     name
     ?dependency
-  >>| snd
   >>| AnnotatedAttribute.Table.to_list
 
 
@@ -537,3 +539,22 @@ let annotation_parser ?allow_invalid_type_parameters resolution =
     parse_as_parameter_specification_instance_annotation =
       parse_as_parameter_specification_instance_annotation resolution;
   }
+
+
+let attribute_names
+    ~resolution:({ dependency; _ } as resolution)
+    ?(transitive = false)
+    ?(class_attributes = false)
+    ?(include_generated_attributes = true)
+    ?instantiated
+    name
+  =
+  AttributeResolution.ReadOnly.attribute_table
+    (attribute_resolution resolution)
+    ~transitive
+    ~class_attributes
+    ~include_generated_attributes
+    ?instantiated
+    name
+    ?dependency
+  >>| AnnotatedAttribute.Table.names

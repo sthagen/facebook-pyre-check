@@ -15,24 +15,24 @@ type visibility =
   | ReadWrite
 [@@deriving eq, show, compare, sexp]
 
-type attribute = {
-  abstract: bool;
-  annotation: Type.t;
-  original_annotation: Type.t;
-  async: bool;
-  class_attribute: bool;
-  defined: bool;
-  initialized: bool;
-  name: Identifier.t;
-  parent: Type.t;
-  visibility: visibility;
-  property: bool;
-  static: bool;
-  value: Expression.t;
-}
-[@@deriving eq, show, compare, sexp]
+type t [@@deriving eq, show, sexp]
 
-type t = attribute Node.t [@@deriving eq, show]
+val create
+  :  abstract:bool ->
+  annotation:Type.t ->
+  original_annotation:Type.t ->
+  async:bool ->
+  class_attribute:bool ->
+  defined:bool ->
+  initialized:bool ->
+  name:Identifier.t ->
+  parent:Type.Primitive.t ->
+  visibility:visibility ->
+  property:bool ->
+  static:bool ->
+  value:Expression.t ->
+  location:Location.t ->
+  t
 
 val name : t -> Identifier.t
 
@@ -42,7 +42,7 @@ val async : t -> bool
 
 val annotation : t -> Annotation.t
 
-val parent : t -> Type.t
+val parent : t -> Type.Primitive.t
 
 val value : t -> Expression.t
 
@@ -58,7 +58,13 @@ val static : t -> bool
 
 val property : t -> bool
 
+val visibility : t -> visibility
+
 val instantiate : t -> constraints:(Type.t -> Type.t option) -> t
+
+val with_value : t -> value:Expression.t -> t
+
+val with_location : t -> location:Location.t -> t
 
 module Table : sig
   type element = t
@@ -76,4 +82,8 @@ module Table : sig
   val clear : t -> unit
 
   val filter_map : f:(element -> element option) -> t -> unit
+
+  val names : t -> string list
+
+  val map : f:(element -> element) -> t -> unit
 end

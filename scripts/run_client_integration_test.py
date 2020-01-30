@@ -3,6 +3,8 @@
 import glob
 import json
 import logging
+import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -12,12 +14,17 @@ from abc import ABC
 from contextlib import contextmanager
 from logging import Logger
 from pathlib import Path
-from typing import Any, Dict, Generator, List, NamedTuple, Optional
+from typing import Any, Dict, Generator, List, NamedTuple, Optional, Pattern
+
+from pyre_paths import pyre_client
 
 
 LOG: Logger = logging.getLogger(__name__)
 CONFIGURATION = ".pyre_configuration"
 LOCAL_CONFIGURATION = ".pyre_configuration.local"
+
+BINARY_OVERRIDE = "PYRE_BINARY"
+BINARY_VERSION_PATTERN: Pattern[str] = re.compile(r"Binary version: (\w*).*")
 
 
 class FilesystemError(IOError):
@@ -52,15 +59,22 @@ def _watch_directory(source_directory: str) -> Generator[None, None, None]:
 
 class TestCommand(unittest.TestCase, ABC):
     directory: Path
+    typeshed: Path
     command_history: List[CommandData]
 
     def __init__(self, methodName: str) -> None:
         super(TestCommand, self).__init__(methodName)
-        self.directory = Path(".")  # workaround for initialization type errors
+        # workaround for initialization type errors
+        self.directory = Path(".")
+        self.typeshed = Path(".")
         self.command_history = []
+        if not os.environ.get("PYRE_CLIENT"):
+            os.environ["PYRE_CLIENT"] = pyre_client
 
     def setUp(self) -> None:
         self.directory = Path(tempfile.mkdtemp())
+        self.typeshed = Path(self.directory, "fake_typeshed")
+        Path(self.typeshed, "stdlib").mkdir(parents=True)
         self.initial_filesystem()
 
     def tearDown(self) -> None:
@@ -80,11 +94,28 @@ class TestCommand(unittest.TestCase, ABC):
         root: Path = Path(root) if root else self.directory
         configuration_path = root / CONFIGURATION
         if not contents:
-            # TODO(T57341910): grab version from pyre --version, hard code other fields
-            contents = {
-                "version": "135a0b724041385fe600e6c624e61a16691fcf90",
-                "use_buck_builder": True,
-            }
+            # Use binary override if it is built.
+            binary_override = os.environ.get(BINARY_OVERRIDE)
+            if binary_override:
+                contents = {"version": "$BINARY_OVERRIDE"}
+            else:
+                # Default to published binary version.
+                output = subprocess.run(
+                    ["pyre", "--version"], capture_output=True
+                ).stdout.decode()
+                output_match = re.match(BINARY_VERSION_PATTERN, output)
+                version = output_match.group(1) if output_match else None
+                if version and version != "No":
+                    contents = {"version": version, "use_buck_builder": True}
+                else:
+                    binary_location = shutil.which("pyre.bin")
+                    if binary_location is None:
+                        LOG.error(
+                            "No project configuration content provided and "
+                            "could not find a binary to run."
+                        )
+                        raise FilesystemError
+                    contents = {"binary": binary_location}
         with configuration_path.open("w") as configuration_file:
             json.dump(contents, configuration_file)
 
@@ -134,6 +165,8 @@ class TestCommand(unittest.TestCase, ABC):
                 "pyre",
                 "--noninteractive",
                 "--output=json",
+                "--typeshed",
+                str(self.typeshed),
                 command,
                 *arguments,
             ]
@@ -278,7 +311,6 @@ class InferTest(TestCommand):
 class InitializeTest(TestCommand):
     def initial_filesystem(self) -> None:
         self.create_file("fake_pyre.bin")
-        self.create_directory("fake_typeshed")
 
     def test_initialize_project_configuration(self) -> None:
         with _watch_directory(self.directory):
@@ -302,7 +334,7 @@ class InitializeTest(TestCommand):
                 "init",
                 "--local",
                 working_directory="local_project",
-                prompts=["//example:target", "Y", "Y", "Y"],
+                prompts=["Y", "//example:target", "Y", "Y", "Y"],
             )
             expected_contents = {
                 "differential": True,

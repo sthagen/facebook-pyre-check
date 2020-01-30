@@ -31,9 +31,9 @@ class TestArgumentValidationMethods(unittest.TestCase):
 class TestCreatingWheel(unittest.TestCase):
     def test_create_init_files(self) -> None:
         with tempfile.TemporaryDirectory() as build_root:
-            add_init_files(build_root)
-            # Assert the expected __init__ files are present
             path = Path(build_root)
+            add_init_files(path)
+            # Assert the expected __init__ files are present
             self.assertEqual(
                 [str(path) for path in path.glob("**/*.py")],
                 [
@@ -45,18 +45,20 @@ class TestCreatingWheel(unittest.TestCase):
 
     def test_sync_files(self) -> None:
         with tempfile.TemporaryDirectory() as build_root:
-            add_init_files(build_root)
-            sync_python_files(build_root)
-            command_directory = Path(build_root) / "pyre_check/client/commands"
+            build_path = Path(build_root)
+            add_init_files(build_path)
+            sync_python_files(build_path)
+            command_directory = build_path / "pyre_check/client/commands"
             self.assertTrue(command_directory.is_dir())
 
-    @patch("subprocess.call")
+    @patch("subprocess.run")
     @patch("shutil.copy")
-    def test_rsync(self, copy: Mock, subprocess_call: Mock) -> None:
+    def test_rsync(self, copy: Mock, subprocess_run: Mock) -> None:
         with tempfile.TemporaryDirectory() as build_root:
-            add_init_files(build_root)
-            sync_pysa_stubs(build_root)
-            args, _ = subprocess_call.call_args
+            build_path = Path(build_root)
+            add_init_files(build_path)
+            sync_pysa_stubs(build_path)
+            args, _ = subprocess_run.call_args
             expected_args = [
                 "rsync",
                 "-avm",
@@ -65,12 +67,13 @@ class TestCreatingWheel(unittest.TestCase):
                 build_root,
             ]
             self.assertTrue(all(x in args[0] for x in expected_args))
-            subprocess_call.assert_called()
+            subprocess_run.assert_called()
             copy.assert_called()
 
     def test_patch_version(self) -> None:
         with tempfile.TemporaryDirectory() as build_root:
-            add_init_files(build_root)
-            patch_version("0.0.21", build_root)
-            path = Path(build_root) / MODULE_NAME / "client/version.py"
+            build_path = Path(build_root)
+            add_init_files(build_path)
+            patch_version("0.0.21", build_path)
+            path = build_path / MODULE_NAME / "client/version.py"
             self.assertTrue(path.is_file())
