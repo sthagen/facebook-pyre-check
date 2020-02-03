@@ -13,6 +13,8 @@ let commands =
     "query", Query.command;
     "rage", Rage.command;
     "incremental", Incremental.command;
+    "infer", Infer.infer_command;
+    "lint", Lint.command;
     "persistent", Persistent.command;
     "start", Start.command;
     "stop", Stop.command;

@@ -8,8 +8,7 @@ open Analysis
 open Pyre
 open Service
 
-(* run_command prints out the errors, for a Check run *)
-let run_check
+let run_infer
     ignore_infer
     verbose
     expected_version
@@ -17,7 +16,7 @@ let run_check
     debug
     strict
     show_error_traces
-    infer
+    _
     sequential
     filter_directories
     ignore_all_errors
@@ -56,7 +55,7 @@ let run_check
       ?logger
       ?profiling_output
       ?memory_profiling_output
-      ~infer
+      ~infer:true
       ~project_root:(Path.create_absolute project_root)
       ~parallel:(not sequential)
       ?filter_directories
@@ -73,31 +72,8 @@ let run_check
   (fun () ->
     let scheduler = Scheduler.create ~configuration () in
     let errors, ast_environment =
-      if infer then
-        let { Infer.errors; ast_environment; _ } = Infer.infer ~configuration ~scheduler () in
-        errors, ast_environment
-      else
-        let timer = Timer.start () in
-        let { Check.errors; ast_environment; _ } =
-          Check.check
-            ~scheduler
-            ~configuration
-            ~build_legacy_dependency_graph:false
-            ~call_graph_builder:(module Analysis.Callgraph.DefaultBuilder)
-        in
-        let { Caml.Gc.minor_collections; major_collections; compactions; _ } = Caml.Gc.stat () in
-        Statistics.performance
-          ~name:"check"
-          ~timer
-          ~integers:
-            [
-              "gc_minor_collections", minor_collections;
-              "gc_major_collections", major_collections;
-              "gc_compactions", compactions;
-            ]
-          ~normals:["request kind", "FullCheck"]
-          ();
-        errors, ast_environment
+      let { Infer.errors; ast_environment; _ } = Infer.infer ~configuration ~scheduler () in
+      errors, ast_environment
     in
     if debug then
       Memory.report_statistics ();
@@ -108,7 +84,7 @@ let run_check
       List.map
         errors
         ~f:
-          (AnalysisError.instantiate
+          (InferenceError.instantiate
              ~lookup:(AstEnvironment.ReadOnly.get_real_path_relative ~configuration ast_environment))
     in
     Yojson.Safe.to_string
@@ -117,18 +93,18 @@ let run_check
           ( "errors",
             `List
               (List.map
-                 ~f:(fun error -> AnalysisError.Instantiated.to_json ~show_error_traces error)
+                 ~f:(fun error -> InferenceError.Instantiated.to_json ~show_error_traces error)
                  errors) );
         ])
     |> Log.print "%s")
   |> Scheduler.run_process ~configuration
 
 
-let check_command =
+let infer_command =
   Command.basic_spec
-    ~summary:"Runs a full check without a server (default)"
+    ~summary:"Runs type inference."
     Command.Spec.(
       empty
       +> flag "-ignore-infer" (optional string) ~doc:"Will not infer the listed files."
       ++ Specification.base_command_line_arguments)
-    run_check
+    run_infer
