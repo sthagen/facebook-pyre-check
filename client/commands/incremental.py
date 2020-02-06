@@ -78,7 +78,7 @@ class Incremental(Reporting):
             "--incremental-style",
             type=IncrementalStyle,
             choices=list(IncrementalStyle),
-            default=None,
+            default=IncrementalStyle.FINE_GRAINED,
             help="How to approach doing incremental checks.",
         )
         incremental.add_argument(
@@ -111,24 +111,8 @@ class Incremental(Reporting):
         if self._state() != State.DEAD:
             LOG.info("Waiting for server...")
 
-        if self._configuration._use_json_sockets:
-            request = json_rpc.Request(
-                method="displayTypeErrors", parameters={"files": []}
-            )
-            self._send_and_handle_socket_request(request, self._version_hash)
-        else:
-            result = self._call_client(command=self.NAME)
-            try:
-                result.check()
-                errors = self._get_errors(result)
-                self._print(errors)
-
-                if errors:
-                    self._exit_code = ExitCode.FOUND_ERRORS
-            except ClientException as exception:
-                LOG.error("Error while waiting for server: %s", str(exception))
-                LOG.error("Run `pyre restart` in order to restart the server.")
-                self._exit_code = ExitCode.FAILURE
+        request = json_rpc.Request(method="displayTypeErrors", parameters={"files": []})
+        self._send_and_handle_socket_request(request, self._version_hash)
 
     def _socket_result_handler(self, result: Result) -> None:
         errors = self._get_errors(result)
@@ -156,9 +140,6 @@ class Incremental(Reporting):
 
         if self._nonblocking:
             flags.append("-nonblocking")
-
-        if self._incremental_style == IncrementalStyle.TRANSITIVE:
-            flags.append("-transitive")
 
         return flags
 

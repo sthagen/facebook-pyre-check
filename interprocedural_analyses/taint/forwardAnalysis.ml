@@ -108,6 +108,7 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
         match index with
         | AbstractTreeDomain.Label.Field name when is_numeric name -> "<numeric>"
         | Field name -> name
+        | DictionaryKeys -> "<keys>"
         | Any -> "<unknown>"
       in
       add_first Features.Breadcrumb.FirstIndex feature
@@ -378,9 +379,10 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
         | String literal -> AbstractTreeDomain.Label.Field literal.value
         | _ -> AbstractTreeDomain.Label.Any
       in
-      (* Since we don't keep track of which keys are tainted, don't require an index for the key
-         taint, and join it as is. *)
-      let key_taint, state = analyze_expression ~resolution ~state ~expression:key in
+      let key_taint, state =
+        analyze_expression ~resolution ~state ~expression:key
+        |>> ForwardState.Tree.prepend [AbstractTreeDomain.Label.DictionaryKeys]
+      in
       analyze_expression ~resolution ~state ~expression:value
       |>> ForwardState.Tree.prepend [field_name]
       |>> ForwardState.Tree.join taint
@@ -408,8 +410,23 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
           ({ Comprehension.Generator.target; iterator; _ } as generator)
         =
         let taint, state =
+          let iterator_is_dictionary =
+            match Resolution.resolve resolution iterator with
+            | Type.Parametric { name; _ } ->
+                GlobalResolution.is_transitive_successor
+                  (Resolution.global_resolution resolution)
+                  ~predecessor:name
+                  ~successor:Type.mapping_primitive
+            | _ -> false
+          in
+          let label =
+            if iterator_is_dictionary then
+              AbstractTreeDomain.Label.DictionaryKeys
+            else
+              AbstractTreeDomain.Label.Any
+          in
           analyze_expression ~resolution ~state ~expression:iterator
-          |>> ForwardState.Tree.read [AbstractTreeDomain.Label.Any]
+          |>> ForwardState.Tree.read [label]
         in
         (* Since generators create variables that Pyre sees as scoped within the generator, handle
            them by adding the generator's bindings to the resolution. *)
@@ -442,7 +459,10 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
         analyze_expression ~resolution ~state ~expression:value
         |>> ForwardState.Tree.prepend [AbstractTreeDomain.Label.Any]
       in
-      let key_taint, state = analyze_expression ~resolution ~state ~expression:key in
+      let key_taint, state =
+        analyze_expression ~resolution ~state ~expression:key
+        |>> ForwardState.Tree.prepend [AbstractTreeDomain.Label.DictionaryKeys]
+      in
       ForwardState.Tree.join key_taint value_taint, state
 
 
@@ -729,7 +749,11 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
           ForwardState.read ~root:(AccessPath.Root.Variable identifier) ~path:[] state.taint, state
       | Name (Name.Attribute { base; attribute; _ }) -> (
           match
-            Interprocedural.CallResolution.resolve_property_targets ~resolution ~base ~attribute
+            Interprocedural.CallResolution.resolve_property_targets
+              ~resolution
+              ~base
+              ~attribute
+              ~setter:false
           with
           | None -> analyze_attribute_access ~resolution ~state ~location base attribute
           | Some targets ->
@@ -835,9 +859,33 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
 
     let analyze_statement ~resolution { Node.value = statement; location } state =
       match statement with
-      | Statement.Assign { target; value; _ } ->
-          let taint, state = analyze_expression ~resolution ~state ~expression:value in
-          analyze_assignment ~resolution target taint taint state
+      | Statement.Assign { target = { Node.location; value = target_value } as target; value; _ }
+        -> (
+          match target_value with
+          | Name (Name.Attribute { base; attribute; _ }) -> (
+              let property_targets =
+                Interprocedural.CallResolution.resolve_property_targets
+                  ~resolution
+                  ~base
+                  ~attribute
+                  ~setter:true
+              in
+              match property_targets with
+              | Some targets ->
+                  apply_call_targets
+                    ~resolution
+                    ~callee:target
+                    (Location.with_module ~qualifier:FunctionContext.qualifier location)
+                    [{ Call.Argument.value; name = None }]
+                    state
+                    targets
+                  |> snd
+              | None ->
+                  let taint, state = analyze_expression ~resolution ~state ~expression:value in
+                  analyze_assignment ~resolution target taint taint state )
+          | _ ->
+              let taint, state = analyze_expression ~resolution ~state ~expression:value in
+              analyze_assignment ~resolution target taint taint state )
       | Assert _
       | Break
       | Class _

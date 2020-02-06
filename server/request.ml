@@ -65,7 +65,8 @@ module AnnotationEdit = struct
           Some (Format.asprintf "%a" Reference.pp_sanitized name)
       | AnalysisError.IncompatibleReturnType { mismatch = { expected; _ }; _ } ->
           Some (Format.asprintf " -> %s" (Type.show expected))
-      | AnalysisError.IncompatibleVariableType { name; mismatch = { expected; _ }; _ } ->
+      | AnalysisError.IncompatibleVariableType
+          { incompatible_type = { name; mismatch = { expected; _ }; _ }; _ } ->
           Some (Format.asprintf "%a: %s" Reference.pp_sanitized name (Type.show expected))
       | _ -> None
     in
@@ -127,7 +128,8 @@ module AnnotationEdit = struct
                 Some (": " ^ format_type annotation)
             | AnalysisError.IncompatibleReturnType { mismatch = { actual = annotation; _ }; _ } ->
                 Some (Format.asprintf "-> %s:" @@ format_type annotation)
-            | AnalysisError.IncompatibleVariableType { mismatch = { actual = annotation; _ }; _ } ->
+            | AnalysisError.IncompatibleVariableType
+                { incompatible_type = { mismatch = { actual = annotation; _ }; _ }; _ } ->
                 Some (Format.asprintf ": %s " @@ format_type annotation)
             | _ -> None
           in
@@ -243,7 +245,9 @@ let process_type_query_request
         let to_attribute attribute =
           let name = Annotated.Class.Attribute.name attribute in
           let annotation =
-            Annotated.Class.Attribute.annotation attribute |> Annotation.annotation
+            GlobalResolution.instantiate_attribute ~resolution:global_resolution attribute
+            |> Annotated.Class.Attribute.annotation
+            |> Annotation.annotation
           in
           let property = Annotated.Class.Attribute.property attribute in
           let kind =
@@ -266,9 +270,11 @@ let process_type_query_request
                (TypeQuery.Error
                   (Format.sprintf "No class definition found for %s" (Reference.show annotation)))
     | TypeQuery.Callees caller ->
+        (* We don't yet support a syntax for fetching property setters. *)
         TypeQuery.Response
           (TypeQuery.Callees
-             (Callgraph.get ~caller |> List.map ~f:(fun { Callgraph.callee; _ } -> callee)))
+             ( Callgraph.get ~caller:(Callgraph.FunctionCaller caller)
+             |> List.map ~f:(fun { Callgraph.callee; _ } -> callee) ))
     | TypeQuery.CalleesWithLocation caller ->
         let instantiate =
           Location.WithModule.instantiate
@@ -278,7 +284,8 @@ let process_type_query_request
                  (AstEnvironment.read_only state.ast_environment))
         in
         let callees =
-          Callgraph.get ~caller
+          (* We don't yet support a syntax for fetching property setters. *)
+          Callgraph.get ~caller:(Callgraph.FunctionCaller caller)
           |> List.map ~f:(fun { Callgraph.callee; locations } ->
                  { TypeQuery.callee; locations = List.map locations ~f:instantiate })
         in
@@ -350,9 +357,10 @@ let process_type_query_request
                   (Callgraph.show_callee callee)
                   (List.map locations ~f:Location.WithModule.show |> String.concat ~sep:", ")
               in
+              let show_caller caller = Callgraph.sexp_of_caller caller |> Sexp.to_string_hum in
               Some
                 ( Callgraph.CalleeValue.description,
-                  Reference.show key,
+                  show_caller key,
                   value >>| List.map ~f:show >>| String.concat ~sep:"," )
           | _ ->
               List.find_map
@@ -499,7 +507,7 @@ let process_type_query_request
                      ~configuration
                      (AstEnvironment.read_only state.ast_environment))
             in
-            Callgraph.get ~caller
+            Callgraph.get ~caller:(Callgraph.FunctionCaller caller)
             |> List.map ~f:(fun { Callgraph.callee; locations } ->
                    { TypeQuery.callee; locations = List.map locations ~f:instantiate })
             |> fun callees -> { Protocol.TypeQuery.caller; callees }
@@ -523,23 +531,6 @@ let process_type_query_request
           ClassHierarchy.to_json (GlobalResolution.class_hierarchy resolution) ~indices
         in
         TypeQuery.Response (TypeQuery.ClassHierarchy class_hierarchy_json)
-    | TypeQuery.DumpDependencies path ->
-        let () =
-          match ModuleTracker.lookup_path ~configuration module_tracker path with
-          | None -> ()
-          | Some { SourcePath.qualifier; _ } ->
-              let ast_environment =
-                TypeEnvironment.global_environment environment
-                |> AnnotatedGlobalEnvironment.ReadOnly.ast_environment
-              in
-              let legacy_dependency_tracker = Dependencies.create ast_environment in
-              Path.create_relative
-                ~root:(Configuration.Analysis.log_directory configuration)
-                ~relative:"dependencies.dot"
-              |> File.create ~content:(Dependencies.to_dot legacy_dependency_tracker ~qualifier)
-              |> File.write
-        in
-        TypeQuery.Response (TypeQuery.Success "Dependencies dumped.")
     | TypeQuery.DumpMemoryToSqlite path ->
         let path = Path.absolute path in
         let () =
@@ -548,10 +539,6 @@ let process_type_query_request
         in
         let timer = Timer.start () in
         (* Normalize the environment for comparison. *)
-        let qualifiers = ModuleTracker.tracked_explicit_modules module_tracker in
-        let ast_environment = TypeEnvironment.ast_environment environment in
-        let legacy_dependency_tracker = Dependencies.create ast_environment in
-        Dependencies.normalize legacy_dependency_tracker qualifiers;
         Memory.SharedMemory.save_table_sqlite path |> ignore;
         let { Memory.SharedMemory.used_slots; _ } = Memory.SharedMemory.hash_stats () in
         Log.info
@@ -590,8 +577,18 @@ let process_type_query_request
         GlobalResolution.meet global_resolution left right
         |> fun annotation -> TypeQuery.Response (TypeQuery.Type annotation)
     | TypeQuery.Methods annotation ->
+        let parsed_annotation =
+          parse_and_validate ~fill_missing_type_parameters_with_any:true annotation
+        in
         let to_method attribute =
-          match Annotated.Attribute.annotation attribute |> Annotation.annotation with
+          match
+            GlobalResolution.instantiate_attribute
+              ~resolution:global_resolution
+              ~instantiated:parsed_annotation
+              attribute
+            |> Annotated.Attribute.annotation
+            |> Annotation.annotation
+          with
           | Callable
               {
                 implementation = { annotation; parameters = Defined parameters; _ };
@@ -607,16 +604,11 @@ let process_type_query_request
               Some { TypeQuery.name = Reference.last name; parameters; return_annotation }
           | _ -> None
         in
-        let parsed_annotation =
-          parse_and_validate ~fill_missing_type_parameters_with_any:true annotation
-        in
         parsed_annotation
         |> Type.split
         |> fst
         |> Type.primitive_name
-        >>= GlobalResolution.attributes
-              ~instantiated:parsed_annotation
-              ~resolution:global_resolution
+        >>= GlobalResolution.attributes ~resolution:global_resolution
         >>| List.filter_map ~f:to_method
         >>| (fun methods -> TypeQuery.Response (TypeQuery.FoundMethods methods))
         |> Option.value
@@ -770,12 +762,12 @@ let process_type_query_request
           TypeQuery.Error (Format.asprintf "Not able to get lookups in: %s" paths)
     | TypeQuery.ValidateTaintModels path -> (
         try
-          let directories =
+          let paths =
             match path with
             | Some path -> [path]
-            | None -> configuration.Configuration.Analysis.taint_models_directories
+            | None -> configuration.Configuration.Analysis.taint_model_paths
           in
-          let configuration = Taint.TaintConfiguration.create ~rule_filter:None ~directories in
+          let configuration = Taint.TaintConfiguration.create ~rule_filter:None ~paths in
           let create_models sources =
             let create_model (path, source) =
               Taint.Model.parse
@@ -789,12 +781,12 @@ let process_type_query_request
             in
             List.iter sources ~f:create_model
           in
-          Taint.Model.get_model_sources ~directories |> create_models;
+          Taint.Model.get_model_sources ~paths |> create_models;
           TypeQuery.Response
             (TypeQuery.Success
                (Format.asprintf
                   "Models in `%s` are valid."
-                  (directories |> List.map ~f:Path.show |> String.concat ~sep:", ")))
+                  (paths |> List.map ~f:Path.show |> String.concat ~sep:", ")))
         with
         | error -> TypeQuery.Error (Exn.to_string error) )
   in

@@ -16,10 +16,9 @@ type visibility =
   | ReadWrite
 [@@deriving eq, show, compare, sexp]
 
-type attribute = {
+type 'a t = {
+  payload: 'a;
   abstract: bool;
-  annotation: Type.t;
-  original_annotation: Type.t;
   async: bool;
   class_attribute: bool;
   defined: bool;
@@ -29,11 +28,17 @@ type attribute = {
   visibility: visibility;
   property: bool;
   static: bool;
-  value: Expression.t;
+  has_ellipsis_value: bool;
 }
 [@@deriving eq, show, compare, sexp]
 
-type t = attribute Node.t [@@deriving eq, show, sexp, compare]
+type instantiated_annotation = {
+  annotation: Type.t;
+  original_annotation: Type.t;
+}
+[@@deriving eq, show, compare, sexp]
+
+type instantiated = instantiated_annotation t [@@deriving eq, show, compare, sexp]
 
 let create
     ~abstract
@@ -48,35 +53,55 @@ let create
     ~visibility
     ~property
     ~static
-    ~value
-    ~location
+    ~has_ellipsis_value
   =
   {
-    Node.location;
-    value =
-      {
-        abstract;
-        annotation;
-        original_annotation;
-        async;
-        class_attribute;
-        defined;
-        initialized;
-        name;
-        parent;
-        visibility;
-        property;
-        static;
-        value;
-      };
+    payload = { annotation; original_annotation };
+    abstract;
+    async;
+    class_attribute;
+    defined;
+    initialized;
+    name;
+    parent;
+    visibility;
+    property;
+    static;
+    has_ellipsis_value;
   }
 
 
-let name { Node.value = { name; _ }; _ } = name
-
-let annotation
-    { Node.value = { annotation; original_annotation; async; defined; visibility; _ }; _ }
+let create_uninstantiated
+    ~abstract
+    ~uninstantiated_annotation
+    ~async
+    ~class_attribute
+    ~defined
+    ~initialized
+    ~name
+    ~parent
+    ~visibility
+    ~property
+    ~static
+    ~has_ellipsis_value
   =
+  {
+    payload = uninstantiated_annotation;
+    abstract;
+    async;
+    class_attribute;
+    defined;
+    initialized;
+    name;
+    parent;
+    visibility;
+    property;
+    static;
+    has_ellipsis_value;
+  }
+
+
+let annotation { payload = { annotation; original_annotation }; async; defined; visibility; _ } =
   let annotation, original =
     if async then
       Type.awaitable annotation, Type.awaitable original_annotation
@@ -99,46 +124,54 @@ let annotation
   { Annotation.annotation; mutability }
 
 
-let parent { Node.value = { parent; _ }; _ } = parent
+let uninstantiated_annotation { payload; _ } = payload
 
-let value { Node.value = { value; _ }; _ } = value
+let name { name; _ } = name
 
-let initialized { Node.value = { initialized; _ }; _ } = initialized
+let parent { parent; _ } = parent
 
-let location { Node.location; _ } = location
+let initialized { initialized; _ } = initialized
 
-let defined { Node.value = { defined; _ }; _ } = defined
+let defined { defined; _ } = defined
 
-let class_attribute { Node.value = { class_attribute; _ }; _ } = class_attribute
+let class_attribute { class_attribute; _ } = class_attribute
 
-let abstract { Node.value = { abstract; _ }; _ } = abstract
+let abstract { abstract; _ } = abstract
 
-let async { Node.value = { async; _ }; _ } = async
+let async { async; _ } = async
 
-let static { Node.value = { static; _ }; _ } = static
+let static { static; _ } = static
 
-let property { Node.value = { property; _ }; _ } = property
+let property { property; _ } = property
 
-let visibility { Node.value = { visibility; _ }; _ } = visibility
+let visibility { visibility; _ } = visibility
 
-let instantiate
-    ({ Node.value = { annotation; original_annotation; _ } as attribute; _ } as attribute_node)
-    ~constraints
+let has_ellipsis_value { has_ellipsis_value; _ } = has_ellipsis_value
+
+let instantiate attribute ~annotation ~original_annotation =
+  { attribute with payload = { annotation; original_annotation } }
+
+
+let ignore_callable_define_locations ({ payload = { annotation; original_annotation }; _ } as value)
   =
-  let instantiate = Type.instantiate ~constraints in
-  {
-    attribute_node with
-    Node.value =
-      {
-        attribute with
-        annotation = instantiate annotation;
-        original_annotation = instantiate original_annotation;
-      };
-  }
+  let remove =
+    let constraints = function
+      | Type.Callable ({ implementation; overloads; _ } as callable) ->
+          let callable =
+            let remove callable = { callable with Type.Callable.define_location = None } in
+            {
+              callable with
+              implementation = remove implementation;
+              overloads = List.map overloads ~f:remove;
+            }
+          in
+          Some (Type.Callable callable)
+      | _ -> None
+    in
+    Type.instantiate ~constraints
+  in
 
-
-let with_value { Node.location; value = attribute } ~value =
-  { Node.location; value = { attribute with value } }
-
-
-let with_location attribute ~location = { attribute with Node.location }
+  let payload =
+    { annotation = remove annotation; original_annotation = remove original_annotation }
+  in
+  { value with payload }

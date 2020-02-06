@@ -44,16 +44,12 @@ let recheck
     ~section:`Server
     "Incremental Parser Update %s"
     (List.to_string ~f:Reference.show reparsed_sources);
-  let legacy_dependency_tracker = Dependencies.create (AstEnvironment.read_only ast_environment) in
   (* Repopulate the environment. *)
   let invalidated_environment_qualifiers =
     match incremental_style with
     | FineGrained
     | Shallow ->
         Reference.Set.of_list reparsed_sources
-    | Transitive ->
-        Dependencies.transitive_of_list legacy_dependency_tracker ~modules:reparsed_sources
-        |> Reference.Set.union (Reference.Set.of_list reparsed_sources)
   in
   Log.info
     "Repopulating the environment for %d modules."
@@ -149,17 +145,6 @@ let recheck
         recheck_modules, errors, List.length recheck_functions
     | _ ->
         let invalidated_environment_qualifiers = Set.to_list invalidated_environment_qualifiers in
-        let () =
-          Dependencies.purge legacy_dependency_tracker invalidated_environment_qualifiers;
-          let re_environment_build_sources =
-            List.filter_map
-              invalidated_environment_qualifiers
-              ~f:(AstEnvironment.ReadOnly.get_source ast_environment)
-          in
-          Dependencies.register_all_dependencies
-            legacy_dependency_tracker
-            re_environment_build_sources
-        in
         Log.log
           ~section:`Server
           "(Old) Incremental Environment Builder Update %s"

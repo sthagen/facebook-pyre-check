@@ -15,7 +15,11 @@ type visibility =
   | ReadWrite
 [@@deriving eq, show, compare, sexp]
 
-type t [@@deriving eq, show, sexp, compare]
+type 'a t [@@deriving eq, show, compare, sexp]
+
+type instantiated_annotation
+
+type instantiated = instantiated_annotation t [@@deriving eq, show, compare, sexp]
 
 val create
   :  abstract:bool ->
@@ -30,38 +34,51 @@ val create
   visibility:visibility ->
   property:bool ->
   static:bool ->
-  value:Expression.t ->
-  location:Location.t ->
-  t
+  has_ellipsis_value:bool ->
+  instantiated
 
-val name : t -> Identifier.t
+val create_uninstantiated
+  :  abstract:bool ->
+  uninstantiated_annotation:'a ->
+  async:bool ->
+  class_attribute:bool ->
+  defined:bool ->
+  initialized:bool ->
+  name:Identifier.t ->
+  parent:Type.Primitive.t ->
+  visibility:visibility ->
+  property:bool ->
+  static:bool ->
+  has_ellipsis_value:bool ->
+  'a t
 
-val abstract : t -> bool
+val annotation : instantiated -> Annotation.t
 
-val async : t -> bool
+val uninstantiated_annotation : 'a t -> 'a
 
-val annotation : t -> Annotation.t
+val name : 'a t -> Identifier.t
 
-val parent : t -> Type.Primitive.t
+val abstract : 'a t -> bool
 
-val value : t -> Expression.t
+val async : 'a t -> bool
 
-val initialized : t -> bool
+val parent : 'a t -> Type.Primitive.t
 
-val location : t -> Location.t
+val initialized : 'a t -> bool
 
-val defined : t -> bool
+val defined : 'a t -> bool
 
-val class_attribute : t -> bool
+val class_attribute : 'a t -> bool
 
-val static : t -> bool
+val static : 'a t -> bool
 
-val property : t -> bool
+val property : 'a t -> bool
 
-val visibility : t -> visibility
+val visibility : 'a t -> visibility
 
-val instantiate : t -> constraints:(Type.t -> Type.t option) -> t
+val has_ellipsis_value : 'a t -> bool
 
-val with_value : t -> value:Expression.t -> t
+val instantiate : 'a t -> annotation:Type.t -> original_annotation:Type.t -> instantiated
 
-val with_location : t -> location:Location.t -> t
+(* For testing *)
+val ignore_callable_define_locations : instantiated -> instantiated

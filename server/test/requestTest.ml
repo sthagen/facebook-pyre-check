@@ -573,7 +573,7 @@ let test_process_type_check_request context =
 
   (* Indirect dependency. *)
   assert_response
-    ~incremental_style:Transitive
+    ~incremental_style:FineGrained
     ~sources:
       [
         "library.py", "def function() -> int: ...";
@@ -602,7 +602,7 @@ let test_process_type_check_request context =
     ~expected_errors:[]
     ();
   assert_response
-    ~incremental_style:Transitive
+    ~incremental_style:FineGrained
     ~sources:["a.py", "var = 42"; "b.py", "from a import *"; "c.py", "from b import *"]
     ~check:["a.py", "var = 1337"]
     ~expected_errors:[]
@@ -890,7 +890,10 @@ let test_create_annotation_edit context =
            Error.location;
            kind =
              Error.IncompatibleVariableType
-               { name = !&"x"; mismatch = mock_mismatch; declare_location = instantiated_location };
+               {
+                 incompatible_type = { name = !&"x"; mismatch = mock_mismatch };
+                 declare_location = instantiated_location;
+               };
            signature = +mock_signature;
          })
 

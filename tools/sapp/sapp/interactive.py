@@ -201,8 +201,10 @@ details              show additional information about the current trace frame
 
         self.sources: Set[str] = set()
         self.sinks: Set[str] = set()
+        self.features: Set[str] = set()
         self.sources_dict: Dict[int, str] = {}
         self.sinks_dict: Dict[int, str] = {}
+        self.features_dict: Dict[int, str] = {}
 
         # Tuples representing the trace of the current issue
         self.trace_tuples: List[TraceTuple] = []
@@ -223,6 +225,9 @@ details              show additional information about the current trace frame
 
             self.sources_dict = self._all_leaves_by_kind(session, SharedTextKind.SOURCE)
             self.sinks_dict = self._all_leaves_by_kind(session, SharedTextKind.SINK)
+            self.features_dict = self._all_leaves_by_kind(
+                session, SharedTextKind.FEATURE
+            )
 
         print("=" * len(self.welcome_message))
         print(self.welcome_message)
@@ -409,6 +414,10 @@ details              show additional information about the current trace frame
                 session, issue_instance_id, SharedTextKind.SINK
             )
 
+            self.features = self._get_leaves_issue_instance(
+                session, issue_instance_id, SharedTextKind.FEATURE
+            )
+
         self.current_issue_instance_id = int(selected_issue.id)
         self.current_frame_id = -1
         self.current_trace_frame_index = 1  # first one after the source
@@ -445,6 +454,10 @@ details              show additional information about the current trace frame
         codes: Optional[Union[int, List[int]]] = None,
         callables: Optional[Union[str, List[str]]] = None,
         filenames: Optional[Union[str, List[str]]] = None,
+        exact_trace_length_to_sources: Optional[Union[int, List[int]]] = None,
+        exact_trace_length_to_sinks: Optional[Union[int, List[int]]] = None,
+        max_trace_length_to_sources: Optional[int] = None,
+        max_trace_length_to_sinks: Optional[int] = None,
     ):
         """Lists issues for the selected run.
 
@@ -453,6 +466,14 @@ details              show additional information about the current trace frame
             codes: int or list[int]        issue codes to filter on
             callables: str or list[str]    callables to filter on (supports wildcards)
             filenames: str or list[str]    filenames to filter on (supports wildcards)
+            exact_trace_length_to_sources: int or list[int]
+                exact values for min trace length to sources to filter on
+            exact_trace_length_to_sinks: int or list[int]
+                exact values for min trace length to sinks to filter on
+            max_trace_length_to_sources: int
+                maximum value for min trace length to sources to filter on
+            max_trace_length_to_sinks: int
+                maximum value for min trace length to sinks to filter on
 
         String filters support LIKE wildcards (%, _) from SQL:
             % matches anything (like .* in regex)
@@ -500,6 +521,58 @@ details              show additional information about the current trace frame
                     filenames, query, FilenameText.contents, "filenames"
                 )
 
+            if (exact_trace_length_to_sources is not None) and (
+                max_trace_length_to_sources is not None
+            ):
+                raise UserError(
+                    (
+                        f"'exact_trace_length_to_sources' and "
+                        f"'max_trace_length_to_sources' can't be set together"
+                    )
+                )
+
+            if (exact_trace_length_to_sinks is not None) and (
+                max_trace_length_to_sinks is not None
+            ):
+                raise UserError(
+                    (
+                        f"'exact_trace_length_to_sinks' and "
+                        f"'max_trace_length_to_sinks' can't be set together"
+                    )
+                )
+
+            if exact_trace_length_to_sources is not None:
+                query = self._add_list_or_int_filter_to_query(
+                    exact_trace_length_to_sources,
+                    query,
+                    IssueInstance.min_trace_length_to_sources,
+                    "exact_trace_length_to_sources",
+                )
+
+            if exact_trace_length_to_sinks is not None:
+                query = self._add_list_or_int_filter_to_query(
+                    exact_trace_length_to_sinks,
+                    query,
+                    IssueInstance.min_trace_length_to_sinks,
+                    "exact_trace_length_to_sinks",
+                )
+
+            if max_trace_length_to_sources is not None:
+                query = self._add_max_int_filter_to_query(
+                    max_trace_length_to_sources,
+                    query,
+                    IssueInstance.min_trace_length_to_sources,
+                    "max_trace_length_to_sources",
+                )
+
+            if max_trace_length_to_sinks is not None:
+                query = self._add_max_int_filter_to_query(
+                    max_trace_length_to_sinks,
+                    query,
+                    IssueInstance.min_trace_length_to_sinks,
+                    "max_trace_length_to_sinks",
+                )
+
             issues = query.join(Issue, IssueInstance.issue_id == Issue.id).join(
                 MessageText, MessageText.id == IssueInstance.message_id
             )
@@ -516,10 +589,17 @@ details              show additional information about the current trace frame
                 )
                 for issue in issues
             ]
-
+            features_list = [
+                self._get_leaves_issue_instance(
+                    session, int(issue.id), SharedTextKind.FEATURE
+                )
+                for issue in issues
+            ]
             issue_strings = [
-                self._create_issue_output_string(issue, sources, sinks)
-                for issue, sources, sinks in zip(issues, sources_list, sinks_list)
+                self._create_issue_output_string(issue, sources, sinks, features)
+                for issue, sources, sinks, features in zip(
+                    issues, sources_list, sinks_list, features_list
+                )
             ]
         issue_output = f"\n{'-' * 80}\n".join(issue_strings)
         pager(issue_output)
@@ -1079,6 +1159,17 @@ details              show additional information about the current trace frame
             f"'{argument_name}' should be {element_type} or " f"list of {element_type}."
         )
 
+    def _add_max_int_filter_to_query(
+        self,
+        filter: int,
+        query: Query,
+        column: InstrumentedAttribute,
+        argument_name: str,
+    ):
+        if isinstance(filter, int):
+            return query.filter(column <= filter)
+        raise UserError(f"'{argument_name}' should be int.")
+
     def _output_file_lines(
         self, trace_frame: TraceFrameQueryResult, file_lines: List[str], context: int
     ) -> None:
@@ -1411,10 +1502,15 @@ details              show additional information about the current trace frame
         return filtered_results
 
     def _create_issue_output_string(
-        self, issue: IssueQueryResult, sources: Set[str], sinks: Set[str]
+        self,
+        issue: IssueQueryResult,
+        sources: Set[str],
+        sinks: Set[str],
+        features: Set[str],
     ) -> str:
-        sources_output = f"\n{' ' * 10}".join(sources)
-        sinks_output = f"\n{' ' * 10}".join(sinks)
+        sources_output = f"\n{' ' * 18}".join(sources)
+        sinks_output = f"\n{' ' * 18}".join(sinks)
+        features_output = f"\n{' ' * 18}".join(features)
         return "\n".join(
             [
                 f"Issue {issue.id}",
@@ -1428,6 +1524,10 @@ details              show additional information about the current trace frame
                 (
                     f"           Sinks: "
                     f"{sinks_output if sinks_output else 'No sinks'}"
+                ),
+                (
+                    f"        Features: "
+                    f"{features_output if features_output else 'No features'}"
                 ),
                 (f"        Location: " f"{issue.filename}" f":{issue.location}"),
                 (
@@ -1573,9 +1673,12 @@ details              show additional information about the current trace frame
     def _leaf_dict_lookups(
         self, message_ids: List[int], kind: SharedTextKind
     ) -> Set[str]:
-        leaf_dict = (
-            self.sources_dict if kind == SharedTextKind.SOURCE else self.sinks_dict
-        )
+        if kind == SharedTextKind.SOURCE:
+            leaf_dict = self.sources_dict
+        elif kind == SharedTextKind.SINK:
+            leaf_dict = self.sinks_dict
+        else:
+            leaf_dict = self.features_dict
         return {leaf_dict[id] for id in message_ids if id in leaf_dict}
 
     def _show_current_issue_instance(self):
@@ -1583,7 +1686,9 @@ details              show additional information about the current trace frame
             issue = self._get_current_issue(session)
 
         page.display_page(
-            self._create_issue_output_string(issue, self.sources, self.sinks)
+            self._create_issue_output_string(
+                issue, self.sources, self.sinks, self.features
+            )
         )
 
     def _show_current_trace_frame(self):

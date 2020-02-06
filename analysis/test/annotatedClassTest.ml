@@ -406,8 +406,7 @@ let test_class_attributes context =
       ~visibility:ReadWrite
       ~property:false
       ~static:false
-      ~value:(Option.value value ~default:(Node.create_with_default_location Expression.Ellipsis))
-      ~location:Location.any
+      ~has_ellipsis_value:true
   in
   (* Test `Class.attributes`. *)
   let assert_attributes definition attributes =
@@ -425,7 +424,9 @@ let test_class_attributes context =
     assert_equal
       ~cmp:attribute_list_equal
       ~printer:print_attributes
-      (GlobalResolution.attributes ~resolution definition |> fun a -> Option.value_exn a)
+      ( GlobalResolution.attributes ~resolution definition
+      |> (fun a -> Option.value_exn a)
+      |> List.map ~f:(GlobalResolution.instantiate_attribute ~resolution) )
       attributes
   in
   assert_attributes
@@ -476,18 +477,10 @@ let test_class_attributes context =
         ~instantiated
     in
     let cmp =
-      let equal left right =
-        let without_locations attribute =
-          Attribute.with_value attribute ~value:(Node.create_with_default_location Expression.True)
-          |> Attribute.with_location ~location:Location.any
-        in
-        Attribute.equal (without_locations left) (without_locations right)
-        && Expression.location_insensitive_compare (Attribute.value left) (Attribute.value right)
-           = 0
-      in
+      let equal = Attribute.equal_instantiated in
       Option.equal equal
     in
-    let printer = Option.value_map ~default:"None" ~f:Attribute.show in
+    let printer = Option.value_map ~default:"None" ~f:Attribute.show_instantiated in
     assert_equal ~cmp ~printer expected_attribute actual_attribute
   in
   let create_expected_attribute
@@ -514,8 +507,7 @@ let test_class_attributes context =
          ~property
          ~visibility
          ~static:false
-         ~value:(Node.create_with_default_location Expression.Ellipsis)
-         ~location:Location.any)
+         ~has_ellipsis_value:true)
   in
   assert_attribute
     ~parent
@@ -556,7 +548,12 @@ let test_class_attributes context =
     ~parent_instantiated_type:(Type.Primitive "Nonsense")
     ~attribute_name:"property"
     ~expected_attribute:
-      (create_expected_attribute ~initialized:false ~defined:false "property" "$unknown");
+      (create_expected_attribute
+         ~initialized:true
+         ~property:true
+         ~visibility:(ReadOnly Unrefinable)
+         "property"
+         "str");
   ()
 
 

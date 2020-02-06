@@ -29,7 +29,7 @@ type error_expectation = {
 }
 
 type expectation = {
-  kind: [ `Function | `Method | `Override | `Object ];
+  kind: [ `Function | `Method | `Override | `Object | `PropertySetter ];
   define_name: string;
   source_parameters: parameter_source_taint list;
   sink_parameters: parameter_taint list;
@@ -98,6 +98,7 @@ let create_callable kind define_name =
   match kind with
   | `Method -> Callable.create_method name
   | `Function -> Callable.create_function name
+  | `PropertySetter -> Callable.create_property_setter name
   | `Override -> Callable.create_override name
   | `Object -> Callable.create_object name
 
@@ -385,7 +386,13 @@ type test_environment = {
   environment: TypeEnvironment.ReadOnly.t;
 }
 
-let initialize ?(handle = "test.py") ?models ~context source_content =
+let initialize
+    ?(handle = "test.py")
+    ?models
+    ?(taint_configuration = TaintConfiguration.default)
+    ~context
+    source_content
+  =
   let configuration, ast_environment, environment, errors =
     let project = Test.ScratchProject.setup ~context [handle, source_content] in
     let { Test.ScratchProject.BuiltTypeEnvironment.ast_environment; type_environment; _ }, errors =
@@ -449,6 +456,7 @@ let initialize ?(handle = "test.py") ?models ~context source_content =
   let stubs = List.map ~f:fst stubs in
   let all_callables = List.rev_append stubs callables in
   (* Initialize models *)
+  let () = TaintConfiguration.register taint_configuration in
   let () =
     let keys = Fixpoint.KeySet.of_list all_callables in
     Fixpoint.remove_new keys;
@@ -461,7 +469,7 @@ let initialize ?(handle = "test.py") ?models ~context source_content =
           Model.parse
             ~resolution:(TypeCheck.resolution global_resolution ())
             ~source:(Test.trim_extra_indentation source)
-            ~configuration:TaintConfiguration.default
+            ~configuration:taint_configuration
             inferred_models
     in
     initial_models

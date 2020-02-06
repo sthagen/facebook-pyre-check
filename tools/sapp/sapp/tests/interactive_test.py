@@ -165,6 +165,8 @@ class InteractiveTest(TestCase):
             issue_id=issue1.id,
             callable="module.sub.function1",
             filename="module/sub.py",
+            min_trace_length_to_sources=1,
+            min_trace_length_to_sinks=1,
         )
         self.fakes.save_all(self.db)
 
@@ -173,6 +175,8 @@ class InteractiveTest(TestCase):
             issue_id=issue2.id,
             callable="module.sub.function2",
             filename="module/sub.py",
+            min_trace_length_to_sources=2,
+            min_trace_length_to_sinks=2,
         )
         self.fakes.save_all(self.db)
 
@@ -181,6 +185,8 @@ class InteractiveTest(TestCase):
             issue_id=issue3.id,
             callable="module.function3",
             filename="module/__init__.py",
+            min_trace_length_to_sources=3,
+            min_trace_length_to_sinks=3,
         )
         self.fakes.save_all(self.db)
 
@@ -250,6 +256,119 @@ class InteractiveTest(TestCase):
         self.assertNotIn("Issue 1", output)
         self.assertNotIn("Issue 2", output)
         self.assertIn("Issue 3", output)
+
+    def testListIssuesFilterMinTraceLength(self):
+        self._list_issues_filter_setup()
+
+        self.interactive.setup()
+
+        self.interactive.issues(exact_trace_length_to_sources="1")
+        stderr = self.stderr.getvalue().strip()
+        self.assertIn("'exact_trace_length_to_sources' should be", stderr)
+        self._clear_stdout()
+
+        self.interactive.issues(exact_trace_length_to_sinks="1")
+        stderr = self.stderr.getvalue().strip()
+        self.assertIn("'exact_trace_length_to_sinks' should be", stderr)
+        self._clear_stdout()
+
+        self.interactive.issues(max_trace_length_to_sources="1")
+        stderr = self.stderr.getvalue().strip()
+        self.assertIn("'max_trace_length_to_sources' should be", stderr)
+        self._clear_stdout()
+
+        self.interactive.issues(max_trace_length_to_sinks="1")
+        stderr = self.stderr.getvalue().strip()
+        self.assertIn("'max_trace_length_to_sinks' should be", stderr)
+        self._clear_stdout()
+
+        self.interactive.issues(
+            exact_trace_length_to_sources=1, max_trace_length_to_sources=1
+        )
+        stderr = self.stderr.getvalue().strip()
+        self.assertIn("can't be set together", stderr)
+        self._clear_stdout()
+
+        self.interactive.issues(
+            exact_trace_length_to_sinks=1, max_trace_length_to_sinks=1
+        )
+        stderr = self.stderr.getvalue().strip()
+        self.assertIn("can't be set together", stderr)
+        self._clear_stdout()
+
+        self.interactive.issues(exact_trace_length_to_sources=1)
+        output = self.stdout.getvalue().strip()
+        self.assertIn("Issue 1", output)
+        self.assertNotIn("Issue 2", output)
+        self.assertNotIn("Issue 3", output)
+        self._clear_stdout()
+
+        self.interactive.issues(exact_trace_length_to_sinks=1)
+        output = self.stdout.getvalue().strip()
+        self.assertIn("Issue 1", output)
+        self.assertNotIn("Issue 2", output)
+        self.assertNotIn("Issue 3", output)
+        self._clear_stdout()
+
+        self.interactive.issues(exact_trace_length_to_sources=[1, 2])
+        output = self.stdout.getvalue().strip()
+        self.assertIn("Issue 1", output)
+        self.assertIn("Issue 2", output)
+        self.assertNotIn("Issue 3", output)
+        self._clear_stdout()
+
+        self.interactive.issues(exact_trace_length_to_sinks=[1, 2])
+        output = self.stdout.getvalue().strip()
+        self.assertIn("Issue 1", output)
+        self.assertIn("Issue 2", output)
+        self.assertNotIn("Issue 3", output)
+        self._clear_stdout()
+
+        self.interactive.issues(max_trace_length_to_sources=1)
+        output = self.stdout.getvalue().strip()
+        self.assertIn("Issue 1", output)
+        self.assertNotIn("Issue 2", output)
+        self.assertNotIn("Issue 3", output)
+        self._clear_stdout()
+
+        self.interactive.issues(max_trace_length_to_sinks=1)
+        output = self.stdout.getvalue().strip()
+        self.assertIn("Issue 1", output)
+        self.assertNotIn("Issue 2", output)
+        self.assertNotIn("Issue 3", output)
+        self._clear_stdout()
+
+        self.interactive.issues(max_trace_length_to_sources=2)
+        output = self.stdout.getvalue().strip()
+        self.assertIn("Issue 1", output)
+        self.assertIn("Issue 2", output)
+        self.assertNotIn("Issue 3", output)
+        self._clear_stdout()
+
+        self.interactive.issues(max_trace_length_to_sinks=2)
+        output = self.stdout.getvalue().strip()
+        self.assertIn("Issue 1", output)
+        self.assertIn("Issue 2", output)
+        self.assertNotIn("Issue 3", output)
+        self._clear_stdout()
+
+        self.interactive.issues(
+            max_trace_length_to_sources=1, max_trace_length_to_sinks=1
+        )
+        output = self.stdout.getvalue().strip()
+        self.assertIn("Issue 1", output)
+        self.assertNotIn("Issue 2", output)
+        self.assertNotIn("Issue 3", output)
+        self._clear_stdout()
+
+        self.interactive.issues(
+            max_trace_length_to_sources=1, max_trace_length_to_sinks=2
+        )
+        output = self.stdout.getvalue().strip()
+        self.assertIn("Issue 1", output)
+        self.assertNotIn("Issue 2", output)
+        self.assertNotIn("Issue 3", output)
+        self._clear_stdout()
 
     def testNoRunsFound(self):
         self.interactive.setup()
@@ -454,6 +573,34 @@ class InteractiveTest(TestCase):
         self.assertEqual(len(sinks), 2)
         self.assertIn("sink1", sinks)
         self.assertIn("sink2", sinks)
+
+    def testGetFeatures(self):
+        self.fakes.instance()
+        feature1 = self.fakes.feature("via:feature1")
+        feature2 = self.fakes.feature("via:feature2")
+        self.fakes.feature("via:feature3")
+        self.fakes.save_all(self.db)
+        assocs = [
+            IssueInstanceSharedTextAssoc(
+                shared_text_id=feature1.id, issue_instance_id=1
+            ),
+            IssueInstanceSharedTextAssoc(
+                shared_text_id=feature2.id, issue_instance_id=1
+            ),
+        ]
+
+        with self.db.make_session() as session:
+            self._add_to_session(session, assocs)
+            session.commit()
+
+            self.interactive.setup()
+            features = self.interactive._get_leaves_issue_instance(
+                session, 1, SharedTextKind.FEATURE
+            )
+
+        self.assertEqual(len(features), 2)
+        self.assertIn("via:feature1", features)
+        self.assertIn("via:feature2", features)
 
     def _basic_trace_frames(self):
         return [
@@ -1605,15 +1752,47 @@ class InteractiveTest(TestCase):
         )
         sources = []
         sinks = ["sink1", "sink2"]
-        result = self.interactive._create_issue_output_string(issue, sources, sinks)
+        features = []
+        result = self.interactive._create_issue_output_string(
+            issue, sources, sinks, features
+        )
         self.assertIn("Sources: No sources", result)
         self.assertIn("Sinks: sink1", result)
 
         sources = ["source1", "source2"]
         sinks = []
-        result = self.interactive._create_issue_output_string(issue, sources, sinks)
+        result = self.interactive._create_issue_output_string(
+            issue, sources, sinks, features
+        )
         self.assertIn("Sources: source1", result)
         self.assertIn("Sinks: No sinks", result)
+
+    def testCreateIssueOutputStringNoFeatures(self):
+        issue = IssueQueryResult(
+            id=1,
+            filename="module.py",
+            location=SourceLocation(1, 2, 3),
+            code=1000,
+            callable="module.function1",
+            message="root",
+            min_trace_length_to_sources=1,
+            min_trace_length_to_sinks=1,
+        )
+        sources = []
+        sinks = ["sink1"]
+        features = []
+        result = self.interactive._create_issue_output_string(
+            issue, sources, sinks, features
+        )
+        self.assertIn("Features: No features", result)
+
+        sources = []
+        sinks = ["sink1"]
+        features = ["via:feature1"]
+        result = self.interactive._create_issue_output_string(
+            issue, sources, sinks, features
+        )
+        self.assertIn("Features: via:feature1", result)
 
     def testCreateIssueOutputStringTraceLength(self):
         issue1 = IssueQueryResult(
@@ -1628,7 +1807,10 @@ class InteractiveTest(TestCase):
         )
         sources = []
         sinks = ["sink1", "sink2"]
-        result = self.interactive._create_issue_output_string(issue1, sources, sinks)
+        features = []
+        result = self.interactive._create_issue_output_string(
+            issue1, sources, sinks, features
+        )
         self.assertIn("Min Trace Length: Source (0) | Sink (6)", result)
 
         issue2 = IssueQueryResult(
@@ -1643,7 +1825,9 @@ class InteractiveTest(TestCase):
         )
         sources = []
         sinks = ["sink1", "sink2"]
-        result = self.interactive._create_issue_output_string(issue2, sources, sinks)
+        result = self.interactive._create_issue_output_string(
+            issue2, sources, sinks, features
+        )
         self.assertIn("Min Trace Length: Source (3) | Sink (1)", result)
 
     def testListSourceCode(self):

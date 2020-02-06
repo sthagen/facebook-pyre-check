@@ -88,19 +88,21 @@ let fallback_attribute ~(resolution : Resolution.t) ~name class_name =
             let annotation = fallback |> AnnotatedAttribute.annotation |> Annotation.annotation in
             match annotation with
             | Type.Callable ({ implementation; _ } as callable) ->
-                let location = AnnotatedAttribute.location fallback in
                 let arguments =
                   let self_argument =
                     {
                       Call.Argument.name = None;
-                      value = from_reference ~location class_name_reference;
+                      value = from_reference ~location:Location.any class_name_reference;
                     }
                   in
                   let name_argument =
                     {
                       Call.Argument.name = None;
                       value =
-                        { Node.location; value = Expression.String (StringLiteral.create name) };
+                        {
+                          Node.location = Location.any;
+                          value = Expression.String (StringLiteral.create name);
+                        };
                     }
                   in
                   [self_argument; name_argument]
@@ -131,8 +133,7 @@ let fallback_attribute ~(resolution : Resolution.t) ~name class_name =
                      ~visibility:ReadWrite
                      ~property:false
                      ~static:false
-                     ~value:(Node.create Ast.Expression.Expression.Ellipsis ~location)
-                     ~location)
+                     ~has_ellipsis_value:true)
             | _ -> None )
         | _ -> None
       in
@@ -188,10 +189,6 @@ let overrides definition ~resolution ~name =
 let has_abstract_base { Node.value = summary; _ } = ClassSummary.is_abstract summary
 
 let get_abstract_attributes ~resolution class_name =
-  GlobalResolution.attributes
-    ~transitive:true
-    ~instantiated:(Type.Primitive class_name)
-    class_name
-    ~resolution
+  GlobalResolution.attributes ~transitive:true class_name ~resolution
   >>| List.filter ~f:AnnotatedAttribute.abstract
   |> Option.value ~default:[]

@@ -34,53 +34,37 @@ let test_set_local context =
 
 
 let test_set_local_with_attributes context =
-  let assert_local_with_attributes
-      ?(global_fallback = true)
-      ~resolution
-      ~head
-      ~attributes
-      ~expected
-      ()
-    =
+  let assert_local_with_attributes ?(global_fallback = true) ~resolution ~name ~expected () =
     assert_equal
       ~cmp:(Option.equal Type.equal)
       (expected >>| parse_single_expression >>| Type.create ~aliases:(fun _ -> None))
       ( Resolution.get_local_with_attributes
           ~global_fallback
+          ~name:(Expression.create_name ~location:Location.any name)
           resolution
-          ~object_reference:!&head
-          ~attribute_path:!&attributes
       >>| Annotation.annotation )
   in
   let resolution = ScratchProject.setup ~context [] |> ScratchProject.build_resolution in
-  assert_local_with_attributes ~resolution ~head:"local" ~attributes:"" ~expected:None ();
+  assert_local_with_attributes ~resolution ~name:"local" ~expected:None ();
   let resolution =
     Resolution.set_local_with_attributes
       resolution
-      ~object_reference:!&"local"
-      ~attribute_path:!&"a.x"
+      ~name:(Expression.create_name ~location:Location.any "local.a.x")
       ~annotation:(Annotation.create Type.integer)
   in
-  assert_local_with_attributes ~resolution ~head:"local" ~attributes:"a.x" ~expected:(Some "int") ();
-  assert_local_with_attributes ~resolution ~head:"local" ~attributes:"a.y" ~expected:None ();
+  assert_local_with_attributes ~resolution ~name:"local.a.x" ~expected:(Some "int") ();
+  assert_local_with_attributes ~resolution ~name:"local.a.y" ~expected:None ();
   let resolution =
     Resolution.set_local_with_attributes
       resolution
-      ~object_reference:!&"local"
-      ~attribute_path:!&"a.x"
+      ~name:(Expression.create_name ~location:Location.any "local.a.x")
       ~annotation:(Annotation.create Type.float)
   in
-  assert_local_with_attributes
-    ~resolution
-    ~head:"local"
-    ~attributes:"a.x"
-    ~expected:(Some "float")
-    ();
+  assert_local_with_attributes ~resolution ~name:"local.a.x" ~expected:(Some "float") ();
   let resolution =
     Resolution.set_local_with_attributes
       resolution
-      ~object_reference:!&"global"
-      ~attribute_path:!&"a.x"
+      ~name:(Expression.create_name ~location:Location.any "global.a.x")
       ~annotation:
         (Annotation.create
            ~mutability:(Immutable { scope = Global; original = Type.integer; final = false })
@@ -89,8 +73,7 @@ let test_set_local_with_attributes context =
   assert_local_with_attributes
     ~global_fallback:false
     ~resolution
-    ~head:"global"
-    ~attributes:"a.x."
+    ~name:"global.a.x"
     ~expected:None
     ()
 
@@ -149,6 +132,43 @@ let test_parse_reference context =
   assert_parse_reference "test.MyType" Type.integer;
   assert_parse_reference "test.Foo" (Type.Primitive "test.Foo");
   assert_parse_reference "typing.List" (Type.Primitive "list")
+
+
+let test_partition_name context =
+  let resolution =
+    make_resolution
+      ~context
+      {|
+      from dataclasses import dataclass
+      from typing import Optional, Final
+      @dataclass(frozen=True)
+      class InnerFrozenDataClass():
+        x: Optional[int]
+      @dataclass(frozen=True)
+      class FrozenDataClass():
+        inner: InnerFrozenDataClass
+      @dataclass
+      class UnfrozenDataClass():
+        inner: InnerFrozenDataClass
+      def foo() -> None:
+        unfrozen_dataclass: Final[UnfrozenDataClass] = ...
+        frozen_dataclass: Final[FrozenDataClass] = ...
+        if unfrozen_dataclass.inner.x is not None:
+          reveal_type(unfrozen_dataclass.inner.x)
+        if frozen_dataclass.inner.x is not None:
+          reveal_type(frozen_dataclass.inner.x)
+    |}
+  in
+  let assert_resolve_name expression (object_reference, attribute_path) =
+    let name = Expression.create_name ~location:Location.any expression in
+    let test_reference, test_attribute_path, _ = Resolution.partition_name resolution ~name in
+    assert_equal
+      (test_reference, test_attribute_path)
+      (Reference.create object_reference, Reference.create attribute_path)
+  in
+  assert_resolve_name "unfrozen_dataclass.inner.x" ("unfrozen_dataclass", "inner.x");
+  assert_resolve_name "frozen_dataclass.inner.x" ("frozen_dataclass", "inner.x");
+  assert_resolve_name "a.b.c" ("a", "b.c")
 
 
 let test_resolve_literal context =
@@ -752,6 +772,7 @@ let () =
          "set_local_with_attributes" >:: test_set_local_with_attributes;
          "parse_annotation" >:: test_parse_annotation;
          "parse_reference" >:: test_parse_reference;
+         "partition_name" >:: test_partition_name;
          "resolve_literal" >:: test_resolve_literal;
          "resolve_exports" >:: test_resolve_exports;
          "resolve_mutable_literals" >:: test_resolve_mutable_literals;

@@ -510,6 +510,253 @@ let test_check_callable context =
   ()
 
 
+let test_check_final_attribute_refinement context =
+  let assert_type_errors = assert_type_errors ~context in
+  assert_type_errors
+    {|
+      from typing import Optional
+      from dataclasses import dataclass
+      def expects_str(x: str) -> None:
+        pass
+
+      @dataclass(frozen=True)
+      class Actor:
+        name: Optional[str]
+        def __init__(self, name: Optional[str]) -> None:
+          self.name = name
+
+      def foo(a: Actor) -> None:
+        if a.name is not None:
+          expects_str(a.name)
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Optional, Final
+      def expects_str(x: str) -> None:
+        pass
+
+      class Actor:
+        name: Final[Optional[str]]
+        def __init__(self, name: Optional[str]) -> None:
+          self.name = name
+
+      def foo(a: Actor) -> None:
+        if a.name is not None:
+          expects_str(a.name)
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Optional
+      def expects_str(x: str) -> None:
+        pass
+
+      class Actor:
+        name: Optional[str]
+        def __init__(self, name: Optional[str]) -> None:
+          self.name = name
+
+      def foo(a: Actor) -> None:
+        if a.name is not None:
+          expects_str(a.name)
+    |}
+    [
+      "Incompatible parameter type [6]: Expected `str` for 1st anonymous parameter to call \
+       `expects_str` but got `Optional[str]`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Optional
+      from dataclasses import dataclass
+      def expects_str(x: str) -> None:
+        pass
+
+      @dataclass(frozen=True)
+      class Actor:
+        name: Optional[str]
+        def __init__(self, name: Optional[str]) -> None:
+          self.name = name
+
+      def foo(a: Actor) -> None:
+        if a.name is not None:
+          a = Actor(None)
+          expects_str(a.name)
+    |}
+    [
+      "Incompatible parameter type [6]: Expected `str` for 1st anonymous parameter to call \
+       `expects_str` but got `Optional[str]`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Optional
+      from dataclasses import dataclass
+      def expects_str(x: str) -> None:
+        pass
+
+      @dataclass(frozen=True)
+      class Actor:
+        name: Optional[str]
+        def __init__(self, name: Optional[str]) -> None:
+          self.name = name
+
+      def foo(a: Actor) -> None:
+        if a.name is not None:
+          a = Actor(None)
+          if a.name:
+            reveal_type(a.name)
+          reveal_type(a.name)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `a.name` is `Optional[str]` (inferred: `str`).";
+      "Revealed type [-1]: Revealed type for `a.name` is `Optional[str]`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Optional
+      from dataclasses import dataclass
+
+      @dataclass(frozen=True)
+      class Base:
+        name: Optional[str]
+        def __init__(self, name: Optional[str]) -> None:
+          self.name = name
+
+      @dataclass(frozen=True)
+      class ChildA(Base):
+        name: Optional[str]
+        age: int
+        def __init__(self, name: Optional[str]) -> None:
+          self.name = name
+          self.age = 0
+
+      @dataclass(frozen=True)
+      class ChildB(Base):
+        name: Optional[str]
+        year: int
+        def __init__(self, name: Optional[str]) -> None:
+          self.name = name
+          self.year = 2020
+
+      def expects_non_optional_and_a(x: str, y: ChildA) -> None:
+        pass
+      def expects_non_optional_and_b(x: str, y: ChildB) -> None:
+        pass
+
+      def foo(o: Base) -> None:
+        if o.name:
+          if isinstance(o, ChildA):
+            expects_non_optional_and_a(o.name, o)
+          if isinstance(o, ChildB):
+            expects_non_optional_and_b(o.name, o)
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Union
+      from dataclasses import dataclass
+      def expects_int(x: int) -> None:
+        pass
+
+      @dataclass(frozen=True)
+      class Foo:
+        x: Union[int, str]
+        def __init__(self, x: Union[int, str]) -> None:
+          self.x = x
+
+      def f(a: Foo) -> None:
+        if isinstance(a.x, int):
+          expects_int(a.x)
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Union
+      from dataclasses import dataclass
+      def expects_int(x: int) -> None:
+        pass
+
+      @dataclass(frozen=True)
+      class Foo:
+        x: Union[int, str]
+        def __init__(self, x: Union[int, str]) -> None:
+          self.x = x
+
+      def f(a: Foo) -> None:
+        if isinstance(a.x, int):
+          a = Foo("bar")
+          expects_int(a.x)
+    |}
+    [
+      "Incompatible parameter type [6]: Expected `int` for 1st anonymous parameter to call \
+       `expects_int` but got `Union[int, str]`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Union
+      from dataclasses import dataclass
+      def expects_int(x: int) -> None:
+        pass
+
+      @dataclass(frozen=True)
+      class Foo:
+        x: Union[int, str]
+        def __init__(self, x: Union[int, str]) -> None:
+          self.x = x
+
+      def f(a: Foo) -> None:
+        if type(a.x) is int:
+          expects_int(a.x)
+        reveal_type(a.x)
+    |}
+    ["Revealed type [-1]: Revealed type for `a.x` is `Union[int, str]`."];
+  assert_type_errors
+    {|
+      from typing import Union, Callable
+      from dataclasses import dataclass
+      def expects_int(x: int) -> None:
+        pass
+
+      @dataclass(frozen=True)
+      class Foo:
+        x: Union[int, Callable[[], int]]
+        def __init__(self, x: Union[int, Callable[[], int]]) -> None:
+          self.x = x
+
+      def f(a: Foo) -> None:
+        if callable(a.x):
+          reveal_type(a.x)
+        reveal_type(a.x)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `a.x` is `typing.Callable[[], int]`.";
+      "Revealed type [-1]: Revealed type for `a.x` is `Union[typing.Callable[[], int], int]`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Union, Callable
+      from dataclasses import dataclass
+      def expects_int(x: int) -> None:
+        pass
+
+      @dataclass(frozen=True)
+      class Foo:
+        x: Union[int, Callable[[], int]]
+        def __init__(self, x: Union[int, Callable[[], int]]) -> None:
+          self.x = x
+
+      def f(a: Foo) -> None:
+        if callable(a.x):
+          a = Foo(42)
+          reveal_type(a.x)
+        reveal_type(a.x)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `a.x` is `Union[typing.Callable[[], int], int]`.";
+      "Revealed type [-1]: Revealed type for `a.x` is `Union[typing.Callable[[], int], int]`.";
+    ]
+
+
 let () =
   "refinement"
   >::: [
@@ -519,5 +766,6 @@ let () =
          "check_isinstance" >:: test_check_isinstance;
          "check_assert_contains_none" >:: test_assert_contains_none;
          "check_callable" >:: test_check_callable;
+         "check_final_attribute_refinement" >:: test_check_final_attribute_refinement;
        ]
   |> Test.run

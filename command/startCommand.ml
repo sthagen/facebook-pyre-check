@@ -446,10 +446,6 @@ let run
             Log.warning
               "Starting server in legacy incremental mode. Incremental Pyre check will only get \
                triggered on changed files but not on any of their dependencies."
-        | Configuration.Analysis.Transitive ->
-            Log.warning
-              "Starting server in transitive incremental mode. Incremental Pyre check is likely \
-               going to take a long time."
       in
       if daemonize then
         Version.log_version_banner ();
@@ -494,7 +490,7 @@ let run_start_command
     saved_state_metadata
     configuration_file_hash
     store_type_check_resolution
-    transitive
+    _transitive
     new_incremental_check
     perform_autocompletion
     features
@@ -515,7 +511,7 @@ let run_start_command
     memory_profiling_output
     project_root
     search_path
-    taint_models_directories
+    taint_model_paths
     excludes
     extensions
     log_directory
@@ -538,8 +534,6 @@ let run_start_command
     let incremental_style =
       if new_incremental_check then
         Configuration.Analysis.FineGrained
-      else if transitive then
-        Transitive
       else
         Shallow
     in
@@ -562,7 +556,7 @@ let run_start_command
       ~number_of_workers
       ~project_root:(Path.create_absolute project_root)
       ~search_path:(List.map search_path ~f:SearchPath.create)
-      ~taint_models_directories:(List.map taint_models_directories ~f:Path.create_absolute)
+      ~taint_model_paths:(List.map taint_model_paths ~f:Path.create_absolute)
       ~excludes
       ~extensions
       ~local_root:(Path.create_absolute local_root)

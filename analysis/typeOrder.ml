@@ -11,7 +11,7 @@ open Assumptions
 type order = {
   handler: (module ClassHierarchy.Handler);
   constructor: Type.t -> protocol_assumptions:ProtocolAssumptions.t -> Type.t option;
-  attributes: Type.t -> assumptions:Assumptions.t -> AnnotatedAttribute.t list option;
+  attributes: Type.t -> assumptions:Assumptions.t -> AnnotatedAttribute.instantiated list option;
   is_protocol: Type.t -> protocol_assumptions:ProtocolAssumptions.t -> bool;
   assumptions: Assumptions.t;
 }
@@ -1347,7 +1347,6 @@ module OrderImplementation = struct
                     let attributes =
                       [
                         AnnotatedAttribute.create
-                          ~location:Location.any
                           ~annotation:callable
                           ~original_annotation:callable
                           ~abstract:false
@@ -1360,8 +1359,7 @@ module OrderImplementation = struct
                           ~static:false
                           ~visibility:ReadWrite
                           ~property:false
-                          ~value:
-                            (Ast.Node.create_with_default_location Expression.Expression.Ellipsis);
+                          ~has_ellipsis_value:true;
                       ]
                       |> Option.some
                     in

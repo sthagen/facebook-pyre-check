@@ -335,7 +335,7 @@ let attribute_from_class_name
             ?dependency
             class_name
         with
-        | Some { Node.location; _ } ->
+        | Some _ ->
             AnnotatedAttribute.create
               ~annotation:Type.Top
               ~original_annotation:Type.Top
@@ -349,8 +349,7 @@ let attribute_from_class_name
               ~visibility:ReadWrite
               ~property:false
               ~static:false
-              ~value:(Node.create Expression.Expression.Ellipsis ~location)
-              ~location
+              ~has_ellipsis_value:true
             |> Option.some
         | None -> None )
   in
@@ -429,7 +428,6 @@ let attributes
     ?(transitive = false)
     ?(class_attributes = false)
     ?(include_generated_attributes = true)
-    ?instantiated
     name
   =
   AttributeResolution.ReadOnly.all_attributes
@@ -437,9 +435,15 @@ let attributes
     ~transitive
     ~class_attributes
     ~include_generated_attributes
-    ?instantiated
     name
     ?dependency
+
+
+let instantiate_attribute ~resolution:({ dependency; _ } as resolution) ?instantiated =
+  AttributeResolution.ReadOnly.instantiate_attribute
+    (attribute_resolution resolution)
+    ?dependency
+    ?instantiated
 
 
 let metaclass ~resolution:({ dependency; _ } as resolution) =
@@ -533,7 +537,7 @@ let attribute_names
     ?(transitive = false)
     ?(class_attributes = false)
     ?(include_generated_attributes = true)
-    ?instantiated
+    ?instantiated:_
     name
   =
   AttributeResolution.ReadOnly.attribute_names
@@ -541,6 +545,5 @@ let attribute_names
     ~transitive
     ~class_attributes
     ~include_generated_attributes
-    ?instantiated
     name
     ?dependency

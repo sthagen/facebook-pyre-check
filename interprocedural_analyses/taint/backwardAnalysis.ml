@@ -360,7 +360,24 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
         let access_path = of_expression ~resolution target in
         let bound_variable_taint = get_taint access_path state in
         let iterator_taint =
-          BackwardState.Tree.prepend [AbstractTreeDomain.Label.Any] bound_variable_taint
+          (* If the type is a dict, we special case `DictionaryKeys` as the taint being iterated on. *)
+          let global_resolution = Resolution.global_resolution resolution in
+          let label =
+            let iterator_is_dictionary =
+              match Resolution.resolve resolution iterator with
+              | Type.Parametric { name; _ } ->
+                  GlobalResolution.is_transitive_successor
+                    global_resolution
+                    ~predecessor:name
+                    ~successor:Type.mapping_primitive
+              | _ -> false
+            in
+            if iterator_is_dictionary then
+              AbstractTreeDomain.Label.DictionaryKeys
+            else
+              AbstractTreeDomain.Label.Any
+          in
+          BackwardState.Tree.prepend [label] bound_variable_taint
         in
         analyze_expression ~resolution ~taint:iterator_taint ~state ~expression:iterator
       in
@@ -566,7 +583,13 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
       | DictionaryComprehension
           { Comprehension.element = { Dictionary.Entry.key; value }; generators; _ } ->
           let resolution = generator_resolution ~resolution generators in
-          let state = analyze_expression ~resolution ~taint ~state ~expression:key in
+          let state =
+            analyze_expression
+              ~resolution
+              ~taint:(read_tree [AbstractTreeDomain.Label.DictionaryKeys] taint)
+              ~state
+              ~expression:key
+          in
           let state =
             analyze_expression
               ~resolution
@@ -594,7 +617,11 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
           store_weak_taint ~root:(Root.Variable identifier) ~path:[] taint state
       | Name (Name.Attribute { base; attribute; _ }) -> (
           match
-            Interprocedural.CallResolution.resolve_property_targets ~resolution ~base ~attribute
+            Interprocedural.CallResolution.resolve_property_targets
+              ~resolution
+              ~base
+              ~attribute
+              ~setter:false
           with
           | None ->
               let field = AbstractTreeDomain.Label.Field attribute in
@@ -734,7 +761,30 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
     let analyze_statement ~resolution state statement =
       log "State: %a\nStmt: %a" pp state pp_statement statement;
       match statement with
-      | Statement.Assign { target; value; _ } -> analyze_assignment ~resolution ~target ~value state
+      | Statement.Assign { target = { Node.location; value = target_value } as target; value; _ }
+        -> (
+          match target_value with
+          | Expression.Name (Name.Attribute { base; attribute; _ }) -> (
+              let property_targets =
+                Interprocedural.CallResolution.resolve_property_targets
+                  ~resolution
+                  ~base
+                  ~attribute
+                  ~setter:true
+              in
+              match property_targets with
+              | Some targets ->
+                  let arguments = [{ Call.Argument.value; name = None }] in
+                  apply_call_targets
+                    ~resolution
+                    ~call_expression:(Expression.Call { Call.callee = target; arguments })
+                    location
+                    arguments
+                    state
+                    BackwardState.Tree.bottom
+                    targets
+              | None -> analyze_assignment ~resolution ~target ~value state )
+          | _ -> analyze_assignment ~resolution ~target ~value state )
       | Assert _
       | Break
       | Class _

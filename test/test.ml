@@ -1710,37 +1710,14 @@ let assert_equivalent_attributes ~context source expected =
     let compare_by_name left right =
       String.compare (Annotated.Attribute.name left) (Annotated.Attribute.name right)
     in
-    let ignore_value_location attribute =
-      let value = Annotated.Attribute.value attribute in
-      Annotated.Attribute.with_value
-        attribute
-        ~value:(Node.create_with_default_location value.value)
-    in
-    let ignore_callable_define_location attribute =
-      let constraints = function
-        | Type.Callable ({ implementation; overloads; _ } as callable) ->
-            let callable =
-              let remove callable = { callable with Type.Callable.define_location = None } in
-              {
-                callable with
-                implementation = remove implementation;
-                overloads = List.map overloads ~f:remove;
-              }
-            in
-            Some (Type.Callable callable)
-        | _ -> None
-      in
-      Annotated.Attribute.instantiate attribute ~constraints
-    in
     Type.split class_type
     |> fst
     |> Type.primitive_name
     >>= GlobalResolution.attributes ~transitive:false ~resolution:global_resolution
     |> (fun attributes -> Option.value_exn attributes)
     |> List.sort ~compare:compare_by_name
-    |> List.map ~f:(Annotated.Attribute.with_location ~location:Location.any)
-    |> List.map ~f:ignore_value_location
-    |> List.map ~f:ignore_callable_define_location
+    |> List.map ~f:(GlobalResolution.instantiate_attribute ~resolution:global_resolution)
+    |> List.map ~f:Annotated.Attribute.ignore_callable_define_locations
   in
   let class_names =
     let expected =
@@ -1758,7 +1735,7 @@ let assert_equivalent_attributes ~context source expected =
   in
   let assert_class_equal class_type expected =
     let pp_as_sexps format l =
-      List.map l ~f:Annotated.Attribute.sexp_of_t
+      List.map l ~f:Annotated.Attribute.sexp_of_instantiated
       |> List.map ~f:Sexp.to_string_hum
       |> String.concat ~sep:"\n"
       |> Format.fprintf format "%s\n"

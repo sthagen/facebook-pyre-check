@@ -47,6 +47,46 @@ let is_global { global_resolution; _ } ~reference =
   Reference.delocalize reference |> GlobalResolution.global global_resolution |> Option.is_some
 
 
+let resolve ({ resolve; _ } as resolution) expression =
+  resolve ~resolution expression |> Annotation.annotation
+
+
+let resolve_to_annotation ({ resolve; _ } as resolution) expression = resolve ~resolution expression
+
+let resolve_reference ({ resolve; _ } as resolution) reference =
+  Expression.from_reference ~location:Location.any reference
+  |> resolve ~resolution
+  |> Annotation.annotation
+
+
+let resolve_assignment ({ resolve_assignment; _ } as resolution) assignment =
+  resolve_assignment ~resolution assignment
+
+
+let resolve_mutable_literals ({ global_resolution; _ } as resolution) =
+  GlobalResolution.resolve_mutable_literals global_resolution ~resolve:(resolve resolution)
+
+
+let partition_name resolution ~name =
+  let identifiers = Reference.as_list (Expression.name_to_reference_exn name) in
+  match identifiers with
+  | head :: attributes ->
+      let rec partition_attribute base attribute_list =
+        let base_type = resolve_reference resolution base in
+        if Type.is_untyped base_type then
+          match attribute_list with
+          | [] -> Reference.create head, attributes, None
+          | attribute :: attribute_list ->
+              partition_attribute Reference.(attribute |> create |> combine base) attribute_list
+        else
+          base, attribute_list, Some (Annotation.create base_type)
+      in
+      partition_attribute (Reference.create head) attributes
+      |> fun (base, attributes, annotation) ->
+      base, Reference.create_from_list attributes, annotation
+  | _ -> Reference.create_from_list identifiers, Reference.create "", None
+
+
 let set_local ({ annotation_store; _ } as resolution) ~reference ~annotation =
   {
     resolution with
@@ -54,19 +94,17 @@ let set_local ({ annotation_store; _ } as resolution) ~reference ~annotation =
       Map.set
         annotation_store
         ~key:reference
-        ~data:
-          ( Map.find annotation_store reference
-          |> Option.value ~default:(RefinementUnit.create ())
-          |> RefinementUnit.set_base ~base:annotation );
+        ~data:(RefinementUnit.create () |> RefinementUnit.set_base ~base:annotation);
   }
 
 
-let set_local_with_attributes
-    ({ annotation_store; _ } as resolution)
-    ~object_reference
-    ~attribute_path
-    ~annotation
-  =
+let set_local_with_attributes ({ annotation_store; _ } as resolution) ~name ~annotation =
+  let object_reference, attribute_path, base = partition_name resolution ~name in
+  let set_base refinement_unit ~base =
+    match RefinementUnit.base refinement_unit, base with
+    | None, Some base -> RefinementUnit.set_base refinement_unit ~base
+    | _ -> refinement_unit
+  in
   {
     resolution with
     annotation_store =
@@ -76,7 +114,8 @@ let set_local_with_attributes
         ~data:
           ( Map.find annotation_store object_reference
           |> Option.value ~default:(RefinementUnit.create ())
-          |> RefinementUnit.add_attribute_refinement ~reference:attribute_path ~base:annotation );
+          |> RefinementUnit.add_attribute_refinement ~reference:attribute_path ~base:annotation
+          |> set_base ~base );
   }
 
 
@@ -96,10 +135,10 @@ let get_local ?(global_fallback = true) ~reference { annotation_store; global_re
 
 let get_local_with_attributes
     ?(global_fallback = true)
-    ~object_reference
-    ~attribute_path
-    { annotation_store; global_resolution; _ }
+    ~name
+    ({ annotation_store; global_resolution; _ } as resolution)
   =
+  let object_reference, attribute_path, _ = partition_name resolution ~name in
   match Map.find annotation_store object_reference with
   | Some result
     when global_fallback
@@ -136,26 +175,6 @@ let with_annotation_store resolution ~annotation_store = { resolution with annot
 let parent { parent; _ } = parent
 
 let with_parent resolution ~parent = { resolution with parent }
-
-let resolve ({ resolve; _ } as resolution) expression =
-  resolve ~resolution expression |> Annotation.annotation
-
-
-let resolve_to_annotation ({ resolve; _ } as resolution) expression = resolve ~resolution expression
-
-let resolve_reference ({ resolve; _ } as resolution) reference =
-  Expression.from_reference ~location:Location.any reference
-  |> resolve ~resolution
-  |> Annotation.annotation
-
-
-let resolve_assignment ({ resolve_assignment; _ } as resolution) assignment =
-  resolve_assignment ~resolution assignment
-
-
-let resolve_mutable_literals ({ global_resolution; _ } as resolution) =
-  GlobalResolution.resolve_mutable_literals global_resolution ~resolve:(resolve resolution)
-
 
 let is_consistent_with ({ global_resolution; _ } as resolution) =
   GlobalResolution.is_consistent_with global_resolution ~resolve:(resolve resolution)

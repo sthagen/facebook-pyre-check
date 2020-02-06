@@ -127,23 +127,17 @@ let get_global_sink_model ~resolution ~location ~expression =
   get_global_model ~resolution ~expression >>| to_sink
 
 
-let get_model_sources ~directories =
+let get_model_sources ~paths =
   let path_and_content file =
     match File.content file with
     | Some content -> Some (File.path file, content)
     | None -> None
   in
-  List.iter directories ~f:(fun directory ->
-      if not (Path.is_directory directory) then
-        raise (Invalid_argument (Format.asprintf "`%a` is not a directory" Path.pp directory)));
+  let model_files = Path.get_matching_files_recursively ~suffix:".pysa" ~paths in
   Log.info
     "Finding taint models in `%s`."
-    (directories |> List.map ~f:Path.show |> String.concat ~sep:", ");
-  directories
-  |> List.concat_map ~f:(fun root ->
-         Pyre.Path.list ~file_filter:(String.is_suffix ~suffix:".pysa") ~root ())
-  |> List.map ~f:File.create
-  |> List.filter_map ~f:path_and_content
+    (paths |> List.map ~f:Path.show |> String.concat ~sep:", ");
+  model_files |> List.map ~f:File.create |> List.filter_map ~f:path_and_content
 
 
 let infer_class_models ~environment =
@@ -198,27 +192,20 @@ let infer_class_models ~environment =
     then
       None
     else
-      let is_fields attribute = Annotated.Attribute.name attribute |> String.equal "_fields" in
-      match List.find attributes ~f:is_fields >>| Annotated.Attribute.value with
-      | Some { Node.value = Tuple names; _ } ->
-          let to_string_literal { Node.value = name; _ } =
-            match name with
-            | Expression.String { StringLiteral.value; _ } -> Some value
-            | _ -> None
-          in
-          let attributes = List.filter_map names ~f:to_string_literal in
-          Some
-            {
-              TaintResult.forward = Forward.empty;
-              backward =
-                {
-                  TaintResult.Backward.taint_in_taint_out =
-                    List.foldi ~f:fold_taint ~init:BackwardState.empty attributes;
-                  sink_taint = BackwardState.empty;
-                };
-              mode = Normal;
-            }
-      | _ -> None
+      GlobalResolution.class_definition global_resolution (Primitive class_summary)
+      >>| Node.value
+      >>= ClassSummary.fields_tuple_value
+      >>| fun attributes ->
+      {
+        TaintResult.forward = Forward.empty;
+        backward =
+          {
+            TaintResult.Backward.taint_in_taint_out =
+              List.foldi ~f:fold_taint ~init:BackwardState.empty attributes;
+            sink_taint = BackwardState.empty;
+          };
+        mode = Normal;
+      }
   in
   let compute_models class_name class_summary =
     let is_dataclass =
