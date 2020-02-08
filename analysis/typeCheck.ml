@@ -462,10 +462,9 @@ module State (Context : Context) = struct
   }
   [@@deriving show]
 
-  let type_of_signature ~resolution ~location signature =
+  let type_of_signature ~resolution signature =
     let global_resolution = Resolution.global_resolution resolution in
-    Node.create signature ~location
-    |> GlobalResolution.create_overload ~resolution:global_resolution
+    GlobalResolution.create_overload ~resolution:global_resolution signature
     |> Type.Callable.create_from_implementation
 
 
@@ -530,8 +529,7 @@ module State (Context : Context) = struct
           GlobalResolution.annotation_parser ~allow_invalid_type_parameters:true global_resolution
         in
         let define_variables =
-          Node.create signature ~location
-          |> AnnotatedCallable.create_overload_without_applying_decorators ~parser
+          AnnotatedCallable.create_overload_without_applying_decorators ~parser signature
           |> (fun { parameters; _ } -> Type.Callable.create ~parameters ~annotation:Type.Top ())
           |> Type.Variable.all_free_variables
           |> List.dedup_and_sort ~compare:Type.Variable.compare
@@ -691,7 +689,7 @@ module State (Context : Context) = struct
     let add_capture_annotations state =
       let process_signature ({ Define.Signature.name = { Node.value = name; _ }; _ } as signature) =
         if Reference.is_local name then
-          type_of_signature ~resolution ~location signature
+          type_of_signature ~resolution signature
           |> Type.Variable.mark_all_variables_as_bound ~specific:outer_scope_variables
           |> Annotation.create
           |> (fun annotation -> Resolution.set_local resolution ~reference:name ~annotation)
@@ -706,15 +704,15 @@ module State (Context : Context) = struct
               emit_error ~state ~location ~kind:(Error.MissingCaptureAnnotation name), Type.Any
           | Define.Capture.Kind.Annotation (Some annotation_expression) ->
               parse_and_check_annotation ~state annotation_expression
-          | Define.Capture.Kind.DefineSignature { Node.value = signature; location } ->
+          | Define.Capture.Kind.DefineSignature signature ->
               ( state,
-                type_of_signature ~resolution ~location signature
+                type_of_signature ~resolution signature
                 |> Type.Variable.mark_all_variables_as_bound ~specific:outer_scope_variables )
           | Define.Capture.Kind.Self parent -> state, type_of_parent ~global_resolution parent
           | Define.Capture.Kind.ClassSelf parent ->
               state, type_of_parent ~global_resolution parent |> Type.meta
         in
-        let annotation = Annotation.create_immutable ~global:false annotation in
+        let annotation = Annotation.create_immutable annotation in
         let resolution =
           let { resolution; _ } = state in
           let reference = Reference.create name in
@@ -899,31 +897,24 @@ module State (Context : Context) = struct
                   match parsed_annotation, value_annotation with
                   | Some annotation, Some value_annotation when Type.contains_final annotation ->
                       ( add_final_parameter_annotation_error ~state,
-                        Annotation.create_immutable
-                          ~global:false
-                          ~original:(Some annotation)
-                          value_annotation )
+                        Annotation.create_immutable ~original:(Some annotation) value_annotation )
                   | Some annotation, Some value_annotation when contains_prohibited_any annotation
                     ->
                       ( add_missing_parameter_annotation_error
                           ~state
                           ~given_annotation:(Some annotation)
                           (Some value_annotation),
-                        Annotation.create_immutable
-                          ~global:false
-                          ~original:(Some annotation)
-                          value_annotation )
+                        Annotation.create_immutable ~original:(Some annotation) value_annotation )
                   | Some annotation, _ when Type.contains_final annotation ->
                       ( add_final_parameter_annotation_error ~state,
-                        Annotation.create_immutable ~global:false annotation )
+                        Annotation.create_immutable annotation )
                   | Some annotation, None when contains_prohibited_any annotation ->
                       ( add_missing_parameter_annotation_error
                           ~state
                           ~given_annotation:(Some annotation)
                           None,
-                        Annotation.create_immutable ~global:false annotation )
-                  | Some annotation, _ ->
-                      state, Annotation.create_immutable ~global:false annotation
+                        Annotation.create_immutable annotation )
+                  | Some annotation, _ -> state, Annotation.create_immutable annotation
                   | None, Some value_annotation ->
                       ( add_missing_parameter_annotation_error
                           ~state
@@ -947,11 +938,11 @@ module State (Context : Context) = struct
             in
             let mutability =
               match mutability with
-              | Annotation.Immutable { Annotation.original; scope; final } ->
+              | Annotation.Immutable { Annotation.original; final } ->
                   let original =
                     Type.Variable.mark_all_variables_as_bound original |> apply_starred_annotations
                   in
-                  Annotation.Immutable { Annotation.original; scope; final }
+                  Annotation.Immutable { Annotation.original; final }
               | _ -> mutability
             in
             state, { Annotation.annotation; mutability }
@@ -1550,7 +1541,6 @@ module State (Context : Context) = struct
             in
             let create_annotation signature =
               Annotation.create_immutable
-                ~global:true
                 ~original:(Some Type.Top)
                 (Type.Callable.Overload.return_annotation signature)
             in
@@ -3587,8 +3577,7 @@ module State (Context : Context) = struct
                     then
                       let global_location =
                         Reference.delocalize reference
-                        |> GlobalResolution.global global_resolution
-                        >>| Node.location
+                        |> GlobalResolution.global_location global_resolution
                         |> Option.value ~default:location
                       in
                       Error.create
@@ -3768,9 +3757,7 @@ module State (Context : Context) = struct
                   in
                   let annotation =
                     if explicit && is_valid_annotation then
-                      let annotation =
-                        Annotation.create_immutable ~global:is_global ~final:is_final guide
-                      in
+                      let annotation = Annotation.create_immutable ~final:is_final guide in
                       if Type.is_concrete resolved && not (Type.is_ellipsis resolved) then
                         refine_annotation annotation resolved
                       else
@@ -3998,8 +3985,7 @@ module State (Context : Context) = struct
                   attribute >>| AnnotatedAttribute.defined,
                   attribute >>| AnnotatedAttribute.annotation )
               with
-              | Some (ReadOnly (Refinable _)), Some true, Some annotation ->
-                  Some (Annotation.make_local annotation)
+              | Some (ReadOnly (Refinable _)), Some true, Some annotation -> Some annotation
               | _ -> None )
           | _ -> None
         in
@@ -4345,7 +4331,6 @@ module State (Context : Context) = struct
                       let refined =
                         if Annotation.is_immutable previous then
                           Annotation.create_immutable
-                            ~global:false
                             ~original:(Some (Annotation.original previous))
                             element_type
                         else
@@ -4526,7 +4511,7 @@ module State (Context : Context) = struct
     | Define { signature = { Define.Signature.name = { Node.value = name; _ }; _ } as signature; _ }
       ->
         if Reference.is_local name then
-          type_of_signature ~resolution ~location signature
+          type_of_signature ~resolution signature
           |> Type.Variable.mark_all_variables_as_bound
                ~specific:(Resolution.all_type_variables_in_scope resolution)
           |> Annotation.create
@@ -4596,7 +4581,9 @@ module State (Context : Context) = struct
   let errors ({ resolution; errors; _ } as state) =
     let global_resolution = Resolution.global_resolution resolution in
     let ( {
-            Node.value = { Define.signature = { name = { Node.value = name; _ }; _ }; _ } as define;
+            Node.value =
+              { Define.signature = { name = { Node.value = name; _ }; _ } as signature; _ } as
+              define;
             location;
           } as define_node )
       =
@@ -4947,6 +4934,9 @@ module State (Context : Context) = struct
         from_reference ~location:Location.any name
         |> fun expression -> forward_expression ~state ~expression
       in
+      let ({ Type.Callable.annotation = current_overload_annotation; _ } as current_overload) =
+        GlobalResolution.create_overload ~resolution:global_resolution signature
+      in
       let overload_to_callable overload =
         Type.Callable
           {
@@ -4977,103 +4967,81 @@ module State (Context : Context) = struct
               annotation =
                 Type.Callable
                   {
-                    overloads;
                     implementation = { annotation = implementation_annotation; _ } as implementation;
                     _;
                   };
               _;
             }
-          when not (Define.is_overloaded_function define) ->
-            overloads
-            |> List.fold
-                 ~init:errors
-                 ~f:(fun errors_sofar
-                         ({ Type.Callable.annotation; define_location; _ } as overload)
-                         ->
-                   let errors_sofar =
-                     if
-                       Resolution.is_consistent_with
-                         resolution
-                         annotation
-                         implementation_annotation
-                         ~expression:None
-                     then
-                       errors_sofar
-                     else
-                       let error =
-                         Error.create
-                           ~location:(Location.with_module ~qualifier:Context.qualifier location)
-                           ~kind:
-                             (Error.IncompatibleOverload
-                                (ReturnType
-                                   {
-                                     implementation_annotation;
-                                     overload_annotation = annotation;
-                                     name;
-                                   }))
-                           ~define:Context.define
-                       in
-                       error :: errors_sofar
-                   in
-                   if
-                     not
-                       (GlobalResolution.less_or_equal
-                          global_resolution
-                          ~right:(overload_to_callable overload)
-                          ~left:(overload_to_callable implementation))
-                   then
-                     let error =
-                       Error.create
-                         ~location:(Location.with_module ~qualifier:Context.qualifier location)
-                         ~define:Context.define
-                         ~kind:
-                           (Error.IncompatibleOverload
-                              (Parameters
-                                 {
-                                   name;
-                                   location = define_location |> Option.value ~default:location;
-                                 }))
-                     in
-                     error :: errors_sofar
-                   else
-                     errors_sofar)
+          when Define.is_overloaded_function define ->
+            let errors_sofar =
+              if
+                Resolution.is_consistent_with
+                  resolution
+                  current_overload_annotation
+                  implementation_annotation
+                  ~expression:None
+              then
+                errors
+              else
+                let error =
+                  Error.create
+                    ~location:(Location.with_module ~qualifier:Context.qualifier location)
+                    ~kind:
+                      (Error.IncompatibleOverload
+                         (ReturnType
+                            {
+                              implementation_annotation;
+                              overload_annotation = current_overload_annotation;
+                              name;
+                            }))
+                    ~define:Context.define
+                in
+                error :: errors
+            in
+            if
+              not
+                (GlobalResolution.less_or_equal
+                   global_resolution
+                   ~right:(overload_to_callable current_overload)
+                   ~left:(overload_to_callable implementation))
+            then
+              let error =
+                Error.create
+                  ~location:(Location.with_module ~qualifier:Context.qualifier location)
+                  ~define:Context.define
+                  ~kind:(Error.IncompatibleOverload (Parameters { name; location }))
+              in
+              error :: errors_sofar
+            else
+              errors_sofar
         | _ -> errors
       in
       let check_unmatched_overloads errors =
         match annotation with
         | Some { annotation = Type.Callable { overloads; _ }; _ }
-          when not (Define.is_overloaded_function define) ->
-            let rec compare_parameters errors_sofar overloads =
-              match overloads with
-              | left :: overloads ->
-                  let create_unmatched_error matched errors_sofar unmatched =
-                    match unmatched, matched with
-                    | ( Type.Callable
-                          { implementation = { define_location = Some unmatched_location; _ }; _ },
-                        Type.Callable
-                          { implementation = { define_location = Some matched_location; _ }; _ } )
-                      ->
-                        let error =
-                          Error.create
-                            ~location:(Location.with_module ~qualifier:Context.qualifier location)
-                            ~define:Context.define
-                            ~kind:
-                              (Error.IncompatibleOverload
-                                 (Unmatchable { name; unmatched_location; matched_location }))
-                        in
-                        error :: errors_sofar
-                    | _, _ -> errors_sofar
-                  in
-                  let errors_sofar =
-                    overloads
-                    |> List.filter ~f:(fun right ->
-                           GlobalResolution.less_or_equal global_resolution ~left ~right)
-                    |> List.fold ~init:errors_sofar ~f:(create_unmatched_error left)
-                  in
-                  compare_parameters errors_sofar overloads
-              | _ -> errors_sofar
+          when Define.is_overloaded_function define ->
+            let preceding, following_and_including =
+              List.split_while overloads ~f:(fun other ->
+                  not (Type.Callable.equal_overload Type.equal other current_overload))
             in
-            overloads |> List.map ~f:overload_to_callable |> compare_parameters errors
+            if List.is_empty following_and_including then
+              errors
+            else
+              let right = overload_to_callable current_overload in
+              List.find preceding ~f:(fun preceder ->
+                  GlobalResolution.less_or_equal
+                    global_resolution
+                    ~left:(overload_to_callable preceder)
+                    ~right)
+              >>| (fun matching_overload ->
+                    Error.create
+                      ~location:(Location.with_module ~qualifier:Context.qualifier location)
+                      ~define:Context.define
+                      ~kind:
+                        (Error.IncompatibleOverload
+                           (Unmatchable { name; unmatched_location = location; matching_overload })))
+              >>| (fun error -> error :: errors)
+              |> Option.value ~default:errors
         | _ -> errors
       in
       errors

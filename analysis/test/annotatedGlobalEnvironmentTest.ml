@@ -10,30 +10,6 @@ open Analysis
 open Pyre
 open Test
 
-let ignore_define_location { Annotation.annotation; mutability } =
-  let ignore annotation =
-    match annotation with
-    | Type.Callable ({ implementation; overloads; _ } as callable) ->
-        let callable =
-          let remove callable = { callable with Type.Callable.define_location = None } in
-          {
-            callable with
-            implementation = remove implementation;
-            overloads = List.map overloads ~f:remove;
-          }
-        in
-        Type.Callable callable
-    | _ -> annotation
-  in
-  let annotation = ignore annotation in
-  let mutability =
-    match mutability with
-    | Mutable -> Annotation.Mutable
-    | Immutable immutable -> Immutable { immutable with original = ignore immutable.original }
-  in
-  { Annotation.annotation; mutability }
-
-
 let test_simple_registration context =
   let assert_registers source name ?original expected =
     let project = ScratchProject.setup ["test.py", source] ~context in
@@ -57,10 +33,8 @@ let test_simple_registration context =
     assert_equal
       ~cmp:location_insensitive_compare
       ~printer
-      (expected >>| Annotation.create_immutable ~global:true ?original)
-      ( AnnotatedGlobalEnvironment.ReadOnly.get_global read_only (Reference.create name)
-      >>| Node.value
-      >>| ignore_define_location )
+      (expected >>| Annotation.create_immutable ?original)
+      (AnnotatedGlobalEnvironment.ReadOnly.get_global read_only (Reference.create name))
   in
   assert_registers "x = 1" "test.x" (Some Type.integer);
   assert_registers "x, y, z  = 'A', True, 1.8" "test.x" (Some Type.string);
@@ -94,16 +68,6 @@ let test_simple_registration context =
           ~annotation:(Type.Primitive "test.R")
           ()));
   ()
-
-
-let node ~start:(start_line, start_column) ~stop:(stop_line, stop_column) =
-  let location =
-    {
-      Location.start = { Location.line = start_line; Location.column = start_column };
-      stop = { Location.line = stop_line; Location.column = stop_column };
-    }
-  in
-  Node.create ~location
 
 
 let test_updates context =
@@ -147,14 +111,11 @@ let test_updates context =
             >>| Sexp.to_string_hum
             |> Option.value ~default:"None"
           in
-          let expectation =
-            expectation >>| Node.map ~f:(Annotation.create_immutable ~global:true)
-          in
+          let expectation = expectation >>| Annotation.create_immutable in
           AnnotatedGlobalEnvironment.ReadOnly.get_global
             read_only
             (Reference.create global_name)
             ~dependency
-          >>| Node.map ~f:ignore_define_location
           |> assert_equal ~cmp:location_insensitive_compare ~printer expectation
     in
     List.iter middle_actions ~f:execute_action;
@@ -197,10 +158,16 @@ let test_updates context =
       |> List.to_string ~f:SharedMemoryKeys.show_dependency
     in
     let expected_triggers = SharedMemoryKeys.DependencyKey.KeySet.of_list expected_triggers in
-    assert_equal
-      ~printer
-      expected_triggers
-      (AnnotatedGlobalEnvironment.UpdateResult.locally_triggered_dependencies update_result);
+    let triggered_type_check_define_dependencies =
+      AnnotatedGlobalEnvironment.UpdateResult.all_triggered_dependencies update_result
+      |> List.fold
+           ~f:SharedMemoryKeys.DependencyKey.KeySet.union
+           ~init:SharedMemoryKeys.DependencyKey.KeySet.empty
+      |> SharedMemoryKeys.DependencyKey.KeySet.filter (function
+             | SharedMemoryKeys.TypeCheckDefine _ -> true
+             | _ -> false)
+    in
+    assert_equal ~printer expected_triggers triggered_type_check_define_dependencies;
     post_actions >>| List.iter ~f:execute_action |> Option.value ~default:()
   in
   let dependency = SharedMemoryKeys.TypeCheckDefine (Reference.create "dep") in
@@ -211,7 +178,7 @@ let test_updates context =
     ~new_source:{|
       y = 9
     |}
-    ~middle_actions:["test.x", dependency, Some (node ~start:(2, 0) ~stop:(2, 1) Type.integer)]
+    ~middle_actions:["test.x", dependency, Some Type.integer]
     ~expected_triggers:[dependency]
     ~post_actions:["test.x", dependency, None]
     ();
@@ -222,9 +189,9 @@ let test_updates context =
     ~new_source:{|
       x = 9
     |}
-    ~middle_actions:["test.x", dependency, Some (node ~start:(2, 0) ~stop:(2, 1) Type.integer)]
+    ~middle_actions:["test.x", dependency, Some Type.integer]
     ~expected_triggers:[]
-    ~post_actions:["test.x", dependency, Some (node ~start:(2, 0) ~stop:(2, 1) Type.integer)]
+    ~post_actions:["test.x", dependency, Some Type.integer]
     ();
   assert_updates
     ~original_source:{|
@@ -233,9 +200,9 @@ let test_updates context =
     ~new_source:{|
       x, y = 7, 8
     |}
-    ~middle_actions:["test.x", dependency, Some (node ~start:(2, 0) ~stop:(2, 1) Type.integer)]
+    ~middle_actions:["test.x", dependency, Some Type.integer]
     ~expected_triggers:[]
-    ~post_actions:["test.x", dependency, Some (node ~start:(2, 0) ~stop:(2, 1) Type.integer)]
+    ~post_actions:["test.x", dependency, Some Type.integer]
     ();
 
   (* Addition should trigger previous failed reads *)
@@ -247,7 +214,19 @@ let test_updates context =
     |}
     ~middle_actions:["test.x", dependency, None]
     ~expected_triggers:[dependency]
-    ~post_actions:["test.x", dependency, Some (node ~start:(2, 0) ~stop:(2, 1) Type.integer)]
+    ~post_actions:["test.x", dependency, Some Type.integer]
+    ();
+  assert_updates
+    ~original_source:{|
+      x = 7
+    |}
+    ~new_source:{|
+      otra = "A"
+      x = 9
+    |}
+    ~middle_actions:["test.x", dependency, Some Type.integer]
+    ~expected_triggers:[]
+    ~post_actions:["test.x", dependency, Some Type.integer]
     ();
   ()
 

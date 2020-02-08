@@ -4,7 +4,6 @@
  * LICENSE file in the root directory of this source tree. *)
 
 open Core
-open Pyre
 open Ast
 
 type t = {
@@ -119,17 +118,17 @@ let set_local_with_attributes ({ annotation_store; _ } as resolution) ~name ~ann
   }
 
 
-let get_local ?(global_fallback = true) ~reference { annotation_store; global_resolution; _ } =
+let get_local
+    ?(global_fallback = true)
+    ~reference
+    ({ annotation_store; global_resolution; _ } as resolution)
+  =
   match Map.find annotation_store reference with
-  | Some result
-    when global_fallback
-         || not
-              (result |> RefinementUnit.base >>| Annotation.is_global |> Option.value ~default:true)
-    ->
+  | Some result when global_fallback || not (is_global resolution ~reference) ->
       RefinementUnit.base result
   | _ when global_fallback ->
       let global = GlobalResolution.global global_resolution in
-      Reference.delocalize reference |> global >>| Node.value
+      Reference.delocalize reference |> global
   | _ -> None
 
 
@@ -140,17 +139,11 @@ let get_local_with_attributes
   =
   let object_reference, attribute_path, _ = partition_name resolution ~name in
   match Map.find annotation_store object_reference with
-  | Some result
-    when global_fallback
-         || not
-              ( result
-              |> RefinementUnit.annotation ~reference:attribute_path
-              >>| Annotation.is_global
-              |> Option.value ~default:true ) ->
+  | Some result when global_fallback || not (is_global resolution ~reference:object_reference) ->
       RefinementUnit.annotation result ~reference:attribute_path
   | _ when global_fallback ->
       let global = GlobalResolution.global global_resolution in
-      Reference.(combine object_reference attribute_path |> delocalize) |> global >>| Node.value
+      Reference.(combine object_reference attribute_path |> delocalize) |> global
   | _ -> None
 
 

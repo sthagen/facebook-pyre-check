@@ -703,14 +703,15 @@ let create ~resolution ?path ~configuration ~verify ~rule_filter source =
         let parent = Option.value_exn (Reference.prefix name) in
         let get_matching_method ~predicate =
           let get_matching_define = function
-            | { Node.value = Statement.Define ({ signature; _ } as define); location } ->
+            | { Node.value = Statement.Define ({ signature; _ } as define); _ } ->
                 if
                   predicate define
                   && Reference.equal (Node.value define.Define.signature.Define.Signature.name) name
                 then
                   let parser = GlobalResolution.annotation_parser global_resolution in
-                  Node.create signature ~location
-                  |> Annotated.Define.Callable.create_overload_without_applying_decorators ~parser
+                  Annotated.Define.Callable.create_overload_without_applying_decorators
+                    ~parser
+                    signature
                   |> Type.Callable.create_from_implementation
                   |> Option.some
                 else
@@ -742,7 +743,10 @@ let create ~resolution ?path ~configuration ~verify ~rule_filter source =
       let () =
         if
           Type.is_top (Annotation.annotation callable_annotation)
-          && not (Annotation.is_global callable_annotation)
+          (* FIXME: We are relying on the fact that nonexistent functions&attributes resolve to
+             mutable callable annotation, while existing ones resolve to immutable callable
+             annotation. This is fragile! *)
+          && not (Annotation.is_immutable callable_annotation)
         then
           raise_invalid_model "Modeled entity is not part of the environment!"
       in
