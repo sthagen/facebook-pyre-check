@@ -45,17 +45,24 @@ class PyreResult(NamedTuple):
 
 @contextmanager
 def _watch_directory(source_directory: str) -> Generator[None, None, None]:
-    subprocess.check_call(
-        ["watchman", "watch", source_directory],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        result = json.loads(subprocess.check_output(["watchman", "watch-list"]))
+        watched = os.path.abspath(source_directory) in result["roots"]
+    except KeyError:
+        watched = False
+
+    def call_watchman(command: str) -> None:
+        watchman_process = subprocess.run(
+            ["watchman", command, source_directory], capture_output=True
+        )
+        if watchman_process.returncode != 0:
+            LOG.error(watchman_process.stderr.decode())
+
+    if not watched:
+        call_watchman("watch")
     yield
-    subprocess.check_call(
-        ["watchman", "watch-del", source_directory],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    if not watched:
+        call_watchman("watch-del")
 
 
 class TestCommand(unittest.TestCase, ABC):
@@ -223,12 +230,18 @@ class TestCommand(unittest.TestCase, ABC):
 
         # Pyre Output
         if result:
+            output = result.output or ""
+            error_output = result.error_output or ""
+            if output:
+                output = "Stdout:\n" + output
+            if error_output:
+                error_output = "Stderr:\n" + error_output
             if result.output or result.error_output:
                 context += format_section(
                     "Pyre Output",
                     "Command: `" + result.command + "`",
-                    result.output or "",
-                    result.error_output or "",
+                    output,
+                    error_output,
                 )
 
         # Filesystem Structure
@@ -322,6 +335,18 @@ class TestCommand(unittest.TestCase, ABC):
                 json.loads(file_contents), json_contents, self.get_context()
             )
 
+    def assert_directory_exists(
+        self,
+        relative_path: str,
+        exists: bool = True,
+        result: Optional[PyreResult] = None,
+    ) -> None:
+        path = self.directory / relative_path
+        if exists:
+            self.assertTrue(path.is_dir(), self.get_context(result))
+        else:
+            self.assertFalse(path.is_dir(), self.get_context(result))
+
     def assert_server_exists(
         self, server_name: str, result: Optional[PyreResult] = None
     ) -> None:
@@ -370,6 +395,7 @@ class CheckTest(TestCommand):
         self.create_local_configuration("local_project", {"source_directories": ["."]})
         result = self.run_pyre("-l", "local_project", "check")
         self.assert_has_errors(result)
+        self.assert_no_servers_exist(result)
 
 
 class ColorTest(TestCommand):
@@ -400,6 +426,10 @@ class IncrementalTest(TestCommand):
             "-l", "local_project", "incremental", "--incremental-style=fine_grained"
         )
         self.assert_has_errors(result)
+
+    def test_command_line_sources(self) -> None:
+        # TODO(T60110667): Test that command line sources do not start a server.
+        pass
 
 
 class InferTest(TestCommand):
@@ -504,6 +534,14 @@ class KillTest(TestCommand):
         self.run_pyre("kill")
         self.assert_no_servers_exist()
 
+    def test_kill_resources(self) -> None:
+        self.run_pyre("-l", "local_one")
+        self.assert_directory_exists(".pyre/resource_cache")
+        result = self.run_pyre("kill")
+        self.assert_directory_exists(
+            ".pyre/resource_cache", exists=False, result=result
+        )
+
 
 class PersistentTest(TestCommand):
     # TODO(T57341910): Fill in test cases.
@@ -516,19 +554,68 @@ class ProfileTest(TestCommand):
 
 
 class QueryTest(TestCommand):
-    # TODO(T57341910): Fill in test cases.
-    # TODO(T57341910): Test pyre query help.
-    pass
+    def initial_filesystem(self) -> None:
+        self.create_project_configuration()
+        self.create_local_configuration("local", {"source_directories": ["."]})
+        self.create_file_with_error("local/has_type_error.py")
+
+    def test_query_help(self) -> None:
+        # TODO(T62048210): Change this when help works without server
+        result = self.run_pyre("query", "help")
+        self.assert_failed(result)
+        result = self.run_pyre("-l", "local", "query", "help")
+        self.assert_failed(result)
+        self.run_pyre("-l", "local", "start")
+        result = self.run_pyre("-l", "local", "query", "help")
+        self.assert_succeeded(result)
+
+    def test_query(self) -> None:
+        self.run_pyre("-l", "local", "start")
+        result = self.run_pyre("-l", "local", "query", "join(A, B)")
+        self.assert_output_matches(result, re.compile(r"\{.*\}"))
+        result = self.run_pyre("-l", "local", "query", "type(A)")
+        self.assert_output_matches(result, re.compile(r"\{.*\}"))
+
+        # Invalid query behavior
+        result = self.run_pyre("-l", "local", "query", "undefined(A)")
+        self.assert_failed(result)
+        # TODO(T62066748): Do not stop server when invalid query comes in.
+        result = self.run_pyre("-l", "local", "query", "type(A)")
+        self.assert_failed(result)
 
 
 class RageTest(TestCommand):
-    # TODO(T57341910): Fill in test cases.
-    pass
+    def initial_filesystem(self) -> None:
+        self.create_project_configuration()
 
+    def test_rage_no_servers(self) -> None:
+        result = self.run_pyre("rage")
+        self.assert_failed(result)
 
-class ReportingTest(TestCommand):
-    # TODO(T57341910): Fill in test cases.
-    pass
+        # TODO(T61745598): Add testing for proper prompting when implemented.
+        self.create_local_configuration("local_one", {"source_directories": ["."]})
+        result = self.run_pyre("rage")
+        self.assert_failed(result)
+
+        # TODO(T62047832): Better defined behavior for rage after a killed or stopped
+        # server, vs. non-existent server or logs
+        result = self.run_pyre("-l", "local_one", "rage")
+        self.assert_succeeded(result)
+
+    def test_rage(self) -> None:
+        self.create_local_configuration("local_one", {"source_directories": ["."]})
+        self.create_local_configuration("local_two", {"source_directories": ["."]})
+        self.run_pyre("-l", "local_one", "start")
+        self.run_pyre("-l", "local_two", "start")
+        result = self.run_pyre("-l", "local_one", "rage")
+        self.assert_succeeded(result)
+
+        # Invoking rage still prints logs of a stopped server
+        self.run_pyre("-l", "local_one", "stop")
+        result = self.run_pyre("-l", "local_one", "rage")
+        self.assert_succeeded(result)
+        result = self.run_pyre("-l", "local_two", "rage")
+        self.assert_succeeded(result)
 
 
 class RestartTest(TestCommand):
@@ -539,10 +626,14 @@ class RestartTest(TestCommand):
         self.create_local_configuration("local_two", {"source_directories": ["."]})
         self.create_file_with_error("local_two/has_type_error.py")
 
-    def test_restart(self) -> None:
-        # TODO(T57341910): Test blank restart
+    def test_server_restart_without_sources(self) -> None:
+        # TODO(T61745598): Add testing for proper prompting when implemented.
         self.assert_no_servers_exist()
+        result = self.run_pyre("restart")
+        self.assert_failed(result)
 
+    def test_restart(self) -> None:
+        self.assert_no_servers_exist()
         result = self.run_pyre("-l", "local_one", "restart")
         self.assert_has_errors(result)
         self.assert_server_exists("local_one")
@@ -578,6 +669,12 @@ class ServersTest(TestCommand):
             ),
         )
 
+        # Test stop servers
+        result = self.run_pyre("servers", "stop")
+        self.assert_succeeded(result)
+        result = self.run_pyre("--output=json", "servers", "list")
+        self.assert_output_matches(result, re.compile(r"\[\]"))
+
 
 class StartTest(TestCommand):
     def cleanup(self) -> None:
@@ -585,21 +682,92 @@ class StartTest(TestCommand):
 
     def initial_filesystem(self) -> None:
         self.create_project_configuration()
-        self.create_directory("local_project")
-        self.create_local_configuration("local_project", {"source_directories": ["."]})
-        self.create_file_with_error("local_project/test.py")
+        self.create_file(".watchmanconfig", "{}")
+        self.create_local_configuration("local_one", {"source_directories": ["."]})
+        self.create_file("local_one/test.py", contents="x = 1")
+        self.create_local_configuration("local_two", {"source_directories": ["."]})
+        self.create_file("local_two/test.py", contents="x = 1")
+
+    def test_server_start_without_sources(self) -> None:
+        # TODO(T61745598): Add testing for proper prompting when implemented.
+        result = self.run_pyre("start")
+        self.assert_failed(result)
 
     def test_server_start(self) -> None:
         with _watch_directory(self.directory):
-            result = self.run_pyre("-l", "local_project", "start")
+            result = self.run_pyre("-l", "local_one", "start")
+            self.assert_no_errors(result)
+            self.assert_server_exists("local_one")
+            result = self.run_pyre("-l", "local_two", "start")
+            self.assert_no_errors(result)
+            self.assert_server_exists("local_one")
+            self.assert_server_exists("local_two")
+
+            # Start already existing server
+            result = self.run_pyre("-l", "local_two", "start")
+            self.assert_no_errors(result)
+            self.assert_server_exists("local_two")
+
+            # Assert servers are picking up on changes
+            result = self.run_pyre("-l", "local_one")
+            self.assert_no_errors(result)
+            self.create_file_with_error("local_one/test.py")
+            result = self.run_pyre("-l", "local_one")
+            self.assert_has_errors(result)
+
+            result = self.run_pyre("-l", "local_two")
+            self.create_file_with_error("local_two/test_two.py")
+            result = self.run_pyre("-l", "local_two")
+            self.assert_has_errors(result)
+
+    def test_server_no_watchman(self) -> None:
+        with _watch_directory(self.directory):
+            result = self.run_pyre("-l", "local_one", "start", "--no-watchman")
             self.assert_no_errors(result)
 
-        # TODO(T57341910): Test concurrent pyre server processes.
+            # Assert server is not picking up on changes
+            self.create_file_with_error("local_one/test.py")
+            result = self.run_pyre("-l", "local_one")
+            self.assert_no_errors(result)
 
 
 class StatisticsTest(TestCommand):
-    # TODO(T57341910): Fill in test cases.
-    pass
+    def initial_filesystem(self) -> None:
+        self.create_project_configuration()
+        self.create_directory("local_project")
+        self.create_local_configuration("local_project", {"source_directories": ["."]})
+        self.create_file(
+            "local_project/test.py",
+            contents="""
+                def fully_annotated(x: int) -> str:
+                    return str(x)
+
+                def return_annotated(x) -> str:
+                    return ""
+        """,
+        )
+
+    def test_statistics_without_sources(self) -> None:
+        result = self.run_pyre("statistics")
+        self.assert_failed(result)
+
+    def test_statistics(self) -> None:
+        result = self.run_pyre("-l", "local_project", "statistics")
+        self.assert_output_matches(
+            result,
+            re.compile(r"\{\"annotations\":.*\"fixmes\":.*\"ignores\".*\"strict\".*\}"),
+        )
+
+    def test_collect(self) -> None:
+        result = self.run_pyre(
+            "-l", "local_project", "statistics", "--collect", "unstrict_files"
+        )
+        self.assert_output_matches(result, re.compile(r"\[(\{.*\})*\]"))
+
+        result = self.run_pyre(
+            "-l", "local_project", "statistics", "--collect", "missing_annotations"
+        )
+        self.assert_output_matches(result, re.compile(r"\[(\{.*\})*\]"))
 
 
 class StopTest(TestCommand):
@@ -611,6 +779,8 @@ class StopTest(TestCommand):
         self.create_file_with_error("local_two/has_type_error.py")
 
     def test_stop_without_server(self) -> None:
+        # TODO(T61745598): Add testing for selecting the correct server or prompting
+        # user when no server is given.
         self.assert_no_servers_exist()
         result = self.run_pyre("stop")
         self.assert_succeeded(result)
