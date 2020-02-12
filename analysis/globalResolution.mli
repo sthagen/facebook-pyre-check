@@ -57,10 +57,10 @@ val solve_less_or_equal
 val is_invariance_mismatch : t -> left:Type.t -> right:Type.t -> bool
 
 val variables
-  :  ?default:ClassHierarchy.Variable.t list option ->
+  :  ?default:Type.Variable.t list option ->
   t ->
   Type.Primitive.t ->
-  ClassHierarchy.Variable.t list option
+  Type.Variable.t list option
 
 val check_invalid_type_parameters
   :  t ->
@@ -199,9 +199,7 @@ val attribute_from_class_name
   instantiated:Type.t ->
   AnnotatedAttribute.instantiated option
 
-val superclasses : resolution:t -> ClassSummary.t Node.t -> ClassSummary.t Node.t list
-
-val successors : resolution:t -> ClassSummary.t Node.t -> string list
+val successors : resolution:t -> Type.Primitive.t -> string list
 
 val constraints
   :  resolution:t ->
@@ -220,7 +218,7 @@ val signature_select
 
 val create_overload : resolution:t -> Define.Signature.t -> Type.t Type.Callable.overload
 
-val constructor : resolution:t -> ClassSummary.t Node.t -> instantiated:Type.t -> Type.t
+val constructor : resolution:t -> Type.Primitive.t -> instantiated:Type.t -> Type.t option
 
 val attribute_names
   :  resolution:t ->
@@ -232,3 +230,5 @@ val attribute_names
   string list option
 
 val global_location : t -> Reference.t -> Location.t option
+
+val class_exists : t -> Type.Primitive.t -> bool

@@ -237,12 +237,36 @@ module OrderImplementation = struct
              in the Python type system at the moment. *)
           | Defined _, Undefined -> [initial_constraints]
           | Undefined, Defined _ -> [initial_constraints]
-          | bound, ParameterVariadicTypeVariable variable
+          | bound, ParameterVariadicTypeVariable { head = []; variable }
             when Type.Variable.Variadic.Parameters.is_free variable ->
               let pair = Type.Variable.ParameterVariadicPair (variable, bound) in
               OrderedConstraints.add_upper_bound initial_constraints ~order ~pair |> Option.to_list
+          | bound, ParameterVariadicTypeVariable { head; variable }
+            when Type.Variable.Variadic.Parameters.is_free variable ->
+              let constraints, remainder =
+                match bound with
+                | Undefined -> [initial_constraints], Undefined
+                | ParameterVariadicTypeVariable { head = left_head; variable = left_variable } ->
+                    let paired, remainder = List.split_n left_head (List.length head) in
+                    ( solve_ordered_types_less_or_equal
+                        order
+                        ~left:(Concrete paired)
+                        ~right:(Concrete head)
+                        ~constraints:initial_constraints,
+                      ParameterVariadicTypeVariable { head = remainder; variable = left_variable } )
+                | Defined defined ->
+                    let paired, remainder = List.split_n defined (List.length head) in
+                    ( solve_parameters
+                        ~left_parameters:paired
+                        ~right_parameters:
+                          (Type.Callable.prepend_anonymous_parameters ~head ~tail:[])
+                        initial_constraints,
+                      Defined remainder )
+              in
+              let pair = Type.Variable.ParameterVariadicPair (variable, remainder) in
+              List.filter_map constraints ~f:(OrderedConstraints.add_upper_bound ~order ~pair)
           | ParameterVariadicTypeVariable left, ParameterVariadicTypeVariable right
-            when Type.Variable.Variadic.Parameters.equal left right ->
+            when Type.Callable.equal_parameter_variadic_type_variable Type.equal left right ->
               [initial_constraints]
           | _, _ -> []
         with
@@ -462,7 +486,7 @@ module OrderImplementation = struct
               | Single Top, _, _ -> []
               | ( Single left,
                   Single right,
-                  ClassHierarchy.Variable.Unary { Type.Variable.Unary.variance = Covariant; _ } ) ->
+                  Type.Variable.Unary { Type.Variable.Unary.variance = Covariant; _ } ) ->
                   constraints
                   |> List.concat_map ~f:(fun constraints ->
                          solve_less_or_equal order ~constraints ~left ~right)
@@ -492,12 +516,15 @@ module OrderImplementation = struct
                            ~constraints
                            ~left:right_parameters
                            ~right:left_parameters)
+              | CallableParameters left, CallableParameters right, ParameterVariadic _ ->
+                  let left = Type.Callable.create ~parameters:left ~annotation:Type.Any () in
+                  let right = Type.Callable.create ~parameters:right ~annotation:Type.Any () in
+                  List.concat_map constraints ~f:(fun constraints ->
+                      solve_less_or_equal order ~constraints ~left ~right)
               | _ -> []
             in
             ClassHierarchy.variables handler right_name
-            >>= ClassHierarchy.Variable.zip_on_two_parameter_lists
-                  ~left_parameters
-                  ~right_parameters
+            >>= Type.Variable.zip_on_two_parameter_lists ~left_parameters ~right_parameters
             >>| List.fold ~f:handle_variables ~init:[constraints]
           in
           let parameters =
@@ -955,7 +982,10 @@ module OrderImplementation = struct
                       match left, right, variable with
                       | Type.Parameter.Group _, _, _
                       | _, Type.Parameter.Group _, _
-                      | _, _, ClassHierarchy.Variable.ListVariadic _ ->
+                      | _, _, Type.Variable.ListVariadic _
+                      | CallableParameters _, _, _
+                      | _, CallableParameters _, _
+                      | _, _, ParameterVariadic _ ->
                           (* TODO(T47348395): Implement joining for variadics *)
                           None
                       | Single Type.Bottom, Single other, _
@@ -987,7 +1017,7 @@ module OrderImplementation = struct
                           in
                           Type.Variable.GlobalTransforms.Unary.replace_all replace_if_free
                         in
-                        ClassHierarchy.Variable.zip_on_two_parameter_lists
+                        Type.Variable.zip_on_two_parameter_lists
                           ~left_parameters
                           ~right_parameters
                           variables
@@ -1311,13 +1341,16 @@ module OrderImplementation = struct
                 let protocol_parameters =
                   protocol_generics
                   >>| List.map ~f:(function
-                          | ClassHierarchy.Variable.Unary variable ->
+                          | Type.Variable.Unary variable ->
                               Type.Parameter.Single (Type.Variable variable)
                           | ListVariadic variable ->
                               Group
                                 (Concatenation
                                    ( Type.OrderedTypes.Concatenation.Middle.create_bare variable
-                                   |> Type.OrderedTypes.Concatenation.create )))
+                                   |> Type.OrderedTypes.Concatenation.create ))
+                          | ParameterVariadic variable ->
+                              CallableParameters
+                                (ParameterVariadicTypeVariable { head = []; variable }))
                   |> Option.value ~default:[]
                 in
                 ProtocolAssumptions.add
@@ -1447,11 +1480,16 @@ module OrderImplementation = struct
                               (TypeConstraints.Solution.instantiate_ordered_types
                                  desanitization_solution
                                  group)
+                        | CallableParameters parameters ->
+                            CallableParameters
+                              (TypeConstraints.Solution.instantiate_callable_parameters
+                                 desanitization_solution
+                                 parameters)
                       in
                       List.map ~f:instantiate
                     in
                     let instantiate = function
-                      | ClassHierarchy.Variable.Unary variable ->
+                      | Type.Variable.Unary variable ->
                           TypeConstraints.Solution.instantiate_single_variable solution variable
                           |> Option.value ~default:(Type.Variable variable)
                           |> fun instantiated -> Type.Parameter.Single instantiated
@@ -1466,6 +1504,15 @@ module OrderImplementation = struct
                             variable
                           |> Option.value ~default
                           |> fun instantiated -> Type.Parameter.Group instantiated
+                      | ParameterVariadic variable ->
+                          TypeConstraints.Solution.instantiate_single_parameter_variadic
+                            solution
+                            variable
+                          |> Option.value
+                               ~default:
+                                 (Type.Callable.ParameterVariadicTypeVariable
+                                    { head = []; variable })
+                          |> fun instantiated -> Type.Parameter.CallableParameters instantiated
                     in
                     protocol_generics
                     >>| List.map ~f:instantiate

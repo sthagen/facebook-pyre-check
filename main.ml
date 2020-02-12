@@ -10,9 +10,7 @@ let commands =
   [
     "analyze", Analyze.command;
     "check", Check.check_command;
-    "query", Query.command;
     "rage", Rage.command;
-    "incremental", Incremental.command;
     "infer", Infer.infer_command;
     "lint", Lint.command;
     "persistent", Persistent.command;

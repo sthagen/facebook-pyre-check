@@ -233,7 +233,7 @@ let is_invariance_mismatch resolution ~left ~right =
         let variances =
           ClassHierarchy.variables (class_hierarchy resolution) left_name
           (* TODO(T47346673): Do this check when list variadics have variance *)
-          >>= ClassHierarchy.Variable.all_unary
+          >>= Type.Variable.all_unary
           >>| List.map ~f:(fun { Type.Variable.Unary.variance; _ } -> variance)
         in
         match variances with
@@ -415,10 +415,6 @@ let successors ~resolution:({ dependency; _ } as resolution) =
   ClassMetadataEnvironment.ReadOnly.successors ?dependency (class_metadata_environment resolution)
 
 
-let superclasses ~resolution:({ dependency; _ } as resolution) =
-  ClassMetadataEnvironment.ReadOnly.superclasses ?dependency (class_metadata_environment resolution)
-
-
 let attributes
     ~resolution:({ dependency; _ } as resolution)
     ?(transitive = false)
@@ -548,4 +544,10 @@ let attribute_names
 let global_location ({ dependency; _ } as resolution) =
   AnnotatedGlobalEnvironment.ReadOnly.get_global_location
     (annotated_global_environment resolution)
+    ?dependency
+
+
+let class_exists ({ dependency; _ } as resolution) =
+  UnannotatedGlobalEnvironment.ReadOnly.class_exists
+    (unannotated_global_environment resolution)
     ?dependency

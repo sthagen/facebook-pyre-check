@@ -120,10 +120,15 @@ module Record : sig
       name: Identifier.t;
     }
 
+    and 'annotation parameter_variadic_type_variable = {
+      head: 'annotation list;
+      variable: 'annotation Variable.RecordVariadic.RecordParameters.record;
+    }
+
     and 'annotation record_parameters =
       | Defined of 'annotation RecordParameter.t list
       | Undefined
-      | ParameterVariadicTypeVariable of 'annotation Variable.RecordVariadic.RecordParameters.record
+      | ParameterVariadicTypeVariable of 'annotation parameter_variadic_type_variable
 
     and 'annotation overload = {
       annotation: 'annotation;
@@ -144,6 +149,7 @@ module Record : sig
     type 'annotation record =
       | Single of 'annotation
       | Group of 'annotation OrderedTypes.record
+      | CallableParameters of 'annotation Callable.record_parameters
   end
 end
 
@@ -153,6 +159,8 @@ module Primitive : sig
   include Hashable with type t := t
 
   module Set : Set.S with type Elt.t = t
+
+  val is_unit_test : t -> bool
 end
 
 type literal =
@@ -388,6 +396,11 @@ module Callable : sig
     type_t
 
   val create_from_implementation : type_t overload -> type_t
+
+  val prepend_anonymous_parameters
+    :  head:type_t list ->
+    tail:type_t Parameter.t list ->
+    type_t Parameter.t list
 end
 
 type alias =
@@ -775,6 +788,21 @@ module Variable : sig
   val contains_escaped_free_variable : type_t -> bool
 
   val convert_all_escaped_free_variables_to_anys : type_t -> type_t
+
+  val zip_on_parameters
+    :  parameters:Parameter.t sexp_list ->
+    t sexp_list ->
+    (Parameter.t * t) sexp_list sexp_option
+
+  val zip_on_two_parameter_lists
+    :  left_parameters:Parameter.t sexp_list ->
+    right_parameters:Parameter.t sexp_list ->
+    t sexp_list ->
+    (Parameter.t * Parameter.t * t) sexp_list sexp_option
+
+  val all_unary : t list -> Unary.t list option
+
+  val to_parameter : t -> Parameter.t
 end
 
 val namespace_insensitive_compare : t -> t -> int

@@ -201,7 +201,10 @@ end = struct
   end
 
   module ClassDefinitions =
-    Memory.DependencyTrackedTableWithCache (SharedMemoryKeys.StringKey) (DependencyKey) (ClassValue)
+    DependencyTrackedMemory.DependencyTrackedTableWithCache
+      (SharedMemoryKeys.StringKey)
+      (DependencyKey)
+      (ClassValue)
 
   module UnannotatedGlobalValue = struct
     type t = unannotated_global
@@ -216,7 +219,9 @@ end = struct
   end
 
   module UnannotatedGlobals =
-    Memory.DependencyTrackedTableNoCache (SharedMemoryKeys.ReferenceKey) (DependencyKey)
+    DependencyTrackedMemory.DependencyTrackedTableNoCache
+      (SharedMemoryKeys.ReferenceKey)
+      (DependencyKey)
       (UnannotatedGlobalValue)
 
   module FunctionDefinitionValue = struct
@@ -232,7 +237,9 @@ end = struct
   end
 
   module FunctionDefinitions =
-    Memory.DependencyTrackedTableWithCache (SharedMemoryKeys.ReferenceKey) (DependencyKey)
+    DependencyTrackedMemory.DependencyTrackedTableWithCache
+      (SharedMemoryKeys.ReferenceKey)
+      (DependencyKey)
       (FunctionDefinitionValue)
 
   let set_unannotated_global ~target = UnannotatedGlobals.add target
@@ -713,7 +720,7 @@ let update_this_and_all_preceding_environments
           "TableUpdate(Unannotated globals)"
           ~f:(fun _ ->
             let (), mutation_triggers =
-              DependencyKey.Transaction.empty
+              DependencyKey.Transaction.empty ~scheduler ~configuration
               |> WriteOnly.add_to_transaction
                    ~previous_classes_list
                    ~previous_unannotated_globals_list

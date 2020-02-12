@@ -1085,10 +1085,7 @@ let test_callable_parameter_variadics context =
       class Propagating(typing.List[typing.Callable[V, int]]):
          def foo(self) -> int: ...
     |}
-    [
-      "Invalid type variable [34]: Cannot propagate callable parameter variadic `V`.  "
-      ^ "Classes parameterized by callable parameter variadics are not supported at this time.";
-    ];
+    [];
   assert_type_errors
     ~handle:"qualifier.py"
     {|
@@ -1832,6 +1829,126 @@ let test_concatenation_operator context =
   ()
 
 
+let test_user_defined_parameter_specification_classes context =
+  let assert_type_errors = assert_type_errors ~context in
+  assert_type_errors
+    {|
+      from pyre_extensions import ParameterSpecification
+      from typing import TypeVar, Generic, Callable
+
+      TParams = ParameterSpecification("TParams")
+      TReturn = TypeVar("TReturn")
+      def function(param: str) -> str:
+        ...
+      class MyClass(Generic[TParams, TReturn]):
+        f: Callable[TParams, TReturn]
+
+        def __init__(self, f: Callable[TParams, TReturn]) -> None:
+         self.f = f
+
+        def call(__self, *args: TParams.args, **kwargs: TParams.kwargs) -> TReturn:
+          f = __self.f
+          # do some logging or something
+          return f( *args, **kwargs)
+
+      def client(f: Callable[TParams, TReturn]) -> MyClass[TParams, TReturn]:
+        return MyClass(f)
+
+      def foo() -> None:
+        x = client(function).call(param="")
+        reveal_type(x)
+        client(function).call(parm="")
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `x` is `str`.";
+      "Unexpected keyword [28]: Unexpected keyword argument `parm` to call `MyClass.call`.";
+    ];
+  assert_type_errors
+    {|
+      from pyre_extensions import ParameterSpecification
+      from typing import TypeVar, Generic, Callable
+      TParams = ParameterSpecification("TParams")
+      TReturn = TypeVar("TReturn")
+      def client(f: Callable[TParams, TReturn]) -> None:
+        def inner(__x: int, *args: TParams.args, **kwargs: TParams.kwargs) -> TReturn:
+          return f( *args, **kwargs)
+        reveal_type(inner)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `inner` is \
+       `typing.Callable[pyre_extensions.type_variable_operators.Concatenate[int, test.TParams], \
+       Variable[TReturn]]`.";
+    ];
+  assert_type_errors
+    {|
+      from pyre_extensions import ParameterSpecification
+      from typing import TypeVar, Generic, Callable, Protocol
+      TParams = ParameterSpecification("TParams")
+      TReturn = TypeVar("TReturn")
+      class CallableReturningInt(Protocol[TParams]):
+        def __call__(__self, __f: int, *args: TParams.args, **kwargs: TParams.kwargs) -> int:
+          ...
+      def za(f: CallableReturningInt[TParams]) -> Callable[TParams, int]: ...
+      def goof(x: int) -> int:
+        return x
+      def foo() -> None:
+        f = za(goof)
+        reveal_type(f)
+    |}
+    ["Revealed type [-1]: Revealed type for `f` is `typing.Callable[[], int]`."];
+  assert_type_errors
+    {|
+    from typing import Protocol
+    from pyre_extensions import ParameterSpecification
+    from typing import TypeVar, Generic, Callable
+    TParams = ParameterSpecification("TParams")
+    TReturn = TypeVar("TReturn")
+    TSelf = TypeVar("TSelf")
+    class ObjectMethod(Protocol[TSelf, TParams, TReturn]):
+        def __call__(__self, __other_self: TSelf, *args: TParams.args, **kwargs: TParams.kwargs) -> TReturn: ...
+    def track_assertion(
+      assertion: ObjectMethod["TestCommand", TParams, None]
+    ) -> ObjectMethod["TestCommand", TParams, int]:
+         def assert_test(
+           __self: "TestCommand",
+           *args: TParams.args,
+           **kwargs: TParams.kwargs
+         ) -> int:
+           assertion(__self, *args, **kwargs)
+           return 7
+         return assert_test
+    class TestCommand:
+      @track_assertion
+      def method(self, x: int) -> bool:
+        return True
+
+    def foo() -> None:
+      m = TestCommand().method
+      reveal_type(m)
+
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `m` is `typing.Callable(TestCommand.method)[[Named(x, \
+       int)], bool]`.";
+    ];
+  assert_type_errors
+    {|
+      from pyre_extensions import ParameterSpecification
+      from typing import TypeVar, Generic, Callable
+
+      Ts = pyre_extensions.ListVariadic("Ts")
+      TParams = ParameterSpecification("TParams")
+      TReturn = TypeVar("TReturn")
+      class MyClass(Generic[Ts, TReturn]):
+        pass
+
+      def bad(x: MyClass[[TParams, int], str]) -> None:
+        pass
+    |}
+    ["Undefined or invalid type [11]: Annotation `TParams` is not defined as a type."];
+  ()
+
+
 let () =
   "typeVariable"
   >::: [
@@ -1847,5 +1964,6 @@ let () =
          "map" >:: test_map;
          "user_defined_variadics" >:: test_user_defined_variadics;
          "concatenation" >:: test_concatenation_operator;
+         "user_defined_parameter_variadics" >:: test_user_defined_parameter_specification_classes;
        ]
   |> Test.run

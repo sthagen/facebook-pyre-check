@@ -61,18 +61,7 @@ let produce_class_metadata undecorated_function_environment class_name ~track_de
     let is_final =
       definition |> fun { Node.value = definition; _ } -> ClassSummary.is_final definition
     in
-    let in_test =
-      let is_unit_test { Node.value = definition; _ } = ClassSummary.is_unit_test definition in
-      let successor_classes =
-        List.filter_map
-          ~f:
-            (UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
-               ?dependency:unannotated_global_environment_dependency
-               unannotated_global_environment)
-          successors
-      in
-      List.exists ~f:is_unit_test successor_classes
-    in
+    let in_test = List.exists ~f:Type.Primitive.is_unit_test successors in
     let extends_placeholder_stub_class =
       let dependency =
         Option.some_if track_dependencies (SharedMemoryKeys.RegisterClassMetadata class_name)
@@ -153,25 +142,10 @@ module ReadOnly = struct
     |> UndecoratedFunctionEnvironment.ReadOnly.class_hierarchy_environment
 
 
-  let successors read_only ?dependency { Node.value = { ClassSummary.name; _ }; _ } =
-    get_class_metadata read_only ?dependency (Reference.show name)
+  let successors read_only ?dependency class_name =
+    get_class_metadata read_only ?dependency class_name
     >>| (fun { successors; _ } -> successors)
     |> Option.value ~default:[]
-
-
-  let superclasses read_only ?dependency class_summary =
-    let class_definition =
-      let unannotated_global_environment =
-        undecorated_function_environment read_only
-        |> UndecoratedFunctionEnvironment.ReadOnly.class_hierarchy_environment
-        |> ClassHierarchyEnvironment.ReadOnly.alias_environment
-        |> AliasEnvironment.ReadOnly.unannotated_global_environment
-      in
-      UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
-        unannotated_global_environment
-        ?dependency
-    in
-    successors read_only class_summary |> List.filter_map ~f:class_definition
 end
 
 module MetadataReadOnly = ReadOnly

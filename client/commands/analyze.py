@@ -20,6 +20,7 @@ def writable_directory(path: str) -> str:
         os.makedirs(path)
     except FileExistsError:
         pass
+    path = os.path.abspath(path)
     assert_writable_directory(path)
     return path
 
@@ -114,4 +115,5 @@ class Analyze(Check):
         self._analysis_directory.prepare()
         result = self._call_client(command=self.NAME)
         result.check()
-        log.stdout.write(result.output)
+        if self._save_results_to is None:
+            log.stdout.write(result.output)

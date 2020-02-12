@@ -135,6 +135,7 @@ def executable_file(file_path: str) -> str:
 
 class CommandParser(ABC):
     NAME = ""
+    HIDDEN = False
     _exit_code: ExitCode = ExitCode.SUCCESS
 
     def __init__(self, arguments: argparse.Namespace, original_directory: str) -> None:
@@ -180,7 +181,6 @@ class CommandParser(ABC):
         self._load_initial_state_from: Optional[str] = arguments.load_initial_state_from
         self._changed_files_path: Optional[str] = arguments.changed_files_path
         self._saved_state_project: Optional[str] = arguments.saved_state_project
-        self._use_json_sockets: bool = arguments.use_json_sockets
 
         # Derived arguments
         self._capable_terminal: bool = is_capable_terminal()

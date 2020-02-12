@@ -157,7 +157,7 @@ module EnvironmentTable = struct
     val mem : ?dependency:SharedMemoryKeys.DependencyKey.t -> key -> bool
 
     val add_dependency
-      :  kind:Memory.DependencyKind.t ->
+      :  kind:DependencyTrackedMemory.DependencyKind.t ->
       key ->
       SharedMemoryKeys.DependencyKey.t ->
       unit
@@ -303,13 +303,14 @@ module EnvironmentTable = struct
                   let keys =
                     List.map names_to_update ~f:In.convert_trigger |> Table.KeySet.of_list
                   in
+                  let transaction =
+                    SharedMemoryKeys.DependencyKey.Transaction.empty ~scheduler ~configuration
+                  in
                   if In.lazy_incremental then
-                    SharedMemoryKeys.DependencyKey.Transaction.empty
-                    |> Table.add_pessimistic_transaction ~keys
+                    Table.add_pessimistic_transaction ~keys transaction
                     |> SharedMemoryKeys.DependencyKey.Transaction.execute ~update:(fun () -> ())
                   else
-                    SharedMemoryKeys.DependencyKey.Transaction.empty
-                    |> Table.add_to_transaction ~keys
+                    Table.add_to_transaction ~keys transaction
                     |> SharedMemoryKeys.DependencyKey.Transaction.execute
                          ~update:(update ~names_to_update ~track_dependencies:true)
                 in
@@ -371,9 +372,15 @@ module EnvironmentTable = struct
   module WithCache (In : In) =
     Make
       (In)
-      (Memory.DependencyTrackedTableWithCache (In.Key) (SharedMemoryKeys.DependencyKey) (In.Value))
+      (DependencyTrackedMemory.DependencyTrackedTableWithCache
+         (In.Key)
+         (SharedMemoryKeys.DependencyKey)
+         (In.Value))
   module NoCache (In : In) =
     Make
       (In)
-      (Memory.DependencyTrackedTableNoCache (In.Key) (SharedMemoryKeys.DependencyKey) (In.Value))
+      (DependencyTrackedMemory.DependencyTrackedTableNoCache
+         (In.Key)
+         (SharedMemoryKeys.DependencyKey)
+         (In.Value))
 end

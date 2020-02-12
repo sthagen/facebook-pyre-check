@@ -478,7 +478,9 @@ module State (Context : Context) = struct
         let variables =
           List.map variables ~f:(function
               | Unary variable -> Type.Parameter.Single (Type.Variable variable)
-              | ListVariadic variadic -> Group (Type.Variable.Variadic.List.self_reference variadic))
+              | ListVariadic variadic -> Group (Type.Variable.Variadic.List.self_reference variadic)
+              | ParameterVariadic parameters ->
+                  CallableParameters (Type.Variable.Variadic.Parameters.self_reference parameters))
         in
         Type.Parametric { name = parent_name; parameters = variables }
     | exception _ -> parent_type
@@ -514,8 +516,9 @@ module State (Context : Context) = struct
           fix_invalid_parameters_in_bounds unary |> fun unary -> Type.Variable.Unary unary
         in
         let extract = function
-          | ClassHierarchy.Variable.Unary unary -> unarize unary
+          | Type.Variable.Unary unary -> unarize unary
           | ListVariadic variadic -> Type.Variable.ListVariadic variadic
+          | ParameterVariadic variable -> ParameterVariadic variable
         in
         Reference.show class_name
         |> GlobalResolution.variables global_resolution
@@ -973,7 +976,7 @@ module State (Context : Context) = struct
               ~data:(RefinementUnit.create ~base:{ Annotation.annotation; mutability } ()) )
         in
         let number_of_stars name = Identifier.split_star name |> fst |> String.length in
-        match parameters, parent with
+        match List.rev parameters, parent with
         | [], Some _ when not (Define.is_class_toplevel define || Define.is_static_method define) ->
             let state =
               let name =
@@ -988,17 +991,16 @@ module State (Context : Context) = struct
                 ~kind:(Error.InvalidMethodSignature { annotation = None; name })
             in
             state, Resolution.annotation_store resolution
-        | ( [
-              {
-                Node.value = { name = first_name; value = None; annotation = Some first_annotation };
-                _;
-              };
-              {
-                Node.value =
-                  { name = second_name; value = None; annotation = Some second_annotation };
-                _;
-              };
-            ],
+        | ( {
+              Node.value = { name = second_name; value = None; annotation = Some second_annotation };
+              _;
+            }
+            :: {
+                 Node.value =
+                   { name = first_name; value = None; annotation = Some first_annotation };
+                 _;
+               }
+               :: reversed_head,
             _ )
           when number_of_stars first_name = 1 && number_of_stars second_name = 2 -> (
             match
@@ -1030,7 +1032,7 @@ module State (Context : Context) = struct
                     |> Type.Variable.Variadic.Parameters.decompose
                     |> add_annotations
                   in
-                  state, annotations
+                  List.rev reversed_head |> List.foldi ~init:(state, annotations) ~f:check_parameter
                 else
                   let state =
                     let origin =
@@ -1064,7 +1066,7 @@ module State (Context : Context) = struct
       let resolution_fixpoint =
         let postcondition = Resolution.annotation_store resolution in
         let key = [%hash: int * int] (Cfg.entry_index, 0) in
-        LocalAnnotationMap.set_statement resolution_fixpoint ~key ~postcondition
+        LocalAnnotationMap.set resolution_fixpoint ~key ~postcondition
       in
       { state with resolution; resolution_fixpoint }
     in
@@ -1122,12 +1124,11 @@ module State (Context : Context) = struct
             errors
           else
             let open Annotated in
-            Node.create define ~location
-            |> Define.create
-            |> Define.parent_definition ~resolution:global_resolution
-            >>= (fun definition ->
+            begin
+              match define with
+              | { Ast.Statement.Define.signature = { parent = Some parent; _ }; _ } -> (
                   Class.overrides
-                    definition
+                    (Reference.show parent)
                     ~resolution:global_resolution
                     ~name:(StatementDefine.unqualified_name define)
                   >>| fun overridden_attribute ->
@@ -1363,7 +1364,9 @@ module State (Context : Context) = struct
                       Type.Callable.Overload.parameters implementation
                       |> Option.value ~default:[]
                       |> List.fold ~init:errors ~f:check_parameter
-                  | _ -> errors)
+                  | _ -> errors )
+              | _ -> None
+            end
             |> Option.value ~default:errors
         with
         | ClassHierarchy.Untracked _ -> errors
@@ -1410,9 +1413,7 @@ module State (Context : Context) = struct
       let { state; resolved = value_resolved; _ } = forward_expression ~state ~expression:value in
       Type.weaken_literals key_resolved, Type.weaken_literals value_resolved, state
     in
-    let forward_generator
-        ~state
-        ~generator:({ Comprehension.Generator.conditions; target; _ } as generator)
+    let forward_generator ~state ~generator:({ Comprehension.Generator.conditions; _ } as generator)
       =
       (* Propagate the target type information. *)
       let iterator =
@@ -1420,18 +1421,9 @@ module State (Context : Context) = struct
         |> Node.create ~location
       in
       let state =
-        let { errors; resolution; resolution_fixpoint; _ } = state in
-        let ({ errors = iterator_errors; resolution = iterator_resolution; _ } as state) =
+        let { errors; resolution_fixpoint; _ } = state in
+        let ({ errors = iterator_errors; _ } as state) =
           forward_statement ~state:{ state with errors = ErrorMap.Map.empty } ~statement:iterator
-        in
-        let precondition = Resolution.annotation_store resolution in
-        let postcondition = Resolution.annotation_store iterator_resolution in
-        let resolution_fixpoint =
-          LocalAnnotationMap.set_expression
-            ~key:target.Node.location
-            ~precondition
-            ~postcondition
-            resolution_fixpoint
         in
         (* Don't throw Incompatible Variable errors on the generated iterator assign; we are
            temporarily minting a variable in a new scope and old annotations should be ignored. *)
@@ -1657,8 +1649,11 @@ module State (Context : Context) = struct
                       | Variable { constraints = Type.Variable.Bound parent; _ } -> parent
                       | _ -> meta_parameter
                     in
-                    GlobalResolution.class_definition global_resolution parent
-                    >>| GlobalResolution.constructor
+                    parent
+                    |> Type.split
+                    |> fst
+                    |> Type.primitive_name
+                    >>= GlobalResolution.constructor
                           ~instantiated:meta_parameter
                           ~resolution:global_resolution
                     >>= function
@@ -2015,10 +2010,7 @@ module State (Context : Context) = struct
           if extends_placeholder_stub_class then
             None
           else
-            List.filter successors ~f:(fun name ->
-                Option.is_some
-                  (GlobalResolution.class_definition global_resolution (Type.Primitive name)))
-            |> List.hd
+            List.find successors ~f:(GlobalResolution.class_exists global_resolution)
         in
         match metadata >>= superclass with
         | Some superclass ->
@@ -4551,7 +4543,7 @@ module State (Context : Context) = struct
               >>| (fun extended_parameters ->
                     let actual_parameters =
                       GlobalResolution.variables global_resolution name
-                      >>= ClassHierarchy.Variable.all_unary
+                      >>= Type.Variable.all_unary
                       >>| List.map ~f:(fun unary -> Type.Variable unary)
                       |> Option.value ~default:[]
                     in
@@ -4609,7 +4601,7 @@ module State (Context : Context) = struct
         | Some key, { resolution = post_resolution; _ } ->
             let precondition = Resolution.annotation_store resolution in
             let postcondition = Resolution.annotation_store post_resolution in
-            LocalAnnotationMap.set_statement resolution_fixpoint ~key ~precondition ~postcondition
+            LocalAnnotationMap.set resolution_fixpoint ~key ~precondition ~postcondition
         | None, _ -> resolution_fixpoint
       in
       { state with resolution_fixpoint }
@@ -4653,6 +4645,7 @@ let resolution global_resolution ?(annotation_store = Reference.Map.empty) () =
         ~annotation_store:Reference.Map.empty
         ~resolve:(fun ~resolution:_ _ -> Annotation.create Type.Top)
         ~resolve_assignment:(fun ~resolution _ -> resolution)
+        ~resolve_assertion:(fun ~resolution ~asserted_expression:_ -> resolution)
         ()
     in
     {
@@ -4676,15 +4669,34 @@ let resolution global_resolution ?(annotation_store = Reference.Map.empty) () =
       ~statement:(Ast.Node.create_with_default_location (Statement.Assign assign))
     |> State.resolution
   in
-  Resolution.create ~global_resolution ~annotation_store ~resolve ~resolve_assignment ()
+  let resolve_assertion ~resolution ~asserted_expression =
+    let state = { state_without_resolution with State.resolution } in
+    let assertion =
+      {
+        Ast.Statement.Assert.test = asserted_expression;
+        message = None;
+        origin = Ast.Statement.Assert.Origin.Assertion;
+      }
+    in
+    State.forward_statement
+      ~state
+      ~statement:(Ast.Node.create_with_default_location (Statement.Assert assertion))
+    |> State.resolution
+  in
+  Resolution.create
+    ~global_resolution
+    ~annotation_store
+    ~resolve
+    ~resolve_assignment
+    ~resolve_assertion
+    ()
 
 
 let resolution_with_key ~global_resolution ~local_annotations ~parent ~key =
   let annotation_store =
     match key, local_annotations with
     | Some key, Some map ->
-        LocalAnnotationMap.get_statement_precondition map key
-        |> Option.value ~default:Reference.Map.empty
+        LocalAnnotationMap.get_precondition map key |> Option.value ~default:Reference.Map.empty
     | _ -> Reference.Map.empty
   in
   resolution global_resolution ~annotation_store () |> Resolution.with_parent ~parent
@@ -4702,7 +4714,7 @@ let emit_errors (module Context : Context) ~errors_in_state ~global_resolution ~
     Context.define
   in
   let exit_annotation_store =
-    LocalAnnotationMap.get_statement_postcondition local_annotations Cfg.exit_index
+    LocalAnnotationMap.get_postcondition local_annotations Cfg.exit_index
     |> Option.value ~default:Reference.Map.empty
   in
   let class_initialization_errors errors =
@@ -4798,11 +4810,14 @@ let emit_errors (module Context : Context) ~errors_in_state ~global_resolution ~
               []
             else
               let abstract_superclasses, concrete_superclasses =
-                List.partition_tf
-                  ~f:(fun superclass ->
-                    ClassSummary.is_protocol (Node.value superclass)
-                    || AnnotatedClass.has_abstract_base superclass)
-                  (GlobalResolution.superclasses definition ~resolution:global_resolution)
+                let { Node.value = { ClassSummary.name; _ }; _ } = definition in
+                let class_name = Reference.show name in
+                GlobalResolution.successors class_name ~resolution:global_resolution
+                |> List.map ~f:(fun successor -> Type.Primitive successor)
+                |> List.filter_map ~f:(GlobalResolution.class_definition global_resolution)
+                |> List.partition_tf ~f:(fun superclass ->
+                       ClassSummary.is_protocol (Node.value superclass)
+                       || AnnotatedClass.has_abstract_base superclass)
               in
               List.cons definition abstract_superclasses
               |> List.fold_right ~init:String.Map.empty ~f:add_uninitialized
@@ -4912,7 +4927,8 @@ let emit_errors (module Context : Context) ~errors_in_state ~global_resolution ~
           errors
       in
       let check_overrides
-          ({ Node.value = { ClassSummary.attribute_components; _ }; _ } as definition)
+          ( { Node.value = { ClassSummary.attribute_components; name = class_name; _ }; _ } as
+          definition )
           errors
         =
         let components =
@@ -4986,7 +5002,7 @@ let emit_errors (module Context : Context) ~errors_in_state ~global_resolution ~
                            ~kind
                            ~define:Context.define)
                   in
-                  Class.overrides ~resolution:global_resolution ~name definition
+                  Class.overrides ~resolution:global_resolution ~name (Reference.show class_name)
                   >>| check_override
                   |> Option.value ~default:None)
           |> Option.value ~default:[]
@@ -5177,7 +5193,7 @@ let exit_state ~resolution (module Context : Context) =
     let errors_in_state = Map.data errors |> Error.deduplicate in
     let local_annotations =
       LocalAnnotationMap.empty
-      |> LocalAnnotationMap.set_statement
+      |> LocalAnnotationMap.set
            ~postcondition:(Resolution.annotation_store resolution)
            ~key:Cfg.exit_index
     in
