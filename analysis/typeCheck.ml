@@ -12,6 +12,12 @@ module StatementDefine = Define
 module ExpressionCall = Call
 module Error = AnalysisError
 
+type class_name_and_is_abstract_and_is_protocol = {
+  class_name: string;
+  is_abstract: bool;
+  is_protocol: bool;
+}
+
 module ErrorMap = struct
   type key = {
     location: Location.t;
@@ -94,7 +100,6 @@ module State (Context : Context) = struct
   and t = {
     resolution: Resolution.t;
     errors: ErrorMap.t;
-    check_return: bool;
     bottom: bool;
     resolution_fixpoint: LocalAnnotationMap.t;
   }
@@ -160,7 +165,7 @@ module State (Context : Context) = struct
       ?(resolution_fixpoint = LocalAnnotationMap.empty)
       ()
     =
-    { resolution; errors; check_return = true; bottom; resolution_fixpoint }
+    { resolution; errors; bottom; resolution_fixpoint }
 
 
   let add_invalid_type_parameters_errors ~resolution ~location ~errors annotation =
@@ -674,17 +679,11 @@ module State (Context : Context) = struct
         in
         state, annotation
       in
-      let update_define (state, annotation) =
-        if Type.is_unknown annotation then
-          { state with check_return = false }
-        else
-          state
-      in
       let state = add_missing_return_error ~state return_annotation in
       return_annotation
       >>| parse_and_check_annotation ~state
       >>| add_variance_error
-      >>| update_define
+      >>| fst
       |> Option.value ~default:state
     in
     let add_capture_annotations state =
@@ -782,6 +781,7 @@ module State (Context : Context) = struct
               || Option.is_some given_annotation
                  && (String.is_prefix ~prefix:"**" name || String.is_prefix ~prefix:"*" name)
               || is_dunder_new_method_for_named_tuple
+              || String.equal name "/"
             then
               state
             else
@@ -1317,10 +1317,10 @@ module State (Context : Context) = struct
                                 ErrorMap.add ~errors error
                         in
                         match overridden_parameter with
-                        | Type.Callable.Parameter.Anonymous { index; annotation; _ } ->
+                        | Type.Callable.Parameter.PositionalOnly { index; annotation; _ } ->
                             List.nth overriding_parameters index
                             >>= (function
-                                  | Anonymous { annotation; _ }
+                                  | PositionalOnly { annotation; _ }
                                   | Named { annotation; _ } ->
                                       Some annotation
                                   | _ -> None)
@@ -1653,7 +1653,7 @@ module State (Context : Context) = struct
                     |> Type.split
                     |> fst
                     |> Type.primitive_name
-                    >>= GlobalResolution.constructor
+                    >>| GlobalResolution.constructor
                           ~instantiated:meta_parameter
                           ~resolution:global_resolution
                     >>= function
@@ -2952,7 +2952,7 @@ module State (Context : Context) = struct
 
 
   and forward_statement
-      ~state:({ resolution; check_return; _ } as state)
+      ~state:({ resolution; _ } as state)
       ~statement:({ Node.location; value } as statement)
     =
     let global_resolution = Resolution.global_resolution resolution in
@@ -3006,7 +3006,7 @@ module State (Context : Context) = struct
       in
       let check_incompatible_return state =
         if
-          check_return
+          Define.has_return_annotation define
           && (not
                 (GlobalResolution.constraints_solution_exists
                    global_resolution
@@ -3308,10 +3308,11 @@ module State (Context : Context) = struct
                       let read_only_non_property_attribute =
                         let open AnnotatedAttribute in
                         let relevant_properties attribute =
-                          visibility attribute, property attribute, has_ellipsis_value attribute
+                          visibility attribute, property attribute, initialized attribute
                         in
                         match attribute >>| fst >>| relevant_properties with
-                        | Some (ReadOnly _, false, true) when Define.is_constructor define -> false
+                        | Some (ReadOnly _, false, Implicitly) when Define.is_constructor define ->
+                            false
                         | Some (ReadOnly _, false, _) -> true
                         | _ -> false
                       in
@@ -4413,41 +4414,6 @@ module State (Context : Context) = struct
           { state with bottom = true }
         else
           state
-    | Import { Import.from; imports } ->
-        let check_import import =
-          let rec check_lead lead = function
-            | [] -> None
-            | name :: rest -> (
-                let lead = lead @ [name] in
-                let reference = Reference.create_from_list lead in
-                match GlobalResolution.module_exists global_resolution reference with
-                | true -> check_lead lead rest
-                | false -> (
-                    match resolve_reference_type ~state reference with
-                    | Type.Any ->
-                        (* Import from Any is ok *)
-                        None
-                    | _ -> Some reference ) )
-          in
-          match GlobalResolution.is_suppressed_module global_resolution import with
-          | true -> None
-          | false -> check_lead [] (Reference.as_list import)
-        in
-        let undefined_imports =
-          match from with
-          | Some { Node.value = from; _ } -> Option.to_list (check_import from)
-          | None ->
-              List.filter_map imports ~f:(fun { Import.name = { Node.value = name; _ }; _ } ->
-                  check_import name)
-        in
-        let add_import_error state reference =
-          Error.create
-            ~location:(Location.with_module ~qualifier:Context.qualifier location)
-            ~kind:(Error.UndefinedImport reference)
-            ~define:Context.define
-          |> emit_raw_error ~state
-        in
-        List.fold undefined_imports ~init:state ~f:add_import_error
     | Raise { Raise.expression = Some expression; _ } ->
         let { state; resolved; _ } = forward_expression ~state ~expression in
         let expected = Type.Primitive "BaseException" in
@@ -4515,47 +4481,6 @@ module State (Context : Context) = struct
           |> fun resolution -> { state with resolution }
         else
           state
-    | Class { Class.bases; _ } when bases <> [] ->
-        (* Check that variance isn't widened on inheritence *)
-        let check_base state { Call.Argument.value = base; _ } =
-          let check_pair state extended actual =
-            match extended, actual with
-            | ( Type.Variable { Type.Record.Variable.RecordUnary.variance = left; _ },
-                Type.Variable { Type.Record.Variable.RecordUnary.variance = right; _ } ) -> (
-                match left, right with
-                | Type.Variable.Covariant, Type.Variable.Invariant
-                | Type.Variable.Contravariant, Type.Variable.Invariant
-                | Type.Variable.Covariant, Type.Variable.Contravariant
-                | Type.Variable.Contravariant, Type.Variable.Covariant ->
-                    emit_error
-                      ~state
-                      ~location
-                      ~kind:
-                        (Error.InvalidTypeVariance
-                           { annotation = extended; origin = Error.Inheritance actual })
-                | _ -> state )
-            | _, _ -> state
-          in
-          match GlobalResolution.parse_annotation global_resolution base with
-          | Type.Parametric { name; parameters = extended_parameters }
-            when not (String.equal name "typing.Generic") ->
-              Type.Parameter.all_singles extended_parameters
-              >>| (fun extended_parameters ->
-                    let actual_parameters =
-                      GlobalResolution.variables global_resolution name
-                      >>= Type.Variable.all_unary
-                      >>| List.map ~f:(fun unary -> Type.Variable unary)
-                      |> Option.value ~default:[]
-                    in
-                    match
-                      List.fold2 extended_parameters actual_parameters ~init:state ~f:check_pair
-                    with
-                    | Ok state -> state
-                    | Unequal_lengths -> state)
-              |> Option.value ~default:state
-          | _ -> state
-        in
-        List.fold bases ~f:check_base ~init:state
     | Class _ ->
         (* Don't check accesses in nested classes and functions, they're analyzed separately. *)
         state
@@ -4565,6 +4490,9 @@ module State (Context : Context) = struct
     | With _
     | While _ ->
         (* Check happens implicitly in the resulting control flow. *)
+        state
+    | Import _ ->
+        (* Check happens after typing is done. *)
         state
     | Break
     | Continue
@@ -4588,7 +4516,7 @@ module State (Context : Context) = struct
     from_reference ~location:Location.any reference |> resolve_expression_type ~state
 
 
-  let forward ?key ({ bottom; resolution; _ } as state) ~statement =
+  let forward ~key ({ bottom; resolution; _ } as state) ~statement =
     let ({ resolution_fixpoint; _ } as state) =
       if bottom then
         state
@@ -4597,19 +4525,17 @@ module State (Context : Context) = struct
     in
     let state =
       let resolution_fixpoint =
-        match key, state with
-        | Some key, { resolution = post_resolution; _ } ->
-            let precondition = Resolution.annotation_store resolution in
-            let postcondition = Resolution.annotation_store post_resolution in
-            LocalAnnotationMap.set resolution_fixpoint ~key ~precondition ~postcondition
-        | None, _ -> resolution_fixpoint
+        let { resolution = post_resolution; _ } = state in
+        let precondition = Resolution.annotation_store resolution in
+        let postcondition = Resolution.annotation_store post_resolution in
+        LocalAnnotationMap.set resolution_fixpoint ~key ~precondition ~postcondition
       in
       { state with resolution_fixpoint }
     in
     state
 
 
-  let backward ?key:_ state ~statement:_ = state
+  let backward ~key:_ state ~statement:_ = state
 end
 
 module CheckResult = struct
@@ -4650,7 +4576,6 @@ let resolution global_resolution ?(annotation_store = Reference.Map.empty) () =
     in
     {
       State.errors = ErrorMap.Map.empty;
-      check_return = true;
       bottom = false;
       resolution_fixpoint = LocalAnnotationMap.empty;
       resolution = empty_resolution;
@@ -4694,17 +4619,16 @@ let resolution global_resolution ?(annotation_store = Reference.Map.empty) () =
 
 let resolution_with_key ~global_resolution ~local_annotations ~parent ~key =
   let annotation_store =
-    match key, local_annotations with
-    | Some key, Some map ->
-        LocalAnnotationMap.get_precondition map key |> Option.value ~default:Reference.Map.empty
-    | _ -> Reference.Map.empty
+    Option.value_map
+      local_annotations
+      ~f:(fun map ->
+        LocalAnnotationMap.get_precondition map key |> Option.value ~default:Reference.Map.empty)
+      ~default:Reference.Map.empty
   in
   resolution global_resolution ~annotation_store () |> Resolution.with_parent ~parent
 
 
-(* TODO (T59974010): Take errors out of state and get rid of the `errors_in_state` parameter *)
-let emit_errors (module Context : Context) ~errors_in_state ~global_resolution ~local_annotations ()
-  =
+let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () =
   let ( {
           Node.value =
             { Define.signature = { name = { Node.value = name; _ }; _ } as signature; _ } as define;
@@ -4713,10 +4637,7 @@ let emit_errors (module Context : Context) ~errors_in_state ~global_resolution ~
     =
     Context.define
   in
-  let exit_annotation_store =
-    LocalAnnotationMap.get_postcondition local_annotations Cfg.exit_index
-    |> Option.value ~default:Reference.Map.empty
-  in
+  let global_resolution = Resolution.global_resolution resolution in
   let class_initialization_errors errors =
     let check_protocol_properties definition errors =
       if Node.value definition |> ClassSummary.is_protocol then
@@ -4751,24 +4672,18 @@ let emit_errors (module Context : Context) ~errors_in_state ~global_resolution ~
       then
         let unimplemented_errors =
           let uninitialized_attributes =
-            let add_uninitialized definition attribute_map =
-              let implicit_attributes = AnnotatedClass.implicit_attributes definition in
+            let add_uninitialized ({ class_name; _ } as name_and_metadata) attribute_map =
               let attributes =
                 GlobalResolution.attributes
                   ~include_generated_attributes:true
                   ~resolution:global_resolution
-                  (Reference.show (AnnotatedClass.name definition))
+                  class_name
                 |> Option.value ~default:[]
               in
               let is_uninitialized attribute =
-                let name = Annotated.Attribute.name attribute in
-                let initialized = Annotated.Attribute.initialized attribute in
-                let implicitly_initialized name =
-                  Identifier.SerializableMap.mem name implicit_attributes
-                in
-                (not initialized)
-                && (not (implicitly_initialized name))
-                && not (is_dynamically_initialized attribute)
+                match Annotated.Attribute.initialized attribute with
+                | NotInitialized -> not (is_dynamically_initialized attribute)
+                | _ -> false
               in
               let add_to_map sofar attribute =
                 let annotation =
@@ -4780,28 +4695,31 @@ let emit_errors (module Context : Context) ~errors_in_state ~global_resolution ~
                   |> Annotation.annotation
                 in
                 let name = Annotated.Attribute.name attribute in
-                match String.Map.add sofar ~key:name ~data:(annotation, definition) with
+                match String.Map.add sofar ~key:name ~data:(annotation, name_and_metadata) with
                 | `Ok map -> map
                 | `Duplicate -> sofar
               in
               List.filter attributes ~f:is_uninitialized
               |> List.fold ~init:attribute_map ~f:add_to_map
             in
-            let remove_initialized definition attribute_map =
+            let remove_initialized { class_name; _ } attribute_map =
               let attributes =
                 GlobalResolution.attributes
                   ~transitive:true
                   ~include_generated_attributes:true
                   ~resolution:global_resolution
-                  (Reference.show (AnnotatedClass.name definition))
+                  class_name
                 |> Option.value ~default:[]
               in
               let is_initialized attribute =
                 (* TODO(T54083014): Don't error on properties overriding attributes, even if they
                    are read-only and therefore not marked as initialized on the attribute object. We
                    should error in the future that this is an inconsistent override. *)
-                Annotated.Attribute.initialized attribute || Annotated.Attribute.property attribute
+                match Annotated.Attribute.initialized attribute with
+                | NotInitialized -> Annotated.Attribute.property attribute
+                | _ -> true
               in
+
               List.filter attributes ~f:is_initialized
               |> List.map ~f:AnnotatedAttribute.name
               |> List.fold ~init:attribute_map ~f:Map.remove
@@ -4809,36 +4727,54 @@ let emit_errors (module Context : Context) ~errors_in_state ~global_resolution ~
             if AnnotatedClass.has_abstract_base definition then
               []
             else
-              let abstract_superclasses, concrete_superclasses =
+              let abstract_superclasses, concrete_superclasses, _superclasses_missing_metadata =
                 let { Node.value = { ClassSummary.name; _ }; _ } = definition in
                 let class_name = Reference.show name in
+                let is_protocol_or_abstract class_name =
+                  match
+                    GlobalResolution.class_metadata global_resolution (Primitive class_name)
+                  with
+                  | Some { is_protocol; is_abstract; _ } when is_protocol || is_abstract ->
+                      `Fst { class_name; is_abstract; is_protocol }
+                  | Some { is_protocol; is_abstract; _ } ->
+                      `Snd { class_name; is_abstract; is_protocol }
+                  | None -> `Trd ()
+                in
                 GlobalResolution.successors class_name ~resolution:global_resolution
-                |> List.map ~f:(fun successor -> Type.Primitive successor)
-                |> List.filter_map ~f:(GlobalResolution.class_definition global_resolution)
-                |> List.partition_tf ~f:(fun superclass ->
-                       ClassSummary.is_protocol (Node.value superclass)
-                       || AnnotatedClass.has_abstract_base superclass)
+                |> List.partition3_map ~f:is_protocol_or_abstract
               in
-              List.cons definition abstract_superclasses
+              let name_and_metadata =
+                let { Node.value = { ClassSummary.name; _ }; _ } = definition in
+                {
+                  class_name = Reference.show name;
+                  is_abstract = ClassSummary.is_abstract (Node.value definition);
+                  is_protocol = ClassSummary.is_protocol (Node.value definition);
+                }
+              in
+              List.cons name_and_metadata abstract_superclasses
               |> List.fold_right ~init:String.Map.empty ~f:add_uninitialized
               |> (fun attribute_map ->
                    List.fold_right
                      ~init:attribute_map
                      ~f:remove_initialized
-                     (List.cons definition concrete_superclasses))
+                     (List.cons name_and_metadata concrete_superclasses))
               |> String.Map.to_alist
           in
           uninitialized_attributes
-          |> List.filter_map ~f:(fun (name, (annotation, original_definition)) ->
+          |> List.filter_map
+               ~f:(fun ( name,
+                         (annotation, { class_name = original_class_name; is_protocol; is_abstract })
+                       )
+                       ->
                  let expected = annotation in
                  if Type.is_top expected then
                    None
                  else
                    let error_kind =
-                     if ClassSummary.is_protocol (Node.value original_definition) then
-                       Error.Protocol (AnnotatedClass.name original_definition)
-                     else if AnnotatedClass.has_abstract_base original_definition then
-                       Error.Abstract (AnnotatedClass.name original_definition)
+                     if is_protocol then
+                       Error.Protocol (Reference.create original_class_name)
+                     else if is_abstract then
+                       Error.Abstract (Reference.create original_class_name)
                      else
                        Error.Class
                    in
@@ -4873,7 +4809,7 @@ let emit_errors (module Context : Context) ~errors_in_state ~global_resolution ~
                 Reference.create_from_list
                   [StatementDefine.self_identifier define; Attribute.name attribute]
               in
-              Map.mem exit_annotation_store reference
+              Map.mem (Resolution.annotation_store resolution) reference
             in
             check_attribute_initialization ~is_dynamically_initialized definition errors
         | None -> errors
@@ -5056,7 +4992,6 @@ let emit_errors (module Context : Context) ~errors_in_state ~global_resolution ~
       errors
   in
   let overload_errors errors =
-    let resolution = resolution global_resolution ~annotation_store:exit_annotation_store () in
     let annotation = Resolution.resolve_reference resolution name in
     let ({ Type.Callable.annotation = current_overload_annotation; _ } as current_overload) =
       GlobalResolution.create_overload ~resolution:global_resolution signature
@@ -5164,9 +5099,234 @@ let emit_errors (module Context : Context) ~errors_in_state ~global_resolution ~
     |> check_compatible_return_types
     |> check_unmatched_overloads
   in
-  class_initialization_errors errors_in_state
-  |> overload_errors
-  |> fun errors ->
+  class_initialization_errors errors_sofar |> overload_errors
+
+
+let emit_error (module Context : Context) ~errors_sofar ~kind ~location =
+  Error.create
+    ~location:(Location.with_module ~qualifier:Context.qualifier location)
+    ~kind
+    ~define:Context.define
+  :: errors_sofar
+
+
+(* TODO (T59974010): Migrate error emission logic from `State.forward_expression` to this function *)
+let emit_errors_in_expression (module Context : Context) ~errors_sofar ~resolution expression =
+  let rec emit_errors_in_expression ~errors_sofar ~resolution { Node.value = expression; _ } =
+    match expression with
+    | Expression.Await await -> emit_errors_in_expression ~resolution ~errors_sofar await
+    | BooleanOperator { BooleanOperator.left; right; _ } ->
+        let errors_sofar = emit_errors_in_expression ~resolution ~errors_sofar left in
+        emit_errors_in_expression ~resolution ~errors_sofar right
+    | Call { Call.callee; arguments } ->
+        let errors_sofar =
+          List.fold arguments ~init:errors_sofar ~f:(fun errors_sofar { Call.Argument.value; _ } ->
+              emit_errors_in_expression ~resolution ~errors_sofar value)
+        in
+        emit_errors_in_expression ~resolution ~errors_sofar callee
+    | ComparisonOperator { ComparisonOperator.left; right; _ } ->
+        let errors_sofar = emit_errors_in_expression ~resolution ~errors_sofar left in
+        emit_errors_in_expression ~resolution ~errors_sofar right
+    | Dictionary { Dictionary.entries; keywords } ->
+        let errors_sofar =
+          List.fold entries ~init:errors_sofar ~f:(fun errors_sofar entry ->
+              emit_errors_in_dictionary_entry ~resolution ~errors_sofar entry)
+        in
+        List.fold keywords ~init:errors_sofar ~f:(fun errors_sofar keyword ->
+            emit_errors_in_expression ~resolution ~errors_sofar keyword)
+    | List expressions
+    | Set expressions
+    | Tuple expressions ->
+        List.fold expressions ~init:errors_sofar ~f:(fun errors_sofar expression ->
+            emit_errors_in_expression ~resolution ~errors_sofar expression)
+    | Starred (Once expression | Twice expression) ->
+        emit_errors_in_expression ~resolution ~errors_sofar expression
+    | String { kind = Format expressions; _ } ->
+        List.fold expressions ~init:errors_sofar ~f:(fun errors_sofar expression ->
+            emit_errors_in_expression ~resolution ~errors_sofar expression)
+    | Ternary { target; test; alternative } ->
+        let errors_sofar = emit_errors_in_expression ~resolution ~errors_sofar test in
+        let errors_sofar = emit_errors_in_expression ~resolution ~errors_sofar target in
+        emit_errors_in_expression ~resolution ~errors_sofar alternative
+    | UnaryOperator { operand; _ } -> emit_errors_in_expression ~resolution ~errors_sofar operand
+    | WalrusOperator { target; value } ->
+        let errors_sofar = emit_errors_in_expression ~resolution ~errors_sofar target in
+        emit_errors_in_expression ~resolution ~errors_sofar value
+    | Yield (Some expression) -> emit_errors_in_expression ~resolution ~errors_sofar expression
+    | Name _
+    | Lambda _
+    | Generator _
+    | ListComprehension _
+    | SetComprehension _
+    | DictionaryComprehension _ ->
+        (* TODO: Process these expressions *)
+        errors_sofar
+    | Complex _
+    | Ellipsis
+    | False
+    | Float _
+    | Integer _
+    | String _
+    | True
+    | Yield None ->
+        (* Not possible to error *)
+        errors_sofar
+  and emit_errors_in_dictionary_entry ~resolution ~errors_sofar { Dictionary.Entry.key; value } =
+    let errors_sofar = emit_errors_in_expression ~resolution ~errors_sofar key in
+    emit_errors_in_expression ~resolution ~errors_sofar value
+  in
+  emit_errors_in_expression ~errors_sofar ~resolution expression
+
+
+let emit_errors_in_body
+    (module Context : Context)
+    ~global_resolution
+    ~errors_sofar
+    ~cfg
+    ~local_annotations
+    ()
+  =
+  (* TODO (T59974010): Migrate error emission logic from `State.forward_statement` to this function *)
+  let emit_errors_in_statement
+      ~pre_resolution
+      ~post_resolution:_
+      ~errors_sofar
+      { Node.value = statement; location }
+    =
+    match statement with
+    | Statement.Import { Import.from; imports } ->
+        let check_import import =
+          let rec check_lead lead = function
+            | [] -> None
+            | name :: rest -> (
+                let lead = lead @ [name] in
+                let reference = Reference.create_from_list lead in
+                match GlobalResolution.module_exists global_resolution reference with
+                | true -> check_lead lead rest
+                | false -> (
+                    match Resolution.resolve_reference pre_resolution reference with
+                    | Type.Any ->
+                        (* Import from Any is ok *)
+                        None
+                    | _ -> Some reference ) )
+          in
+          match GlobalResolution.is_suppressed_module global_resolution import with
+          | true -> None
+          | false -> check_lead [] (Reference.as_list import)
+        in
+        let undefined_imports =
+          match from with
+          | Some { Node.value = from; _ } -> Option.to_list (check_import from)
+          | None ->
+              List.filter_map imports ~f:(fun { Import.name = { Node.value = name; _ }; _ } ->
+                  check_import name)
+        in
+        let add_import_error errors_sofar reference =
+          emit_error
+            (module Context)
+            ~errors_sofar
+            ~kind:(Error.UndefinedImport reference)
+            ~location
+        in
+        List.fold undefined_imports ~init:errors_sofar ~f:add_import_error
+    | Statement.Class { Class.bases; _ } when bases <> [] ->
+        (* Check that variance isn't widened on inheritence *)
+        let check_base errors_sofar { Call.Argument.value = base; _ } =
+          let check_pair errors_sofar extended actual =
+            match extended, actual with
+            | ( Type.Variable { Type.Record.Variable.RecordUnary.variance = left; _ },
+                Type.Variable { Type.Record.Variable.RecordUnary.variance = right; _ } ) -> (
+                match left, right with
+                | Type.Variable.Covariant, Type.Variable.Invariant
+                | Type.Variable.Contravariant, Type.Variable.Invariant
+                | Type.Variable.Covariant, Type.Variable.Contravariant
+                | Type.Variable.Contravariant, Type.Variable.Covariant ->
+                    emit_error
+                      (module Context)
+                      ~errors_sofar
+                      ~location
+                      ~kind:
+                        (Error.InvalidTypeVariance
+                           { annotation = extended; origin = Error.Inheritance actual })
+                | _ -> errors_sofar )
+            | _, _ -> errors_sofar
+          in
+          match GlobalResolution.parse_annotation global_resolution base with
+          | Type.Parametric { name; parameters = extended_parameters }
+            when not (String.equal name "typing.Generic") ->
+              Type.Parameter.all_singles extended_parameters
+              >>| (fun extended_parameters ->
+                    let actual_parameters =
+                      GlobalResolution.variables global_resolution name
+                      >>= Type.Variable.all_unary
+                      >>| List.map ~f:(fun unary -> Type.Variable unary)
+                      |> Option.value ~default:[]
+                    in
+                    match
+                      List.fold2
+                        extended_parameters
+                        actual_parameters
+                        ~init:errors_sofar
+                        ~f:check_pair
+                    with
+                    | Ok errors -> errors
+                    | Unequal_lengths -> errors_sofar)
+              |> Option.value ~default:errors_sofar
+          | _ -> errors_sofar
+        in
+        List.fold bases ~f:check_base ~init:errors_sofar
+    | _ -> errors_sofar
+  in
+  let walk_statement node_id statement_index errors_sofar statement =
+    let pre_annotations, post_annotations =
+      let key = [%hash: int * int] (node_id, statement_index) in
+      ( LocalAnnotationMap.get_precondition local_annotations key
+        |> Option.value ~default:Reference.Map.empty,
+        LocalAnnotationMap.get_postcondition local_annotations key
+        |> Option.value ~default:Reference.Map.empty )
+    in
+    let pre_resolution, post_resolution =
+      ( resolution global_resolution ~annotation_store:pre_annotations (),
+        resolution global_resolution ~annotation_store:post_annotations () )
+    in
+    emit_errors_in_statement ~pre_resolution ~post_resolution ~errors_sofar statement
+  in
+  let walk_cfg_node ~key:node_id ~data:cfg_node errors_sofar =
+    let statements = Cfg.Node.statements cfg_node in
+    List.foldi statements ~init:errors_sofar ~f:(walk_statement node_id)
+  in
+  Hashtbl.fold cfg ~init:errors_sofar ~f:walk_cfg_node
+
+
+(* TODO (T59974010): Take errors out of state and get rid of the `errors_in_state` parameter *)
+let emit_errors
+    (module Context : Context)
+    ~global_resolution
+    ~errors_in_state
+    ~cfg
+    ~local_annotations
+    ()
+  =
+  let errors_in_body =
+    emit_errors_in_body
+      (module Context)
+      ~global_resolution
+      ~errors_sofar:errors_in_state
+      ~cfg
+      ~local_annotations
+      ()
+  in
+  let exit_resolution =
+    let annotation_store =
+      LocalAnnotationMap.get_postcondition local_annotations Cfg.exit_index
+      |> Option.value ~default:Reference.Map.empty
+    in
+    resolution global_resolution ~annotation_store ()
+  in
+  emit_errors_on_exit (module Context) ~errors_sofar:errors_in_body ~resolution:exit_resolution ()
+
+
+let filter_errors (module Context : Context) ~global_resolution errors =
   if Context.debug then
     errors
   else
@@ -5190,14 +5350,9 @@ let exit_state ~resolution (module Context : Context) =
   let global_resolution = Resolution.global_resolution resolution in
   if Define.is_stub define then
     let { State.resolution; errors; _ } = initial in
-    let errors_in_state = Map.data errors |> Error.deduplicate in
-    let local_annotations =
-      LocalAnnotationMap.empty
-      |> LocalAnnotationMap.set
-           ~postcondition:(Resolution.annotation_store resolution)
-           ~key:Cfg.exit_index
-    in
-    ( emit_errors (module Context) ~global_resolution ~errors_in_state ~local_annotations (),
+    let errors_sofar = Map.data errors |> Error.deduplicate in
+    ( emit_errors_on_exit (module Context) ~errors_sofar ~resolution ()
+      |> filter_errors (module Context) ~global_resolution,
       None,
       None )
   else (
@@ -5209,8 +5364,8 @@ let exit_state ~resolution (module Context : Context) =
       Log.dump "AST:\n%a" Define.pp define );
     if Define.dump_locations define then
       Log.dump "AST with Locations:\n%s" (Define.show_json define);
+    let cfg = Cfg.create define in
     let exit =
-      let cfg = Cfg.create define in
       let fixpoint = Fixpoint.forward ~cfg ~initial in
       Fixpoint.exit fixpoint
     in
@@ -5226,8 +5381,10 @@ let exit_state ~resolution (module Context : Context) =
               (module Context)
               ~global_resolution
               ~errors_in_state
+              ~cfg
               ~local_annotations:resolution_fixpoint
-              (),
+              ()
+            |> filter_errors (module Context) ~global_resolution,
             Some resolution_fixpoint )
     in
     errors, local_annotations, Some callees )

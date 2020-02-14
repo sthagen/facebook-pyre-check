@@ -181,7 +181,7 @@ class SharedAnalysisDirectory(AnalysisDirectory):
             original_directory = self._original_directory
             if original_directory is not None:
                 new_source_directories = translate_paths(
-                    # pyre-fixme[6]: Expected `Set[str]` for 1st anonymous parameter
+                    # pyre-fixme[6]: Expected `Set[str]` for 1st positional only parameter
                     # to call `translate_paths` but got `typing.Iterable[str]`.
                     new_source_directories,
                     original_directory,
@@ -588,6 +588,7 @@ def resolve_analysis_directory(
                 buck_builder_binary=arguments.buck_builder_binary,
                 buck_builder_target=arguments.buck_builder_target,
                 debug_mode=arguments.buck_builder_debug,
+                buck_mode=arguments.buck_mode,
             )
         else:
             buck_builder = buck.SimpleBuckBuilder(build=build)

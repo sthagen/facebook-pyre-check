@@ -44,7 +44,7 @@ let parse_attributes ~parse_annotation ~class_name =
       ~async:false
       ~class_attribute:false
       ~defined:true
-      ~initialized:true
+      ~initialized:Explicitly
       ~parent:class_name
       ~property:false
       ~static:false
@@ -2527,7 +2527,7 @@ let test_solve_less_or_equal context =
         |> Type.split
         |> fst
         |> Type.primitive_name
-        >>= GlobalResolution.constructor ~instantiated ~resolution
+        >>| GlobalResolution.constructor ~instantiated ~resolution
       in
       let handler = GlobalResolution.create environment |> GlobalResolution.class_hierarchy in
       {

@@ -119,7 +119,7 @@ module SignatureSelectionTypes = struct
 
   type missing_argument =
     | Named of Identifier.t
-    | Anonymous of int
+    | PositionalOnly of int
   [@@deriving eq, show, compare, sexp, hash]
 
   type mismatch_with_list_variadic_type_variable =
@@ -685,8 +685,8 @@ module Implementation = struct
                         | _ -> None
                       in
                       match initialized with
-                      | false -> None
-                      | true -> (
+                      | NotInitialized -> None
+                      | _ -> (
                           match extract_dataclass_field_arguments (attribute, value) with
                           | Some arguments -> List.find_map arguments ~f:get_default_value
                           | _ -> Some value )
@@ -735,7 +735,8 @@ module Implementation = struct
                         let value =
                           match attribute with
                           | {
-                           Node.value = { Attribute.kind = Simple { value = Some value; _ }; _ };
+                           Node.value =
+                             { Attribute.kind = Simple { values = { value; _ } :: _; _ }; _ };
                            _;
                           } ->
                               value
@@ -746,7 +747,6 @@ module Implementation = struct
                             ?dependency
                             ~parent
                             ?defined:None
-                            ?inherited:None
                             ?default_class_attribute:None
                             ~accessed_via_metaclass:false
                             (Node.value attribute),
@@ -829,7 +829,7 @@ module Implementation = struct
                 ~async:false
                 ~class_attribute:false
                 ~defined:true
-                ~initialized:true
+                ~initialized:Implicitly
                 ~name:attribute_name
                 ~parent:(Reference.show name)
                 ~visibility:ReadWrite
@@ -859,16 +859,48 @@ module Implementation = struct
       ?dependency:dependency ->
       ClassMetadataEnvironment.ReadOnly.t ->
       TypeOrder.order;
-    uninstantiated_attribute_table:
+    single_uninstantiated_attribute_table:
       assumptions:Assumptions.t ->
-      transitive:sexp_bool ->
-      class_attributes:sexp_bool ->
-      include_generated_attributes:sexp_bool ->
-      ?special_method:sexp_bool ->
+      class_attributes:bool ->
+      include_generated_attributes:bool ->
+      in_test:bool ->
+      accessed_via_metaclass:bool ->
       ?dependency:dependency ->
       Type.Primitive.t ->
       class_metadata_environment:ClassMetadataEnvironment.MetadataReadOnly.t ->
       UninstantiatedAttributeTable.t option;
+    uninstantiated_attribute_tables:
+      assumptions:Assumptions.t ->
+      class_metadata_environment:ClassMetadataEnvironment.MetadataReadOnly.t ->
+      transitive:bool ->
+      class_attributes:bool ->
+      include_generated_attributes:bool ->
+      special_method:bool ->
+      ?dependency:dependency ->
+      string ->
+      UninstantiatedAttributeTable.t Sequence.t option;
+    attribute:
+      assumptions:Assumptions.t ->
+      class_metadata_environment:ClassMetadataEnvironment.MetadataReadOnly.t ->
+      transitive:bool ->
+      class_attributes:bool ->
+      include_generated_attributes:bool ->
+      ?special_method:bool ->
+      ?instantiated:Type.t ->
+      ?dependency:dependency ->
+      attribute_name:Identifier.t ->
+      Type.Primitive.t ->
+      AnnotatedAttribute.instantiated option;
+    all_attributes:
+      assumptions:Assumptions.t ->
+      class_metadata_environment:ClassMetadataEnvironment.MetadataReadOnly.t ->
+      transitive:bool ->
+      class_attributes:bool ->
+      include_generated_attributes:bool ->
+      ?special_method:bool ->
+      ?dependency:dependency ->
+      Type.Primitive.t ->
+      uninstantiated_attribute list option;
     check_invalid_type_parameters:
       assumptions:Assumptions.t ->
       class_metadata_environment:ClassMetadataEnvironment.ReadOnly.t ->
@@ -890,7 +922,6 @@ module Implementation = struct
       ?dependency:SharedMemoryKeys.dependency ->
       parent:ClassSummary.t Node.t ->
       ?defined:bool ->
-      ?inherited:bool ->
       ?default_class_attribute:bool ->
       accessed_via_metaclass:bool ->
       Attribute.attribute ->
@@ -952,7 +983,7 @@ module Implementation = struct
       ?dependency:SharedMemoryKeys.dependency ->
       Type.Primitive.t ->
       instantiated:Type.t ->
-      Type.t option;
+      Type.t;
     instantiate_attribute:
       assumptions:Assumptions.t ->
       class_metadata_environment:ClassMetadataEnvironment.ReadOnly.t ->
@@ -963,7 +994,7 @@ module Implementation = struct
   }
 
   let full_order
-      { constructor; uninstantiated_attribute_table; instantiate_attribute; _ }
+      { constructor; all_attributes; instantiate_attribute; _ }
       ~assumptions
       ?dependency
       class_metadata_environment
@@ -978,14 +1009,14 @@ module Implementation = struct
           ~instantiated:(Primitive class_name)
       in
 
-      instantiated |> Type.primitive_name >>= constructor { assumptions with protocol_assumptions }
+      instantiated |> Type.primitive_name >>| constructor { assumptions with protocol_assumptions }
     in
     let attributes class_type ~assumptions =
       match Type.resolve_class class_type with
       | None -> None
       | Some [] -> None
       | Some [{ instantiated; class_attributes; class_name }] ->
-          uninstantiated_attribute_table
+          all_attributes
             ~assumptions
             ~transitive:true
             ~class_attributes
@@ -994,7 +1025,6 @@ module Implementation = struct
             ?dependency
             class_name
             ~class_metadata_environment
-          >>| UninstantiatedAttributeTable.to_list
           >>| List.map
                 ~f:(instantiate_attribute ~assumptions ~class_metadata_environment ~instantiated)
       | Some (_ :: _) ->
@@ -1183,87 +1213,79 @@ module Implementation = struct
     result
 
 
-  let uninstantiated_attribute_table
-      { create_attribute; metaclass; instantiate_attribute; _ }
+  let single_uninstantiated_attribute_table
+      { create_attribute; instantiate_attribute; _ }
       ~assumptions
-      ~transitive
       ~class_attributes
       ~include_generated_attributes
-      ?(special_method = false)
+      ~in_test
+      ~accessed_via_metaclass
       ?dependency
-      name
+      class_name
       ~class_metadata_environment
     =
-    let name = Reference.create name in
-    let handle definition =
-      let definition_attributes
-          ~in_test
-          ~class_attributes
-          ~table
-          ~accessed_via_metaclass
-          ( { Node.value = { ClassSummary.name = parent_name; attribute_components; _ }; _ } as
-          parent )
-        =
-        let add_actual () =
-          let collect_attributes attribute =
-            create_attribute
-              (Node.value attribute)
-              ?dependency
-              ~class_metadata_environment
-              ~assumptions
-              ~parent
-              ~inherited:(not (Reference.equal name parent_name))
-              ~default_class_attribute:class_attributes
-              ~accessed_via_metaclass
-            |> UninstantiatedAttributeTable.add table
-          in
-          Class.attributes ~include_generated_attributes ~in_test attribute_components
-          |> fun attribute_map ->
-          Identifier.SerializableMap.iter (fun _ data -> collect_attributes data) attribute_map
+    let handle ({ Node.value = { ClassSummary.attribute_components; _ }; _ } as parent) =
+      let table = UninstantiatedAttributeTable.create () in
+      let add_actual () =
+        let collect_attributes attribute =
+          create_attribute
+            (Node.value attribute)
+            ?dependency
+            ~class_metadata_environment
+            ~assumptions
+            ~parent
+            ~default_class_attribute:class_attributes
+            ~accessed_via_metaclass
+          |> UninstantiatedAttributeTable.add table
         in
-        let add_placeholder_stub_inheritances () =
-          let add_if_missing ~attribute_name ~annotation =
-            if Option.is_none (UninstantiatedAttributeTable.lookup_name table attribute_name) then
-              UninstantiatedAttributeTable.add
-                table
-                (AnnotatedAttribute.create_uninstantiated
-                   ~uninstantiated_annotation:
-                     {
-                       UninstantiatedAnnotation.accessed_via_metaclass;
-                       kind =
-                         Attribute
-                           { annotation; original_annotation = annotation; is_property = false };
-                     }
-                   ~abstract:false
-                   ~async:false
-                   ~class_attribute:false
-                   ~defined:true
-                   ~initialized:true
-                   ~name:attribute_name
-                   ~parent:(Reference.show name)
-                   ~visibility:ReadWrite
-                   ~static:true
-                   ~property:false
-                   ~has_ellipsis_value:true)
-            else
-              ()
-          in
-          add_if_missing
-            ~attribute_name:"__init__"
-            ~annotation:(Type.Callable.create ~annotation:Type.none ());
-          add_if_missing
-            ~attribute_name:"__getattr__"
-            ~annotation:(Type.Callable.create ~annotation:Type.Any ())
+        Class.attributes ~include_generated_attributes ~in_test attribute_components
+        |> fun attribute_map ->
+        Identifier.SerializableMap.iter (fun _ data -> collect_attributes data) attribute_map
+      in
+      let add_placeholder_stub_inheritances () =
+        let add_if_missing ~attribute_name ~annotation =
+          if Option.is_none (UninstantiatedAttributeTable.lookup_name table attribute_name) then
+            UninstantiatedAttributeTable.add
+              table
+              (AnnotatedAttribute.create_uninstantiated
+                 ~uninstantiated_annotation:
+                   {
+                     UninstantiatedAnnotation.accessed_via_metaclass;
+                     kind =
+                       Attribute
+                         { annotation; original_annotation = annotation; is_property = false };
+                   }
+                 ~abstract:false
+                 ~async:false
+                 ~class_attribute:false
+                 ~defined:true
+                 ~initialized:Implicitly
+                 ~name:attribute_name
+                 ~parent:class_name
+                 ~visibility:ReadWrite
+                 ~static:true
+                 ~property:false
+                 ~has_ellipsis_value:true)
+          else
+            ()
         in
-        add_actual ();
-        if
-          include_generated_attributes
-          && AnnotatedBases.extends_placeholder_stub_class
-               parent
-               ~aliases:(aliases class_metadata_environment ~dependency)
-               ~from_empty_stub:(is_suppressed_module class_metadata_environment ~dependency)
-        then
-          add_placeholder_stub_inheritances ();
+        add_if_missing
+          ~attribute_name:"__init__"
+          ~annotation:(Type.Callable.create ~annotation:Type.none ());
+        add_if_missing
+          ~attribute_name:"__getattr__"
+          ~annotation:(Type.Callable.create ~annotation:Type.Any ())
+      in
+      add_actual ();
+      if
+        include_generated_attributes
+        && AnnotatedBases.extends_placeholder_stub_class
+             parent
+             ~aliases:(aliases class_metadata_environment ~dependency)
+             ~from_empty_stub:(is_suppressed_module class_metadata_environment ~dependency)
+      then
+        add_placeholder_stub_inheritances ();
+      let () =
         if include_generated_attributes then
           ClassDecorators.apply
             ~definition:parent
@@ -1279,72 +1301,187 @@ module Implementation = struct
             ?dependency
             table
       in
-      let successors_of class_name =
-        ClassMetadataEnvironment.ReadOnly.successors
-          class_metadata_environment
-          ?dependency
-          class_name
-      in
-      let successors = successors_of (Reference.show name) in
-      let in_test =
-        List.exists (Reference.show name :: successors) ~f:Type.Primitive.is_unit_test
-      in
-      let table = UninstantiatedAttributeTable.create () in
-      (* Pass over normal class hierarchy. *)
-      let definitions =
-        if class_attributes && special_method then
-          []
-        else if transitive then
-          let class_definition =
-            UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
-              (ClassMetadataEnvironment.ReadOnly.unannotated_global_environment
-                 class_metadata_environment)
-              ?dependency
-          in
-          definition :: List.filter_map successors ~f:class_definition
-        else
-          [definition]
-      in
-      List.iter
-        definitions
-        ~f:(definition_attributes ~in_test ~class_attributes ~table ~accessed_via_metaclass:false);
-
-      (* Class over meta hierarchy if necessary. *)
-      let meta_definitions =
-        if class_attributes then
-          let superclasses class_name =
-            let class_definition =
-              UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
-                (ClassMetadataEnvironment.ReadOnly.unannotated_global_environment
-                   class_metadata_environment)
-                ?dependency
-            in
-            successors_of class_name |> List.filter_map ~f:class_definition
-          in
-          metaclass ?dependency ~class_metadata_environment ~assumptions definition
-          |> class_definition class_metadata_environment ~dependency
-          >>| (fun ({ Node.value = { name; _ }; _ } as definition) ->
-                definition :: superclasses (Reference.show name))
-          |> Option.value ~default:[]
-        else
-          []
-      in
-      List.iter
-        meta_definitions
-        ~f:
-          (definition_attributes
-             ~in_test
-             ~class_attributes:false
-             ~table
-             ~accessed_via_metaclass:true);
       table
     in
-
     UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
       (ClassMetadataEnvironment.ReadOnly.unannotated_global_environment class_metadata_environment)
       ?dependency
-      (Reference.show name)
+      class_name
     >>| handle
+
+
+  let uninstantiated_attribute_tables
+      { metaclass; single_uninstantiated_attribute_table; _ }
+      ~assumptions
+      ~class_metadata_environment
+      ~transitive
+      ~class_attributes
+      ~include_generated_attributes
+      ~special_method
+      ?dependency
+      class_name
+    =
+    let handle { ClassMetadataEnvironment.is_test; successors; _ } =
+      let get_table ~class_attributes ~accessed_via_metaclass =
+        single_uninstantiated_attribute_table
+          ~assumptions
+          ?dependency
+          ~class_metadata_environment
+          ~include_generated_attributes
+          ~in_test:is_test
+          ~class_attributes
+          ~accessed_via_metaclass
+      in
+      let normal_tables =
+        let normal_hierarchy =
+          (* Pass over normal class hierarchy. *)
+          if class_attributes && special_method then
+            []
+          else if transitive then
+            class_name :: successors
+          else
+            [class_name]
+        in
+        Sequence.of_list normal_hierarchy
+        |> Sequence.filter_map ~f:(get_table ~class_attributes ~accessed_via_metaclass:false)
+      in
+      let metaclass_tables =
+        (* We don't want to have to find our metaclass/it's parents if we successfully find the
+           attribute in one of our actual parents *)
+        lazy
+          begin
+            let metaclass_hierarchy =
+              (* Class over meta hierarchy if necessary. *)
+              if class_attributes then
+                let successors_of class_name =
+                  ClassMetadataEnvironment.ReadOnly.successors
+                    class_metadata_environment
+                    ?dependency
+                    class_name
+                in
+                UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
+                  (ClassMetadataEnvironment.ReadOnly.unannotated_global_environment
+                     class_metadata_environment)
+                  ?dependency
+                  class_name
+                >>| metaclass ?dependency ~class_metadata_environment ~assumptions
+                >>| Type.split
+                >>| fst
+                >>= Type.primitive_name
+                >>| (fun metaclass -> metaclass :: successors_of metaclass)
+                |> Option.value ~default:[]
+              else
+                []
+            in
+            metaclass_hierarchy
+            |> Sequence.of_list
+            |> Sequence.filter_map
+                 ~f:(get_table ~class_attributes:false ~accessed_via_metaclass:true)
+          end
+      in
+      Sequence.append normal_tables (Sequence.of_lazy metaclass_tables)
+    in
+    ClassMetadataEnvironment.ReadOnly.get_class_metadata
+      class_metadata_environment
+      ?dependency
+      class_name
+    >>| handle
+
+
+  let attribute
+      { instantiate_attribute; uninstantiated_attribute_tables; _ }
+      ~assumptions
+      ~class_metadata_environment
+      ~transitive
+      ~class_attributes
+      ~include_generated_attributes
+      ?(special_method = false)
+      ?instantiated
+      ?dependency
+      ~attribute_name
+      class_name
+    =
+    uninstantiated_attribute_tables
+      ~assumptions
+      ~class_metadata_environment
+      ~transitive
+      ~class_attributes
+      ~include_generated_attributes
+      ~special_method
+      ?dependency
+      class_name
+    >>= Sequence.find_map ~f:(fun table ->
+            UninstantiatedAttributeTable.lookup_name table attribute_name)
+    >>| instantiate_attribute ~assumptions ~class_metadata_environment ?instantiated
+
+
+  let all_attributes
+      { uninstantiated_attribute_tables; _ }
+      ~assumptions
+      ~class_metadata_environment
+      ~transitive
+      ~class_attributes
+      ~include_generated_attributes
+      ?(special_method = false)
+      ?dependency
+      class_name
+    =
+    let collect sofar table =
+      let add ((sofar_list, sofar_set) as sofar) attribute =
+        let name = AnnotatedAttribute.name attribute in
+        if Set.mem sofar_set name then
+          sofar
+        else
+          attribute :: sofar_list, Set.add sofar_set name
+      in
+      UninstantiatedAttributeTable.to_list table |> List.fold ~f:add ~init:sofar
+    in
+    uninstantiated_attribute_tables
+      ~assumptions
+      ~class_metadata_environment
+      ~transitive
+      ~class_attributes
+      ~include_generated_attributes
+      ~special_method
+      ?dependency
+      class_name
+    >>| Sequence.fold ~f:collect ~init:([], Identifier.Set.empty)
+    >>| fst
+    >>| List.rev
+
+
+  let attribute_names
+      { uninstantiated_attribute_tables; _ }
+      ~assumptions
+      ~class_metadata_environment
+      ~transitive
+      ~class_attributes
+      ~include_generated_attributes
+      ?(special_method = false)
+      ?dependency
+      class_name
+    =
+    let collect sofar table =
+      let add ((sofar_list, sofar_set) as sofar) name =
+        if Set.mem sofar_set name then
+          sofar
+        else
+          name :: sofar_list, Set.add sofar_set name
+      in
+      UninstantiatedAttributeTable.names table |> List.fold ~f:add ~init:sofar
+    in
+    uninstantiated_attribute_tables
+      ~assumptions
+      ~class_metadata_environment
+      ~transitive
+      ~class_attributes
+      ~include_generated_attributes
+      ~special_method
+      ?dependency
+      class_name
+    >>| Sequence.fold ~f:collect ~init:([], Identifier.Set.empty)
+    >>| fst
+    >>| List.rev
 
 
   let instantiate_attribute
@@ -1497,7 +1634,8 @@ module Implementation = struct
                     |> Option.value ~default:[]
                   in
                   let create_parameter annotation =
-                    Type.Callable.Parameter.Anonymous { index = 0; annotation; default = false }
+                    Type.Callable.Parameter.PositionalOnly
+                      { index = 0; annotation; default = false }
                   in
                   let synthetic =
                     Type.Variable
@@ -1656,7 +1794,6 @@ module Implementation = struct
       ?dependency
       ~parent
       ?(defined = true)
-      ?(inherited = false)
       ?(default_class_attribute = false)
       ~accessed_via_metaclass
       { Attribute.name = attribute_name; kind }
@@ -1666,7 +1803,8 @@ module Implementation = struct
     let class_annotation = Type.Primitive parent_name in
     let annotation, value, class_attribute, visibility =
       match kind with
-      | Simple { annotation; value; frozen; toplevel; implicit; primitive } ->
+      | Simple { annotation; values; frozen; toplevel; implicit; primitive; _ } ->
+          let value = List.hd values >>| fun { value; _ } -> value in
           let parsed_annotation =
             annotation >>| parse_annotation ?dependency ~assumptions ~class_metadata_environment
           in
@@ -1699,7 +1837,6 @@ module Implementation = struct
             if
               (not (Set.mem Recognized.enumeration_classes (Type.show class_annotation)))
               && (not (Set.is_empty (Set.inter Recognized.enumeration_classes superclasses)))
-              && (not inherited)
               && primitive
               && defined
               && not implicit
@@ -1818,6 +1955,23 @@ module Implementation = struct
             class_property,
             visibility )
     in
+    let initialized =
+      match kind with
+      | Simple { nested_class = true; _ } -> AnnotatedAttribute.Implicitly
+      | Simple { values; _ } ->
+          let is_not_ellipsis = function
+            | { Attribute.value = { Node.value = Ellipsis; _ }; _ } -> false
+            | _ -> true
+          in
+          List.find values ~f:is_not_ellipsis
+          >>| (function
+                | { Attribute.origin = Explicit; _ } -> AnnotatedAttribute.Explicitly
+                | { origin = Implicit; _ } -> Implicitly)
+          |> Option.value ~default:AnnotatedAttribute.NotInitialized
+      | Method _
+      | Property _ ->
+          Implicitly
+    in
     AnnotatedAttribute.create_uninstantiated
       ~uninstantiated_annotation:
         { UninstantiatedAnnotation.accessed_via_metaclass; kind = annotation }
@@ -1832,15 +1986,7 @@ module Implementation = struct
         | _ -> false )
       ~class_attribute
       ~defined
-      ~initialized:
-        ( match kind with
-        | Simple { value = Some { Node.value = Ellipsis; _ }; _ }
-        | Simple { value = None; _ } ->
-            false
-        | Simple { value = Some _; _ }
-        | Method _
-        | Property _ ->
-            true )
+      ~initialized
       ~name:attribute_name
       ~parent:parent_name
       ~static:
@@ -2235,7 +2381,10 @@ module Implementation = struct
                     Type.Callable.annotation = return_annotation;
                     parameters =
                       Type.Callable.Defined
-                        [Type.Callable.Parameter.Anonymous { annotation = parameter_annotation; _ }];
+                        [
+                          Type.Callable.Parameter.PositionalOnly
+                            { annotation = parameter_annotation; _ };
+                        ];
                     _;
                   }
               | Some
@@ -2387,7 +2536,7 @@ module Implementation = struct
             (* Positional argument; parameters empty *)
             { signature_match with reasons = arity_mismatch ~arguments reasons }
         | [], (Parameter.KeywordOnly { default = true; _ } as parameter) :: parameters_tail
-        | [], (Parameter.Anonymous { default = true; _ } as parameter) :: parameters_tail
+        | [], (Parameter.PositionalOnly { default = true; _ } as parameter) :: parameters_tail
         | [], (Parameter.Named { default = true; _ } as parameter) :: parameters_tail ->
             (* Arguments empty, default parameter *)
             let argument_mapping = update_mapping parameter Default in
@@ -2613,11 +2762,13 @@ module Implementation = struct
             (* Parameter was not matched *)
             let reasons = { reasons with arity = MissingArgument (Named name) :: arity } in
             { signature_match with reasons }
-        | Parameter.Anonymous { index; _ }, [] ->
+        | Parameter.PositionalOnly { index; _ }, [] ->
             (* Parameter was not matched *)
-            let reasons = { reasons with arity = MissingArgument (Anonymous index) :: arity } in
+            let reasons =
+              { reasons with arity = MissingArgument (PositionalOnly index) :: arity }
+            in
             { signature_match with reasons }
-        | Anonymous { annotation = parameter_annotation; _ }, arguments
+        | PositionalOnly { annotation = parameter_annotation; _ }, arguments
         | KeywordOnly { annotation = parameter_annotation; _ }, arguments
         | Named { annotation = parameter_annotation; _ }, arguments
         | Variable (Concrete parameter_annotation), arguments
@@ -2957,125 +3108,120 @@ module Implementation = struct
 
 
   let constructor
-      { uninstantiated_attribute_table; instantiate_attribute; _ }
+      { attribute; _ }
       ~assumptions
       ~class_metadata_environment
       ?dependency
       class_name
       ~instantiated
     =
-    let handle uninstantiated_attribute_table =
-      let return_annotation =
-        let generics =
-          ClassHierarchyEnvironment.ReadOnly.variables
-            (ClassMetadataEnvironment.ReadOnly.class_hierarchy_environment
-               class_metadata_environment)
-            ?dependency
-            class_name
-          >>| List.map ~f:Type.Variable.to_parameter
-          |> Option.value ~default:[]
-        in
-        (* Tuples are special. *)
-        if String.equal class_name "tuple" then
-          match generics with
-          | [Single tuple_variable] -> Type.Tuple (Type.Unbounded tuple_variable)
-          | _ -> Type.Tuple (Type.Unbounded Type.Any)
-        else
-          let backup = Type.Parametric { name = class_name; parameters = generics } in
-          match instantiated, generics with
-          | _, [] -> instantiated
-          | Type.Primitive instantiated_name, _ when String.equal instantiated_name class_name ->
-              backup
-          | Type.Parametric { parameters; name = instantiated_name }, generics
-            when String.equal instantiated_name class_name
-                 && List.length parameters <> List.length generics ->
-              backup
-          | _ -> instantiated
+    let return_annotation =
+      let generics =
+        ClassHierarchyEnvironment.ReadOnly.variables
+          (ClassMetadataEnvironment.ReadOnly.class_hierarchy_environment class_metadata_environment)
+          ?dependency
+          class_name
+        >>| List.map ~f:Type.Variable.to_parameter
+        |> Option.value ~default:[]
       in
-      let definitions =
-        class_name
-        :: ClassMetadataEnvironment.ReadOnly.successors
-             class_metadata_environment
-             ?dependency
-             class_name
-      in
-      let definition_index parent =
-        parent
-        |> (fun class_annotation ->
-             List.findi definitions ~f:(fun _ annotation ->
-                 Type.equal (Primitive annotation) class_annotation))
-        >>| fst
-        |> Option.value ~default:Int.max_value
-      in
-      let signature_and_index ~name =
-        let signature, parent =
-          match UninstantiatedAttributeTable.lookup_name uninstantiated_attribute_table name with
-          | Some attribute ->
-              ( instantiate_attribute
-                  ~assumptions
-                  ~class_metadata_environment
-                  ?instantiated:(Some return_annotation)
-                  attribute
-                |> AnnotatedAttribute.annotation
-                |> Annotation.annotation,
-                Type.Primitive (AnnotatedAttribute.parent attribute) )
-          | None -> Type.Top, Type.Primitive class_name
-        in
-        signature, definition_index parent
-      in
-      let constructor_signature, constructor_index = signature_and_index ~name:"__init__" in
-      let new_signature, new_index =
-        let new_signature, new_index = signature_and_index ~name:"__new__" in
-        let drop_class_parameter = function
-          | Type.Callable { Type.Callable.kind; implementation; overloads; implicit } ->
-              let drop_parameter { Type.Callable.annotation; parameters } =
-                let parameters =
-                  match parameters with
-                  | Type.Callable.Defined (_ :: parameters) -> Type.Callable.Defined parameters
-                  | _ -> parameters
-                in
-                { Type.Callable.annotation; parameters }
-              in
-              Type.Callable
-                {
-                  kind;
-                  implementation = drop_parameter implementation;
-                  overloads = List.map overloads ~f:drop_parameter;
-                  implicit;
-                }
-          | annotation -> annotation
-        in
-        drop_class_parameter new_signature, new_index
-      in
-      let signature =
-        if new_index < constructor_index then
-          new_signature
-        else
-          constructor_signature
-      in
-      match signature with
-      | Type.Callable callable ->
-          Type.Callable
-            (Type.Callable.with_return_annotation ~annotation:return_annotation callable)
-      | _ -> signature
+      (* Tuples are special. *)
+      if String.equal class_name "tuple" then
+        match generics with
+        | [Single tuple_variable] -> Type.Tuple (Type.Unbounded tuple_variable)
+        | _ -> Type.Tuple (Type.Unbounded Type.Any)
+      else
+        let backup = Type.Parametric { name = class_name; parameters = generics } in
+        match instantiated, generics with
+        | _, [] -> instantiated
+        | Type.Primitive instantiated_name, _ when String.equal instantiated_name class_name ->
+            backup
+        | Type.Parametric { parameters; name = instantiated_name }, generics
+          when String.equal instantiated_name class_name
+               && List.length parameters <> List.length generics ->
+            backup
+        | _ -> instantiated
     in
-    uninstantiated_attribute_table
-      ~assumptions
-      ~transitive:true
-      ~class_attributes:false
-      ~include_generated_attributes:true
-      ?special_method:None
-      ?dependency
+    let definitions =
       class_name
-      ~class_metadata_environment
-    >>| handle
+      :: ClassMetadataEnvironment.ReadOnly.successors
+           class_metadata_environment
+           ?dependency
+           class_name
+    in
+    let definition_index parent =
+      parent
+      |> (fun class_annotation ->
+           List.findi definitions ~f:(fun _ annotation ->
+               Type.equal (Primitive annotation) class_annotation))
+      >>| fst
+      |> Option.value ~default:Int.max_value
+    in
+    let signature_and_index ~name =
+      let signature, parent =
+        match
+          attribute
+            ~assumptions
+            ~transitive:true
+            ~class_attributes:false
+            ~include_generated_attributes:true
+            ?special_method:None
+            ?dependency
+            ?instantiated:(Some return_annotation)
+            ~attribute_name:name
+            class_name
+            ~class_metadata_environment
+        with
+        | Some attribute ->
+            ( AnnotatedAttribute.annotation attribute |> Annotation.annotation,
+              Type.Primitive (AnnotatedAttribute.parent attribute) )
+        | None -> Type.Top, Type.Primitive class_name
+      in
+      signature, definition_index parent
+    in
+    let constructor_signature, constructor_index = signature_and_index ~name:"__init__" in
+    let new_signature, new_index =
+      let new_signature, new_index = signature_and_index ~name:"__new__" in
+      let drop_class_parameter = function
+        | Type.Callable { Type.Callable.kind; implementation; overloads; implicit } ->
+            let drop_parameter { Type.Callable.annotation; parameters } =
+              let parameters =
+                match parameters with
+                | Type.Callable.Defined (_ :: parameters) -> Type.Callable.Defined parameters
+                | _ -> parameters
+              in
+              { Type.Callable.annotation; parameters }
+            in
+            Type.Callable
+              {
+                kind;
+                implementation = drop_parameter implementation;
+                overloads = List.map overloads ~f:drop_parameter;
+                implicit;
+              }
+        | annotation -> annotation
+      in
+      drop_class_parameter new_signature, new_index
+    in
+    let signature =
+      if new_index < constructor_index then
+        new_signature
+      else
+        constructor_signature
+    in
+    match signature with
+    | Type.Callable callable ->
+        Type.Callable (Type.Callable.with_return_annotation ~annotation:return_annotation callable)
+    | _ -> signature
 end
 
-let make_open_recurser ~given_uninstantiated_attribute_table ~given_parse_annotation =
+let make_open_recurser ~given_single_uninstantiated_attribute_table ~given_parse_annotation =
   let rec open_recurser =
     {
       Implementation.full_order;
-      uninstantiated_attribute_table;
+      single_uninstantiated_attribute_table;
+      uninstantiated_attribute_tables;
+      attribute;
+      all_attributes;
       check_invalid_type_parameters;
       parse_annotation;
       create_attribute;
@@ -3089,10 +3235,14 @@ let make_open_recurser ~given_uninstantiated_attribute_table ~given_parse_annota
       constructor;
       instantiate_attribute;
     }
-  and uninstantiated_attribute_table ~assumptions =
-    given_uninstantiated_attribute_table open_recurser ~assumptions
+  and single_uninstantiated_attribute_table ~assumptions =
+    given_single_uninstantiated_attribute_table open_recurser ~assumptions
   and parse_annotation ~assumptions = given_parse_annotation open_recurser ~assumptions
   and full_order ~assumptions = Implementation.full_order open_recurser ~assumptions
+  and uninstantiated_attribute_tables ~assumptions =
+    Implementation.uninstantiated_attribute_tables open_recurser ~assumptions
+  and attribute ~assumptions = Implementation.attribute open_recurser ~assumptions
+  and all_attributes ~assumptions = Implementation.all_attributes open_recurser ~assumptions
   and check_invalid_type_parameters ~assumptions =
     Implementation.check_invalid_type_parameters open_recurser ~assumptions
   and create_attribute ~assumptions = Implementation.create_attribute open_recurser ~assumptions
@@ -3152,7 +3302,8 @@ module ParseAnnotationCache = struct
       =
       let uncached_open_recurser =
         make_open_recurser
-          ~given_uninstantiated_attribute_table:Implementation.uninstantiated_attribute_table
+          ~given_single_uninstantiated_attribute_table:
+            Implementation.single_uninstantiated_attribute_table
           ~given_parse_annotation:Implementation.parse_annotation
       in
       let dependency =
@@ -3225,10 +3376,10 @@ module Cache = ManagedCache.Make (struct
   let produce_value
       parse_annotation_cache
       ( {
-          SharedMemoryKeys.AttributeTableKey.transitive;
-          class_attributes;
+          SharedMemoryKeys.AttributeTableKey.class_attributes;
           include_generated_attributes;
-          special_method;
+          in_test;
+          accessed_via_metaclass;
           name;
           assumptions;
         } as key )
@@ -3242,16 +3393,17 @@ module Cache = ManagedCache.Make (struct
     in
     let open_recurser_with_parse_annotation_cache =
       make_open_recurser
-        ~given_uninstantiated_attribute_table:Implementation.uninstantiated_attribute_table
+        ~given_single_uninstantiated_attribute_table:
+          Implementation.single_uninstantiated_attribute_table
         ~given_parse_annotation:
           (ParseAnnotationCache.ReadOnly.cached_parse_annotation parse_annotation_cache)
     in
-    Implementation.uninstantiated_attribute_table
+    Implementation.single_uninstantiated_attribute_table
       open_recurser_with_parse_annotation_cache
-      ~transitive
       ~class_attributes
       ~include_generated_attributes
-      ~special_method
+      ~in_test
+      ~accessed_via_metaclass
       ?dependency
       ~class_metadata_environment
       ~assumptions
@@ -3275,16 +3427,16 @@ module ReadOnly = struct
     ParseAnnotationCache.ReadOnly.upstream_environment (upstream_environment read_only)
 
 
-  let cached_attribute_table
+  let cached_single_attribute_table
       read_only
       (* There's no need to use the given open recurser since we're already using the uncached
          version inside of the implementation of produce_value *)
         _open_recurser
       ~assumptions
-      ~transitive
       ~class_attributes
       ~include_generated_attributes
-      ?(special_method = false)
+      ~in_test
+      ~accessed_via_metaclass
       ?dependency
       name
       ~class_metadata_environment:
@@ -3295,10 +3447,10 @@ module ReadOnly = struct
       read_only
       ?dependency
       {
-        SharedMemoryKeys.AttributeTableKey.transitive;
-        class_attributes;
+        SharedMemoryKeys.AttributeTableKey.class_attributes;
         include_generated_attributes;
-        special_method;
+        in_test;
+        accessed_via_metaclass;
         name;
         assumptions;
       }
@@ -3306,7 +3458,7 @@ module ReadOnly = struct
 
   let open_recurser_with_both_caches read_only =
     make_open_recurser
-      ~given_uninstantiated_attribute_table:(cached_attribute_table read_only)
+      ~given_single_uninstantiated_attribute_table:(cached_single_attribute_table read_only)
       ~given_parse_annotation:
         (ParseAnnotationCache.ReadOnly.cached_parse_annotation (parse_annotation_cache read_only))
 
@@ -3322,78 +3474,11 @@ module ReadOnly = struct
     add_both_caches_and_empty_assumptions Implementation.instantiate_attribute
 
 
-  let attribute
-      read_only
-      ~transitive
-      ~class_attributes
-      ~include_generated_attributes
-      ?(special_method = false)
-      ?instantiated
-      ?dependency
-      ~attribute_name
-      class_name
-    =
-    get
-      read_only
-      ?dependency
-      {
-        SharedMemoryKeys.AttributeTableKey.transitive;
-        class_attributes;
-        include_generated_attributes;
-        special_method;
-        name = class_name;
-        assumptions = empty_assumptions;
-      }
-    >>= fun table ->
-    UninstantiatedAttributeTable.lookup_name table attribute_name
-    >>| instantiate_attribute read_only ?instantiated
+  let attribute = add_both_caches_and_empty_assumptions Implementation.attribute
 
+  let all_attributes = add_both_caches_and_empty_assumptions Implementation.all_attributes
 
-  let attribute_names
-      read_only
-      ~transitive
-      ~class_attributes
-      ~include_generated_attributes
-      ?(special_method = false)
-      ?dependency
-      class_name
-    =
-    get
-      read_only
-      ?dependency
-      {
-        SharedMemoryKeys.AttributeTableKey.transitive;
-        class_attributes;
-        include_generated_attributes;
-        special_method;
-        name = class_name;
-        assumptions = empty_assumptions;
-      }
-    >>| UninstantiatedAttributeTable.names
-
-
-  let all_attributes
-      read_only
-      ~transitive
-      ~class_attributes
-      ~include_generated_attributes
-      ?(special_method = false)
-      ?dependency
-      class_name
-    =
-    get
-      read_only
-      ?dependency
-      {
-        SharedMemoryKeys.AttributeTableKey.transitive;
-        class_attributes;
-        include_generated_attributes;
-        special_method;
-        name = class_name;
-        assumptions = empty_assumptions;
-      }
-    >>| UninstantiatedAttributeTable.to_list
-
+  let attribute_names = add_both_caches_and_empty_assumptions Implementation.attribute_names
 
   let check_invalid_type_parameters =
     add_both_caches_and_empty_assumptions Implementation.check_invalid_type_parameters

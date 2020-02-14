@@ -270,7 +270,7 @@ module Record = struct
       [@@deriving compare, eq, sexp, show, hash]
 
       type 'annotation t =
-        | Anonymous of {
+        | PositionalOnly of {
             index: int;
             annotation: 'annotation;
             default: bool;
@@ -302,7 +302,7 @@ module Record = struct
             (if default then ", default" else "")
         in
         match parameter with
-        | Anonymous { default; annotation; _ } ->
+        | PositionalOnly { default; annotation; _ } ->
             Format.asprintf "%a%s" pp_type annotation (if default then ", default" else "")
         | Named named -> print_named ~kind:"Named" named
         | KeywordOnly named -> print_named ~kind:"KeywordOnly" named
@@ -316,7 +316,7 @@ module Record = struct
 
 
       let annotation = function
-        | Anonymous { annotation; _ } -> Some annotation
+        | PositionalOnly { annotation; _ } -> Some annotation
         | Named { annotation; _ } -> Some annotation
         | KeywordOnly { annotation; _ } -> Some annotation
         | Variable (Concrete annotation) -> Some annotation
@@ -580,6 +580,7 @@ let is_top = function
 
 let is_tuple = function
   | Tuple _ -> true
+  | Parametric { name = "typing.Tuple" | "Tuple"; _ } -> true
   | _ -> false
 
 
@@ -749,7 +750,7 @@ let rec pp_concise format annotation =
               parameter_variable_type_representation variable |> Format.asprintf "%a" pp_concise
           | Defined parameters ->
               let parameter = function
-                | CallableParameter.Anonymous { annotation; default; _ } ->
+                | CallableParameter.PositionalOnly { annotation; default; _ } ->
                     if default then
                       Format.asprintf "%a=..." pp_concise annotation
                     else
@@ -1011,8 +1012,8 @@ let rec expression annotation =
             |> Node.create ~location
           in
           match parameter with
-          | CallableParameter.Anonymous { annotation; default; _ } ->
-              call ~default "Anonymous" (expression annotation)
+          | CallableParameter.PositionalOnly { annotation; default; _ } ->
+              call ~default "PositionalOnly" (expression annotation)
           | Keywords annotation -> call "Keywords" (expression annotation)
           | Named { name; annotation; default } ->
               call ~default ~name "Named" (expression annotation)
@@ -1275,8 +1276,8 @@ module Transform = struct
                 Variable (Concatenation (visit_concatenation concatenation))
             | RecordParameter.Keywords annotation ->
                 RecordParameter.Keywords (visit_annotation annotation ~state)
-            | RecordParameter.Anonymous ({ annotation; _ } as anonymous) ->
-                RecordParameter.Anonymous
+            | RecordParameter.PositionalOnly ({ annotation; _ } as anonymous) ->
+                RecordParameter.PositionalOnly
                   { anonymous with annotation = visit_annotation annotation ~state }
           in
           match parameter with
@@ -1407,7 +1408,7 @@ module Callable = struct
                   String.is_prefix sanitized ~prefix:"__"
                   && not (String.is_suffix sanitized ~suffix:"__")
                 then
-                  CallableParameter.Anonymous { index; annotation; default }
+                  CallableParameter.PositionalOnly { index; annotation; default }
                 else
                   let named = { name; annotation; default } in
                   if keyword_only then
@@ -1417,13 +1418,24 @@ module Callable = struct
           in
           keyword_only, new_parameter :: sofar
       in
-      List.foldi parameters ~f:parameter ~init:(false, []) |> snd |> List.rev
+      let add_positional_only index (positional_only, sofar) parameter =
+        match parameter with
+        | Named { name; _ } when String.equal (Identifier.sanitized name) "/" -> true, sofar
+        | Named { annotation; default; _ } when positional_only ->
+            let index = List.length parameters - 1 - index in
+            positional_only, PositionalOnly { index; annotation; default } :: sofar
+        | _ -> positional_only, parameter :: sofar
+      in
+      List.foldi parameters ~f:parameter ~init:(false, [])
+      |> snd
+      |> List.foldi ~f:add_positional_only ~init:(false, [])
+      |> snd
 
 
     let show_concise = show_concise ~pp_type
 
     let default = function
-      | Anonymous { default; _ }
+      | PositionalOnly { default; _ }
       | KeywordOnly { default; _ }
       | Named { default; _ } ->
           default
@@ -1436,8 +1448,8 @@ module Callable = struct
       match left, right with
       | Variable _, Variable _
       | Keywords _, Keywords _
-      | _, Anonymous _
-      | Anonymous _, _ ->
+      | _, PositionalOnly _
+      | PositionalOnly _, _ ->
           true
       | Named { name = left; _ }, Named { name = right; _ } ->
           let left = Identifier.sanitized left in
@@ -1536,10 +1548,10 @@ module Callable = struct
 
   let prepend_anonymous_parameters ~head ~tail =
     let make_anonymous annotation =
-      Parameter.Anonymous { index = 0; annotation; default = false }
+      Parameter.PositionalOnly { index = 0; annotation; default = false }
     in
     let correct_indices index = function
-      | Parameter.Anonymous anonymous -> Parameter.Anonymous { anonymous with index }
+      | Parameter.PositionalOnly anonymous -> Parameter.PositionalOnly { anonymous with index }
       | parameter -> parameter
     in
     let head = List.map head ~f:make_anonymous in
@@ -1815,13 +1827,13 @@ let rec create_logic ~aliases ~variable_aliases { Node.value = expression; _ } =
                       List.map arguments ~f:(fun { Call.Argument.value; _ } -> Node.value value)
                     in
                     match name, arguments with
-                    | "Anonymous", annotation :: tail ->
+                    | "PositionalOnly", annotation :: tail ->
                         let default =
                           match tail with
                           | [Name (Name.Identifier "default")] -> true
                           | _ -> false
                         in
-                        CallableParameter.Anonymous
+                        CallableParameter.PositionalOnly
                           {
                             index;
                             annotation = create_logic (Node.create_with_default_location annotation);
@@ -1869,8 +1881,9 @@ let rec create_logic ~aliases ~variable_aliases { Node.value = expression; _ } =
                           | _ -> Top
                         in
                         Keywords annotation
-                    | _ -> Anonymous { index; annotation = Top; default = false } )
-                | _ -> Anonymous { index; annotation = create_logic parameter; default = false }
+                    | _ -> PositionalOnly { index; annotation = Top; default = false } )
+                | _ ->
+                    PositionalOnly { index; annotation = create_logic parameter; default = false }
               in
               match Node.value parameters with
               | List parameters -> Defined (List.mapi ~f:extract_parameter parameters)
@@ -3161,7 +3174,7 @@ end = struct
                           | OrderedTypes.Any -> [Callable.Parameter.Variable (Concrete Any)]
                           | Concrete concretes ->
                               let make_anonymous annotation =
-                                Callable.Parameter.Anonymous
+                                Callable.Parameter.PositionalOnly
                                   { index = 0; annotation; default = false }
                               in
                               List.map concretes ~f:make_anonymous
@@ -3174,8 +3187,8 @@ end = struct
                     | parameter -> [parameter]
                   in
                   let correct_indices index = function
-                    | Callable.Parameter.Anonymous anonymous ->
-                        Callable.Parameter.Anonymous { anonymous with index }
+                    | Callable.Parameter.PositionalOnly anonymous ->
+                        Callable.Parameter.PositionalOnly { anonymous with index }
                     | parameter -> parameter
                   in
                   List.concat_map parameters ~f:replace_variadic
@@ -3619,6 +3632,13 @@ let dequalify map annotation =
                 parameters =
                   List.map parameters ~f:(fun parameter -> Record.Parameter.Single parameter);
               }
+        | Tuple (Bounded (Concrete parameters)) ->
+            Parametric
+              {
+                name = dequalify_string "typing.Tuple";
+                parameters =
+                  List.map parameters ~f:(fun parameter -> Record.Parameter.Single parameter);
+              }
         | Primitive name -> Primitive (dequalify_identifier map name)
         | Variable ({ variable = name; _ } as annotation) ->
             Variable { annotation with variable = dequalify_identifier map name }
@@ -3671,7 +3691,7 @@ module TypedDictionary = struct
             parameters =
               Defined
                 [
-                  Record.Callable.RecordParameter.Anonymous
+                  Record.Callable.RecordParameter.PositionalOnly
                     { index = 0; annotation; default = false };
                 ];
           };
@@ -3903,31 +3923,37 @@ let infer_transform annotation =
 
     let visit _ annotation =
       let transformed_annotation =
+        let shorten_tuple_type types =
+          let parameter = List.hd types |> Option.value ~default:Bottom in
+          let should_be_unbound =
+            List.fold types ~init:true ~f:(fun all_match next_parameter ->
+                if equal parameter next_parameter then
+                  all_match
+                else
+                  false)
+          in
+          if should_be_unbound then Some (Tuple (Unbounded parameter)) else None
+        in
         match annotation with
         | Tuple (Bounded (Concrete types)) when List.length types > 2 ->
-            let parameter = List.hd types |> Option.value ~default:Bottom in
-            let should_be_unbound =
-              List.fold types ~init:true ~f:(fun all_match next_parameter ->
-                  if equal parameter next_parameter then
-                    all_match
-                  else
-                    false)
-            in
-            if should_be_unbound then
-              Tuple (Unbounded parameter)
-            else
+            shorten_tuple_type types |> Option.value ~default:annotation
+        | Parametric { name = "typing.Tuple"; parameters } when List.length parameters > 2 ->
+            let types = List.filter_map parameters ~f:Parameter.is_single in
+            if List.length types < List.length parameters then
               annotation
+            else
+              shorten_tuple_type types |> Option.value ~default:annotation
         | Callable
             ( { implementation = { parameters = Defined parameters; _ } as implementation; _ } as
             callable ) ->
             let parameters =
               let transform_parameter index parameter =
                 match parameter with
-                | CallableParameter.Anonymous { annotation; _ }
+                | CallableParameter.PositionalOnly { annotation; _ }
                 | KeywordOnly { annotation; _ }
                 | Named { annotation; _ }
                 | Variable (Concrete annotation) ->
-                    CallableParameter.Anonymous { annotation; default = false; index }
+                    CallableParameter.PositionalOnly { annotation; default = false; index }
                 | _ -> parameter
               in
               List.mapi parameters ~f:transform_parameter

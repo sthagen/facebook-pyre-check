@@ -25,7 +25,7 @@ let test_check_bounded_variables context =
     |}
     [
       "Incompatible parameter type [6]: "
-      ^ "Expected `int` for 1st anonymous parameter to anonymous call but got `str`.";
+      ^ "Expected `int` for 1st positional only parameter to anonymous call but got `str`.";
     ];
   assert_type_errors
     {|
@@ -124,7 +124,8 @@ let test_check_unbounded_variables context =
     |}
     [
       "Incompatible parameter type [6]: "
-      ^ "Expected `str` for 1st anonymous parameter to call `expects_string` but got `Variable[T]`.";
+      ^ "Expected `str` for 1st positional only parameter to call `expects_string` but got \
+         `Variable[T]`.";
     ];
   assert_type_errors
     {|
@@ -174,7 +175,8 @@ let test_check_unbounded_variables context =
       "Revealed type [-1]: Revealed type for `test.Foo[float]` is `typing.Type[Foo[float]]`.";
       "Revealed type [-1]: Revealed type for `test.Foo[float]()` is `Foo[float]`.";
       "Revealed type [-1]: Revealed type for `test.Foo[str]()` is `Foo[str]`.";
-      "Incompatible parameter type [6]: Expected `typing.Type[Variable[X]]` for 1st anonymous "
+      "Incompatible parameter type [6]: Expected `typing.Type[Variable[X]]` for 1st positional \
+       only "
       ^ "parameter to call `typing.GenericMeta.__getitem__` but got `str`.";
     ];
   assert_type_errors
@@ -189,7 +191,7 @@ let test_check_unbounded_variables context =
         return Foo[int](1.2)
     |}
     [
-      "Incompatible parameter type [6]: Expected `int` for 1st anonymous parameter to call "
+      "Incompatible parameter type [6]: Expected `int` for 1st positional only parameter to call "
       ^ "`Foo.__init__` but got `float`.";
     ];
   assert_type_errors
@@ -219,14 +221,14 @@ let test_check_unbounded_variables context =
     |}
     [
       "Revealed type [-1]: Revealed type for `test.generic(test.overloaded, [1], [\"1\"])` is \
-       `typing.Tuple[int, str]`.";
+       `Tuple[int, str]`.";
       "Revealed type [-1]: Revealed type for `test.generic(test.overloaded, [True], [1.000000])` \
-       is `typing.Tuple[bool, float]`.";
+       is `Tuple[bool, float]`.";
       "Revealed type [-1]: Revealed type for `test.generic(test.overloaded, [1.000000], [False])` \
-       is `typing.Tuple[float, bool]`.";
+       is `Tuple[float, bool]`.";
       "Revealed type [-1]: Revealed type for `test.generic(test.overloaded, [\"1\"], [7])` is \
-       `typing.Tuple[str, int]`.";
-      "Incompatible parameter type [6]: Expected `List[Variable[T2]]` for 3rd anonymous "
+       `Tuple[str, int]`.";
+      "Incompatible parameter type [6]: Expected `List[Variable[T2]]` for 3rd positional only "
       ^ "parameter to call `generic` but got `List[int]`.";
     ];
   assert_type_errors
@@ -273,10 +275,7 @@ let test_check_unbounded_variables context =
       reveal_type(i)
       return i
     |}
-    [
-      "Revealed type [-1]: Revealed type for `i` is `Union[typing.Tuple[int, bool], \
-       typing.Tuple[str, None]]`.";
-    ];
+    ["Revealed type [-1]: Revealed type for `i` is `Union[Tuple[int, bool], Tuple[str, None]]`."];
   assert_type_errors
     {|
     from typing import Callable, TypeVar
@@ -368,7 +367,7 @@ let test_check_variable_bindings context =
     |}
     [
       "Incompatible parameter type [6]: "
-      ^ "Expected `str` for 1st anonymous parameter to call `str_to_int` but got "
+      ^ "Expected `str` for 1st positional only parameter to call `str_to_int` but got "
       ^ "`Variable[T (bound to int)]`.";
     ];
   assert_type_errors
@@ -380,6 +379,7 @@ let test_check_variable_bindings context =
     [
       "Invalid type variable [34]: The type variable `Variable[T (bound to int)]` isn't present in \
        the function's parameters.";
+      "Incompatible return type [7]: Expected `Variable[T (bound to int)]` but got `float`.";
     ];
   assert_type_errors
     {|
@@ -390,7 +390,8 @@ let test_check_variable_bindings context =
         foo(x)
     |}
     [
-      "Incompatible parameter type [6]: Expected `Variable[T (bound to int)]` for 1st anonymous "
+      "Incompatible parameter type [6]: Expected `Variable[T (bound to int)]` for 1st positional \
+       only "
       ^ "parameter to call `foo` but got `str`.";
     ];
   assert_type_errors
@@ -417,8 +418,8 @@ let test_check_variable_bindings context =
     |}
     [
       "Incompatible return type [7]: Expected `None` but got `int`.";
-      "Incompatible parameter type [6]: Expected `int` for 2nd anonymous parameter to call `f` but \
-       got `None`.";
+      "Incompatible parameter type [6]: Expected `int` for 2nd positional only parameter to call \
+       `f` but got `None`.";
     ];
   assert_type_errors
     {|
@@ -517,7 +518,7 @@ let test_check_variable_bindings context =
       "Revealed type [-1]: Revealed type for `test.Foo[test.C]()` is `Foo[C]`.";
       "Revealed type [-1]: Revealed type for `test.Foo[test.D]()` is `Foo[D]`.";
       "Incompatible parameter type [6]: Expected `typing.Type[Variable[X (bound to C)]]` for "
-      ^ "1st anonymous parameter to call `typing.GenericMeta.__getitem__` but got \
+      ^ "1st positional only parameter to call `typing.GenericMeta.__getitem__` but got \
          `typing.Type[int]`.";
     ];
   assert_type_errors
@@ -541,7 +542,7 @@ let test_check_variable_bindings context =
       "Revealed type [-1]: Revealed type for `test.Foo[test.Mineral]()` is `Foo[Mineral]`.";
       "Revealed type [-1]: Revealed type for `test.Foo[test.Fish]()` is `Foo[Animal]`.";
       "Incompatible parameter type [6]: Expected `typing.Type[Variable[X <: [Mineral, Animal]]]` "
-      ^ "for 1st anonymous parameter to call `typing.GenericMeta.__getitem__` but got "
+      ^ "for 1st positional only parameter to call `typing.GenericMeta.__getitem__` but got "
       ^ "`typing.Type[int]`.";
     ];
   assert_type_errors
@@ -835,7 +836,8 @@ let test_unbound_variables context =
           foo([])
     |}
     [
-      "Incompatible parameter type [6]: Expected `int` for 1st anonymous parameter to call `foo` "
+      "Incompatible parameter type [6]: Expected `int` for 1st positional only parameter to call \
+       `foo` "
       ^ "but got `typing.List[Variable[_T]]`.";
     ];
   assert_type_errors
@@ -899,7 +901,8 @@ let test_distinguish context =
         return f(1)
     |}
     [
-      "Incompatible parameter type [6]: Expected `Variable[_T1]` for 1st anonymous parameter to "
+      "Incompatible parameter type [6]: Expected `Variable[_T1]` for 1st positional only parameter \
+       to "
       ^ "anonymous call but got `int`.";
     ];
   assert_type_errors
@@ -1034,7 +1037,7 @@ let test_integer_variables context =
         baz(y)
     |}
     [
-      "Incompatible parameter type [6]: Expected `IntegerVariable[X]` for 1st anonymous "
+      "Incompatible parameter type [6]: Expected `IntegerVariable[X]` for 1st positional only "
       ^ "parameter to call `baz` but got `int`.";
     ];
   ()
@@ -1124,8 +1127,8 @@ let test_list_variadics context =
       reveal_type(duple((x, y)))
     |}
     [
-      "Revealed type [-1]: Revealed type for `test.duple((x, y))` is \
-       `typing.Tuple[typing.Tuple[int, str], typing.Tuple[int, str]]`.";
+      "Revealed type [-1]: Revealed type for `test.duple((x, y))` is `Tuple[Tuple[int, str], \
+       Tuple[int, str]]`.";
     ];
   assert_type_errors
     {|
@@ -1152,7 +1155,7 @@ let test_list_variadics context =
       reveal_type(x)
       return x
     |}
-    ["Revealed type [-1]: Revealed type for `x` is `typing.Tuple[int, str, bool]`."];
+    ["Revealed type [-1]: Revealed type for `x` is `Tuple[int, str, bool]`."];
   assert_type_errors
     {|
     from typing import List
@@ -1243,7 +1246,7 @@ let test_list_variadics context =
       reveal_type(t)
       return t
     |}
-    ["Revealed type [-1]: Revealed type for `t` is `typing.Tuple[int, str, bool]`."];
+    ["Revealed type [-1]: Revealed type for `t` is `Tuple[int, str, bool]`."];
   assert_type_errors
     {|
     from typing import Tuple, Optional, Callable
@@ -1258,7 +1261,7 @@ let test_list_variadics context =
       reveal_type(t)
       return t
     |}
-    ["Revealed type [-1]: Revealed type for `t` is `typing.Tuple[int, str, bool]`."];
+    ["Revealed type [-1]: Revealed type for `t` is `Tuple[int, str, bool]`."];
   assert_type_errors
     {|
     from typing import Tuple, Optional, Callable, TypeVar
@@ -1278,8 +1281,8 @@ let test_list_variadics context =
        is `str`.";
       "Revealed type [-1]: Revealed type for `test.call_with_tuple(test.bar, (True, 19, 37))` is \
        `int`.";
-      "Incompatible parameter type [6]: Expected `typing.Tuple[test.Ts]` for 2nd anonymous \
-       parameter to call `call_with_tuple` but got `typing.Tuple[bool, float, int]`.";
+      "Incompatible parameter type [6]: Expected `typing.Tuple[test.Ts]` for 2nd positional only \
+       parameter to call `call_with_tuple` but got `Tuple[bool, float, int]`.";
     ];
   assert_type_errors
     {|
@@ -1315,9 +1318,7 @@ let test_list_variadics context =
     def foo(x: int, y: str, z: bool) -> None:
       reveal_type(loop(x, y, z))
     |}
-    [
-      "Revealed type [-1]: Revealed type for `test.loop(x, y, z)` is `typing.Tuple[int, str, bool]`.";
-    ];
+    ["Revealed type [-1]: Revealed type for `test.loop(x, y, z)` is `Tuple[int, str, bool]`."];
   assert_type_errors
     {|
     from typing import Tuple, Optional, Callable
@@ -1460,9 +1461,8 @@ let test_map context =
       reveal_type(unwrap((lx, ly)))
     |}
     [
-      "Revealed type [-1]: Revealed type for `test.wrap((x, y))` is `typing.Tuple[List[int], \
-       List[str]]`.";
-      "Revealed type [-1]: Revealed type for `test.unwrap((lx, ly))` is `typing.Tuple[int, str]`.";
+      "Revealed type [-1]: Revealed type for `test.wrap((x, y))` is `Tuple[List[int], List[str]]`.";
+      "Revealed type [-1]: Revealed type for `test.unwrap((lx, ly))` is `Tuple[int, str]`.";
     ];
   assert_type_errors
     ~handle:"qualifier.py"
@@ -1475,9 +1475,7 @@ let test_map context =
     def foo(lx: List[int], ly: List[str]) -> None:
       reveal_type(unwrap(lx, ly))
     |}
-    [
-      "Revealed type [-1]: Revealed type for `qualifier.unwrap(lx, ly)` is `typing.Tuple[int, str]`.";
-    ];
+    ["Revealed type [-1]: Revealed type for `qualifier.unwrap(lx, ly)` is `Tuple[int, str]`."];
   assert_type_errors
     {|
     from typing import Tuple, List, Generic, TypeVar, Callable, TypeVar
@@ -1535,11 +1533,10 @@ let test_map context =
       reveal_type(await better_gather( *many))
     |}
     [
-      "Revealed type [-1]: Revealed type for `await test.better_gather(i)` is `typing.Tuple[int]`.";
-      "Revealed type [-1]: Revealed type for `await test.better_gather(i, s)` is \
-       `typing.Tuple[int, str]`.";
-      "Revealed type [-1]: Revealed type for `await test.better_gather(*many)` is \
-       `typing.Tuple[int, str, int, str, int, str, int, str, int]`.";
+      "Revealed type [-1]: Revealed type for `await test.better_gather(i)` is `Tuple[int]`.";
+      "Revealed type [-1]: Revealed type for `await test.better_gather(i, s)` is `Tuple[int, str]`.";
+      "Revealed type [-1]: Revealed type for `await test.better_gather(*many)` is `Tuple[int, str, \
+       int, str, int, str, int, str, int]`.";
     ];
   assert_type_errors
     {|
@@ -1585,14 +1582,12 @@ let test_user_defined_variadics context =
       reveal_type(f.meth)
     |}
     [
-      "Revealed type [-1]: Revealed type for `f.x` is `typing.Tuple[int, str, bool]`.";
-      "Revealed type [-1]: Revealed type for `f.y` is `typing.Tuple[List[int], List[str], \
-       List[bool]]`.";
+      "Revealed type [-1]: Revealed type for `f.x` is `Tuple[int, str, bool]`.";
+      "Revealed type [-1]: Revealed type for `f.y` is `Tuple[List[int], List[str], List[bool]]`.";
       "Revealed type [-1]: Revealed type for `f.meth` is `typing.Callable(Foo.meth)[[Named(x, \
        int), int, str, bool], bool]`.";
-      "Revealed type [-1]: Revealed type for `f.x` is `typing.Tuple[bool, int, float]`.";
-      "Revealed type [-1]: Revealed type for `f.y` is `typing.Tuple[List[bool], List[int], \
-       List[float]]`.";
+      "Revealed type [-1]: Revealed type for `f.x` is `Tuple[bool, int, float]`.";
+      "Revealed type [-1]: Revealed type for `f.y` is `Tuple[List[bool], List[int], List[float]]`.";
       "Revealed type [-1]: Revealed type for `f.meth` is `typing.Callable(Foo.meth)[[Named(x, \
        int), bool, int, float], bool]`.";
     ];
@@ -1612,7 +1607,7 @@ let test_user_defined_variadics context =
     def gun(x: I) -> None:
       reveal_type(fun(x))
     |}
-    ["Revealed type [-1]: Revealed type for `test.fun(x)` is `typing.Tuple[int, str, bool]`."];
+    ["Revealed type [-1]: Revealed type for `test.fun(x)` is `Tuple[int, str, bool]`."];
   assert_type_errors
     {|
     from typing import Generic, Tuple, List, Protocol
@@ -1630,7 +1625,7 @@ let test_user_defined_variadics context =
     |}
     [
       "Revealed type [-1]: Revealed type for `x` is `Foo[int, str, bool]`.";
-      "Revealed type [-1]: Revealed type for `y` is `typing.Tuple[int, str, bool]`.";
+      "Revealed type [-1]: Revealed type for `y` is `Tuple[int, str, bool]`.";
     ];
   assert_type_errors
     {|
@@ -1650,7 +1645,7 @@ let test_user_defined_variadics context =
     |}
     [
       "Revealed type [-1]: Revealed type for `x` is `Foo[int, str, bool]`.";
-      "Revealed type [-1]: Revealed type for `y` is `typing.Tuple[int, str, bool]`.";
+      "Revealed type [-1]: Revealed type for `y` is `Tuple[int, str, bool]`.";
     ];
   (* Distinguishing between these two cases is the main reason we introduce the intermediate type
      Type.Single *)
@@ -1701,8 +1696,8 @@ let test_concatenation_operator context =
       reveal_type(removed)
     |}
     [
-      "Revealed type [-1]: Revealed type for `added` is `typing.Tuple[int, int, str, bool, float]`.";
-      "Revealed type [-1]: Revealed type for `removed` is `typing.Tuple[str]`.";
+      "Revealed type [-1]: Revealed type for `added` is `Tuple[int, int, str, bool, float]`.";
+      "Revealed type [-1]: Revealed type for `removed` is `Tuple[str]`.";
     ];
   assert_type_errors
     {|
@@ -1723,8 +1718,8 @@ let test_concatenation_operator context =
       "Revealed type [-1]: Revealed type for `x` is `typing.Tuple[Concatenate[List[int], Map[list, \
        test.Ts], List[bool]]]`.";
       "Incompatible parameter type [6]: Expected `typing.Tuple[Map[list, test.Ts]]` for 1st \
-       anonymous parameter to call `unmap_tuple` but got `typing.Tuple[Concatenate[List[int], \
-       Map[list, test.Ts], List[bool]]]`.";
+       positional only parameter to call `unmap_tuple` but got \
+       `typing.Tuple[Concatenate[List[int], Map[list, test.Ts], List[bool]]]`.";
     ];
   assert_type_errors
     {|
@@ -1747,7 +1742,7 @@ let test_concatenation_operator context =
     |}
     [
       "Revealed type [-1]: Revealed type for `el` is `int`.";
-      "Revealed type [-1]: Revealed type for `dims` is `typing.Tuple[typing_extensions.Literal[1], \
+      "Revealed type [-1]: Revealed type for `dims` is `Tuple[typing_extensions.Literal[1], \
        typing_extensions.Literal[2], typing_extensions.Literal[3]]`.";
     ];
   assert_type_errors
@@ -1823,8 +1818,8 @@ let test_concatenation_operator context =
         reveal_type(m.second())
     |}
     [
-      "Revealed type [-1]: Revealed type for `m.first()` is `typing.Tuple[int, str]`.";
-      "Revealed type [-1]: Revealed type for `m.second()` is `typing.Tuple[bool, int, bool]`.";
+      "Revealed type [-1]: Revealed type for `m.first()` is `Tuple[int, str]`.";
+      "Revealed type [-1]: Revealed type for `m.second()` is `Tuple[bool, int, bool]`.";
     ];
   ()
 

@@ -211,7 +211,6 @@ let test_constructors context =
           Node.value name
           |> Reference.show
           |> GlobalResolution.constructor ~resolution ~instantiated
-          |> fun option -> Option.value_exn option
         in
         assert_equal ~printer:Type.show ~cmp:Type.equal callable actual
     | _ -> assert_unreached ()
@@ -384,7 +383,7 @@ let test_class_attributes context =
       ~async:false
       ~class_attribute
       ~defined:true
-      ~initialized:(Option.is_some value)
+      ~initialized:(if Option.is_some value then Explicitly else NotInitialized)
       ~name
       ~parent:(Reference.show parent)
       ~visibility:ReadWrite
@@ -471,7 +470,7 @@ let test_class_attributes context =
       ?(property = false)
       ?(visibility = Attribute.ReadWrite)
       ?(parent = "test.Attributes")
-      ?(initialized = true)
+      ?(initialized = Annotated.Attribute.Implicitly)
       ?(defined = true)
       name
       callable
@@ -521,23 +520,13 @@ let test_class_attributes context =
     ~parent_instantiated_type:(Type.meta (Type.Primitive "Attributes"))
     ~attribute_name:"property"
     ~expected_attribute:
-      (create_expected_attribute
-         ~initialized:true
-         ~property:true
-         ~visibility:(ReadOnly Unrefinable)
-         "property"
-         "str");
+      (create_expected_attribute ~property:true ~visibility:(ReadOnly Unrefinable) "property" "str");
   assert_attribute
     ~parent
     ~parent_instantiated_type:(Type.Primitive "Nonsense")
     ~attribute_name:"property"
     ~expected_attribute:
-      (create_expected_attribute
-         ~initialized:true
-         ~property:true
-         ~visibility:(ReadOnly Unrefinable)
-         "property"
-         "str");
+      (create_expected_attribute ~property:true ~visibility:(ReadOnly Unrefinable) "property" "str");
   ()
 
 

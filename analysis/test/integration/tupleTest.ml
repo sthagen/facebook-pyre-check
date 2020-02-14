@@ -29,7 +29,8 @@ let test_check_tuple context =
     |}
     [
       "Incompatible parameter type [6]: "
-      ^ "Expected `int` for 1st anonymous parameter to call `tuple.tuple_method` but got `float`.";
+      ^ "Expected `int` for 1st positional only parameter to call `tuple.tuple_method` but got \
+         `float`.";
     ];
   assert_type_errors
     {|
@@ -324,6 +325,15 @@ let test_check_tuple context =
       "Missing parameter annotation [2]: Parameter `foo` must have a type that does not contain \
        `Any`.";
     ];
+  assert_type_errors
+    {|
+      X = typing.NamedTuple(
+        "x",
+        dates=str
+      ) 
+      X(dates="foo")
+    |}
+    [];
   ()
 
 

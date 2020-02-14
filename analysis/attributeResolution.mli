@@ -44,7 +44,7 @@ type invalid_argument = {
 
 type missing_argument =
   | Named of Identifier.t
-  | Anonymous of int
+  | PositionalOnly of int
 [@@deriving eq, show, compare, sexp, hash]
 
 type mismatch_with_list_variadic_type_variable =
@@ -244,7 +244,7 @@ module AttributeReadOnly : sig
     ?dependency:SharedMemoryKeys.dependency ->
     Type.Primitive.t ->
     instantiated:Type.t ->
-    Type.t option
+    Type.t
 
   val instantiate_attribute
     :  t ->

@@ -1003,7 +1003,7 @@ let test_check_refinement context =
     |}
     [
       "Prohibited any [33]: Explicit annotation for `l` cannot contain `Any`.";
-      "Incompatible parameter type [6]: Expected `int` for 1st anonymous parameter to call \
+      "Incompatible parameter type [6]: Expected `int` for 1st positional only parameter to call \
        `list.append` but got `str`.";
     ];
   assert_type_errors
@@ -1014,7 +1014,7 @@ let test_check_refinement context =
     |}
     [
       "Incompatible parameter type [6]: "
-      ^ "Expected `int` for 1st anonymous parameter to call `list.append` but got `str`.";
+      ^ "Expected `int` for 1st positional only parameter to call `list.append` but got `str`.";
     ];
   assert_type_errors
     {|
@@ -1026,7 +1026,7 @@ let test_check_refinement context =
       "Incompatible variable type [9]: l is declared to have type `typing.List[int]` "
       ^ "but is used as type `None`.";
       "Incompatible parameter type [6]: "
-      ^ "Expected `int` for 1st anonymous parameter to call `list.append` but got `str`.";
+      ^ "Expected `int` for 1st positional only parameter to call `list.append` but got `str`.";
     ];
   assert_type_errors
     {|
@@ -1111,6 +1111,7 @@ let test_check_invalid_type_variables context =
     [
       "Invalid type variable [34]: The type variable `Variable[T]` isn't present in the function's \
        parameters.";
+      "Incompatible return type [7]: Expected `Variable[T]` but got `unknown`.";
     ];
   assert_type_errors
     {|
@@ -1247,8 +1248,8 @@ let test_check_aliases context =
        as type `typing.Type[BAR]`.";
       "Incompatible return type [7]: Expected `int` but got `unknown`.";
       "Undefined attribute [16]: `BAR` has no attribute `x`.";
-      "Incompatible parameter type [6]: Expected `BAR` for 1st anonymous parameter to call `foo` \
-       but got `FOO`.";
+      "Incompatible parameter type [6]: Expected `BAR` for 1st positional only parameter to call \
+       `foo` but got `FOO`.";
     ];
 
   (* Locals are not aliases *)
@@ -1367,7 +1368,7 @@ let test_check_invalid_generic_inheritance context =
     [
       "Incompatible variable type [9]: y is declared to have type `Base[str]` but is used as type \
        `Base[int]`.";
-      "Incompatible parameter type [6]: Expected `int` for 1st anonymous parameter to call \
+      "Incompatible parameter type [6]: Expected `int` for 1st positional only parameter to call \
        `Base.__init__` but got `str`.";
       "Incompatible variable type [9]: x is declared to have type `Child[str]` but is used as type \
        `Child[int]`.";
@@ -1391,7 +1392,7 @@ let test_check_invalid_generic_inheritance context =
         PartialChild("hello", "world")
       |}
     [
-      "Incompatible parameter type [6]: Expected `int` for 1st anonymous parameter to call \
+      "Incompatible parameter type [6]: Expected `int` for 1st positional only parameter to call \
        `Base.__new__` but got `str`.";
     ];
   assert_type_errors
@@ -1414,13 +1415,13 @@ let test_check_invalid_generic_inheritance context =
         y4: PartialChild[int] = PartialChild(0, "hello")
       |}
     [
-      "Incompatible parameter type [6]: Expected `int` for 1st anonymous parameter to call \
+      "Incompatible parameter type [6]: Expected `int` for 1st positional only parameter to call \
        `Base.__init__` but got `str`.";
       "Incompatible variable type [9]: y2 is declared to have type `PartialChild[str]` but is used \
        as type `PartialChild[int]`.";
       "Incompatible variable type [9]: y3 is declared to have type `PartialChild[str]` but is used \
        as type `PartialChild[int]`.";
-      "Incompatible parameter type [6]: Expected `int` for 1st anonymous parameter to call \
+      "Incompatible parameter type [6]: Expected `int` for 1st positional only parameter to call \
        `Base.__init__` but got `str`.";
       "Incompatible variable type [9]: y4 is declared to have type `PartialChild[int]` but is used \
        as type `PartialChild[str]`.";
@@ -1446,7 +1447,7 @@ let test_check_invalid_generic_inheritance context =
         y3: PartialChildWithConstructor[str] = PartialChildWithConstructor(0, 0, "world")
       |}
     [
-      "Incompatible parameter type [6]: Expected `str` for 3rd anonymous parameter to call \
+      "Incompatible parameter type [6]: Expected `str` for 3rd positional only parameter to call \
        `PartialChildWithConstructor.__init__` but got `int`.";
       "Incompatible variable type [9]: y3 is declared to have type \
        `PartialChildWithConstructor[str]` but is used as type `PartialChildWithConstructor[int]`.";
@@ -1478,7 +1479,7 @@ let test_check_invalid_generic_inheritance context =
       |}
     [
       "Revealed type [-1]: Revealed type for `y1.identity(0)` is `int`.";
-      "Incompatible parameter type [6]: Expected `int` for 1st anonymous parameter to call \
+      "Incompatible parameter type [6]: Expected `int` for 1st positional only parameter to call \
        `TypeNotUsedInConstructor.identity` but got `str`.";
       "Revealed type [-1]: Revealed type for `y1.identity(\"hello\")` is `int`.";
     ];
@@ -1512,11 +1513,11 @@ let test_check_invalid_generic_inheritance context =
           x.generic_method("hello", "world")
       |}
     [
-      "Incompatible parameter type [6]: Expected `int` for 2nd anonymous parameter to call \
+      "Incompatible parameter type [6]: Expected `int` for 2nd positional only parameter to call \
        `Base.generic_method` but got `str`.";
-      "Incompatible parameter type [6]: Expected `int` for 2nd anonymous parameter to call \
+      "Incompatible parameter type [6]: Expected `int` for 2nd positional only parameter to call \
        `Base.generic_method` but got `str`.";
-      "Incompatible parameter type [6]: Expected `int` for 1st anonymous parameter to call \
+      "Incompatible parameter type [6]: Expected `int` for 1st positional only parameter to call \
        `Base.generic_method` but got `str`.";
     ];
   ()

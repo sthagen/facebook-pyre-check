@@ -88,8 +88,15 @@ val resolution_with_key
   :  global_resolution:GlobalResolution.t ->
   local_annotations:LocalAnnotationMap.t option ->
   parent:Reference.t option ->
-  key:int option ->
+  key:int ->
   Resolution.t
+
+val emit_errors_in_expression
+  :  (module Context) ->
+  errors_sofar:Error.t list ->
+  resolution:Resolution.t ->
+  Expression.t ->
+  Error.t list
 
 val name : string
 
