@@ -758,13 +758,7 @@ let messages ~concise ~signature location kind =
       let detail =
         match override with
         | WeakenedPostcondition { actual; expected; due_to_invariance; _ } ->
-            if Type.is_top actual then
-              Format.asprintf
-                "The overriding %s is not annotated but should return a subtype of `%a`."
-                kind
-                pp_type
-                expected
-            else if due_to_invariance then
+            if due_to_invariance then
               invariance_message
             else if equal_override_kind override_kind Attribute then
               Format.asprintf
@@ -1773,19 +1767,18 @@ let messages ~concise ~signature location kind =
       in
       [message]
   | UnusedIgnore codes ->
-      let string_from_codes codes =
-        if List.length codes > 0 then
-          List.map codes ~f:Int.to_string |> String.concat ~sep:", " |> Format.asprintf "[%s] "
-        else
-          ""
+      let codes =
+        match codes with
+        | [] -> ""
+        | codes ->
+            Format.asprintf "[%s]" (List.map codes ~f:Int.to_string |> String.concat ~sep:", ")
       in
-      let plural = List.length codes > 1 in
       [
-        Format.asprintf
-          "Pyre ignore%s %s%s extraneous."
-          (if plural then "s" else "")
-          (string_from_codes codes)
-          (if plural then "are" else "is");
+        Format.sprintf
+          "The `pyre-ignore%s` or `pyre-fixme%s` comment is not suppressing type errors, please \
+           remove it."
+          codes
+          codes;
       ]
   | UnusedLocalMode { unused_mode; actual_mode } ->
       let mode_string = function
@@ -1977,7 +1970,10 @@ let due_to_analysis_limitations { kind; _ } =
   | RedundantCast actual
   | UninitializedAttribute { mismatch = { actual; _ }; _ }
   | Unpack { unpack_problem = UnacceptableType actual; _ } ->
-      Type.is_unknown actual || Type.is_unbound actual || Type.is_type_alias actual
+      Type.is_unknown actual
+      || Type.is_unbound actual
+      || Type.is_type_alias actual
+      || Type.is_undeclared actual
   | Top -> true
   | UndefinedAttribute { origin = Class { annotation; _ }; _ } -> Type.is_unknown annotation
   | AnalysisFailure _
