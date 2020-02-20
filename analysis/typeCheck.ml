@@ -1069,18 +1069,8 @@ module State (Context : Context) = struct
     let check_base_annotations state =
       if Define.is_class_toplevel define then
         let open Annotated in
-        let check_base state { ExpressionCall.Argument.value; _ } =
+        let check_base state ({ ExpressionCall.Argument.value; _ } as base) =
           let state_with_errors, parsed = parse_and_check_annotation ~state value in
-          let is_actual_any () =
-            match
-              GlobalResolution.parse_annotation
-                global_resolution
-                value
-                ~allow_primitives_from_empty_stubs:true
-            with
-            | Any -> true
-            | _ -> false
-          in
           match parsed with
           | Type.Parametric { name = "type"; parameters = [Single Type.Any] } ->
               (* Inheriting from type makes you a metaclass, and we don't want to
@@ -1091,7 +1081,8 @@ module State (Context : Context) = struct
           | Primitive _
           | Parametric _ ->
               state_with_errors
-          | Any when not (is_actual_any ()) -> state_with_errors
+          | Any when GlobalResolution.base_is_from_placeholder_stub global_resolution base ->
+              state_with_errors
           | annotation ->
               emit_error
                 ~state:state_with_errors
@@ -2461,6 +2452,14 @@ module State (Context : Context) = struct
         let resolved = if Type.equal resolved Type.Bottom then Type.Top else resolved in
         { state; resolved; resolved_annotation = None; base = None }
     | ComparisonOperator ({ ComparisonOperator.left; right; _ } as operator) -> (
+        let state, left =
+          match left with
+          | { Node.value = WalrusOperator { target; _ }; _ } ->
+              let { state; _ } = forward_expression ~state ~expression:left in
+              state, target
+          | _ -> state, left
+        in
+        let operator = { operator with left } in
         match ComparisonOperator.override operator with
         | Some expression -> forward_expression ~state ~expression
         | None ->
@@ -4395,6 +4394,8 @@ module State (Context : Context) = struct
                     { state with resolution }
                 | _ -> state )
             | _ -> state )
+        | WalrusOperator { target; _ } ->
+            forward_statement ~state ~statement:(Statement.assume target)
         | _ -> state )
     | Delete expression ->
         let resolution =
@@ -4662,10 +4663,8 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
       else
         errors
     in
-    (* Ensure all attributes are instantiated. This must happen after typechecking is finished to
-       access the annotations added to resolution in the constructor. If a constructor does not
-       exist, this function is triggered in the toplevel. *)
-    let check_attribute_initialization ~is_dynamically_initialized definition errors =
+    (* Ensure all attributes are instantiated. *)
+    let check_attribute_initialization definition errors =
       if
         (not (ClassSummary.is_protocol (Node.value definition)))
         && not (AnnotatedClass.has_abstract_base definition)
@@ -4682,7 +4681,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
               in
               let is_uninitialized attribute =
                 match Annotated.Attribute.initialized attribute with
-                | NotInitialized -> not (is_dynamically_initialized attribute)
+                | NotInitialized -> true
                 | _ -> false
               in
               let add_to_map sofar attribute =
@@ -4796,26 +4795,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
       else
         errors
     in
-    if Define.is_constructor define && not (Define.is_stub define) then
-      let check_attributes_initialized errors =
-        let open Annotated in
-        let definition =
-          Define.parent_definition ~resolution:global_resolution (Define.create define_node)
-        in
-        match definition with
-        | Some definition ->
-            let is_dynamically_initialized attribute =
-              let reference =
-                Reference.create_from_list
-                  [StatementDefine.self_identifier define; Attribute.name attribute]
-              in
-              Map.mem (Resolution.annotation_store resolution) reference
-            in
-            check_attribute_initialization ~is_dynamically_initialized definition errors
-        | None -> errors
-      in
-      errors |> check_attributes_initialized
-    else if Define.is_class_toplevel define then
+    if Define.is_class_toplevel define then
       let check_bases errors =
         let open Annotated in
         let is_final errors { ExpressionCall.Argument.name; value } =
@@ -4847,21 +4827,6 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
         |> Option.value ~default:errors
       in
       let check_protocol definition errors = check_protocol_properties definition errors in
-      let check_attributes definition errors =
-        (* Error on uninitialized attributes if there was no constructor in which to do so. *)
-        if
-          not
-            (AnnotatedClass.has_explicit_constructor
-               (AnnotatedClass.name definition |> Reference.show)
-               ~resolution:global_resolution)
-        then
-          check_attribute_initialization
-            ~is_dynamically_initialized:(fun _ -> false)
-            definition
-            errors
-        else
-          errors
-      in
       let check_overrides
           ( { Node.value = { ClassSummary.attribute_components; name = class_name; _ }; _ } as
           definition )
@@ -4984,7 +4949,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
             errors
             |> check_bases
             |> check_protocol definition
-            |> check_attributes definition
+            |> check_attribute_initialization definition
             |> check_overrides definition
             |> check_redefined_class definition)
       |> Option.value ~default:errors

@@ -105,8 +105,11 @@ let class_metadata ({ dependency; _ } as resolution) annotation =
         (class_metadata_environment resolution)
 
 
-let is_suppressed_module resolution reference =
-  EmptyStubEnvironment.ReadOnly.from_empty_stub (empty_stub_environment resolution) reference
+let is_suppressed_module ({ dependency; _ } as resolution) reference =
+  EmptyStubEnvironment.ReadOnly.from_empty_stub
+    ?dependency
+    (empty_stub_environment resolution)
+    reference
 
 
 let undecorated_signature ({ dependency; _ } as resolution) =
@@ -117,6 +120,12 @@ let undecorated_signature ({ dependency; _ } as resolution) =
 
 let aliases ({ dependency; _ } as resolution) =
   AliasEnvironment.ReadOnly.get_alias ?dependency (alias_environment resolution)
+
+
+let base_is_from_placeholder_stub resolution =
+  AnnotatedBases.base_is_from_placeholder_stub
+    ~aliases:(aliases resolution)
+    ~from_empty_stub:(is_suppressed_module resolution)
 
 
 let module_exists ({ dependency; _ } as resolution) =
@@ -269,29 +278,6 @@ let source_is_unit_test resolution ~source =
   List.exists (Preprocessing.classes source) ~f:is_unittest
 
 
-let class_extends_placeholder_stub_class ({ dependency; _ } as resolution) { ClassSummary.bases; _ }
-  =
-  let is_from_placeholder_stub { Expression.Call.Argument.value; _ } =
-    let parsed =
-      AttributeResolution.ReadOnly.parse_annotation
-        ~allow_untracked:true
-        ~allow_invalid_type_parameters:true
-        ~allow_primitives_from_empty_stubs:true
-        ?dependency
-        (attribute_resolution resolution)
-        value
-    in
-    match parsed with
-    | Type.Primitive primitive
-    | Parametric { name = primitive; _ } ->
-        Reference.create primitive
-        |> fun reference ->
-        EmptyStubEnvironment.ReadOnly.from_empty_stub (empty_stub_environment resolution) reference
-    | _ -> false
-  in
-  List.exists bases ~f:is_from_placeholder_stub
-
-
 let global ({ dependency; _ } as resolution) reference =
   (* TODO (T41143153): We might want to properly support this by unifying attribute lookup logic for
      module and for class *)
@@ -345,7 +331,6 @@ let attribute_from_class_name
               ~visibility:ReadWrite
               ~property:false
               ~static:false
-              ~has_ellipsis_value:true
             |> Option.some
         | None -> None )
   in

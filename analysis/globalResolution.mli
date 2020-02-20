@@ -35,8 +35,6 @@ val solve_ordered_types_less_or_equal
 
 val source_is_unit_test : t -> source:Ast.Source.t -> bool
 
-val class_extends_placeholder_stub_class : t -> ClassSummary.t -> bool
-
 val solve_constraints : t -> TypeConstraints.t -> TypeConstraints.Solution.t option
 
 val partial_solve_constraints
@@ -101,6 +99,8 @@ val empty_stub_environment : t -> EmptyStubEnvironment.ReadOnly.t
 val unannotated_global_environment : t -> UnannotatedGlobalEnvironment.ReadOnly.t
 
 val aliases : t -> Type.Primitive.t -> Type.alias option
+
+val base_is_from_placeholder_stub : t -> Expression.Call.Argument.t -> bool
 
 val module_exists : t -> Reference.t -> bool
 
