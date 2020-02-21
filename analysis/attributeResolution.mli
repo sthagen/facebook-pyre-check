@@ -153,9 +153,7 @@ module AttributeReadOnly : sig
 
   val parse_annotation
     :  t ->
-    ?allow_untracked:bool ->
-    ?allow_invalid_type_parameters:bool ->
-    ?allow_primitives_from_empty_stubs:bool ->
+    ?validation:SharedMemoryKeys.ParseAnnotationKey.type_validation_policy ->
     ?dependency:SharedMemoryKeys.dependency ->
     Expression.expression Node.t ->
     Type.t
