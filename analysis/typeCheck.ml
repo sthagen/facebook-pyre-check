@@ -57,7 +57,6 @@ module type Signature = sig
 
   val create
     :  ?bottom:bool ->
-    ?errors:ErrorMap.t ->
     resolution:Resolution.t ->
     ?resolution_fixpoint:LocalAnnotationMap.t ->
     unit ->
@@ -65,7 +64,7 @@ module type Signature = sig
 
   val resolution : t -> Resolution.t
 
-  val error_map : t -> ErrorMap.t
+  val errors : t -> Error.t list
 
   val initial : resolution:Resolution.t -> t
 
@@ -158,13 +157,13 @@ module State (Context : Context) = struct
     && Bool.equal left.bottom right.bottom
 
 
-  let create ?(bottom = false) ?(errors = ErrorMap.Map.empty) ~resolution ?resolution_fixpoint () =
+  let create ?(bottom = false) ~resolution ?resolution_fixpoint () =
     let resolution_fixpoint =
       match resolution_fixpoint with
       | Some resolution_fixpoint -> resolution_fixpoint
       | None -> LocalAnnotationMap.empty ()
     in
-    { resolution; errors; bottom; resolution_fixpoint }
+    { resolution; errors = ErrorMap.Map.empty; bottom; resolution_fixpoint }
 
 
   let add_invalid_type_parameters_errors ~resolution ~location ~errors annotation =
@@ -302,7 +301,7 @@ module State (Context : Context) = struct
 
   let resolution { resolution; _ } = resolution
 
-  let error_map { errors; _ } = errors
+  let errors { errors; _ } = ErrorMap.Map.data errors
 
   let less_or_equal ~left:({ resolution; _ } as left) ~right =
     let global_resolution = Resolution.global_resolution resolution in
@@ -4562,8 +4561,7 @@ let resolution global_resolution ?(annotation_store = Reference.Map.empty) () =
         ~global_resolution
         ~annotation_store:Reference.Map.empty
         ~resolve:(fun ~resolution:_ _ -> Annotation.create Type.Top)
-        ~resolve_assignment:(fun ~resolution _ -> resolution)
-        ~resolve_assertion:(fun ~resolution ~asserted_expression:_ -> resolution)
+        ~resolve_statement:(fun ~resolution _ -> resolution, [])
         ()
     in
     {
@@ -4579,34 +4577,12 @@ let resolution global_resolution ?(annotation_store = Reference.Map.empty) () =
     |> fun { State.resolved; resolved_annotation; _ } ->
     resolved_annotation |> Option.value ~default:(Annotation.create resolved)
   in
-  let resolve_assignment ~resolution assign =
+  let resolve_statement ~resolution statement =
     let state = { state_without_resolution with State.resolution } in
-    State.forward_statement
-      ~state
-      ~statement:(Ast.Node.create_with_default_location (Statement.Assign assign))
-    |> State.resolution
+    State.forward_statement ~state ~statement
+    |> fun { State.resolution; errors; _ } -> resolution, ErrorMap.Map.data errors
   in
-  let resolve_assertion ~resolution ~asserted_expression =
-    let state = { state_without_resolution with State.resolution } in
-    let assertion =
-      {
-        Ast.Statement.Assert.test = asserted_expression;
-        message = None;
-        origin = Ast.Statement.Assert.Origin.Assertion;
-      }
-    in
-    State.forward_statement
-      ~state
-      ~statement:(Ast.Node.create_with_default_location (Statement.Assert assertion))
-    |> State.resolution
-  in
-  Resolution.create
-    ~global_resolution
-    ~annotation_store
-    ~resolve
-    ~resolve_assignment
-    ~resolve_assertion
-    ()
+  Resolution.create ~global_resolution ~annotation_store ~resolve ~resolve_statement ()
 
 
 let resolution_with_key ~global_resolution ~local_annotations ~parent ~key =
