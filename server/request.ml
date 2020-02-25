@@ -613,7 +613,7 @@ let process_type_query_request
         let get_signatures function_name =
           let keep_known_annotation annotation =
             match annotation with
-            | Type.(Any | Top) -> None
+            | Type.Top -> None
             | _ -> Some annotation
           in
           match
@@ -669,7 +669,7 @@ let process_type_query_request
                (TypeQuery.Error
                   (Format.sprintf "No class definition found for %s" (Expression.show annotation)))
     | TypeQuery.Type expression ->
-        let annotation = Resolution.resolve resolution expression in
+        let annotation = Resolution.resolve_expression_to_type resolution expression in
         TypeQuery.Response (TypeQuery.Type annotation)
     | TypeQuery.TypeAtPosition { path; position } ->
         let default =

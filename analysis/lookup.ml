@@ -38,7 +38,7 @@ module NodeVisitor = struct
       let resolution = if postcondition then post_resolution else pre_resolution in
       let resolve ~resolution ~expression =
         try
-          let annotation = Resolution.resolve_to_annotation resolution expression in
+          let annotation = Resolution.resolve_expression_to_annotation resolution expression in
           let original = Annotation.original annotation in
           if Type.is_top original || Type.is_unbound original then
             let annotation = Annotation.annotation annotation in
@@ -118,6 +118,7 @@ module NodeVisitor = struct
         let store_condition_and_refine resolution condition =
           annotate_expression resolution condition;
           Resolution.resolve_assertion resolution ~asserted_expression:condition
+          |> Option.value ~default:resolution
         in
         let resolution = List.fold conditions ~f:store_condition_and_refine ~init:resolution in
         annotate_expression resolution target;
@@ -138,7 +139,7 @@ module NodeVisitor = struct
             List.fold generators ~f:store_generator_and_compute_resolution ~init:resolution
           in
           let annotate_expression ({ Node.location; _ } as expression) =
-            store_annotation location (Resolution.resolve resolution expression)
+            store_annotation location (Resolution.resolve_expression_to_type resolution expression)
           in
           annotate_expression key;
           annotate_expression value

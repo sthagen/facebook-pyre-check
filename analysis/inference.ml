@@ -287,7 +287,9 @@ module State (Context : Context) = struct
       state
     else
       let global_resolution = Resolution.global_resolution resolution in
-      let resolve annotation = Resolution.resolve resolution annotation |> Type.weaken_literals in
+      let resolve annotation =
+        Resolution.resolve_expression_to_type resolution annotation |> Type.weaken_literals
+      in
       let validate_return ~expression ~actual =
         let create_missing_return_error expression actual =
           let {
@@ -316,7 +318,7 @@ module State (Context : Context) = struct
           let actual =
             GlobalResolution.resolve_mutable_literals
               global_resolution
-              ~resolve:(Resolution.resolve resolution)
+              ~resolve:(Resolution.resolve_expression_to_type resolution)
               ~expression
               ~resolved:actual
               ~expected:return_annotation
@@ -456,19 +458,23 @@ module State (Context : Context) = struct
           { state with resolution }
       | Statement.Return { Return.expression; _ } ->
           let actual =
-            Option.value_map expression ~f:(Resolution.resolve resolution) ~default:Type.none
+            Option.value_map
+              expression
+              ~f:(Resolution.resolve_expression_to_type resolution)
+              ~default:Type.none
           in
           validate_return ~expression ~actual
       | Statement.Yield { Node.value = Expression.Yield return; _ } ->
           let { Node.value = { Define.signature = { async; _ }; _ }; _ } = Context.define in
           let actual =
             match return with
-            | Some expression -> Resolution.resolve resolution expression |> Type.generator ~async
+            | Some expression ->
+                Resolution.resolve_expression_to_type resolution expression |> Type.generator ~async
             | None -> Type.generator ~async Type.none
           in
           validate_return ~expression:None ~actual
       | YieldFrom { Node.value = Expression.Yield (Some return); _ } ->
-          let resolved = Resolution.resolve resolution return in
+          let resolved = Resolution.resolve_expression_to_type resolution return in
           let actual =
             match GlobalResolution.join global_resolution resolved (Type.iterator Type.Bottom) with
             | Type.Parametric { name = "typing.Iterator"; parameters = [Single parameter] } ->
@@ -476,15 +482,17 @@ module State (Context : Context) = struct
             | annotation -> Type.generator annotation
           in
           validate_return ~expression:None ~actual
-      | _ ->
-          let resolution, statement_errors = Resolution.resolve_statement resolution statement in
-          {
-            state with
-            resolution;
-            errors =
-              List.fold statement_errors ~init:errors ~f:(fun errors error ->
-                  ErrorMap.add ~errors error);
-          }
+      | _ -> (
+          match Resolution.resolve_statement resolution statement with
+          | Resolution.Unreachable -> { state with bottom = true }
+          | Resolution.Reachable { resolution; errors = statement_errors } ->
+              {
+                state with
+                resolution;
+                errors =
+                  List.fold statement_errors ~init:errors ~f:(fun errors error ->
+                      ErrorMap.add ~errors error);
+              } )
 
 
   let return_reference = Reference.create "$return"
@@ -608,7 +616,7 @@ module State (Context : Context) = struct
       | _ -> Some annotation
     in
     let forward_expression ~state:{ resolution; _ } ~expression =
-      Resolution.resolve resolution expression
+      Resolution.resolve_expression_to_type resolution expression
     in
     let annotate_call_accesses statement resolution =
       let propagate resolution { Call.callee; arguments } =

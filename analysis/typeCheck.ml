@@ -55,12 +55,7 @@ end
 module type Signature = sig
   type t [@@deriving eq]
 
-  val create
-    :  ?bottom:bool ->
-    resolution:Resolution.t ->
-    ?resolution_fixpoint:LocalAnnotationMap.t ->
-    unit ->
-    t
+  val create : ?bottom:bool -> resolution:Resolution.t -> unit -> t
 
   val resolution : t -> Resolution.t
 
@@ -68,24 +63,7 @@ module type Signature = sig
 
   val initial : resolution:Resolution.t -> t
 
-  type base =
-    | Class of Type.t
-    | Instance of Type.t
-    | Super of Type.t
-
-  and resolved = {
-    state: t;
-    resolved: Type.t;
-    resolved_annotation: Annotation.t option;
-    base: base option;
-  }
-  [@@deriving show]
-
   val parse_and_check_annotation : ?bind_variables:bool -> state:t -> Expression.t -> t * Type.t
-
-  val forward_expression : state:t -> expression:Expression.t -> resolved
-
-  val forward_statement : state:t -> statement:Statement.t -> t
 
   include Fixpoint.State with type t := t
 end
@@ -157,13 +135,13 @@ module State (Context : Context) = struct
     && Bool.equal left.bottom right.bottom
 
 
-  let create ?(bottom = false) ~resolution ?resolution_fixpoint () =
-    let resolution_fixpoint =
-      match resolution_fixpoint with
-      | Some resolution_fixpoint -> resolution_fixpoint
-      | None -> LocalAnnotationMap.empty ()
-    in
-    { resolution; errors = ErrorMap.Map.empty; bottom; resolution_fixpoint }
+  let create ?(bottom = false) ~resolution () =
+    {
+      resolution;
+      errors = ErrorMap.Map.empty;
+      bottom;
+      resolution_fixpoint = LocalAnnotationMap.empty ();
+    }
 
 
   let add_invalid_type_parameters_errors ~resolution ~location ~errors annotation =
@@ -1832,22 +1810,34 @@ module State (Context : Context) = struct
                     let normal =
                       Error.IncompatibleParameterType { name; position; callee; mismatch }
                     in
+                    let typed_dictionary_error
+                        ~method_name
+                        ~position
+                        { Type.Record.TypedDictionary.fields; total; name }
+                      =
+                      if Type.TypedDictionary.is_special_mismatch ~method_name ~position ~total then
+                        match actual with
+                        | Type.Literal (Type.String missing_key) ->
+                            Error.TypedDictionaryKeyNotFound
+                              { typed_dictionary_name = name; missing_key }
+                        | Type.Primitive "str" ->
+                            Error.TypedDictionaryAccessWithNonLiteral
+                              (List.map fields ~f:(fun { name; _ } -> name))
+                        | _ -> normal
+                      else
+                        normal
+                    in
                     match implicit, callee >>| Reference.as_list with
-                    | ( Some
-                          { implicit_annotation = Type.TypedDictionary { fields; name; total }; _ },
+                    | ( Some { implicit_annotation = Type.TypedDictionary typed_dictionary; _ },
                         Some [_; method_name] ) ->
-                        if Type.TypedDictionary.is_special_mismatch ~method_name ~position ~total
-                        then
-                          match actual with
-                          | Type.Literal (Type.String missing_key) ->
-                              Error.TypedDictionaryKeyNotFound
-                                { typed_dictionary_name = name; missing_key }
-                          | Type.Primitive "str" ->
-                              Error.TypedDictionaryAccessWithNonLiteral
-                                (List.map fields ~f:(fun { name; _ } -> name))
-                          | _ -> normal
-                        else
-                          normal
+                        typed_dictionary_error ~method_name ~position typed_dictionary
+                    | ( Some { implicit_annotation = Type.Primitive _ as annotation; _ },
+                        Some [_; method_name] ) ->
+                        GlobalResolution.get_typed_dictionary
+                          ~resolution:global_resolution
+                          annotation
+                        >>| typed_dictionary_error ~method_name ~position
+                        |> Option.value ~default:normal
                     | _ -> normal
                   in
                   let location = Location.with_module ~qualifier:Context.qualifier location in
@@ -2119,7 +2109,6 @@ module State (Context : Context) = struct
            imprecise (doesn't correctly declare the arguments as a recursive tuple. *)
         let state =
           let { state; _ } = forward_expression ~state ~expression in
-          let previous_errors = Map.length state.errors in
           let state, annotations =
             let rec collect_types (state, collected) = function
               | { Node.value = Expression.Tuple annotations; _ } ->
@@ -2142,43 +2131,38 @@ module State (Context : Context) = struct
             in
             collect_types (state, []) annotations
           in
-          if Map.length state.errors > previous_errors then
-            state
-          else
-            let add_incompatible_non_meta_error state (non_meta, location) =
-              emit_error
-                ~state
-                ~location
-                ~kind:
-                  (Error.IncompatibleParameterType
-                     {
-                       name = None;
-                       position = 2;
-                       callee = Some (Reference.create "isinstance");
-                       mismatch =
-                         {
-                           Error.actual = non_meta;
-                           expected =
-                             Type.union
-                               [
-                                 Type.meta Type.Any; Type.Tuple (Type.Unbounded (Type.meta Type.Any));
-                               ];
-                           due_to_invariance = false;
-                         };
-                     })
-            in
-            let rec is_compatible annotation =
-              match annotation with
-              | _ when Type.is_meta annotation -> true
-              | Type.Tuple (Type.Unbounded annotation) -> Type.is_meta annotation
-              | Type.Tuple (Type.Bounded (Type.OrderedTypes.Concrete annotations)) ->
-                  List.for_all ~f:Type.is_meta annotations
-              | Type.Union annotations -> List.for_all annotations ~f:is_compatible
-              | _ -> false
-            in
-            List.find annotations ~f:(fun (annotation, _) -> not (is_compatible annotation))
-            >>| add_incompatible_non_meta_error state
-            |> Option.value ~default:state
+          let add_incompatible_non_meta_error state (non_meta, location) =
+            emit_error
+              ~state
+              ~location
+              ~kind:
+                (Error.IncompatibleParameterType
+                   {
+                     name = None;
+                     position = 2;
+                     callee = Some (Reference.create "isinstance");
+                     mismatch =
+                       {
+                         Error.actual = non_meta;
+                         expected =
+                           Type.union
+                             [Type.meta Type.Any; Type.Tuple (Type.Unbounded (Type.meta Type.Any))];
+                         due_to_invariance = false;
+                       };
+                   })
+          in
+          let rec is_compatible annotation =
+            match annotation with
+            | _ when Type.is_meta annotation -> true
+            | Type.Tuple (Type.Unbounded annotation) -> Type.is_meta annotation
+            | Type.Tuple (Type.Bounded (Type.OrderedTypes.Concrete annotations)) ->
+                List.for_all ~f:Type.is_meta annotations
+            | Type.Union annotations -> List.for_all annotations ~f:is_compatible
+            | _ -> false
+          in
+          List.find annotations ~f:(fun (annotation, _) -> not (is_compatible annotation))
+          >>| add_incompatible_non_meta_error state
+          |> Option.value ~default:state
         in
         { state; resolved = Type.bool; resolved_annotation = None; base = None }
     | Call
@@ -3359,7 +3343,18 @@ module State (Context : Context) = struct
                       match resolved_base, attribute with
                       | Some parent, Some (attribute, name)
                         when not (Annotated.Attribute.defined attribute) ->
-                          if is_undefined_attribute parent then
+                          let is_meta_typed_dictionary =
+                            Type.is_meta parent
+                            && GlobalResolution.is_typed_dictionary
+                                 ~resolution:global_resolution
+                                 (Type.single_parameter parent)
+                          in
+                          if is_meta_typed_dictionary then
+                            (* Ignore the error from the attribute declaration `Movie.name = ...`,
+                               which would raise an error because `name` was removed as an attribute
+                               from the TypedDictionary. *)
+                            state
+                          else if is_undefined_attribute parent then
                             emit_error
                               ~state
                               ~location
@@ -3548,7 +3543,13 @@ module State (Context : Context) = struct
                     | None -> Type.Top
                     | Some reference -> Type.Primitive (Reference.show reference)
                   in
-                  explicit && not (Type.equal parent_annotation (Primitive attribute_parent))
+                  explicit
+                  (* [Movie.items: int] would raise an error because [Mapping] also has [items]. *)
+                  && (not
+                        (GlobalResolution.is_typed_dictionary
+                           ~resolution:global_resolution
+                           parent_annotation))
+                  && not (Type.equal parent_annotation (Primitive attribute_parent))
                 in
                 let parent_class =
                   match name with
@@ -3714,7 +3715,28 @@ module State (Context : Context) = struct
                           |> Option.some
                         else
                           None
-                    | None -> None )
+                    | None ->
+                        Option.some_if
+                          ( insufficiently_annotated
+                          && GlobalResolution.is_typed_dictionary
+                               ~resolution:global_resolution
+                               (Type.Primitive class_name) )
+                          (Error.create
+                             ~location:(Location.with_module ~qualifier:Context.qualifier location)
+                             ~kind:
+                               (Error.ProhibitedAny
+                                  {
+                                    missing_annotation =
+                                      {
+                                        Error.name = reference;
+                                        annotation = actual_annotation;
+                                        given_annotation = Option.some_if is_immutable expected;
+                                        evidence_locations;
+                                        thrown_at_source = true;
+                                      };
+                                    is_type_alias = false;
+                                  })
+                             ~define:Context.define) )
                 | _ ->
                     Error.create
                       ~location:(Location.with_module ~qualifier:Context.qualifier location)
@@ -4560,8 +4582,8 @@ let resolution global_resolution ?(annotation_store = Reference.Map.empty) () =
       Resolution.create
         ~global_resolution
         ~annotation_store:Reference.Map.empty
-        ~resolve:(fun ~resolution:_ _ -> Annotation.create Type.Top)
-        ~resolve_statement:(fun ~resolution _ -> resolution, [])
+        ~resolve_expression:(fun ~resolution _ -> resolution, Annotation.create Type.Top)
+        ~resolve_statement:(fun ~resolution:_ _ -> Resolution.Unreachable)
         ()
     in
     {
@@ -4571,18 +4593,23 @@ let resolution global_resolution ?(annotation_store = Reference.Map.empty) () =
       resolution = empty_resolution;
     }
   in
-  let resolve ~resolution expression =
+  let resolve_expression ~resolution expression =
     let state = { state_without_resolution with State.resolution } in
     State.forward_expression ~state ~expression
-    |> fun { State.resolved; resolved_annotation; _ } ->
-    resolved_annotation |> Option.value ~default:(Annotation.create resolved)
+    |> fun { State.resolved; resolved_annotation; state = new_state; _ } ->
+    ( State.resolution new_state,
+      resolved_annotation |> Option.value ~default:(Annotation.create resolved) )
   in
   let resolve_statement ~resolution statement =
     let state = { state_without_resolution with State.resolution } in
     State.forward_statement ~state ~statement
-    |> fun { State.resolution; errors; _ } -> resolution, ErrorMap.Map.data errors
+    |> fun { State.resolution; errors; bottom; _ } ->
+    if bottom then
+      Resolution.Unreachable
+    else
+      Resolution.Reachable { resolution; errors = ErrorMap.Map.data errors }
   in
-  Resolution.create ~global_resolution ~annotation_store ~resolve ~resolve_statement ()
+  Resolution.create ~global_resolution ~annotation_store ~resolve_expression ~resolve_statement ()
 
 
 let resolution_with_key ~global_resolution ~local_annotations ~parent ~key =
@@ -4635,7 +4662,11 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
     let check_attribute_initialization definition errors =
       if
         (not (ClassSummary.is_protocol (Node.value definition)))
-        && not (AnnotatedClass.has_abstract_base definition)
+        && (not (AnnotatedClass.has_abstract_base definition))
+        && not
+             (GlobalResolution.is_typed_dictionary
+                ~resolution:global_resolution
+                (Type.Primitive (Reference.show (AnnotatedClass.name definition))))
       then
         let unimplemented_errors =
           let uninitialized_attributes =
@@ -4864,7 +4895,6 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
                         >>| Node.location
                         |> Option.value ~default:location
                       in
-
                       Some
                         (Error.create
                            ~location:(Location.with_module ~qualifier:Context.qualifier location)

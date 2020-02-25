@@ -7,26 +7,36 @@ open Ast
 
 type t [@@deriving show]
 
+type resolve_statement_result_t =
+  | Unreachable
+  | Reachable of {
+      resolution: t;
+      errors: AnalysisError.t list;
+    }
+
 val create
   :  global_resolution:GlobalResolution.t ->
   annotation_store:RefinementUnit.t Reference.Map.t ->
-  resolve:(resolution:t -> Expression.t -> Annotation.t) ->
-  resolve_statement:(resolution:t -> Statement.t -> t * AnalysisError.t list) ->
+  resolve_expression:(resolution:t -> Expression.t -> t * Annotation.t) ->
+  resolve_statement:(resolution:t -> Statement.t -> resolve_statement_result_t) ->
   ?parent:Reference.t ->
   unit ->
   t
 
-val resolve : t -> Expression.t -> Type.t
+val resolve_expression : t -> Expression.t -> t * Type.t
 
-val resolve_to_annotation : t -> Expression.t -> Annotation.t
+val resolve_expression_to_type : t -> Expression.t -> Type.t
+
+val resolve_expression_to_annotation : t -> Expression.t -> Annotation.t
 
 val resolve_reference : t -> Reference.t -> Type.t
 
-val resolve_statement : t -> Statement.t -> t * AnalysisError.t list
+val resolve_statement : t -> Statement.t -> resolve_statement_result_t
 
 val resolve_assignment : t -> Statement.Assign.t -> t
 
-val resolve_assertion : t -> asserted_expression:Expression.t -> t
+(* Return None when the assertion cannot be satisfied *)
+val resolve_assertion : t -> asserted_expression:Expression.t -> t option
 
 val resolve_attribute_access : t -> base_type:Type.t -> attribute:string -> Type.t
 

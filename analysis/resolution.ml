@@ -10,17 +10,24 @@ type t = {
   global_resolution: GlobalResolution.t;
   annotation_store: RefinementUnit.t Reference.Map.t;
   type_variables: Type.Variable.Set.t;
-  resolve: resolution:t -> Expression.t -> Annotation.t;
-  resolve_statement: resolution:t -> Statement.t -> t * AnalysisError.t list;
+  resolve_expression: resolution:t -> Expression.t -> t * Annotation.t;
+  resolve_statement: resolution:t -> Statement.t -> resolve_statement_result_t;
   parent: Reference.t option;
 }
 
-let create ~global_resolution ~annotation_store ~resolve ~resolve_statement ?parent () =
+and resolve_statement_result_t =
+  | Unreachable
+  | Reachable of {
+      resolution: t;
+      errors: AnalysisError.t list;
+    }
+
+let create ~global_resolution ~annotation_store ~resolve_expression ~resolve_statement ?parent () =
   {
     global_resolution;
     annotation_store;
     type_variables = Type.Variable.Set.empty;
-    resolve;
+    resolve_expression;
     resolve_statement;
     parent;
   }
@@ -46,15 +53,23 @@ let is_global { global_resolution; _ } ~reference =
   Reference.delocalize reference |> GlobalResolution.global global_resolution |> Option.is_some
 
 
-let resolve ({ resolve; _ } as resolution) expression =
-  resolve ~resolution expression |> Annotation.annotation
+let resolve_expression ({ resolve_expression; _ } as resolution) expression =
+  let resolution, annotation = resolve_expression ~resolution expression in
+  resolution, Annotation.annotation annotation
 
 
-let resolve_to_annotation ({ resolve; _ } as resolution) expression = resolve ~resolution expression
+let resolve_expression_to_type ({ resolve_expression; _ } as resolution) expression =
+  resolve_expression ~resolution expression |> snd |> Annotation.annotation
 
-let resolve_reference ({ resolve; _ } as resolution) reference =
+
+let resolve_expression_to_annotation ({ resolve_expression; _ } as resolution) expression =
+  resolve_expression ~resolution expression |> snd
+
+
+let resolve_reference ({ resolve_expression; _ } as resolution) reference =
   Expression.from_reference ~location:Location.any reference
-  |> resolve ~resolution
+  |> resolve_expression ~resolution
+  |> snd
   |> Annotation.annotation
 
 
@@ -66,7 +81,9 @@ let resolve_assignment ({ resolve_statement; _ } as resolution) assign =
   Statement.Statement.Assign assign
   |> Ast.Node.create_with_default_location
   |> resolve_statement ~resolution
-  |> fst
+  |> function
+  | Unreachable -> resolution
+  | Reachable { resolution; _ } -> resolution
 
 
 let resolve_assertion ({ resolve_statement; _ } as resolution) ~asserted_expression =
@@ -78,7 +95,9 @@ let resolve_assertion ({ resolve_statement; _ } as resolution) ~asserted_express
     }
   |> Ast.Node.create_with_default_location
   |> resolve_statement ~resolution
-  |> fst
+  |> function
+  | Unreachable -> None
+  | Reachable { resolution; _ } -> Some resolution
 
 
 let partition_name resolution ~name =
@@ -176,7 +195,7 @@ let resolve_attribute_access resolution ~base_type ~attribute =
       ~location:Location.any
       (Reference.create ~prefix:unique_name attribute)
   in
-  resolve resolution expression_to_analyze
+  resolve_expression_to_type resolution expression_to_analyze
 
 
 let add_type_variable ({ type_variables; _ } as resolution) ~variable =
@@ -198,7 +217,9 @@ let parent { parent; _ } = parent
 let with_parent resolution ~parent = { resolution with parent }
 
 let is_consistent_with ({ global_resolution; _ } as resolution) =
-  GlobalResolution.is_consistent_with global_resolution ~resolve:(resolve resolution)
+  GlobalResolution.is_consistent_with
+    global_resolution
+    ~resolve:(resolve_expression_to_type resolution)
 
 
 let global_resolution { global_resolution; _ } = global_resolution
