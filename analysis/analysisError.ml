@@ -158,7 +158,7 @@ type kind =
   | ImpossibleAssertion of {
       expression: Expression.t;
       annotation: Type.t;
-      statement: Statement.t;
+      test: Expression.t;
     }
   | IncompatibleAttributeType of {
       parent: Type.t;
@@ -564,23 +564,14 @@ let messages ~concise ~signature location kind =
           consequence;
       ]
   | ImpossibleAssertion _ when concise -> ["Assertion will always fail."]
-  | ImpossibleAssertion { expression; annotation; statement } ->
-      let statement_string =
-        show statement
-        |> String.chop_prefix_exn ~prefix:"assert"
-        |> String.strip ~drop:(function
-               | ' '
-               | ',' ->
-                   true
-               | _ -> false)
-      in
+  | ImpossibleAssertion { expression; annotation; test } ->
       [
         Format.asprintf
           "`%s` has type `%a`, assertion `%s` will always fail."
-          (Expression.show expression)
+          (show_sanitized_expression expression)
           pp_type
           annotation
-          statement_string;
+          (show_sanitized_expression test);
       ]
   | IncompatibleAwaitableType actual ->
       [Format.asprintf "Expected an awaitable but got `%a`." pp_type actual]
@@ -1555,7 +1546,7 @@ let messages ~concise ~signature location kind =
         match mutability with
         | Mutable -> Format.asprintf "%a" pp_type annotation, ""
         | Immutable { Annotation.original; _ } ->
-            if Type.is_unknown original then
+            if Type.contains_unknown original then
               Format.asprintf "%a" pp_type annotation, ""
             else if Type.equal annotation original then
               Format.asprintf "%a" pp_type original, ""
@@ -1970,12 +1961,12 @@ let due_to_analysis_limitations { kind; _ } =
   | RedundantCast actual
   | UninitializedAttribute { mismatch = { actual; _ }; _ }
   | Unpack { unpack_problem = UnacceptableType actual; _ } ->
-      Type.is_unknown actual
+      Type.contains_unknown actual
       || Type.is_unbound actual
       || Type.is_type_alias actual
       || Type.is_undeclared actual
   | Top -> true
-  | UndefinedAttribute { origin = Class { annotation; _ }; _ } -> Type.is_unknown annotation
+  | UndefinedAttribute { origin = Class { annotation; _ }; _ } -> Type.contains_unknown annotation
   | AnalysisFailure _
   | DeadStore _
   | Deobfuscation _
@@ -2040,8 +2031,8 @@ let less_or_equal ~resolution left right =
   | DeadStore left, DeadStore right -> Identifier.equal left right
   | Deobfuscation left, Deobfuscation right -> Source.equal left right
   | IllegalAnnotationTarget left, IllegalAnnotationTarget right -> Expression.equal left right
-  | ImpossibleAssertion left, ImpossibleAssertion right
-    when Statement.equal left.statement right.statement ->
+  | ImpossibleAssertion left, ImpossibleAssertion right when Expression.equal left.test right.test
+    ->
       GlobalResolution.less_or_equal resolution ~left:left.annotation ~right:right.annotation
   | IncompatibleAwaitableType left, IncompatibleAwaitableType right ->
       GlobalResolution.less_or_equal resolution ~left ~right
