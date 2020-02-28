@@ -4,7 +4,6 @@
   analysisErrorTest
   annotatedBasesTest
   annotatedCallableTest
-  annotatedClassTest
   annotatedDefineTest
   annotatedGlobalEnvironmentTest
   annotatedSignatureTest
@@ -22,6 +21,7 @@
   dataClassTest
   environmentTest
   fixpointTest
+  globalResolutionTest
   inferenceTest
   livenessCheckTest
   lookupTest

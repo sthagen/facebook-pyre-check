@@ -8,8 +8,16 @@ open Ast
 open Pyre
 open Assumptions
 
+type class_hierarchy = {
+  instantiate_successors_parameters:
+    source:Type.t -> target:Type.Primitive.t -> Type.Parameter.t list option;
+  is_transitive_successor: source:Type.Primitive.t -> target:Type.Primitive.t -> bool;
+  variables: Type.Primitive.t -> Type.Variable.t list option;
+  least_upper_bound: Type.Primitive.t -> Type.Primitive.t -> Type.Primitive.t list;
+}
+
 type order = {
-  handler: (module ClassHierarchy.Handler);
+  class_hierarchy: class_hierarchy;
   constructor: Type.t -> protocol_assumptions:ProtocolAssumptions.t -> Type.t option;
   attributes: Type.t -> assumptions:Assumptions.t -> AnnotatedAttribute.instantiated list option;
   is_protocol: Type.t -> protocol_assumptions:ProtocolAssumptions.t -> bool;
@@ -359,7 +367,8 @@ module OrderImplementation = struct
        ~f:OrderedConstraints.solve *)
     and solve_less_or_equal
         ( {
-            handler = (module Handler : ClassHierarchy.Handler) as handler;
+            class_hierarchy =
+              { instantiate_successors_parameters; variables; is_transitive_successor; _ };
             constructor;
             is_protocol;
             assumptions = { protocol_assumptions; _ };
@@ -376,7 +385,7 @@ module OrderImplementation = struct
         |> List.fold ~init:constraints ~f:OrderedConstraints.add_fallback_to_any
       in
       let solve_less_or_equal_primitives ~source ~target =
-        if ClassHierarchy.is_transitive_successor handler ~source ~target then
+        if is_transitive_successor ~source ~target then
           [constraints]
         else if
           is_protocol right ~protocol_assumptions
@@ -546,17 +555,12 @@ module OrderImplementation = struct
                       solve_less_or_equal order ~constraints ~left ~right)
               | _ -> []
             in
-            ClassHierarchy.variables handler right_name
+            variables right_name
             >>= Type.Variable.zip_on_two_parameter_lists ~left_parameters ~right_parameters
             >>| List.fold ~f:handle_variables ~init:[constraints]
           in
           let parameters =
-            let parameters =
-              ClassHierarchy.instantiate_successors_parameters
-                handler
-                ~source:left
-                ~target:right_name
-            in
+            let parameters = instantiate_successors_parameters ~source:left ~target:right_name in
             match parameters with
             | None when is_protocol right ~protocol_assumptions ->
                 instantiate_protocol_parameters order ~protocol:right_name ~candidate:left
@@ -573,11 +577,19 @@ module OrderImplementation = struct
                 ~constraints
                 ~left:(Type.TypedDictionary left)
                 ~right:(Type.TypedDictionary right)
-          | Some { total; _ }, None ->
-              let left = Type.Primitive (Type.TypedDictionary.class_name ~total) in
+          | Some { fields; _ }, None ->
+              let left =
+                Type.Primitive
+                  (Type.TypedDictionary.class_name
+                     ~total:(Type.TypedDictionary.are_fields_total fields))
+              in
               solve_less_or_equal order ~constraints ~left ~right
-          | None, Some { total; _ } ->
-              let right = Type.Primitive (Type.TypedDictionary.class_name ~total) in
+          | None, Some { fields; _ } ->
+              let right =
+                Type.Primitive
+                  (Type.TypedDictionary.class_name
+                     ~total:(Type.TypedDictionary.are_fields_total fields))
+              in
               solve_less_or_equal order ~constraints ~left ~right
           | None, None -> solve_less_or_equal_primitives ~source ~target )
       | Type.Parametric { name = source; _ }, Type.Primitive target ->
@@ -615,6 +627,27 @@ module OrderImplementation = struct
           Type.Callable { Callable.kind = Callable.Named right; _ } )
         when Reference.equal left right ->
           [constraints]
+      | ( Type.Callable
+            {
+              Callable.kind = Callable.Anonymous;
+              implementation = left_implementation;
+              overloads = left_overloads;
+              implicit = left_implicit;
+            },
+          Type.Callable
+            {
+              Callable.kind = Callable.Named _;
+              implementation = right_implementation;
+              overloads = right_overloads;
+              implicit = right_implicit;
+            } )
+        when Callable.equal_overload Type.equal left_implementation right_implementation
+             && List.equal (Callable.equal_overload Type.equal) left_overloads right_overloads
+             && Option.equal
+                  (Callable.equal_implicit_record Type.equal)
+                  left_implicit
+                  right_implicit ->
+          []
       | Type.Callable callable, Type.Callable { implementation; overloads; _ } ->
           let fold_overload sofar called_as =
             let call_as_overload constraints =
@@ -649,12 +682,16 @@ module OrderImplementation = struct
                  left.fields
                  ~f:([%equal: Type.t Type.Record.TypedDictionary.typed_dictionary_field] field))
           in
-          if Bool.equal left.total right.total && not (List.exists right.fields ~f:field_not_found)
+          if
+            Bool.equal
+              (Type.TypedDictionary.are_fields_total left.fields)
+              (Type.TypedDictionary.are_fields_total right.fields)
+            && not (List.exists right.fields ~f:field_not_found)
           then
             [constraints]
           else
             []
-      | _, Type.TypedDictionary { total; _ } -> (
+      | _, Type.TypedDictionary { fields; _ } -> (
           let left_typed_dictionary = get_typed_dictionary left in
           match left_typed_dictionary with
           | Some typed_dictionary ->
@@ -664,9 +701,13 @@ module OrderImplementation = struct
                 ~left:(Type.TypedDictionary typed_dictionary)
                 ~right
           | None ->
-              let right = Type.Primitive (Type.TypedDictionary.class_name ~total) in
+              let right =
+                Type.Primitive
+                  (Type.TypedDictionary.class_name
+                     ~total:(Type.TypedDictionary.are_fields_total fields))
+              in
               solve_less_or_equal order ~constraints ~left ~right )
-      | Type.TypedDictionary { total; _ }, _ -> (
+      | Type.TypedDictionary { fields; _ }, _ -> (
           let right_typed_dictionary = get_typed_dictionary right in
           match right_typed_dictionary with
           | Some typed_dictionary ->
@@ -676,7 +717,11 @@ module OrderImplementation = struct
                 ~left
                 ~right:(Type.TypedDictionary typed_dictionary)
           | None ->
-              let left = Type.Primitive (Type.TypedDictionary.class_name ~total) in
+              let left =
+                Type.Primitive
+                  (Type.TypedDictionary.class_name
+                     ~total:(Type.TypedDictionary.are_fields_total fields))
+              in
               solve_less_or_equal order ~constraints ~left ~right )
       | _, Type.Literal _ -> []
       | Type.Literal _, _ ->
@@ -935,7 +980,7 @@ module OrderImplementation = struct
 
     and join
         ( {
-            handler = (module Handler : ClassHierarchy.Handler) as handler;
+            class_hierarchy = { least_upper_bound; instantiate_successors_parameters; variables; _ };
             constructor;
             is_protocol;
             assumptions = { protocol_assumptions; _ };
@@ -1019,68 +1064,58 @@ module OrderImplementation = struct
                 | ClassHierarchy.Untracked _ -> None
               in
               let handle_target target =
-                let left_parameters =
-                  ClassHierarchy.instantiate_successors_parameters handler ~source:left ~target
-                in
-                let right_parameters =
-                  ClassHierarchy.instantiate_successors_parameters handler ~source:right ~target
-                in
-                let variables = ClassHierarchy.variables handler target in
-                let parameters =
-                  let join_parameters (left, right, variable) =
-                    match left, right, variable with
-                    | Type.Parameter.Group _, _, _
-                    | _, Type.Parameter.Group _, _
-                    | _, _, Type.Variable.ListVariadic _
-                    | CallableParameters _, _, _
-                    | _, CallableParameters _, _
-                    | _, _, ParameterVariadic _ ->
-                        (* TODO(T47348395): Implement joining for variadics *)
+                let left_parameters = instantiate_successors_parameters ~source:left ~target in
+                let right_parameters = instantiate_successors_parameters ~source:right ~target in
+                let variables = variables target in
+                let join_parameters (left, right, variable) =
+                  match left, right, variable with
+                  | Type.Parameter.Group _, _, _
+                  | _, Type.Parameter.Group _, _
+                  | _, _, Type.Variable.ListVariadic _
+                  | CallableParameters _, _, _
+                  | _, CallableParameters _, _
+                  | _, _, ParameterVariadic _ ->
+                      (* TODO(T47348395): Implement joining for variadics *)
+                      None
+                  | Single Type.Bottom, Single other, _
+                  | Single other, Single Type.Bottom, _ ->
+                      Some other
+                  | Single Type.Top, _, _
+                  | _, Single Type.Top, _ ->
+                      Some Type.Top
+                  | Single left, Single right, Unary { variance = Covariant; _ } ->
+                      Some (join order left right)
+                  | Single left, Single right, Unary { variance = Contravariant; _ } ->
+                      Some (meet order left right)
+                  | Single left, Single right, Unary { variance = Invariant; _ } ->
+                      if
+                        always_less_or_equal order ~left ~right
+                        && always_less_or_equal order ~left:right ~right:left
+                      then
+                        Some left
+                      else
                         None
-                    | Single Type.Bottom, Single other, _
-                    | Single other, Single Type.Bottom, _ ->
-                        Some other
-                    | Single Type.Top, _, _
-                    | _, Single Type.Top, _ ->
-                        Some Type.Top
-                    | Single left, Single right, Unary { variance = Covariant; _ } ->
-                        Some (join order left right)
-                    | Single left, Single right, Unary { variance = Contravariant; _ } ->
-                        Some (meet order left right)
-                    | Single left, Single right, Unary { variance = Invariant; _ } ->
-                        if
-                          always_less_or_equal order ~left ~right
-                          && always_less_or_equal order ~left:right ~right:left
-                        then
-                          Some left
-                        else
-                          (* We fallback to Type.Any if type equality fails to help display
-                             meaningful error messages. *)
-                          Some Type.Any
-                  in
-                  match left_parameters, right_parameters, variables with
-                  | Some left_parameters, Some right_parameters, Some variables ->
-                      let replace_free_unary_variables_with_top =
-                        let replace_if_free variable =
-                          Option.some_if (Type.Variable.Unary.is_free variable) Type.Top
-                        in
-                        Type.Variable.GlobalTransforms.Unary.replace_all replace_if_free
-                      in
-                      Type.Variable.zip_on_two_parameter_lists
-                        ~left_parameters
-                        ~right_parameters
-                        variables
-                      >>| List.map ~f:join_parameters
-                      >>= Option.all
-                      >>| List.map ~f:replace_free_unary_variables_with_top
-                      >>| List.map ~f:(fun single -> Type.Parameter.Single single)
-                  | _ -> None
                 in
-                match parameters with
-                | Some parameters -> Type.Parametric { name = target; parameters }
-                | None -> Type.Primitive target
+                match left_parameters, right_parameters, variables with
+                | Some left_parameters, Some right_parameters, Some variables ->
+                    let replace_free_unary_variables_with_top =
+                      let replace_if_free variable =
+                        Option.some_if (Type.Variable.Unary.is_free variable) Type.Top
+                      in
+                      Type.Variable.GlobalTransforms.Unary.replace_all replace_if_free
+                    in
+                    Type.Variable.zip_on_two_parameter_lists
+                      ~left_parameters
+                      ~right_parameters
+                      variables
+                    >>| List.map ~f:join_parameters
+                    >>= Option.all
+                    >>| List.map ~f:replace_free_unary_variables_with_top
+                    >>| List.map ~f:(fun single -> Type.Parameter.Single single)
+                    >>| fun parameters -> Type.Parametric { name = target; parameters }
+                | _ -> None
               in
-              target >>| handle_target |> Option.value ~default:union
+              target >>= handle_target |> Option.value ~default:union
         (* Special case joins of optional collections with their uninstantated counterparts. *)
         | ( Type.Parametric ({ parameters = [Single Type.Bottom]; _ } as other),
             Type.Optional (Type.Parametric ({ parameters = [Single parameter]; _ } as collection)) )
@@ -1122,12 +1157,9 @@ module OrderImplementation = struct
             Type.Callable { Callable.kind = Callable.Named right; _ } )
           when Reference.equal left right ->
             callable
-        | ( Type.TypedDictionary { fields = left_fields; total = left_total; _ },
-            Type.TypedDictionary { fields = right_fields; total = right_total; _ } ) ->
-            if
-              Type.TypedDictionary.fields_have_colliding_keys left_fields right_fields
-              || left_total <> right_total
-            then
+        | ( Type.TypedDictionary { fields = left_fields; _ },
+            Type.TypedDictionary { fields = right_fields; _ } ) ->
+            if Type.TypedDictionary.fields_have_colliding_keys left_fields right_fields then
               Type.Parametric
                 {
                   name = "typing.Mapping";
@@ -1150,7 +1182,7 @@ module OrderImplementation = struct
                   in
                   List.filter right_fields ~f:found_match
               in
-              Type.TypedDictionary.anonymous ~total:left_total join_fields
+              Type.TypedDictionary.anonymous join_fields
         | Type.TypedDictionary _, other
         | other, Type.TypedDictionary _ ->
             let class_join =
@@ -1202,7 +1234,7 @@ module OrderImplementation = struct
                && always_less_or_equal order ~left:right ~right:left ->
             left
         | Primitive left, Primitive right -> (
-            match List.hd (ClassHierarchy.least_upper_bound handler left right) with
+            match List.hd (least_upper_bound left right) with
             | Some joined ->
                 if Type.Primitive.equal joined left then
                   Type.Primitive left
@@ -1214,13 +1246,7 @@ module OrderImplementation = struct
 
 
     and meet
-        ( {
-            handler = (module Handler : ClassHierarchy.Handler);
-            constructor;
-            is_protocol;
-            assumptions = { protocol_assumptions; _ };
-            _;
-          } as order )
+        ({ constructor; is_protocol; assumptions = { protocol_assumptions; _ }; _ } as order)
         left
         right
       =
@@ -1322,12 +1348,9 @@ module OrderImplementation = struct
             >>= constructor ~protocol_assumptions
             >>| meet order (Type.Callable callable)
             |> Option.value ~default:Type.Bottom
-        | ( Type.TypedDictionary { fields = left_fields; total = left_total; _ },
-            Type.TypedDictionary { fields = right_fields; total = right_total; _ } ) ->
-            if
-              Type.TypedDictionary.fields_have_colliding_keys left_fields right_fields
-              || left_total <> right_total
-            then
+        | ( Type.TypedDictionary { fields = left_fields; _ },
+            Type.TypedDictionary { fields = right_fields; _ } ) ->
+            if Type.TypedDictionary.fields_have_colliding_keys left_fields right_fields then
               Type.Bottom
             else
               let meet_fields =
@@ -1341,7 +1364,7 @@ module OrderImplementation = struct
                     ~compare:
                       [%compare: Type.type_t Type.Record.TypedDictionary.typed_dictionary_field]
               in
-              Type.TypedDictionary.anonymous ~total:left_total meet_fields
+              Type.TypedDictionary.anonymous meet_fields
         | Type.TypedDictionary _, _
         | _, Type.TypedDictionary _ ->
             Type.Bottom
@@ -1365,7 +1388,7 @@ module OrderImplementation = struct
     and instantiate_protocol_parameters
         ( {
             attributes;
-            handler = (module Handler : ClassHierarchy.Handler) as handler;
+            class_hierarchy = { variables; _ };
             assumptions = { protocol_assumptions; _ } as assumptions;
             _;
           } as order )
@@ -1374,8 +1397,7 @@ module OrderImplementation = struct
         : Type.Parameter.t list option
       =
       match candidate with
-      | Type.Primitive candidate_name
-        when Option.is_some (ClassHierarchy.variables handler candidate_name) ->
+      | Type.Primitive candidate_name when Option.is_some (variables candidate_name) ->
           (* If we are given a "stripped" generic, we decline to do structural analysis, as these
              kinds of comparisons only exists for legacy reasons to do nominal comparisons *)
           None
@@ -1391,7 +1413,7 @@ module OrderImplementation = struct
           match assumed_protocol_parameters with
           | Some result -> Some result
           | None -> (
-              let protocol_generics = ClassHierarchy.variables handler protocol in
+              let protocol_generics = variables protocol in
               let protocol_generic_parameters =
                 protocol_generics
                 >>| List.map ~f:(function

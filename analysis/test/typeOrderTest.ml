@@ -55,15 +55,26 @@ let parse_attributes ~parse_annotation ~class_name =
 
 let get_typed_dictionary _ = None
 
+let hierarchy class_hierarchy_handler =
+  {
+    TypeOrder.instantiate_successors_parameters =
+      ClassHierarchy.instantiate_successors_parameters class_hierarchy_handler;
+    is_transitive_successor = ClassHierarchy.is_transitive_successor class_hierarchy_handler;
+    variables = ClassHierarchy.variables class_hierarchy_handler;
+    least_upper_bound = ClassHierarchy.least_upper_bound class_hierarchy_handler;
+  }
+
+
 let less_or_equal
     ?(constructor = fun _ ~protocol_assumptions:_ -> None)
     ?(attributes = fun _ ~assumptions:_ -> None)
     ?(is_protocol = fun _ ~protocol_assumptions:_ -> false)
     handler
   =
+  let class_hierarchy = hierarchy handler in
   always_less_or_equal
     {
-      handler;
+      class_hierarchy;
       constructor;
       attributes;
       is_protocol;
@@ -77,9 +88,10 @@ let less_or_equal
 
 
 let is_compatible_with ?(constructor = fun _ ~protocol_assumptions:_ -> None) handler =
+  let class_hierarchy = hierarchy handler in
   is_compatible_with
     {
-      handler;
+      class_hierarchy;
       constructor;
       attributes = (fun _ ~assumptions:_ -> None);
       is_protocol = (fun _ ~protocol_assumptions:_ -> false);
@@ -97,9 +109,10 @@ let join
     ?(attributes = fun _ ~assumptions:_ -> None)
     handler
   =
+  let class_hierarchy = hierarchy handler in
   join
     {
-      handler;
+      class_hierarchy;
       constructor;
       attributes;
       is_protocol = (fun _ ~protocol_assumptions:_ -> false);
@@ -113,9 +126,10 @@ let join
 
 
 let meet ?(constructor = fun _ ~protocol_assumptions:_ -> None) handler =
+  let class_hierarchy = hierarchy handler in
   meet
     {
-      handler;
+      class_hierarchy;
       constructor;
       attributes = (fun _ ~assumptions:_ -> None);
       is_protocol = (fun _ ~protocol_assumptions:_ -> false);
@@ -940,7 +954,7 @@ let test_less_or_equal context =
     (less_or_equal order ~left:"typing.Callable[[int], int]" ~right:"typing.Callable[[float], int]");
 
   (* Named vs. anonymous callables. *)
-  assert_true
+  assert_false
     (less_or_equal
        order
        ~left:"typing.Callable[[int], int]"
@@ -1755,7 +1769,10 @@ let test_join context =
 
   (* Parametric types. *)
   assert_join "typing.List[float]" "typing.List[float]" "typing.List[float]";
-  assert_join "typing.List[float]" "typing.List[int]" "typing.List[typing.Any]";
+  assert_join
+    "typing.List[float]"
+    "typing.List[int]"
+    "typing.Union[typing.List[float], typing.List[int]]";
   assert_join "typing.List[int]" "typing.Iterator[int]" "typing.Iterator[int]";
   assert_join "typing.Iterator[int]" "typing.List[int]" "typing.Iterator[int]";
   assert_join "typing.List[float]" "typing.Iterator[int]" "typing.Iterator[float]";
@@ -1807,7 +1824,7 @@ let test_join context =
   assert_join
     "typing.Dict[str, str]"
     "typing.Dict[str, typing.List[str]]"
-    "typing.Dict[str, typing.Any]";
+    "typing.Union[typing.Dict[str, typing.List[str]], typing.Dict[str, str]]";
   assert_join "typing.Union[typing.List[int], typing.Set[int]]" "typing.Sized" "typing.Sized";
   assert_join "typing.Tuple[int, ...]" "typing.Iterable[int]" "typing.Iterable[int]";
   assert_join "typing.Tuple[str, ...]" "typing.Iterator[str]" "typing.Iterator[str]";
@@ -2031,7 +2048,8 @@ let test_join context =
   assert_join
     "mypy_extensions.TypedDict[('Alpha', True, ('bar', str), ('foo', str), ('ben', str))]"
     "typing.Mapping[int, str]"
-    "typing.Mapping[typing.Any, object]";
+    "typing.Union[typing.Mapping[int, str], mypy_extensions.TypedDict[('Alpha', True, ('bar', \
+     str), ('foo', str), ('ben', str))]]";
   assert_join
     "mypy_extensions.TypedDict[('Alpha', True, ('bar', str), ('foo', str), ('ben', str))]"
     "typing.Dict[str, str]"
@@ -2039,6 +2057,86 @@ let test_join context =
     ^ "mypy_extensions.TypedDict[('Alpha', True, ('bar', str), ('foo', str), ('ben', str))], "
     ^ "typing.Dict[str, str]"
     ^ "]" );
+  let empty_typed_dictionary = Type.TypedDictionary.anonymous [] in
+  let foo_required_typed_dictionary =
+    Type.TypedDictionary.anonymous [{ name = "foo"; annotation = Type.integer; required = true }]
+  in
+  let foo_not_required_typed_dictionary =
+    Type.TypedDictionary.anonymous [{ name = "foo"; annotation = Type.integer; required = false }]
+  in
+  let bar_required_typed_dictionary =
+    Type.TypedDictionary.anonymous [{ name = "bar"; annotation = Type.integer; required = true }]
+  in
+  let bar_not_required_typed_dictionary =
+    Type.TypedDictionary.anonymous [{ name = "bar"; annotation = Type.integer; required = false }]
+  in
+  let foo_required_bar_not_required =
+    Type.TypedDictionary.anonymous
+      [
+        { name = "foo"; annotation = Type.integer; required = true };
+        { name = "bar"; annotation = Type.integer; required = false };
+      ]
+  in
+  let foo_not_required_bar_required =
+    Type.TypedDictionary.anonymous
+      [
+        { name = "foo"; annotation = Type.integer; required = false };
+        { name = "bar"; annotation = Type.integer; required = true };
+      ]
+  in
+  let mapping_str_to_object =
+    Type.parametric "typing.Mapping" ![Type.string; Type.object_primitive]
+  in
+  assert_type_equal
+    empty_typed_dictionary
+    (join default empty_typed_dictionary empty_typed_dictionary);
+  assert_type_equal
+    empty_typed_dictionary
+    (join default empty_typed_dictionary foo_required_typed_dictionary);
+  assert_type_equal
+    empty_typed_dictionary
+    (join default empty_typed_dictionary foo_not_required_typed_dictionary);
+  assert_type_equal
+    empty_typed_dictionary
+    (join default empty_typed_dictionary foo_required_bar_not_required);
+
+  assert_type_equal
+    foo_required_typed_dictionary
+    (join default foo_required_typed_dictionary foo_required_typed_dictionary);
+  assert_type_equal
+    mapping_str_to_object
+    (join default foo_required_typed_dictionary foo_not_required_typed_dictionary);
+  assert_type_equal
+    foo_required_typed_dictionary
+    (join default foo_required_typed_dictionary foo_required_bar_not_required);
+
+  assert_type_equal
+    foo_not_required_typed_dictionary
+    (join default foo_not_required_typed_dictionary foo_not_required_typed_dictionary);
+  assert_type_equal
+    mapping_str_to_object
+    (join default foo_not_required_typed_dictionary foo_required_bar_not_required);
+  assert_type_equal
+    foo_not_required_typed_dictionary
+    (join default foo_not_required_typed_dictionary foo_not_required_bar_required);
+
+  assert_type_equal
+    mapping_str_to_object
+    (join default foo_required_bar_not_required foo_not_required_bar_required);
+
+  (* TypedDicts with distinct keys. *)
+  assert_type_equal
+    empty_typed_dictionary
+    (join default foo_required_typed_dictionary bar_required_typed_dictionary);
+  assert_type_equal
+    empty_typed_dictionary
+    (join default foo_required_typed_dictionary bar_not_required_typed_dictionary);
+  assert_type_equal
+    empty_typed_dictionary
+    (join default foo_not_required_typed_dictionary bar_required_typed_dictionary);
+  assert_type_equal
+    empty_typed_dictionary
+    (join default foo_not_required_typed_dictionary bar_not_required_typed_dictionary);
 
   (* Variables. *)
   assert_type_equal
@@ -2128,7 +2226,11 @@ let test_join context =
        variance_order
        (Type.parametric "Map" ![Type.integer; Type.integer])
        (Type.parametric "Map" ![Type.Top; Type.string]))
-    (Type.parametric "Map" ![Type.Top; Type.Any]);
+    (Type.union
+       [
+         Type.parametric "Map" ![Type.integer; Type.integer];
+         Type.parametric "Map" ![Type.Top; Type.string];
+       ]);
   assert_type_equal
     (join
        variance_order
@@ -2348,6 +2450,60 @@ let test_meet _ =
     "mypy_extensions.TypedDict[('Alpha', True, ('bar', int), ('foo', str), ('ben', int))]"
     "typing.Mapping[str, typing.Any]"
     "$bottom";
+  let empty_typed_dictionary = Type.TypedDictionary.anonymous [] in
+  let foo_required_typed_dictionary =
+    Type.TypedDictionary.anonymous [{ name = "foo"; annotation = Type.integer; required = true }]
+  in
+  let foo_not_required_typed_dictionary =
+    Type.TypedDictionary.anonymous [{ name = "foo"; annotation = Type.integer; required = false }]
+  in
+  let foo_required_bar_not_required =
+    Type.TypedDictionary.anonymous
+      [
+        { name = "bar"; annotation = Type.integer; required = false };
+        { name = "foo"; annotation = Type.integer; required = true };
+      ]
+  in
+  let foo_not_required_bar_required =
+    Type.TypedDictionary.anonymous
+      [
+        { name = "bar"; annotation = Type.integer; required = true };
+        { name = "foo"; annotation = Type.integer; required = false };
+      ]
+  in
+  assert_type_equal
+    foo_required_typed_dictionary
+    (meet default empty_typed_dictionary foo_required_typed_dictionary);
+  assert_type_equal
+    foo_not_required_typed_dictionary
+    (meet default empty_typed_dictionary foo_not_required_typed_dictionary);
+  assert_type_equal
+    foo_required_bar_not_required
+    (meet default empty_typed_dictionary foo_required_bar_not_required);
+
+  assert_type_equal
+    foo_required_typed_dictionary
+    (meet default foo_required_typed_dictionary foo_required_typed_dictionary);
+  assert_type_equal
+    Type.Bottom
+    (meet default foo_required_typed_dictionary foo_not_required_typed_dictionary);
+  assert_type_equal
+    foo_required_bar_not_required
+    (meet default foo_required_typed_dictionary foo_required_bar_not_required);
+
+  assert_type_equal
+    foo_not_required_typed_dictionary
+    (meet default foo_not_required_typed_dictionary foo_not_required_typed_dictionary);
+  assert_type_equal
+    Type.Bottom
+    (meet default foo_not_required_typed_dictionary foo_required_bar_not_required);
+  assert_type_equal
+    foo_not_required_bar_required
+    (meet default foo_not_required_typed_dictionary foo_not_required_bar_required);
+
+  assert_type_equal
+    Type.Bottom
+    (meet default foo_required_bar_not_required foo_not_required_bar_required);
 
   (* Variables. *)
   assert_type_equal (meet default Type.integer (Type.variable "T")) Type.Bottom;
@@ -2587,9 +2743,11 @@ let test_solve_less_or_equal context =
         |> Type.primitive_name
         >>| GlobalResolution.constructor ~instantiated ~resolution
       in
-      let handler = GlobalResolution.create environment |> GlobalResolution.class_hierarchy in
+      let class_hierarchy =
+        GlobalResolution.create environment |> GlobalResolution.class_hierarchy |> hierarchy
+      in
       {
-        handler;
+        class_hierarchy;
         constructor;
         attributes;
         is_protocol;
@@ -3270,7 +3428,7 @@ let test_instantiate_protocol_parameters context =
       in
       let handler = GlobalResolution.create environment |> GlobalResolution.class_hierarchy in
       {
-        handler;
+        class_hierarchy = hierarchy handler;
         constructor = (fun _ ~protocol_assumptions:_ -> None);
         attributes;
         is_protocol;
@@ -3453,7 +3611,7 @@ let test_mark_escaped_as_escaped context =
     let handler = GlobalResolution.create environment |> GlobalResolution.class_hierarchy in
     let handler =
       {
-        handler;
+        class_hierarchy = hierarchy handler;
         constructor = (fun _ ~protocol_assumptions:_ -> None);
         attributes = (fun _ ~assumptions:_ -> None);
         is_protocol = (fun _ ~protocol_assumptions:_ -> false);

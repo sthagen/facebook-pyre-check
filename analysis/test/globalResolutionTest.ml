@@ -12,8 +12,6 @@ open Statement
 open Pyre
 open Test
 module StatementClass = Class
-module StatementAttribute = Attribute
-module Class = Annotated.Class
 module Attribute = Annotated.Attribute
 module Argument = Call.Argument
 
@@ -70,7 +68,6 @@ let test_get_decorator context =
           let actual =
             Node.create_with_default_location definition
             |> Node.map ~f:ClassSummary.create
-            |> Class.create
             |> AstEnvironment.ReadOnly.get_decorator
                  (GlobalResolution.ast_environment resolution)
                  ~decorator
@@ -1040,142 +1037,6 @@ let test_typed_dictionary_individual_attributes context =
   ()
 
 
-let test_fallback_attribute context =
-  let assert_fallback_attribute ~name source annotation =
-    let { ScratchProject.BuiltGlobalEnvironment.ast_environment; global_environment; _ } =
-      ScratchProject.setup ~context ["test.py", source] |> ScratchProject.build_global_environment
-    in
-    let global_resolution = GlobalResolution.create global_environment in
-    let resolution = TypeCheck.resolution global_resolution () in
-    let attribute =
-      let source =
-        AstEnvironment.ReadOnly.get_source
-          (AstEnvironment.read_only ast_environment)
-          (Reference.create "test")
-      in
-      let source = Option.value_exn source in
-      last_statement_exn source
-      |> (function
-           | { Node.location; value = Statement.Class definition; _ } ->
-               Node.create ~location definition |> Node.map ~f:ClassSummary.create |> Class.create
-           | _ -> failwith "Last statement was not a class")
-      |> Class.name
-      |> Reference.show
-      |> Class.fallback_attribute ~resolution ~name
-    in
-    match annotation with
-    | None -> assert_is_none attribute
-    | Some annotation ->
-        assert_is_some attribute;
-        let attribute = Option.value_exn attribute in
-        assert_equal
-          ~cmp:Type.equal
-          ~printer:Type.show
-          annotation
-          (Attribute.annotation attribute |> Annotation.annotation)
-  in
-  assert_fallback_attribute ~name:"attribute" {|
-      class Foo:
-        pass
-    |} None;
-  assert_fallback_attribute
-    ~name:"attribute"
-    {|
-      class Foo:
-        def Foo.__getattr__(self, attribute: str) -> int:
-          return 1
-    |}
-    (Some Type.integer);
-  assert_fallback_attribute
-    ~name:"attribute"
-    {|
-      class Foo:
-        def Foo.__getattr__(self, attribute: str) -> int: ...
-    |}
-    (Some Type.integer);
-  assert_fallback_attribute
-    ~name:"attribute"
-    {|
-      class Foo:
-        def Foo.__getattr__(self, attribute: str) -> int: ...
-      class Bar(Foo):
-        pass
-    |}
-    (Some Type.integer);
-  assert_fallback_attribute
-    ~name:"__iadd__"
-    {|
-      class Foo:
-        def Foo.__add__(self, other: Foo) -> int:
-          pass
-    |}
-    (Some (parse_callable "typing.Callable('test.Foo.__add__')[[Named(other, test.Foo)], int]"));
-  assert_fallback_attribute ~name:"__iadd__" {|
-      class Foo:
-        pass
-    |} None;
-  assert_fallback_attribute
-    ~name:"__iadd__"
-    {|
-      class Foo:
-        def Foo.__getattr__(self, attribute) -> int: ...
-    |}
-    (Some Type.integer);
-  assert_fallback_attribute
-    ~name:"foo"
-    {|
-      from typing import overload
-      import typing_extensions
-      class Foo:
-        @overload
-        def Foo.__getattr__(self, attribute: typing_extensions.Literal['foo']) -> int: ...
-        @overload
-        def Foo.__getattr__(self, attribute: typing_extensions.Literal['bar']) -> str: ...
-        @overload
-        def Foo.__getattr__(self, attribute: str) -> None: ...
-    |}
-    (Some Type.integer);
-  assert_fallback_attribute
-    ~name:"bar"
-    {|
-      from typing import overload
-      import typing_extensions
-      class Foo:
-        @overload
-        def Foo.__getattr__(self, attribute: typing_extensions.Literal['foo']) -> int: ...
-        @overload
-        def Foo.__getattr__(self, attribute: typing_extensions.Literal['bar']) -> str: ...
-        @overload
-        def Foo.__getattr__(self, attribute: str) -> None: ...
-    |}
-    (Some Type.string);
-  assert_fallback_attribute
-    ~name:"baz"
-    {|
-      from typing import overload
-      import typing_extensions
-      class Foo:
-        @overload
-        def Foo.__getattr__(self, attribute: typing_extensions.Literal['foo']) -> int: ...
-        @overload
-        def Foo.__getattr__(self, attribute: typing_extensions.Literal['bar']) -> str: ...
-        @overload
-        def Foo.__getattr__(self, attribute: str) -> None: ...
-    |}
-    (Some Type.none);
-  assert_fallback_attribute
-    ~name:"baz"
-    {|
-      from typing import overload
-      import typing_extensions
-      class Foo:
-        @overload
-        def Foo.__getattr__(self: Foo, attribute: str) -> int: ...
-    |}
-    (Some Type.integer);
-  ()
-
-
 let test_constraints context =
   let assert_constraints ~target ~instantiated ?parameters source expected =
     let { ScratchProject.BuiltGlobalEnvironment.global_environment; _ } =
@@ -1451,10 +1312,7 @@ let test_metaclasses context =
       let target = function
         | { Node.location; value = Statement.Class ({ StatementClass.name; _ } as definition) }
           when Reference.show (Node.value name) = target ->
-            { Node.location; value = definition }
-            |> Node.map ~f:ClassSummary.create
-            |> Class.create
-            |> Option.some
+            { Node.location; value = definition } |> Node.map ~f:ClassSummary.create |> Option.some
         | _ -> None
       in
       List.find_map ~f:target statements
@@ -1581,42 +1439,11 @@ let test_overrides context =
       ]
     |> ScratchProject.build_global_resolution
   in
-  assert_is_none (Class.overrides "test.Baz" ~resolution ~name:"baz");
-  let overrides = Class.overrides "test.Baz" ~resolution ~name:"foo" in
+  assert_is_none (GlobalResolution.overrides "test.Baz" ~resolution ~name:"baz");
+  let overrides = GlobalResolution.overrides "test.Baz" ~resolution ~name:"foo" in
   assert_is_some overrides;
   assert_equal ~cmp:String.equal (Attribute.name (Option.value_exn overrides)) "foo";
   assert_equal (Option.value_exn overrides |> Attribute.parent) "test.Foo"
-
-
-let test_implicit_attributes context =
-  let assert_unimplemented_attributes_equal ~source ~class_name ~expected =
-    let resolution =
-      ScratchProject.setup ~context ["test.py", source] |> ScratchProject.build_global_resolution
-    in
-    let definition =
-      let definition =
-        GlobalResolution.class_definition resolution (Type.Primitive class_name) >>| Class.create
-      in
-      Option.value_exn ~message:"Missing definition." definition
-    in
-    let attributes =
-      Class.implicit_attributes definition
-      |> Identifier.SerializableMap.bindings
-      |> List.map ~f:snd
-      |> List.map ~f:(fun { Node.value = { StatementAttribute.name; _ }; _ } -> name)
-    in
-    assert_equal attributes expected
-  in
-  assert_unimplemented_attributes_equal
-    ~expected:["__init__"; "x"; "y"]
-    ~source:
-      {|
-      class Foo:
-        def __init__(self):
-            self.x = 1
-            self.y = ""
-    |}
-    ~class_name:"test.Foo"
 
 
 let () =
@@ -1627,12 +1454,10 @@ let () =
          "typed_dictionary_individual_attributes" >:: test_typed_dictionary_individual_attributes;
          "constraints" >:: test_constraints;
          "constructors" >:: test_constructors;
-         "fallback_attribute" >:: test_fallback_attribute;
          "get_decorator" >:: test_get_decorator;
          "is_protocol" >:: test_is_protocol;
          "metaclasses" >:: test_metaclasses;
-         "overrides" >:: test_overrides;
          "superclasses" >:: test_superclasses;
-         "implicit_attributes" >:: test_implicit_attributes;
+         "overrides" >:: test_overrides;
        ]
   |> Test.run
