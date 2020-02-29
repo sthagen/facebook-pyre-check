@@ -732,12 +732,23 @@ class InferTest(TestCommand):
             result=result,
         )
 
-        json_stub = result.output
+        # TODO(T62259082): Fix JSON formatting
+        output = result.output
+        json_stub = '{"errors": ' + output + "}" if output else ""
         self.assertTrue(json_stub is not None)
         result = self.run_pyre(
             "-l", "local_project", "infer", "--in-place", "--json", prompts=[json_stub]
         )
-        self.assert_succeeded(result)
+        self.assert_file_exists(
+            "local_project/missing_annotation.py",
+            contents=self.typed_contents,
+            result=result,
+        )
+        self.assert_file_exists(
+            "local_project/missing_annotation_two.py",
+            contents=self.typed_contents,
+            result=result,
+        )
 
     def test_infer_recursive(self) -> None:
         result = self.run_pyre("-l", "local_project", "infer", "--recursive")
@@ -875,14 +886,17 @@ class KillTest(TestCommand):
 class PersistentTest(TestCommand):
     def initial_filesystem(self) -> None:
         self.create_project_configuration()
+        # TODO(T57341910): Test persistent interaction with -l flag.
         self.create_local_configuration("local", {"source_directories": ["."]})
 
     def test_persistent(self) -> None:
-        # TODO(T57341910): Fill in test cases
-        self.run_pyre("persistent", interrupt_after_seconds=5)
-
-    def test_local_persistent(self) -> None:
-        self.run_pyre("-l", "local", "persistent", interrupt_after_seconds=5)
+        result = self.run_pyre("persistent", interrupt_after_seconds=3)
+        output = result.output
+        output = [line for line in output.split("\r\n") if line][-1] if output else ""
+        result = PyreResult(
+            result.command, output, result.error_output, result.return_code
+        )
+        self.assert_output_matches(result, VALID_DICT)
 
 
 class QueryTest(TestCommand):
