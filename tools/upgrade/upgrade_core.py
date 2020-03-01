@@ -54,21 +54,52 @@ class Configuration:
         else:
             self.is_local = False
         self.root = str(path.parent)
+        self.original_contents = json_contents
+
+        # Configuration fields
+        self.strict = json_contents.get("strict")
         self.targets = json_contents.get("targets")
         self.source_directories = json_contents.get("source_directories")
         self.push_blocking = bool(json_contents.get("push_blocking"))
         self.version = json_contents.get("version")
 
+    def get_contents(self) -> Dict[str, Any]:
+        contents = self.original_contents
+
+        def update_contents(key: str) -> None:
+            attribute = getattr(self, key)
+            if attribute:
+                contents[key] = attribute
+            elif key in contents:
+                del contents[key]
+
+        update_contents("targets")
+        update_contents("source_directories")
+        update_contents("push_blocking")
+        update_contents("version")
+        update_contents("strict")
+        return contents
+
     @staticmethod
-    def find_project_configuration(directory: Optional[Path] = None) -> Optional[Path]:
+    def find_parent_file(
+        filename: str, directory: Optional[Path] = None
+    ) -> Optional[Path]:
         directory = directory or Path.cwd()
         root = directory.root
         while directory != root:
-            configuration_path = directory / ".pyre_configuration"
+            configuration_path = directory / filename
             if configuration_path.is_file():
                 return configuration_path
             directory = directory.parent
         return None
+
+    @staticmethod
+    def find_project_configuration(directory: Optional[Path] = None) -> Optional[Path]:
+        return Configuration.find_parent_file(".pyre_configuration", directory)
+
+    @staticmethod
+    def find_local_configuration(directory: Optional[Path] = None) -> Optional[Path]:
+        return Configuration.find_parent_file(".pyre_configuration.local", directory)
 
     @staticmethod
     def gather_local_configurations(arguments) -> List["Configuration"]:
@@ -117,27 +148,31 @@ class Configuration:
     def get_directory(self) -> Path:
         return self._path.parent
 
-    def remove_version(self) -> None:
-        with open(self._path) as configuration_file:
-            contents = json.load(configuration_file)
-        if "version" not in contents:
-            LOG.info("Version not found in configuration.")
-            return
-        del contents["version"]
+    def write(self) -> None:
         with open(self._path, "w") as configuration_file:
-            json.dump(contents, configuration_file, sort_keys=True, indent=2)
+            json.dump(self.get_contents(), configuration_file, sort_keys=True, indent=2)
             configuration_file.write("\n")
 
+    def remove_version(self) -> None:
+        if not self.version:
+            LOG.info("Version not found in configuration.")
+            return
+        self.version = None
+        self.write()
+
     def add_strict(self) -> None:
-        with open(self._path) as configuration_file:
-            contents = json.load(configuration_file)
-        if "strict" in contents:
+        if self.strict:
             LOG.info("Configuration is already strict.")
             return
-        contents["strict"] = True
-        with open(self._path, "w") as configuration_file:
-            json.dump(contents, configuration_file, sort_keys=True, indent=2)
-            configuration_file.write("\n")
+        self.strict = True
+        self.write()
+
+    def add_targets(self, targets: List[str]) -> None:
+        if self.targets:
+            self.targets += targets
+        else:
+            self.targets = targets
+        self.write()
 
     def get_errors(self, should_clean: bool = True) -> List[Dict[str, Any]]:
         # TODO(T37074129): Better parallelization or truncation needed for fbcode
@@ -659,19 +694,7 @@ def run_fixme_targets_file(
         fix(arguments, sort_errors(errors))
 
 
-def run_fixme_targets(
-    arguments: argparse.Namespace, version_control: VersionControl
-) -> None:
-    # Currently does not support sandcastle integration, or setting the global hash
-    # at the same time. As-is, run this locally after the global hash is updated.
-    subdirectory = arguments.subdirectory
-    subdirectory = Path(subdirectory) if subdirectory else None
-    project_configuration = Configuration.find_project_configuration(subdirectory)
-    if project_configuration is None:
-        LOG.error("No project configuration found for the given directory.")
-        return
-    project_directory = project_configuration.parent
-    search_root = subdirectory if subdirectory else project_directory
+def find_targets(search_root: Path) -> Dict[str, List[str]]:
     LOG.info("Finding typecheck targets in %s", search_root)
     # TODO(T56778370): Clean up code by parsing the TARGETS file rather than using grep.
     typing_field = "check_types ?= ?True"
@@ -689,11 +712,11 @@ def run_fixme_targets(
         find_targets_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
     if find_targets.returncode == 1:
-        LOG.info("Did not find any targets to upgrade.")
-        return
+        LOG.info("Did not find any targets.")
+        return {}
     if find_targets.returncode != 0:
         LOG.error("Failed to search for targets: %s", find_targets.stderr.decode())
-        return
+        return {}
     output = find_targets.stdout.decode()
     targets = re.split(typing_field, output)
     target_pattern = re.compile(r".*?([^\s]*)\/TARGETS:.*name = \"([^\"]*)\".*")
@@ -710,11 +733,31 @@ def run_fixme_targets(
             else:
                 target_names[path] = [target_name]
     LOG.info(
-        "Found %d typecheck targets in %d TARGETS files to analyze",
-        total_targets,
-        len(target_names),
+        "Found {} typecheck targets in {} TARGETS files to analyze".format(
+            total_targets, len(target_names)
+        )
     )
-    for path, target_names in target_names.items():
+    return target_names
+
+
+def run_fixme_targets(
+    arguments: argparse.Namespace, version_control: VersionControl
+) -> None:
+    # Currently does not support sandcastle integration, or setting the global hash
+    # at the same time. As-is, run this locally after the global hash is updated.
+    subdirectory = arguments.subdirectory
+    subdirectory = Path(subdirectory) if subdirectory else None
+    project_configuration = Configuration.find_project_configuration(subdirectory)
+    if project_configuration is None:
+        LOG.error("No project configuration found for the given directory.")
+        return
+    project_directory = project_configuration.parent
+    search_root = subdirectory if subdirectory else project_directory
+
+    all_targets = find_targets(search_root)
+    if not all_targets:
+        return
+    for path, target_names in all_targets.items():
         run_fixme_targets_file(
             arguments, project_directory, path, target_names, version_control
         )
@@ -726,6 +769,106 @@ def run_fixme_targets(
             )
     except subprocess.CalledProcessError:
         LOG.info("Error while running hg.")
+
+
+def run_migrate_targets(
+    arguments: argparse.Namespace, version_control: VersionControl
+) -> None:
+    subdirectory = arguments.subdirectory
+    subdirectory = Path(subdirectory) if subdirectory else Path.cwd()
+    LOG.info("Migrating typecheck targets in {}".format(subdirectory))
+
+    # Remove explicit check types options.
+    targets_files = [
+        str(subdirectory / path)
+        for path in get_filesystem().list(str(subdirectory), patterns=[r"**/TARGETS"])
+    ]
+    LOG.info("...found {} targets files".format(len(targets_files)))
+    remove_check_types_command = [
+        "sed",
+        "-i",
+        r'/check_types_options \?= \?"mypy",/d',
+    ] + targets_files
+    remove_options_command = [
+        "sed",
+        "-i",
+        r's/typing_options \?= \?".*strict",/check_types_options = "strict",/g',
+    ] + targets_files
+    subprocess.check_output(remove_check_types_command)
+    subprocess.check_output(remove_options_command)
+
+    # Remove old-style ignores.
+    python_files = [
+        str(subdirectory / path)
+        for path in get_filesystem().list(str(subdirectory), patterns=[r"**/*.py"])
+    ]
+    LOG.info("...cleaning {} python files".format(len(python_files)))
+    remove_type_ignore_command = [
+        "sed",
+        "-i",
+        r"s/# \?type: \?ignore$//g",
+    ] + python_files
+    subprocess.check_output(remove_type_ignore_command)
+
+    # Suppress errors.
+    run_fixme_targets(arguments, version_control)
+
+
+def run_targets_to_configuration(
+    arguments: argparse.Namespace, version_control: VersionControl
+) -> None:
+    # TODO(T62926437): Support glob target with file-level suppression of files
+    # excluded from original targets.
+    # TODO(T62926437): Remove all type-related target settings &
+    # ensure strict settings are preserved
+    # TODO(T62926437): Clean up old style errors & suppress new errors
+    subdirectory = arguments.subdirectory
+    subdirectory = Path(subdirectory) if subdirectory else Path.cwd()
+    LOG.info("Creating configuration from typecheck targets in %s", subdirectory)
+
+    all_targets = find_targets(subdirectory)
+    new_targets = []
+    if not all_targets:
+        LOG.warning("No configuration created because no targets found.")
+        return
+    for path, target_names in all_targets.items():
+        new_targets += [path + ":" + name for name in target_names]
+    project_configuration = Configuration.find_project_configuration(subdirectory)
+    local_configuration = Configuration.find_local_configuration(subdirectory)
+    if local_configuration:
+        LOG.warning(
+            "Pyre project already exists at %s.\n\
+            Amending targets to existing configuration.",
+            local_configuration,
+        )
+        with open(local_configuration) as configuration_file:
+            configuration = Configuration(
+                local_configuration, json.load(configuration_file)
+            )
+            configuration.add_targets(new_targets)
+    elif project_configuration:
+        with open(project_configuration) as configuration_file:
+            configuration = Configuration(
+                project_configuration, json.load(configuration_file)
+            )
+            if (
+                configuration.targets
+                or configuration.source_directories
+                or configuration.get_path() == subdirectory / ".pyre_configuration"
+            ):
+                configuration.add_targets(new_targets)
+            else:
+                configuration_contents = {"targets": new_targets, "push_blocking": True}
+                configuration = Configuration(
+                    subdirectory / ".pyre_configuration.local", configuration_contents
+                )
+                configuration.write()
+    else:
+        LOG.warning(
+            "Could not find a project configuration with binary and typeshed \
+            locations.\nPlease run `pyre init` before attempting to migrate."
+        )
+        return
 
 
 def path_exists(filename: str) -> Path:
@@ -862,6 +1005,45 @@ def run(version_control: VersionControl) -> None:
     fixme_targets.add_argument(
         "--no-commit", action="store_true", help="Keep changes in working state."
     )
+
+    # Subcommand: Migrate and fixme errors in targets running type checking
+    migrate_targets = commands.add_parser("migrate-targets")
+    migrate_targets.set_defaults(function=run_migrate_targets)
+    migrate_targets.add_argument(
+        "-c", "--comment", help="Custom comment after fixme comments"
+    )
+    migrate_targets.add_argument(
+        "--submit", action="store_true", help=argparse.SUPPRESS
+    )
+    migrate_targets.add_argument("--lint", action="store_true", help=argparse.SUPPRESS)
+    migrate_targets.add_argument(
+        "--subdirectory", help="Only upgrade TARGETS files within this directory."
+    )
+    migrate_targets.add_argument(
+        "--no-commit", action="store_true", help="Keep changes in working state."
+    )
+
+    # Subcommand: Remove targets integration and replace with configuration
+    targets_to_configuration = commands.add_parser("targets-to-configuration")
+    targets_to_configuration.set_defaults(function=run_targets_to_configuration)
+    targets_to_configuration.add_argument(
+        "-c", "--comment", help="Custom comment after fixme comments"
+    )
+    targets_to_configuration.add_argument(
+        "--submit", action="store_true", help=argparse.SUPPRESS
+    )
+    targets_to_configuration.add_argument(
+        "--lint", action="store_true", help=argparse.SUPPRESS
+    )
+    targets_to_configuration.add_argument(
+        "--subdirectory", help="Only upgrade TARGETS files within this directory."
+    )
+    targets_to_configuration.add_argument(
+        "--glob",
+        action="store_true",
+        help="Use a toplevel glob target and suppress unchecked files.",
+    )
+
     # Initialize default values.
     arguments = parser.parse_args()
     if not hasattr(arguments, "function"):
