@@ -1097,7 +1097,7 @@ module Implementation = struct
 
 
   let full_order
-      ({ constructor; all_attributes; instantiate_attribute; _ } as open_recurser)
+      ({ constructor; all_attributes; instantiate_attribute; metaclass; _ } as open_recurser)
       ~assumptions
       ?dependency
       class_metadata_environment
@@ -1148,6 +1148,14 @@ module Implementation = struct
         ?dependency
         (class_hierarchy_environment class_metadata_environment)
     in
+    let metaclass class_name ~assumptions =
+      UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
+        (ClassMetadataEnvironment.ReadOnly.unannotated_global_environment
+           class_metadata_environment)
+        ?dependency
+        class_name
+      >>| metaclass ~assumptions ~class_metadata_environment ?dependency
+    in
     {
       TypeOrder.class_hierarchy =
         {
@@ -1163,6 +1171,7 @@ module Implementation = struct
       assumptions;
       get_typed_dictionary =
         get_typed_dictionary open_recurser ~assumptions ~class_metadata_environment ?dependency;
+      metaclass;
     }
 
 
@@ -1856,25 +1865,7 @@ module Implementation = struct
             then
               callable
             else if String.equal attribute_name "__new__" then
-              (* Special case __new__ because it is the only static method with one of its
-                 parameters implicitly annotated. *)
-              let add_class_annotation { Type.Callable.annotation; parameters } =
-                let parameters =
-                  match parameters with
-                  | Defined
-                      (Named { Type.Callable.Parameter.name; annotation = Type.Top; default }
-                      :: parameters) ->
-                      Type.Callable.Defined
-                        (Named { name; annotation = Type.meta instantiated; default } :: parameters)
-                  | _ -> parameters
-                in
-                { Type.Callable.annotation; parameters }
-              in
-              {
-                callable with
-                implementation = add_class_annotation implementation;
-                overloads = List.map overloads ~f:add_class_annotation;
-              }
+              callable
             else if is_class_method then
               partial_apply_self ~self_type:(Type.meta instantiated)
             else if AnnotatedAttribute.static attribute then
@@ -2750,21 +2741,28 @@ module Implementation = struct
       | Expression.Name name -> resolve_decorators name ~arguments:None
       | _ -> overload
     in
-    let parser =
-      {
-        AnnotatedCallable.parse_annotation =
-          parse_annotation ?dependency ~class_metadata_environment ~assumptions;
-        parse_as_concatenation =
-          AliasEnvironment.ReadOnly.parse_as_concatenation
-            (alias_environment class_metadata_environment)
-            ?dependency;
-        parse_as_parameter_specification_instance_annotation =
-          AliasEnvironment.ReadOnly.parse_as_parameter_specification_instance_annotation
-            (alias_environment class_metadata_environment)
-            ?dependency;
-      }
+    let init =
+      let parser =
+        {
+          AnnotatedCallable.parse_annotation =
+            parse_annotation ?dependency ~class_metadata_environment ~assumptions;
+          parse_as_concatenation =
+            AliasEnvironment.ReadOnly.parse_as_concatenation
+              (alias_environment class_metadata_environment)
+              ?dependency;
+          parse_as_parameter_specification_instance_annotation =
+            AliasEnvironment.ReadOnly.parse_as_parameter_specification_instance_annotation
+              (alias_environment class_metadata_environment)
+              ?dependency;
+        }
+      in
+      let variables =
+        ClassHierarchyEnvironment.ReadOnly.variables
+          (ClassMetadataEnvironment.ReadOnly.class_hierarchy_environment class_metadata_environment)
+          ?dependency
+      in
+      AnnotatedCallable.create_overload_without_applying_decorators ~parser ~variables signature
     in
-    let init = AnnotatedCallable.create_overload_without_applying_decorators ~parser signature in
     decorators |> List.rev |> List.fold ~init ~f:apply_decorator
 
 

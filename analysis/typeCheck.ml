@@ -489,8 +489,9 @@ module State (Context : Context) = struct
         let parser =
           GlobalResolution.annotation_parser ~allow_invalid_type_parameters:true global_resolution
         in
+        let variables = GlobalResolution.variables global_resolution in
         let define_variables =
-          AnnotatedCallable.create_overload_without_applying_decorators ~parser signature
+          AnnotatedCallable.create_overload_without_applying_decorators ~parser ~variables signature
           |> (fun { parameters; _ } -> Type.Callable.create ~parameters ~annotation:Type.Top ())
           |> Type.Variable.all_free_variables
           |> List.dedup_and_sort ~compare:Type.Variable.compare
@@ -3036,14 +3037,19 @@ module State (Context : Context) = struct
               |> fst
             in
             let add_type_variable_errors state =
-              match parsed with
-              | Variable variable when Type.Variable.Unary.contains_subvariable variable ->
-                  let kind =
-                    AnalysisError.InvalidType
-                      (AnalysisError.NestedTypeVariables (Type.Variable.Unary variable))
-                  in
-                  emit_error_no_join ~state ~location ~kind
-              | _ -> state
+              let kind =
+                match parsed with
+                | Variable variable when Type.Variable.Unary.contains_subvariable variable ->
+                    Some
+                      (AnalysisError.InvalidType
+                         (AnalysisError.NestedTypeVariables (Type.Variable.Unary variable)))
+                | Variable { constraints = Explicit [explicit]; _ } ->
+                    Some (AnalysisError.InvalidType (AnalysisError.SingleExplicit explicit))
+                | _ -> None
+              in
+              kind
+              >>| (fun kind -> emit_error_no_join ~state ~location ~kind)
+              |> Option.value ~default:state
             in
             let state = add_annotation_errors state |> add_type_variable_errors in
             { state with resolution }, resolved

@@ -760,7 +760,7 @@ let test_invalid_models context =
     |}
     ~expect:
       "Invalid model for `test.C.foo`: Model signature parameters do not match implementation \
-       `(self: unknown) -> int`. Reason(s): unexpected named parameter: `value`."
+       `(self: C) -> int`. Reason(s): unexpected named parameter: `value`."
     ();
   assert_invalid_model
     ~source:
@@ -779,7 +779,7 @@ let test_invalid_models context =
     |}
     ~expect:
       "Invalid model for `test.C.foo`: Model signature parameters do not match implementation \
-       `(self: unknown, value: int) -> None`. Reason(s): missing named parameters: `value`."
+       `(self: C, value: int) -> None`. Reason(s): missing named parameters: `value`."
     ();
   assert_invalid_model
     ~model_source:
@@ -832,6 +832,18 @@ let test_invalid_models context =
     ~expect:
       "Invalid model for `unittest.TestCase.assertIsNotNone`: The modelled function is an imported \
        function `unittest.case.TestCase.assertIsNotNone`, please model it directly."
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+        def test.sink(parameter: TaintSink[Test, Via[a-feature]]):
+          ...
+    |}
+    ~expect:
+      "Invalid model for `test.sink`: Invalid expression for breadcrumb: (Expression.Expression.Call\n\
+      \   { Expression.Call.callee = a.__sub__;\n\
+      \     arguments = [{ Expression.Call.Argument.name = None; value = feature }]\n\
+      \     })"
     ()
 
 

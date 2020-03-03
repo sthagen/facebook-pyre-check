@@ -78,20 +78,30 @@ let rec parse_annotations ~configuration ~parameters annotation =
     | Expression.Name (Name.Identifier breadcrumb) ->
         [Features.simple_via ~allowed:configuration.features breadcrumb]
     | Tuple expressions -> List.concat_map ~f:extract_breadcrumbs expressions
-    | _ -> []
+    | _ ->
+        Format.sprintf
+          "Invalid expression for breadcrumb: %s"
+          (show_expression expression.Node.value)
+        |> failwith
   in
   let rec extract_via_value_of expression =
     match expression.Node.value with
     | Expression.Name (Name.Identifier name) ->
         [Features.Simple.ViaValueOf { position = get_parameter_position name }]
     | Tuple expressions -> List.concat_map ~f:extract_via_value_of expressions
-    | _ -> []
+    | _ ->
+        Format.sprintf
+          "Invalid expression for ViaValueOf: %s"
+          (show_expression expression.Node.value)
+        |> failwith
   in
   let rec extract_names expression =
     match expression.Node.value with
     | Expression.Name (Name.Identifier name) -> [name]
     | Tuple expressions -> List.concat_map ~f:extract_names expressions
-    | _ -> []
+    | _ ->
+        Format.sprintf "Invalid expression name: %s" (show_expression expression.Node.value)
+        |> failwith
   in
   let base_name = function
     | {
@@ -118,7 +128,11 @@ let rec parse_annotations ~configuration ~parameters annotation =
         | _ -> extract_kinds callee )
     | Call { callee; _ } -> extract_kinds callee
     | Tuple expressions -> List.concat_map ~f:extract_kinds expressions
-    | _ -> []
+    | _ ->
+        Format.sprintf
+          "Invalid expression for taint kind: %s"
+          (show_expression expression.Node.value)
+        |> failwith
   in
   let extract_leafs expression =
     let kinds, breadcrumbs =
@@ -713,8 +727,10 @@ let create ~resolution ?path ~configuration ~verify ~rule_filter source =
                   && Reference.equal (Node.value define.Define.signature.Define.Signature.name) name
                 then
                   let parser = GlobalResolution.annotation_parser global_resolution in
+                  let variables = GlobalResolution.variables global_resolution in
                   Annotated.Define.Callable.create_overload_without_applying_decorators
                     ~parser
+                    ~variables
                     signature
                   |> Type.Callable.create_from_implementation
                   |> Option.some
