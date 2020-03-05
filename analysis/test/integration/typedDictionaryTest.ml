@@ -636,6 +636,19 @@ let test_check_typed_dictionaries context =
       ^ "`TypedDictionary.update`.";
     ];
   assert_test_typed_dictionary
+    {|
+      import mypy_extensions
+      Movie = mypy_extensions.TypedDict('Movie', {'name': str, 'year': 'int'})
+      movie1: Movie
+      movie2: Movie
+      movie2.update(movie1)
+      movie2.update(7)
+    |}
+    [
+      "Incompatible parameter type [6]: Expected `Movie` for 1st positional only parameter to call \
+       `TypedDictionary.update` but got `int`.";
+    ];
+  assert_test_typed_dictionary
     (* TODO(T37629490): We should handle the alias not being the same as the TypedDict name. *)
     {|
       import mypy_extensions
@@ -1462,6 +1475,21 @@ let test_check_typed_dictionary_inheritance context =
       "Revealed type [-1]: Revealed type for `d[\"foo\"]` is `int`.";
       "Revealed type [-1]: Revealed type for `d[\"bar\"]` is `str`.";
     ];
+  assert_test_typed_dictionary
+    {|
+      import mypy_extensions
+      class TotalBase(mypy_extensions.TypedDict):
+        foo: int
+      class NonTotalChild(TotalBase, total=False):
+        bar: str
+      class TotalChild(TotalBase):
+        bar: str
+      d: NonTotalChild
+      d2: TotalChild
+      d3: TotalBase = d
+      d4: TotalBase = d2
+    |}
+    [];
   (* TypedDict operations. *)
   assert_test_typed_dictionary
     {|
@@ -1479,6 +1507,24 @@ let test_check_typed_dictionary_inheritance context =
        `non_existent`.";
       "Revealed type [-1]: Revealed type for `child[\"foo\"]` is `int`.";
       "Revealed type [-1]: Revealed type for `child[\"bar\"]` is `str`.";
+    ];
+  assert_test_typed_dictionary
+    {|
+        import mypy_extensions
+
+        class Base(mypy_extensions.TypedDict):
+          foo: int
+        class Child(Base, total=False):
+          bar: int
+        child: Child
+        y: int = child.pop("foo")
+        y: int = child.pop("bar")
+        child.__delitem__("foo")
+        child.__delitem__("bar")
+    |}
+    [
+      "Invalid TypedDict operation [54]: Cannot `pop` required field `foo` from TypedDict `Child`.";
+      "Invalid TypedDict operation [54]: Cannot delete required field `foo` from TypedDict `Child`.";
     ];
   (* Multiple inheritance. *)
   assert_test_typed_dictionary

@@ -286,7 +286,8 @@ let global ({ dependency; _ } as resolution) reference =
   match Reference.last reference with
   | "__doc__"
   | "__file__"
-  | "__name__" ->
+  | "__name__"
+  | "__package__" ->
       let annotation = Annotation.create_immutable Type.string in
       Some annotation
   | "__dict__" ->
@@ -495,6 +496,37 @@ let solve_constraints resolution = TypeOrder.OrderedConstraints.solve ~order:(fu
 
 let solve_ordered_types_less_or_equal resolution =
   full_order resolution |> TypeOrder.solve_ordered_types_less_or_equal
+
+
+let extract_type_parameters resolution ~source ~target =
+  match source with
+  | Type.Top
+  | Bottom
+  | Any ->
+      (* TODO (T63159626): These special cases may not make sense. *)
+      None
+  | _ ->
+      ClassHierarchy.variables (class_hierarchy resolution) target
+      >>= fun variables ->
+      let namespace = Type.Variable.Namespace.create_fresh () in
+      List.map variables ~f:(Type.Variable.namespace ~namespace)
+      |> Type.Variable.all_unary
+      >>= fun unaries ->
+      let solve_against =
+        List.map unaries ~f:(fun unary -> Type.Parameter.Single (Type.Variable unary))
+        |> Type.parametric target
+      in
+      solve_less_or_equal
+        resolution
+        ~constraints:TypeConstraints.empty
+        ~left:source
+        ~right:solve_against
+      |> List.hd
+      >>= fun first_constraint ->
+      solve_constraints resolution first_constraint
+      >>= fun solution ->
+      List.map unaries ~f:(TypeConstraints.Solution.instantiate_single_variable solution)
+      |> Option.all
 
 
 let parse_annotation ({ dependency; _ } as resolution) =

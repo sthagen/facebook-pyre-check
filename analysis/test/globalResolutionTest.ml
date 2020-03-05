@@ -680,6 +680,11 @@ let test_typed_dictionary_individual_attributes context =
               year: int
             class EmptyNonTotalMovie(TypedDictionary, NonTotalTypedDictionary): ...
             class RegularClass: ...
+
+            class Base(TypedDictionary):
+              required: int
+            class NonTotalChild(Base, total=False):
+              non_required: str
           |}
         );
       ]
@@ -1033,6 +1038,163 @@ let test_typed_dictionary_individual_attributes context =
                     };
                   ];
                 implicit = None;
+              }));
+  assert_attribute
+    ~parent_name:"test.Movie"
+    ~attribute_name:"update"
+    ~expected_attribute:
+      (create_expected_attribute
+         "update"
+         ~parent:"test.Movie"
+         ~annotation:
+           (Type.Callable
+              {
+                Type.Record.Callable.kind =
+                  Type.Record.Callable.Named
+                    (Reference.create_from_list ["TypedDictionary"; "update"]);
+                implementation =
+                  {
+                    Type.Record.Callable.annotation = Type.Top;
+                    parameters = Type.Record.Callable.Undefined;
+                  };
+                overloads =
+                  [
+                    {
+                      Type.Record.Callable.annotation = Type.none;
+                      parameters =
+                        Type.Record.Callable.Defined
+                          [
+                            Type.Record.Callable.RecordParameter.KeywordOnly
+                              {
+                                Type.Record.Callable.RecordParameter.name = "$parameter$name";
+                                annotation = Type.string;
+                                default = true;
+                              };
+                            Type.Record.Callable.RecordParameter.KeywordOnly
+                              {
+                                Type.Record.Callable.RecordParameter.name = "$parameter$year";
+                                annotation = Type.integer;
+                                default = true;
+                              };
+                          ];
+                    };
+                    {
+                      Type.Record.Callable.annotation = Type.none;
+                      parameters =
+                        Type.Record.Callable.Defined
+                          [
+                            Type.Record.Callable.RecordParameter.PositionalOnly
+                              {
+                                index = 0;
+                                annotation = Type.Primitive "test.Movie";
+                                default = false;
+                              };
+                          ];
+                    };
+                  ];
+                implicit = Some { implicit_annotation = Type.Primitive "test.Movie"; name = "self" };
+              }));
+  assert_attribute
+    ~parent_name:"test.NonTotalChild"
+    ~attribute_name:"pop"
+    ~expected_attribute:
+      (create_expected_attribute
+         "pop"
+         ~parent:"test.NonTotalChild"
+         ~annotation:
+           (Type.Callable
+              {
+                Type.Record.Callable.kind =
+                  Type.Record.Callable.Named
+                    (Reference.create_from_list ["NonTotalTypedDictionary"; "pop"]);
+                implementation =
+                  {
+                    Type.Record.Callable.annotation = Type.Top;
+                    parameters = Type.Record.Callable.Undefined;
+                  };
+                overloads =
+                  [
+                    {
+                      annotation = Type.string;
+                      parameters =
+                        Type.Record.Callable.Defined
+                          [
+                            Type.Record.Callable.RecordParameter.Named
+                              {
+                                name = "k";
+                                annotation = Type.literal_string "non_required";
+                                default = false;
+                              };
+                          ];
+                    };
+                    {
+                      annotation =
+                        Union [Type.string; Type.Variable (Type.Variable.Unary.create "_T")];
+                      parameters =
+                        Defined
+                          [
+                            Type.Record.Callable.RecordParameter.Named
+                              {
+                                name = "k";
+                                annotation = Type.literal_string "non_required";
+                                default = false;
+                              };
+                            Type.Record.Callable.RecordParameter.Named
+                              {
+                                name = "default";
+                                annotation = Type.Variable (Type.Variable.Unary.create "_T");
+                                default = false;
+                              };
+                          ];
+                    };
+                  ];
+                implicit =
+                  Some
+                    {
+                      Type.Record.Callable.implicit_annotation = Type.Primitive "test.NonTotalChild";
+                      name = "self";
+                    };
+              }));
+  assert_attribute
+    ~parent_name:"test.NonTotalChild"
+    ~attribute_name:"__delitem__"
+    ~expected_attribute:
+      (create_expected_attribute
+         "__delitem__"
+         ~parent:"test.NonTotalChild"
+         ~annotation:
+           (Type.Callable
+              {
+                Type.Record.Callable.kind =
+                  Type.Record.Callable.Named
+                    (Reference.create_from_list ["NonTotalTypedDictionary"; "__delitem__"]);
+                implementation =
+                  {
+                    Type.Record.Callable.annotation = Type.Top;
+                    parameters = Type.Record.Callable.Undefined;
+                  };
+                overloads =
+                  [
+                    {
+                      annotation = Type.none;
+                      parameters =
+                        Type.Record.Callable.Defined
+                          [
+                            Type.Record.Callable.RecordParameter.Named
+                              {
+                                name = "k";
+                                annotation = Type.literal_string "non_required";
+                                default = false;
+                              };
+                          ];
+                    };
+                  ];
+                implicit =
+                  Some
+                    {
+                      Type.Record.Callable.implicit_annotation = Type.Primitive "test.NonTotalChild";
+                      name = "self";
+                    };
               }));
   ()
 
@@ -1446,6 +1608,158 @@ let test_overrides context =
   assert_equal (Option.value_exn overrides |> Attribute.parent) "test.Foo"
 
 
+let test_extract_type_parameter context =
+  let resolution =
+    ScratchProject.setup
+      ~context
+      [
+        ( "test.py",
+          {|
+         from typing import TypeVar, Generic, List, Protocol
+         T = TypeVar('T')
+         U = TypeVar('U')
+         class Derp: ...
+         class Foo(Generic[T]): ...
+         class Bar(Foo[T]): ...
+         class Baz(Foo[T], Generic[T, U]): ...
+
+         class MyProtocol(Protocol[T]):
+           def derp(self) -> T: ...
+         class MyIntProtocol:
+           def derp(self) -> int: ...
+         class MyStrProtocol:
+           def derp(self) -> str: ...
+         class MyGenericProtocol(Generic[T]):
+           def derp(self) -> T: ...
+         class NotMyProtocol:
+           def herp(self) -> int: ...
+        
+         ListOfInt = List[int]
+       |}
+        );
+      ]
+    |> ScratchProject.build_global_resolution
+  in
+  let parse_annotation annotation =
+    annotation
+    (* Preprocess literal TypedDict syntax. *)
+    |> parse_single_expression ~preprocess:true
+    |> GlobalResolution.parse_annotation resolution
+  in
+  let assert_extracted ~expected ~as_name annotation =
+    let actual =
+      GlobalResolution.extract_type_parameters resolution ~source:annotation ~target:as_name
+    in
+    assert_equal
+      ~cmp:[%equal: Type.t list option]
+      ~printer:(function
+        | Some annotations -> List.to_string ~f:Type.show annotations
+        | None -> "EXTRACTION FAILED")
+      expected
+      actual
+  in
+  let list_name =
+    (* Change me in case the canonical name for list type changes *)
+    "list"
+  in
+
+  assert_extracted Type.Any ~as_name:"test.Derp" ~expected:None;
+  assert_extracted Type.Top ~as_name:"test.Derp" ~expected:None;
+  assert_extracted Type.Bottom ~as_name:"test.Derp" ~expected:None;
+  assert_extracted (Type.list Type.integer) ~as_name:"test.Derp" ~expected:None;
+  assert_extracted (parse_annotation "test.Derp") ~as_name:"test.Derp" ~expected:None;
+
+  assert_extracted
+    (parse_annotation "test.Foo[int]")
+    ~as_name:"test.Foo"
+    ~expected:(Some [Type.integer]);
+  assert_extracted
+    (parse_annotation "test.Bar[str]")
+    ~as_name:"test.Foo"
+    ~expected:(Some [Type.string]);
+  assert_extracted
+    (parse_annotation "test.Baz[int, str]")
+    ~as_name:"test.Foo"
+    ~expected:(Some [Type.integer]);
+  assert_extracted
+    (parse_annotation "test.Baz[str, int]")
+    ~as_name:"test.Foo"
+    ~expected:(Some [Type.string]);
+  assert_extracted
+    (parse_annotation "test.Baz[int, str]")
+    ~as_name:"test.Baz"
+    ~expected:(Some [Type.integer; Type.string]);
+
+  assert_extracted Type.integer ~as_name:list_name ~expected:None;
+  assert_extracted (parse_annotation "test.Foo[int]") ~as_name:list_name ~expected:None;
+  assert_extracted
+    (parse_annotation "typing.List[int]")
+    ~as_name:list_name
+    ~expected:(Some [Type.integer]);
+  assert_extracted
+    (parse_annotation "test.ListOfInt")
+    ~as_name:list_name
+    ~expected:(Some [Type.integer]);
+  assert_extracted
+    (parse_annotation "test.ListOfInt")
+    ~as_name:"typing.Sequence"
+    ~expected:(Some [Type.integer]);
+  assert_extracted
+    (parse_annotation "test.ListOfInt")
+    ~as_name:"typing.Iterable"
+    ~expected:(Some [Type.integer]);
+
+  assert_extracted
+    (parse_annotation "test.MyIntProtocol")
+    ~as_name:"test.MyProtocol"
+    ~expected:(Some [Type.integer]);
+  assert_extracted
+    (parse_annotation "test.MyStrProtocol")
+    ~as_name:"test.MyProtocol"
+    ~expected:(Some [Type.string]);
+  assert_extracted
+    (parse_annotation "test.MyGenericProtocol[float]")
+    ~as_name:"test.MyProtocol"
+    ~expected:(Some [Type.float]);
+  assert_extracted (parse_annotation "test.NotMyProtocol") ~as_name:"test.MyProtocol" ~expected:None;
+
+  assert_extracted
+    (parse_annotation "typing.Dict[int, str]")
+    ~as_name:"typing.Iterable"
+    ~expected:(Some [Type.integer]);
+  assert_extracted
+    (parse_annotation "typing.Dict[int, str]")
+    ~as_name:"typing.Mapping"
+    ~expected:(Some [Type.integer; Type.string]);
+  assert_extracted
+    (parse_annotation "typing.Mapping[int, str]")
+    ~as_name:"typing.Iterable"
+    ~expected:(Some [Type.integer]);
+  assert_extracted
+    (parse_annotation "typing.Generator[int, str, float]")
+    ~as_name:"typing.Iterator"
+    ~expected:(Some [Type.integer]);
+  assert_extracted
+    (parse_annotation "typing.Coroutine[typing.Any, typing.Any, typing.Any]")
+    ~as_name:"typing.Awaitable"
+    ~expected:(Some [Type.Any]);
+  assert_extracted
+    (parse_annotation "typing.Coroutine[int, str, float]")
+    ~as_name:"typing.Awaitable"
+    ~expected:(Some [Type.float]);
+
+  assert_extracted (Type.list Type.Any) ~as_name:list_name ~expected:(Some [Type.Any]);
+  assert_extracted
+    (Type.list Type.object_primitive)
+    ~as_name:list_name
+    ~expected:(Some [Type.object_primitive]);
+  (* TODO (T63159626): Should be [Top] *)
+  assert_extracted (Type.list Type.Top) ~as_name:list_name ~expected:None;
+  (* TODO (T63159626): Should be [Bottom] *)
+  assert_extracted (Type.list Type.Bottom) ~as_name:list_name ~expected:None;
+  ()
+
+
 let () =
   "class"
   >::: [
@@ -1459,5 +1773,6 @@ let () =
          "metaclasses" >:: test_metaclasses;
          "superclasses" >:: test_superclasses;
          "overrides" >:: test_overrides;
+         "extract_type_parameter" >:: test_extract_type_parameter;
        ]
   |> Test.run

@@ -877,7 +877,7 @@ module State (Context : Context) = struct
                           ~state
                           ~given_annotation:None
                           (Some value_annotation),
-                        Annotation.create value_annotation )
+                        Annotation.create Type.Any )
                   | None, None ->
                       ( add_missing_parameter_annotation_error ~state ~given_annotation:None None,
                         Annotation.create Type.Any ) )
@@ -1418,11 +1418,13 @@ module State (Context : Context) = struct
         | Expression.Starred (Starred.Once expression) ->
             let { state; resolved = new_resolved; _ } = forward_expression ~state ~expression in
             let parameter =
-              (* TODO (T56720048): Stop joining with iterable bottom *)
               match
-                GlobalResolution.join global_resolution new_resolved (Type.iterable Type.Bottom)
+                GlobalResolution.extract_type_parameters
+                  global_resolution
+                  ~target:"typing.Iterable"
+                  ~source:new_resolved
               with
-              | Type.Parametric { parameters = [Single parameter]; _ } -> parameter
+              | Some [element_type] -> element_type
               | _ -> Type.Any
             in
             {
@@ -1712,132 +1714,127 @@ module State (Context : Context) = struct
         in
         callables >>| List.map ~f:signature
       in
-      let signature =
-        let not_found = function
-          | AttributeResolution.NotFound _ -> true
-          | _ -> false
-        in
-        match signatures >>| List.partition_tf ~f:not_found with
-        (* Prioritize missing signatures for union type checking. *)
-        | Some (not_found :: _, _) -> Some not_found
-        | Some ([], AttributeResolution.Found callable :: found) ->
-            let callables =
-              let extract = function
-                | AttributeResolution.Found callable -> callable
-                | _ -> failwith "Not all signatures were found."
-              in
-              List.map found ~f:extract
+      let error_from_not_found
+          ~callable:
+            ({ Type.Callable.implementation = { annotation; _ }; kind; implicit; _ } as callable)
+          ~reason
+        =
+        let state =
+          let error_location, error_kind =
+            let callee =
+              match kind with
+              | Type.Callable.Named callable -> Some callable
+              | _ -> None
             in
-            let signature =
-              let joined_callable =
-                List.map callables ~f:(fun callable -> Type.Callable callable)
-                |> List.fold
-                     ~init:(Type.Callable callable)
-                     ~f:(GlobalResolution.join global_resolution)
-              in
-              match joined_callable with
-              | Type.Callable callable -> AttributeResolution.Found callable
-              | _ -> AttributeResolution.NotFound { callable; reason = None }
-            in
-            Some signature
-        | _ -> None
-      in
-      match signature with
-      | Some (AttributeResolution.Found { implementation = { annotation; _ }; _ }) ->
-          { state; resolved = annotation; resolved_annotation = None; base = None }
-      | Some
-          (AttributeResolution.NotFound
-            {
-              callable = { implementation = { annotation; _ }; kind; implicit; _ } as callable;
-              reason = Some reason;
-            }) ->
-          let state =
-            let error_location, error_kind =
-              let callee =
-                match kind with
-                | Type.Callable.Named callable -> Some callable
-                | _ -> None
-              in
-              match reason with
-              | AbstractClassInstantiation { class_name; abstract_methods } ->
-                  ( location,
-                    Error.InvalidClassInstantiation
-                      (Error.AbstractClassInstantiation { class_name; abstract_methods }) )
-              | CallingParameterVariadicTypeVariable ->
-                  location, Error.NotCallable (Type.Callable callable)
-              | InvalidKeywordArgument { Node.location; value = { expression; annotation } } ->
-                  location, Error.InvalidArgument (Error.Keyword { expression; annotation })
-              | InvalidVariableArgument { Node.location; value = { expression; annotation } } ->
-                  ( location,
-                    Error.InvalidArgument (Error.ConcreteVariable { expression; annotation }) )
-              | Mismatch mismatch ->
-                  let { AttributeResolution.actual; expected; name; position } =
-                    Node.value mismatch
+            match reason with
+            | AttributeResolution.AbstractClassInstantiation { class_name; abstract_methods } ->
+                ( location,
+                  Error.InvalidClassInstantiation
+                    (Error.AbstractClassInstantiation { class_name; abstract_methods }) )
+            | CallingParameterVariadicTypeVariable ->
+                location, Error.NotCallable (Type.Callable callable)
+            | InvalidKeywordArgument { Node.location; value = { expression; annotation } } ->
+                location, Error.InvalidArgument (Error.Keyword { expression; annotation })
+            | InvalidVariableArgument { Node.location; value = { expression; annotation } } ->
+                location, Error.InvalidArgument (Error.ConcreteVariable { expression; annotation })
+            | Mismatch mismatch ->
+                let { AttributeResolution.actual; expected; name; position } =
+                  Node.value mismatch
+                in
+                let mismatch, name, position, location =
+                  ( Error.create_mismatch
+                      ~resolution:global_resolution
+                      ~actual
+                      ~expected
+                      ~covariant:true,
+                    name,
+                    position,
+                    Node.location mismatch )
+                in
+                let kind =
+                  let normal =
+                    Error.IncompatibleParameterType { name; position; callee; mismatch }
                   in
-                  let mismatch, name, position, location =
-                    ( Error.create_mismatch
-                        ~resolution:global_resolution
-                        ~actual
-                        ~expected
-                        ~covariant:true,
-                      name,
-                      position,
-                      Node.location mismatch )
-                  in
-                  let kind =
-                    let normal =
-                      Error.IncompatibleParameterType { name; position; callee; mismatch }
-                    in
-                    let typed_dictionary_error
+                  let typed_dictionary_error
+                      ~method_name
+                      ~position
+                      { Type.Record.TypedDictionary.fields; name }
+                    =
+                    if
+                      Type.TypedDictionary.is_special_mismatch
+                        ~class_name:name
                         ~method_name
                         ~position
-                        { Type.Record.TypedDictionary.fields; name }
-                      =
-                      if
-                        Type.TypedDictionary.is_special_mismatch
-                          ~method_name
-                          ~position
-                          ~total:(Type.TypedDictionary.are_fields_total fields)
-                      then
-                        match actual with
-                        | Type.Literal (Type.String missing_key) ->
+                        ~total:(Type.TypedDictionary.are_fields_total fields)
+                    then
+                      match actual with
+                      | Type.Literal (Type.String field_name) ->
+                          let required_field_exists =
+                            List.exists
+                              ~f:(fun { Type.Record.TypedDictionary.name; required; _ } ->
+                                String.equal name field_name && required)
+                              fields
+                          in
+                          if required_field_exists then
+                            Error.TypedDictionaryInvalidOperation
+                              { typed_dictionary_name = name; field_name; method_name }
+                          else
                             Error.TypedDictionaryKeyNotFound
-                              { typed_dictionary_name = name; missing_key }
-                        | Type.Primitive "str" ->
-                            Error.TypedDictionaryAccessWithNonLiteral
-                              (List.map fields ~f:(fun { name; _ } -> name))
-                        | _ -> normal
-                      else
-                        normal
-                    in
-                    match implicit, callee >>| Reference.as_list with
-                    | ( Some { implicit_annotation = Type.TypedDictionary typed_dictionary; _ },
-                        Some [_; method_name] ) ->
-                        typed_dictionary_error ~method_name ~position typed_dictionary
-                    | ( Some { implicit_annotation = Type.Primitive _ as annotation; _ },
-                        Some [_; method_name] ) ->
-                        GlobalResolution.get_typed_dictionary
-                          ~resolution:global_resolution
-                          annotation
-                        >>| typed_dictionary_error ~method_name ~position
-                        |> Option.value ~default:normal
-                    | _ -> normal
+                              { typed_dictionary_name = name; missing_key = field_name }
+                      | Type.Primitive "str" ->
+                          Error.TypedDictionaryAccessWithNonLiteral
+                            (List.map fields ~f:(fun { name; _ } -> name))
+                      | _ -> normal
+                    else
+                      normal
                   in
-                  location, kind
-              | MismatchWithListVariadicTypeVariable { variable; mismatch } ->
-                  location, Error.InvalidArgument (ListVariadicVariable { variable; mismatch })
-              | MissingArgument parameter -> location, Error.MissingArgument { callee; parameter }
-              | MutuallyRecursiveTypeVariables ->
-                  location, Error.MutuallyRecursiveTypeVariables callee
-              | ProtocolInstantiation class_name ->
-                  location, Error.InvalidClassInstantiation (ProtocolInstantiation class_name)
-              | TooManyArguments { expected; provided } ->
-                  location, Error.TooManyArguments { callee; expected; provided }
-              | UnexpectedKeyword name -> location, Error.UnexpectedKeyword { callee; name }
-            in
-            emit_error ~state ~location:error_location ~kind:error_kind
+                  match implicit, callee >>| Reference.as_list with
+                  | ( Some { implicit_annotation = Type.TypedDictionary typed_dictionary; _ },
+                      Some [_; method_name] ) ->
+                      typed_dictionary_error ~method_name ~position typed_dictionary
+                  | ( Some { implicit_annotation = Type.Primitive _ as annotation; _ },
+                      Some [_; method_name] ) ->
+                      GlobalResolution.get_typed_dictionary ~resolution:global_resolution annotation
+                      >>| typed_dictionary_error ~method_name ~position
+                      |> Option.value ~default:normal
+                  | _ -> normal
+                in
+                location, kind
+            | MismatchWithListVariadicTypeVariable { variable; mismatch } ->
+                location, Error.InvalidArgument (ListVariadicVariable { variable; mismatch })
+            | MissingArgument parameter -> location, Error.MissingArgument { callee; parameter }
+            | MutuallyRecursiveTypeVariables ->
+                location, Error.MutuallyRecursiveTypeVariables callee
+            | ProtocolInstantiation class_name ->
+                location, Error.InvalidClassInstantiation (ProtocolInstantiation class_name)
+            | TooManyArguments { expected; provided } ->
+                location, Error.TooManyArguments { callee; expected; provided }
+            | UnexpectedKeyword name -> location, Error.UnexpectedKeyword { callee; name }
           in
-          { state; resolved = annotation; resolved_annotation = None; base = None }
+          emit_error ~state ~location:error_location ~kind:error_kind
+        in
+        { state; resolved = annotation; resolved_annotation = None; base = None }
+      in
+
+      let not_found = function
+        | AttributeResolution.NotFound _ -> true
+        | _ -> false
+      in
+      match signatures >>| List.partition_tf ~f:not_found with
+      (* Prioritize missing signatures for union type checking. *)
+      | Some (AttributeResolution.NotFound { callable; reason = Some reason } :: _, _) ->
+          error_from_not_found ~callable ~reason
+      | Some ([], head :: tail) ->
+          let resolved =
+            let extract = function
+              | AttributeResolution.Found { Type.Callable.implementation = { annotation; _ }; _ } ->
+                  annotation
+              | _ -> failwith "Not all signatures were found."
+            in
+            List.map tail ~f:extract
+            |> List.fold ~f:(GlobalResolution.join global_resolution) ~init:(extract head)
+          in
+          { state; resolved; resolved_annotation = None; base = None }
       | _ ->
           let state =
             match resolved, potential_missing_operator_error with
@@ -1881,9 +1878,14 @@ module State (Context : Context) = struct
             state
         in
         let resolved =
-          GlobalResolution.join global_resolution (Type.awaitable Type.Bottom) resolved
-          |> Type.awaitable_value
-          |> Option.value ~default:Type.Top
+          match
+            GlobalResolution.extract_type_parameters
+              global_resolution
+              ~target:"typing.Awaitable"
+              ~source:resolved
+          with
+          | Some [awaited_type] -> awaited_type
+          | _ -> Type.Any
         in
         { state; resolved; resolved_annotation = None; base = None }
     | BooleanOperator { BooleanOperator.left; operator; right } ->
@@ -3086,11 +3088,14 @@ module State (Context : Context) = struct
             match annotation with
             | Type.Tuple (Type.Unbounded parameter) -> parameter
             | _ -> (
-                (* TODO (T56720048): Stop joining with iterable bottom *)
-                GlobalResolution.join global_resolution annotation (Type.iterable Type.Bottom)
-                |> function
-                | Type.Parametric { parameters = [Single parameter]; _ } -> parameter
-                | _ -> Type.Top )
+                match
+                  GlobalResolution.extract_type_parameters
+                    global_resolution
+                    ~target:"typing.Iterable"
+                    ~source:annotation
+                with
+                | Some [element_type] -> element_type
+                | _ -> Type.Any )
           in
           let nonuniform_sequence_parameters annotation =
             match annotation with
@@ -4232,55 +4237,51 @@ module State (Context : Context) = struct
               operator = ComparisonOperator.In;
               right;
             }
-          when is_simple_name name ->
+          when is_simple_name name -> (
             let reference = name_to_reference_exn name in
             let { resolved; _ } = forward_expression ~state ~expression:right in
-            (* TODO (T56720048): Stop joining with iterable bottom *)
-            let iterable =
-              GlobalResolution.join global_resolution resolved (Type.iterable Type.Bottom)
-            in
-            if Type.is_iterable iterable then
-              match Type.single_parameter iterable with
-              | Type.Any
-              | Type.Bottom ->
-                  state
-              | element_type -> (
-                  let annotation =
-                    Resolution.get_local_with_attributes ~global_fallback:false ~name resolution
-                  in
-                  match annotation with
-                  | Some previous ->
-                      let refined =
-                        if Annotation.is_immutable previous then
-                          Annotation.create_immutable
-                            ~original:(Some (Annotation.original previous))
-                            element_type
-                        else
-                          Annotation.create element_type
-                      in
-                      if
-                        RefinementUnit.less_or_equal
-                          ~global_resolution
-                          (RefinementUnit.create ~base:refined ())
-                          (RefinementUnit.create ~base:previous ())
-                      then
-                        let resolution =
-                          Resolution.set_local_with_attributes resolution ~name ~annotation:refined
-                        in
-                        { state with resolution }
-                      else (* Keeping previous state, since it is more refined. *)
-                        state
-                  | None when not (Resolution.is_global resolution ~reference) ->
+            match
+              GlobalResolution.extract_type_parameters
+                global_resolution
+                ~target:"typing.Iterable"
+                ~source:resolved
+            with
+            | Some [element_type] -> (
+                let annotation =
+                  Resolution.get_local_with_attributes ~global_fallback:false ~name resolution
+                in
+                match annotation with
+                | Some previous ->
+                    let refined =
+                      if Annotation.is_immutable previous then
+                        Annotation.create_immutable
+                          ~original:(Some (Annotation.original previous))
+                          element_type
+                      else
+                        Annotation.create element_type
+                    in
+                    if
+                      RefinementUnit.less_or_equal
+                        ~global_resolution
+                        (RefinementUnit.create ~base:refined ())
+                        (RefinementUnit.create ~base:previous ())
+                    then
                       let resolution =
-                        Resolution.set_local_with_attributes
-                          resolution
-                          ~name
-                          ~annotation:(Annotation.create element_type)
+                        Resolution.set_local_with_attributes resolution ~name ~annotation:refined
                       in
                       { state with resolution }
-                  | _ -> state )
-            else
-              state
+                    else (* Keeping previous state, since it is more refined. *)
+                      state
+                | None when not (Resolution.is_global resolution ~reference) ->
+                    let resolution =
+                      Resolution.set_local_with_attributes
+                        resolution
+                        ~name
+                        ~annotation:(Annotation.create element_type)
+                    in
+                    { state with resolution }
+                | _ -> state )
+            | _ -> state )
         | ComparisonOperator
             {
               ComparisonOperator.left = { Node.value = Name (Name.Identifier "None"); _ };
@@ -4377,10 +4378,14 @@ module State (Context : Context) = struct
     | YieldFrom { Node.value = Expression.Yield (Some return); _ } ->
         let { state; resolved; _ } = forward_expression ~state ~expression:return in
         let actual =
-          match GlobalResolution.join global_resolution resolved (Type.iterator Type.Bottom) with
-          | Type.Parametric { name = "typing.Iterator"; parameters = [Single parameter] } ->
-              Type.generator parameter
-          | annotation -> Type.generator annotation
+          match
+            GlobalResolution.extract_type_parameters
+              global_resolution
+              ~target:"typing.Iterator"
+              ~source:resolved
+          with
+          | Some [parameter] -> Type.generator parameter
+          | _ -> Type.generator Type.Any
         in
         validate_return ~expression:None ~state ~actual ~is_implicit:false
     | YieldFrom _ -> state
