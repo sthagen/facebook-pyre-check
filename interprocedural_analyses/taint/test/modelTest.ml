@@ -39,7 +39,11 @@ let assert_model ?source ?rules ~context ~model_source ~expect () =
       | Some rules -> Some (List.map rules ~f:(fun { Taint.TaintConfiguration.code; _ } -> code))
       | None -> None
     in
-    Taint.Model.parse ~resolution ?rule_filter ~source ~configuration Callable.Map.empty
+    let { Taint.Model.models; errors } =
+      Taint.Model.parse ~resolution ?rule_filter ~source ~configuration Callable.Map.empty
+    in
+    assert_bool "Models have parsing errors" (List.is_empty errors);
+    models
   in
   let get_model callable =
     let message = Format.asprintf "Model %a missing" Interprocedural.Callable.pp callable in
@@ -366,6 +370,23 @@ let test_class_models context =
       |}
     ~model_source:"class test.Source(TaintSource[UserControlled]): ..."
     ~expect:[outcome ~kind:`Method ~returns:[Sources.UserControlled] "test.Source.prop"]
+    ();
+  assert_model
+    ~source:
+      {|
+        class SkipMe:
+          def SkipMe.method(parameter): ...
+          def SkipMe.method_with_multiple_parameters(first, second): ...
+      |}
+    ~model_source:"class test.SkipMe(SkipAnalysis): ..."
+    ~expect:
+      [
+        outcome ~kind:`Method ~analysis_mode:Taint.Result.SkipAnalysis "test.SkipMe.method";
+        outcome
+          ~kind:`Method
+          ~analysis_mode:Taint.Result.SkipAnalysis
+          "test.SkipMe.method_with_multiple_parameters";
+      ]
     ()
 
 
@@ -514,19 +535,13 @@ let test_invalid_models context =
     in
     let error_message =
       let path = path >>| Path.create_absolute ~follow_symbolic_links:false in
-      try
-        Model.parse
-          ~resolution
-          ~configuration
-          ?path
-          ~source:(Test.trim_extra_indentation model_source)
-          Callable.Map.empty
-        |> ignore;
-        "no failure"
-      with
-      | Failure message
-      | Model.InvalidModel message ->
-          message
+      Model.parse
+        ~resolution
+        ~configuration
+        ?path
+        ~source:(Test.trim_extra_indentation model_source)
+        Callable.Map.empty
+      |> fun { Taint.Model.errors; _ } -> List.hd errors |> Option.value ~default:"no failure"
     in
     assert_equal ~printer:ident expect error_message
   in
@@ -690,7 +705,7 @@ let test_invalid_models context =
       class test.ClassSinkWithMethod(TaintSink[TestSink]):
           def method(self): ...
       |}
-    ~expect:"Class models must have a body of `...`."
+    ~expect:"Invalid model for `test.ClassSinkWithMethod`: Class model must have a body of `...`."
     ();
 
   (* Attach syntax. *)

@@ -191,9 +191,13 @@ let test_check_tuple context =
     [
       "Missing attribute annotation [4]: Attribute `a` of class `T` must have a type other than \
        `Any`.";
+      "Missing attribute annotation [4]: Attribute `b` of class `T` must have a type other than \
+       `Any`.";
+      "Missing attribute annotation [4]: Attribute `c` of class `T` must have a type other than \
+       `Any`.";
       "Missing parameter annotation [2]: Parameter `a` must have a type other than `Any`.";
-      "Undefined error [1]: Problem with analysis.";
-      "Undefined error [1]: Problem with analysis.";
+      "Missing parameter annotation [2]: Parameter `b` must have a type other than `Any`.";
+      "Missing parameter annotation [2]: Parameter `c` must have a type other than `Any`.";
       "Undefined attribute [16]: `T` has no attribute `d`.";
     ];
   assert_type_errors
@@ -215,9 +219,13 @@ let test_check_tuple context =
     [
       "Missing attribute annotation [4]: Attribute `a` of class `T` must have a type other than \
        `Any`.";
+      "Missing attribute annotation [4]: Attribute `b` of class `T` must have a type other than \
+       `Any`.";
+      "Missing attribute annotation [4]: Attribute `c` of class `T` must have a type other than \
+       `Any`.";
       "Missing parameter annotation [2]: Parameter `a` must have a type other than `Any`.";
-      "Undefined error [1]: Problem with analysis.";
-      "Undefined error [1]: Problem with analysis.";
+      "Missing parameter annotation [2]: Parameter `b` must have a type other than `Any`.";
+      "Missing parameter annotation [2]: Parameter `c` must have a type other than `Any`.";
       "Unable to unpack [23]: Unable to unpack 3 values, 2 were expected.";
       "Unable to unpack [23]: Unable to unpack 3 values, 4 were expected.";
     ];
@@ -299,10 +307,6 @@ let test_check_tuple context =
         hello: typing.Dict[str, typing.Any] = {}
     |}
     [
-      (* TODO (T62552480): Unrelated solve error manifesting here *)
-      "Incompatible attribute type [8]: Attribute `baz` declared in class `Foo` has type \
-       `typing.Dict[int, typing.Any]` but is used as type `typing.Dict[Variable[_KT], \
-       Variable[_VT]]`.";
       "Missing parameter annotation [2]: Parameter `baz` must have a type that does not contain \
        `Any`.";
       "Missing attribute annotation [4]: Attribute `baz` of class `Foo` must have a type that does \

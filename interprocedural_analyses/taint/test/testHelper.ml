@@ -37,6 +37,7 @@ type expectation = {
   returns: Taint.Sources.t list;
   errors: error_expectation list;
   obscure: bool option;
+  analysis_mode: Taint.Result.mode;
 }
 
 let environment
@@ -69,6 +70,7 @@ let outcome
     ?(returns = [])
     ?(errors = [])
     ?obscure
+    ?(analysis_mode = Taint.Result.Normal)
     define_name
   =
   {
@@ -80,6 +82,7 @@ let outcome
     returns;
     errors;
     obscure;
+    analysis_mode;
   }
 
 
@@ -115,6 +118,7 @@ let check_expectation
       errors;
       kind;
       obscure;
+      analysis_mode = expected_analysis_mode;
     }
   =
   let callable = create_callable kind define_name in
@@ -145,10 +149,8 @@ let check_expectation
         String.Map.set sink_map ~key:name ~data:sinks
     | _ -> sink_map
   in
-  let backward, forward, is_obscure =
-    let { backward; forward; _ }, is_obscure = get_model callable in
-    backward, forward, is_obscure
-  in
+  let { backward; forward; mode }, is_obscure = get_model callable in
+  assert_equal mode expected_analysis_mode;
   let sink_taint_map =
     Domains.BackwardState.fold
       Domains.BackwardState.KeyValue
@@ -357,12 +359,15 @@ let run_with_taint_models tests ~name =
     let global_resolution =
       Test.ScratchProject.setup ~context [] |> Test.ScratchProject.build_global_resolution
     in
-    Model.parse
-      ~resolution:(TypeCheck.resolution global_resolution ())
-      ~source:model_source
-      ~configuration:TaintConfiguration.default
-      Callable.Map.empty
-    |> Callable.Map.map ~f:(Interprocedural.Result.make_model Taint.Result.kind)
+    let { Taint.Model.models; errors } =
+      Model.parse
+        ~resolution:(TypeCheck.resolution global_resolution ())
+        ~source:model_source
+        ~configuration:TaintConfiguration.default
+        Callable.Map.empty
+    in
+    assert_bool "The models shouldn't have any parsing errors." (List.is_empty errors);
+    Callable.Map.map models ~f:(Interprocedural.Result.make_model Taint.Result.kind)
     |> Interprocedural.Analysis.record_initial_models ~functions:[] ~stubs:[]
   in
   let decorated_tests =
@@ -462,11 +467,15 @@ let initialize
       match models with
       | None -> inferred_models
       | Some source ->
-          Model.parse
-            ~resolution:(TypeCheck.resolution global_resolution ())
-            ~source:(Test.trim_extra_indentation source)
-            ~configuration:taint_configuration
-            inferred_models
+          let { Taint.Model.models; errors } =
+            Model.parse
+              ~resolution:(TypeCheck.resolution global_resolution ())
+              ~source:(Test.trim_extra_indentation source)
+              ~configuration:taint_configuration
+              inferred_models
+          in
+          assert_bool "The models shouldn't have any parsing errors." (List.is_empty errors);
+          models
     in
     initial_models
     |> Callable.Map.map ~f:(Interprocedural.Result.make_model Taint.Result.kind)

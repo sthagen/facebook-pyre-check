@@ -24,7 +24,10 @@ module type Signature = sig
 
   val resolution : t -> Resolution.t
 
-  val errors : t -> Error.t list
+  (* Expose for testing *)
+  val local_errors : t -> Error.t list
+
+  val all_errors : t -> Error.t list
 
   val initial : resolution:Resolution.t -> t
 
@@ -52,13 +55,6 @@ val resolution_with_key
   parent:Reference.t option ->
   key:int ->
   Resolution.t
-
-val emit_errors_in_expression
-  :  (module Context) ->
-  errors_sofar:Error.t list ->
-  resolution:Resolution.t ->
-  Expression.t ->
-  Error.t list
 
 val name : string
 
