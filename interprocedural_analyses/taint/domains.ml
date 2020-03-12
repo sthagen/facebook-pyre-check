@@ -529,10 +529,21 @@ module MakeTaintTree (Taint : TAINT_DOMAIN) () = struct
 
 
   let essential_for_constructor tree =
-    (* We special case access paths of length 1 to support some precision without blowing the
-       analysis up. *)
     let essential_complex_features set = set in
     compute_essential_features ~essential_complex_features tree
+
+
+  let approximate_complex_access_paths
+      ?(cutoff_at = Configuration.analysis_model_constraints.maximum_complex_access_path_length)
+      tree
+    =
+    let cut_off features =
+      if List.length features > cutoff_at then
+        [Features.Complex.ReturnAccessPath []]
+      else
+        features
+    in
+    transform Taint.complex_feature_set (Abstract.Domain.Map cut_off) tree
 
 
   let filter_by_leaf ~leaf taint_tree =
@@ -541,6 +552,19 @@ module MakeTaintTree (Taint : TAINT_DOMAIN) () = struct
            if Taint.equal_leaf leaf candidate then Some true else None)
     |> (fun map -> Map.Poly.find map true)
     |> Option.value ~default:Taint.bottom
+
+
+  let get_all_breadcrumbs taint_tree =
+    let gather_features feature features =
+      let open Features in
+      match feature.Abstract.OverUnderSetDomain.element with
+      | Simple.Breadcrumb _ -> feature :: features
+      (* The ViaValueOf models will be converted to breadcrumbs at the call site via
+         `get_callsite_model`. *)
+      | Simple.ViaValueOf _ -> feature :: features
+      | _ -> features
+    in
+    fold FlowDetails.simple_feature_element ~f:gather_features ~init:[] taint_tree
 end
 
 module MakeTaintEnvironment (Taint : TAINT_DOMAIN) () = struct

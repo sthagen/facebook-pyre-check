@@ -15,6 +15,13 @@ type rule = {
 
 type implicit_sinks = { conditional_test: Sinks.t list }
 
+type analysis_model_constraints = {
+  maximum_model_width: int;
+  maximum_complex_access_path_length: int;
+}
+
+val analysis_model_constraints : analysis_model_constraints
+
 type t = {
   sources: string list;
   sinks: string list;

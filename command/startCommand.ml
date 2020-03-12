@@ -136,6 +136,9 @@ let computation_thread
                 write_to_json_socket (Jsonrpc.Response.TypeErrors.to_json response)
             | Some (TypeQueryResponse response) ->
                 write_to_json_socket (TypeQuery.json_socket_response response)
+            | Some (LanguageServerProtocolResponse response) ->
+                Connections.write_lsp_response_to_json_socket ~socket response;
+                Connections.remove_json_socket ~connections:state.connections ~socket |> ignore
             | _ -> () );
             state
         | Protocol.Request.FileNotifier ->
@@ -284,6 +287,7 @@ let request_handler_thread
         "Stopping server due to missing source root, %s is not a directory."
         (Path.show local_root);
       Operations.stop ~reason:"missing source root" ~configuration:server_configuration );
+    Connections.close_json_sockets ~connections;
     let readable =
       Unix.select
         ~restart:true
@@ -379,7 +383,14 @@ let serve
       {
         lock = Mutex.create ();
         connections =
-          ref { socket; json_socket; persistent_clients = Socket.Map.empty; json_sockets = [] };
+          ref
+            {
+              socket;
+              json_socket;
+              persistent_clients = Socket.Map.empty;
+              json_sockets = [];
+              sockets_to_close = [];
+            };
       }
     in
     (* Register signal handlers. *)

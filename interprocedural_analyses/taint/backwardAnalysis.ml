@@ -692,9 +692,25 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
           with
           | None ->
               let field = Abstract.TreeDomain.Label.Field attribute in
-              let taint =
-                BackwardState.Tree.assign [field] ~tree:BackwardState.Tree.empty ~subtree:taint
+              let add_tito_features taint =
+                let expression =
+                  Node.create_with_default_location
+                    (Expression.Name
+                       (Name.Attribute { Name.Attribute.base; attribute; special = false }))
+                in
+                let attribute_breadcrumbs =
+                  Model.get_global_tito_model ~resolution ~expression
+                  >>| BackwardState.Tree.get_all_breadcrumbs
+                in
+                match attribute_breadcrumbs with
+                | Some (_ :: _ as breadcrumbs) ->
+                    BackwardState.Tree.transform
+                      BackwardTaint.simple_feature_set
+                      Abstract.Domain.(Map (List.rev_append breadcrumbs))
+                      taint
+                | _ -> taint
               in
+              let taint = BackwardState.Tree.prepend [field] (add_tito_features taint) in
               analyze_expression ~resolution ~taint ~state ~expression:base
           | Some targets ->
               let arguments = [{ Call.Argument.name = None; value = base }] in
@@ -924,7 +940,11 @@ let extract_tito_and_sink_models define ~is_constructor ~resolution ~existing_ba
     |> BackwardState.Tree.transform
          BackwardTaint.simple_feature_set
          Abstract.Domain.(Map (Features.add_type_breadcrumb ~resolution annotation))
+    |> BackwardState.Tree.limit_to
+         ~width:Configuration.analysis_model_constraints.maximum_model_width
+    |> BackwardState.Tree.approximate_complex_access_paths
   in
+
   let split_and_simplify model (parameter, name, original) =
     let annotation = original.Node.value.Parameter.annotation in
     let partition =
@@ -1003,6 +1023,7 @@ let extract_tito_and_sink_models define ~is_constructor ~resolution ~existing_ba
 
 
 let run ~environment ~qualifier ~define ~existing_model =
+  let timer = Timer.start () in
   let ( { Node.value = { Define.signature = { name = { Node.value = name; _ }; _ }; _ }; _ } as
       define )
     =
@@ -1066,4 +1087,13 @@ let run ~environment ~qualifier ~define ~existing_model =
     let () = log "Callable: %a Models: %a" Reference.pp name TaintResult.Backward.pp_model model in
     model
   in
+  Statistics.performance
+    ~randomly_log_every:1000
+    ~always_log_time_threshold:1.0 (* Seconds *)
+    ~name:"Backward analysis"
+    ~normals:["callable", Reference.show name]
+    ~section:`Taint
+    ~timer
+    ();
+
   entry_state >>| extract_model |> Option.value ~default:TaintResult.Backward.empty

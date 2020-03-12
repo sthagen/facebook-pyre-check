@@ -64,3 +64,32 @@ class InheritsFromTITO(FieldIsTITO):
 
 def adds_tito_inherited(x: InheritsFromTITO) -> int:
     return x.add_tito
+
+
+def adds_tito_with_indirect_sink(src: FieldIsTITO) -> None:
+    indirect_sink(src)
+
+
+def indirect_sink(x: FieldIsTITO) -> None:
+    __test_sink(x.add_tito)
+
+
+def issue_with_indirect_sink_tito():
+    x = __test_source()
+    adds_tito_with_indirect_sink(x)
+
+
+def approximate_complex_access_paths(x):
+    return {
+        "a": x.a,
+        "b": x.b,
+        "c": x.c,
+        "d": x.d,
+        "e": x.e,
+        "f": x.f,
+        "g": x.g,
+        "h": x.h,
+        "j": x.j,
+        "k": x.k,
+        "l": x.l,
+    }

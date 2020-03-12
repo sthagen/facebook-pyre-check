@@ -9,6 +9,7 @@ import argparse
 import json
 import subprocess
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, call, mock_open, patch
@@ -375,15 +376,16 @@ class FixmeAllTest(unittest.TestCase):
         error_map = {7: [{"code": "6", "description": "Foo"}]}
         with tempfile.NamedTemporaryFile(delete=False) as file:
             contents = """
-def foo(x: int) -> str:
-    return str(x)
+                def foo(x: int) -> str:
+                    return str(x)
 
-def bar(x: str) -> str:
-    return f\'\'\'
-    first line
-    second {foo(x)}
-    \'\'\'
-"""
+                def bar(x: str) -> str:
+                    return f\'\'\'
+                    first line
+                    second {foo(x)}
+                    \'\'\'
+                """
+            contents = textwrap.dedent(contents)
             file.write(contents.encode())
             upgrade_core.fix_file(mock_arguments, file.name, error_map)
 
@@ -394,15 +396,16 @@ def bar(x: str) -> str:
 
         with tempfile.NamedTemporaryFile(delete=False) as file:
             contents = """
-def foo(x: int) -> str:
-    return str(x)
+                def foo(x: int) -> str:
+                    return str(x)
 
-def bar(x: str) -> str:
-     if True \
-        and True \
-        and foo(x):
-         return x
-"""
+                def bar(x: str) -> str:
+                    if True \
+                        and True \
+                        and foo(x):
+                        return x
+                """
+            contents = textwrap.dedent(contents)
             file.write(contents.encode())
             upgrade_core.fix_file(mock_arguments, file.name, error_map)
 
@@ -643,7 +646,7 @@ class FixmeTest(unittest.TestCase):
         arguments.run = False
         arguments.lint = False
 
-        # Test error with comment.
+        # Test error with custom message.
         with patch.object(Path, "write_text") as path_write_text:
             pyre_errors = [
                 {
@@ -659,6 +662,25 @@ class FixmeTest(unittest.TestCase):
             upgrade_core.run_fixme(arguments, VERSION_CONTROL)
             arguments.comment = None
             path_write_text.assert_called_once_with("# pyre-fixme[1]: T1234\n1\n2")
+
+        # Test error with existing comment.
+        with patch.object(Path, "write_text") as path_write_text:
+            pyre_errors = [
+                {
+                    "path": "path.py",
+                    "line": 2,
+                    "concise_description": "Error [1]: description",
+                }
+            ]
+            arguments.comment = None
+            stdin_errors.return_value = pyre_errors
+            run_errors.return_value = pyre_errors
+            path_read_text.return_value = "# existing comment\n2"
+            upgrade_core.run_fixme(arguments, VERSION_CONTROL)
+            arguments.comment = None
+            path_write_text.assert_called_once_with(
+                "# existing comment\n# pyre-fixme[1]: description\n2"
+            )
 
         # Test multiple errors and multiple lines.
         with patch.object(Path, "write_text") as path_write_text:
@@ -892,12 +914,12 @@ class FixmeTest(unittest.TestCase):
             stdin_errors.return_value = pyre_errors
             run_errors.return_value = pyre_errors
             path_read_text.return_value = (
-                "  # pyre-ignore[0]: [1, 2, 3]\n# user comment\n2"
+                "  # pyre-ignore[0]: [1, 2, 3]\n# assumed continuation\n2"
             )
             upgrade_core.run_fixme(arguments, VERSION_CONTROL)
             arguments.comment = None
             arguments.truncate = True
-            path_write_text.assert_called_once_with("# user comment\n2")
+            path_write_text.assert_called_once_with("2")
 
         with patch.object(Path, "write_text") as path_write_text:
             arguments.max_line_length = 30
@@ -1140,10 +1162,9 @@ class FixmeTargetsTest(unittest.TestCase):
         >         WARNING: Invoking pyre through buck TARGETS may...
         >         See `https://wiki/configuration/` to set up Pyre for your project.
         >
-        > 	a/b/x.py:278:28 Undefined attribute [16]: `Optional` has no attribute `derp`.
-        > 	a/b/x.py:325:41 Undefined attribute [16]: `Optional` has no attribute `herp`.
-        > 	a/b/y.py:86:26 Incompatible parameter type [6]: Expected `str` for 1st \
-positional only parameter to call `merp` but got `Optional[str]`.
+        > 	a/b/x.py:278:28 %s
+        > 	a/b/x.py:325:41 %s
+        > 	a/b/y.py:86:26 %s
                a/b:c-typecheck - main 0.000 (passed)
         Finished test run: https://url
         Summary (total time 58.75s):
@@ -1154,7 +1175,12 @@ positional only parameter to call `merp` but got `Optional[str]`.
           FATAL: 0
           TIMEOUT: 0
           OMIT: 0
-        """
+        """ % (
+            b"Undefined attribute [16]: `Optional` has no attribute `derp`.",
+            b"Undefined attribute [16]: `Optional` has no attribute `herp`.",
+            b"Incompatible parameter type [6]: Expected `str` for 1st positional only "
+            + b"parameter to call `merp` but got `Optional[str]`.",
+        )
         subprocess.return_value = buck_return
         expected_errors = [
             {
@@ -1344,6 +1370,7 @@ class MigrateTest(unittest.TestCase):
                     ),
                 ]
             )
+            fix_targets.assert_called_once_with(arguments, VERSION_CONTROL)
 
 
 class TargetsToConfigurationTest(unittest.TestCase):
@@ -1351,8 +1378,12 @@ class TargetsToConfigurationTest(unittest.TestCase):
     @patch("%s.Configuration.find_project_configuration" % upgrade_core.__name__)
     @patch("%s.Configuration.find_local_configuration" % upgrade_core.__name__)
     @patch("%s.find_targets" % upgrade_core.__name__)
+    @patch("%s.get_filesystem" % upgrade_core.__name__)
+    @patch("%s.run_fixme_single" % upgrade_core.__name__)
     def test_run_targets_to_configuration(
         self,
+        run_fixme_single,
+        get_filesystem,
         find_targets,
         find_local_configuration,
         find_project_configuration,
@@ -1365,12 +1396,17 @@ class TargetsToConfigurationTest(unittest.TestCase):
             "subdirectory/b/c": ["target_two", "target_three"],
         }
 
+        filesystem_list = MagicMock()
+        filesystem_list.return_value = []
+        get_filesystem.list = filesystem_list
+
         # Do not attempt to create a configuration when no existing project-level
         # configuration is found.
         find_project_configuration.return_value = None
         find_local_configuration.return_value = None
         upgrade_core.run_targets_to_configuration(arguments, VERSION_CONTROL)
         open_mock.assert_not_called()
+        run_fixme_single.assert_not_called()
 
         # Add to existing project configuration if it lives at given subdirectory
         find_project_configuration.return_value = Path(
@@ -1404,10 +1440,12 @@ class TargetsToConfigurationTest(unittest.TestCase):
             dump_mock.assert_called_once_with(
                 expected_configuration_contents, mocks[1], indent=2, sort_keys=True
             )
+            run_fixme_single.assert_called_once_with(arguments, VERSION_CONTROL)
 
         # Create local project configuration
         open_mock.reset_mock()
         dump_mock.reset_mock()
+        run_fixme_single.reset_mock()
         find_project_configuration.return_value = Path(".pyre_configuration")
         with patch("json.dump") as dump_mock:
             mocks = [
@@ -1423,6 +1461,7 @@ class TargetsToConfigurationTest(unittest.TestCase):
                     "subdirectory/b/c:target_three",
                 ],
                 "push_blocking": True,
+                "strict": True,
             }
             open_mock.assert_has_calls(
                 [
@@ -1433,6 +1472,7 @@ class TargetsToConfigurationTest(unittest.TestCase):
             dump_mock.assert_called_once_with(
                 expected_configuration_contents, mocks[1], indent=2, sort_keys=True
             )
+            run_fixme_single.assert_called_once_with(arguments, VERSION_CONTROL)
 
         # Add to existing local project configuration
         open_mock.reset_mock()
@@ -1453,8 +1493,8 @@ class TargetsToConfigurationTest(unittest.TestCase):
                 "targets": [
                     "existing:target",
                     "subdirectory/a:target_one",
-                    "subdirectory/b/c:target_two",
                     "subdirectory/b/c:target_three",
+                    "subdirectory/b/c:target_two",
                 ]
             }
             open_mock.assert_has_calls(
@@ -1487,8 +1527,8 @@ class TargetsToConfigurationTest(unittest.TestCase):
                 "targets": [
                     "existing:target",
                     "subdirectory/a:target_one",
-                    "subdirectory/b/c:target_two",
                     "subdirectory/b/c:target_three",
+                    "subdirectory/b/c:target_two",
                 ]
             }
             open_mock.assert_has_calls(
@@ -1500,6 +1540,68 @@ class TargetsToConfigurationTest(unittest.TestCase):
             dump_mock.assert_called_once_with(
                 expected_configuration_contents, mocks[1], indent=2, sort_keys=True
             )
+
+    @patch("subprocess.run")
+    @patch("builtins.open")
+    @patch("%s.Configuration.find_project_configuration" % upgrade_core.__name__)
+    @patch("%s.Configuration.find_local_configuration" % upgrade_core.__name__)
+    @patch("%s.find_targets" % upgrade_core.__name__)
+    @patch("%s.get_filesystem" % upgrade_core.__name__)
+    @patch("%s.run_fixme_single" % upgrade_core.__name__)
+    def test_targets_file_cleanup(
+        self,
+        run_fixme_single,
+        get_filesystem,
+        find_targets,
+        find_local_configuration,
+        find_project_configuration,
+        open_mock,
+        subprocess_run,
+    ) -> None:
+        arguments = MagicMock()
+        arguments.subdirectory = "subdirectory"
+        find_targets.return_value = {
+            "subdirectory/a": ["target_one"],
+            "subdirectory/b/c": ["target_two", "target_three"],
+        }
+
+        filesystem_list = MagicMock()
+        filesystem_list.return_value = []
+        get_filesystem.list = filesystem_list
+
+        configuration_contents = json.dumps(
+            {"version": "abc", "search_path": ["stubs"]}
+        )
+        mocks = [
+            mock_open(read_data=configuration_contents).return_value,
+            mock_open(read_data="{}").return_value,
+        ]
+        open_mock.side_effect = mocks
+
+        # Do not modify TAREGTS when no existing project-level configuration is found.
+        find_project_configuration.return_value = None
+        find_local_configuration.return_value = None
+        upgrade_core.run_targets_to_configuration(arguments, VERSION_CONTROL)
+        subprocess_run.assert_not_called()
+
+        # Clean up typing-related fields from TARGETS.
+        subprocess_run.reset_mock()
+        find_project_configuration.return_value = Path(
+            "subdirectory/.pyre_configuration"
+        )
+        upgrade_core.run_targets_to_configuration(arguments, VERSION_CONTROL)
+        subprocess_run.assert_has_calls(
+            [
+                call(
+                    [
+                        "sed",
+                        "-i",
+                        "/typing \\?=.*\\|check_types \\?=.*\\|"
+                        "check_types_options \\?=.*\\|typing_options \\?=.*/d",
+                    ]
+                )
+            ]
+        )
 
 
 class DecodeTest(unittest.TestCase):
@@ -1706,30 +1808,52 @@ class FilterErrorTest(unittest.TestCase):
 
 class DefaultStrictTest(unittest.TestCase):
     @patch.object(Path, "read_text")
-    def test_add_local_unsafe(self, read_text) -> None:
+    def test_add_local_mode(self, read_text) -> None:
         arguments = MagicMock()
         arguments.sandcastle = None
         with patch.object(Path, "write_text") as path_write_text:
             read_text.return_value = "1\n2"
-            upgrade_core.add_local_unsafe(arguments, "local.py")
+            upgrade_core.add_local_mode(
+                arguments, "local.py", upgrade_core.LocalMode.UNSAFE
+            )
             path_write_text.assert_called_once_with("# pyre-unsafe\n1\n2")
 
         with patch.object(Path, "write_text") as path_write_text:
             read_text.return_value = "# comment\n# comment\n1"
-            upgrade_core.add_local_unsafe(arguments, "local.py")
+            upgrade_core.add_local_mode(
+                arguments, "local.py", upgrade_core.LocalMode.UNSAFE
+            )
             path_write_text.assert_called_once_with(
                 "# comment\n# comment\n\n# pyre-unsafe\n1"
             )
 
         with patch.object(Path, "write_text") as path_write_text:
             read_text.return_value = "# comment\n# pyre-strict\n1"
-            upgrade_core.add_local_unsafe(arguments, "local.py")
+            upgrade_core.add_local_mode(
+                arguments, "local.py", upgrade_core.LocalMode.UNSAFE
+            )
             path_write_text.assert_not_called()
 
         with patch.object(Path, "write_text") as path_write_text:
             read_text.return_value = "# comment\n# pyre-ignore-all-errors\n1"
-            upgrade_core.add_local_unsafe(arguments, "local.py")
+            upgrade_core.add_local_mode(
+                arguments, "local.py", upgrade_core.LocalMode.UNSAFE
+            )
             path_write_text.assert_not_called()
+
+        with patch.object(Path, "write_text") as path_write_text:
+            read_text.return_value = "1\n2"
+            upgrade_core.add_local_mode(
+                arguments, "local.py", upgrade_core.LocalMode.STRICT
+            )
+            path_write_text.assert_called_once_with("# pyre-strict\n1\n2")
+
+        with patch.object(Path, "write_text") as path_write_text:
+            read_text.return_value = "1\n2"
+            upgrade_core.add_local_mode(
+                arguments, "local.py", upgrade_core.LocalMode.IGNORE
+            )
+            path_write_text.assert_called_once_with("# pyre-ignore-all-errors\n1\n2")
 
     @patch.object(
         upgrade_core.Configuration, "find_project_configuration", return_value=Path(".")
@@ -1737,12 +1861,12 @@ class DefaultStrictTest(unittest.TestCase):
     @patch.object(upgrade_core.Configuration, "get_directory")
     @patch.object(upgrade_core.Configuration, "add_strict")
     @patch.object(upgrade_core.Configuration, "get_errors")
-    @patch("%s.add_local_unsafe" % upgrade_core.__name__)
+    @patch("%s.add_local_mode" % upgrade_core.__name__)
     @patch("%s.get_lint_status" % upgrade_core.__name__, return_value=0)
     def test_run_strict_default(
         self,
         get_lint_status,
-        add_local_unsafe,
+        add_local_mode,
         get_errors,
         add_strict,
         get_directory,
@@ -1756,9 +1880,9 @@ class DefaultStrictTest(unittest.TestCase):
         configuration_contents = '{"targets":[]}'
         with patch("builtins.open", mock_open(read_data=configuration_contents)):
             upgrade_core.run_strict_default(arguments, VERSION_CONTROL)
-            add_local_unsafe.assert_not_called()
+            add_local_mode.assert_not_called()
 
-        add_local_unsafe.reset_mock()
+        add_local_mode.reset_mock()
         get_errors.reset_mock()
         pyre_errors = [
             {
@@ -1777,11 +1901,11 @@ class DefaultStrictTest(unittest.TestCase):
         configuration_contents = '{"targets":[]}'
         with patch("builtins.open", mock_open(read_data=configuration_contents)):
             upgrade_core.run_strict_default(arguments, VERSION_CONTROL)
-            add_local_unsafe.assert_called_once()
+            add_local_mode.assert_called_once()
 
         arguments.reset_mock()
         get_errors.return_value = []
-        add_local_unsafe.reset_mock()
+        add_local_mode.reset_mock()
         get_errors.reset_mock()
         pyre_errors = [
             {
@@ -1800,4 +1924,4 @@ class DefaultStrictTest(unittest.TestCase):
         configuration_contents = '{"targets":[]}'
         with patch("builtins.open", mock_open(read_data=configuration_contents)):
             upgrade_core.run_strict_default(arguments, VERSION_CONTROL)
-            add_local_unsafe.assert_called_once()
+            add_local_mode.assert_called_once()

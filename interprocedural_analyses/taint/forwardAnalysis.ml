@@ -616,26 +616,13 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
       in
       let add_tito_features taint =
         let attribute_breadcrumbs =
-          let gather_features feature features =
-            let open Features in
-            match feature.Abstract.OverUnderSetDomain.element with
-            | Simple.Breadcrumb _ -> feature :: features
-            (* The ViaValueOf models will be converted to breadcrumbs at the call site via
-               `get_callsite_model`. *)
-            | Simple.ViaValueOf _ -> feature :: features
-            | _ -> features
-          in
           Model.get_global_tito_model
             ~resolution
-            ~location
             ~expression:
               (Node.create_with_default_location
                  (Expression.Name
                     (Name.Attribute { Name.Attribute.base; attribute; special = false })))
-          >>| BackwardState.Tree.fold
-                BackwardTaint.simple_feature_element
-                ~f:gather_features
-                ~init:[]
+          >>| BackwardState.Tree.get_all_breadcrumbs
         in
         match attribute_breadcrumbs with
         | Some (_ :: _ as breadcrumbs) ->
@@ -1117,6 +1104,9 @@ let extract_source_model ~define ~resolution ~features_to_attach exit_taint =
     |> ForwardState.Tree.transform
          ForwardTaint.simple_feature_set
          Abstract.Domain.(Map (Features.add_type_breadcrumb ~resolution return_annotation))
+    |> ForwardState.Tree.limit_to
+         ~width:Configuration.analysis_model_constraints.maximum_model_width
+    |> ForwardState.Tree.approximate_complex_access_paths
   in
   let attach_features taint =
     if not (List.is_empty features_to_attach) then
@@ -1223,6 +1213,7 @@ let run ~environment ~qualifier ~define ~existing_model =
   let module AnalysisInstance = AnalysisInstance (Context) in
   let open AnalysisInstance in
   log "Starting analysis of %a" Interprocedural.Callable.pp (Interprocedural.Callable.create define);
+  let timer = Timer.start () in
   let cfg = Cfg.create define.value in
   let initial =
     let normalized_parameters = AccessPath.Root.normalize_parameters parameters in
@@ -1245,4 +1236,12 @@ let run ~environment ~qualifier ~define ~existing_model =
   in
   let issues = Context.generate_issues () in
   let model = exit_state >>| extract_model |> Option.value ~default:TaintResult.Forward.empty in
+  Statistics.performance
+    ~randomly_log_every:1000
+    ~always_log_time_threshold:1.0 (* Seconds *)
+    ~name:"Forward analysis"
+    ~section:`Taint
+    ~normals:["callable", Reference.show name]
+    ~timer
+    ();
   model, issues

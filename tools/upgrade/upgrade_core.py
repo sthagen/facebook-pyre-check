@@ -14,6 +14,7 @@ import subprocess
 import sys
 import traceback
 from collections import defaultdict
+from enum import Enum
 from logging import Logger
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
@@ -30,6 +31,18 @@ from .postprocess import apply_lint, get_lint_status
 
 
 LOG: Logger = logging.getLogger(__name__)
+
+
+class LocalMode(Enum):
+    IGNORE = "pyre-ignore-all-errors"
+    UNSAFE = "pyre-unsafe"
+    STRICT = "pyre-strict"
+
+    def get_regex(self) -> str:
+        return "^[ \t]*# *" + self.value + " *$"
+
+    def get_comment(self) -> str:
+        return "# " + self.value
 
 
 class VersionControl:
@@ -57,11 +70,13 @@ class Configuration:
         self.original_contents = json_contents
 
         # Configuration fields
-        self.strict = json_contents.get("strict")
-        self.targets = json_contents.get("targets")
-        self.source_directories = json_contents.get("source_directories")
-        self.push_blocking = bool(json_contents.get("push_blocking"))
-        self.version = json_contents.get("version")
+        self.strict: bool = bool(json_contents.get("strict"))
+        self.targets: Optional[List[str]] = json_contents.get("targets")
+        self.source_directories: Optional[List[str]] = json_contents.get(
+            "source_directories"
+        )
+        self.push_blocking: bool = bool(json_contents.get("push_blocking"))
+        self.version: Optional[str] = json_contents.get("version")
 
     def get_contents(self) -> Dict[str, Any]:
         contents = self.original_contents
@@ -90,7 +105,10 @@ class Configuration:
             configuration_path = directory / filename
             if configuration_path.is_file():
                 return configuration_path
-            directory = directory.parent
+            parent = directory.parent
+            if directory == parent:
+                return None
+            directory = parent
         return None
 
     @staticmethod
@@ -172,8 +190,9 @@ class Configuration:
         self.write()
 
     def add_targets(self, targets: List[str]) -> None:
-        if self.targets:
-            self.targets += targets
+        existing_targets = self.targets
+        if existing_targets:
+            self.targets = sorted(set(existing_targets + targets))
         else:
             self.targets = targets
         self.write()
@@ -288,9 +307,10 @@ def fix_file(
     removing_pyre_comments = False
     for index, line in enumerate(lines):
         if removing_pyre_comments:
-            # Only delete continuation comments of the form
-            # "# pyre-fixme[2]:\n#  expected type `T`."
-            if line.lstrip().startswith("#  "):
+            stripped = line.lstrip()
+            if line.startswith("#") and not re.match(
+                r"# *pyre-(ignore|fixme).*$", stripped
+            ):
                 continue
             else:
                 removing_pyre_comments = False
@@ -398,7 +418,9 @@ def fix(
 
 
 @verify_stable_ast
-def add_local_unsafe(arguments: argparse.Namespace, filename: str) -> None:
+def add_local_mode(
+    arguments: argparse.Namespace, filename: str, mode: LocalMode
+) -> None:
     LOG.info("Processing `%s`", filename)
     path = Path(filename)
     text = path.read_text()
@@ -408,12 +430,11 @@ def add_local_unsafe(arguments: argparse.Namespace, filename: str) -> None:
 
     lines = text.split("\n")  # type: List[str]
 
-    # Check if already locally strict or ignore-all.
+    # Check if a local mode is already set.
     for line in lines:
-        if re.match("^[ \t]*# *pyre-strict *$", line) or re.match(
-            "^[ \t]*# *pyre-ignore-all-errors *$", line
-        ):
-            return
+        for local_mode in LocalMode:
+            if re.match(local_mode.get_regex(), line):
+                return
 
     def is_header(line: str) -> bool:
         is_comment = line.lstrip().startswith("#")
@@ -424,7 +445,7 @@ def add_local_unsafe(arguments: argparse.Namespace, filename: str) -> None:
         )
         return is_comment and not is_pyre_ignore
 
-    # Add local unsafe.
+    # Add local mode.
     new_lines = []
     past_header = False
     for line in lines:
@@ -432,7 +453,7 @@ def add_local_unsafe(arguments: argparse.Namespace, filename: str) -> None:
             past_header = True
             if len(new_lines) != 0:
                 new_lines.append("")
-            new_lines.append("# pyre-unsafe")
+            new_lines.append(mode.get_comment())
         new_lines.append(line)
     new_text = "\n".join(new_lines)
     path.write_text(new_text)
@@ -527,7 +548,7 @@ def run_strict_default(
         if len(errors) > 0:
             result = sort_errors(errors)
             for filename, _ in result:
-                add_local_unsafe(arguments, filename)
+                add_local_mode(arguments, filename, LocalMode.UNSAFE)
 
             if arguments.lint:
                 lint_status = get_lint_status(version_control.LINTERS_TO_SKIP)
@@ -775,6 +796,23 @@ def run_fixme_targets(
         LOG.info("Error while running hg.")
 
 
+def remove_non_pyre_ignores(
+    subdirectory: Path, arguments: argparse.Namespace, version_control: VersionControl
+) -> None:
+    python_files = [
+        str(subdirectory / path)
+        for path in get_filesystem().list(str(subdirectory), patterns=[r"**/*.py"])
+    ]
+    if python_files:
+        LOG.info("...cleaning %s python files", len(python_files))
+        remove_type_ignore_command = [
+            "sed",
+            "-i",
+            r"s/# \?type: \?ignore$//g",
+        ] + python_files
+        subprocess.check_output(remove_type_ignore_command)
+
+
 def run_migrate_targets(
     arguments: argparse.Namespace, version_control: VersionControl
 ) -> None:
@@ -801,40 +839,31 @@ def run_migrate_targets(
     subprocess.check_output(remove_check_types_command)
     subprocess.check_output(remove_options_command)
 
-    # Remove old-style ignores.
-    python_files = [
-        str(subdirectory / path)
-        for path in get_filesystem().list(str(subdirectory), patterns=[r"**/*.py"])
-    ]
-    LOG.info("...cleaning {} python files".format(len(python_files)))
-    remove_type_ignore_command = [
-        "sed",
-        "-i",
-        r"s/# \?type: \?ignore$//g",
-    ] + python_files
-    subprocess.check_output(remove_type_ignore_command)
-
-    # Suppress errors.
+    remove_non_pyre_ignores(subdirectory, arguments, version_control)
     run_fixme_targets(arguments, version_control)
 
 
 def run_targets_to_configuration(
     arguments: argparse.Namespace, version_control: VersionControl
 ) -> None:
+    # TODO(T62926437): Basic integration testing.
     # TODO(T62926437): Support glob target with file-level suppression of files
     # excluded from original targets.
-    # TODO(T62926437): Remove all type-related target settings &
-    # ensure strict settings are preserved
-    # TODO(T62926437): Clean up old style errors & suppress new errors
+    # TODO(T62926437): Dedup additional targets with existing glob targets.
     subdirectory = arguments.subdirectory
     subdirectory = Path(subdirectory) if subdirectory else Path.cwd()
-    LOG.info("Creating configuration from typecheck targets in %s", subdirectory)
+    LOG.info("Converting typecheck targets to pyre configuration in `%s`", subdirectory)
 
+    # Create or amend to existing pyre configuration
     all_targets = find_targets(subdirectory)
     new_targets = []
     if not all_targets:
         LOG.warning("No configuration created because no targets found.")
         return
+    targets_files = [
+        str(subdirectory / path)
+        for path in get_filesystem().list(str(subdirectory), patterns=[r"**/TARGETS"])
+    ]
     for path, target_names in all_targets.items():
         new_targets += [path + ":" + name for name in target_names]
     project_configuration = Configuration.find_project_configuration(subdirectory)
@@ -851,6 +880,7 @@ def run_targets_to_configuration(
             )
             configuration.add_targets(new_targets)
     elif project_configuration:
+        LOG.info("Found project configuration at %s.", project_configuration)
         with open(project_configuration) as configuration_file:
             configuration = Configuration(
                 project_configuration, json.load(configuration_file)
@@ -860,11 +890,33 @@ def run_targets_to_configuration(
                 or configuration.source_directories
                 or configuration.get_path() == subdirectory / ".pyre_configuration"
             ):
+                LOG.info("Amending targets to existing project configuration.")
                 configuration.add_targets(new_targets)
             else:
-                configuration_contents = {"targets": new_targets, "push_blocking": True}
+                local_configuration_path = subdirectory / ".pyre_configuration.local"
+                LOG.info(
+                    "Creating local configuration at %s.", local_configuration_path
+                )
+                configuration_contents = {
+                    "targets": new_targets,
+                    "push_blocking": True,
+                    "strict": True,
+                }
+                # Heuristic: if all targets with type checked targets are setting
+                # a target to be strictly checked, let's turn on default strict.
+                for targets_file in targets_files:
+                    regex_patterns = [
+                        r"check_types_options \?=.*strict.*",
+                        r"typing_options \?=.*strict.*",
+                    ]
+                    result = subprocess.run(
+                        ["grep", "-x", r"\|".join(regex_patterns), targets_file]
+                    )
+                    if result.returncode != 0:
+                        configuration_contents["strict"] = False
+                        break
                 configuration = Configuration(
-                    subdirectory / ".pyre_configuration.local", configuration_contents
+                    local_configuration_path, configuration_contents
                 )
                 configuration.write()
     else:
@@ -873,6 +925,25 @@ def run_targets_to_configuration(
             locations.\nPlease run `pyre init` before attempting to migrate."
         )
         return
+
+    # Remove all type-related target settings
+    LOG.info("Removing typing options from %s targets files", len(targets_files))
+    typing_options_regex = [
+        r"typing \?=.*",
+        r"check_types \?=.*",
+        r"check_types_options \?=.*",
+        r"typing_options \?=.*",
+    ]
+    remove_typing_fields_command = [
+        "sed",
+        "-i",
+        "/" + r"\|".join(typing_options_regex) + "/d",
+    ] + targets_files
+    subprocess.run(remove_typing_fields_command)
+
+    remove_non_pyre_ignores(subdirectory, arguments, version_control)
+    arguments.path = subdirectory
+    run_fixme_single(arguments, version_control)
 
 
 def path_exists(filename: str) -> Path:
