@@ -39,7 +39,6 @@ type invalid_class_instantiation =
 [@@deriving compare, eq, sexp, show, hash]
 
 type origin =
-  | Callable of Reference.t option
   | Class of {
       annotation: Type.t;
       class_attribute: bool;
@@ -1713,8 +1712,9 @@ let messages ~concise ~signature location kind =
   | UndefinedAttribute { attribute; origin } ->
       let target =
         match origin with
-        | Callable None -> "Anonymous callable"
-        | Callable (Some name) -> Format.asprintf "Callable `%a`" pp_reference name
+        | Class { annotation = Callable { kind = Anonymous; _ }; _ } -> "Anonymous callable"
+        | Class { annotation = Callable { kind = Named name; _ }; _ } ->
+            Format.asprintf "Callable `%a`" pp_reference name
         | Class { annotation; _ } ->
             let annotation, _ = Type.split annotation in
             let name =
@@ -2830,17 +2830,21 @@ let filter ~resolution errors =
     let is_callable_attribute_error { kind; _ } =
       (* TODO(T53616545): Remove once our decorators are more expressive. *)
       match kind with
-      | UndefinedAttribute { origin = Callable _; attribute = "command" } -> true
+      | UndefinedAttribute { origin = Class { annotation = Callable _; _ }; attribute = "command" }
+        ->
+          true
       (* We also need to filter errors for common mocking patterns. *)
       | UndefinedAttribute
           {
-            origin = Callable _;
+            origin = Class { annotation = Callable _; _ };
             attribute =
               ( "assert_not_called" | "assert_called_once" | "assert_called_once_with"
               | "reset_mock" | "assert_has_calls" | "assert_any_call" );
           } ->
           true
-      | UndefinedAttribute { origin = Callable (Some name); _ } -> Reference.last name = "patch"
+      | UndefinedAttribute
+          { origin = Class { annotation = Callable { kind = Named name; _ }; _ }; _ } ->
+          Reference.last name = "patch"
       | _ -> false
     in
     let is_stub_error { kind; location = { Location.WithModule.path; _ }; _ } =
@@ -3212,7 +3216,6 @@ let dequalify
                   dequalify annotation
               in
               Class { annotation; class_attribute }
-          | Callable callable -> Callable (callable >>| dequalify_reference)
           | Module module_name -> Module (dequalify_reference module_name)
         in
         UndefinedAttribute { attribute; origin }

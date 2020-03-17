@@ -92,7 +92,7 @@ class Incremental(Reporting):
 
     def _run(self) -> None:
         if (not self._no_start_server) and self._state() == State.DEAD:
-            LOG.warning("Starting server at `%s`.", self._analysis_directory.get_root())
+            LOG.info("Starting server at `%s`.", self._analysis_directory.get_root())
             arguments = self._arguments
             arguments.no_watchman = self._no_watchman
             arguments.terminal = False
@@ -147,17 +147,6 @@ class Incremental(Reporting):
             flags.append("-nonblocking")
 
         return flags
-
-    def _read_stderr(self, _stream) -> None:
-        stderr_file = os.path.join(self._log_directory, "server/server.stdout")
-        with subprocess.Popen(
-            ["tail", "--follow", "--lines=0", stderr_file],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ) as stderr_tail:
-            atexit.register(stderr_tail.terminate)
-            super(Incremental, self)._read_stderr(stderr_tail.stdout)
 
     def _restart_file_monitor_if_needed(self) -> None:
         if self._no_watchman:

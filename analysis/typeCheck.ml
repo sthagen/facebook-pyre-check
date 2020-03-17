@@ -45,13 +45,15 @@ module type Signature = sig
 
   val resolution : t -> Resolution.t
 
-  val local_errors : t -> Error.t list
-
   val all_errors : t -> Error.t list
 
   val initial : resolution:Resolution.t -> t
 
-  val parse_and_check_annotation : ?bind_variables:bool -> state:t -> Expression.t -> t * Type.t
+  val parse_and_check_annotation
+    :  ?bind_variables:bool ->
+    resolution:Resolution.t ->
+    Expression.t ->
+    Error.t list * Type.t
 
   include Fixpoint.State with type t := t
 end
@@ -64,13 +66,12 @@ module State (Context : Context) = struct
 
   and t = {
     resolution: Resolution.t;
-    errors: Error.t list;
     bottom: bool;
     resolution_fixpoint: LocalAnnotationMap.t;
     error_map: LocalErrorMap.t;
   }
 
-  let pp format { resolution; errors; bottom; _ } =
+  let pp format { resolution; bottom; error_map; _ } =
     let global_resolution = Resolution.global_resolution resolution in
     let expected =
       let parser = GlobalResolution.annotation_parser global_resolution in
@@ -101,7 +102,7 @@ module State (Context : Context) = struct
           (Error.Instantiated.location error)
           (Error.Instantiated.description error ~show_error_traces:true)
       in
-      List.map errors ~f:error_to_string |> String.concat ~sep:"\n"
+      List.map (LocalErrorMap.all_errors error_map) ~f:error_to_string |> String.concat ~sep:"\n"
     in
     Format.fprintf
       format
@@ -127,35 +128,31 @@ module State (Context : Context) = struct
   let create ?(bottom = false) ~resolution () =
     {
       resolution;
-      errors = [];
       bottom;
       resolution_fixpoint = LocalAnnotationMap.empty ();
       error_map = LocalErrorMap.empty ();
     }
 
 
-  let emit_error ~state ~location ~kind =
-    let emit_raw_error ~state:({ errors; _ } as state) error =
-      { state with errors = error :: errors }
-    in
+  let emit_error ~errors ~location ~kind =
     Error.create
       ~location:(Location.with_module ~qualifier:Context.qualifier location)
       ~kind
       ~define:Context.define
-    |> emit_raw_error ~state
+    :: errors
 
 
-  let add_invalid_type_parameters_errors ~resolution ~location ~state annotation =
+  let add_invalid_type_parameters_errors ~resolution ~location ~errors annotation =
     let mismatches, annotation =
       GlobalResolution.check_invalid_type_parameters resolution annotation
     in
-    let add_error state mismatch =
-      emit_error ~state ~location ~kind:(Error.InvalidTypeParameters mismatch)
+    let add_error errors mismatch =
+      emit_error ~errors ~location ~kind:(Error.InvalidTypeParameters mismatch)
     in
-    List.fold mismatches ~f:add_error ~init:state, annotation
+    List.fold mismatches ~f:add_error ~init:errors, annotation
 
 
-  let add_untracked_annotation_errors ~resolution ~location ~state annotation =
+  let add_untracked_annotation_errors ~resolution ~location ~errors annotation =
     let is_untracked_name class_name =
       match class_name with
       | "..." -> false
@@ -163,19 +160,19 @@ module State (Context : Context) = struct
     in
     let untracked = List.filter (Type.elements annotation) ~f:is_untracked_name in
     let errors =
-      List.fold untracked ~init:state ~f:(fun state name ->
-          emit_error ~state ~location ~kind:(Error.UndefinedType (Primitive name)))
+      List.fold untracked ~init:errors ~f:(fun errors name ->
+          emit_error ~errors ~location ~kind:(Error.UndefinedType (Primitive name)))
     in
     errors, List.is_empty untracked
 
 
   let parse_and_check_annotation
       ?(bind_variables = true)
-      ~state:({ resolution; _ } as state)
+      ~resolution
       ({ Node.location; _ } as expression)
     =
     let global_resolution = Resolution.global_resolution resolution in
-    let check_and_correct_annotation ~resolution ~location ~annotation state =
+    let check_and_correct_annotation ~resolution ~location ~annotation errors =
       let check_invalid_variables resolution variable =
         if not (Resolution.type_variable_exists resolution ~variable) then
           let origin =
@@ -203,31 +200,35 @@ module State (Context : Context) = struct
               ~init:resolution
         | _ -> resolution
       in
-      let all_primitives_and_variables_are_valid, state =
-        let state, no_untracked =
-          add_untracked_annotation_errors ~resolution:global_resolution ~location ~state annotation
+      let all_primitives_and_variables_are_valid, errors =
+        let errors, no_untracked =
+          add_untracked_annotation_errors ~resolution:global_resolution ~location ~errors annotation
         in
         let invalid_variable_error_kinds =
           Type.Variable.all_free_variables annotation
           |> List.filter_map ~f:(check_invalid_variables resolution)
         in
         ( no_untracked && List.is_empty invalid_variable_error_kinds,
-          List.fold invalid_variable_error_kinds ~init:state ~f:(fun state kind ->
-              emit_error ~state ~location ~kind) )
+          List.fold invalid_variable_error_kinds ~init:errors ~f:(fun errors kind ->
+              emit_error ~errors ~location ~kind) )
       in
       if all_primitives_and_variables_are_valid then
-        add_invalid_type_parameters_errors annotation ~resolution:global_resolution ~location ~state
+        add_invalid_type_parameters_errors
+          annotation
+          ~resolution:global_resolution
+          ~location
+          ~errors
       else
-        state, Type.Top
+        errors, Type.Top
     in
     let annotation =
       GlobalResolution.parse_annotation ~validation:NoValidation global_resolution expression
     in
-    let state =
+    let errors =
       match annotation with
       | Type.Top ->
           emit_error
-            ~state
+            ~errors:[]
             ~location
             ~kind:
               (Error.InvalidType
@@ -235,7 +236,7 @@ module State (Context : Context) = struct
                     { annotation = Type.Primitive (Expression.show expression); expected = "" }))
       | Type.Callable { implementation = { annotation = Type.Top; _ }; _ } ->
           emit_error
-            ~state
+            ~errors:[]
             ~location
             ~kind:
               (Error.InvalidType
@@ -244,18 +245,18 @@ module State (Context : Context) = struct
                       annotation = Type.Primitive (Expression.show expression);
                       expected = "`Callable[[<parameters>], <return type>]`";
                     }))
-      | _ -> state
+      | _ -> []
     in
-    let state, annotation = check_and_correct_annotation state ~resolution ~location ~annotation in
+    let errors, annotation =
+      check_and_correct_annotation errors ~resolution ~location ~annotation
+    in
     let annotation =
       if bind_variables then Type.Variable.mark_all_variables_as_bound annotation else annotation
     in
-    state, annotation
+    errors, annotation
 
 
   let resolution { resolution; _ } = resolution
-
-  let local_errors { errors; _ } = errors
 
   let all_errors { error_map; _ } = LocalErrorMap.all_errors error_map
 
@@ -304,7 +305,7 @@ module State (Context : Context) = struct
         in
         Resolution.with_annotation_store left_resolution ~annotation_store
       in
-      { left with errors = []; resolution = join_resolutions left.resolution right.resolution }
+      { left with resolution = join_resolutions left.resolution right.resolution }
 
 
   let widening_threshold = 10
@@ -351,7 +352,6 @@ module State (Context : Context) = struct
       in
       {
         previous with
-        errors = [];
         resolution = Resolution.with_annotation_store resolution ~annotation_store;
         resolution_fixpoint = next.resolution_fixpoint;
         error_map = next.error_map;
@@ -365,6 +365,7 @@ module State (Context : Context) = struct
 
   and resolved = {
     state: t;
+    errors: Error.t list;
     resolved: Type.t;
     resolved_annotation: Annotation.t option;
     base: base option;
@@ -497,17 +498,17 @@ module State (Context : Context) = struct
         ~lookup:(AstEnvironment.ReadOnly.get_relative ast_environment)
         location
     in
-    let check_decorators state =
-      let check_final_decorator state =
+    let check_decorators state errors =
+      let check_final_decorator errors =
         if Option.is_none parent && Define.is_final_method define then
           emit_error
-            ~state
+            ~errors
             ~location
             ~kind:(Error.InvalidInheritance (NonMethodFunction "typing.final"))
         else
-          state
+          errors
       in
-      let check_decorator state decorator =
+      let check_decorator errors decorator =
         let is_whitelisted decorator =
           let has_suffix { Node.value; _ } suffix =
             match value with
@@ -529,15 +530,15 @@ module State (Context : Context) = struct
           || is_attr_validator decorator
         in
         if is_whitelisted decorator then
-          state
+          errors
         else
-          let { state; _ } = forward_expression ~state ~expression:decorator in
-          state
+          let { errors = decorator_errors; _ } = forward_expression ~state ~expression:decorator in
+          List.append decorator_errors errors
       in
-      List.fold decorators ~init:state ~f:check_decorator |> check_final_decorator
+      List.fold decorators ~init:errors ~f:check_decorator |> check_final_decorator
     in
-    let check_return_annotation state =
-      let add_missing_return_error ~state annotation =
+    let check_return_annotation state errors =
+      let add_missing_return_error ~errors annotation =
         let return_annotation =
           let annotation =
             let parser = GlobalResolution.annotation_parser global_resolution in
@@ -559,7 +560,7 @@ module State (Context : Context) = struct
           || contains_literal_any
         then
           emit_error
-            ~state
+            ~errors
             ~location
             ~kind:
               (Error.MissingReturnAnnotation
@@ -572,28 +573,28 @@ module State (Context : Context) = struct
                    thrown_at_source = true;
                  })
         else
-          state
+          errors
       in
-      let add_variance_error (state, annotation) =
-        let state =
-          match annotation with
-          | Type.Variable variable when Type.Variable.Unary.is_contravariant variable ->
-              emit_error
-                ~state
-                ~location
-                ~kind:(Error.InvalidTypeVariance { annotation; origin = Error.Return })
-          | _ -> state
-        in
-        state, annotation
+      let add_variance_error errors annotation =
+        match annotation with
+        | Type.Variable variable when Type.Variable.Unary.is_contravariant variable ->
+            emit_error
+              ~errors
+              ~location
+              ~kind:(Error.InvalidTypeVariance { annotation; origin = Error.Return })
+        | _ -> errors
       in
-      let state = add_missing_return_error ~state return_annotation in
-      return_annotation
-      >>| parse_and_check_annotation ~state
-      >>| add_variance_error
-      >>| fst
-      |> Option.value ~default:state
+      let errors = add_missing_return_error ~errors return_annotation in
+      match return_annotation with
+      | None -> errors
+      | Some return_annotation ->
+          let annotation_errors, annotation =
+            parse_and_check_annotation ~resolution:state.resolution return_annotation
+          in
+          let errors = List.append annotation_errors errors in
+          add_variance_error errors annotation
     in
-    let add_capture_annotations state =
+    let add_capture_annotations state errors =
       let process_signature ({ Define.Signature.name = { Node.value = name; _ }; _ } as signature) =
         if Reference.is_local name then
           type_of_signature ~resolution signature
@@ -604,20 +605,27 @@ module State (Context : Context) = struct
         else
           state
       in
-      let process_capture state { Define.Capture.name; kind } =
-        let state, annotation =
+      let process_capture (state, errors) { Define.Capture.name; kind } =
+        let state, errors, annotation =
           match kind with
           | Define.Capture.Kind.Annotation None ->
-              emit_error ~state ~location ~kind:(Error.MissingCaptureAnnotation name), Type.Any
+              ( state,
+                emit_error ~errors ~location ~kind:(Error.MissingCaptureAnnotation name),
+                Type.Any )
           | Define.Capture.Kind.Annotation (Some annotation_expression) ->
-              parse_and_check_annotation ~state annotation_expression
+              let annotation_errors, annotation =
+                parse_and_check_annotation ~resolution:state.resolution annotation_expression
+              in
+              state, List.append annotation_errors errors, annotation
           | Define.Capture.Kind.DefineSignature signature ->
               ( state,
+                errors,
                 type_of_signature ~resolution signature
                 |> Type.Variable.mark_all_variables_as_bound ~specific:outer_scope_variables )
-          | Define.Capture.Kind.Self parent -> state, type_of_parent ~global_resolution parent
+          | Define.Capture.Kind.Self parent ->
+              state, errors, type_of_parent ~global_resolution parent
           | Define.Capture.Kind.ClassSelf parent ->
-              state, type_of_parent ~global_resolution parent |> Type.meta
+              state, errors, type_of_parent ~global_resolution parent |> Type.meta
         in
         let annotation = Annotation.create_immutable annotation in
         let resolution =
@@ -625,22 +633,22 @@ module State (Context : Context) = struct
           let reference = Reference.create name in
           Resolution.set_local resolution ~reference ~annotation
         in
-        { state with resolution }
+        { state with resolution }, errors
       in
       let state = process_signature signature in
-      List.fold captures ~init:state ~f:process_capture
+      List.fold captures ~init:(state, errors) ~f:process_capture
     in
-    let check_parameter_annotations ({ resolution; _ } as state) =
-      let state, annotation_store =
+    let check_parameter_annotations ({ resolution; _ } as state) errors =
+      let errors, annotation_store =
         let make_parameter_name name =
           name |> String.filter ~f:(fun character -> character <> '*') |> Reference.create
         in
         let check_parameter
             index
-            (state, annotation_store)
+            (errors, annotation_store)
             { Node.location; value = { Parameter.name; value; annotation } }
           =
-          let add_incompatible_variable_error ~state annotation default =
+          let add_incompatible_variable_error ~errors annotation default =
             if
               Type.is_any default
               || GlobalResolution.less_or_equal global_resolution ~left:default ~right:annotation
@@ -649,10 +657,10 @@ module State (Context : Context) = struct
                    ~left:default
                    ~right:annotation
             then
-              state
+              errors
             else
               emit_error
-                ~state
+                ~errors
                 ~location
                 ~kind:
                   (Error.IncompatibleVariableType
@@ -670,7 +678,7 @@ module State (Context : Context) = struct
                        declare_location = instantiate location;
                      })
           in
-          let add_missing_parameter_annotation_error ~state ~given_annotation annotation =
+          let add_missing_parameter_annotation_error ~errors ~given_annotation annotation =
             let name = name |> Identifier.sanitized in
             let is_dunder_new_method_for_named_tuple =
               Define.is_method define
@@ -690,10 +698,10 @@ module State (Context : Context) = struct
               || is_dunder_new_method_for_named_tuple
               || String.equal name "/"
             then
-              state
+              errors
             else
               emit_error
-                ~state
+                ~errors
                 ~location
                 ~kind:
                   (Error.MissingParameterAnnotation
@@ -705,25 +713,22 @@ module State (Context : Context) = struct
                        thrown_at_source = true;
                      })
           in
-          let add_final_parameter_annotation_error ~state =
-            emit_error ~state ~location ~kind:(Error.InvalidType (FinalParameter name))
+          let add_final_parameter_annotation_error ~errors =
+            emit_error ~errors ~location ~kind:(Error.InvalidType (FinalParameter name))
           in
-          let add_variance_error (state, annotation) =
-            let state =
-              match annotation with
-              | Type.Variable variable
-                when (not (Define.is_constructor define))
-                     && Type.Variable.Unary.is_covariant variable ->
-                  emit_error
-                    ~state
-                    ~location
-                    ~kind:(Error.InvalidTypeVariance { annotation; origin = Error.Parameter })
-              | _ -> state
-            in
-            state, annotation
+          let add_variance_error errors annotation =
+            match annotation with
+            | Type.Variable variable
+              when (not (Define.is_constructor define)) && Type.Variable.Unary.is_covariant variable
+              ->
+                emit_error
+                  ~errors
+                  ~location
+                  ~kind:(Error.InvalidTypeVariance { annotation; origin = Error.Parameter })
+            | _ -> errors
           in
           let parse_as_unary () =
-            let state, { Annotation.annotation; mutability } =
+            let errors, { Annotation.annotation; mutability } =
               match index, parent with
               | 0, Some parent
               (* __new__ does not require an annotation for __cls__, even though it is a static
@@ -742,8 +747,14 @@ module State (Context : Context) = struct
                   in
                   match annotation with
                   | Some annotation ->
-                      let state, annotation =
-                        parse_and_check_annotation ~state ~bind_variables:false annotation
+                      let errors, annotation =
+                        let annotation_errors, annotation =
+                          parse_and_check_annotation
+                            ~resolution:state.resolution
+                            ~bind_variables:false
+                            annotation
+                        in
+                        List.append annotation_errors errors, annotation
                       in
                       let compatible =
                         GlobalResolution.constraints_solution_exists
@@ -751,7 +762,7 @@ module State (Context : Context) = struct
                           ~left:resolved
                           ~right:annotation
                       in
-                      let state =
+                      let errors =
                         let name = Identifier.sanitized name in
                         let kind =
                           if compatible then
@@ -772,18 +783,25 @@ module State (Context : Context) = struct
                                  })
                         in
                         match kind with
-                        | Some kind -> emit_error ~state ~location ~kind
-                        | None -> state
+                        | Some kind -> emit_error ~errors ~location ~kind
+                        | None -> errors
                       in
-                      state, Annotation.create annotation
-                  | None -> state, Annotation.create resolved )
+                      errors, Annotation.create annotation
+                  | None -> errors, Annotation.create resolved )
               | _ -> (
-                  let state, parsed_annotation =
-                    annotation
-                    >>| parse_and_check_annotation ~state ~bind_variables:false
-                    >>| add_variance_error
-                    >>| (fun (state, annotation) -> state, Some annotation)
-                    |> Option.value ~default:(state, None)
+                  let errors, parsed_annotation =
+                    match annotation with
+                    | None -> errors, None
+                    | Some annotation ->
+                        let anntation_errors, annotation =
+                          parse_and_check_annotation
+                            ~resolution:state.resolution
+                            ~bind_variables:false
+                            annotation
+                        in
+                        let errors = List.append anntation_errors errors in
+                        let errors = add_variance_error errors annotation in
+                        errors, Some annotation
                   in
                   let contains_prohibited_any parsed_annotation =
                     let contains_literal_any =
@@ -796,41 +814,41 @@ module State (Context : Context) = struct
                     >>| (fun expression -> forward_expression ~state ~expression)
                     >>| fun { resolved; _ } -> resolved
                   in
-                  let state =
+                  let errors =
                     match parsed_annotation, value_annotation with
                     | Some annotation, Some value_annotation ->
-                        add_incompatible_variable_error ~state annotation value_annotation
-                    | _ -> state
+                        add_incompatible_variable_error ~errors annotation value_annotation
+                    | _ -> errors
                   in
                   match parsed_annotation, value_annotation with
                   | Some annotation, Some _ when Type.contains_final annotation ->
-                      ( add_final_parameter_annotation_error ~state,
+                      ( add_final_parameter_annotation_error ~errors,
                         Annotation.create_immutable annotation )
                   | Some annotation, Some value_annotation when contains_prohibited_any annotation
                     ->
                       ( add_missing_parameter_annotation_error
-                          ~state
+                          ~errors
                           ~given_annotation:(Some annotation)
                           (Some value_annotation),
                         Annotation.create_immutable annotation )
                   | Some annotation, _ when Type.contains_final annotation ->
-                      ( add_final_parameter_annotation_error ~state,
+                      ( add_final_parameter_annotation_error ~errors,
                         Annotation.create_immutable annotation )
                   | Some annotation, None when contains_prohibited_any annotation ->
                       ( add_missing_parameter_annotation_error
-                          ~state
+                          ~errors
                           ~given_annotation:(Some annotation)
                           None,
                         Annotation.create_immutable annotation )
-                  | Some annotation, _ -> state, Annotation.create_immutable annotation
+                  | Some annotation, _ -> errors, Annotation.create_immutable annotation
                   | None, Some value_annotation ->
                       ( add_missing_parameter_annotation_error
-                          ~state
+                          ~errors
                           ~given_annotation:None
                           (Some value_annotation),
                         Annotation.create Type.Any )
                   | None, None ->
-                      ( add_missing_parameter_annotation_error ~state ~given_annotation:None None,
+                      ( add_missing_parameter_annotation_error ~errors ~given_annotation:None None,
                         Annotation.create Type.Any ) )
             in
             let apply_starred_annotations annotation =
@@ -853,9 +871,9 @@ module State (Context : Context) = struct
                   Annotation.Immutable { Annotation.original; final }
               | _ -> mutability
             in
-            state, { Annotation.annotation; mutability }
+            errors, { Annotation.annotation; mutability }
           in
-          let state, { Annotation.annotation; mutability } =
+          let errors, { Annotation.annotation; mutability } =
             if String.is_prefix ~prefix:"**" name then
               parse_as_unary ()
             else if String.is_prefix ~prefix:"*" name then
@@ -863,7 +881,7 @@ module State (Context : Context) = struct
                 Type.Tuple (Bounded bounded)
                 |> Type.Variable.mark_all_variables_as_bound
                 |> Annotation.create
-                |> fun annotation -> state, annotation
+                |> fun annotation -> errors, annotation
               in
               let parsed_as_concatenation () =
                 annotation
@@ -876,7 +894,7 @@ module State (Context : Context) = struct
             else
               parse_as_unary ()
           in
-          ( state,
+          ( errors,
             Map.set
               annotation_store
               ~key:(make_parameter_name name)
@@ -885,7 +903,7 @@ module State (Context : Context) = struct
         let number_of_stars name = Identifier.split_star name |> fst |> String.length in
         match List.rev parameters, parent with
         | [], Some _ when not (Define.is_class_toplevel define || Define.is_static_method define) ->
-            let state =
+            let errors =
               let name =
                 if Define.is_class_method define || Define.is_class_property define then
                   "cls"
@@ -893,11 +911,11 @@ module State (Context : Context) = struct
                   "self"
               in
               emit_error
-                ~state
+                ~errors
                 ~location
                 ~kind:(Error.InvalidMethodSignature { annotation = None; name })
             in
-            state, Resolution.annotation_store resolution
+            errors, Resolution.annotation_store resolution
         | ( {
               Node.value = { name = second_name; value = None; annotation = Some second_annotation };
               _;
@@ -939,9 +957,10 @@ module State (Context : Context) = struct
                     |> Type.Variable.Variadic.Parameters.decompose
                     |> add_annotations
                   in
-                  List.rev reversed_head |> List.foldi ~init:(state, annotations) ~f:check_parameter
+                  List.rev reversed_head
+                  |> List.foldi ~init:(errors, annotations) ~f:check_parameter
                 else
-                  let state =
+                  let errors =
                     let origin =
                       if Define.is_toplevel (Node.value Context.define) then
                         Error.Toplevel
@@ -951,37 +970,40 @@ module State (Context : Context) = struct
                         Error.Define
                     in
                     emit_error
-                      ~state
+                      ~errors
                       ~location
                       ~kind:
                         (Error.InvalidTypeVariable
                            { annotation = ParameterVariadic variable; origin })
                   in
-                  state, add_annotations { positional_component = Top; keyword_component = Top }
+                  errors, add_annotations { positional_component = Top; keyword_component = Top }
             | None ->
                 List.foldi
-                  ~init:(state, Resolution.annotation_store resolution)
+                  ~init:(errors, Resolution.annotation_store resolution)
                   ~f:check_parameter
                   parameters )
         | _ ->
             List.foldi
-              ~init:(state, Resolution.annotation_store resolution)
+              ~init:(errors, Resolution.annotation_store resolution)
               ~f:check_parameter
               parameters
       in
       let resolution = Resolution.with_annotation_store resolution ~annotation_store in
-      { state with resolution }
+      { state with resolution }, errors
     in
-    let check_base_annotations state =
+    let check_base_annotations state errors =
       if Define.is_class_toplevel define then
         let open Annotated in
-        let check_base state ({ ExpressionCall.Argument.value; _ } as base) =
-          let state_with_errors, parsed = parse_and_check_annotation ~state value in
+        let check_base old_errors ({ ExpressionCall.Argument.value; _ } as base) =
+          let annotation_errors, parsed =
+            parse_and_check_annotation ~resolution:state.resolution value
+          in
+          let errors = List.append annotation_errors old_errors in
           match parsed with
           | Type.Parametric { name = "type"; parameters = [Single Type.Any] } ->
               (* Inheriting from type makes you a metaclass, and we don't want to
                * suggest that instead you need to use typing.Type[Something] *)
-              state
+              old_errors
           | Primitive base_name ->
               let is_subclass_typed_dictionary =
                 define.signature.parent
@@ -1001,23 +1023,22 @@ module State (Context : Context) = struct
                      || Type.TypedDictionary.is_builtin_typed_dictionary_class base_name )
               then
                 emit_error
-                  ~state:state_with_errors
+                  ~errors
                   ~location:(Node.location value)
                   ~kind:
                     (InvalidInheritance
                        (UninheritableType
                           { annotation = parsed; is_parent_class_typed_dictionary = true }))
               else
-                state_with_errors
+                errors
           | Top
           (* There's some other problem we already errored on *)
           | Parametric _ ->
-              state_with_errors
-          | Any when GlobalResolution.base_is_from_placeholder_stub global_resolution base ->
-              state_with_errors
+              errors
+          | Any when GlobalResolution.base_is_from_placeholder_stub global_resolution base -> errors
           | annotation ->
               emit_error
-                ~state:state_with_errors
+                ~errors
                 ~location:(Node.location value)
                 ~kind:
                   (InvalidInheritance
@@ -1031,18 +1052,18 @@ module State (Context : Context) = struct
           >>| ClassSummary.bases
           |> Option.value ~default:[]
         in
-        List.fold ~init:state ~f:check_base bases
+        List.fold ~init:errors ~f:check_base bases
       else
-        state
+        errors
     in
-    let check_behavioral_subtyping state =
+    let check_behavioral_subtyping state errors =
       try
         if
           Define.is_constructor define
           || Define.is_class_method define
           || Define.is_dunder_method define
         then
-          state
+          errors
         else
           let open Annotated in
           begin
@@ -1053,17 +1074,17 @@ module State (Context : Context) = struct
                   ~resolution:global_resolution
                   ~name:(StatementDefine.unqualified_name define)
                 >>| fun overridden_attribute ->
-                let state =
+                let errors =
                   match AnnotatedAttribute.visibility overridden_attribute with
                   | ReadOnly (Refinable { overridable = false }) ->
                       let parent = overridden_attribute |> Attribute.parent in
                       emit_error
-                        ~state
+                        ~errors
                         ~location
                         ~kind:(Error.InvalidOverride { parent; decorator = Final })
-                  | _ -> state
+                  | _ -> errors
                 in
-                let state =
+                let errors =
                   if
                     not
                       (Bool.equal
@@ -1077,9 +1098,9 @@ module State (Context : Context) = struct
                       else
                         Error.StaticOverride
                     in
-                    emit_error ~state ~location ~kind:(Error.InvalidOverride { parent; decorator })
+                    emit_error ~errors ~location ~kind:(Error.InvalidOverride { parent; decorator })
                   else
-                    state
+                    errors
                 in
                 (* Check strengthening of postcondition. *)
                 match Annotation.annotation (Attribute.annotation overridden_attribute) with
@@ -1093,7 +1114,7 @@ module State (Context : Context) = struct
                           original_implementation
                       | annotation -> raise (ClassHierarchy.Untracked annotation)
                     in
-                    let state =
+                    let errors =
                       let expected = Type.Callable.Overload.return_annotation implementation in
                       let actual =
                         Type.Callable.Overload.return_annotation original_implementation
@@ -1107,7 +1128,7 @@ module State (Context : Context) = struct
                                 ~right:expected)
                       then
                         emit_error
-                          ~state
+                          ~errors
                           ~location
                           ~kind:
                             (Error.InconsistentOverride
@@ -1124,7 +1145,7 @@ module State (Context : Context) = struct
                                         ~covariant:false);
                                })
                       else
-                        state
+                        errors
                     in
                     (* Check weakening of precondition. *)
                     let overriding_parameters =
@@ -1148,7 +1169,7 @@ module State (Context : Context) = struct
                              { Type.Callable.Parameter.name; annotation; default = false })
                       |> Type.Callable.Parameter.create
                     in
-                    let check_parameter state overridden_parameter =
+                    let check_parameter errors overridden_parameter =
                       let validate_match ~expected = function
                         | Some actual -> (
                             let is_compatible =
@@ -1161,7 +1182,7 @@ module State (Context : Context) = struct
                             try
                               if (not (Type.is_top expected)) && not is_compatible then
                                 emit_error
-                                  ~state
+                                  ~errors
                                   ~location
                                   ~kind:
                                     (Error.InconsistentOverride
@@ -1180,11 +1201,11 @@ module State (Context : Context) = struct
                                                    ~covariant:false));
                                        })
                               else
-                                state
+                                errors
                             with
                             | ClassHierarchy.Untracked _ ->
                                 (* TODO(T27409168): Error here. *)
-                                state )
+                                errors )
                         | None ->
                             let has_keyword_and_anonymous_starred_parameters =
                               List.exists overriding_parameters ~f:(function
@@ -1195,10 +1216,10 @@ module State (Context : Context) = struct
                                      | _ -> false)
                             in
                             if has_keyword_and_anonymous_starred_parameters then
-                              state
+                              errors
                             else
                               emit_error
-                                ~state
+                                ~errors
                                 ~location
                                 ~kind:
                                   (Error.InconsistentOverride
@@ -1255,21 +1276,21 @@ module State (Context : Context) = struct
                           (* TODO(T44178876): There is no reasonable way to compare either of these
                              alone, which is the central issue with this comparison strategy. For
                              now, let's just ignore this *)
-                          state
+                          errors
                     in
                     Type.Callable.Overload.parameters implementation
                     |> Option.value ~default:[]
-                    |> List.fold ~init:state ~f:check_parameter
-                | _ -> state )
+                    |> List.fold ~init:errors ~f:check_parameter
+                | _ -> errors )
             | _ -> None
           end
-          |> Option.value ~default:state
+          |> Option.value ~default:errors
       with
-      | ClassHierarchy.Untracked _ -> state
+      | ClassHierarchy.Untracked _ -> errors
     in
-    let check_constructor_return state =
+    let check_constructor_return errors =
       if not (Define.is_constructor define) then
-        state
+        errors
       else
         match return_annotation with
         | Some ({ Node.location; _ } as annotation) -> (
@@ -1278,30 +1299,33 @@ module State (Context : Context) = struct
               when String.equal (Reference.last name) "__new__" ->
                 (* TODO(T45018328): Error here. `__new__` is a special undecorated static method,
                    and we really ought to be checking its return type against typing.Type[Cls]. *)
-                state
+                errors
             | _ ->
                 let annotation = GlobalResolution.parse_annotation global_resolution annotation in
                 if Type.is_none annotation then
-                  state
+                  errors
                 else
                   emit_error
-                    ~state
+                    ~errors
                     ~location
                     ~kind:(Error.IncompatibleConstructorAnnotation annotation) )
-        | _ -> state
+        | _ -> errors
     in
-    let state =
-      create ~resolution:(Resolution.with_parent resolution ~parent) ()
-      |> check_return_annotation
-      |> add_capture_annotations
-      |> check_decorators
-      |> check_parameter_annotations
-      |> check_base_annotations
-      |> check_behavioral_subtyping
-      |> check_constructor_return
+    let state, errors =
+      let state = create ~resolution:(Resolution.with_parent resolution ~parent) () in
+      let state, errors = add_capture_annotations state [] in
+      let state, errors = check_parameter_annotations state errors in
+      let errors =
+        check_return_annotation state errors
+        |> check_decorators state
+        |> check_base_annotations state
+        |> check_behavioral_subtyping state
+        |> check_constructor_return
+      in
+      state, errors
     in
     let () =
-      let { resolution; resolution_fixpoint; errors; error_map; _ } = state in
+      let { resolution; resolution_fixpoint; error_map; _ } = state in
       let postcondition = Resolution.annotation_store resolution in
       let key = [%hash: int * int] (Cfg.entry_index, 0) in
       LocalAnnotationMap.set resolution_fixpoint ~key ~postcondition;
@@ -1312,21 +1336,31 @@ module State (Context : Context) = struct
 
   and forward_expression ~state:({ resolution; _ } as state) ~expression:{ Node.location; value } =
     let global_resolution = Resolution.global_resolution resolution in
-    let forward_entry ~state ~entry:{ Dictionary.Entry.key; value } =
-      let { state; resolved = key_resolved; _ } = forward_expression ~state ~expression:key in
-      let { state; resolved = value_resolved; _ } = forward_expression ~state ~expression:value in
-      Type.weaken_literals key_resolved, Type.weaken_literals value_resolved, state
+    let forward_entry ~state ~errors ~entry:{ Dictionary.Entry.key; value } =
+      let { state; resolved = key_resolved; errors = key_errors; _ } =
+        forward_expression ~state ~expression:key
+      in
+      let { state; resolved = value_resolved; errors = value_errors; _ } =
+        forward_expression ~state ~expression:value
+      in
+      ( Type.weaken_literals key_resolved,
+        Type.weaken_literals value_resolved,
+        state,
+        List.concat [key_errors; value_errors; errors] )
     in
-    let forward_generator ~state ~generator:({ Comprehension.Generator.conditions; _ } as generator)
+    let forward_generator
+        ~state
+        ~errors
+        ~generator:({ Comprehension.Generator.conditions; _ } as generator)
       =
       (* Propagate the target type information. *)
       let iterator =
         Statement.Assign (Ast.Statement.Statement.generator_assignment generator)
         |> Node.create ~location
       in
-      let state =
-        let { errors = iterator_errors; resolution = iterator_resolution; _ } =
-          forward_statement ~state:{ state with errors = [] } ~statement:iterator
+      let state, errors =
+        let { resolution = iterator_resolution; _ }, iterator_errors =
+          forward_statement ~state ~statement:iterator
         in
         let iterator_errors =
           (* Don't throw Incompatible Variable errors on the generated iterator assign; we are
@@ -1340,22 +1374,24 @@ module State (Context : Context) = struct
         (* We want the resolution in the iterator assignment -- they will become useful in
            `forward_comprehension`. Don't worry about annotation store pollutions as we will throw
            away generator-local variables there. *)
-        {
-          state with
-          resolution = iterator_resolution;
-          errors = List.append iterator_errors state.errors;
-        }
+        { state with resolution = iterator_resolution }, List.append iterator_errors errors
       in
       List.map conditions ~f:Statement.assume
-      |> List.fold ~init:state ~f:(fun state statement -> forward_statement ~state ~statement)
+      |> List.fold ~init:(state, errors) ~f:(fun (state, errors) statement ->
+             let state, new_errors = forward_statement ~state ~statement in
+             state, List.append new_errors errors)
     in
-    let forward_comprehension ~element ~generators =
-      let { state; resolved; _ } =
+    let forward_comprehension ~state ~errors ~element ~generators =
+      let state, resolved, errors =
         List.fold
           generators
-          ~f:(fun state generator -> forward_generator ~state ~generator)
-          ~init:state
-        |> fun state -> forward_expression ~state ~expression:element
+          ~f:(fun (state, errors) generator -> forward_generator ~state ~errors ~generator)
+          ~init:(state, errors)
+        |> fun (state, errors) ->
+        let { state; resolved; errors = element_errors; _ } =
+          forward_expression ~state ~expression:element
+        in
+        state, resolved, List.append element_errors errors
       in
       (* Discard generator-local variables. *)
       {
@@ -1363,13 +1399,16 @@ module State (Context : Context) = struct
         resolved = Type.weaken_literals resolved;
         resolved_annotation = None;
         base = None;
+        errors;
       }
     in
-    let forward_elements ~state ~elements =
-      let forward_element { state; resolved; _ } expression =
+    let forward_elements ~state ~errors ~elements =
+      let forward_element { state; resolved; errors; _ } expression =
         match Node.value expression with
         | Expression.Starred (Starred.Once expression) ->
-            let { state; resolved = new_resolved; _ } = forward_expression ~state ~expression in
+            let { state; resolved = new_resolved; errors = new_errors; _ } =
+              forward_expression ~state ~expression
+            in
             let parameter =
               match
                 GlobalResolution.extract_type_parameters
@@ -1383,41 +1422,46 @@ module State (Context : Context) = struct
             {
               state;
               resolved = GlobalResolution.join global_resolution resolved parameter;
+              errors = List.append new_errors errors;
               resolved_annotation = None;
               base = None;
             }
         | _ ->
-            let { state; resolved = new_resolved; _ } = forward_expression ~state ~expression in
+            let { state; resolved = new_resolved; errors = new_errors; _ } =
+              forward_expression ~state ~expression
+            in
             {
               state;
               resolved = GlobalResolution.join global_resolution resolved new_resolved;
+              errors = List.append new_errors errors;
               resolved_annotation = None;
               base = None;
             }
       in
-      let correct_bottom { state; resolved; _ } =
+      let correct_bottom { state; resolved; errors; _ } =
         let resolved =
           if Type.is_unbound resolved then
             Type.variable "_T" |> Type.Variable.mark_all_free_variables_as_escaped
           else
             resolved
         in
-        { state; resolved; resolved_annotation = None; base = None }
+        { state; errors; resolved; resolved_annotation = None; base = None }
       in
       List.fold
         elements
-        ~init:{ state; resolved = Type.Bottom; resolved_annotation = None; base = None }
+        ~init:{ state; errors; resolved = Type.Bottom; resolved_annotation = None; base = None }
         ~f:forward_element
-      |> (fun { state; resolved; _ } ->
+      |> (fun { state; errors; resolved; _ } ->
            {
              state;
+             errors;
              resolved = Type.weaken_literals resolved;
              resolved_annotation = None;
              base = None;
            })
       |> correct_bottom
     in
-    let forward_reference ~state reference =
+    let forward_reference ~state ~errors reference =
       let reference = GlobalResolution.resolve_exports global_resolution ~reference in
       let annotation =
         let local_annotation = Resolution.get_local resolution ~reference in
@@ -1452,11 +1496,12 @@ module State (Context : Context) = struct
       in
       match annotation with
       | Some annotation when Type.is_undeclared (Annotation.annotation annotation) ->
-          let state =
-            Error.UndefinedName reference |> fun kind -> emit_error ~state ~location ~kind
+          let errors =
+            Error.UndefinedName reference |> fun kind -> emit_error ~errors ~location ~kind
           in
           {
             state;
+            errors;
             resolved = Annotation.annotation annotation;
             resolved_annotation = Some annotation;
             base = None;
@@ -1464,6 +1509,7 @@ module State (Context : Context) = struct
       | Some annotation ->
           {
             state;
+            errors;
             resolved = Annotation.annotation annotation;
             resolved_annotation = Some annotation;
             base = None;
@@ -1471,12 +1517,12 @@ module State (Context : Context) = struct
       | None -> (
           match GlobalResolution.module_exists global_resolution reference with
           | false when not (GlobalResolution.is_suppressed_module global_resolution reference) ->
-              let state =
+              let errors =
                 match Reference.prefix reference with
                 | Some qualifier when not (Reference.is_empty qualifier) ->
                     if GlobalResolution.module_exists global_resolution qualifier then
                       emit_error
-                        ~state
+                        ~errors
                         ~location
                         ~kind:
                           (Error.UndefinedAttribute
@@ -1485,18 +1531,19 @@ module State (Context : Context) = struct
                                origin = Error.Module qualifier;
                              })
                     else
-                      state
-                | _ -> emit_error ~state ~location ~kind:(Error.UndefinedName reference)
+                      errors
+                | _ -> emit_error ~errors ~location ~kind:(Error.UndefinedName reference)
               in
-              { state; resolved = Type.Top; resolved_annotation = None; base = None }
-          | _ -> { state; resolved = Type.Top; resolved_annotation = None; base = None } )
+              { state; errors; resolved = Type.Top; resolved_annotation = None; base = None }
+          | _ -> { state; errors; resolved = Type.Top; resolved_annotation = None; base = None } )
     in
-    let forward_callable ~state ~target ~dynamic ~callee ~resolved ~arguments =
-      let state =
-        let forward_argument state { Call.Argument.value; _ } =
-          forward_expression ~state ~expression:value |> fun { state; _ } -> state
+    let forward_callable ~state ~errors ~target ~dynamic ~callee ~resolved ~arguments =
+      let state, errors =
+        let forward_argument (state, errors) { Call.Argument.value; _ } =
+          forward_expression ~state ~expression:value
+          |> fun { state; errors = new_errors; _ } -> state, List.append new_errors errors
         in
-        List.fold arguments ~f:forward_argument ~init:state
+        List.fold arguments ~f:forward_argument ~init:(state, errors)
       in
       let find_method ~parent ~name =
         Type.split parent
@@ -1673,7 +1720,7 @@ module State (Context : Context) = struct
             callable )
           ~reason
         =
-        let state =
+        let errors =
           let error_location, error_kind =
             let callee =
               match kind with
@@ -1784,9 +1831,9 @@ module State (Context : Context) = struct
                 location, Error.TooManyArguments { callee; expected; provided }
             | UnexpectedKeyword name -> location, Error.UnexpectedKeyword { callee; name }
           in
-          emit_error ~state ~location:error_location ~kind:error_kind
+          emit_error ~errors ~location:error_location ~kind:error_kind
         in
-        { state; resolved = annotation; resolved_annotation = None; base = None }
+        { state; errors; resolved = annotation; resolved_annotation = None; base = None }
       in
 
       let not_found = function
@@ -1807,25 +1854,17 @@ module State (Context : Context) = struct
             List.map tail ~f:extract
             |> List.fold ~f:(GlobalResolution.join global_resolution) ~init:(extract head)
           in
-          { state; resolved; resolved_annotation = None; base = None }
+          { state; errors; resolved; resolved_annotation = None; base = None }
       | _ ->
-          let state =
+          let errors =
             match resolved, potential_missing_operator_error with
-            | Type.Top, Some kind -> emit_error ~state ~location ~kind
+            | Type.Top, Some kind -> emit_error ~errors ~location ~kind
             | Type.Any, _
             | Type.Top, _ ->
-                state
-            | _ -> emit_error ~state ~location ~kind:(Error.NotCallable resolved)
+                errors
+            | _ -> emit_error ~errors ~location ~kind:(Error.NotCallable resolved)
           in
-          { state; resolved = Type.Top; resolved_annotation = None; base = None }
-    in
-    let join_resolved left right =
-      {
-        state = join left.state right.state;
-        resolved = GlobalResolution.join global_resolution left.resolved right.resolved;
-        resolved_annotation = None;
-        base = None;
-      }
+          { state; errors; resolved = Type.Top; resolved_annotation = None; base = None }
     in
     let is_terminating_error { Error.kind; _ } =
       let open Error in
@@ -1837,8 +1876,8 @@ module State (Context : Context) = struct
     in
     match value with
     | Await expression ->
-        let { state; resolved; _ } = forward_expression ~state ~expression in
-        let state =
+        let { state; resolved; errors; _ } = forward_expression ~state ~expression in
+        let errors =
           let is_awaitable =
             GlobalResolution.less_or_equal
               global_resolution
@@ -1846,9 +1885,9 @@ module State (Context : Context) = struct
               ~right:(Type.awaitable Type.Top)
           in
           if not is_awaitable then
-            emit_error ~state ~location ~kind:(Error.IncompatibleAwaitableType resolved)
+            emit_error ~errors ~location ~kind:(Error.IncompatibleAwaitableType resolved)
           else
-            state
+            errors
         in
         let resolved =
           match
@@ -1860,7 +1899,7 @@ module State (Context : Context) = struct
           | Some [awaited_type] -> awaited_type
           | _ -> Type.Any
         in
-        { state; resolved; resolved_annotation = None; base = None }
+        { state; resolved; errors; resolved_annotation = None; base = None }
     | BooleanOperator { BooleanOperator.left; operator; right } ->
         let assume =
           let assume =
@@ -1873,8 +1912,12 @@ module State (Context : Context) = struct
         let { state = state_left; resolved = resolved_left; _ } =
           forward_expression ~state ~expression:left
         in
-        let { state = state_right; resolved = resolved_right; _ } =
-          forward_expression ~state:(forward_statement ~state ~statement:assume) ~expression:right
+        let state_right, resolved_right, errors =
+          let state, errors_left = forward_statement ~state ~statement:assume in
+          let { state; resolved; errors = errors_right; _ } =
+            forward_expression ~state ~expression:right
+          in
+          state, resolved, List.append errors_left errors_right
         in
         let resolved =
           match resolved_left, resolved_right, operator with
@@ -1889,12 +1932,8 @@ module State (Context : Context) = struct
           | resolved_left, resolved_right, _ ->
               GlobalResolution.join global_resolution resolved_left resolved_right
         in
-        let state =
-          let { errors; _ } = state_right in
-          let joined_state = join state_left state_right in
-          { joined_state with errors }
-        in
-        { state; resolved; resolved_annotation = None; base = None }
+        let state = join state_left state_right in
+        { state; errors; resolved; resolved_annotation = None; base = None }
     | Call { callee = { Node.value = Name (Name.Identifier "super"); _ } as callee; arguments } -> (
         let metadata =
           Resolution.parent resolution
@@ -1911,10 +1950,23 @@ module State (Context : Context) = struct
         match metadata >>= superclass with
         | Some superclass ->
             let resolved = Type.Primitive superclass in
-            { state; resolved; resolved_annotation = None; base = Some (Super resolved) }
+            {
+              state;
+              errors = [];
+              resolved;
+              resolved_annotation = None;
+              base = Some (Super resolved);
+            }
         | None ->
             let { resolved; _ } = forward_expression ~state ~expression:callee in
-            forward_callable ~state ~target:None ~callee ~dynamic:false ~resolved ~arguments )
+            forward_callable
+              ~state
+              ~errors:[]
+              ~target:None
+              ~callee
+              ~dynamic:false
+              ~resolved
+              ~arguments )
     | Call
         {
           callee = { Node.value = Name (Name.Identifier "type"); _ };
@@ -1922,7 +1974,7 @@ module State (Context : Context) = struct
         } ->
         (* Resolve `type()` calls. *)
         let resolved = resolve_expression_type ~state value |> Type.meta in
-        { state; resolved; resolved_annotation = None; base = None }
+        { state; errors = []; resolved; resolved_annotation = None; base = None }
     | Call
         {
           callee = { Node.location; value = Name (Name.Identifier "reveal_type") };
@@ -1948,10 +2000,13 @@ module State (Context : Context) = struct
           else
             annotation
         in
-        let state =
-          emit_error ~state ~location ~kind:(Error.RevealedType { expression = value; annotation })
+        let errors =
+          emit_error
+            ~errors:[]
+            ~location
+            ~kind:(Error.RevealedType { expression = value; annotation })
         in
-        { state; resolved = Type.none; resolved_annotation = None; base = None }
+        { state; errors; resolved = Type.none; resolved_annotation = None; base = None }
     | Call
         {
           callee = { Node.location; value = Name name };
@@ -1966,12 +2021,19 @@ module State (Context : Context) = struct
                 (name_to_reference name)
                 (Some (Reference.create "pyre_extensions.safe_cast")) ->
         let contains_literal_any = Type.expression_contains_any cast_annotation in
-        let state, cast_annotation = parse_and_check_annotation ~state cast_annotation in
-        let { state; resolved; _ } = forward_expression ~state ~expression:value in
-        let state =
+        let errors, cast_annotation =
+          parse_and_check_annotation ~resolution:state.resolution cast_annotation
+        in
+        let state, resolved, errors =
+          let { state; resolved; errors = value_errors; _ } =
+            forward_expression ~state ~expression:value
+          in
+          state, resolved, List.append value_errors errors
+        in
+        let errors =
           if contains_literal_any then
             emit_error
-              ~state
+              ~errors
               ~location
               ~kind:
                 (Error.ProhibitedAny
@@ -1987,7 +2049,7 @@ module State (Context : Context) = struct
                      is_type_alias = false;
                    })
           else if Type.equal cast_annotation resolved then
-            emit_error ~state ~location ~kind:(Error.RedundantCast resolved)
+            emit_error ~errors ~location ~kind:(Error.RedundantCast resolved)
           else if
             Reference.equal
               (name_to_reference_exn name)
@@ -1998,13 +2060,13 @@ module State (Context : Context) = struct
                  ~right:resolved
           then
             emit_error
-              ~state
+              ~errors
               ~location
               ~kind:(Error.UnsafeCast { expression = value; annotation = resolved })
           else
-            state
+            errors
         in
-        { state; resolved = cast_annotation; resolved_annotation = None; base = None }
+        { state; errors; resolved = cast_annotation; resolved_annotation = None; base = None }
     | Call
         {
           callee = { Node.value = Name (Name.Identifier "isinstance"); _ } as callee;
@@ -2031,17 +2093,16 @@ module State (Context : Context) = struct
 
         (* We special case type inference for `isinstance` in asserted, and the typeshed stubs are
            imprecise (doesn't correctly declare the arguments as a recursive tuple. *)
-        let state =
-          let { state; _ } = forward_expression ~state ~expression in
-          let state, annotations =
-            let rec collect_types (state, collected) = function
+        let state, errors =
+          let { state; errors; _ } = forward_expression ~state ~expression in
+          let state, errors, annotations =
+            let rec collect_types (state, errors, collected) = function
               | { Node.value = Expression.Tuple annotations; _ } ->
-                  let state, new_annotations =
-                    List.fold annotations ~init:(state, []) ~f:collect_types
-                  in
-                  state, new_annotations @ collected
+                  List.fold annotations ~init:(state, errors, collected) ~f:collect_types
               | expression ->
-                  let { state; resolved; _ } = forward_expression ~state ~expression in
+                  let { state; resolved; errors = expression_errors; _ } =
+                    forward_expression ~state ~expression
+                  in
                   let new_annotations =
                     match resolved with
                     | Type.Tuple (Type.Bounded (Concrete annotations)) ->
@@ -2051,13 +2112,13 @@ module State (Context : Context) = struct
                     | annotation ->
                         [annotation, Node.location expression]
                   in
-                  state, new_annotations @ collected
+                  state, List.append expression_errors errors, new_annotations @ collected
             in
-            collect_types (state, []) annotations
+            collect_types (state, errors, []) annotations
           in
-          let add_incompatible_non_meta_error state (non_meta, location) =
+          let add_incompatible_non_meta_error errors (non_meta, location) =
             emit_error
-              ~state
+              ~errors
               ~location
               ~kind:
                 (Error.IncompatibleParameterType
@@ -2084,11 +2145,14 @@ module State (Context : Context) = struct
             | Type.Union annotations -> List.for_all annotations ~f:is_compatible
             | _ -> false
           in
-          List.find annotations ~f:(fun (annotation, _) -> not (is_compatible annotation))
-          >>| add_incompatible_non_meta_error state
-          |> Option.value ~default:state
+          let errors =
+            List.find annotations ~f:(fun (annotation, _) -> not (is_compatible annotation))
+            >>| add_incompatible_non_meta_error errors
+            |> Option.value ~default:errors
+          in
+          state, errors
         in
-        { state; resolved = Type.bool; resolved_annotation = None; base = None }
+        { state; errors; resolved = Type.bool; resolved_annotation = None; base = None }
     | Call
         {
           callee =
@@ -2098,40 +2162,38 @@ module State (Context : Context) = struct
             } as callee;
           arguments = [{ Call.Argument.value = expression; _ }] as arguments;
         } ->
-        let state = forward_statement ~state ~statement:(Statement.assume expression) in
-        let { state; resolved = resolved_callee; _ } =
-          forward_expression ~state ~expression:callee
+        let state, resolved, errors =
+          let state, assume_errors =
+            forward_statement ~state ~statement:(Statement.assume expression)
+          in
+          let { state; resolved; errors = callee_errors; _ } =
+            forward_expression ~state ~expression:callee
+          in
+          state, resolved, List.append assume_errors callee_errors
         in
-        forward_callable
-          ~state
-          ~target:None
-          ~dynamic:true
-          ~callee
-          ~resolved:resolved_callee
-          ~arguments
+        forward_callable ~state ~errors ~target:None ~dynamic:true ~callee ~resolved ~arguments
     | Call
         {
           callee =
             { Node.value = Name (Name.Attribute { attribute = "assertFalse"; _ }); _ } as callee;
           arguments = [{ Call.Argument.value = expression; _ }] as arguments;
         } ->
-        let state = forward_statement ~state ~statement:(Statement.assume (negate expression)) in
-        let { state; resolved = resolved_callee; _ } =
-          forward_expression ~state ~expression:callee
+        let state, resolved, errors =
+          let state, assume_errors =
+            forward_statement ~state ~statement:(Statement.assume (negate expression))
+          in
+          let { state; resolved; errors = callee_errors; _ } =
+            forward_expression ~state ~expression:callee
+          in
+          state, resolved, List.append assume_errors callee_errors
         in
-        forward_callable
-          ~state
-          ~target:None
-          ~dynamic:true
-          ~callee
-          ~resolved:resolved_callee
-          ~arguments
+        forward_callable ~state ~errors ~target:None ~dynamic:true ~callee ~resolved ~arguments
     | Call call ->
         let { Call.callee; arguments } = AnnotatedCall.redirect_special_calls ~resolution call in
-        let { state = { errors = callee_errors; _ }; resolved = resolved_callee; base; _ } =
-          forward_expression ~state:{ state with errors = [] } ~expression:callee
+        let { errors = callee_errors; resolved = resolved_callee; base; _ } =
+          forward_expression ~state ~expression:callee
         in
-        let { state = updated_state; resolved; _ } =
+        let { state = updated_state; resolved; errors = updated_errors; _ } =
           let target_and_dynamic resolved_callee =
             if Type.is_meta resolved_callee then
               Some (Type.single_parameter resolved_callee), false
@@ -2145,48 +2207,60 @@ module State (Context : Context) = struct
           match resolved_callee with
           | Type.Parametric { name = "type"; parameters = [Single (Type.Union resolved_callees)] }
             ->
-              let forward_inner_callable (state, annotations) inner_resolved_callee =
+              let forward_inner_callable (state, errors, annotations) inner_resolved_callee =
                 let target, dynamic = target_and_dynamic inner_resolved_callee in
                 forward_callable
                   ~state
+                  ~errors
                   ~target
                   ~dynamic
                   ~callee
                   ~resolved:inner_resolved_callee
                   ~arguments
-                |> fun { state; resolved; _ } -> state, resolved :: annotations
+                |> fun { state; resolved; errors = new_errors; _ } ->
+                state, List.append new_errors errors, resolved :: annotations
               in
-              let state, return_annotations =
+              let state, errors, return_annotations =
                 List.fold_left
                   ~f:forward_inner_callable
-                  ~init:(state, [])
+                  ~init:(state, callee_errors, [])
                   (List.map ~f:Type.meta resolved_callees)
               in
               {
                 state;
+                errors;
                 resolved = Type.union return_annotations;
                 resolved_annotation = None;
                 base = None;
               }
           | _ ->
               let target, dynamic = target_and_dynamic resolved_callee in
-              forward_callable ~state ~target ~dynamic ~callee ~resolved:resolved_callee ~arguments
+              forward_callable
+                ~state
+                ~errors:callee_errors
+                ~target
+                ~dynamic
+                ~callee
+                ~resolved:resolved_callee
+                ~arguments
         in
         if
           List.is_empty (List.filter ~f:is_terminating_error callee_errors)
           || not (Type.is_top resolved_callee || Type.is_undeclared resolved_callee)
         then
-          let state =
-            { updated_state with errors = List.append callee_errors updated_state.errors }
-          in
-          { state; resolved; resolved_annotation = None; base = None }
+          {
+            state = updated_state;
+            errors = updated_errors;
+            resolved;
+            resolved_annotation = None;
+            base = None;
+          }
         else (* Do not throw more errors if callee already contains terminating error. *)
-          let state = { state with errors = List.append callee_errors state.errors } in
-          { state; resolved; resolved_annotation = None; base = None }
+          { state; errors = callee_errors; resolved; resolved_annotation = None; base = None }
     | ComparisonOperator { ComparisonOperator.left; right; operator = ComparisonOperator.In }
     | ComparisonOperator { ComparisonOperator.left; right; operator = ComparisonOperator.NotIn } ->
         let resolve_in_call
-            (state, joined_annotation)
+            (state, errors, joined_annotation)
             { Type.instantiated; class_name; class_attributes }
           =
           let resolve_method
@@ -2210,7 +2284,7 @@ module State (Context : Context) = struct
             | Type.Top -> None
             | annotation -> Some annotation
           in
-          let { state; resolved; _ } =
+          let { state; resolved; errors; _ } =
             match
               resolve_method
                 ~class_attributes
@@ -2230,6 +2304,7 @@ module State (Context : Context) = struct
                 in
                 forward_callable
                   ~state
+                  ~errors
                   ~target:(Some instantiated)
                   ~dynamic:true
                   ~callee
@@ -2260,7 +2335,11 @@ module State (Context : Context) = struct
                     (* Since we can't call forward_expression with the general type (we don't have a
                        good way of saying "synthetic expression with type T", simulate what happens
                        ourselves. *)
-                    let forward_method ~method_name ~arguments { state; resolved = parent; _ } =
+                    let forward_method
+                        ~method_name
+                        ~arguments
+                        { state; resolved = parent; errors; _ }
+                      =
                       Type.split parent
                       |> fst
                       |> Type.primitive_name
@@ -2268,6 +2347,7 @@ module State (Context : Context) = struct
                       >>| fun callable ->
                       forward_callable
                         ~state
+                        ~errors
                         ~target:(Some parent)
                         ~resolved:callable
                         ~arguments:
@@ -2275,6 +2355,7 @@ module State (Context : Context) = struct
                     in
                     forward_callable
                       ~state
+                      ~errors
                       ~target:(Some instantiated)
                       ~resolved:iter_callable
                       ~arguments:[]
@@ -2282,7 +2363,13 @@ module State (Context : Context) = struct
                     >>= forward_method ~method_name:"__eq__" ~arguments:[left]
                     |> Option.value
                          ~default:
-                           { state; resolved = Type.Top; resolved_annotation = None; base = None }
+                           {
+                             state;
+                             errors;
+                             resolved = Type.Top;
+                             resolved_annotation = None;
+                             base = None;
+                           }
                 | None ->
                     let call =
                       let getitem =
@@ -2332,42 +2419,50 @@ module State (Context : Context) = struct
                     in
                     forward_expression ~state ~expression:call )
           in
-          state, GlobalResolution.join global_resolution joined_annotation resolved
+          state, errors, GlobalResolution.join global_resolution joined_annotation resolved
         in
-        let { state; resolved; _ } = forward_expression ~state ~expression:right in
-        let state, resolved =
+        let { state; resolved; errors; _ } = forward_expression ~state ~expression:right in
+        let state, errors, resolved =
           Type.resolve_class resolved
-          >>| List.fold ~f:resolve_in_call ~init:(state, Type.Bottom)
-          |> Option.value ~default:(state, Type.Bottom)
+          >>| List.fold ~f:resolve_in_call ~init:(state, errors, Type.Bottom)
+          |> Option.value ~default:(state, errors, Type.Bottom)
         in
         let resolved = if Type.equal resolved Type.Bottom then Type.Top else resolved in
-        { state; resolved; resolved_annotation = None; base = None }
+        { state; errors; resolved; resolved_annotation = None; base = None }
     | ComparisonOperator ({ ComparisonOperator.left; right; _ } as operator) -> (
-        let state, left =
+        let state, errors, left =
           match left with
           | { Node.value = WalrusOperator { target; _ }; _ } ->
-              let { state; _ } = forward_expression ~state ~expression:left in
-              state, target
-          | _ -> state, left
+              let { state; errors; _ } = forward_expression ~state ~expression:left in
+              state, errors, target
+          | _ -> state, [], left
         in
         let operator = { operator with left } in
         match ComparisonOperator.override operator with
-        | Some expression -> forward_expression ~state ~expression
+        | Some expression ->
+            let resolved = forward_expression ~state ~expression in
+            { resolved with errors = List.append errors resolved.errors }
         | None ->
             forward_expression ~state ~expression:left
-            |> (fun { state; _ } -> forward_expression ~state ~expression:right)
-            |> fun state ->
-            { state with resolved = Type.bool; resolved_annotation = None; base = None } )
-    | Complex _ -> { state; resolved = Type.complex; resolved_annotation = None; base = None }
+            |> (fun { state; errors = left_errors; _ } ->
+                 let { state; errors = right_errors; _ } =
+                   forward_expression ~state ~expression:right
+                 in
+                 state, List.concat [errors; left_errors; right_errors])
+            |> fun (state, errors) ->
+            { state; errors; resolved = Type.bool; resolved_annotation = None; base = None } )
+    | Complex _ ->
+        { state; errors = []; resolved = Type.complex; resolved_annotation = None; base = None }
     | Dictionary { Dictionary.entries; keywords } ->
-        let key, value, state =
-          let forward_entry (key, value, state) entry =
-            let new_key, new_value, state = forward_entry ~state ~entry in
+        let key, value, state, errors =
+          let forward_entry (key, value, state, errors) entry =
+            let new_key, new_value, state, errors = forward_entry ~state ~errors ~entry in
             ( GlobalResolution.join global_resolution key new_key,
               GlobalResolution.join global_resolution value new_value,
-              state )
+              state,
+              errors )
           in
-          List.fold entries ~f:forward_entry ~init:(Type.Bottom, Type.Bottom, state)
+          List.fold entries ~f:forward_entry ~init:(Type.Bottom, Type.Bottom, state, [])
         in
         let key =
           if List.is_empty keywords && Type.is_unbound key then
@@ -2381,45 +2476,65 @@ module State (Context : Context) = struct
           else
             value
         in
-        let resolved, state =
-          let forward_keyword (resolved, state) keyword =
-            let { state; resolved = keyword_resolved; _ } =
+        let resolved, state, errors =
+          let forward_keyword (resolved, state, errors) keyword =
+            let { state; resolved = keyword_resolved; errors = new_errors; _ } =
               forward_expression ~state ~expression:keyword
             in
-            GlobalResolution.join global_resolution resolved keyword_resolved, state
+            ( GlobalResolution.join global_resolution resolved keyword_resolved,
+              state,
+              List.append new_errors errors )
           in
-          List.fold keywords ~f:forward_keyword ~init:(Type.dictionary ~key ~value, state)
+          List.fold keywords ~f:forward_keyword ~init:(Type.dictionary ~key ~value, state, errors)
         in
-        { state; resolved; resolved_annotation = None; base = None }
+        { state; errors; resolved; resolved_annotation = None; base = None }
     | DictionaryComprehension { Comprehension.element; generators } ->
-        let key, value, state =
+        let key, value, state, errors =
           List.fold
             generators
-            ~f:(fun state generator -> forward_generator ~state ~generator)
-            ~init:state
-          |> fun state -> forward_entry ~state ~entry:element
+            ~f:(fun (state, errors) generator -> forward_generator ~state ~errors ~generator)
+            ~init:(state, [])
+          |> fun (state, errors) -> forward_entry ~state ~errors ~entry:element
         in
         (* Discard generator-local variables. *)
         {
           state = { state with resolution };
+          errors;
           resolved = Type.dictionary ~key ~value;
           resolved_annotation = None;
           base = None;
         }
-    | Ellipsis -> { state; resolved = Type.Any; resolved_annotation = None; base = None }
+    | Ellipsis ->
+        { state; errors = []; resolved = Type.Any; resolved_annotation = None; base = None }
     | False ->
         {
           state;
+          errors = [];
           resolved = Type.Literal (Type.Boolean false);
           resolved_annotation = None;
           base = None;
         }
-    | Float _ -> { state; resolved = Type.float; resolved_annotation = None; base = None }
+    | Float _ ->
+        { state; errors = []; resolved = Type.float; resolved_annotation = None; base = None }
     | Generator { Comprehension.element; generators } ->
-        let { state; resolved; _ } = forward_comprehension ~element ~generators in
-        { state; resolved = Type.generator resolved; resolved_annotation = None; base = None }
+        let { state; resolved; errors; _ } =
+          forward_comprehension ~state ~errors:[] ~element ~generators
+        in
+        {
+          state;
+          errors;
+          resolved = Type.generator resolved;
+          resolved_annotation = None;
+          base = None;
+        }
     | Integer literal ->
-        { state; resolved = Type.literal_integer literal; resolved_annotation = None; base = None }
+        {
+          state;
+          errors = [];
+          resolved = Type.literal_integer literal;
+          resolved_annotation = None;
+          base = None;
+        }
     | Lambda { Lambda.body; parameters } ->
         let resolution_with_parameters =
           let add_parameter resolution { Node.value = { Parameter.name; _ }; _ } =
@@ -2431,7 +2546,7 @@ module State (Context : Context) = struct
           in
           List.fold ~f:add_parameter ~init:resolution parameters
         in
-        let { state; resolved; _ } =
+        let { state; resolved; errors; _ } =
           forward_expression
             ~state:{ state with resolution = resolution_with_parameters }
             ~expression:body
@@ -2450,27 +2565,31 @@ module State (Context : Context) = struct
         in
         {
           state = { state with resolution };
+          errors;
           resolved = Type.Callable.create ~parameters ~annotation:resolved ();
           resolved_annotation = None;
           base = None;
         }
     | List elements ->
-        let { state; resolved; _ } = forward_elements ~state ~elements in
-        { state; resolved = Type.list resolved; resolved_annotation = None; base = None }
+        let { state; resolved; errors; _ } = forward_elements ~state ~errors:[] ~elements in
+        { state; errors; resolved = Type.list resolved; resolved_annotation = None; base = None }
     | ListComprehension { Comprehension.element; generators } ->
-        let { state; resolved; _ } = forward_comprehension ~element ~generators in
-        { state; resolved = Type.list resolved; resolved_annotation = None; base = None }
-    | Name (Name.Identifier identifier) -> forward_reference ~state (Reference.create identifier)
+        let { state; resolved; errors; _ } =
+          forward_comprehension ~state ~errors:[] ~element ~generators
+        in
+        { state; errors; resolved = Type.list resolved; resolved_annotation = None; base = None }
+    | Name (Name.Identifier identifier) ->
+        forward_reference ~state ~errors:[] (Reference.create identifier)
     | Name (Name.Attribute { base; attribute; special } as name) ->
         let reference = name_to_reference name in
-        let { state = { errors = base_errors; _ }; resolved = resolved_base; base = super_base; _ } =
-          forward_expression ~state:{ state with errors = [] } ~expression:base
+        let { errors = base_errors; resolved = resolved_base; base = super_base; _ } =
+          forward_expression ~state ~expression:base
         in
-        let state, resolved_base =
+        let errors, resolved_base =
           if Type.Variable.contains_escaped_free_variable resolved_base then
-            let state =
+            let errors =
               emit_error
-                ~state
+                ~errors:[]
                 ~location
                 ~kind:
                   (Error.IncompleteType
@@ -2480,50 +2599,12 @@ module State (Context : Context) = struct
                        attempted_action = Error.AttributeAccess attribute;
                      })
             in
-            state, Type.Variable.convert_all_escaped_free_variables_to_anys resolved_base
+            errors, Type.Variable.convert_all_escaped_free_variables_to_anys resolved_base
           else
-            state, resolved_base
+            [], resolved_base
         in
-        let { state = updated_state; resolved; resolved_annotation; _ } =
-          if Type.is_undeclared resolved_base then
-            let state =
-              reference
-              >>| (fun reference -> Error.UndefinedName reference)
-              >>| (fun kind -> emit_error ~state ~location ~kind)
-              |> Option.value ~default:state
-            in
-            { state; resolved = resolved_base; resolved_annotation = None; base = None }
-          else if Type.equal resolved_base Type.Top then (* Global or local. *)
-            reference
-            >>| forward_reference ~state
-            |> Option.value
-                 ~default:{ state; resolved = Type.Top; resolved_annotation = None; base = None }
-          else if Type.is_callable resolved_base then (* Nested function. *)
-            let resolved =
-              reference >>= fun reference -> Resolution.get_local resolution ~reference
-            in
-            match resolved with
-            | Some annotation ->
-                {
-                  state;
-                  resolved = Annotation.annotation annotation;
-                  resolved_annotation = Some annotation;
-                  base = None;
-                }
-            | None ->
-                let state =
-                  let name =
-                    match resolved_base with
-                    | Type.Callable { Type.Callable.kind = Named name; _ } -> Some name
-                    | _ -> None
-                  in
-                  emit_error
-                    ~state
-                    ~location
-                    ~kind:(Error.UndefinedAttribute { attribute; origin = Error.Callable name })
-                in
-                { state; resolved = Type.Top; resolved_annotation = None; base = None }
-          else (* Attribute access. *)
+        let { state = updated_state; errors = updated_errors; resolved; resolved_annotation; _ } =
+          let access_as_attribute () =
             let find_attribute ({ Type.instantiated; class_attributes; class_name } as resolved) =
               let name = attribute in
               match
@@ -2561,9 +2642,9 @@ module State (Context : Context) = struct
               Type.resolve_class resolved_base >>| List.map ~f:find_attribute >>= Option.all
             with
             | None ->
-                let state =
+                let errors =
                   emit_error
-                    ~state
+                    ~errors
                     ~location
                     ~kind:
                       (Error.UndefinedAttribute
@@ -2573,8 +2654,9 @@ module State (Context : Context) = struct
                              Error.Class { annotation = resolved_base; class_attribute = false };
                          })
                 in
-                { state; resolved = Type.Top; resolved_annotation = None; base = None }
-            | Some [] -> { state; resolved = Type.Top; resolved_annotation = None; base = None }
+                { state; errors; resolved = Type.Top; resolved_annotation = None; base = None }
+            | Some [] ->
+                { state; errors; resolved = Type.Top; resolved_annotation = None; base = None }
             | Some (head :: tail) ->
                 let name = attribute in
                 let head_resolved_class, head_definition, head_resolved = head in
@@ -2597,7 +2679,7 @@ module State (Context : Context) = struct
                     ~qualifier:Context.qualifier
                     ~name
                 end;
-                let state =
+                let errors =
                   let definition =
                     List.find (head_definition :: tail_definitions) ~f:(fun (_, undefined_target) ->
                         match undefined_target with
@@ -2607,15 +2689,15 @@ module State (Context : Context) = struct
                   in
                   match reference, definition with
                   | Some reference, (_, Some target) when Type.equal Type.undeclared target ->
-                      emit_error ~state ~location ~kind:(Error.UndefinedName reference)
+                      emit_error ~errors ~location ~kind:(Error.UndefinedName reference)
                   | _, (attribute, Some target) ->
                       if Option.is_some (inverse_operator name) then
                         (* Defer any missing attribute error until the inverse operator has been
                            typechecked. *)
-                        state
+                        errors
                       else
                         emit_error
-                          ~state
+                          ~errors
                           ~location
                           ~kind:
                             (Error.UndefinedAttribute
@@ -2652,7 +2734,7 @@ module State (Context : Context) = struct
                       in
                       if is_private_attribute attribute && not is_accessed_in_base_class then
                         emit_error
-                          ~state
+                          ~errors
                           ~location
                           ~kind:
                             (Error.UndefinedAttribute
@@ -2663,7 +2745,7 @@ module State (Context : Context) = struct
                                      { annotation = resolved_base; class_attribute = false };
                                })
                       else
-                        state
+                        errors
                 in
                 let resolved =
                   let apply_global_override resolved =
@@ -2694,10 +2776,45 @@ module State (Context : Context) = struct
                 in
                 {
                   state;
+                  errors;
                   resolved = Annotation.annotation resolved;
                   resolved_annotation = Some resolved;
                   base = None;
                 }
+          in
+          if Type.is_undeclared resolved_base then
+            let errors =
+              reference
+              >>| (fun reference -> Error.UndefinedName reference)
+              >>| (fun kind -> emit_error ~errors ~location ~kind)
+              |> Option.value ~default:errors
+            in
+            { state; errors; resolved = resolved_base; resolved_annotation = None; base = None }
+          else if Type.equal resolved_base Type.Top then (* Global or local. *)
+            reference
+            >>| forward_reference ~state ~errors
+            |> Option.value
+                 ~default:
+                   { state; errors; resolved = Type.Top; resolved_annotation = None; base = None }
+          (* TODO(T63892020): We need to fix up qualification so nested classes and functions are
+             just normal locals rather than attributes of the enclosing function, which they really
+             are not *)
+          else if Type.is_callable resolved_base then
+            let resolved =
+              reference >>= fun reference -> Resolution.get_local resolution ~reference
+            in
+            match resolved with
+            | Some annotation ->
+                {
+                  state;
+                  errors;
+                  resolved = Annotation.annotation annotation;
+                  resolved_annotation = Some annotation;
+                  base = None;
+                }
+            | None -> access_as_attribute ()
+          else (* Attribute access. *)
+            access_as_attribute ()
         in
         let base =
           match super_base with
@@ -2724,19 +2841,23 @@ module State (Context : Context) = struct
           List.is_empty (List.filter ~f:is_terminating_error base_errors)
           || not (Type.is_top resolved_base || Type.is_undeclared resolved_base)
         then
-          let state =
-            { updated_state with errors = List.append base_errors updated_state.errors }
-          in
-          { state; resolved; resolved_annotation; base }
+          {
+            state = updated_state;
+            errors = List.append base_errors updated_errors;
+            resolved;
+            resolved_annotation;
+            base;
+          }
         else (* Do not throw more errors if base already contains terminating error. *)
-          let state = { state with errors = List.append base_errors state.errors } in
-          { state; resolved; resolved_annotation; base }
+          { state; errors = base_errors; resolved; resolved_annotation; base }
     | Set elements ->
-        let { state; resolved; _ } = forward_elements ~state ~elements in
-        { state; resolved = Type.set resolved; resolved_annotation = None; base = None }
+        let { state; resolved; errors; _ } = forward_elements ~state ~errors:[] ~elements in
+        { state; errors; resolved = Type.set resolved; resolved_annotation = None; base = None }
     | SetComprehension { Comprehension.element; generators } ->
-        let { state; resolved; _ } = forward_comprehension ~element ~generators in
-        { state; resolved = Type.set resolved; resolved_annotation = None; base = None }
+        let { state; resolved; errors; _ } =
+          forward_comprehension ~state ~errors:[] ~element ~generators
+        in
+        { state; errors; resolved = Type.set resolved; resolved_annotation = None; base = None }
     | Starred starred ->
         let state =
           match starred with
@@ -2746,38 +2867,51 @@ module State (Context : Context) = struct
         in
         { state with resolved = Type.Top; resolved_annotation = None; base = None }
     | String { StringLiteral.kind = StringLiteral.Format expressions; _ } ->
-        let state =
+        let state, errors =
           List.fold
             expressions
-            ~f:(fun state expression ->
-              forward_expression ~state ~expression |> fun { state; _ } -> state)
-            ~init:state
+            ~f:(fun (state, errors) expression ->
+              forward_expression ~state ~expression
+              |> fun { state; errors = new_errors; _ } -> state, List.append new_errors errors)
+            ~init:(state, [])
         in
-        { state; resolved = Type.string; resolved_annotation = None; base = None }
+        { state; errors; resolved = Type.string; resolved_annotation = None; base = None }
     | String { StringLiteral.kind = StringLiteral.Bytes; _ } ->
-        { state; resolved = Type.bytes; resolved_annotation = None; base = None }
+        { state; errors = []; resolved = Type.bytes; resolved_annotation = None; base = None }
     | String { StringLiteral.kind = StringLiteral.String; value } ->
-        { state; resolved = Type.literal_string value; resolved_annotation = None; base = None }
+        {
+          state;
+          errors = [];
+          resolved = Type.literal_string value;
+          resolved_annotation = None;
+          base = None;
+        }
     | String { StringLiteral.kind = StringLiteral.Mixed _; _ } ->
         (* NOTE: We may run into this case with nested f-strings. Treat them as literal strings
            until the parser gets full support of them. *)
-        { state; resolved = Type.string; resolved_annotation = None; base = None }
+        { state; errors = []; resolved = Type.string; resolved_annotation = None; base = None }
     | Ternary { Ternary.target; test; alternative } ->
-        let ({ state = { errors = target_errors; _ }; _ } as target) =
-          forward_statement ~state:{ state with errors = [] } ~statement:(Statement.assume test)
-          |> fun state -> forward_expression ~state ~expression:target
+        let target_state, target_resolved, target_errors =
+          forward_statement ~state ~statement:(Statement.assume test)
+          |> fun (state, test_errors) ->
+          let { state; resolved; errors; _ } = forward_expression ~state ~expression:target in
+          state, resolved, List.append test_errors errors
         in
-        let ({ state = { errors = alternative_errors; _ }; _ } as alternative) =
-          forward_statement
-            ~state:{ state with errors = [] }
-            ~statement:(Statement.assume (negate test))
-          |> fun state -> forward_expression ~state ~expression:alternative
+        let alternative_state, alternative_resolved, alternative_errors =
+          forward_statement ~state ~statement:(Statement.assume (negate test))
+          |> fun (state, test_errors) ->
+          let { state; resolved; errors; _ } = forward_expression ~state ~expression:alternative in
+          state, resolved, List.append test_errors errors
         in
-        let { state; resolved; _ } = join_resolved target alternative in
+        let state = join target_state alternative_state in
+        let resolved =
+          GlobalResolution.join global_resolution target_resolved alternative_resolved
+        in
         let errors = List.append target_errors alternative_errors in
         (* The resolution is local to the ternary expression and should not be propagated out. *)
         {
-          state = { state with resolution; errors };
+          state = { state with resolution };
+          errors;
           resolved;
           resolved_annotation = None;
           base = None;
@@ -2785,20 +2919,24 @@ module State (Context : Context) = struct
     | True ->
         {
           state;
+          errors = [];
           resolved = Type.Literal (Type.Boolean true);
           resolved_annotation = None;
           base = None;
         }
     | Tuple elements ->
-        let state, resolved =
-          let forward_element (state, resolved) expression =
-            let { state; resolved = new_resolved; _ } = forward_expression ~state ~expression in
-            state, new_resolved :: resolved
+        let state, errors, resolved =
+          let forward_element (state, errors, resolved) expression =
+            let { state; resolved = new_resolved; errors = new_errors; _ } =
+              forward_expression ~state ~expression
+            in
+            state, List.append new_errors errors, new_resolved :: resolved
           in
-          List.fold elements ~f:forward_element ~init:(state, [])
+          List.fold elements ~f:forward_element ~init:(state, [], [])
         in
         {
           state;
+          errors;
           resolved = Type.tuple (List.rev resolved);
           resolved_annotation = None;
           base = None;
@@ -2816,13 +2954,26 @@ module State (Context : Context) = struct
             location;
           }
         in
-        let state = forward_statement ~state ~statement in
-        forward_expression ~state ~expression:value
+        let state, errors = forward_statement ~state ~statement in
+        let resolved = forward_expression ~state ~expression:value in
+        { resolved with errors = List.append errors resolved.errors }
     | Expression.Yield (Some expression) ->
-        let { state; resolved; _ } = forward_expression ~state ~expression in
-        { state; resolved = Type.generator resolved; resolved_annotation = None; base = None }
+        let { state; resolved; errors; _ } = forward_expression ~state ~expression in
+        {
+          state;
+          errors;
+          resolved = Type.generator resolved;
+          resolved_annotation = None;
+          base = None;
+        }
     | Expression.Yield None ->
-        { state; resolved = Type.generator Type.none; resolved_annotation = None; base = None }
+        {
+          state;
+          errors = [];
+          resolved = Type.generator Type.none;
+          resolved_annotation = None;
+          base = None;
+        }
 
 
   and forward_statement ~state:({ resolution; _ } as state) ~statement:{ Node.location; value } =
@@ -2855,7 +3006,7 @@ module State (Context : Context) = struct
     in
     (* We weaken type inference of mutable literals for assignments and returns to get around the
        invariance of containers when we can prove that casting to a supertype is safe. *)
-    let validate_return ~expression ~state ~actual ~is_implicit =
+    let validate_return ~expression ~state ~errors ~actual ~is_implicit =
       let return_annotation =
         let annotation =
           let parser = GlobalResolution.annotation_parser global_resolution in
@@ -2875,7 +3026,7 @@ module State (Context : Context) = struct
           ~resolved:actual
           ~expected:return_annotation
       in
-      let check_incompatible_return state =
+      let check_incompatible_return errors =
         if
           Define.has_return_annotation define
           && (not
@@ -2900,7 +3051,7 @@ module State (Context : Context) = struct
             | _ -> false
           in
           emit_error
-            ~state
+            ~errors
             ~location
             ~kind:
               (Error.IncompatibleReturnType
@@ -2916,9 +3067,9 @@ module State (Context : Context) = struct
                    define_location;
                  })
         else
-          state
+          errors
       in
-      let check_missing_return state =
+      let check_missing_return errors =
         let contains_literal_any =
           return_annotation_expression
           >>| Type.expression_contains_any
@@ -2932,7 +3083,7 @@ module State (Context : Context) = struct
             Option.some_if (Define.has_return_annotation define) return_annotation
           in
           emit_error
-            ~state
+            ~errors
             ~location:define_location
             ~kind:
               (Error.MissingReturnAnnotation
@@ -2944,17 +3095,20 @@ module State (Context : Context) = struct
                    thrown_at_source = true;
                  })
         else
-          state
+          errors
       in
-      state |> check_incompatible_return |> check_missing_return
+      check_incompatible_return errors |> check_missing_return
     in
     match value with
     | Assign { Assign.target; annotation; value; parent } ->
-        let state, original_annotation =
-          annotation
-          >>| parse_and_check_annotation ~state
-          >>| (fun (state, annotation) -> state, Some annotation)
-          |> Option.value ~default:(state, None)
+        let errors, original_annotation =
+          match annotation with
+          | None -> [], None
+          | Some annotation ->
+              let annotation_errors, annotation =
+                parse_and_check_annotation ~resolution:state.resolution annotation
+              in
+              annotation_errors, Some annotation
         in
         let is_final = original_annotation >>| Type.is_final |> Option.value ~default:false in
         let original_annotation =
@@ -2997,25 +3151,25 @@ module State (Context : Context) = struct
         in
         (* Ensure that we actually visit the target and resolve any property calls. *)
         let _ = forward_expression ~state ~expression:target in
-        let state, resolved =
-          let { state = { resolution; _ } as new_state; resolved; _ } =
+        let state, errors, resolved =
+          let { state = { resolution; _ } as new_state; errors = new_errors; resolved; _ } =
             forward_expression ~state ~expression:value
           in
           let resolved = Type.remove_undeclared resolved in
           (* TODO(T35601774): We need to suppress subscript related errors on generic classes. *)
           if is_type_alias then
-            let add_annotation_errors state =
+            let add_annotation_errors errors =
               add_invalid_type_parameters_errors
                 ~resolution:global_resolution
                 ~location
-                ~state
+                ~errors
                 parsed
               |> fst
-              |> fun state ->
-              add_untracked_annotation_errors ~resolution:global_resolution ~location ~state parsed
+              |> fun errors ->
+              add_untracked_annotation_errors ~resolution:global_resolution ~location ~errors parsed
               |> fst
             in
-            let add_type_variable_errors state =
+            let add_type_variable_errors errors =
               let kind =
                 match parsed with
                 | Variable variable when Type.Variable.Unary.contains_subvariable variable ->
@@ -3027,13 +3181,13 @@ module State (Context : Context) = struct
                 | _ -> None
               in
               kind
-              >>| (fun kind -> emit_error ~state ~location ~kind)
-              |> Option.value ~default:state
+              >>| (fun kind -> emit_error ~errors ~location ~kind)
+              |> Option.value ~default:errors
             in
-            let state = add_annotation_errors state |> add_type_variable_errors in
-            { state with resolution }, resolved
+            let errors = add_annotation_errors errors |> add_type_variable_errors in
+            { state with resolution }, errors, resolved
           else
-            new_state, resolved
+            new_state, List.append new_errors errors, resolved
         in
         let guide =
           (* This is the annotation determining how we recursively break up the assignment. *)
@@ -3044,6 +3198,7 @@ module State (Context : Context) = struct
         let explicit = Option.is_some annotation in
         let rec forward_assign
             ~state:({ resolution; _ } as state)
+            ~errors
             ~target:({ Node.location; value = target_value } as target)
             ~guide
             ~resolved
@@ -3166,13 +3321,13 @@ module State (Context : Context) = struct
                 in
                 not is_setattr_any_defined
               in
-              let state =
+              let errors =
                 match reference with
                 | Some reference ->
-                    let check_final_reassignment state =
+                    let check_final_reassignment errors =
                       let error () =
                         emit_error
-                          ~state
+                          ~errors
                           ~location
                           ~kind:(Error.InvalidAssignment (FinalAttribute reference))
                       in
@@ -3192,9 +3347,9 @@ module State (Context : Context) = struct
                       else if Option.is_none attribute && Annotation.is_final target_annotation then
                         error ()
                       else
-                        state
+                        errors
                     in
-                    let check_assign_class_variable_on_instance state =
+                    let check_assign_class_variable_on_instance errors =
                       match
                         ( resolved_base,
                           attribute >>| fst >>| Annotated.Attribute.class_attribute,
@@ -3203,38 +3358,38 @@ module State (Context : Context) = struct
                       | Some parent, Some true, Some class_variable
                         when Option.is_none original_annotation && not (Type.is_meta parent) ->
                           emit_error
-                            ~state
+                            ~errors
                             ~location
                             ~kind:
                               (Error.InvalidAssignment
                                  (ClassVariable { class_name = Type.show parent; class_variable }))
-                      | _ -> state
+                      | _ -> errors
                     in
-                    let check_final_is_outermost_qualifier state =
+                    let check_final_is_outermost_qualifier errors =
                       original_annotation
                       >>| (fun annotation ->
                             if Type.contains_final annotation then
                               emit_error
-                                ~state
+                                ~errors
                                 ~location
                                 ~kind:(Error.InvalidType (FinalNested annotation))
                             else
-                              state)
-                      |> Option.value ~default:state
+                              errors)
+                      |> Option.value ~default:errors
                     in
-                    let check_is_readonly_property state =
+                    let check_is_readonly_property errors =
                       match
                         ( attribute >>| fst >>| Annotated.Attribute.visibility,
                           attribute >>| fst >>| Annotated.Attribute.property )
                       with
                       | Some (ReadOnly _), Some true when Option.is_none original_annotation ->
                           emit_error
-                            ~state
+                            ~errors
                             ~location
                             ~kind:(Error.InvalidAssignment (ReadOnly reference))
-                      | _ -> state
+                      | _ -> errors
                     in
-                    let check_undefined_attribute_target state =
+                    let check_undefined_attribute_target errors =
                       match resolved_base, attribute with
                       | Some parent, Some (attribute, name)
                         when not (Annotated.Attribute.defined attribute) ->
@@ -3248,10 +3403,10 @@ module State (Context : Context) = struct
                             (* Ignore the error from the attribute declaration `Movie.name = ...`,
                                which would raise an error because `name` was removed as an attribute
                                from the TypedDictionary. *)
-                            state
+                            errors
                           else if is_undefined_attribute parent then
                             emit_error
-                              ~state
+                              ~errors
                               ~location
                               ~kind:
                                 (Error.UndefinedAttribute
@@ -3265,26 +3420,26 @@ module State (Context : Context) = struct
                                          };
                                    })
                           else
-                            state
-                      | _ -> state
+                            errors
+                      | _ -> errors
                     in
-                    let check_nested_explicit_type_alias state =
+                    let check_nested_explicit_type_alias errors =
                       match name, original_annotation with
                       | Name.Identifier identifier, Some annotation
                         when Type.is_type_alias annotation && not (Define.is_toplevel define) ->
                           emit_error
-                            ~state
+                            ~errors
                             ~location
                             ~kind:(Error.InvalidType (NestedAlias identifier))
-                      | _ -> state
+                      | _ -> errors
                     in
-                    check_final_reassignment state
+                    check_final_reassignment errors
                     |> check_assign_class_variable_on_instance
                     |> check_final_is_outermost_qualifier
                     |> check_is_readonly_property
                     |> check_undefined_attribute_target
                     |> check_nested_explicit_type_alias
-                | _ -> state
+                | _ -> errors
               in
               let expected, is_immutable =
                 match original_annotation, target_annotation with
@@ -3310,7 +3465,7 @@ module State (Context : Context) = struct
                     contains_unknown resolved
                 | _ -> false
               in
-              let state =
+              let errors =
                 let resolved =
                   match resolved with
                   | Type.Parametric _ -> Type.weaken_literals resolved
@@ -3371,7 +3526,7 @@ module State (Context : Context) = struct
                                 ~covariant:true;
                           };
                       }
-                    |> fun kind -> emit_error ~state ~location ~kind
+                    |> fun kind -> emit_error ~errors ~location ~kind
                 | _, Some reference when is_incompatible ->
                     Error.IncompatibleVariableType
                       {
@@ -3387,11 +3542,11 @@ module State (Context : Context) = struct
                           };
                         declare_location = instantiate location;
                       }
-                    |> fun kind -> emit_error ~state ~location ~kind
-                | _ -> state
+                    |> fun kind -> emit_error ~errors ~location ~kind
+                | _ -> errors
               in
               (* Check for missing annotations. *)
-              let check_annotation state =
+              let check_annotation errors =
                 let insufficiently_annotated, thrown_at_source =
                   let is_reassignment =
                     (* Special-casing re-use of typed parameters as attributes *)
@@ -3466,7 +3621,7 @@ module State (Context : Context) = struct
                         |> Option.value ~default:location
                       in
                       ( emit_error
-                          ~state
+                          ~errors
                           ~location:global_location
                           ~kind:
                             (Error.MissingGlobalAnnotation
@@ -3480,7 +3635,7 @@ module State (Context : Context) = struct
                         true )
                     else if explicit && insufficiently_annotated then
                       ( emit_error
-                          ~state
+                          ~errors
                           ~location
                           ~kind:
                             (Error.ProhibitedAny
@@ -3500,10 +3655,10 @@ module State (Context : Context) = struct
                       let value_annotation =
                         GlobalResolution.parse_annotation global_resolution value
                       in
-                      let state =
+                      let errors =
                         if Type.contains_prohibited_any value_annotation then
                           emit_error
-                            ~state
+                            ~errors
                             ~location
                             ~kind:
                               (Error.ProhibitedAny
@@ -3519,11 +3674,11 @@ module State (Context : Context) = struct
                                    is_type_alias;
                                  })
                         else
-                          state
+                          errors
                       in
-                      state, true
+                      errors, true
                     else
-                      state, true
+                      errors, true
                 | Name.Attribute { base = { Node.value = Name base; _ }; attribute; _ }, None
                   when is_simple_name base && insufficiently_annotated ->
                     (* Module *)
@@ -3534,7 +3689,7 @@ module State (Context : Context) = struct
                       && not (GlobalResolution.module_exists global_resolution reference)
                     then
                       ( emit_error
-                          ~state
+                          ~errors
                           ~location
                           ~kind:
                             (Error.ProhibitedAny
@@ -3551,7 +3706,7 @@ module State (Context : Context) = struct
                                }),
                         true )
                     else
-                      state, true
+                      errors, true
                 | ( Name.Attribute { attribute; _ },
                     Some ({ Type.instantiated; class_attributes; class_name } :: _) ) -> (
                     (* Instance *)
@@ -3569,12 +3724,12 @@ module State (Context : Context) = struct
                     | Some attribute ->
                         if is_illegal_attribute_annotation attribute then
                           (* Non-self attributes may not be annotated. *)
-                          ( emit_error ~state ~location ~kind:(Error.IllegalAnnotationTarget target),
+                          ( emit_error ~errors ~location ~kind:(Error.IllegalAnnotationTarget target),
                             false )
                         else if Annotated.Attribute.defined attribute && insufficiently_annotated
                         then
                           ( emit_error
-                              ~state
+                              ~errors
                               ~location
                               ~kind:
                                 (Error.MissingAttributeAnnotation
@@ -3592,7 +3747,7 @@ module State (Context : Context) = struct
                             true )
                         else if insufficiently_annotated && explicit && not is_type_alias then
                           ( emit_error
-                              ~state
+                              ~errors
                               ~location
                               ~kind:
                                 (Error.ProhibitedAny
@@ -3609,7 +3764,7 @@ module State (Context : Context) = struct
                                    }),
                             true )
                         else
-                          state, true
+                          errors, true
                     | None ->
                         if
                           insufficiently_annotated
@@ -3618,7 +3773,7 @@ module State (Context : Context) = struct
                                (Type.Primitive class_name)
                         then
                           ( emit_error
-                              ~state
+                              ~errors
                               ~location
                               ~kind:
                                 (Error.ProhibitedAny
@@ -3635,101 +3790,98 @@ module State (Context : Context) = struct
                                    }),
                             true )
                         else
-                          state, true )
+                          errors, true )
                 | _ ->
                     if explicit then
-                      ( emit_error ~state ~location ~kind:(Error.IllegalAnnotationTarget target),
+                      ( emit_error ~errors ~location ~kind:(Error.IllegalAnnotationTarget target),
                         false )
                     else
-                      state, true
+                      errors, true
               in
-              let state, is_valid_annotation = check_annotation state in
+              let errors, is_valid_annotation = check_annotation errors in
               (* Propagate annotations. *)
-              let state =
-                let is_global =
+              let is_global =
+                match name with
+                | Identifier identifier ->
+                    Resolution.is_global resolution ~reference:(Reference.create identifier)
+                | Attribute _ as name when is_simple_name name ->
+                    Resolution.is_global resolution ~reference:(name_to_reference_exn name)
+                | _ -> false
+              in
+              if is_global && not (Define.is_toplevel Context.define.value) then
+                state, errors
+              else
+                let refine_annotation annotation refined =
+                  RefinementUnit.refine ~global_resolution annotation refined
+                in
+                let annotation =
+                  if explicit && is_valid_annotation then
+                    let annotation = Annotation.create_immutable ~final:is_final guide in
+                    if Type.is_concrete resolved && not (Type.is_ellipsis resolved) then
+                      refine_annotation annotation resolved
+                    else
+                      annotation
+                  else if is_immutable then
+                    refine_annotation target_annotation guide
+                  else
+                    Annotation.create guide
+                in
+                let errors, annotation =
+                  if
+                    (not explicit)
+                    && (not is_type_alias)
+                    && Type.Variable.contains_escaped_free_variable
+                         (Annotation.annotation annotation)
+                  then
+                    let kind =
+                      Error.IncompleteType
+                        {
+                          target = { Node.location; value = target_value };
+                          annotation = resolved;
+                          attempted_action = Naming;
+                        }
+                    in
+                    let converted =
+                      Type.Variable.convert_all_escaped_free_variables_to_anys
+                        (Annotation.annotation annotation)
+                    in
+                    emit_error ~errors ~location ~kind, { annotation with annotation = converted }
+                  else
+                    errors, annotation
+                in
+                let resolution =
                   match name with
                   | Identifier identifier ->
-                      Resolution.is_global resolution ~reference:(Reference.create identifier)
-                  | Attribute _ as name when is_simple_name name ->
-                      Resolution.is_global resolution ~reference:(name_to_reference_exn name)
-                  | _ -> false
+                      Resolution.set_local
+                        resolution
+                        ~reference:(Reference.create identifier)
+                        ~annotation
+                  | Attribute _ as name when is_simple_name name -> (
+                      match resolved_base, attribute with
+                      | Some parent, Some (attribute, _)
+                        when not
+                               ( Annotated.Attribute.defined attribute
+                               || is_undefined_attribute parent ) ->
+                          Resolution.set_local_with_attributes resolution ~name ~annotation
+                      | _ -> resolution )
+                  | _ -> resolution
                 in
-                if is_global && not (Define.is_toplevel Context.define.value) then
-                  state
-                else
-                  let refine_annotation annotation refined =
-                    RefinementUnit.refine ~global_resolution annotation refined
-                  in
-                  let annotation =
-                    if explicit && is_valid_annotation then
-                      let annotation = Annotation.create_immutable ~final:is_final guide in
-                      if Type.is_concrete resolved && not (Type.is_ellipsis resolved) then
-                        refine_annotation annotation resolved
-                      else
-                        annotation
-                    else if is_immutable then
-                      refine_annotation target_annotation guide
-                    else
-                      Annotation.create guide
-                  in
-                  let state, annotation =
-                    if
-                      (not explicit)
-                      && (not is_type_alias)
-                      && Type.Variable.contains_escaped_free_variable
-                           (Annotation.annotation annotation)
-                    then
-                      let kind =
-                        Error.IncompleteType
-                          {
-                            target = { Node.location; value = target_value };
-                            annotation = resolved;
-                            attempted_action = Naming;
-                          }
-                      in
-                      let converted =
-                        Type.Variable.convert_all_escaped_free_variables_to_anys
-                          (Annotation.annotation annotation)
-                      in
-                      emit_error ~state ~location ~kind, { annotation with annotation = converted }
-                    else
-                      state, annotation
-                  in
-                  let resolution =
-                    match name with
-                    | Identifier identifier ->
-                        Resolution.set_local
-                          resolution
-                          ~reference:(Reference.create identifier)
-                          ~annotation
-                    | Attribute _ as name when is_simple_name name -> (
-                        match resolved_base, attribute with
-                        | Some parent, Some (attribute, _)
-                          when not
-                                 ( Annotated.Attribute.defined attribute
-                                 || is_undefined_attribute parent ) ->
-                            Resolution.set_local_with_attributes resolution ~name ~annotation
-                        | _ -> resolution )
-                    | _ -> resolution
-                  in
-                  { state with resolution }
-              in
-              state
+                { state with resolution }, errors
           | List elements
           | Tuple elements
             when is_uniform_sequence guide ->
-              let propagate state element =
+              let propagate (state, errors) element =
                 match Node.value element with
                 | Expression.Starred (Starred.Once target) ->
                     let guide = uniform_sequence_parameter guide |> Type.list in
                     let resolved = uniform_sequence_parameter resolved |> Type.list in
-                    forward_assign ~state ~target ~guide ~resolved ~expression:None
+                    forward_assign ~state ~errors ~target ~guide ~resolved ~expression:None
                 | _ ->
                     let guide = uniform_sequence_parameter guide in
                     let resolved = uniform_sequence_parameter resolved in
-                    forward_assign ~state ~target:element ~guide ~resolved ~expression:None
+                    forward_assign ~state ~errors ~target:element ~guide ~resolved ~expression:None
               in
-              List.fold elements ~init:state ~f:propagate
+              List.fold elements ~init:(state, errors) ~f:propagate
           | List elements
           | Tuple elements ->
               let left, starred, right =
@@ -3753,16 +3905,16 @@ module State (Context : Context) = struct
                 left, starred, right
               in
               let assignees = left @ starred @ right in
-              let state, annotations =
+              let errors, annotations =
                 match guide with
-                | Type.Any -> state, List.map assignees ~f:(fun _ -> Type.Any)
-                | Type.Top -> state, List.map assignees ~f:(fun _ -> Type.Top)
+                | Type.Any -> errors, List.map assignees ~f:(fun _ -> Type.Any)
+                | Type.Top -> errors, List.map assignees ~f:(fun _ -> Type.Top)
                 | _ -> (
                     match nonuniform_sequence_parameters guide with
                     | None ->
-                        let state =
+                        let errors =
                           emit_error
-                            ~state
+                            ~errors
                             ~location
                             ~kind:
                               (Error.Unpack
@@ -3771,7 +3923,7 @@ module State (Context : Context) = struct
                                    unpack_problem = UnacceptableType guide;
                                  })
                         in
-                        state, List.map assignees ~f:(fun _ -> Type.Top)
+                        errors, List.map assignees ~f:(fun _ -> Type.Top)
                     | Some annotations ->
                         let annotations =
                           let has_starred_assignee = not (List.is_empty starred) in
@@ -3797,9 +3949,9 @@ module State (Context : Context) = struct
                           left @ starred @ right
                         in
                         if List.length annotations <> List.length assignees then
-                          let state =
+                          let errors =
                             emit_error
-                              ~state
+                              ~errors
                               ~location
                               ~kind:
                                 (Error.Unpack
@@ -3808,27 +3960,27 @@ module State (Context : Context) = struct
                                      unpack_problem = CountMismatch (List.length annotations);
                                    })
                           in
-                          state, List.map assignees ~f:(fun _ -> Type.Top)
+                          errors, List.map assignees ~f:(fun _ -> Type.Top)
                         else
-                          state, annotations )
+                          errors, annotations )
               in
               List.zip_exn assignees annotations
-              |> List.fold ~init:state ~f:(fun state (target, guide) ->
-                     forward_assign ~state ~target ~guide ~resolved:guide ~expression:None)
+              |> List.fold ~init:(state, errors) ~f:(fun (state, errors) (target, guide) ->
+                     forward_assign ~state ~errors ~target ~guide ~resolved:guide ~expression:None)
           | _ ->
               if Option.is_some annotation then
-                emit_error ~state ~location ~kind:(Error.IllegalAnnotationTarget target)
+                state, emit_error ~errors ~location ~kind:(Error.IllegalAnnotationTarget target)
               else
-                state
+                state, errors
         in
-        forward_assign ~state ~target ~guide ~resolved ~expression:(Some value)
+        forward_assign ~state ~errors ~target ~guide ~resolved ~expression:(Some value)
     | Assert { Assert.test; _ } -> (
-        let ({ resolution; _ } as state) =
-          forward_expression ~state ~expression:test |> fun { state; _ } -> state
+        let ({ resolution; _ } as state), errors =
+          forward_expression ~state ~expression:test |> fun { state; errors; _ } -> state, errors
         in
         let parse_refinement_annotation annotation =
           let parse_meta annotation =
-            match parse_and_check_annotation ~state annotation |> snd with
+            match parse_and_check_annotation ~resolution:state.resolution annotation |> snd with
             | Type.Top -> (
                 (* Try to resolve meta-types given as expressions. *)
                 match resolve_expression_type ~state annotation with
@@ -3900,7 +4052,7 @@ module State (Context : Context) = struct
         match Node.value test with
         | False ->
             (* Explicit bottom. *)
-            { state with bottom = true }
+            { state with bottom = true }, errors
         | ComparisonOperator
             {
               left =
@@ -3956,7 +4108,7 @@ module State (Context : Context) = struct
                   else
                     Annotation.create consistent_with_boundary |> set_local name
             in
-            { state with resolution }
+            { state with resolution }, errors
         | Call
             {
               callee = { Node.value = Name (Name.Identifier "callable"); _ };
@@ -3978,7 +4130,7 @@ module State (Context : Context) = struct
                     Annotation.create consistent_with_boundary |> set_local name
               | _ -> resolution
             in
-            { state with resolution }
+            { state with resolution }, errors
         | ComparisonOperator
             {
               left =
@@ -4050,10 +4202,10 @@ module State (Context : Context) = struct
             in
             match contradiction, value with
             | Some (location, kind), _ ->
-                emit_error ~state:{ state with bottom = true } ~location ~kind
+                { state with bottom = true }, emit_error ~errors ~location ~kind
             | _, { Node.value = Name name; _ } when is_simple_name name ->
-                { state with resolution = resolve ~name }
-            | _ -> state )
+                { state with resolution = resolve ~name }, errors
+            | _ -> state, errors )
         | UnaryOperator
             {
               UnaryOperator.operator = UnaryOperator.Not;
@@ -4088,7 +4240,7 @@ module State (Context : Context) = struct
                   |> Option.value ~default:resolution
               | _ -> resolution
             in
-            { state with resolution }
+            { state with resolution }, errors
         | Call
             {
               callee = { Node.value = Name (Name.Identifier "all"); _ };
@@ -4118,16 +4270,17 @@ module State (Context : Context) = struct
                             { name = parametric_name; parameters = [Single parameter] }))
               | _ -> resolution
             in
-            { state with resolution }
+            { state with resolution }, errors
         | Name name when is_simple_name name -> (
             match refinable_annotation name with
             | Some { Annotation.annotation = Type.Optional Type.Bottom; _ } ->
-                emit_error
-                  ~state:{ state with bottom = true }
-                  ~location:(Node.location test)
-                  ~kind:
-                    (Error.ImpossibleAssertion
-                       { test; expression = test; annotation = Type.Optional Type.Bottom })
+                ( { state with bottom = true },
+                  emit_error
+                    ~errors
+                    ~location:(Node.location test)
+                    ~kind:
+                      (Error.ImpossibleAssertion
+                         { test; expression = test; annotation = Type.Optional Type.Bottom }) )
             | Some ({ Annotation.annotation = Type.Optional parameter; _ } as annotation) ->
                 let resolution =
                   Resolution.set_local_with_attributes
@@ -4135,18 +4288,18 @@ module State (Context : Context) = struct
                     ~name
                     ~annotation:{ annotation with Annotation.annotation = parameter }
                 in
-                { state with resolution }
-            | _ -> state )
+                { state with resolution }, errors
+            | _ -> state, errors )
         | BooleanOperator { BooleanOperator.left; operator; right } -> (
             let update state expression =
               forward_statement ~state ~statement:(Statement.assume expression)
-              |> fun { resolution; _ } -> Resolution.annotation_store resolution
+              |> fun ({ resolution; _ }, _) -> Resolution.annotation_store resolution
             in
             match operator with
             | BooleanOperator.And ->
                 let resolution =
                   forward_statement ~state ~statement:(Statement.assume left)
-                  |> fun { resolution; _ } -> resolution
+                  |> fun ({ resolution; _ }, _) -> resolution
                 in
                 let left = update state left in
                 let right = update { state with resolution } right in
@@ -4157,7 +4310,7 @@ module State (Context : Context) = struct
                 in
                 let annotation_store = Map.merge ~f:merge left right in
                 let resolution = Resolution.with_annotation_store resolution ~annotation_store in
-                { state with resolution }
+                { state with resolution }, errors
             | BooleanOperator.Or ->
                 let negated_left = update state (normalize (negate left)) in
                 let resolution =
@@ -4165,15 +4318,18 @@ module State (Context : Context) = struct
                 in
                 let left = update state left in
                 let right = update { state with resolution } right in
-                join
-                  {
-                    state with
-                    resolution = Resolution.with_annotation_store resolution ~annotation_store:left;
-                  }
-                  {
-                    state with
-                    resolution = Resolution.with_annotation_store resolution ~annotation_store:right;
-                  } )
+                ( join
+                    {
+                      state with
+                      resolution =
+                        Resolution.with_annotation_store resolution ~annotation_store:left;
+                    }
+                    {
+                      state with
+                      resolution =
+                        Resolution.with_annotation_store resolution ~annotation_store:right;
+                    },
+                  errors ) )
         | ComparisonOperator
             {
               ComparisonOperator.left;
@@ -4197,17 +4353,18 @@ module State (Context : Context) = struct
                     (RefinementUnit.create ~base:refined ())
                     (RefinementUnit.create ~base:previous ())
                 then
-                  {
-                    state with
-                    resolution =
-                      Resolution.set_local_with_attributes resolution ~name ~annotation:refined;
-                  }
+                  ( {
+                      state with
+                      resolution =
+                        Resolution.set_local_with_attributes resolution ~name ~annotation:refined;
+                    },
+                    errors )
                 else
                   (* Keeping previous state, since it is more refined. *)
                   (* TODO: once T38750424 is done, we should really return bottom if previous is not
                      <= refined and refined is not <= previous, as this is an obvious contradiction. *)
-                  state
-            | None -> state )
+                  state, errors
+            | None -> state, errors )
         | ComparisonOperator
             {
               ComparisonOperator.left = { Node.value = Name name; _ };
@@ -4246,9 +4403,9 @@ module State (Context : Context) = struct
                       let resolution =
                         Resolution.set_local_with_attributes resolution ~name ~annotation:refined
                       in
-                      { state with resolution }
+                      { state with resolution }, errors
                     else (* Keeping previous state, since it is more refined. *)
-                      state
+                      state, errors
                 | None when not (Resolution.is_global resolution ~reference) ->
                     let resolution =
                       Resolution.set_local_with_attributes
@@ -4256,9 +4413,9 @@ module State (Context : Context) = struct
                         ~name
                         ~annotation:(Annotation.create element_type)
                     in
-                    { state with resolution }
-                | _ -> state )
-            | _ -> state )
+                    { state with resolution }, errors
+                | _ -> state, errors )
+            | _ -> state, errors )
         | ComparisonOperator
             {
               ComparisonOperator.left = { Node.value = Name (Name.Identifier "None"); _ };
@@ -4280,12 +4437,13 @@ module State (Context : Context) = struct
                         ~name
                         ~annotation:{ annotation with Annotation.annotation = Type.list parameter }
                     in
-                    { state with resolution }
-                | _ -> state )
-            | _ -> state )
+                    { state with resolution }, errors
+                | _ -> state, errors )
+            | _ -> state, errors )
         | WalrusOperator { target; _ } ->
-            forward_statement ~state ~statement:(Statement.assume target)
-        | _ -> state )
+            let state, _ = forward_statement ~state ~statement:(Statement.assume target) in
+            state, errors
+        | _ -> state, errors )
     | Delete expression ->
         let resolution =
           match Node.value expression with
@@ -4293,21 +4451,21 @@ module State (Context : Context) = struct
               Resolution.unset_local resolution ~reference:(Reference.create identifier)
           | _ -> resolution
         in
-        let { state; _ } = forward_expression ~state ~expression in
-        { state with resolution }
+        let { state; errors; _ } = forward_expression ~state ~expression in
+        { state with resolution }, errors
     | Expression
         { Node.value = Call { callee; arguments = { Call.Argument.value = test; _ } :: _ }; _ }
       when Core.Set.mem Recognized.assert_functions (Expression.show callee) ->
         forward_statement ~state ~statement:(Statement.assume test)
     | Expression expression ->
         forward_expression ~state ~expression
-        |> fun { state; resolved; _ } ->
+        |> fun { state; resolved; errors; _ } ->
         if Type.is_noreturn resolved then
-          { state with bottom = true }
+          { state with bottom = true }, errors
         else
-          state
+          state, errors
     | Raise { Raise.expression = Some expression; _ } ->
-        let { state; resolved; _ } = forward_expression ~state ~expression in
+        let { state; resolved; errors; _ } = forward_expression ~state ~expression in
         let expected = Type.Primitive "BaseException" in
         let actual =
           if Type.is_meta resolved then
@@ -4315,29 +4473,34 @@ module State (Context : Context) = struct
           else
             resolved
         in
-        if GlobalResolution.less_or_equal global_resolution ~left:actual ~right:expected then
-          state
-        else
-          emit_error
-            ~state
-            ~location
-            ~kind:(Error.InvalidException { expression; annotation = resolved })
-    | Raise _ -> state
+        let errors =
+          if GlobalResolution.less_or_equal global_resolution ~left:actual ~right:expected then
+            errors
+          else
+            emit_error
+              ~errors
+              ~location
+              ~kind:(Error.InvalidException { expression; annotation = resolved })
+        in
+        state, errors
+    | Raise _ -> state, []
     | Return { Return.expression; is_implicit } ->
-        let { state; resolved = actual; _ } =
+        let { state; resolved = actual; errors; _ } =
           Option.value_map
             expression
-            ~default:{ state; resolved = Type.none; resolved_annotation = None; base = None }
+            ~default:
+              { state; errors = []; resolved = Type.none; resolved_annotation = None; base = None }
             ~f:(fun expression -> forward_expression ~state ~expression)
         in
-        validate_return ~expression ~state ~actual ~is_implicit
+        state, validate_return ~expression ~state ~errors ~actual ~is_implicit
     | Statement.Yield { Node.value = Expression.Yield return; _ } ->
-        let { state; resolved = actual; _ } =
+        let { state; resolved = actual; errors; _ } =
           match return with
           | Some expression ->
-              let { state; resolved; _ } = forward_expression ~state ~expression in
+              let { state; resolved; errors; _ } = forward_expression ~state ~expression in
               {
                 state;
+                errors;
                 resolved = Type.generator ~async resolved;
                 resolved_annotation = None;
                 base = None;
@@ -4345,15 +4508,16 @@ module State (Context : Context) = struct
           | None ->
               {
                 state;
+                errors = [];
                 resolved = Type.generator ~async Type.none;
                 resolved_annotation = None;
                 base = None;
               }
         in
-        validate_return ~expression:None ~state ~actual ~is_implicit:false
-    | Statement.Yield _ -> state
+        state, validate_return ~expression:None ~state ~errors ~actual ~is_implicit:false
+    | Statement.Yield _ -> state, []
     | YieldFrom { Node.value = Expression.Yield (Some return); _ } ->
-        let { state; resolved; _ } = forward_expression ~state ~expression:return in
+        let { state; resolved; errors; _ } = forward_expression ~state ~expression:return in
         let actual =
           match
             GlobalResolution.extract_type_parameters
@@ -4364,19 +4528,22 @@ module State (Context : Context) = struct
           | Some [parameter] -> Type.generator parameter
           | _ -> Type.generator Type.Any
         in
-        validate_return ~expression:None ~state ~actual ~is_implicit:false
-    | YieldFrom _ -> state
+        state, validate_return ~expression:None ~state ~errors ~actual ~is_implicit:false
+    | YieldFrom _ -> state, []
     | Define { signature = { Define.Signature.name = { Node.value = name; _ }; _ } as signature; _ }
       ->
-        if Reference.is_local name then
-          type_of_signature ~resolution signature
-          |> Type.Variable.mark_all_variables_as_bound
-               ~specific:(Resolution.all_type_variables_in_scope resolution)
-          |> Annotation.create
-          |> (fun annotation -> Resolution.set_local resolution ~reference:name ~annotation)
-          |> fun resolution -> { state with resolution }
-        else
-          state
+        let state =
+          if Reference.is_local name then
+            type_of_signature ~resolution signature
+            |> Type.Variable.mark_all_variables_as_bound
+                 ~specific:(Resolution.all_type_variables_in_scope resolution)
+            |> Annotation.create
+            |> (fun annotation -> Resolution.set_local resolution ~reference:name ~annotation)
+            |> fun resolution -> { state with resolution }
+          else
+            state
+        in
+        state, []
     | Import { Import.from; imports } ->
         let check_import import =
           let rec check_lead lead = function
@@ -4404,12 +4571,13 @@ module State (Context : Context) = struct
               List.filter_map imports ~f:(fun { Import.name = { Node.value = name; _ }; _ } ->
                   check_import name)
         in
-        List.fold undefined_imports ~init:state ~f:(fun state reference ->
-            emit_error ~state ~location ~kind:(Error.UndefinedImport reference))
+        ( state,
+          List.fold undefined_imports ~init:[] ~f:(fun errors reference ->
+              emit_error ~errors ~location ~kind:(Error.UndefinedImport reference)) )
     | Class { Class.bases; _ } when bases <> [] ->
         (* Check that variance isn't widened on inheritence *)
-        let check_base state { Call.Argument.value = base; _ } =
-          let check_pair state extended actual =
+        let check_base errors { Call.Argument.value = base; _ } =
+          let check_pair errors extended actual =
             match extended, actual with
             | ( Type.Variable { Type.Record.Variable.RecordUnary.variance = left; _ },
                 Type.Variable { Type.Record.Variable.RecordUnary.variance = right; _ } ) -> (
@@ -4419,13 +4587,13 @@ module State (Context : Context) = struct
                 | Type.Variable.Covariant, Type.Variable.Contravariant
                 | Type.Variable.Contravariant, Type.Variable.Covariant ->
                     emit_error
-                      ~state
+                      ~errors
                       ~location
                       ~kind:
                         (Error.InvalidTypeVariance
                            { annotation = extended; origin = Error.Inheritance actual })
-                | _ -> state )
-            | _, _ -> state
+                | _ -> errors )
+            | _, _ -> errors
           in
           match GlobalResolution.parse_annotation global_resolution base with
           | Type.Parametric { name; parameters = extended_parameters }
@@ -4439,30 +4607,30 @@ module State (Context : Context) = struct
                       |> Option.value ~default:[]
                     in
                     match
-                      List.fold2 extended_parameters actual_parameters ~init:state ~f:check_pair
+                      List.fold2 extended_parameters actual_parameters ~init:errors ~f:check_pair
                     with
-                    | Ok state -> state
-                    | Unequal_lengths -> state)
-              |> Option.value ~default:state
-          | _ -> state
+                    | Ok errors -> errors
+                    | Unequal_lengths -> errors)
+              |> Option.value ~default:errors
+          | _ -> errors
         in
-        List.fold bases ~f:check_base ~init:state
+        state, List.fold bases ~f:check_base ~init:[]
     | Class _ ->
         (* Don't check accesses in nested classes and functions, they're analyzed separately. *)
-        state
+        state, []
     | For _
     | If _
     | Try _
     | With _
     | While _ ->
         (* Check happens implicitly in the resulting control flow. *)
-        state
+        state, []
     | Break
     | Continue
     | Global _
     | Nonlocal _
     | Pass ->
-        state
+        state, []
 
 
   and resolve_expression ~state expression =
@@ -4480,21 +4648,20 @@ module State (Context : Context) = struct
 
 
   let forward ~key ({ bottom; resolution; _ } as state) ~statement =
-    let state = { state with errors = [] } in
-    let state =
+    let state, errors =
       if bottom then
-        state
+        state, []
       else
         forward_statement ~state ~statement
     in
     let () =
-      let { resolution = post_resolution; errors; _ } = state in
+      let { resolution = post_resolution; _ } = state in
       let precondition = Resolution.annotation_store resolution in
       let postcondition = Resolution.annotation_store post_resolution in
       LocalAnnotationMap.set state.resolution_fixpoint ~key ~precondition ~postcondition;
       LocalErrorMap.set state.error_map ~key ~errors
     in
-    { state with errors = [] }
+    state
 
 
   let backward ~key:_ state ~statement:_ = state
@@ -4536,8 +4703,7 @@ let resolution global_resolution ?(annotation_store = Reference.Map.empty) () =
         ()
     in
     {
-      State.errors = [];
-      bottom = false;
+      State.bottom = false;
       resolution = empty_resolution;
       resolution_fixpoint = LocalAnnotationMap.empty ();
       error_map = LocalErrorMap.empty ();
@@ -4553,7 +4719,7 @@ let resolution global_resolution ?(annotation_store = Reference.Map.empty) () =
   let resolve_statement ~resolution statement =
     let state = { state_without_resolution with State.resolution } in
     State.forward_statement ~state ~statement
-    |> fun { State.resolution; errors; bottom; _ } ->
+    |> fun ({ State.resolution; bottom; _ }, errors) ->
     if bottom then
       Resolution.Unreachable
     else
@@ -5046,7 +5212,7 @@ let exit_state ~resolution (module Context : Context) =
   let global_resolution = Resolution.global_resolution resolution in
   if Define.is_stub define then
     let { State.resolution; _ } = initial in
-    let errors_sofar = State.local_errors initial |> Error.deduplicate in
+    let errors_sofar = State.all_errors initial |> Error.deduplicate in
     ( emit_errors_on_exit (module Context) ~errors_sofar ~resolution ()
       |> filter_errors (module Context) ~global_resolution,
       None,

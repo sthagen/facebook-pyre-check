@@ -240,10 +240,11 @@ let process_type_query_request
     | TypeQuery.Attributes annotation ->
         let to_attribute attribute =
           let name = Annotated.Attribute.name attribute in
-          let annotation =
+          let instantiated_annotation =
             GlobalResolution.instantiate_attribute ~resolution:global_resolution attribute
-            |> Annotated.Attribute.annotation
-            |> Annotation.annotation
+          in
+          let annotation =
+            instantiated_annotation |> Annotated.Attribute.annotation |> Annotation.annotation
           in
           let property = Annotated.Attribute.property attribute in
           let kind =
@@ -252,7 +253,8 @@ let process_type_query_request
             else
               TypeQuery.Regular
           in
-          { TypeQuery.name; annotation; kind }
+          let final = Annotated.Attribute.is_final instantiated_annotation in
+          { TypeQuery.name; annotation; kind; final }
         in
         parse_and_validate (Expression.from_reference ~location:Location.any annotation)
         |> Type.split
@@ -821,6 +823,9 @@ let rec process
           Mutex.critical_section connections.lock ~f:(fun () ->
               Operations.stop ~reason:"explicit request" ~configuration:server_configuration)
       | TypeQueryRequest request -> process_type_query_request ~state ~configuration ~request
+      | UnparsableQuery { query; reason } ->
+          let response = TypeQuery.Error (Format.sprintf "Unable to parse %s: %s" query reason) in
+          { state; response = Some (TypeQueryResponse response) }
       | DisplayTypeErrors paths ->
           let configuration = { configuration with include_hints = true } in
           process_display_type_errors_request ~state ~configuration paths

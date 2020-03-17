@@ -52,15 +52,7 @@ let unfiltered_callables ~resolution ~source:{ Source.source_path = { SourcePath
             class_name
             Reference.pp
             name;
-        let is_test_function =
-          GlobalResolution.less_or_equal
-            resolution
-            ~left:(GlobalResolution.parse_reference resolution class_name)
-            ~right:(Type.Primitive "unittest.case.TestCase")
-        in
-        if is_test_function then
-          None
-        else if Define.is_property_setter (Node.value definition) then
+        if Define.is_property_setter (Node.value definition) then
           Some (Callable.create_property_setter name, definition)
         else
           Some (Callable.create_method name, definition)

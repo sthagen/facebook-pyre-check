@@ -370,9 +370,6 @@ class FixmeAllTest(unittest.TestCase):
         )
 
     def test_preserve_ast(self) -> None:
-        mock_arguments = argparse.Namespace()
-        mock_arguments.max_line_length = 88
-        mock_arguments.truncate = True
         error_map = {7: [{"code": "6", "description": "Foo"}]}
         with tempfile.NamedTemporaryFile(delete=False) as file:
             contents = """
@@ -387,7 +384,13 @@ class FixmeAllTest(unittest.TestCase):
                 """
             contents = textwrap.dedent(contents)
             file.write(contents.encode())
-            upgrade_core.fix_file(mock_arguments, file.name, error_map)
+            errors.fix_file(
+                file.name,
+                error_map,
+                custom_comment=None,
+                max_line_length=88,
+                truncate=True,
+            )
 
             file.seek(0)
             updated_contents = file.read().decode()
@@ -407,7 +410,7 @@ class FixmeAllTest(unittest.TestCase):
                 """
             contents = textwrap.dedent(contents)
             file.write(contents.encode())
-            upgrade_core.fix_file(mock_arguments, file.name, error_map)
+            errors.fix_file(file.name, error_map)
 
             file.seek(0)
             updated_contents = file.read().decode()
@@ -642,7 +645,7 @@ class FixmeTest(unittest.TestCase):
                     ]
                 ),
             ]
-            subprocess.assert_has_calls(calls)
+            subprocess.assert_has_calls(calls, any_order=True)
         arguments.run = False
         arguments.lint = False
 
@@ -894,7 +897,7 @@ class FixmeTest(unittest.TestCase):
             stdin_errors.return_value = pyre_errors
             run_errors.return_value = pyre_errors
             path_read_text.return_value = (
-                "  # pyre-ignore[0]: [1, 2, 3]\n#  continuation comment\n2"
+                "  # pyre-ignore[0]: [1, 2, 3]\n  #  continuation comment\n2"
             )
             upgrade_core.run_fixme(arguments, VERSION_CONTROL)
             arguments.comment = None
@@ -914,7 +917,7 @@ class FixmeTest(unittest.TestCase):
             stdin_errors.return_value = pyre_errors
             run_errors.return_value = pyre_errors
             path_read_text.return_value = (
-                "  # pyre-ignore[0]: [1, 2, 3]\n# assumed continuation\n2"
+                "  # pyre-ignore[0]: [1, 2, 3]\n  # assumed continuation\n2"
             )
             upgrade_core.run_fixme(arguments, VERSION_CONTROL)
             arguments.comment = None
@@ -934,7 +937,7 @@ class FixmeTest(unittest.TestCase):
             stdin_errors.return_value = pyre_errors
             run_errors.return_value = pyre_errors
             path_read_text.return_value = (
-                "  # pyre-ignore[0]:\n#  comment that doesn't fit on one line\n"
+                "  # pyre-ignore[0]:\n  #  comment that doesn't fit on one line\n"
                 "# pyre-ignore[1]:\n2"
             )
             upgrade_core.run_fixme(arguments, VERSION_CONTROL)
@@ -1103,7 +1106,7 @@ class FixmeTargetsTest(unittest.TestCase):
                 "grep",
                 "-RPzo",
                 "--include=*TARGETS",
-                r"(?s)name = ((?!\n\s*name).)*check_types ?= ?True((?!\n\s*name).)*",
+                r"(?s)name = ((?!\n\s*name).)*check_types ?=((?!\n\s*name).)*",
                 Path("derp"),
             ],
             stderr=-1,
@@ -1138,6 +1141,8 @@ class FixmeTargetsTest(unittest.TestCase):
                 "--show-full-json-output",
                 "a/b:derp-pyre-typecheck",
                 "a/b:herp-pyre-typecheck",
+                "--",
+                "--run-disabled",
             ],
             stdout=-1,
             stderr=-1,
@@ -1240,6 +1245,8 @@ class FixmeTargetsTest(unittest.TestCase):
                         "test",
                         "--show-full-json-output",
                         "a/b:derp-pyre-typecheck",
+                        "--",
+                        "--run-disabled",
                     ],
                     stdout=-1,
                     stderr=-1,
@@ -1253,6 +1260,8 @@ class FixmeTargetsTest(unittest.TestCase):
                         "test",
                         "--show-full-json-output",
                         "//target/to:retry-pyre-typecheck",
+                        "--",
+                        "--run-disabled",
                     ],
                     stdout=-1,
                     stderr=-1,
@@ -1290,6 +1299,8 @@ class FixmeTargetsTest(unittest.TestCase):
                         "test",
                         "--show-full-json-output",
                         "a/b:derp-pyre-typecheck",
+                        "--",
+                        "--run-disabled",
                     ],
                     stdout=-1,
                     stderr=-1,
@@ -1303,6 +1314,8 @@ class FixmeTargetsTest(unittest.TestCase):
                         "test",
                         "--show-full-json-output",
                         "//target/to:retry-pyre-typecheck",
+                        "--",
+                        "--run-disabled",
                     ],
                     stdout=-1,
                     stderr=-1,
@@ -1809,50 +1822,36 @@ class FilterErrorTest(unittest.TestCase):
 class DefaultStrictTest(unittest.TestCase):
     @patch.object(Path, "read_text")
     def test_add_local_mode(self, read_text) -> None:
-        arguments = MagicMock()
-        arguments.sandcastle = None
         with patch.object(Path, "write_text") as path_write_text:
             read_text.return_value = "1\n2"
-            upgrade_core.add_local_mode(
-                arguments, "local.py", upgrade_core.LocalMode.UNSAFE
-            )
+            upgrade_core.add_local_mode("local.py", upgrade_core.LocalMode.UNSAFE)
             path_write_text.assert_called_once_with("# pyre-unsafe\n1\n2")
 
         with patch.object(Path, "write_text") as path_write_text:
             read_text.return_value = "# comment\n# comment\n1"
-            upgrade_core.add_local_mode(
-                arguments, "local.py", upgrade_core.LocalMode.UNSAFE
-            )
+            upgrade_core.add_local_mode("local.py", upgrade_core.LocalMode.UNSAFE)
             path_write_text.assert_called_once_with(
                 "# comment\n# comment\n\n# pyre-unsafe\n1"
             )
 
         with patch.object(Path, "write_text") as path_write_text:
             read_text.return_value = "# comment\n# pyre-strict\n1"
-            upgrade_core.add_local_mode(
-                arguments, "local.py", upgrade_core.LocalMode.UNSAFE
-            )
+            upgrade_core.add_local_mode("local.py", upgrade_core.LocalMode.UNSAFE)
             path_write_text.assert_not_called()
 
         with patch.object(Path, "write_text") as path_write_text:
             read_text.return_value = "# comment\n# pyre-ignore-all-errors\n1"
-            upgrade_core.add_local_mode(
-                arguments, "local.py", upgrade_core.LocalMode.UNSAFE
-            )
+            upgrade_core.add_local_mode("local.py", upgrade_core.LocalMode.UNSAFE)
             path_write_text.assert_not_called()
 
         with patch.object(Path, "write_text") as path_write_text:
             read_text.return_value = "1\n2"
-            upgrade_core.add_local_mode(
-                arguments, "local.py", upgrade_core.LocalMode.STRICT
-            )
+            upgrade_core.add_local_mode("local.py", upgrade_core.LocalMode.STRICT)
             path_write_text.assert_called_once_with("# pyre-strict\n1\n2")
 
         with patch.object(Path, "write_text") as path_write_text:
             read_text.return_value = "1\n2"
-            upgrade_core.add_local_mode(
-                arguments, "local.py", upgrade_core.LocalMode.IGNORE
-            )
+            upgrade_core.add_local_mode("local.py", upgrade_core.LocalMode.IGNORE)
             path_write_text.assert_called_once_with("# pyre-ignore-all-errors\n1\n2")
 
     @patch.object(
@@ -1875,7 +1874,6 @@ class DefaultStrictTest(unittest.TestCase):
         arguments = MagicMock()
         arguments.sandcastle = None
         arguments.local_configuration = Path("local")
-        arguments.log_directory = ".pyre"
         get_errors.return_value = []
         configuration_contents = '{"targets":[]}'
         with patch("builtins.open", mock_open(read_data=configuration_contents)):

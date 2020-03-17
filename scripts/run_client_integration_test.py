@@ -416,26 +416,6 @@ class TestCommand(unittest.TestCase, ABC):
         self.assertEqual(self.get_servers(), [], self.get_context(result))
 
 
-class BaseCommandTest(TestCommand):
-    def test_pyre_version(self) -> None:
-        result = self.run_pyre("--version")
-        self.assert_output_matches(
-            result, re.compile(r"Binary version: No version set\nClient version:.*")
-        )
-
-        self.create_project_configuration(contents={"version": "abc"})
-        result = self.run_pyre("--version")
-        self.assert_output_matches(
-            result, re.compile(r"Binary version: abc\nClient version:.*")
-        )
-
-        self.create_local_configuration("local", contents={"version": "def"})
-        result = self.run_pyre("-l", "local", "--version")
-        self.assert_output_matches(
-            result, re.compile(r"Binary version: def\nClient version:.*")
-        )
-
-
 class AnalyzeTest(TestCommand):
     def initial_filesystem(self) -> None:
         self.create_project_configuration()
@@ -830,12 +810,12 @@ class InitializeTest(TestCommand):
             )
 
     def test_initialize_local_configuration(self) -> None:
+        self.create_project_configuration()
         self.create_directory("local_project")
         # pyre-fixme[6]: Expected `str` for 1st param but got `Path`.
         with _watch_directory(self.directory):
             result = self.run_pyre(
                 "init",
-                "--local",
                 working_directory="local_project",
                 prompts=["Y", "//example:target", "Y", "Y", "Y"],
             )

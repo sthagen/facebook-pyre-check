@@ -16,7 +16,7 @@ from typing import Optional
 
 import psutil
 
-from .. import BINARY_NAME, CLIENT_NAME, LOG_DIRECTORY, configuration_monitor
+from .. import BINARY_NAME, CLIENT_NAME, configuration_monitor
 from ..analysis_directory import AnalysisDirectory
 from ..configuration import Configuration
 from ..project_files_monitor import ProjectFilesMonitor
@@ -29,31 +29,43 @@ LOG: logging.Logger = logging.getLogger(__name__)
 
 
 PYRE_FIRE = """
-                              .
-                             ,,,
-                            .,,,,
-                           ,,,,,,,,
-                          ,,,*/*,,,,.
-                         ,,,*///*,,,,,
-                       ,,,,*/////*,,,,,
-                      ,,,,////////*,,,,,
-                     ,,,*/////(/////*,,, ,
-                    ,,,**/////(((//*/*,,.,.
-                   ,,,*/////((((((////,,,,*
-                ,,.,,,/////((((((((//***/,,,
-               .,,,,/*////((((((((((/////*,,.
-               ,,,,*//////((((((((((/////*,,,
-               ,,,,*/////((((((((((((////*,,,,,
-               ,,,,,//////((((((((((/////,,,,,*
-               .,,,,,*/////(((((((/////*,,,,,*.
-            ##, *,,,,,,*//////////////,,,,,,**
-           .,*###(/**,,,*,,,,,,,,,,,,,,,*,**/
-/(##################(****///***,**,*****//*(#############//
-///#####%%%%%%%%#############((####(########%%##########*//
-///#%%#,     /**/((#########%#######. ############%%%%##/*/
-             //*/*//#####%%..#((#(###   *######////*   ////
-             ,/**///#%%#.   ,////////*    .%##/*/*//,
-               .///*        .///*////*       #/*////,
+                                                    ',
+                                                   ,c:
+                                ',                ;cc:
+                              ,:l;             ';:lll:
+                            'cllc'            'clllll:
+                           ;loooc'           'cllllllc'
+                          ;looool,           :llllllll,       :,
+                         'looooool'         ;lollllllo:      ;ll;
+                         ;ooooooool,       'loooooloool;    ,clll:
+                         cdoddoooooo;      ;oooooooooool:  ;loooll:
+                         cddddddddodo;     cooooooooooooolloooooool;
+                         ;ddddddddddo;    'loooooooooooooooooooooooc'
+                          cdddddddddc     'ldddddooooooooooooooooooo,
+                           ,coodolc;       cddddddddddoooooooooooooo;
+                               '           ,oddddddddddddddddodooooo;
+                          ,::::::::::::,    :ddddddddddddddddddddddl'
+                          'lddddddddddxd:    :ddddddddddddddddddddd:
+                            ;odddddddddddl,   ;oxdddddddddddddddddl'
+                             'ldddddddddddo:   ,:ldxddxddddddddddl'
+                               :ddddddddddddl'    cdxxxxxxxdddddl'
+                                ,ldddddddddddo;    ,oxxxxxxxxxdc
+                                  :ddddddddddddc;'  'cdxxxxxxo;
+                                   ,ldddddddddddxo;   ;dxxxo:
+                                     cdddddddddddddc   'lo:
+                                      ;oddddddddddddo,
+                                       'cddddddddddddd:
+                                        ;odddddddddddddl,
+                                       :ddddddddddddddddd:
+                                     ,ldddddddddddddddddddl,
+                                    :odddddddddddddddddddddo:
+                                  'ldddddddddddddddddddddddddl'
+                                 ;odddddddddddl, ,ldddddddddddo;
+                               'cdddddddddddd:     :ddddddddddddc'
+                              ;odddddddddddo,       ,odddddddddddo;
+                             cddddddddddddc           cddddddddddddc
+                           ;oxddxddxddddo;             ;odxxxxddddxxo,
+                           ;:::::::::::;'               ';:::::::::::;
 """
 
 
@@ -96,10 +108,9 @@ class Kill(Command):
             pass
 
     def _delete_caches(self) -> None:
-        root_log_directory = Path(self._current_directory, LOG_DIRECTORY)
         # If a resource cache exists, delete it to remove corrupted artifacts.
         try:
-            shutil.rmtree(str(root_log_directory / "resource_cache"))
+            shutil.rmtree(str(self._dot_pyre_directory / "resource_cache"))
         except OSError:
             pass
 
@@ -174,11 +185,10 @@ class Kill(Command):
         self._kill_processes_by_name(binary_name)
 
     def _delete_server_files(self) -> None:
-        root_log_directory = Path(self._current_directory, LOG_DIRECTORY)
-        LOG.info("Deleting server files under %s", root_log_directory)
-        socket_paths = root_log_directory.glob("**/server.sock")
-        json_server_paths = root_log_directory.glob("**/json_server.sock")
-        pid_paths = root_log_directory.glob("**/server.pid")
+        LOG.info("Deleting server files under %s", self._dot_pyre_directory)
+        socket_paths = self._dot_pyre_directory.glob("**/server.sock")
+        json_server_paths = self._dot_pyre_directory.glob("**/json_server.sock")
+        pid_paths = self._dot_pyre_directory.glob("**/server.pid")
         for path in chain(socket_paths, json_server_paths, pid_paths):
             self._delete_linked_path(path)
 
@@ -208,12 +218,11 @@ class Kill(Command):
         self._delete_server_files()
         self._delete_caches()
         self._kill_client_processes()
-        if self._arguments.with_fire is True:
+        if self._arguments.with_fire:
             LOG.warning(
-                "All --with-fire functionality has now been included in `pyre kill`.\n   "
-                "The flag is now a no-op, but here is a pyre for your troubles."
+                "Note that `--with-fire` adds emphasis to `pyre kill` but does not affect its behavior."
+                f"\n{PYRE_FIRE}"
             )
-            LOG.info(PYRE_FIRE)
 
 
 def _get_process_name(environment_variable_name: str, default: str) -> str:

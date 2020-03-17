@@ -16,11 +16,13 @@ import subprocess
 import sys
 import threading
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import IO, Iterable, List, Optional
 
 from typing_extensions import Final
 
 from .. import (
+    find_dot_pyre_directory,
     find_local_root,
     find_log_directory,
     find_project_root,
@@ -33,6 +35,7 @@ from ..analysis_directory import AnalysisDirectory, resolve_analysis_directory
 from ..configuration import Configuration
 from ..exceptions import EnvironmentException
 from ..filesystem import remove_if_exists, translate_path
+from ..log import StreamLogger
 from ..process import register_non_unique_process
 from ..socket_connection import SocketConnection, SocketException
 
@@ -159,7 +162,6 @@ class CommandParser(ABC):
         self._hide_parse_errors: bool = arguments.hide_parse_errors
         self._logging_sections: str = arguments.logging_sections
         self._log_identifier: str = arguments.log_identifier
-        self._log_directory: str = arguments.log_directory
         self._logger: str = arguments.logger
         self._formatter: List[str] = arguments.formatter
 
@@ -189,6 +191,7 @@ class CommandParser(ABC):
         ] = arguments.load_initial_state_from
         self._changed_files_path: Final[Optional[str]] = arguments.changed_files_path
         self._saved_state_project: Final[Optional[str]] = arguments.saved_state_project
+        dot_pyre_directory: Final[Optional[Path]] = arguments.dot_pyre_directory
 
         # Derived arguments
         self._capable_terminal: bool = is_capable_terminal()
@@ -197,9 +200,15 @@ class CommandParser(ABC):
         self._local_configuration = find_local_root(
             self._original_directory, self._local_configuration
         )
-        self._log_directory: str = find_log_directory(
-            self._log_directory, self._current_directory, self._local_configuration
+        self._dot_pyre_directory: Path = find_dot_pyre_directory(
+            dot_pyre_directory, self._current_directory
         )
+        self._log_directory: str = find_log_directory(
+            self._current_directory,
+            self._local_configuration,
+            str(self._dot_pyre_directory),
+        )
+
         logger = self._logger
         if logger:
             self._logger = translate_path(self._original_directory, logger)
@@ -263,10 +272,9 @@ class CommandParser(ABC):
             default="",
             help=argparse.SUPPRESS,  # Add given identifier to logged samples.
         )
-        parser.add_argument(
-            "--log-directory",
-            help=argparse.SUPPRESS,  # Override default location for logs
-        )
+
+        # Directory where Pyre places its log files and artifacts.
+        parser.add_argument("--dot-pyre-directory", type=Path, help=argparse.SUPPRESS)
         parser.add_argument(
             "--logger", help=argparse.SUPPRESS  # Specify custom logging binary.
         )
@@ -438,7 +446,6 @@ class CommandParser(ABC):
 
 class Command(CommandParser, ABC):
     _buffer: List[str] = []
-    _call_client_terminated: bool = False
 
     _local_root: str = ""
 
@@ -588,28 +595,6 @@ class Command(CommandParser, ABC):
         for line in stdout:
             self._buffer.append(line)
 
-    def _read_stderr(self, stream: Iterable[str]) -> None:
-        buffer = None
-        log_pattern = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} (\w+) (.*)")
-        try:
-            for line in stream:
-                if self._call_client_terminated:
-                    return
-                line = line.rstrip()
-                match = log_pattern.match(line)
-                if match:
-                    if buffer:
-                        buffer.flush()
-                    buffer = log.Buffer(
-                        section=match.groups()[0], data=[match.groups()[1]]
-                    )
-                elif buffer:
-                    buffer.append(line)
-            if buffer:
-                buffer.flush()
-        except Exception:
-            pass
-
     def _call_client(
         self,
         command: str,
@@ -655,23 +640,16 @@ class Command(CommandParser, ABC):
                 stdout_reader.start()
 
             # Read the error output and print it.
-            self._call_client_terminated = False
-            stderr_reader = threading.Thread(
-                target=self._read_stderr, args=(process.stderr,)
-            )
-            stderr_reader.daemon = True
-            stderr_reader.start()
+            with StreamLogger(process.stderr) as stream_logger:
+                with register_non_unique_process(
+                    process.pid, self.NAME, self.log_directory
+                ):
+                    # Wait for the process to finish and clean up.
+                    process.wait()
+                # In the exceptional case, make sure that we don't stop early
+                if process.returncode != 0:
+                    stream_logger.join()
 
-            with register_non_unique_process(
-                process.pid, self.NAME, self.log_directory
-            ):
-                # Wait for the process to finish and clean up.
-                process.wait()
-
-            # In the exceptional case, make sure that we print the error messages.
-            if process.returncode != 0:
-                stderr_reader.join()
-            self._call_client_terminated = True
             if capture_output:
                 # pyre-fixme: stdout_reader is not always declared!
                 stdout_reader.join()
@@ -702,18 +680,24 @@ class Command(CommandParser, ABC):
         self, request: json_rpc.Request, version_hash: str
     ) -> None:
         try:
-            with SocketConnection(self._log_directory) as socket_connection:
-                socket_connection.perform_handshake(version_hash)
-                socket_connection.send(request)
-                stderr_reader = threading.Thread(
-                    target=self._read_stderr, args=(sys.stderr,)
-                )
-                stderr_reader.daemon = True
-                stderr_reader.start()
-                response = socket_connection.read()
-                result = _convert_json_response_to_result(response)
-                result.check()
-                self._socket_result_handler(result)
+            stderr_file = os.path.join(self._log_directory, "server/server.stdout")
+            with subprocess.Popen(
+                ["tail", "--follow", "--lines=0", stderr_file],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            ) as stderr_tail:
+                try:
+                    with SocketConnection(self._log_directory) as socket_connection:
+                        socket_connection.perform_handshake(version_hash)
+                        with StreamLogger(stderr_tail.stdout):
+                            socket_connection.send(request)
+                            response = socket_connection.read()
+                        result = _convert_json_response_to_result(response)
+                        result.check()
+                        self._socket_result_handler(result)
+                finally:
+                    stderr_tail.terminate()
         except (
             SocketException,
             ResourceWarning,
