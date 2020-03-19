@@ -3,11 +3,12 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import argparse
 import itertools
 import json
 import re
+import subprocess
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -15,10 +16,50 @@ from .ast import verify_stable_ast
 from .postprocess import LOG
 
 
-def json_to_errors(json_string: Optional[str]) -> List[Dict[str, Any]]:
+def error_path(error: Dict[str, Any]) -> str:
+    return error["path"]
+
+
+class Errors:
+    def __init__(self, errors: List[Dict[str, Any]]) -> None:
+        self.errors: List[Dict[str, Any]] = errors
+        self.error_iterator: Iterator[
+            Tuple[str, Iterator[Dict[str, Any]]]
+        ] = itertools.groupby(sorted(errors, key=error_path), error_path)
+        self.length: int = len(errors)
+
+    def __iter__(self) -> Iterator[Tuple[str, Iterator[Dict[str, Any]]]]:
+        return self.error_iterator.__iter__()
+
+    def __next__(self) -> Tuple[str, Iterator[Dict[str, Any]]]:
+        return self.error_iterator.__next__()
+
+    def __len__(self) -> int:
+        return self.length
+
+    def __eq__(self, other: "Errors") -> bool:
+        return self.errors == other.errors
+
+    @classmethod
+    def empty(cls) -> "Errors":
+        return cls([])
+
+
+def _filter_errors(
+    errors: List[Dict[str, Any]], only_fix_error_code: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    if only_fix_error_code is not None:
+        errors = [error for error in errors if error["code"] == only_fix_error_code]
+    return errors
+
+
+def json_to_errors(
+    json_string: Optional[str], only_fix_error_code: Optional[int] = None
+) -> Errors:
     if json_string:
         try:
-            return json.loads(json_string)
+            errors = json.loads(json_string)
+            return Errors(_filter_errors(errors, only_fix_error_code))
         except json.decoder.JSONDecodeError:
             LOG.error(
                 "Recevied invalid JSON as input."
@@ -29,31 +70,87 @@ def json_to_errors(json_string: Optional[str]) -> List[Dict[str, Any]]:
             "Recevied no input."
             "If piping from `pyre check` be sure to use `--output=json`."
         )
-    return []
+    return Errors.empty()
 
 
-def sort_errors(
-    errors: List[Dict[str, Any]]
-) -> Iterator[Tuple[str, Iterator[Dict[str, Any]]]]:
-    def error_path(error: Dict[str, Any]) -> str:
-        return error["path"]
-
-    return itertools.groupby(sorted(errors, key=error_path), error_path)
-
-
-def filter_errors(
-    arguments: argparse.Namespace, errors: List[Dict[str, Any]]
-) -> List[Dict[str, Any]]:
-    only_fix_error_code: Optional[int] = arguments.only_fix_error_code
-    if only_fix_error_code is not None:
-        errors = [error for error in errors if error["code"] == only_fix_error_code]
-    return errors
-
-
-def errors_from_stdin(_arguments: argparse.Namespace) -> List[Dict[str, Any]]:
+def errors_from_stdin(only_fix_error_code: Optional[int] = None) -> Errors:
     input = sys.stdin.read()
-    errors = json_to_errors(input)
-    return filter_errors(_arguments, errors)
+    return json_to_errors(input)
+
+
+def errors_from_targets(
+    project_directory: Path,
+    path: str,
+    targets: List[str],
+    check_alternate_names: bool = True,
+) -> Errors:
+    buck_test_command = (
+        ["buck", "test", "--show-full-json-output"] + targets + ["--", "--run-disabled"]
+    )
+    buck_test = subprocess.run(
+        buck_test_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    errors = Errors.empty()
+    if buck_test.returncode == 0:
+        # Successful run with no type errors
+        LOG.info("No errors in %s/TARGETS...", path)
+    elif buck_test.returncode == 32:
+        buck_test_output = buck_test.stdout.decode().split("\n")
+        pyre_error_pattern = re.compile(r"\W*(.*\.pyi?):(\d*):(\d*) (.* \[(\d*)\]: .*)")
+        errors = {}
+        for output_line in buck_test_output:
+            matched = pyre_error_pattern.match(output_line)
+            if matched:
+                path = matched.group(1)
+                line = int(matched.group(2))
+                column = int(matched.group(3))
+                description = matched.group(4)
+                code = matched.group(5)
+                error = {
+                    "line": line,
+                    "column": column,
+                    "path": project_directory / path,
+                    "code": code,
+                    "description": description,
+                    "concise_description": description,
+                }
+                errors[(line, column, path, code)] = error
+        errors = Errors(list(errors.values()))
+    elif check_alternate_names and buck_test.returncode == 5:
+        # Generated type check target was not named as expected.
+        LOG.warning("Could not find buck test targets: %s", targets)
+        LOG.info("Looking for similar targets...")
+        targets_to_retry = []
+        for target in targets:
+            query_command = ["buck", "query", target]
+            similar_targets = subprocess.run(
+                query_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            output = similar_targets.stdout.decode()
+            error_output = similar_targets.stderr.decode()
+            if output:
+                targets_to_retry.append(output)
+            elif error_output:
+                typecheck_targets = [
+                    target.strip()
+                    for target in error_output.split("\n")
+                    if target.strip().endswith("-pyre-typecheck")
+                ]
+                targets_to_retry += typecheck_targets
+        if targets_to_retry:
+            LOG.info("Retrying similar targets: %s", targets_to_retry)
+            errors = errors_from_targets(
+                project_directory, path, targets_to_retry, check_alternate_names=False
+            )
+        else:
+            LOG.error("No similar targets to retry.")
+    else:
+        LOG.error(
+            "Failed to run buck test command:\n\t%s\n\n%s",
+            " ".join(buck_test_command),
+            buck_test.stderr.decode(),
+        )
+    return errors
 
 
 def _remove_comment_preamble(lines: List[str]) -> None:
@@ -98,7 +195,7 @@ def _split_across_lines(
 
 
 @verify_stable_ast
-def fix_file(
+def _fix_file(
     filename: str,
     errors: Dict[int, List[Dict[str, str]]],
     custom_comment: Optional[str] = None,
@@ -166,3 +263,34 @@ def fix_file(
         new_lines.append(line)
     new_text = "\n".join(new_lines)
     path.write_text(new_text)
+
+
+def _build_error_map(
+    errors: Iterator[Dict[str, Any]]
+) -> Dict[int, List[Dict[str, str]]]:
+    error_map = defaultdict(lambda: [])
+    for error in errors:
+        if error["concise_description"]:
+            description = error["concise_description"]
+        else:
+            description = error["description"]
+        match = re.search(r"\[(\d+)\]: (.*)", description)
+        if match:
+            error_map[error["line"]].append(
+                {"code": match.group(1), "description": match.group(2)}
+            )
+    return error_map
+
+
+def fix(
+    errors: Errors, comment: str = "", max_line_length: int = 0, truncate: bool = False
+) -> None:
+    for path, errors in errors:
+        LOG.info("Processing `%s`", path)
+        _fix_file(
+            path,
+            _build_error_map(errors),
+            comment,
+            max_line_length if max_line_length > 0 else None,
+            truncate,
+        )

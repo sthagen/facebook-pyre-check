@@ -1079,9 +1079,9 @@ module Implementation = struct
             ~assumptions
             ~class_metadata_environment
             ~transitive:false
-            ~class_attributes:false
+            ~class_attributes:true
             ~include_generated_attributes:true
-            ~instantiated:annotation
+            ~instantiated:(Type.meta annotation)
             ?dependency
             ~special_method:false
             ~attribute_name:"__init__"
@@ -1129,7 +1129,12 @@ module Implementation = struct
             class_name
             ~class_metadata_environment
           >>| List.map
-                ~f:(instantiate_attribute ~assumptions ~class_metadata_environment ~instantiated)
+                ~f:
+                  (instantiate_attribute
+                     ?dependency
+                     ~assumptions
+                     ~class_metadata_environment
+                     ~instantiated)
       | Some (_ :: _) ->
           (* These come from calling attributes on Unions, which are handled by solve_less_or_equal
              indirectly by breaking apart the union before doing the
@@ -1470,7 +1475,7 @@ module Implementation = struct
           ~uninstantiated_annotation
           ~abstract:false
           ~async:false
-          ~class_attribute:false
+          ~class_attribute:class_attributes
           ~defined:true
           ~initialized:Implicitly
           ~name:"__init__"
@@ -1707,7 +1712,7 @@ module Implementation = struct
       class_name
     >>= Sequence.find_map ~f:(fun table ->
             UninstantiatedAttributeTable.lookup_name table attribute_name)
-    >>| instantiate_attribute ~assumptions ~class_metadata_environment ?instantiated
+    >>| instantiate_attribute ~assumptions ~class_metadata_environment ?instantiated ?dependency
 
 
   let all_attributes
@@ -1794,6 +1799,59 @@ module Implementation = struct
       AnnotatedAttribute.uninstantiated_annotation attribute
     in
     let annotation, original =
+      let partial_apply_self ({ Type.Callable.implementation; overloads; _ } as callable) ~self_type
+        =
+        let open Type.Callable in
+        let { Type.Callable.kind; implementation; overloads; implicit } =
+          match implementation, overloads with
+          | { Type.Callable.parameters = Defined (Named { name; annotation; _ } :: _); _ }, _ -> (
+              let callable =
+                let implicit = { implicit_annotation = self_type; name } in
+                { callable with implicit = Some implicit }
+              in
+              let order = full_order ?dependency class_metadata_environment ~assumptions in
+              let solution =
+                try
+                  TypeOrder.solve_less_or_equal
+                    order
+                    ~left:self_type
+                    ~right:annotation
+                    ~constraints:TypeConstraints.empty
+                  |> List.filter_map ~f:(TypeOrder.OrderedConstraints.solve ~order)
+                  |> List.hd
+                  |> Option.value ~default:TypeConstraints.Solution.empty
+                with
+                | ClassHierarchy.Untracked _ -> TypeConstraints.Solution.empty
+              in
+              let instantiated =
+                TypeConstraints.Solution.instantiate solution (Type.Callable callable)
+              in
+              match instantiated with
+              | Type.Callable callable -> callable
+              | _ -> callable )
+          (* We also need to set the implicit up correctly for overload-only methods. *)
+          | _, { parameters = Defined (Named { name; _ } :: _); _ } :: _ ->
+              let implicit = { implicit_annotation = self_type; name } in
+              { callable with implicit = Some implicit }
+          | _ -> callable
+        in
+        let drop_self { Type.Callable.annotation; parameters } =
+          let parameters =
+            match parameters with
+            | Type.Callable.Defined (_ :: parameters) -> Type.Callable.Defined parameters
+            | ParameterVariadicTypeVariable { head = _ :: head; variable } ->
+                ParameterVariadicTypeVariable { head; variable }
+            | _ -> parameters
+          in
+          { Type.Callable.annotation; parameters }
+        in
+        {
+          Type.Callable.kind;
+          implementation = drop_self implementation;
+          overloads = List.map overloads ~f:drop_self;
+          implicit;
+        }
+      in
       let instantiated =
         match instantiated with
         | Some instantiated -> instantiated
@@ -1801,98 +1859,13 @@ module Implementation = struct
       in
       let instantiated = if accessed_via_metaclass then Type.meta instantiated else instantiated in
       match annotation with
-      | Method
-          { callable = { Type.Callable.implementation; overloads; _ } as callable; is_class_method }
-        ->
-          let callable =
-            let partial_apply_self ~self_type =
-              let open Type.Callable in
-              let { Type.Callable.kind; implementation; overloads; implicit } =
-                match implementation, overloads with
-                | { Type.Callable.parameters = Defined (Named { name; annotation; _ } :: _); _ }, _
-                  -> (
-                    let callable =
-                      let implicit = { implicit_annotation = self_type; name } in
-                      { callable with implicit = Some implicit }
-                    in
-                    let order = full_order ?dependency class_metadata_environment ~assumptions in
-                    let solution =
-                      try
-                        TypeOrder.solve_less_or_equal
-                          order
-                          ~left:self_type
-                          ~right:annotation
-                          ~constraints:TypeConstraints.empty
-                        |> List.filter_map ~f:(TypeOrder.OrderedConstraints.solve ~order)
-                        |> List.hd
-                        |> Option.value ~default:TypeConstraints.Solution.empty
-                      with
-                      | ClassHierarchy.Untracked _ -> TypeConstraints.Solution.empty
-                    in
-                    let instantiated =
-                      TypeConstraints.Solution.instantiate solution (Type.Callable callable)
-                    in
-                    match instantiated with
-                    | Type.Callable callable -> callable
-                    | _ -> callable )
-                (* We also need to set the implicit up correctly for overload-only methods. *)
-                | _, { parameters = Defined (Named { name; _ } :: _); _ } :: _ ->
-                    let implicit = { implicit_annotation = self_type; name } in
-                    { callable with implicit = Some implicit }
-                | _ -> callable
-              in
-              let drop_self { Type.Callable.annotation; parameters } =
-                let parameters =
-                  match parameters with
-                  | Type.Callable.Defined (_ :: parameters) -> Type.Callable.Defined parameters
-                  | ParameterVariadicTypeVariable { head = _ :: head; variable } ->
-                      ParameterVariadicTypeVariable { head; variable }
-                  | _ -> parameters
-                in
-                { Type.Callable.annotation; parameters }
-              in
-              {
-                Type.Callable.kind;
-                implementation = drop_self implementation;
-                overloads = List.map overloads ~f:drop_self;
-                implicit;
-              }
-            in
-            if
-              ClassMetadataEnvironment.ReadOnly.is_typed_dictionary
-                class_metadata_environment
-                ?dependency
-                class_name
-            then
-              callable
-            else if String.equal attribute_name "__new__" then
-              callable
-            else if is_class_method then
-              partial_apply_self ~self_type:(Type.meta instantiated)
-            else if AnnotatedAttribute.static attribute then
-              callable
-            else if default_class_attribute then
-              (* Keep first argument around when calling instance methods from class attributes. *)
-              callable
-            else
-              let applied = partial_apply_self ~self_type:instantiated in
-              let instantiated_is_protocol =
-                Type.split instantiated
-                |> fst
-                |> UnannotatedGlobalEnvironment.ReadOnly.is_protocol
-                     (unannotated_global_environment class_metadata_environment)
-                     ?dependency
-              in
-              if (not (String.equal class_name "object")) && instantiated_is_protocol then
-                (* We don't have a way of tracing taint through protocols, so maintaining a name and
-                   implicit for methods of protocols isn't valuable. It also will complicate things
-                   down the line with BoundMethods *)
-                { applied with kind = Anonymous; implicit = None }
-              else
-                applied
-          in
+      | Method { callable; is_class_method } ->
           (* Special cases *)
           let callable =
+            let self_parameter =
+              Type.Callable.Parameter.Named
+                { name = "self"; annotation = Type.Top; default = false }
+            in
             match instantiated, attribute_name, callable with
             | Type.TypedDictionary { fields; _ }, method_name, callable ->
                 Type.TypedDictionary.special_overloads ~class_name ~fields ~method_name
@@ -1911,6 +1884,7 @@ module Implementation = struct
                     parameters =
                       Defined
                         [
+                          self_parameter;
                           Named
                             { name = "x"; annotation = Type.literal_integer index; default = false };
                         ];
@@ -1950,7 +1924,8 @@ module Implementation = struct
                   | "typing.Optional" ->
                       ( {
                           Type.Callable.annotation = Type.meta (Type.Optional synthetic);
-                          parameters = Defined [create_parameter (Type.meta synthetic)];
+                          parameters =
+                            Defined [self_parameter; create_parameter (Type.meta synthetic)];
                         },
                         [] )
                   | "typing.Callable" ->
@@ -1960,6 +1935,7 @@ module Implementation = struct
                           parameters =
                             Defined
                               [
+                                self_parameter;
                                 create_parameter
                                   (Type.Tuple (Bounded (Concrete [Type.Any; Type.meta synthetic])));
                               ];
@@ -1971,7 +1947,7 @@ module Implementation = struct
                         {
                           Type.Callable.annotation =
                             Type.meta (Type.Parametric { name; parameters = generics });
-                          parameters = Defined [parameter];
+                          parameters = Defined [self_parameter; parameter];
                         }
                       in
                       match generics with
@@ -2018,12 +1994,43 @@ module Implementation = struct
                               Type.Callable.annotation =
                                 Type.meta (Type.Parametric { name; parameters = return_parameters });
                               parameters =
-                                Defined [create_parameter (Type.tuple parameter_parameters)];
+                                Defined
+                                  [
+                                    self_parameter;
+                                    create_parameter (Type.tuple parameter_parameters);
+                                  ];
                             },
                             [] ) )
                 in
                 { callable with implementation; overloads }
             | _ -> callable
+          in
+          let callable =
+            if String.equal attribute_name "__new__" then
+              callable
+            else if is_class_method then
+              partial_apply_self callable ~self_type:(Type.meta instantiated)
+            else if AnnotatedAttribute.static attribute then
+              callable
+            else if default_class_attribute then
+              (* Keep first argument around when calling instance methods from class attributes. *)
+              callable
+            else
+              let applied = partial_apply_self callable ~self_type:instantiated in
+              let instantiated_is_protocol =
+                Type.split instantiated
+                |> fst
+                |> UnannotatedGlobalEnvironment.ReadOnly.is_protocol
+                     (unannotated_global_environment class_metadata_environment)
+                     ?dependency
+              in
+              if (not (String.equal class_name "object")) && instantiated_is_protocol then
+                (* We don't have a way of tracing taint through protocols, so maintaining a name and
+                   implicit for methods of protocols isn't valuable. It also will complicate things
+                   down the line with BoundMethods *)
+                { applied with kind = Anonymous; implicit = None }
+              else
+                applied
           in
           Type.Callable callable, Type.Callable callable
       | Attribute { annotation; original_annotation; is_property = true } ->
@@ -2066,6 +2073,17 @@ module Implementation = struct
       | Attribute { annotation; original_annotation; is_property = false } -> (
           match instantiated, class_name, attribute_name with
           | Type.Callable _, "typing.Callable", "__call__" -> instantiated, instantiated
+          | ( Parametric
+                {
+                  name = "BoundMethod";
+                  parameters = [Single (Callable callable); Single self_type];
+                },
+              "typing.Callable",
+              "__call__" ) ->
+              let callable =
+                partial_apply_self callable ~self_type |> fun callable -> Type.Callable callable
+              in
+              callable, callable
           | _ -> annotation, original_annotation )
     in
     let annotation, original =
@@ -3527,9 +3545,16 @@ module Implementation = struct
       else
         constructor_signature
     in
+    let with_return = Type.Callable.with_return_annotation ~annotation:return_annotation in
     match signature with
-    | Type.Callable callable ->
-        Type.Callable (Type.Callable.with_return_annotation ~annotation:return_annotation callable)
+    | Type.Callable callable -> Type.Callable (with_return callable)
+    | Parametric
+        { name = "BoundMethod"; parameters = [Single (Callable callable); Single self_type] } ->
+        Parametric
+          {
+            name = "BoundMethod";
+            parameters = [Single (Callable (with_return callable)); Single self_type];
+          }
     | _ -> signature
 end
 

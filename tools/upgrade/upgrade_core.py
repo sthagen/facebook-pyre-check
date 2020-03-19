@@ -3,52 +3,35 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
-
 
 import argparse
 import json
 import logging
-import re
 import subprocess
 import sys
 import traceback
-from collections import defaultdict
-from enum import Enum
 from logging import Logger
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
 from ...client.commands import ExitCode
-from ...client.filesystem import get_filesystem
-from .ast import verify_stable_ast
 from .codemods import (
     run_missing_global_annotations,
     run_missing_overridden_return_annotations,
 )
-from .errors import (
-    errors_from_stdin,
-    filter_errors,
-    fix_file,
-    json_to_errors,
-    sort_errors,
+from .errors import Errors, errors_from_stdin, errors_from_targets, fix, json_to_errors
+from .filesystem import (
+    LocalMode,
+    add_local_mode,
+    find_targets,
+    get_filesystem,
+    path_exists,
+    remove_non_pyre_ignores,
 )
 from .postprocess import apply_lint, get_lint_status
 
 
 LOG: Logger = logging.getLogger(__name__)
-
-
-class LocalMode(Enum):
-    IGNORE = "pyre-ignore-all-errors"
-    UNSAFE = "pyre-unsafe"
-    STRICT = "pyre-strict"
-
-    def get_regex(self) -> str:
-        return "^[ \t]*# *" + self.value + " *$"
-
-    def get_comment(self) -> str:
-        return "# " + self.value
 
 
 class VersionControl:
@@ -67,13 +50,13 @@ class VersionControl:
 
 class Configuration:
     def __init__(self, path: Path, json_contents: Dict[str, Any]) -> None:
-        self._path = path
+        self._path: Path = path
         if path.name == ".pyre_configuration.local":
-            self.is_local = True
+            self.is_local: bool = True
         else:
-            self.is_local = False
-        self.root = str(path.parent)
-        self.original_contents = json_contents
+            self.is_local: bool = False
+        self.root: str = str(path.parent)
+        self.original_contents: Dict[str, Any] = json_contents
 
         # Configuration fields
         self.strict: bool = bool(json_contents.get("strict"))
@@ -85,7 +68,7 @@ class Configuration:
         self.version: Optional[str] = json_contents.get("version")
 
     def get_contents(self) -> Dict[str, Any]:
-        contents = self.original_contents
+        contents: Dict[str, Any] = self.original_contents
 
         def update_contents(key: str) -> None:
             attribute = getattr(self, key)
@@ -135,7 +118,9 @@ class Configuration:
         ]
 
     @staticmethod
-    def gather_local_configurations(arguments) -> List["Configuration"]:
+    def gather_local_configurations(
+        *, push_blocking_only: bool = False
+    ) -> List["Configuration"]:
         LOG.info("Finding configurations...")
         configuration_paths = Configuration.gather_local_configuration_paths(".")
         if not configuration_paths:
@@ -153,9 +138,7 @@ class Configuration:
                     configuration = Configuration(
                         configuration_path, json.load(configuration_file)
                     )
-                    if configuration.push_blocking or (
-                        not arguments.push_blocking_only
-                    ):
+                    if configuration.push_blocking or (not push_blocking_only):
                         configurations.append(configuration)
                 except json.decoder.JSONDecodeError:
                     LOG.error(
@@ -165,7 +148,7 @@ class Configuration:
         LOG.info(
             "Found %d %sconfiguration%s",
             len(configurations),
-            "push-blocking " if arguments.push_blocking_only else "",
+            "push-blocking " if push_blocking_only else "",
             "s" if len(configurations) != 1 else "",
         )
         return configurations
@@ -203,7 +186,9 @@ class Configuration:
             self.targets = targets
         self.write()
 
-    def get_errors(self, should_clean: bool = True) -> List[Dict[str, Any]]:
+    def get_errors(
+        self, only_fix_error_code: Optional[int] = None, should_clean: bool = True
+    ) -> Errors:
         # TODO(T37074129): Better parallelization or truncation needed for fbcode
         if self.targets and should_clean:
             try:
@@ -212,10 +197,10 @@ class Configuration:
                 subprocess.call(["buck", "clean"], timeout=200)
             except subprocess.TimeoutExpired:
                 LOG.warning("Buck timed out. Try running `buck kill` before retrying.")
-                return []
+                return Errors.empty()
             except subprocess.CalledProcessError as error:
                 LOG.warning("Error calling `buck clean`: %s", str(error))
-                return []
+                return Errors.empty()
         try:
             LOG.info("Checking `%s`...", self.root)
             if self.is_local:
@@ -231,126 +216,51 @@ class Configuration:
                     stderr=subprocess.PIPE,
                 )
             json_string = process.stdout.decode().strip()
-            errors = json_to_errors(json_string)
+            errors = json_to_errors(json_string, only_fix_error_code)
             LOG.info("Found %d error%s.", len(errors), "s" if len(errors) != 1 else "")
             return errors
         except subprocess.CalledProcessError as error:
             LOG.warning("Error calling pyre: %s", str(error))
-            return []
+            return Errors.empty()
 
 
-def errors_from_run(_arguments: argparse.Namespace) -> List[Dict[str, Any]]:
+def errors_from_run(only_fix_error_code: Optional[int] = None) -> Errors:
     configuration_path = Configuration.find_project_configuration()
     if not configuration_path:
         LOG.warning("Could not find pyre configuration.")
-        return []
+        return Errors.empty()
     with open(configuration_path) as configuration_file:
         configuration = Configuration(configuration_path, json.load(configuration_file))
-        errors = configuration.get_errors()
-        return filter_errors(_arguments, errors)
+        return configuration.get_errors(only_fix_error_code)
 
 
-# Exposed for testing.
-def _upgrade_project(
-    arguments: argparse.Namespace,
-    configuration: Configuration,
-    root: Path,
-    version_control: VersionControl,
+def run_strict_default(
+    arguments: argparse.Namespace, version_control: VersionControl
 ) -> None:
-    LOG.info("Processing %s", configuration.get_directory())
-    if not configuration.is_local or not configuration.version:
+    project_configuration = Configuration.find_project_configuration()
+    if project_configuration is None:
+        LOG.info("No project configuration found for the given directory.")
         return
-    configuration.remove_version()
-    errors = (
-        errors_from_stdin(arguments)
-        if arguments.from_stdin
-        else configuration.get_errors()
-    )
-    if len(errors) > 0:
-        fix(arguments, sort_errors(errors))
+    local_configuration = arguments.local_configuration
+    if local_configuration:
+        configuration_path = local_configuration / ".pyre_configuration.local"
+    else:
+        configuration_path = project_configuration
+    with open(configuration_path) as configuration_file:
+        configuration = Configuration(configuration_path, json.load(configuration_file))
+        LOG.info("Processing %s", configuration.get_directory())
+        configuration.add_strict()
+        errors = configuration.get_errors()
 
-        # Lint and re-run pyre once to resolve most formatting issues
+        if len(errors) == 0:
+            return
+        for filename, _ in errors:
+            add_local_mode(filename, LocalMode.UNSAFE)
+
         if arguments.lint:
             lint_status = get_lint_status(version_control.LINTERS_TO_SKIP)
             if lint_status:
                 apply_lint(version_control.LINTERS_TO_SKIP)
-                errors = configuration.get_errors(should_clean=False)
-                fix(arguments, sort_errors(errors))
-    try:
-        project_root = root.resolve()
-        local_root = configuration.get_directory().resolve()
-        version_control.submit_changes(
-            arguments.submit,
-            version_control.commit_message(str(local_root.relative_to(project_root))),
-        )
-    except subprocess.CalledProcessError:
-        LOG.info("Error while running hg.")
-
-
-def fix(
-    arguments: argparse.Namespace,
-    result: Iterator[Tuple[str, Iterator[Dict[str, Any]]]],
-) -> None:
-    for path, errors in result:
-        LOG.info("Processing `%s`", path)
-
-        # Build map from line to error codes.
-        error_map = defaultdict(lambda: [])
-        for error in errors:
-            if error["concise_description"]:
-                description = error["concise_description"]
-            else:
-                description = error["description"]
-            match = re.search(r"\[(\d+)\]: (.*)", description)
-            if match:
-                error_map[error["line"]].append(
-                    {"code": match.group(1), "description": match.group(2)}
-                )
-        custom_comment = arguments.comment if hasattr(arguments, "comment") else ""
-        max_line_length = (
-            arguments.max_line_length if arguments.max_line_length > 0 else None
-        )
-        fix_file(path, error_map, custom_comment, max_line_length, arguments.truncate)
-
-
-@verify_stable_ast
-def add_local_mode(filename: str, mode: LocalMode) -> None:
-    LOG.info("Processing `%s`", filename)
-    path = Path(filename)
-    text = path.read_text()
-    if "@" "generated" in text:
-        LOG.warning("Attempting to edit generated file %s, skipping.", filename)
-        return
-
-    lines = text.split("\n")  # type: List[str]
-
-    # Check if a local mode is already set.
-    for line in lines:
-        for local_mode in LocalMode:
-            if re.match(local_mode.get_regex(), line):
-                return
-
-    def is_header(line: str) -> bool:
-        is_comment = line.lstrip().startswith("#")
-        is_pyre_ignore = (
-            re.match("^[ \t]*# *pyre-ignore *$", line)
-            or re.match("^[ \t]*# *pyre-fixme *$", line)
-            or re.match("^[ \t]*# *type: ignore *$", line)
-        )
-        return is_comment and not is_pyre_ignore
-
-    # Add local mode.
-    new_lines = []
-    past_header = False
-    for line in lines:
-        if not past_header and not is_header(line):
-            past_header = True
-            if len(new_lines) != 0:
-                new_lines.append("")
-            new_lines.append(mode.get_comment())
-        new_lines.append(line)
-    new_text = "\n".join(new_lines)
-    path.write_text(new_text)
 
 
 def run_global_version_update(
@@ -386,7 +296,9 @@ def run_global_version_update(
         if paths
         else [
             configuration.get_path()
-            for configuration in Configuration.gather_local_configurations(arguments)
+            for configuration in Configuration.gather_local_configurations(
+                push_blocking_only=arguments.push_blocking_only
+            )
             if configuration.is_local
         ]
     )
@@ -421,49 +333,89 @@ def run_global_version_update(
         LOG.info("Error while running hg.")
 
 
-def run_strict_default(
+def run_upgrade_all(
     arguments: argparse.Namespace, version_control: VersionControl
 ) -> None:
-    project_configuration = Configuration.find_project_configuration()
-    if project_configuration is None:
-        LOG.info("No project configuration found for the given directory.")
+    configurations = Configuration.gather_local_configurations(
+        push_blocking_only=arguments.push_blocking_only
+    )
+    paths = [str(configuration.get_directory()) for configuration in configurations]
+    with open(arguments.sandcastle) as sandcastle_file:
+        sandcastle_command = json.load(sandcastle_file)
+    if arguments.hash:
+        sandcastle_command["args"]["hash"] = arguments.hash
+    sandcastle_command["args"]["paths"] = paths
+    sandcastle_command["args"]["push_blocking_only"] = arguments.push_blocking_only
+    command = ["scutil", "create"]
+    subprocess.run(command, input=json.dumps(sandcastle_command).encode())
+
+
+# Exposed for testing.
+def _upgrade_project(
+    arguments: argparse.Namespace,
+    configuration: Configuration,
+    root: Path,
+    version_control: VersionControl,
+) -> None:
+    LOG.info("Processing %s", configuration.get_directory())
+    if not configuration.is_local:
         return
-    local_configuration = arguments.local_configuration
-    if local_configuration:
-        configuration_path = local_configuration / ".pyre_configuration.local"
-    else:
-        configuration_path = project_configuration
-    with open(configuration_path) as configuration_file:
-        configuration = Configuration(configuration_path, json.load(configuration_file))
-        LOG.info("Processing %s", configuration.get_directory())
-        configuration.add_strict()
-        errors = configuration.get_errors()
+    if arguments.upgrade_version:
+        if configuration.version:
+            configuration.remove_version()
+        else:
+            return
+    errors = (
+        errors_from_stdin(arguments.only_fix_error_code)
+        if arguments.from_stdin
+        else configuration.get_errors()
+    )
+    if len(errors) > 0:
+        fix(errors, arguments.comment, arguments.max_line_length, arguments.truncate)
 
-        if len(errors) > 0:
-            result = sort_errors(errors)
-            for filename, _ in result:
-                add_local_mode(filename, LocalMode.UNSAFE)
-
-            if arguments.lint:
-                lint_status = get_lint_status(version_control.LINTERS_TO_SKIP)
-                if lint_status:
-                    apply_lint(version_control.LINTERS_TO_SKIP)
+        # Lint and re-run pyre once to resolve most formatting issues
+        if arguments.lint:
+            lint_status = get_lint_status(version_control.LINTERS_TO_SKIP)
+            if lint_status:
+                apply_lint(version_control.LINTERS_TO_SKIP)
+                errors = configuration.get_errors(should_clean=False)
+                fix(
+                    errors,
+                    arguments.comment,
+                    arguments.max_line_length,
+                    arguments.truncate,
+                )
+    try:
+        project_root = root.resolve()
+        local_root = configuration.get_directory().resolve()
+        version_control.submit_changes(
+            arguments.submit,
+            version_control.commit_message(str(local_root.relative_to(project_root))),
+        )
+    except subprocess.CalledProcessError:
+        LOG.info("Error while running hg.")
 
 
 def run_fixme(arguments: argparse.Namespace, version_control: VersionControl) -> None:
+    # Suppress errors in project with no local configurations.
     if arguments.run:
-        errors = errors_from_run(arguments)
-        fix(arguments, sort_errors(errors))
+        errors = errors_from_run(arguments.only_fix_error_code)
+        fix(errors, arguments.comment, arguments.max_line_length, arguments.truncate)
 
         if arguments.lint:
             lint_status = get_lint_status(version_control.LINTERS_TO_SKIP)
             if lint_status:
                 apply_lint(version_control.LINTERS_TO_SKIP)
-                errors = errors_from_run(arguments)
-                fix(arguments, sort_errors(errors))
+                errors = errors_from_run(arguments.only_fix_error_code)
+                fix(
+                    errors,
+                    arguments.comment,
+                    arguments.max_line_length,
+                    arguments.truncate,
+                )
     else:
-        errors = errors_from_stdin(arguments)
-        fix(arguments, sort_errors(errors))
+        errors = errors_from_stdin(arguments.only_fix_error_code)
+        fix(errors, arguments.comment, arguments.max_line_length, arguments.truncate)
 
 
 def run_fixme_single(
@@ -484,30 +436,14 @@ def run_fixme_single(
 def run_fixme_all(
     arguments: argparse.Namespace, version_control: VersionControl
 ) -> None:
-    # Create sandcastle command.
-    if arguments.sandcastle:
-        configurations = Configuration.gather_local_configurations(arguments)
-        paths = [str(configuration.get_directory()) for configuration in configurations]
-        with open(arguments.sandcastle) as sandcastle_file:
-            sandcastle_command = json.load(sandcastle_file)
-        if arguments.hash:
-            sandcastle_command["args"]["hash"] = arguments.hash
-        sandcastle_command["args"]["paths"] = paths
-        sandcastle_command["args"]["push_blocking_only"] = arguments.push_blocking_only
-        command = ["scutil", "create"]
-        subprocess.run(command, input=json.dumps(sandcastle_command).encode())
-        return
-
-    # Run locally.
-    if arguments.hash and isinstance(arguments.hash, str):
-        run_global_version_update(arguments, version_control)
-
     project_configuration = Configuration.find_project_configuration()
     if project_configuration is None:
         LOG.info("No project configuration found for the current directory.")
         return
 
-    configurations = Configuration.gather_local_configurations(arguments)
+    configurations = Configuration.gather_local_configurations(
+        push_blocking_only=arguments.push_blocking_only
+    )
     for configuration in configurations:
         _upgrade_project(
             arguments, configuration, project_configuration.parent, version_control
@@ -522,145 +458,25 @@ def run_fixme_targets_file(
     version_control: VersionControl,
 ) -> None:
     LOG.info("Processing %s/TARGETS...", path)
-
-    def get_errors(
-        path: str, targets: List[str], check_alternate_names: bool = True
-    ) -> Optional[List[Dict[str, Any]]]:
-        buck_test_command = (
-            ["buck", "test", "--show-full-json-output"]
-            + targets
-            + ["--", "--run-disabled"]
-        )
-        buck_test = subprocess.run(
-            buck_test_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        errors = None
-        if buck_test.returncode == 0:
-            # Successful run with no type errors
-            LOG.info("No errors in %s/TARGETS...", path)
-        elif buck_test.returncode == 32:
-            buck_test_output = buck_test.stdout.decode().split("\n")
-            pyre_error_pattern = re.compile(
-                r"\W*(.*\.pyi?):(\d*):(\d*) (.* \[(\d*)\]: .*)"
-            )
-            errors = {}
-            for output_line in buck_test_output:
-                matched = pyre_error_pattern.match(output_line)
-                if matched:
-                    path = matched.group(1)
-                    line = int(matched.group(2))
-                    column = int(matched.group(3))
-                    description = matched.group(4)
-                    code = matched.group(5)
-                    error = {
-                        "line": line,
-                        "column": column,
-                        "path": project_directory / path,
-                        "code": code,
-                        "description": description,
-                        "concise_description": description,
-                    }
-                    errors[(line, column, path, code)] = error
-            errors = list(errors.values())
-        elif check_alternate_names and buck_test.returncode == 5:
-            # Generated type check target was not named as expected.
-            LOG.warning("Could not find buck test targets: %s", targets)
-            LOG.info("Looking for similar targets...")
-            targets_to_retry = []
-            for target in targets:
-                query_command = ["buck", "query", target]
-                similar_targets = subprocess.run(
-                    query_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-                )
-                output = similar_targets.stdout.decode()
-                error_output = similar_targets.stderr.decode()
-                if output:
-                    targets_to_retry.append(output)
-                elif error_output:
-                    typecheck_targets = [
-                        target.strip()
-                        for target in error_output.split("\n")
-                        if target.strip().endswith("-pyre-typecheck")
-                    ]
-                    targets_to_retry += typecheck_targets
-            if targets_to_retry:
-                LOG.info("Retrying similar targets: %s", targets_to_retry)
-                errors = get_errors(path, targets_to_retry, check_alternate_names=False)
-            else:
-                LOG.error("No similar targets to retry.")
-        else:
-            LOG.error(
-                "Failed to run buck test command:\n\t%s\n\n%s",
-                " ".join(buck_test_command),
-                buck_test.stderr.decode(),
-            )
-        return errors
-
     targets = [path + ":" + name + "-pyre-typecheck" for name in target_names]
-    errors = get_errors(path, targets)
+    errors = errors_from_targets(project_directory, path, targets)
     if not errors:
         return
     LOG.info("Found %d type errors in %s/TARGETS.", len(errors), path)
     if not errors:
         return
-    fix(arguments, sort_errors(errors))
+    fix(errors, arguments.comment, arguments.max_line_length, arguments.truncate)
     if not arguments.lint:
         return
     lint_status = get_lint_status(version_control.LINTERS_TO_SKIP)
     if lint_status:
         apply_lint(version_control.LINTERS_TO_SKIP)
-        errors = get_errors(path, targets)
+        errors = errors_from_targets(project_directory, path, targets)
         if not errors:
             LOG.info("Errors unchanged after linting.")
             return
         LOG.info("Found %d type errors after linting.", len(errors))
-        fix(arguments, sort_errors(errors))
-
-
-def find_targets(search_root: Path) -> Dict[str, List[str]]:
-    LOG.info("Finding typecheck targets in %s", search_root)
-    # TODO(T56778370): Clean up code by parsing the TARGETS file rather than using grep.
-    typing_field = "check_types ?="
-    targets_regex = r"(?s)name = ((?!\n\s*name).)*{}((?!\n\s*name).)*".format(
-        typing_field
-    )
-    find_targets_command = [
-        "grep",
-        "-RPzo",
-        "--include=*TARGETS",
-        targets_regex,
-        search_root,
-    ]
-    find_targets = subprocess.run(
-        find_targets_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-    )
-    if find_targets.returncode == 1:
-        LOG.info("Did not find any targets.")
-        return {}
-    if find_targets.returncode != 0:
-        LOG.error("Failed to search for targets: %s", find_targets.stderr.decode())
-        return {}
-    output = find_targets.stdout.decode()
-    targets = re.split(typing_field, output)
-    target_pattern = re.compile(r".*?([^\s]*)\/TARGETS:.*name = \"([^\"]*)\".*")
-    target_names = {}
-    total_targets = 0
-    for target in targets:
-        matched = target_pattern.match(target.replace("\n", " ").strip())
-        if matched:
-            total_targets += 1
-            path = matched.group(1).strip()
-            target_name = matched.group(2)
-            if path in target_names:
-                target_names[path].append(target_name)
-            else:
-                target_names[path] = [target_name]
-    LOG.info(
-        "Found {} typecheck targets in {} TARGETS files to analyze".format(
-            total_targets, len(target_names)
-        )
-    )
-    return target_names
+        fix(errors, arguments.comment, arguments.max_line_length, arguments.truncate)
 
 
 def run_fixme_targets(
@@ -694,23 +510,6 @@ def run_fixme_targets(
         LOG.info("Error while running hg.")
 
 
-def remove_non_pyre_ignores(
-    subdirectory: Path, arguments: argparse.Namespace, version_control: VersionControl
-) -> None:
-    python_files = [
-        str(subdirectory / path)
-        for path in get_filesystem().list(str(subdirectory), patterns=[r"**/*.py"])
-    ]
-    if python_files:
-        LOG.info("...cleaning %s python files", len(python_files))
-        remove_type_ignore_command = [
-            "sed",
-            "-i",
-            r"s/# \?type: \?ignore$//g",
-        ] + python_files
-        subprocess.check_output(remove_type_ignore_command)
-
-
 def run_migrate_targets(
     arguments: argparse.Namespace, version_control: VersionControl
 ) -> None:
@@ -737,7 +536,7 @@ def run_migrate_targets(
     subprocess.check_output(remove_check_types_command)
     subprocess.check_output(remove_options_command)
 
-    remove_non_pyre_ignores(subdirectory, arguments, version_control)
+    remove_non_pyre_ignores(subdirectory)
     run_fixme_targets(arguments, version_control)
 
 
@@ -839,16 +638,9 @@ def run_targets_to_configuration(
     ] + targets_files
     subprocess.run(remove_typing_fields_command)
 
-    remove_non_pyre_ignores(subdirectory, arguments, version_control)
+    remove_non_pyre_ignores(subdirectory)
     arguments.path = subdirectory
     run_fixme_single(arguments, version_control)
-
-
-def path_exists(filename: str) -> Path:
-    path = Path(filename)
-    if not path.exists():
-        raise ValueError("No file at {}".format(filename))
-    return path
 
 
 def run(version_control: VersionControl) -> None:
@@ -907,6 +699,19 @@ def run(version_control: VersionControl) -> None:
     )
     strict_default.add_argument("--lint", action="store_true", help=argparse.SUPPRESS)
 
+    # Subcommand: Set global configuration to given hash, then upgrade and suppress
+    # errors in all local configurations.
+    upgrade_all = commands.add_parser("upgrade-all")
+    upgrade_all.set_defaults(function=run_upgrade_all)
+    upgrade_all.add_argument("hash", help="Hash of new Pyre version")
+    upgrade_all.add_argument("-p", "--push-blocking-only", action="store_true")
+    upgrade_all.add_argument(
+        "-s",
+        "--sandcastle",
+        help="Create upgrade stack on sandcastle.",
+        type=path_exists,
+    )
+
     # Subcommand: Set global configuration to given hash, and add version override
     # to all local configurations to run previous version.
     update_global_version = commands.add_parser("update-global-version")
@@ -940,6 +745,11 @@ def run(version_control: VersionControl) -> None:
         "path", help="Path to project root with local configuration", type=path_exists
     )
     fixme_single.add_argument(
+        "--upgrade-version",
+        action="store_true",
+        help="Upgrade and clean project if a version override set.",
+    )
+    fixme_single.add_argument(
         "--from-stdin", action="store_true", help=argparse.SUPPRESS
     )
     fixme_single.add_argument("--submit", action="store_true", help=argparse.SUPPRESS)
@@ -952,17 +762,13 @@ def run(version_control: VersionControl) -> None:
         "-c", "--comment", help="Custom comment after fixme comments"
     )
     fixme_all.add_argument("-p", "--push-blocking-only", action="store_true")
+    fixme_all.add_argument(
+        "--upgrade-version",
+        action="store_true",
+        help="Upgrade and clean projects with a version override set.",
+    )
     fixme_all.add_argument("--submit", action="store_true", help=argparse.SUPPRESS)
     fixme_all.add_argument("--lint", action="store_true", help=argparse.SUPPRESS)
-    fixme_all.add_argument(
-        "-s",
-        "--sandcastle",
-        help="Create upgrade stack on sandcastle.",
-        type=path_exists,
-    )
-    fixme_all.add_argument(
-        "hash", nargs="?", default=None, help="Hash of new Pyre version"
-    )
 
     # Subcommand: Fixme all errors in targets running type checking
     fixme_targets = commands.add_parser("fixme-targets")
@@ -1029,6 +835,8 @@ def run(version_control: VersionControl) -> None:
         arguments.paths = None
     if not hasattr(arguments, "from_stdin"):
         arguments.from_stdin = None
+    if not hasattr(arguments, "comment"):
+        arguments.comment = None
 
     logging.basicConfig(
         format="%(asctime)s %(levelname)s %(message)s",

@@ -607,6 +607,36 @@ let test_class_attributes context =
          ~callable_name:(Reference.create "test.Prot.method")
          "method"
          "typing.Callable[[Named(x, int)], str]");
+  let tself = Type.variable "TSelf" in
+  assert_attribute
+    ~parent:"BoundMethod"
+    ~parent_instantiated_type:
+      (Type.Parametric
+         {
+           name = "BoundMethod";
+           parameters =
+             [
+               Single
+                 (Type.Callable.create
+                    ~parameters:
+                      (Defined
+                         [
+                           Named { name = "self"; annotation = tself; default = false };
+                           Named { name = "x"; annotation = Type.string; default = false };
+                         ])
+                    ~annotation:tself
+                    ());
+               Single Type.integer;
+             ];
+         })
+    ~attribute_name:"__call__"
+    ~expected_attribute:
+      (create_expected_attribute
+         ~parent:"typing.Callable"
+         ~visibility:ReadWrite
+         ~initialized:Explicitly
+         "__call__"
+         "typing.Callable[[Named(x, str)], int]");
   ()
 
 
@@ -919,7 +949,7 @@ let test_typed_dictionary_individual_attributes context =
                           ];
                     };
                   ];
-                implicit = None;
+                implicit = Some { name = "self"; implicit_annotation = Primitive "test.Movie" };
               }));
   assert_attribute
     ~parent_name:"test.ChildMovie"
@@ -979,7 +1009,7 @@ let test_typed_dictionary_individual_attributes context =
                           ];
                     };
                   ];
-                implicit = None;
+                implicit = Some { name = "self"; implicit_annotation = Primitive "test.ChildMovie" };
               }));
   assert_attribute
     ~parent_name:"test.NonTotalMovie"
@@ -1033,7 +1063,8 @@ let test_typed_dictionary_individual_attributes context =
                           ];
                     };
                   ];
-                implicit = None;
+                implicit =
+                  Some { name = "self"; implicit_annotation = Primitive "test.NonTotalMovie" };
               }));
   assert_attribute
     ~parent_name:"test.EmptyNonTotalMovie"
@@ -1072,7 +1103,8 @@ let test_typed_dictionary_individual_attributes context =
                           ];
                     };
                   ];
-                implicit = None;
+                implicit =
+                  Some { name = "self"; implicit_annotation = Primitive "test.EmptyNonTotalMovie" };
               }));
   assert_attribute
     ~parent_name:"test.Movie"

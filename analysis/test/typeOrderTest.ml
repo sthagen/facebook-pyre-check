@@ -2823,19 +2823,36 @@ let test_solve_less_or_equal context =
         GlobalResolution.class_definition resolution (Primitive name)
         >>| GlobalResolution.metaclass ~resolution
       in
-      {
-        class_hierarchy;
-        constructor;
-        attributes;
-        is_protocol;
-        assumptions =
-          {
-            protocol_assumptions = ProtocolAssumptions.empty;
-            callable_assumptions = CallableAssumptions.empty;
-          };
-        get_typed_dictionary;
-        metaclass;
-      }
+      let order =
+        {
+          class_hierarchy;
+          constructor;
+          attributes;
+          is_protocol;
+          assumptions =
+            {
+              protocol_assumptions = ProtocolAssumptions.empty;
+              callable_assumptions = CallableAssumptions.empty;
+            };
+          get_typed_dictionary;
+          metaclass;
+        }
+      in
+      let attributes annotation ~assumptions =
+        match attributes annotation ~assumptions with
+        | Some attributes -> Some attributes
+        | None -> (
+            match Type.resolve_class annotation with
+            | Some [{ instantiated; class_attributes; class_name }] ->
+                GlobalResolution.attributes
+                  ~transitive:true
+                  ~resolution
+                  ~class_attributes
+                  class_name
+                >>| List.map ~f:(GlobalResolution.instantiate_attribute ~resolution ~instantiated)
+            | _ -> None )
+      in
+      { order with attributes }
     in
     let leave_unbound_in_left = List.map leave_unbound_in_left ~f:(fun a -> "test." ^ a) in
     let parse_annotation annotation =
@@ -3181,6 +3198,18 @@ let test_solve_less_or_equal context =
     ~left:"typing.Callable[[int], str]"
     ~right:"G_invariant[T1]"
     [["T1", "int"]];
+  let attributes annotation ~assumptions:_ =
+    match annotation with
+    | Type.Primitive "HasBoundMethodCall" ->
+        Some
+          (parse_attributes
+             ~parse_annotation
+             ~class_name:"HasBoundMethodCall"
+             ["__call__", "BoundMethod[typing.Callable[[int, str], bool], int]"])
+    | _ -> None
+  in
+  assert_solve ~attributes ~left:"HasBoundMethodCall" ~right:"typing.Callable[[str], bool]" [[]];
+  assert_solve ~attributes ~left:"HasBoundMethodCall" ~right:"typing.Callable[[int], bool]" [];
 
   (* Multiple options *)
   assert_solve
@@ -3449,6 +3478,15 @@ let test_solve_less_or_equal context =
     [[]];
   assert_solve ~left:"typing.Type[test.ChildA]" ~right:"test.Meta" [];
   assert_solve ~left:"typing.Type[test.HasMeta]" ~right:"test.Meta" [[]];
+  (* BoundMethods are Callable, but Callables can't replace a BoundMethod *)
+  assert_solve
+    ~left:"BoundMethod[typing.Callable[[int, str], bool], int]"
+    ~right:"typing.Callable[[str], bool]"
+    [[]];
+  assert_solve
+    ~left:"typing.Callable[[str], bool]"
+    ~right:"BoundMethod[typing.Callable[[int, str], bool], int]"
+    [];
   ()
 
 
