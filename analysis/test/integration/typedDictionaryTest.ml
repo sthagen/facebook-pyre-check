@@ -98,7 +98,7 @@ let test_check_typed_dictionaries context =
     [
       "Incompatible parameter type [6]: Expected `int` for 1st positional only parameter to call \
        `foo` but got `str`.";
-      "TypedDict accessed with a missing key [27]: TypedDict `test.Movie` has no key `yar`.";
+      "TypedDict accessed with a missing key [27]: TypedDict `Movie` has no key `yar`.";
     ];
   assert_test_typed_dictionary
     {|
@@ -220,7 +220,7 @@ let test_check_typed_dictionaries context =
     |}
     [
       "Incompatible return type [7]: Expected `int` but got `str`.";
-      "TypedDict accessed with a missing key [27]: TypedDict `test.Cat` has no key `year`.";
+      "TypedDict accessed with a missing key [27]: TypedDict `Cat` has no key `year`.";
     ];
   assert_test_typed_dictionary
     {|
@@ -283,7 +283,7 @@ let test_check_typed_dictionaries context =
             q = a["bar"]
         return q
     |}
-    ["TypedDict accessed with a missing key [27]: TypedDict `test.Baz` has no key `fou`."];
+    ["TypedDict accessed with a missing key [27]: TypedDict `Baz` has no key `fou`."];
   assert_test_typed_dictionary
     {|
       import mypy_extensions
@@ -317,7 +317,7 @@ let test_check_typed_dictionaries context =
             q = a["first_very_long_field"]
         return q
     |}
-    ["TypedDict accessed with a missing key [27]: TypedDict `test.Baz` has no key `foo`."];
+    ["TypedDict accessed with a missing key [27]: TypedDict `Baz` has no key `foo`."];
   assert_test_typed_dictionary
     {|
       import mypy_extensions
@@ -472,7 +472,7 @@ let test_check_typed_dictionaries context =
         movie: Movie
         movie['nme'] = 'new name'
     |}
-    ["TypedDict accessed with a missing key [27]: TypedDict `test.Movie` has no key `nme`."];
+    ["TypedDict accessed with a missing key [27]: TypedDict `Movie` has no key `nme`."];
   assert_test_typed_dictionary
     {|
       import mypy_extensions
@@ -558,7 +558,7 @@ let test_check_typed_dictionaries context =
       "Revealed type [-1]: Revealed type for `v` is `typing.Optional[str]`.";
       "Revealed type [-1]: Revealed type for `v` is "
       ^ "`typing.Union[typing_extensions.Literal[True], str]`.";
-      "TypedDict accessed with a missing key [27]: TypedDict `test.Movie` has no key `nae`.";
+      "TypedDict accessed with a missing key [27]: TypedDict `Movie` has no key `nae`.";
     ];
   assert_test_typed_dictionary
     {|
@@ -604,7 +604,7 @@ let test_check_typed_dictionaries context =
       "Revealed type [-1]: Revealed type for `v` is `str`.";
       "Incompatible parameter type [6]: Expected `str` for 2nd positional only parameter to "
       ^ "call `TypedDictionary.setdefault` but got `int`.";
-      "TypedDict accessed with a missing key [27]: TypedDict `test.Movie` has no key `nme`.";
+      "TypedDict accessed with a missing key [27]: TypedDict `Movie` has no key `nme`.";
     ];
   assert_test_typed_dictionary
     {|
@@ -664,7 +664,7 @@ let test_check_typed_dictionaries context =
       "Revealed type [-1]: Revealed type for `v` is `str`.";
       "Revealed type [-1]: Revealed type for `v` is "
       ^ "`typing.Union[typing_extensions.Literal[False], str]`.";
-      "TypedDict accessed with a missing key [27]: TypedDict `test.MovieNonTotal` has no key `nae`.";
+      "TypedDict accessed with a missing key [27]: TypedDict `MovieNonTotal` has no key `nae`.";
     ];
 
   (* You can't pop an item from a total typeddict *)
@@ -688,7 +688,7 @@ let test_check_typed_dictionaries context =
         movieNonTotal.__delitem__("name")
         movieNonTotal.__delitem__("nae")
     |}
-    ["TypedDict accessed with a missing key [27]: TypedDict `test.MovieNonTotal` has no key `nae`."];
+    ["TypedDict accessed with a missing key [27]: TypedDict `MovieNonTotal` has no key `nae`."];
 
   (* You can't delete an item from a total typeddict *)
   assert_test_typed_dictionary
@@ -1011,8 +1011,6 @@ let test_check_typed_dictionaries context =
       class Bar(mypy_extensions.TypedDict):
         items: typing.List[int]
         foo: int
-      class Child(Bar):
-        foo: str
     |}
     [];
   assert_test_typed_dictionary
@@ -1243,10 +1241,9 @@ let test_check_typed_dictionary_inheritance context =
       "Revealed type [-1]: Revealed type for `helpers.child[\"bar\"]` is `str`.";
       "Revealed type [-1]: Revealed type for `helpers.grandchild[\"bar\"]` is `str`.";
       "Revealed type [-1]: Revealed type for `helpers.grandchild[\"foo\"]` is `int`.";
-      "TypedDict accessed with a missing key [27]: TypedDict `helpers.GrandChild` has no key \
+      "TypedDict accessed with a missing key [27]: TypedDict `GrandChild` has no key \
        `non_existent`.";
-      "TypedDict accessed with a missing key [27]: TypedDict `helpers.GrandChild` has no key \
-       `__doc__`.";
+      "TypedDict accessed with a missing key [27]: TypedDict `GrandChild` has no key `__doc__`.";
     ];
   (* No attribute access allowed for TypedDictionary. *)
   assert_test_typed_dictionary
@@ -1501,8 +1498,7 @@ let test_check_typed_dictionary_inheritance context =
         reveal_type(child["bar"])
     |}
     [
-      "TypedDict accessed with a missing key [27]: TypedDict `helpers.Child` has no key \
-       `non_existent`.";
+      "TypedDict accessed with a missing key [27]: TypedDict `Child` has no key `non_existent`.";
       "Revealed type [-1]: Revealed type for `child[\"foo\"]` is `int`.";
       "Revealed type [-1]: Revealed type for `child[\"bar\"]` is `str`.";
     ];
@@ -1555,22 +1551,76 @@ let test_check_typed_dictionary_inheritance context =
       "Incompatible variable type [9]: x is declared to have type `str` but is used as type `int`.";
       "Revealed type [-1]: Revealed type for `d` is `Child`.";
     ];
+
   (* Key collision between Child and Base. *)
+
+  (* No error when they have the same annotation, as per PEP 589. However, [foo: int] must show up
+     only once in the constructor. *)
   assert_test_typed_dictionary
     {|
         import mypy_extensions
         class Base(mypy_extensions.TypedDict):
           foo: int
         class Child(Base):
-          foo: str
-        d: Child
-        reveal_type(d)
+          foo: int
+        reveal_type(Child.__init__)
     |}
-    (* TODO(T61662929): Key collision should raise a TypedDict-specific error. *)
     [
-      (* "Inconsistent override [15]: `foo` overrides attribute defined in `Base` inconsistently. \
-         Type `str` is not a subtype of the overridden attribute `int`."; *)
-      "Revealed type [-1]: Revealed type for `d` is `Child`.";
+      "Revealed type [-1]: Revealed type for `test.Child.__init__` is \
+       `typing.Callable(__init__)[..., unknown][[[Named(self, unknown), KeywordOnly(foo, int)], \
+       Child][[Named(self, unknown), Child], Child]]`.";
+    ];
+  assert_test_typed_dictionary
+    {|
+        import mypy_extensions
+        class Base1(mypy_extensions.TypedDict):
+          foo: int
+        class Base2(mypy_extensions.TypedDict):
+          foo: int
+        class Child(Base1, Base2):
+          foo: int
+        reveal_type(Child.__init__)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `test.Child.__init__` is \
+       `typing.Callable(__init__)[..., unknown][[[Named(self, unknown), KeywordOnly(foo, int)], \
+       Child][[Named(self, unknown), Child], Child]]`.";
+    ];
+  assert_test_typed_dictionary
+    {|
+        import mypy_extensions
+        class Base(mypy_extensions.TypedDict):
+          foo: int
+        class Base2(mypy_extensions.TypedDict):
+          bar: str
+        class Child(Base, Base2):
+          foo: str
+          bar: int
+        reveal_type(Child.__init__)
+    |}
+    [
+      "Inconsistent override [15]: `bar` overrides attribute defined in `Base2` inconsistently. \
+       Type `int` is not a subtype of the overridden attribute `str`.";
+      "Inconsistent override [15]: `foo` overrides attribute defined in `Base` inconsistently. \
+       Type `str` is not a subtype of the overridden attribute `int`.";
+      (* Only the shadowing field shows up in the constructor. *)
+      "Revealed type [-1]: Revealed type for `test.Child.__init__` is \
+       `typing.Callable(__init__)[..., unknown][[[Named(self, unknown), KeywordOnly(bar, int), \
+       KeywordOnly(foo, str)], Child][[Named(self, unknown), Child], Child]]`.";
+    ];
+  (* Error when one field is required and the other is not. *)
+  assert_test_typed_dictionary
+    {|
+        import mypy_extensions
+        class Base(mypy_extensions.TypedDict):
+          foo: int
+        class Child(Base, total=False):
+          foo: int
+    |}
+    (* TODO(T61662929): This should say that one is required and the other is not. *)
+    [
+      "Inconsistent override [15]: `foo` overrides attribute defined in `Base` inconsistently. \
+       Type `int` is not a subtype of the overridden attribute `int`.";
     ];
   (* Key collision between superclasses. *)
   assert_test_typed_dictionary
@@ -1580,7 +1630,7 @@ let test_check_typed_dictionary_inheritance context =
           foo: int
           bar: str
         class Base2(mypy_extensions.TypedDict):
-          foo: int
+          foo: str
           bar: int
         class Child(Base1, Base2):
           baz: str
@@ -1588,9 +1638,41 @@ let test_check_typed_dictionary_inheritance context =
         x: int = d["bar"]
         y: str = d["bar"]
     |}
-    (* TODO(T61662929): Key collision should raise an error. Should a common key with compatible
-       types also raise an error? *)
-    ["Incompatible variable type [9]: x is declared to have type `int` but is used as type `str`."];
+    [
+      "Invalid inheritance [39]: Field `bar` has type `str` in base class `Base1` and type `int` \
+       in base class `Base2`.";
+      "Invalid inheritance [39]: Field `foo` has type `int` in base class `Base1` and type `str` \
+       in base class `Base2`.";
+      "Incompatible variable type [9]: x is declared to have type `int` but is used as type `str`.";
+    ];
+  assert_test_typed_dictionary
+    {|
+        import mypy_extensions
+        class Base1(mypy_extensions.TypedDict):
+          foo: int
+        class Base2(mypy_extensions.TypedDict, total=False):
+          foo: int
+        class Child(Base1, Base2):
+          baz: str
+    |}
+    [
+      "Invalid inheritance [39]: `foo` is a required field in base class `Base1` and a \
+       non-required field in base class `Base2` (because of `total=False`).";
+    ];
+  assert_test_typed_dictionary
+    {|
+        import mypy_extensions
+        class Base1(mypy_extensions.TypedDict):
+          foo: int
+        class Base2(mypy_extensions.TypedDict):
+          foo: str
+        class Child(Base1, Base2):
+          foo: str
+    |}
+    [
+      "Invalid inheritance [39]: Field `foo` has type `int` in base class `Base1` and type `str` \
+       in base class `Base2`.";
+    ];
   (* Superclass must be a TypedDict. *)
   assert_test_typed_dictionary
     {|
@@ -1619,8 +1701,8 @@ let test_check_typed_dictionary_inheritance context =
        `typing.Callable(__init__)[..., unknown][[[Named(self, unknown), KeywordOnly(baz, str), \
        KeywordOnly(foo, int)], Child][[Named(self, unknown), Child], Child]]`.";
       "Revealed type [-1]: Revealed type for `test.NonTotalChild.__init__` is \
-       `typing.Callable(__init__)[..., unknown][[[Named(self, unknown), KeywordOnly(non_total_baz, \
-       str, default), KeywordOnly(foo, int)], NonTotalChild][[Named(self, unknown), \
+       `typing.Callable(__init__)[..., unknown][[[Named(self, unknown), KeywordOnly(foo, int), \
+       KeywordOnly(non_total_baz, str, default)], NonTotalChild][[Named(self, unknown), \
        NonTotalChild], NonTotalChild]]`.";
     ];
   ()

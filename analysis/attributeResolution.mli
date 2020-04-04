@@ -77,15 +77,15 @@ type reason =
 [@@deriving eq, show, compare]
 
 type closest = {
-  callable: Type.Callable.t;
+  closest_return_annotation: Type.t;
   reason: reason option;
 }
 [@@deriving show]
 
 type sig_t =
-  | Found of Type.Callable.t
+  | Found of { selected_return_annotation: Type.t }
   | NotFound of closest
-[@@deriving eq, show]
+[@@deriving eq, show, sexp]
 
 module Argument : sig
   type kind =
@@ -206,7 +206,7 @@ module AttributeReadOnly : sig
     ?dependency:SharedMemoryKeys.dependency ->
     instantiated:Type.t ->
     unit ->
-    TypeConstraints.Solution.t
+    ConstraintsSet.Solution.t
 
   val resolve_literal
     :  t ->
@@ -223,9 +223,11 @@ module AttributeReadOnly : sig
   val signature_select
     :  t ->
     ?dependency:SharedMemoryKeys.dependency ->
-    resolve:(Expression.expression Node.t -> Type.t) ->
+    resolve_with_locals:
+      (locals:(Reference.t * Annotation.t) list -> Expression.expression Node.t -> Type.t) ->
     arguments:Expression.Call.Argument.t list ->
-    callable:Type.t Type.Callable.record ->
+    callable:Type.Callable.t ->
+    self_argument:Type.t option ->
     sig_t
 
   val resolve_mutable_literals

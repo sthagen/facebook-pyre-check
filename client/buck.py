@@ -47,6 +47,7 @@ class FastBuckBuilder(BuckBuilder):
         buck_builder_target: Optional[str] = None,
         debug_mode: bool = False,
         buck_mode: Optional[str] = None,
+        project_name: Optional[str] = None,
     ) -> None:
         self._buck_root = buck_root
         self._output_directory: str = output_directory or tempfile.mkdtemp(
@@ -56,6 +57,7 @@ class FastBuckBuilder(BuckBuilder):
         self._buck_builder_target = buck_builder_target
         self._debug_mode = debug_mode
         self._buck_mode = buck_mode
+        self._project_name = project_name
         self.conflicting_files: List[str] = []
         self.unsupported_files: List[str] = []
 
@@ -80,7 +82,8 @@ class FastBuckBuilder(BuckBuilder):
                     "buck",
                     "build",
                     "--show-output",
-                    "//tools/pyre/facebook/fb_buck_project_builder",
+                    "//tools/pyre/facebook/tools/"
+                    "buck_project_builder:fb_buck_project_builder",
                 ],
                 stderr=subprocess.DEVNULL,
             )
@@ -105,19 +108,23 @@ class FastBuckBuilder(BuckBuilder):
         buck_mode = self._buck_mode
         if buck_mode:
             command.extend(["--mode", buck_mode])
-        LOG.info("Buck builder command: `{}`".format(" ".join(command)))
+        project_name = self._project_name
+        if project_name:
+            command.extend(["--project_name", project_name])
+        LOG.info("Building buck targets...")
+        LOG.debug("Buck builder command: `{}`".format(" ".join(command)))
         with subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            env={**os.environ, "NO_BUCKD": "1"},
+            universal_newlines=True,
         ) as buck_builder_process:
             # Java's logging conflicts with Python's logging, we capture the
             # logs and re-log them with python's logger.
             log_processor = threading.Thread(
-                target=self._read_stderr, args=(buck_builder_process.stderr,)
+                target=self._read_stderr,
+                args=(buck_builder_process.stderr, logging.DEBUG),
             )
             log_processor.daemon = True
             log_processor.start()
@@ -133,10 +140,12 @@ class FastBuckBuilder(BuckBuilder):
                 return [self._output_directory]
             else:
                 raise BuckException(
-                    "Could not build targets. Check the paths or run `buck clean`."
+                    f"Failed to build targets with:\n`{' '.join(command)}`"
                 )
 
-    def _read_stderr(self, stream: Iterable[str]) -> None:
+    def _read_stderr(
+        self, stream: Iterable[str], default_logging_section: int = logging.ERROR
+    ) -> None:
         for line in stream:
             line = line.rstrip()
             if line.startswith("INFO: "):
@@ -149,7 +158,7 @@ class FastBuckBuilder(BuckBuilder):
                 # Filter away thrift warnings.
                 pass
             else:
-                LOG.error(line)
+                LOG.log(default_logging_section, line)
 
 
 class SimpleBuckBuilder(BuckBuilder):
@@ -223,12 +232,7 @@ def _normalize(targets: List[str]) -> List[Tuple[str, str]]:
             + ["--type", "python_binary", "python_test"]
         )
         targets_to_destinations: List[str] = (
-            subprocess.check_output(
-                command,
-                stderr=subprocess.PIPE,
-                timeout=600,
-                env={**os.environ, "NO_BUCKD": "1"},
-            )
+            subprocess.check_output(command, stderr=subprocess.PIPE, timeout=600)
             .decode()
             .strip()
             .split("\n")
@@ -276,9 +280,7 @@ def _build_targets(targets: List[str], original_targets: List[str]) -> None:
     )
     command = ["buck", "build"] + targets
     try:
-        subprocess.check_output(
-            command, stderr=subprocess.PIPE, env={**os.environ, "NO_BUCKD": "1"}
-        )
+        subprocess.check_output(command, stderr=subprocess.PIPE)
         LOG.warning("Finished building targets.")
     except subprocess.CalledProcessError as error:
         # The output can be overwhelming, hence print only the last 20 lines.
@@ -344,12 +346,7 @@ def query_buck_relative_paths(
     LOG.info(f"Running command: {command}")
     try:
         owner_output = json.loads(
-            subprocess.check_output(
-                command,
-                timeout=30,
-                stderr=subprocess.DEVNULL,
-                env={**os.environ, "NO_BUCKD": "1"},
-            )
+            subprocess.check_output(command, timeout=30, stderr=subprocess.DEVNULL)
             .decode()
             .strip()
         )

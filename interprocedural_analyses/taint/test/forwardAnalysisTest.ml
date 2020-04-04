@@ -684,6 +684,42 @@ let test_tuple context =
     ]
 
 
+let test_asyncio_gather context =
+  assert_taint
+    ~context
+    {|
+      import asyncio
+      def benign_through_asyncio():
+        a, b = asyncio.gather(0, __test_source())
+        return a
+
+      def source_through_asyncio():
+        a, b = asyncio.gather(0, __test_source())
+        return b
+    |}
+    [
+      outcome ~kind:`Function ~returns:[Sources.Test] "qualifier.source_through_asyncio";
+      outcome ~kind:`Function ~returns:[] "qualifier.benign_through_asyncio";
+    ];
+  (* We also support asyncio.gather imported from other modules. *)
+  assert_taint
+    ~context
+    {|
+      import foo
+      def benign_through_asyncio():
+        a, b = foo.asyncio.gather(0, __test_source())
+        return a
+
+      def source_through_asyncio():
+        a, b = foo.asyncio.gather(0, __test_source())
+        return b
+    |}
+    [
+      outcome ~kind:`Function ~returns:[Sources.Test] "qualifier.source_through_asyncio";
+      outcome ~kind:`Function ~returns:[] "qualifier.benign_through_asyncio";
+    ]
+
+
 let test_lambda context =
   assert_taint
     ~context
@@ -955,31 +991,32 @@ let test_tito_side_effects context =
 
 let () =
   [
-    "no_model", test_no_model;
-    "simple", test_simple_source;
-    "hardcoded", test_hardcoded_source;
-    "copy", test_local_copy;
-    "test_access_paths", test_access_paths;
+    "access_paths", test_access_paths;
+    "apply_method_model_at_call_site", test_apply_method_model_at_call_site;
+    "asyncio_gather", test_asyncio_gather;
     "class_model", test_class_model;
-    "test_apply_method_model_at_call_site", test_apply_method_model_at_call_site;
-    "test_taint_in_taint_out_application", test_taint_in_taint_out_application;
-    "test_union", test_taint_in_taint_out_application;
-    "test_dictionary", test_dictionary;
-    "test_comprehensions", test_comprehensions;
-    "test_list", test_list;
-    "test_lambda", test_lambda;
-    "test_set", test_set;
-    "test_starred", test_starred;
-    "test_string", test_string;
-    "test_ternary", test_ternary;
-    "test_tuple", test_tuple;
-    "test_unary", test_unary;
-    "test_parameter_default_values", test_parameter_default_values;
-    "test_walrus", test_walrus;
-    "test_yield", test_yield;
-    "test_construction", test_construction;
-    "test_composed_models", test_composed_models;
-    "test_tito_side_effects", test_tito_side_effects;
-    "test_global_taint", test_global_taint;
+    "composed_models", test_composed_models;
+    "comprehensions", test_comprehensions;
+    "construction", test_construction;
+    "copy", test_local_copy;
+    "dictionary", test_dictionary;
+    "global_taint", test_global_taint;
+    "hardcoded", test_hardcoded_source;
+    "lambda", test_lambda;
+    "list", test_list;
+    "no_model", test_no_model;
+    "parameter_default_values", test_parameter_default_values;
+    "set", test_set;
+    "simple", test_simple_source;
+    "starred", test_starred;
+    "string", test_string;
+    "taint_in_taint_out_application", test_taint_in_taint_out_application;
+    "ternary", test_ternary;
+    "tito_side_effects", test_tito_side_effects;
+    "tuple", test_tuple;
+    "unary", test_unary;
+    "union", test_taint_in_taint_out_application;
+    "walrus", test_walrus;
+    "yield", test_yield;
   ]
   |> TestHelper.run_with_taint_models ~name:"forwardTaint"

@@ -9,12 +9,17 @@ import os
 import site
 import sys
 import unittest
-from typing import Any, Optional, cast
+from typing import Any, NamedTuple, Optional, cast
 from unittest.mock import MagicMock, call, patch
 
-from .. import CONFIGURATION_FILE, number_of_workers
 from ..configuration import Configuration, InvalidConfiguration, SearchPathElement
 from ..exceptions import EnvironmentException
+from ..find_directories import CONFIGURATION_FILE
+
+
+class MockCompletedProcess(NamedTuple):
+    returncode: int
+    stdout: str
 
 
 class ConfigurationTest(unittest.TestCase):
@@ -100,7 +105,6 @@ class ConfigurationTest(unittest.TestCase):
         json_load.side_effect = [{"typeshed": "TYPESHED/"}, {}]
         configuration = Configuration()
         self.assertEqual(configuration.typeshed, "TYPESHED/")
-        self.assertEqual(configuration.number_of_workers, number_of_workers())
         self.assertEqual(configuration.file_hash, None)
 
         with patch.object(os.path, "isdir", return_value=False):
@@ -464,7 +468,6 @@ class ConfigurationTest(unittest.TestCase):
         json_load.side_effect = [{"typeshed": "/TYPESHED/", "workers": 0}, {}]
         configuration = Configuration()
         self.assertEqual(configuration.typeshed, "/TYPESHED/")
-        self.assertEqual(configuration.number_of_workers, number_of_workers())
 
         # Test excludes
         json_load.side_effect = [{"exclude": "regexp"}, {}]
@@ -731,3 +734,25 @@ class ConfigurationTest(unittest.TestCase):
         ):
             configuration = Configuration()
             self.assertEqual(configuration._binary, None)
+
+    @patch.object(Configuration, "_validate")
+    def test_get_binary_version(self, _validate):
+        configuration = Configuration()
+        configuration._binary = "<binary>"
+
+        def assert_version(
+            returncode: int, stdout: str, expected: Optional[str]
+        ) -> None:
+            with patch(
+                "subprocess.run",
+                return_value=MockCompletedProcess(returncode, stdout=stdout),
+            ):
+                self.assertEqual(expected, configuration.get_binary_version())
+
+        assert_version(
+            returncode=0, stdout="facefacefaceb00", expected="facefacefaceb00"
+        )
+        assert_version(
+            returncode=0, stdout=" facefacefaceb00\n", expected="facefacefaceb00"
+        )
+        assert_version(returncode=1, stdout="facefacefaceb00", expected=None)

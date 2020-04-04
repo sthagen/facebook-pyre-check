@@ -6,6 +6,7 @@
 # pyre-strict
 
 import argparse
+import json
 import logging
 import os
 import time
@@ -14,7 +15,7 @@ from typing import Any, Dict, List, Optional, Set, Type
 
 from typing_extensions import Final
 
-from ...client import log_statistics
+from ...client import statistics
 from .generator_specifications import DecoratorAnnotationSpecification
 from .get_annotated_free_functions_with_decorator import (  # noqa
     AnnotatedFreeFunctionWithDecoratorGenerator,
@@ -85,6 +86,15 @@ def _report_results(
                     "\n".join([str(model) for model in sorted(models[name])])
                 )
                 output_file.write("\n")
+        print(
+            json.dumps(
+                {
+                    "number of generated models": sum(
+                        (len(generated_models) for generated_models in models.values())
+                    )
+                }
+            )
+        )
     else:
         all_models = set()
         for name in models:
@@ -118,7 +128,7 @@ def run_generators(
 
         if logger_executable is not None:
             elapsed_time_milliseconds = int(elapsed_time_seconds * 1000)
-            log_statistics(
+            statistics.log(
                 "perfpipe_pyre_performance",
                 integers={"time": elapsed_time_milliseconds},
                 normals={"name": "model generation", "model kind": mode},

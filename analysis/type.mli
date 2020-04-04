@@ -115,11 +115,6 @@ module Record : sig
       | Anonymous
       | Named of Reference.t
 
-    and 'annotation implicit_record = {
-      implicit_annotation: 'annotation;
-      name: Identifier.t;
-    }
-
     and 'annotation parameter_variadic_type_variable = {
       head: 'annotation list;
       variable: 'annotation Variable.RecordVariadic.RecordParameters.record;
@@ -140,7 +135,6 @@ module Record : sig
       kind: kind;
       implementation: 'annotation overload;
       overloads: 'annotation overload list;
-      implicit: 'annotation implicit_record option;
     }
     [@@deriving compare, eq, sexp, show, hash]
   end
@@ -222,6 +216,12 @@ val default_to_bottom : t Map.t -> t list -> t Map.t
 module Set : Set.S with type Elt.t = t
 
 include Hashable with type t := t
+
+val pp_typed_dictionary_field
+  :  pp_type:(Format.formatter -> type_t -> unit) ->
+  Format.formatter ->
+  t Record.TypedDictionary.typed_dictionary_field ->
+  unit
 
 val pp_concise : Format.formatter -> t -> unit
 
@@ -365,8 +365,6 @@ module Callable : sig
     include Record.Callable
   end
 
-  type implicit = type_t Record.Callable.implicit_record [@@deriving compare, eq, sexp, show, hash]
-
   type t = type_t Record.Callable.record [@@deriving compare, eq, sexp, show, hash]
 
   type parameters = type_t Record.Callable.record_parameters
@@ -394,7 +392,6 @@ module Callable : sig
     :  ?name:Reference.t ->
     ?overloads:type_t overload list ->
     ?parameters:parameters ->
-    ?implicit:implicit ->
     annotation:type_t ->
     unit ->
     type_t
@@ -830,6 +827,13 @@ module TypedDictionary : sig
 
   val are_fields_total : t typed_dictionary_field list -> bool
 
+  val same_name_different_requiredness
+    :  t typed_dictionary_field ->
+    t typed_dictionary_field ->
+    bool
+
+  val same_name_different_annotation : t typed_dictionary_field -> t typed_dictionary_field -> bool
+
   val fields_have_colliding_keys
     :  t typed_dictionary_field list ->
     t typed_dictionary_field list ->
@@ -868,3 +872,6 @@ val contains_prohibited_any : t -> bool
 val to_yojson : t -> Yojson.Safe.json
 
 val resolve_class : t -> class_data list option
+
+(* Gives the name of either a Callable or BoundMethod[Callable, X] type *)
+val callable_name : t -> Reference.t option

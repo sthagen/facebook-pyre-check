@@ -15,7 +15,7 @@ from pathlib import Path
 from time import time
 from typing import Dict, List, NamedTuple, Optional, Set, Tuple
 
-from . import _resolve_filter_paths, buck, filesystem, json_rpc, log
+from . import buck, json_rpc, log
 from .buck import BuckBuilder
 from .configuration import Configuration
 from .exceptions import EnvironmentException
@@ -50,6 +50,26 @@ REBUILD_THRESHOLD_FOR_NEW_OR_DELETED_PATHS: int = 50
 
 
 DONT_CARE_PROGRESS_VALUE = 1
+
+
+def _resolve_filter_paths(
+    arguments: argparse.Namespace,
+    configuration: "Configuration",
+    original_directory: str,
+) -> Set[str]:
+    filter_paths = set()
+    if arguments.source_directories or arguments.targets:
+        if arguments.source_directories:
+            filter_paths.update(arguments.source_directories)
+        if arguments.targets:
+            filter_paths.update(
+                [buck.presumed_target_root(target) for target in arguments.targets]
+            )
+    else:
+        local_configuration_root = configuration.local_configuration_root
+        if local_configuration_root:
+            filter_paths = {local_configuration_root}
+    return translate_paths(filter_paths, original_directory)
 
 
 class UpdatedPaths(NamedTuple):
@@ -536,6 +556,30 @@ class SharedAnalysisDirectory(AnalysisDirectory):
                 continue
 
 
+def _get_project_name(isolate: bool) -> Optional[str]:
+    return "isolated_{}".format(str(os.getpid())) if isolate else None
+
+
+def _get_fast_buck_builder(
+    arguments: argparse.Namespace, current_directory: str, isolate: bool
+) -> buck.FastBuckBuilder:
+    buck_root = buck.find_buck_root(current_directory)
+    if not buck_root:
+        raise EnvironmentException(
+            "No Buck configuration at `{}` or any of its ancestors.".format(
+                current_directory
+            )
+        )
+    return buck.FastBuckBuilder(
+        buck_root=buck_root,
+        buck_builder_binary=arguments.buck_builder_binary,
+        buck_builder_target=arguments.buck_builder_target,
+        debug_mode=arguments.buck_builder_debug,
+        buck_mode=arguments.buck_mode,
+        project_name=_get_project_name(isolate),
+    )
+
+
 def resolve_analysis_directory(
     arguments: argparse.Namespace,
     configuration: Configuration,
@@ -590,20 +634,7 @@ def resolve_analysis_directory(
         build = arguments.build or build
         buck_builder = buck.SimpleBuckBuilder(build=build)
         if use_buck_builder:
-            buck_root = buck.find_buck_root(os.getcwd())
-            if not buck_root:
-                raise EnvironmentException(
-                    "No Buck configuration at `{}` or any of its ancestors.".format(
-                        os.getcwd()
-                    )
-                )
-            buck_builder = buck.FastBuckBuilder(
-                buck_root=buck_root,
-                buck_builder_binary=arguments.buck_builder_binary,
-                buck_builder_target=arguments.buck_builder_target,
-                debug_mode=arguments.buck_builder_debug,
-                buck_mode=arguments.buck_mode,
-            )
+            buck_builder = _get_fast_buck_builder(arguments, os.getcwd(), isolate)
         else:
             buck_builder = buck.SimpleBuckBuilder(build=build)
 

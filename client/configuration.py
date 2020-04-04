@@ -8,23 +8,18 @@
 import hashlib
 import json
 import logging
+import multiprocessing
 import os
 import shutil
 import site
+import subprocess
 import sys
 from logging import Logger
 from typing import Dict, List, Optional, Union
 
-from . import (
-    BINARY_NAME,
-    CONFIGURATION_FILE,
-    LOCAL_CONFIGURATION_FILE,
-    LOG_DIRECTORY,
-    assert_readable_directory,
-    find_typeshed,
-    number_of_workers,
-)
 from .exceptions import EnvironmentException
+from .filesystem import assert_readable_directory, expand_relative_path
+from .find_directories import BINARY_NAME, CONFIGURATION_FILE, find_typeshed
 
 
 LOG: Logger = logging.getLogger(__name__)
@@ -38,6 +33,35 @@ class SearchPathElement:
     def __init__(self, root: str, subdirectory: Optional[str] = None) -> None:
         self.root = os.path.expanduser(root)
         self.subdirectory = subdirectory
+
+    @staticmethod
+    def expand(path: Union[Dict[str, str], str]) -> "SearchPathElement":
+        if isinstance(path, str):
+            return SearchPathElement(path)
+        else:
+            if "root" in path and "subdirectory" in path:
+                root = path["root"]
+                subdirectory = path["subdirectory"]
+                return SearchPathElement(root, subdirectory)
+            elif "site-package" in path:
+                site_root = site.getsitepackages()
+                subdirectory = path["site-package"]
+
+                found_element = None
+                for root in site_root:
+                    site_package_element = SearchPathElement(root, subdirectory)
+                    if os.path.isdir(site_package_element.path()):
+                        found_element = site_package_element
+                if found_element is None:
+                    raise InvalidConfiguration(
+                        "Cannot find site package '{}'".format(subdirectory)
+                    )
+                return found_element
+            else:
+                raise InvalidConfiguration(
+                    "Search path elements must have `root` and `subdirectory` "
+                    "specified."
+                )
 
     def path(self) -> str:
         subdirectory = self.subdirectory
@@ -59,34 +83,6 @@ class SearchPathElement:
             return self.path() == other
         else:
             return self.root == other.root and self.subdirectory == other.subdirectory
-
-
-def expand_search_path(path: Union[Dict[str, str], str]) -> SearchPathElement:
-    if isinstance(path, str):
-        return SearchPathElement(path)
-    else:
-        if "root" in path and "subdirectory" in path:
-            root = path["root"]
-            subdirectory = path["subdirectory"]
-            return SearchPathElement(root, subdirectory)
-        elif "site-package" in path:
-            site_root = site.getsitepackages()
-            subdirectory = path["site-package"]
-
-            found_element = None
-            for root in site_root:
-                site_package_element = SearchPathElement(root, subdirectory)
-                if os.path.isdir(site_package_element.path()):
-                    found_element = site_package_element
-            if found_element is None:
-                raise InvalidConfiguration(
-                    "Cannot find site package '{}'".format(subdirectory)
-                )
-            return found_element
-        else:
-            raise InvalidConfiguration(
-                "Search path elements must have `root` and `subdirectory` specified."
-            )
 
 
 class _ConfigurationFile:
@@ -138,22 +134,13 @@ class _ConfigurationFile:
         return self._configuration.keys() - {
             "buck_builder_binary",
             "buck_mode",
-            "continuous",
-            "coverage",
             "differential",
-            "push_blocking",
-            "pyre_client",
+            "stable_client",
+            "unstable_client",
             "saved_state",
             "taint_models_path",
+            "oncall",
         }
-
-
-def expand_relative_path(root: str, path: str) -> str:
-    path = os.path.expanduser(path)
-    if os.path.isabs(path):
-        return path
-    else:
-        return os.path.join(root, path)
 
 
 class Configuration:
@@ -209,7 +196,9 @@ class Configuration:
             ]
             self._search_path.extend(sys_path)
         if search_path:
-            search_path_elements = [expand_search_path(path) for path in search_path]
+            search_path_elements = [
+                SearchPathElement.expand(path) for path in search_path
+            ]
             self._search_path.extend(search_path_elements)
         # We will extend the search path further, with the config file
         # items, inside _read().
@@ -420,6 +409,15 @@ class Configuration:
             raise InvalidConfiguration("Configuration was not validated")
         return log_directory
 
+    def get_binary_version(self) -> Optional[str]:
+        status = subprocess.run(
+            [self.binary, "-version"], stdout=subprocess.PIPE, universal_newlines=True
+        )
+        if status.returncode == 0:
+            return status.stdout.strip()
+        else:
+            return None
+
     def _check_read_local_configuration(self, path: str, fail_on_error: bool) -> None:
         if fail_on_error and not os.path.exists(path):
             raise EnvironmentException(
@@ -529,7 +527,10 @@ class Configuration:
 
                 if isinstance(additional_search_path, list):
                     self._search_path.extend(
-                        [expand_search_path(path) for path in additional_search_path]
+                        [
+                            SearchPathElement.expand(path)
+                            for path in additional_search_path
+                        ]
                     )
                 else:
                     self._search_path.append(SearchPathElement(additional_search_path))
@@ -639,7 +640,10 @@ class Configuration:
                 LOG.info("Found: `%s`", self._binary)
 
         if self.number_of_workers == 0:
-            self.number_of_workers = number_of_workers()
+            try:
+                self.number_of_workers = max(multiprocessing.cpu_count() - 4, 1)
+            except NotImplementedError:
+                self.number_of_workers = 4
 
         if not self._typeshed:
             LOG.info("No typeshed specified, looking for it")

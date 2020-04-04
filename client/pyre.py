@@ -11,18 +11,19 @@ import shutil
 import sys
 import time
 import traceback
-from typing import Optional
+from typing import List, Optional
 
-from . import buck, commands, find_project_root, get_binary_version, log, log_statistics
+from . import buck, commands, log, statistics
 from .commands import CommandParser, ExitCode, IncrementalStyle
 from .exceptions import EnvironmentException
+from .find_directories import find_project_root
 from .version import __version__
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
 
-def main() -> int:
+def main(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(
         allow_abbrev=False,
         formatter_class=argparse.RawTextHelpFormatter,
@@ -48,7 +49,9 @@ def main() -> int:
     for command in commands.COMMANDS:
         command.add_subparser(parsed_commands)
 
-    arguments = parser.parse_args()
+    arguments = parser.parse_args(argv)
+
+    log.initialize(arguments.noninteractive)
 
     if not hasattr(arguments, "command"):
         if shutil.which("watchman"):
@@ -76,36 +79,55 @@ def main() -> int:
         original_directory = os.getcwd()
         # TODO(T57959968): Stop changing the directory in the client
         os.chdir(find_project_root(original_directory))
-        command = arguments.command(arguments, original_directory)
 
         if arguments.version:
-            configuration = command.configuration
-            if configuration:
-                binary_version = (
-                    get_binary_version(configuration)
-                    or "Cannot get version from binary"
-                )
-            else:
-                binary_version = "Cannot find Pyre binary"
-            log.stdout.write(
-                "Binary version: {}\nClient version: {}".format(
-                    binary_version, __version__
-                )
-            )
+            try:
+                # TODO(T64512953): Decouple configuration creation with command creation
+                configuration = arguments.command(
+                    arguments, original_directory
+                ).configuration
+                if configuration:
+                    binary_version = configuration.get_binary_version()
+                    if binary_version:
+                        log.stdout.write(f"Binary version: {binary_version}\n")
+            except Exception:
+                pass
+            log.stdout.write(f"Client version: {__version__}\n")
             exit_code = ExitCode.SUCCESS
         else:
-            log.initialize(command.noninteractive, command.log_directory)
+            command = arguments.command(arguments, original_directory)
+            log.start_logging_to_directory(
+                arguments.noninteractive, command.log_directory
+            )
             exit_code = command.run().exit_code()
     except buck.BuckException as error:
-        client_exception_message = str(error)
         if arguments.command == commands.Persistent:
-            commands.Persistent.run_null_server(timeout=3600 * 12)
-        exit_code = ExitCode.BUCK_ERROR
+            try:
+                commands.Persistent.run_null_server(timeout=3600 * 12)
+                exit_code = ExitCode.SUCCESS
+            except Exception as error:
+                client_exception_message = str(error)
+                exit_code = ExitCode.FAILURE
+            except KeyboardInterrupt:
+                LOG.warning("Interrupted by user")
+                exit_code = ExitCode.SUCCESS
+        else:
+            client_exception_message = str(error)
+            exit_code = ExitCode.BUCK_ERROR
     except EnvironmentException as error:
-        client_exception_message = str(error)
         if arguments.command == commands.Persistent:
-            commands.Persistent.run_null_server(timeout=3600 * 12)
-        exit_code = ExitCode.FAILURE
+            try:
+                commands.Persistent.run_null_server(timeout=3600 * 12)
+                exit_code = ExitCode.SUCCESS
+            except Exception as error:
+                client_exception_message = str(error)
+                exit_code = ExitCode.FAILURE
+            except KeyboardInterrupt:
+                LOG.warning("Interrupted by user")
+                exit_code = ExitCode.SUCCESS
+        else:
+            client_exception_message = str(error)
+            exit_code = ExitCode.FAILURE
     except commands.ClientException as error:
         client_exception_message = str(error)
         exit_code = ExitCode.FAILURE
@@ -124,7 +146,7 @@ def main() -> int:
             command.cleanup()
             configuration = command.configuration
             if configuration and configuration.logger:
-                log_statistics(
+                statistics.log(
                     "perfpipe_pyre_usage",
                     arguments=arguments,
                     configuration=configuration,
@@ -153,4 +175,4 @@ if __name__ == "__main__":
             "Has it been removed?\nExiting."
         )
         sys.exit(ExitCode.FAILURE)
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

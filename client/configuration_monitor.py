@@ -4,19 +4,17 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
-import logging
 import os
-from logging import Logger
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .analysis_directory import AnalysisDirectory
 from .commands import stop
-from .configuration import CONFIGURATION_FILE, LOCAL_CONFIGURATION_FILE, Configuration
-from .watchman_subscriber import Subscription, WatchmanSubscriber
+from .configuration import Configuration
+from .find_directories import CONFIGURATION_FILE, LOCAL_CONFIGURATION_FILE
 
-
-LOG: Logger = logging.getLogger(__name__)
+# We use the `LOG` from watchman_subscriber due to its better formatting in log files
+from .watchman_subscriber import LOG, Subscription, WatchmanSubscriber
 
 
 class ConfigurationMonitor(WatchmanSubscriber):
@@ -80,7 +78,7 @@ class ConfigurationMonitor(WatchmanSubscriber):
                     "fields": ["name"],
                 }
                 subscription = Subscription(root, name, subscription)
-                LOG.debug("Configuration monitor subscription: %s", subscription)
+                LOG.debug(f"Configuration monitor subscription: {subscription}")
                 return [subscription]
         LOG.debug("Configuration monitor is not subscribed to any paths.")
         return []
@@ -94,7 +92,7 @@ class ConfigurationMonitor(WatchmanSubscriber):
             return
 
         absolute_paths = [Path(watchman_root, path).resolve() for path in paths]
-        LOG.info("Update to configuration at %s", absolute_paths)
+        LOG.info(f"Update to configuration at {absolute_paths}")
 
         root_configuration_path = self._project_root_path / CONFIGURATION_FILE
         local_configuration_root = self._local_configuration_root

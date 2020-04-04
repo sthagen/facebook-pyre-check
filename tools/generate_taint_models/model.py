@@ -14,7 +14,7 @@ from enum import Enum, auto
 from typing import Callable, Iterable, List, Mapping, NamedTuple, Optional, Set, Union
 
 import _ast
-from tools.pyre.client import query_api
+from tools.pyre.api import query
 from typing_extensions import Final
 
 from .inspect_parser import extract_annotation, extract_name, extract_qualified_name
@@ -118,7 +118,9 @@ class RawCallableModel(Model):
             else:
                 taint = None
 
-            if taint:
+            # * parameters indicate kwargs after the parameter position, and can't be
+            # tainted. Example: `def foo(x, *, y): ...`
+            if parameter_name != "*" and taint:
                 serialized_parameters.append(f"{parameter_name}: {taint}")
             else:
                 serialized_parameters.append(parameter_name)
@@ -248,6 +250,20 @@ class FunctionDefinitionModel(RawCallableModel):
                 )
             )
 
+        keyword_only_parameters = function_arguments.kwonlyargs
+        if len(keyword_only_parameters) > 0:
+            parameters.append(
+                Parameter(name="*", annotation=None, kind=ArgumentKind.ARG)
+            )
+            for parameter in keyword_only_parameters:
+                parameters.append(
+                    Parameter(
+                        parameter.arg,
+                        FunctionDefinitionModel._get_annotation(parameter),
+                        ArgumentKind.ARG,
+                    )
+                )
+
         vararg_parameters = function_arguments.vararg
         if isinstance(vararg_parameters, ast.arg):
             parameters.append(
@@ -277,11 +293,11 @@ class FunctionDefinitionModel(RawCallableModel):
 
 
 class PyreFunctionDefinitionModel(RawCallableModel):
-    definition: query_api.Define
+    definition: query.Define
 
     def __init__(
         self,
-        definition: query_api.Define,
+        definition: query.Define,
         arg: Optional[str] = None,
         vararg: Optional[str] = None,
         kwarg: Optional[str] = None,

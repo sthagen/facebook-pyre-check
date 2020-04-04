@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional
 
-from .connection_api import PyreConnection
+from .connection import PyreConnection
 
 
 class DefineParameter(NamedTuple):
@@ -13,6 +13,12 @@ class Define(NamedTuple):
     name: str
     parameters: List[DefineParameter]
     return_annotation: str
+
+    def get_class_name(self) -> str:
+        return ".".join(self.name.split(".")[:-1])
+
+    def get_method_name(self) -> str:
+        return self.name.split(".")[-1]
 
 
 class Position(NamedTuple):

@@ -3,6 +3,7 @@
   aliasEnvironmentTest
   analysisErrorTest
   annotatedBasesTest
+  annotatedCallTest
   annotatedCallableTest
   annotatedDefineTest
   annotatedGlobalEnvironmentTest
@@ -11,10 +12,12 @@
   astEnvironmentTest
   attrsTest
   awaitableCheckTest
+  callgraphTest
   cfgTest
   classHierarchyTest
   classHierarchyEnvironmentTest
   classMetadataEnvironmentTest
+  constraintsSetTest
   coverageTest
   customAnalysisTest
   deobfuscationCheckTest

@@ -5,7 +5,6 @@
 
 open Core
 open Ast
-open Pyre
 
 type t = {
   global_resolution: GlobalResolution.t;
@@ -199,6 +198,16 @@ let resolve_attribute_access resolution ~base_type ~attribute =
   resolve_expression_to_type resolution expression_to_analyze
 
 
+let resolve_expression_to_type_with_locals
+    ({ resolve_expression; _ } as resolution)
+    ~locals
+    expression
+  =
+  let add_local resolution (reference, annotation) = set_local resolution ~reference ~annotation in
+  let resolution_with_locals = List.fold ~init:resolution ~f:add_local locals in
+  resolve_expression ~resolution:resolution_with_locals expression |> snd |> Annotation.annotation
+
+
 let add_type_variable ({ type_variables; _ } as resolution) ~variable =
   { resolution with type_variables = Type.Variable.Set.add type_variables variable }
 
@@ -271,23 +280,14 @@ let fallback_attribute ~resolution ~name class_name =
     in
     match fallback with
     | Some fallback when AnnotatedAttribute.defined fallback -> (
-        let annotation =
-          match fallback |> AnnotatedAttribute.annotation |> Annotation.annotation with
-          | Callable callable -> Some callable
-          | other -> (
-              match
-                GlobalResolution.attribute_from_annotation
-                  global_resolution
-                  ~parent:other
-                  ~name:"__call__"
-                >>| AnnotatedAttribute.annotation
-                >>| Annotation.annotation
-              with
-              | Some (Callable callable) -> Some callable
-              | _ -> None )
-        in
+        let annotation = fallback |> AnnotatedAttribute.annotation |> Annotation.annotation in
         match annotation with
-        | Some ({ implementation; _ } as callable) ->
+        | Parametric
+            {
+              name = "BoundMethod";
+              parameters =
+                [Single (Callable ({ implementation; _ } as callable)); Single self_argument];
+            } ->
             let arguments =
               let name_argument =
                 {
@@ -301,18 +301,20 @@ let fallback_attribute ~resolution ~name class_name =
               in
               [name_argument]
             in
-            let implementation =
+            let return_annotation =
               match
                 GlobalResolution.signature_select
                   ~global_resolution
-                  ~resolve:(resolve_expression_to_type resolution)
+                  ~resolve_with_locals:(resolve_expression_to_type_with_locals resolution)
                   ~arguments
                   ~callable
+                  ~self_argument:(Some self_argument)
               with
-              | AttributeResolution.Found { Type.Callable.implementation; _ } -> implementation
-              | AttributeResolution.NotFound _ -> implementation
+              | AttributeResolution.Found { selected_return_annotation } ->
+                  selected_return_annotation
+              | AttributeResolution.NotFound _ ->
+                  Type.Callable.Overload.return_annotation implementation
             in
-            let return_annotation = Type.Callable.Overload.return_annotation implementation in
             Some
               (AnnotatedAttribute.create
                  ~annotation:return_annotation

@@ -498,7 +498,7 @@ let test_check_method_parameters context =
       "Revealed type [-1]: Revealed type for `test.Foo.foo` is "
       ^ "`typing.Callable(Foo.foo)[[Named(self, Foo)], None]`.";
       "Revealed type [-1]: Revealed type for `test.Foo().foo` is "
-      ^ "`typing.Callable(Foo.foo)[[], None]`.";
+      ^ "`BoundMethod[typing.Callable(Foo.foo)[[Named(self, Foo)], None], Foo]`.";
     ];
   assert_strict_type_errors
     {|
@@ -1459,7 +1459,8 @@ let test_check_callable_protocols context =
     |}
     [
       "Incompatible return type [7]: Expected `None` but got "
-      ^ "`typing.Callable(Foo.bar)[[Named(x, int)], str]`.";
+      ^ "`BoundMethod[typing.Callable(Foo.bar)[[Named(self, typing.Type[Foo]), Named(x, int)], \
+         str], typing.Type[Foo]]`.";
     ];
   assert_type_errors
     {|
@@ -1630,6 +1631,35 @@ let test_check_self context =
     [
       "Invalid type parameters [24]: Generic type `G` expects 1 type parameter.";
       "Revealed type [-1]: Revealed type for `x.verbose(1).outer()` is `int`.";
+    ];
+  assert_type_errors
+    {|
+      import typing
+      TSelf = typing.TypeVar('TSelf', bound="C")
+      class C:
+        flip: bool = True
+        def flipflop(self: TSelf, other: TSelf) -> TSelf:
+          self.flip = not self.flip
+          if self.flip:
+           return other
+          else:
+           return self
+      class A(C):
+        pass
+      class B(C):
+        pass
+      def foo() -> None:
+        x = A().flipflop(A())
+        reveal_type(x)
+        x = B().flipflop(B())
+        reveal_type(x)
+        x = A().flipflop(B())
+        reveal_type(x)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `x` is `A`.";
+      "Revealed type [-1]: Revealed type for `x` is `B`.";
+      "Revealed type [-1]: Revealed type for `x` is `typing.Union[A, B]`.";
     ];
   ()
 

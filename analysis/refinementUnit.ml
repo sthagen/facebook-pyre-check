@@ -84,14 +84,12 @@ let refine ~global_resolution { annotation; mutability } refined =
         | Type.Top -> refined
         | Type.Bottom -> annotation
         | refined ->
-            GlobalResolution.solve_less_or_equal
-              global_resolution
-              ~constraints:TypeConstraints.empty
-              ~left:refined
-              ~right:original
-            |> List.filter_map ~f:(GlobalResolution.solve_constraints global_resolution)
-            |> List.hd
-            >>| (fun solution -> TypeConstraints.Solution.instantiate solution refined)
+            GlobalResolution.ConstraintsSet.add
+              ConstraintsSet.empty
+              ~new_constraint:(LessOrEqual { left = refined; right = original })
+              ~global_resolution
+            |> GlobalResolution.ConstraintsSet.solve ~global_resolution
+            >>| (fun solution -> ConstraintsSet.Solution.instantiate solution refined)
             |> Option.value ~default:annotation
       in
       let refine =

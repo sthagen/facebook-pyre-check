@@ -328,6 +328,13 @@ let test_check_invalid_type context =
     ["Undefined or invalid type [11]: Annotation `foo.MyType` is not defined as a type."];
   assert_type_errors
     {|
+      class Foo:
+        X = int
+      x: Foo.X = ...
+    |}
+    ["Undefined or invalid type [11]: Annotation `Foo.X` is not defined as a type."];
+  assert_type_errors
+    {|
         def foo() -> None:
           MyType: typing.TypeAlias = int
           x: MyType = 1
@@ -426,6 +433,19 @@ let test_check_invalid_type context =
       def foo() -> Foo[garbage]: ...
     |}
     ["Undefined or invalid type [11]: Annotation `garbage` is not defined as a type."];
+
+  (* Malformed alias assignment *)
+  assert_type_errors
+    {|
+      X, Y = int
+      x: X = ...
+    |}
+    [
+      "Missing global annotation [5]: Globally accessible variable `X` has no type specified.";
+      "Unable to unpack [23]: Unable to unpack `typing.Type[int]` into 2 values.";
+      "Missing global annotation [5]: Globally accessible variable `Y` has no type specified.";
+      "Undefined or invalid type [11]: Annotation `X` is not defined as a type.";
+    ];
   ()
 
 
@@ -1244,8 +1264,6 @@ let test_check_aliases context =
       "Redefined class [50]: Class `FOO` conflicts with class `BAR`.";
       "Illegal annotation target [35]: Target `test.FOO.x` cannot be annotated.";
       "Undefined attribute [16]: `typing.Type` has no attribute `x`.";
-      "Incompatible variable type [9]: FOO is declared to have type `typing.Type[FOO]` but is used \
-       as type `typing.Type[BAR]`.";
       "Incompatible return type [7]: Expected `int` but got `unknown`.";
       "Undefined attribute [16]: `BAR` has no attribute `x`.";
       "Incompatible parameter type [6]: Expected `BAR` for 1st positional only parameter to call \
@@ -1279,20 +1297,25 @@ let test_check_aliases context =
       "Undefined name [18]: Global name `UndefinedName` is not defined, or there is at least one \
        control flow path that doesn't define `UndefinedName`.";
     ];
+  (* TODO (T61917464): Surface explicit type aliases registeration failures as type errors *)
   assert_type_errors
     ~context
     {|
       import typing
       MyAlias: typing.TypeAlias = typing.Union[int, UndefinedName]
     |}
-    ["Undefined or invalid type [11]: Annotation `UndefinedName` is not defined as a type."];
+    [
+      "Undefined name [18]: Global name `UndefinedName` is not defined, or there is at least one \
+       control flow path that doesn't define `UndefinedName`.";
+    ];
+  (* TODO (T61917464): Surface explicit type aliases registeration failures as type errors *)
   assert_type_errors
     ~context
     {|
       import typing
       MyAlias: typing.TypeAlias = typing.Union[int, "UndefinedName"]
     |}
-    ["Undefined or invalid type [11]: Annotation `UndefinedName` is not defined as a type."];
+    [];
 
   (* Aliases to invalid types *)
   assert_type_errors

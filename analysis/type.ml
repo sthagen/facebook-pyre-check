@@ -328,11 +328,6 @@ module Record = struct
       | Anonymous
       | Named of Reference.t
 
-    and 'annotation implicit_record = {
-      implicit_annotation: 'annotation;
-      name: Identifier.t;
-    }
-
     and 'annotation parameter_variadic_type_variable = {
       head: 'annotation list;
       variable: 'annotation Variable.RecordVariadic.RecordParameters.record;
@@ -352,7 +347,6 @@ module Record = struct
       kind: kind;
       implementation: 'annotation overload;
       overloads: 'annotation overload list;
-      implicit: 'annotation implicit_record option;
     }
     [@@deriving compare, eq, sexp, show, hash]
 
@@ -665,6 +659,10 @@ let pp_parameters ~pp_type format = function
       Format.pp_print_list ~pp_sep:(fun format () -> Format.fprintf format ", ") s format parameters
 
 
+let pp_typed_dictionary_field ~pp_type format { Record.TypedDictionary.name; annotation; required } =
+  Format.fprintf format "%s%s: %a" name (if required then "" else "?") pp_type annotation
+
+
 let rec pp format annotation =
   match annotation with
   | Annotated annotation -> Format.fprintf format "typing.Annotated[%a]" pp annotation
@@ -712,8 +710,7 @@ let rec pp format annotation =
   | TypedDictionary { Record.TypedDictionary.name; fields } ->
       let fields =
         fields
-        |> List.map ~f:(fun { Record.TypedDictionary.name; annotation; required } ->
-               Format.asprintf "%s%s: %a" name (if required then "" else "?") pp annotation)
+        |> List.map ~f:(Format.asprintf "%a" (pp_typed_dictionary_field ~pp_type:pp))
         |> String.concat ~sep:", "
       in
       let name =
@@ -810,8 +807,7 @@ let rec pp_concise format annotation =
   | TypedDictionary { name = "$anonymous"; fields; _ } ->
       let fields =
         fields
-        |> List.map ~f:(fun { Record.TypedDictionary.name; annotation; required } ->
-               Format.asprintf "%s%s: %a" name (if required then "" else "?") pp_concise annotation)
+        |> List.map ~f:(Format.asprintf "%a" (pp_typed_dictionary_field ~pp_type:pp))
         |> String.concat ~sep:", "
       in
       Format.fprintf format "TypedDict(%s)" fields
@@ -1479,8 +1475,6 @@ module Callable = struct
 
   include Record.Callable
 
-  type implicit = type_t Record.Callable.implicit_record [@@deriving compare, eq, sexp, show, hash]
-
   type t = type_t Record.Callable.record [@@deriving compare, eq, sexp, show, hash]
 
   type parameters = type_t Record.Callable.record_parameters
@@ -1508,9 +1502,9 @@ module Callable = struct
     | ({ kind = Named _; _ } as initial) :: overloads ->
         let fold sofar signature =
           match sofar, signature with
-          | Some sofar, { kind; implementation; overloads; implicit } ->
+          | Some sofar, { kind; implementation; overloads } ->
               if equal_kind kind sofar.kind then
-                Some { kind; implementation; overloads = sofar.overloads @ overloads; implicit }
+                Some { kind; implementation; overloads = sofar.overloads @ overloads }
               else
                 None
           | _ -> None
@@ -1528,7 +1522,7 @@ module Callable = struct
 
 
   let map_implementation implementation ~f =
-    map { kind = Anonymous; implementation; overloads = []; implicit = None } ~f
+    map { kind = Anonymous; implementation; overloads = [] } ~f
     |> function
     | Some { implementation; _ } -> implementation
     | _ -> failwith "f did not return a callable"
@@ -1554,9 +1548,9 @@ module Callable = struct
     }
 
 
-  let create ?name ?(overloads = []) ?(parameters = Undefined) ?implicit ~annotation () =
+  let create ?name ?(overloads = []) ?(parameters = Undefined) ~annotation () =
     let kind = name >>| (fun name -> Named name) |> Option.value ~default:Anonymous in
-    Callable { kind; implementation = { annotation; parameters }; overloads; implicit }
+    Callable { kind; implementation = { annotation; parameters }; overloads }
 
 
   let create_from_implementation implementation =
@@ -1586,7 +1580,6 @@ let lambda ~parameters ~return_annotation =
       kind = Anonymous;
       implementation = { annotation = return_annotation; parameters = Defined parameters };
       overloads = [];
-      implicit = None;
     }
 
 
@@ -1835,6 +1828,10 @@ let rec create_logic ~aliases ~variable_aliases { Node.value = expression; _ } =
       in
       let kind =
         match modifiers with
+        | Some ({ Call.Argument.value = { Node.value = Expression.Name name; _ }; _ } :: _) ->
+            Ast.Expression.name_to_reference name
+            >>| (fun name -> Named name)
+            |> Option.value ~default:Anonymous
         | Some
             ({
                Call.Argument.value =
@@ -1960,7 +1957,7 @@ let rec create_logic ~aliases ~variable_aliases { Node.value = expression; _ } =
         | Some signatures -> List.rev (parse_overloads (Node.value signatures))
         | None -> []
       in
-      Callable { kind; implementation; overloads; implicit = None }
+      Callable { kind; implementation; overloads }
     in
     match expression with
     | Call
@@ -3700,6 +3697,20 @@ module TypedDictionary = struct
 
   let are_fields_total = are_fields_total
 
+  let same_name_different_requiredness
+      { name = left_name; required = left_required; _ }
+      { name = right_name; required = right_required; _ }
+    =
+    String.equal left_name right_name && not (Bool.equal left_required right_required)
+
+
+  let same_name_different_annotation
+      { name = left_name; annotation = left_annotation; _ }
+      { name = right_name; annotation = right_annotation; _ }
+    =
+    String.equal left_name right_name && not (equal left_annotation right_annotation)
+
+
   let fields_have_colliding_keys left_fields right_fields =
     let found_collision
         { name = needle_name; annotation = needle_annotation; required = needle_required }
@@ -3746,7 +3757,6 @@ module TypedDictionary = struct
                 ];
           };
         ];
-      implicit = None;
     }
 
 
@@ -3868,7 +3878,7 @@ module TypedDictionary = struct
 
   let non_total_special_methods =
     let pop_overloads =
-      let overloads { name; annotation; required } =
+      let overloads { name; annotation; required; _ } =
         if required then
           []
         else
@@ -4147,3 +4157,12 @@ let resolve_class annotation =
         | None -> None )
   in
   extract ~meta:false annotation
+
+
+let callable_name = function
+  | Callable { kind = Named name; _ } -> Some name
+  | Parametric
+      { name = "BoundMethod"; parameters = [Single (Callable { kind = Named name; _ }); Single _] }
+    ->
+      Some name
+  | _ -> None

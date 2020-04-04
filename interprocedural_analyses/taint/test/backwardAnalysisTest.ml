@@ -178,6 +178,24 @@ let test_tito_sink context =
     ]
 
 
+let test_asyncio_gather context =
+  assert_taint
+    ~context
+    {|
+      import asyncio
+      def sink_through_gather(arg):
+          (_, result, _) = await asyncio.gather(1, arg, "foo")
+          return result
+      def benign_through_gather(arg):
+          (_, _, result) = await asyncio.gather(1, arg, "foo")
+          return result
+    |}
+    [
+      outcome ~kind:`Function ~tito_parameters:["arg"] "qualifier.sink_through_gather";
+      outcome ~kind:`Function ~tito_parameters:[] "qualifier.benign_through_gather";
+    ]
+
+
 let test_apply_method_model_at_call_site context =
   assert_taint
     ~context
@@ -809,7 +827,16 @@ let test_tuple context =
       outcome ~kind:`Function ~tito_parameters:["arg"] "qualifier.tuple_unknown_index";
       outcome ~kind:`Function ~tito_parameters:["arg"] "qualifier.tuple_pattern_same_index";
       outcome ~kind:`Function "qualifier.tuple_pattern_different_index";
-    ]
+    ];
+  assert_taint
+    ~context
+    {|
+      def clear_taint_in_tuple(arg):
+        result = arg
+        x, result = 1, 2
+        return result
+    |}
+    [outcome ~kind:`Function ~sink_parameters:[] "qualifier.clear_taint_in_tuple"]
 
 
 let test_lambda context =
@@ -1451,34 +1478,35 @@ let test_for_loops context =
 
 let () =
   [
-    "plus_taint_in_taint_out", test_plus_taint_in_taint_out;
-    "concatenate_taint_in_taint_out", test_concatenate_taint_in_taint_out;
-    "rce_sink", test_rce_sink;
-    "test_sink", test_sink;
-    "rce_and_test_sink", test_rce_and_test_sink;
-    "test_call_tito", test_call_taint_in_taint_out;
-    "test_tito_sink", test_tito_sink;
-    "test_tito_via_receiver", test_tito_via_receiver;
-    "test_apply_method_model_at_call_site", test_apply_method_model_at_call_site;
-    "test_seqential_call_path", test_sequential_call_path;
-    "test_chained_call_path", test_chained_call_path;
-    "test_dictionary", test_dictionary;
-    "test_comprehensions", test_comprehensions;
-    "test_list", test_list;
-    "test_lambda", test_lambda;
-    "test_set", test_set;
-    "test_starred", test_starred;
-    "test_ternary", test_ternary;
-    "test_tuple", test_tuple;
-    "test_unary", test_unary;
-    "test_walrus", test_walrus;
-    "test_yield", test_yield;
-    "test_named_arguments", test_named_arguments;
-    "test_actual_parameter_matching", test_actual_parameter_matching;
-    "test_constructor_argument_tito", test_constructor_argument_tito;
-    "decorator", test_decorator;
-    "assignment", test_assignment;
     "access_paths", test_access_paths;
+    "actual_parameter_matching", test_actual_parameter_matching;
+    "apply_method_model_at_call_site", test_apply_method_model_at_call_site;
+    "assignment", test_assignment;
+    "asyncio_gather", test_asyncio_gather;
+    "call_tito", test_call_taint_in_taint_out;
+    "chained_call_path", test_chained_call_path;
+    "comprehensions", test_comprehensions;
+    "concatenate_taint_in_taint_out", test_concatenate_taint_in_taint_out;
+    "constructor_argument_tito", test_constructor_argument_tito;
+    "decorator", test_decorator;
+    "dictionary", test_dictionary;
     "for_loops", test_for_loops;
+    "lambda", test_lambda;
+    "list", test_list;
+    "named_arguments", test_named_arguments;
+    "plus_taint_in_taint_out", test_plus_taint_in_taint_out;
+    "rce_and_test_sink", test_rce_and_test_sink;
+    "rce_sink", test_rce_sink;
+    "seqential_call_path", test_sequential_call_path;
+    "set", test_set;
+    "sink", test_sink;
+    "starred", test_starred;
+    "ternary", test_ternary;
+    "tito_sink", test_tito_sink;
+    "tito_via_receiver", test_tito_via_receiver;
+    "tuple", test_tuple;
+    "unary", test_unary;
+    "walrus", test_walrus;
+    "yield", test_yield;
   ]
   |> TestHelper.run_with_taint_models ~name:"backwardsTaint"

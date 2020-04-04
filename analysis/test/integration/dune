@@ -41,6 +41,7 @@
   importTest
   inferTest
   isinstanceTest
+  lambdaTest
   literalTest
   methodTest
   modeTest
@@ -52,6 +53,7 @@
   revealTypeTest
   scopeTest
   signatureSelectionTest
+  sqlAlchemyTest
   tupleTest
   typeVariableTest
   typedDictionaryTest

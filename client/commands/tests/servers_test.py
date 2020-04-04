@@ -41,10 +41,10 @@ class ServersCommandTest(unittest.TestCase):
         )
         log_stdout.assert_has_calls(
             [
-                call("Pyre servers:\n<pid> <server-root>"),
-                call("\n789        <root>"),
-                call("\n456        bar/baz"),
-                call("\n123        foo"),
+                call("PID       project\n"),
+                call("789       <root>\n"),
+                call("456       bar/baz\n"),
+                call("123       foo\n"),
             ]
         )
 
@@ -85,8 +85,10 @@ class ServersCommandTest(unittest.TestCase):
         self, stop_class: MagicMock, make_directory: MagicMock
     ) -> None:
         servers = Servers(
-            arguments=mock_arguments(dot_pyre_directory=Path("/root/.pyre")),
-            original_directory="/",
+            arguments=mock_arguments(
+                dot_pyre_directory=Path("/dot-pyre-directory/.pyre")
+            ),
+            original_directory="/root",
             configuration=mock_configuration(),
             analysis_directory=AnalysisDirectory("."),
         )
@@ -95,20 +97,25 @@ class ServersCommandTest(unittest.TestCase):
                 ServerDetails(
                     pid=789,
                     local_root=".",
-                    server_pid_path=Path("/root/.pyre/server/server.pid"),
+                    server_pid_path=Path("/dot-pyre-directory/.pyre/server/server.pid"),
                 ),
                 ServerDetails(
                     pid=456,
                     local_root="bar/baz",
-                    server_pid_path=Path("/root/.pyre/bar/baz/server/server.pid"),
+                    server_pid_path=Path(
+                        "/dot-pyre-directory/.pyre/bar/baz/server/server.pid"
+                    ),
                 ),
                 ServerDetails(
                     pid=123,
                     local_root="foo",
-                    server_pid_path=Path("/root/.pyre/foo/server/server.pid"),
+                    server_pid_path=Path(
+                        "/dot-pyre-directory/.pyre/foo/server/server.pid"
+                    ),
                 ),
             ]
         )
+        self.assertEqual(servers._current_directory, "/root")
         stop_class.assert_has_calls(
             [
                 call(arguments=servers._arguments, original_directory="/root"),
@@ -175,4 +182,16 @@ class ServerDetailsTest(unittest.TestCase):
                 local_root=".",
                 server_pid_path=Path("/root/.pyre/server/server.pid"),
             ),
+        )
+
+    def test_is_root(self) -> None:
+        self.assertTrue(
+            ServerDetails(
+                pid=1, local_root=".", server_pid_path=Path("something")
+            ).is_root()
+        )
+        self.assertFalse(
+            ServerDetails(
+                pid=1, local_root="foo/bar", server_pid_path=Path("something")
+            ).is_root()
         )

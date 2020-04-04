@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 from types import TracebackType
-from typing import Iterable, List, Optional, Pattern, Sequence
+from typing import Iterable, Optional, Pattern, Sequence
 
 
 PERFORMANCE: int = 15
@@ -75,7 +75,6 @@ class TimedStreamHandler(logging.StreamHandler):
         self.setLevel(logging.INFO)
 
         self._record: Optional[logging.LogRecord] = None
-        self._last_record: Optional[logging.LogRecord] = None
         self._active_lines: int = 0
 
         # Preamble preparing terminal.
@@ -101,7 +100,6 @@ class TimedStreamHandler(logging.StreamHandler):
         )
 
     def emit(self, record: logging.LogRecord, age: Optional[float] = None) -> None:
-        self._last_record = record
         suffix = ""
         color = ""
         active_lines = record.msg.count("\n") + 1
@@ -137,7 +135,7 @@ class TimedStreamHandler(logging.StreamHandler):
 
         timed_record = copy.copy(record)
         timed_record.msg = (
-            "{clear_line}{color} {cursor}{clear} " "{truncate}{message}{suffix}"
+            "{clear_line}{color} {cursor}{clear} {truncate}{message}{suffix}"
         ).format(
             clear_line=self.clear_lines(),
             color=color,
@@ -171,12 +169,9 @@ class TimedStreamHandler(logging.StreamHandler):
         sys.stderr.flush()
 
 
-def initialize(
-    noninteractive: bool,
-    log_directory: str = "/tmp/.pyre",
-    disable_file_logging: bool = False,
-) -> None:
+def initialize(noninteractive: bool) -> None:
     global __handler
+
     if noninteractive:
         stream_handler = logging.StreamHandler()
         stream_handler.setFormatter(SectionFormatter())
@@ -186,19 +181,22 @@ def initialize(
         stream_handler = TimedStreamHandler()
         __handler = stream_handler
 
-    handlers: List[logging.Handler] = [stream_handler]
-
-    if not noninteractive and not disable_file_logging:
-        if not os.path.exists(log_directory):
-            os.makedirs(log_directory)
-        file_handler = logging.FileHandler(os.path.join(log_directory, "pyre.stderr"))
-        file_handler.setFormatter(SectionFormatter())
-        file_handler.setLevel(logging.DEBUG)
-        handlers.append(file_handler)
     logging.addLevelName(PERFORMANCE, "PERFORMANCE")
     logging.addLevelName(PROMPT, "PROMPT")
     logging.addLevelName(SUCCESS, "SUCCESS")
-    logging.basicConfig(level=logging.DEBUG, handlers=handlers)
+
+    logging.basicConfig(level=logging.DEBUG, handlers=[stream_handler])
+
+
+def start_logging_to_directory(noninteractive: bool, log_directory: str) -> None:
+    if not noninteractive and log_directory is not None:
+        if not os.path.exists(log_directory):
+            os.makedirs(log_directory)
+        handler = logging.FileHandler(os.path.join(log_directory, "pyre.stderr"))
+        handler.setFormatter(SectionFormatter())
+        handler.setLevel(logging.DEBUG)
+        logger = logging.getLogger()
+        logger.addHandler(handler)
 
 
 def cleanup() -> None:
@@ -208,7 +206,9 @@ def cleanup() -> None:
 
     output = stdout.getvalue()
     if output:
-        sys.stdout.write(output + "\n")
+        sys.stdout.write(output)
+        if not output.endswith("\n"):
+            sys.stdout.write("\n")
 
 
 class StreamLogger:

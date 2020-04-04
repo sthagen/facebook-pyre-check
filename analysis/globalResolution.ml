@@ -426,6 +426,8 @@ let successors ~resolution:({ dependency; _ } as resolution) =
   ClassMetadataEnvironment.ReadOnly.successors ?dependency (class_metadata_environment resolution)
 
 
+let immediate_parents ~resolution = ClassHierarchy.immediate_parents (class_hierarchy resolution)
+
 let attributes
     ~resolution:({ dependency; _ } as resolution)
     ?(transitive = false)
@@ -490,7 +492,24 @@ let variables ?default ({ dependency; _ } as resolution) =
     (class_hierarchy_environment resolution)
 
 
-let solve_less_or_equal resolution = full_order resolution |> TypeOrder.solve_less_or_equal
+module ConstraintsSet = struct
+  include ConstraintsSet
+
+  let add constraints ~new_constraint ~global_resolution =
+    TypeOrder.OrderedConstraintsSet.add
+      constraints
+      ~new_constraint
+      ~order:(full_order global_resolution)
+
+
+  let solve constraints ~global_resolution =
+    TypeOrder.OrderedConstraintsSet.solve constraints ~order:(full_order global_resolution)
+
+
+  module Solution = struct
+    include ConstraintsSet.Solution
+  end
+end
 
 let constraints_solution_exists ({ dependency; _ } as resolution) =
   AttributeResolution.ReadOnly.constraints_solution_exists
@@ -498,15 +517,7 @@ let constraints_solution_exists ({ dependency; _ } as resolution) =
     (attribute_resolution resolution)
 
 
-let partial_solve_constraints resolution =
-  TypeOrder.OrderedConstraints.extract_partial_solution ~order:(full_order resolution)
-
-
 let solve_constraints resolution = TypeOrder.OrderedConstraints.solve ~order:(full_order resolution)
-
-let solve_ordered_types_less_or_equal resolution =
-  full_order resolution |> TypeOrder.solve_ordered_types_less_or_equal
-
 
 let extract_type_parameters resolution ~source ~target =
   match source with
@@ -526,16 +537,13 @@ let extract_type_parameters resolution ~source ~target =
         List.map unaries ~f:(fun unary -> Type.Parameter.Single (Type.Variable unary))
         |> Type.parametric target
       in
-      solve_less_or_equal
-        resolution
-        ~constraints:TypeConstraints.empty
-        ~left:source
-        ~right:solve_against
-      |> List.hd
-      >>= fun first_constraint ->
-      solve_constraints resolution first_constraint
+      ConstraintsSet.add
+        ConstraintsSet.empty
+        ~new_constraint:(LessOrEqual { left = source; right = solve_against })
+        ~global_resolution:resolution
+      |> ConstraintsSet.solve ~global_resolution:resolution
       >>= fun solution ->
-      List.map unaries ~f:(TypeConstraints.Solution.instantiate_single_variable solution)
+      List.map unaries ~f:(ConstraintsSet.Solution.instantiate_single_variable solution)
       |> Option.all
 
 

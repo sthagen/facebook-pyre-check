@@ -65,6 +65,19 @@ let test_lexer _ =
     ];
   assert_parsed_equal "print a" [+Statement.Expression !"a"];
   assert_parsed_equal
+    "a.print == 1"
+    [
+      +Statement.Expression
+         (+Expression.ComparisonOperator
+             {
+               ComparisonOperator.left =
+                 +Expression.Name
+                    (Name.Attribute { base = !"a"; attribute = "print"; special = false });
+               operator = ComparisonOperator.Equals;
+               right = +Expression.Integer 1;
+             });
+    ];
+  assert_parsed_equal
     "print (a, file=b)"
     [
       +Statement.Expression
@@ -79,6 +92,26 @@ let test_lexer _ =
              });
     ];
   assert_parsed_equal "print >> a, b" [+Statement.Expression (+Expression.Tuple [!"a"; !"b"])];
+  assert_parsed_equal
+    "def foo():\n\tprint >> a"
+    [
+      +Statement.Define
+         {
+           signature =
+             {
+               name = + !&"foo";
+               parameters = [];
+               decorators = [];
+               return_annotation = None;
+               async = false;
+               generator = false;
+               parent = None;
+               nesting_define = None;
+             };
+           captures = [];
+           body = [+Statement.Expression !"a"];
+         };
+    ];
   assert_parsed_equal
     "1 +\\\n 2"
     [

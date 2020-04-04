@@ -1879,7 +1879,7 @@ let test_expand_implicit_returns _ =
     match List.rev (Source.statements expanded) with
     | { Node.value = Define { body; _ }; _ } :: _ -> (
         match List.rev body with
-        | return :: _ -> assert_equal return.location expected_location
+        | return :: _ -> assert_equal ~printer:Location.show expected_location return.location
         | _ -> failwith "Preprocessed source's Define body is empty" )
     | _ -> failwith "Preprocessed source failed"
   in
@@ -2394,6 +2394,27 @@ let test_expand_typed_dictionaries _ =
       class Movie(MovieBase, NonTotalTypedDictionary):
         name: str
         year: int
+    |};
+  ()
+
+
+let test_sqlalchemy_declarative_base _ =
+  let assert_expand ?(handle = "") source expected =
+    let expected = parse ~handle ~coerce_special_methods:true expected |> Preprocessing.qualify in
+    let actual =
+      parse ~handle source
+      |> Preprocessing.qualify
+      |> Preprocessing.expand_sqlalchemy_declarative_base
+    in
+    assert_source_equal ~location_insensitive:true expected actual
+  in
+  assert_expand
+    {|
+      Base = sqlalchemy.ext.declarative.declarative_base()
+    |}
+    {|
+      class Base(metaclass=sqlalchemy.ext.declarative.DeclarativeMeta):
+        pass
     |};
   ()
 
@@ -3976,6 +3997,7 @@ let () =
          "transform_ast" >:: test_transform_ast;
          "typed_dictionary_stub_fix" >:: test_replace_mypy_extensions_stub;
          "typed_dictionaries" >:: test_expand_typed_dictionaries;
+         "sqlalchemy_declarative_base" >:: test_sqlalchemy_declarative_base;
          "nesting_define" >:: test_populate_nesting_define;
          "captures" >:: test_populate_captures;
        ]

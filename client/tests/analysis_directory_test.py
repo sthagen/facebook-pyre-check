@@ -18,6 +18,8 @@ from ..analysis_directory import (
     AnalysisDirectory,
     SharedAnalysisDirectory,
     UpdatedPaths,
+    _get_project_name,
+    _resolve_filter_paths,
     resolve_analysis_directory,
 )
 
@@ -859,3 +861,50 @@ class SharedAnalysisDirectoryTest(unittest.TestCase):
         shared_analysis_directory._configuration = MagicMock()
         shared_analysis_directory._notify_about_rebuild(is_start_message=True)
         socket_connection_class.assert_called_once()
+
+    def test_resolve_filter_paths(self) -> None:
+        arguments = MagicMock()
+        configuration = MagicMock()
+        original_directory = "/project"
+        arguments.source_directories = []
+        arguments.targets = []
+        configuration.local_configuration_root = None
+
+        filter_paths = _resolve_filter_paths(
+            arguments, configuration, original_directory
+        )
+        self.assertEqual(filter_paths, set())
+
+        arguments.source_directories = ["/project/a"]
+        filter_paths = _resolve_filter_paths(
+            arguments, configuration, original_directory
+        )
+        self.assertEqual(filter_paths, {"/project/a"})
+
+        arguments.source_directories = ["/project/a"]
+        arguments.targets = ["//x/y/..."]
+        filter_paths = _resolve_filter_paths(
+            arguments, configuration, original_directory
+        )
+        self.assertEqual(filter_paths, {"/project/a", "x/y"})
+
+        arguments.source_directories = ["/project/local/a"]
+        arguments.targets = ["//x/y:z"]
+        configuration.local_configuration_root = "project/local"
+        filter_paths = _resolve_filter_paths(
+            arguments, configuration, original_directory
+        )
+        self.assertEqual(filter_paths, {"/project/local/a", "x/y"})
+
+        arguments.source_directories = []
+        arguments.targets = []
+        configuration.local_configuration_root = "/project/local"
+        filter_paths = _resolve_filter_paths(
+            arguments, configuration, original_directory
+        )
+        self.assertEqual(filter_paths, {"/project/local"})
+
+    @patch.object(os, "getpid", return_value=1234)
+    def test_get_project_name(self, get_process_id: MagicMock) -> None:
+        self.assertEqual(_get_project_name(isolate=True), "isolated_1234")
+        self.assertEqual(_get_project_name(isolate=False), None)

@@ -5,23 +5,31 @@
 
 
 import functools
-import logging
 import os
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Sequence, Set
 
 from . import json_rpc
 from .analysis_directory import AnalysisDirectory
 from .configuration import Configuration
 from .filesystem import find_root
 from .socket_connection import SocketConnection
-from .watchman_subscriber import Subscription, WatchmanSubscriber
 
-
-LOG: logging.Logger = logging.getLogger(__name__)
+# We use the `LOG` from watchman_subscriber due to its better formatting in log files
+from .watchman_subscriber import LOG, Subscription, WatchmanSubscriber
 
 
 class MonitorException(Exception):
     pass
+
+
+def _log_paths(message: str, paths: Sequence[str]) -> None:
+    path_count = len(paths)
+    log_threshold = 30
+    if path_count <= log_threshold:
+        LOG.info(f"{message} {paths}")
+    else:
+        additional_count = path_count - log_threshold
+        LOG.info(f"{message} {paths[:log_threshold]} (and {additional_count} more)")
 
 
 class ProjectFilesMonitor(WatchmanSubscriber):
@@ -103,7 +111,7 @@ class ProjectFilesMonitor(WatchmanSubscriber):
             absolute_paths = [
                 os.path.join(response["root"], path) for path in response["files"]
             ]
-            LOG.info("Received Watchman update for files %s.", absolute_paths)
+            _log_paths("Received Watchman update for files", absolute_paths)
 
             updated_paths = self._analysis_directory.process_updated_files(
                 absolute_paths
@@ -113,11 +121,11 @@ class ProjectFilesMonitor(WatchmanSubscriber):
                 LOG.info("Skipping update: Pyre doesn't track any of these files.")
                 return
 
-            LOG.info(
-                "Notifying server of update to files %s and invalidation of %s.",
-                updated_paths.updated_paths,
-                updated_paths.deleted_paths,
+            _log_paths(
+                "Notifying server of update to files", updated_paths.updated_paths
             )
+            _log_paths("  and invalidation of files", updated_paths.deleted_paths)
+
             message = json_rpc.Request(
                 method="updateFiles",
                 parameters={
@@ -158,4 +166,4 @@ class ProjectFilesMonitor(WatchmanSubscriber):
             ).daemonize()
             LOG.debug("Restarted file monitor.")
         except MonitorException as exception:
-            LOG.warning("Failed to restart file monitor: %s", exception)
+            LOG.warning(f"Failed to restart file monitor: {exception}")

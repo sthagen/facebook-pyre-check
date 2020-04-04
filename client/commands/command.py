@@ -21,20 +21,17 @@ from typing import IO, Iterable, List, Optional
 
 from typing_extensions import Final
 
-from .. import (
-    find_dot_pyre_directory,
-    find_local_root,
-    find_log_directory,
-    find_project_root,
-    is_capable_terminal,
-    json_rpc,
-    log,
-    readable_directory,
-)
+from .. import json_rpc, log, terminal
 from ..analysis_directory import AnalysisDirectory, resolve_analysis_directory
 from ..configuration import Configuration
 from ..exceptions import EnvironmentException
-from ..filesystem import remove_if_exists, translate_path
+from ..filesystem import readable_directory, remove_if_exists, translate_path
+from ..find_directories import (
+    LOCAL_CONFIGURATION_FILE,
+    find_local_root,
+    find_log_directory,
+    find_project_root,
+)
 from ..log import StreamLogger
 from ..process import register_non_unique_process
 from ..socket_connection import SocketConnection, SocketException
@@ -43,6 +40,7 @@ from ..socket_connection import SocketConnection, SocketException
 TEXT: str = "text"
 JSON: str = "json"
 
+LOG_DIRECTORY: str = ".pyre"
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
@@ -147,7 +145,14 @@ class CommandParser(ABC):
 
     def __init__(self, arguments: argparse.Namespace, original_directory: str) -> None:
         self._arguments = arguments
-        self._local_configuration: Final[Optional[str]] = arguments.local_configuration
+
+        local_configuration = arguments.local_configuration
+        if local_configuration and local_configuration.endswith(
+            LOCAL_CONFIGURATION_FILE
+        ):
+            local_configuration = local_configuration[: -len(LOCAL_CONFIGURATION_FILE)]
+        self._local_configuration: Final[Optional[str]] = local_configuration
+
         self._version: bool = arguments.version
         self._debug: bool = arguments.debug
         self._sequential: bool = arguments.sequential
@@ -194,20 +199,21 @@ class CommandParser(ABC):
         dot_pyre_directory: Final[Optional[Path]] = arguments.dot_pyre_directory
 
         # Derived arguments
-        self._capable_terminal: bool = is_capable_terminal()
+        self._capable_terminal: bool = terminal.is_capable()
         self._original_directory: str = original_directory
         self._current_directory: str = find_project_root(self._original_directory)
         self._local_configuration = find_local_root(
             self._original_directory, self._local_configuration
         )
-        self._dot_pyre_directory: Path = find_dot_pyre_directory(
-            dot_pyre_directory, self._current_directory
+        self._dot_pyre_directory: Path = dot_pyre_directory or Path(
+            self._current_directory, LOG_DIRECTORY
         )
         self._log_directory: str = find_log_directory(
             self._current_directory,
             self._local_configuration,
             str(self._dot_pyre_directory),
         )
+        Path(self._log_directory).mkdir(parents=True, exist_ok=True)
 
         logger = self._logger
         if logger:
@@ -547,10 +553,7 @@ class Command(CommandParser, ABC):
         if self._verbose:
             flags.append("-verbose")
         if not self._hide_parse_errors:
-            if self._logging_sections:
-                self._logging_sections = self._logging_sections + ",parser"
-            else:
-                self._logging_sections = "parser"
+            self._enable_logging_section("parser")
         if not self._capable_terminal:
             # Disable progress reporting for non-capable terminals.
             # This helps in reducing clutter.
@@ -628,7 +631,7 @@ class Command(CommandParser, ABC):
             stdout=stdout,
             stderr=subprocess.PIPE,
             preexec_fn=limit_memory_usage,
-            text=True,
+            universal_newlines=True,
         ) as process:
 
             # Read stdout output
@@ -685,7 +688,7 @@ class Command(CommandParser, ABC):
                 ["tail", "--follow", "--lines=0", stderr_file],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
-                text=True,
+                universal_newlines=True,
             ) as stderr_tail:
                 try:
                     with SocketConnection(self._log_directory) as socket_connection:
@@ -723,3 +726,9 @@ class Command(CommandParser, ABC):
     @property
     def configuration(self) -> Optional[Configuration]:
         return self._configuration
+
+    def _enable_logging_section(self, section: str) -> None:
+        if self._logging_sections:
+            self._logging_sections = self._logging_sections + "," + section
+        else:
+            self._logging_sections = section

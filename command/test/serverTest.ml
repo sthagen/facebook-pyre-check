@@ -480,12 +480,12 @@ let test_query context =
           [
             {
               Protocol.TypeQuery.name = "bar";
-              parameters = [Type.Primitive "self"; Type.integer];
+              parameters = [Type.Primitive "test.C"; Type.integer];
               return_annotation = Type.string;
             };
             {
               Protocol.TypeQuery.name = "foo";
-              parameters = [Type.Primitive "self"];
+              parameters = [Type.Primitive "test.C"];
               return_annotation = Type.integer;
             };
           ]));
@@ -605,7 +605,6 @@ let test_query context =
                                  ];
                            };
                          overloads = [];
-                         implicit = None;
                        } );
                    3, 2, 3, 3, Type.literal_integer 42;
                    2, 8, 2, 9, Type.integer;
@@ -654,7 +653,6 @@ let test_query context =
                                  ];
                            };
                          overloads = [];
-                         implicit = None;
                        } );
                    3, 5, 3, 6, Type.literal_integer 4;
                    3, 1, 3, 2, Type.integer;
@@ -720,7 +718,6 @@ let test_query context =
                              parameters = Type.Callable.Defined [];
                            };
                          overloads = [];
-                         implicit = None;
                        } );
                    3, 5, 3, 9, Type.Literal (Boolean true);
                    4, 3, 4, 4, Type.literal_integer 1;
@@ -757,7 +754,6 @@ let test_query context =
                              parameters = Type.Callable.Defined [];
                            };
                          overloads = [];
-                         implicit = None;
                        } );
                    3, 15, 3, 16, Type.literal_integer 2;
                    3, 6, 3, 7, Type.integer;
@@ -800,7 +796,6 @@ let test_query context =
                              parameters = Type.Callable.Defined [];
                            };
                          overloads = [];
-                         implicit = None;
                        } );
                    6, 4, 6, 5, Type.literal_integer 2;
                    4, 8, 4, 9, Type.literal_integer 1;
@@ -884,7 +879,6 @@ let test_query context =
                                  [Named { name = "x"; annotation = Type.integer; default = false }];
                            };
                          overloads = [];
-                         implicit = None;
                        } );
                    3, 21, 3, 24, parse_annotation "typing.Type[str]";
                    3, 13, 3, 16, parse_annotation "typing.Type[int]";
@@ -934,7 +928,6 @@ let test_query context =
                                  ];
                            };
                          overloads = [];
-                         implicit = None;
                        } );
                    2, 32, 2, 36, Type.none;
                    2, 8, 2, 9, Type.list Type.integer;
@@ -988,16 +981,24 @@ let test_query context =
             {
               Protocol.TypeQuery.name = "foo";
               annotation =
-                Type.Callable
+                Type.Parametric
                   {
-                    Type.Callable.kind = Type.Callable.Named !&"test.C.foo";
-                    implementation =
-                      {
-                        Type.Callable.annotation = Type.integer;
-                        parameters = Type.Callable.Defined [];
-                      };
-                    overloads = [];
-                    implicit = Some { implicit_annotation = Type.Primitive "C"; name = "self" };
+                    name = "BoundMethod";
+                    parameters =
+                      [
+                        Single
+                          (Type.Callable
+                             {
+                               Type.Callable.kind = Type.Callable.Named !&"test.C.foo";
+                               implementation =
+                                 {
+                                   Type.Callable.annotation = Type.integer;
+                                   parameters = Type.Callable.Defined [];
+                                 };
+                               overloads = [];
+                             });
+                        Single (Primitive "test.C");
+                      ];
                   };
               kind = Protocol.TypeQuery.Regular;
               final = false;

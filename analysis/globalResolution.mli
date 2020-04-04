@@ -24,31 +24,25 @@ val define_body : t -> Reference.t -> Define.t Node.t option
 
 val function_definition : t -> Reference.t -> FunctionDefinition.t option
 
-val solve_ordered_types_less_or_equal
-  :  t ->
-  left:Type.OrderedTypes.t ->
-  right:Type.OrderedTypes.t ->
-  constraints:TypeConstraints.t ->
-  TypeConstraints.t list
-
 val source_is_unit_test : t -> source:Ast.Source.t -> bool
 
 val solve_constraints : t -> TypeConstraints.t -> TypeConstraints.Solution.t option
 
-val partial_solve_constraints
-  :  t ->
-  TypeConstraints.t ->
-  variables:Type.Variable.t list ->
-  (TypeConstraints.t * TypeConstraints.Solution.t) option
-
 val constraints_solution_exists : t -> left:Type.t -> right:Type.t -> bool
 
-val solve_less_or_equal
-  :  t ->
-  constraints:TypeConstraints.t ->
-  left:Type.t ->
-  right:Type.t ->
-  TypeConstraints.t list
+module ConstraintsSet : sig
+  val add
+    :  ConstraintsSet.t ->
+    new_constraint:ConstraintsSet.kind ->
+    global_resolution:t ->
+    ConstraintsSet.t
+
+  val solve : ConstraintsSet.t -> global_resolution:t -> ConstraintsSet.Solution.t option
+
+  module Solution : sig
+    type t = ConstraintsSet.Solution.t
+  end
+end
 
 val is_invariance_mismatch : t -> left:Type.t -> right:Type.t -> bool
 
@@ -211,19 +205,23 @@ val attribute_from_class_name
 
 val successors : resolution:t -> Type.Primitive.t -> string list
 
+val immediate_parents : resolution:t -> Type.Primitive.t -> string list
+
 val constraints
   :  resolution:t ->
   target:Type.Primitive.t ->
   ?parameters:Type.Parameter.t list ->
   instantiated:Type.t ->
   unit ->
-  TypeConstraints.Solution.t
+  ConstraintsSet.Solution.t
 
 val signature_select
   :  global_resolution:t ->
-  resolve:(Expression.expression Node.t -> Type.t) ->
+  resolve_with_locals:
+    (locals:(Reference.t * Annotation.t) list -> Expression.expression Node.t -> Type.t) ->
   arguments:Expression.Call.Argument.t list ->
   callable:Type.Callable.t ->
+  self_argument:Type.t option ->
   AttributeResolution.sig_t
 
 val create_overload : resolution:t -> Define.Signature.t -> Type.t Type.Callable.overload

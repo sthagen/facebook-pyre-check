@@ -130,7 +130,7 @@ module SignatureSelectionTypes = struct
     name: Identifier.t option;
     position: int;
   }
-  [@@deriving eq, show, compare]
+  [@@deriving eq, show, compare, sexp]
 
   type invalid_argument = {
     expression: Expression.t;
@@ -170,24 +170,24 @@ module SignatureSelectionTypes = struct
         provided: int;
       }
     | UnexpectedKeyword of Identifier.t
-  [@@deriving eq, show, compare]
+  [@@deriving eq, show, compare, sexp]
 
   type closest = {
-    callable: Type.Callable.t;
+    closest_return_annotation: Type.t;
     reason: reason option;
   }
-  [@@deriving show]
+  [@@deriving show, sexp]
 
   let equal_closest (left : closest) (right : closest) =
     (* Ignore rank. *)
-    Type.Callable.equal left.callable right.callable
+    Type.equal left.closest_return_annotation right.closest_return_annotation
     && Option.equal equal_reason left.reason right.reason
 
 
   type sig_t =
-    | Found of Type.Callable.t
+    | Found of { selected_return_annotation: Type.t }
     | NotFound of closest
-  [@@deriving eq, show]
+  [@@deriving eq, show, sexp]
 
   module Argument = struct
     type kind =
@@ -372,6 +372,50 @@ let rec weaken_mutable_literals
       Type.Parametric { name = "set"; parameters = [Single expected_parameter] } )
     when comparator ~left:actual ~right:expected_parameter ->
       expected
+  | ( Some { Node.value = Expression.Tuple items; _ },
+      Type.Tuple (Bounded (Concrete actual_item_types)),
+      Type.Tuple (Bounded (Concrete expected_item_types)) )
+    when List.length actual_item_types = List.length expected_item_types ->
+      let weakened_item_types =
+        List.map3_exn
+          ~f:(fun item actual_item_type expected_item_type ->
+            weaken_mutable_literals
+              ~get_typed_dictionary
+              resolve
+              ~expression:(Some item)
+              ~resolved:actual_item_type
+              ~expected:expected_item_type
+              ~comparator)
+          items
+          actual_item_types
+          expected_item_types
+      in
+      let weakened_type = Type.Tuple (Bounded (Concrete weakened_item_types)) in
+      if comparator ~left:weakened_type ~right:expected then
+        expected
+      else
+        weakened_type
+  | ( Some { Node.value = Expression.Tuple items; _ },
+      Type.Tuple (Bounded (Concrete actual_item_types)),
+      Type.Tuple (Unbounded expected_item_type) ) ->
+      let weakened_item_type =
+        Type.union
+          (List.map2_exn
+             ~f:(fun item actual_item_type ->
+               weaken_mutable_literals
+                 ~get_typed_dictionary
+                 resolve
+                 ~expression:(Some item)
+                 ~resolved:actual_item_type
+                 ~expected:expected_item_type
+                 ~comparator)
+             items
+             actual_item_types)
+      in
+      if comparator ~left:weakened_item_type ~right:expected_item_type then
+        expected
+      else
+        resolved
   | Some { Node.value = Expression.Dictionary { entries; keywords = [] }; _ }, _, Type.Primitive _
     -> (
       let open Type.Record.TypedDictionary in
@@ -659,20 +703,29 @@ module Implementation = struct
         in
         let make_callable ~parameters ~annotation ~attribute_name =
           let parameters =
-            if class_attributes then
-              { Type.Callable.Parameter.name = "self"; annotation = Type.Top; default = false }
-              :: parameters
-            else
-              parameters
+            {
+              Type.Callable.Parameter.name = "$parameter$self";
+              annotation = Type.Primitive (Reference.show name);
+              default = false;
+            }
+            :: parameters
           in
-          ( attribute_name,
+          let callable =
             Type.Callable.create
-              ~implicit:
-                { implicit_annotation = Primitive (Reference.show name); name = "$parameter$self" }
               ~name:(Reference.combine name (Reference.create attribute_name))
               ~parameters:(Defined (Type.Callable.Parameter.create parameters))
               ~annotation
-              () )
+              ()
+          in
+          ( attribute_name,
+            if class_attributes then
+              callable
+            else
+              Type.Parametric
+                {
+                  name = "BoundMethod";
+                  parameters = [Single callable; Single (Primitive (Reference.show name))];
+                } )
         in
         match options definition with
         | None -> []
@@ -1002,7 +1055,7 @@ module Implementation = struct
       ?dependency:SharedMemoryKeys.dependency ->
       instantiated:Type.t ->
       unit ->
-      TypeConstraints.Solution.t;
+      ConstraintsSet.Solution.t;
     resolve_literal:
       assumptions:Assumptions.t ->
       class_metadata_environment:ClassMetadataEnvironment.ReadOnly.t ->
@@ -1019,9 +1072,11 @@ module Implementation = struct
       assumptions:Assumptions.t ->
       class_metadata_environment:ClassMetadataEnvironment.ReadOnly.t ->
       ?dependency:SharedMemoryKeys.dependency ->
-      resolve:(Expression.expression Node.t -> Type.t) ->
+      resolve_with_locals:
+        (locals:(Reference.t * Annotation.t) list -> Expression.expression Node.t -> Type.t) ->
       arguments:Expression.Call.Argument.t list ->
-      callable:Type.t Type.Callable.record ->
+      callable:Type.Callable.t ->
+      self_argument:Type.t option ->
       SignatureSelectionTypes.sig_t;
     resolve_mutable_literals:
       assumptions:Assumptions.t ->
@@ -1097,7 +1152,8 @@ module Implementation = struct
 
 
   let full_order
-      ({ constructor; all_attributes; instantiate_attribute; metaclass; _ } as open_recurser)
+      ( { constructor; attribute; all_attributes; metaclass; instantiate_attribute; _ } as
+      open_recurser )
       ~assumptions
       ?dependency
       class_metadata_environment
@@ -1114,27 +1170,11 @@ module Implementation = struct
 
       instantiated |> Type.primitive_name >>| constructor { assumptions with protocol_assumptions }
     in
-    let attributes class_type ~assumptions =
+    let resolve class_type =
       match Type.resolve_class class_type with
       | None -> None
       | Some [] -> None
-      | Some [{ instantiated; class_attributes; class_name }] ->
-          all_attributes
-            ~assumptions
-            ~transitive:true
-            ~class_attributes
-            ~include_generated_attributes:true
-            ?special_method:None
-            ?dependency
-            class_name
-            ~class_metadata_environment
-          >>| List.map
-                ~f:
-                  (instantiate_attribute
-                     ?dependency
-                     ~assumptions
-                     ~class_metadata_environment
-                     ~instantiated)
+      | Some [resolved] -> Some resolved
       | Some (_ :: _) ->
           (* These come from calling attributes on Unions, which are handled by solve_less_or_equal
              indirectly by breaking apart the union before doing the
@@ -1142,6 +1182,42 @@ module Implementation = struct
              attributes together here *)
           None
     in
+    let attribute class_type ~assumptions ~name =
+      resolve class_type
+      >>= fun { instantiated; class_attributes; class_name } ->
+      attribute
+        ~assumptions
+        ~class_metadata_environment
+        ~transitive:true
+        ~class_attributes
+        ~include_generated_attributes:true
+        ?special_method:None
+        ?dependency
+        ~attribute_name:name
+        ~instantiated
+        class_name
+    in
+    let all_attributes class_type ~assumptions =
+      resolve class_type
+      >>= fun { instantiated; class_attributes; class_name } ->
+      all_attributes
+        ~assumptions
+        ~class_metadata_environment
+        ~transitive:true
+        ~class_attributes
+        ~include_generated_attributes:true
+        ?special_method:None
+        ?dependency
+        class_name
+      >>| List.map
+            ~f:
+              (instantiate_attribute
+                 ?dependency
+                 ~assumptions
+                 ~class_metadata_environment
+                 ~instantiated)
+    in
+
     let is_protocol annotation ~protocol_assumptions:_ =
       UnannotatedGlobalEnvironment.ReadOnly.is_protocol
         (unannotated_global_environment class_metadata_environment)
@@ -1162,7 +1238,7 @@ module Implementation = struct
       >>| metaclass ~assumptions ~class_metadata_environment ?dependency
     in
     {
-      TypeOrder.class_hierarchy =
+      ConstraintsSet.class_hierarchy =
         {
           instantiate_successors_parameters =
             ClassHierarchy.instantiate_successors_parameters class_hierarchy_handler;
@@ -1171,7 +1247,8 @@ module Implementation = struct
           least_upper_bound = ClassHierarchy.least_upper_bound class_hierarchy_handler;
         };
       constructor;
-      attributes;
+      attribute;
+      all_attributes;
       is_protocol;
       assumptions;
       get_typed_dictionary =
@@ -1429,11 +1506,20 @@ module Implementation = struct
                  ~required)
         | _ -> None
       in
+      let keep_last_declarations fields =
+        List.map
+          fields
+          ~f:(fun (field : Type.t Type.Record.TypedDictionary.typed_dictionary_field) ->
+            field.name, field)
+        |> Map.of_alist_multi (module String)
+        |> Map.to_alist
+        |> List.map ~f:(fun (_, fields) -> List.last_exn fields)
+      in
       let fields =
-        List.concat_map
-          typed_dictionary_definitions
-          ~f:(get_field_attributes ~include_generated_attributes:false)
+        List.rev typed_dictionary_definitions
+        |> List.concat_map ~f:(get_field_attributes ~include_generated_attributes:false)
         |> List.filter_map ~f:attribute_to_typed_dictionary_field
+        |> keep_last_declarations
       in
       let overload_method (attribute, _) =
         match AnnotatedAttribute.uninstantiated_annotation attribute with
@@ -1444,12 +1530,6 @@ module Implementation = struct
                 callable with
                 Type.Callable.implementation = { annotation = Type.Top; parameters = Undefined };
                 overloads;
-                implicit =
-                  Some
-                    {
-                      Type.Record.Callable.implicit_annotation = Type.Primitive class_name;
-                      name = "self";
-                    };
               }
             in
             Type.TypedDictionary.special_overloads
@@ -1534,8 +1614,16 @@ module Implementation = struct
                    {
                      UninstantiatedAnnotation.accessed_via_metaclass;
                      kind =
-                       Attribute
-                         { annotation; original_annotation = annotation; is_property = false };
+                       Method
+                         {
+                           callable =
+                             {
+                               kind = Anonymous;
+                               implementation = { annotation; parameters = Undefined };
+                               overloads = [];
+                             };
+                           is_class_method = false;
+                         };
                    }
                  ~abstract:false
                  ~async:false
@@ -1545,17 +1633,13 @@ module Implementation = struct
                  ~name:attribute_name
                  ~parent:class_name
                  ~visibility:ReadWrite
-                 ~static:true
+                 ~static:false
                  ~property:false)
           else
             ()
         in
-        add_if_missing
-          ~attribute_name:"__init__"
-          ~annotation:(Type.Callable.create ~annotation:Type.none ());
-        add_if_missing
-          ~attribute_name:"__getattr__"
-          ~annotation:(Type.Callable.create ~annotation:Type.Any ())
+        add_if_missing ~attribute_name:"__init__" ~annotation:Type.none;
+        add_if_missing ~attribute_name:"__getattr__" ~annotation:Type.Any
       in
       add_actual ();
       if
@@ -1688,8 +1772,65 @@ module Implementation = struct
     >>| handle
 
 
+  let partial_apply_self { Type.Callable.implementation; overloads; _ } ~order ~self_type =
+    let open Type.Callable in
+    let implementation, overloads =
+      match implementation, overloads with
+      | { Type.Callable.parameters = Defined (Named { annotation; _ } :: _); _ }, _ -> (
+          let solution =
+            try
+              TypeOrder.OrderedConstraintsSet.add
+                ConstraintsSet.empty
+                ~new_constraint:(LessOrEqual { left = self_type; right = annotation })
+                ~order
+              |> TypeOrder.OrderedConstraintsSet.solve ~order
+              |> Option.value ~default:ConstraintsSet.Solution.empty
+            with
+            | ClassHierarchy.Untracked _ -> ConstraintsSet.Solution.empty
+          in
+          let instantiated =
+            ConstraintsSet.Solution.instantiate
+              solution
+              (Type.Callable { kind = Anonymous; implementation; overloads })
+          in
+          match instantiated with
+          | Type.Callable { implementation; overloads; _ } -> implementation, overloads
+          | _ -> implementation, overloads )
+      | _ -> implementation, overloads
+    in
+    let drop_self { Type.Callable.annotation; parameters } =
+      let parameters =
+        match parameters with
+        | Type.Callable.Defined (_ :: parameters) -> Type.Callable.Defined parameters
+        | ParameterVariadicTypeVariable { head = _ :: head; variable } ->
+            ParameterVariadicTypeVariable { head; variable }
+        | _ -> parameters
+      in
+      { Type.Callable.annotation; parameters }
+    in
+    {
+      Type.Callable.kind = Anonymous;
+      implementation = drop_self implementation;
+      overloads = List.map overloads ~f:drop_self;
+    }
+
+
+  let callable_call_special_cases ~instantiated ~class_name ~attribute_name ~order =
+    match instantiated, class_name, attribute_name with
+    | Some (Type.Callable _), "typing.Callable", "__call__" -> instantiated
+    | ( Some
+          (Parametric
+            { name = "BoundMethod"; parameters = [Single (Callable callable); Single self_type] }),
+        "typing.Callable",
+        "__call__" ) ->
+        let order = order () in
+        partial_apply_self callable ~order ~self_type
+        |> fun callable -> Type.Callable callable |> Option.some
+    | _ -> None
+
+
   let attribute
-      { instantiate_attribute; uninstantiated_attribute_tables; _ }
+      { instantiate_attribute; uninstantiated_attribute_tables; full_order; _ }
       ~assumptions
       ~class_metadata_environment
       ~transitive
@@ -1701,18 +1842,36 @@ module Implementation = struct
       ~attribute_name
       class_name
     =
-    uninstantiated_attribute_tables
-      ~assumptions
-      ~class_metadata_environment
-      ~transitive
-      ~class_attributes
-      ~include_generated_attributes
-      ~special_method
-      ?dependency
-      class_name
-    >>= Sequence.find_map ~f:(fun table ->
-            UninstantiatedAttributeTable.lookup_name table attribute_name)
-    >>| instantiate_attribute ~assumptions ~class_metadata_environment ?instantiated ?dependency
+    let order () = full_order ?dependency class_metadata_environment ~assumptions in
+    match callable_call_special_cases ~instantiated ~class_name ~attribute_name ~order with
+    | Some callable ->
+        AnnotatedAttribute.create
+          ~annotation:callable
+          ~original_annotation:callable
+          ~visibility:ReadWrite
+          ~abstract:false
+          ~async:false
+          ~class_attribute:class_attributes
+          ~defined:true
+          ~initialized:Explicitly
+          ~name:"__call__"
+          ~parent:"typing.Callable"
+          ~static:false
+          ~property:false
+        |> Option.some
+    | None ->
+        uninstantiated_attribute_tables
+          ~assumptions
+          ~class_metadata_environment
+          ~transitive
+          ~class_attributes
+          ~include_generated_attributes
+          ~special_method
+          ?dependency
+          class_name
+        >>= Sequence.find_map ~f:(fun table ->
+                UninstantiatedAttributeTable.lookup_name table attribute_name)
+        >>| instantiate_attribute ~assumptions ~class_metadata_environment ?instantiated ?dependency
 
 
   let all_attributes
@@ -1799,59 +1958,6 @@ module Implementation = struct
       AnnotatedAttribute.uninstantiated_annotation attribute
     in
     let annotation, original =
-      let partial_apply_self ({ Type.Callable.implementation; overloads; _ } as callable) ~self_type
-        =
-        let open Type.Callable in
-        let { Type.Callable.kind; implementation; overloads; implicit } =
-          match implementation, overloads with
-          | { Type.Callable.parameters = Defined (Named { name; annotation; _ } :: _); _ }, _ -> (
-              let callable =
-                let implicit = { implicit_annotation = self_type; name } in
-                { callable with implicit = Some implicit }
-              in
-              let order = full_order ?dependency class_metadata_environment ~assumptions in
-              let solution =
-                try
-                  TypeOrder.solve_less_or_equal
-                    order
-                    ~left:self_type
-                    ~right:annotation
-                    ~constraints:TypeConstraints.empty
-                  |> List.filter_map ~f:(TypeOrder.OrderedConstraints.solve ~order)
-                  |> List.hd
-                  |> Option.value ~default:TypeConstraints.Solution.empty
-                with
-                | ClassHierarchy.Untracked _ -> TypeConstraints.Solution.empty
-              in
-              let instantiated =
-                TypeConstraints.Solution.instantiate solution (Type.Callable callable)
-              in
-              match instantiated with
-              | Type.Callable callable -> callable
-              | _ -> callable )
-          (* We also need to set the implicit up correctly for overload-only methods. *)
-          | _, { parameters = Defined (Named { name; _ } :: _); _ } :: _ ->
-              let implicit = { implicit_annotation = self_type; name } in
-              { callable with implicit = Some implicit }
-          | _ -> callable
-        in
-        let drop_self { Type.Callable.annotation; parameters } =
-          let parameters =
-            match parameters with
-            | Type.Callable.Defined (_ :: parameters) -> Type.Callable.Defined parameters
-            | ParameterVariadicTypeVariable { head = _ :: head; variable } ->
-                ParameterVariadicTypeVariable { head; variable }
-            | _ -> parameters
-          in
-          { Type.Callable.annotation; parameters }
-        in
-        {
-          Type.Callable.kind;
-          implementation = drop_self implementation;
-          overloads = List.map overloads ~f:drop_self;
-          implicit;
-        }
-      in
       let instantiated =
         match instantiated with
         | Some instantiated -> instantiated
@@ -2006,17 +2112,23 @@ module Implementation = struct
             | _ -> callable
           in
           let callable =
+            let bound_method ~self_type =
+              Type.Parametric
+                {
+                  name = "BoundMethod";
+                  parameters = [Single (Callable callable); Single self_type];
+                }
+            in
             if String.equal attribute_name "__new__" then
-              callable
+              Type.Callable callable
             else if is_class_method then
-              partial_apply_self callable ~self_type:(Type.meta instantiated)
+              bound_method ~self_type:(Type.meta instantiated)
             else if AnnotatedAttribute.static attribute then
-              callable
+              Type.Callable callable
             else if default_class_attribute then
               (* Keep first argument around when calling instance methods from class attributes. *)
-              callable
+              Type.Callable callable
             else
-              let applied = partial_apply_self callable ~self_type:instantiated in
               let instantiated_is_protocol =
                 Type.split instantiated
                 |> fst
@@ -2026,13 +2138,15 @@ module Implementation = struct
               in
               if (not (String.equal class_name "object")) && instantiated_is_protocol then
                 (* We don't have a way of tracing taint through protocols, so maintaining a name and
-                   implicit for methods of protocols isn't valuable. It also will complicate things
-                   down the line with BoundMethods *)
-                { applied with kind = Anonymous; implicit = None }
+                   implicit for methods of protocols isn't valuable. *)
+                let order = full_order ?dependency class_metadata_environment ~assumptions in
+                partial_apply_self callable ~order ~self_type:instantiated
+                |> fun callable -> Type.Callable { callable with kind = Anonymous }
               else
-                applied
+                bound_method ~self_type:instantiated
           in
-          Type.Callable callable, Type.Callable callable
+
+          callable, callable
       | Attribute { annotation; original_annotation; is_property = true } ->
           (* Special case properties with type variables. *)
           (* TODO(T44676629): handle this correctly *)
@@ -2070,21 +2184,15 @@ module Implementation = struct
             annotation, annotation
           else
             annotation, original_annotation
-      | Attribute { annotation; original_annotation; is_property = false } -> (
-          match instantiated, class_name, attribute_name with
-          | Type.Callable _, "typing.Callable", "__call__" -> instantiated, instantiated
-          | ( Parametric
-                {
-                  name = "BoundMethod";
-                  parameters = [Single (Callable callable); Single self_type];
-                },
-              "typing.Callable",
-              "__call__" ) ->
-              let callable =
-                partial_apply_self callable ~self_type |> fun callable -> Type.Callable callable
-              in
-              callable, callable
-          | _ -> annotation, original_annotation )
+      | Attribute { annotation; original_annotation; is_property = false } ->
+          let order () = full_order ?dependency class_metadata_environment ~assumptions in
+          callable_call_special_cases
+            ~instantiated:(Some instantiated)
+            ~class_name
+            ~attribute_name
+            ~order
+          >>| (fun callable -> callable, callable)
+          |> Option.value ~default:(annotation, original_annotation)
     in
     let annotation, original =
       match instantiated with
@@ -2098,7 +2206,7 @@ module Implementation = struct
               ~assumptions
               ()
           in
-          let instantiate annotation = TypeConstraints.Solution.instantiate solution annotation in
+          let instantiate annotation = ConstraintsSet.Solution.instantiate solution annotation in
           instantiate annotation, instantiate original
       | None -> annotation, original
     in
@@ -2237,7 +2345,7 @@ module Implementation = struct
                     ~f:to_signature
                     overloads
                 in
-                let callable = { kind = Named name; implementation; overloads; implicit = None } in
+                let callable = { kind = Named name; implementation; overloads } in
                 let is_class_method = Define.Signature.is_class_method define in
                 UninstantiatedAnnotation.Method { callable; is_class_method }
             | [] -> failwith "impossible"
@@ -2407,7 +2515,7 @@ module Implementation = struct
       | Some parameters -> parameters
     in
     if List.is_empty parameters then
-      TypeConstraints.Solution.empty
+      ConstraintsSet.Solution.empty
     else
       let right = Type.parametric target parameters in
       match instantiated, right with
@@ -2415,18 +2523,16 @@ module Implementation = struct
         ->
           (* TODO(T42259381) This special case is only necessary because constructor calls
              attributes with an "instantiated" type of a bare parametric, which will fill with Anys *)
-          TypeConstraints.Solution.empty
+          ConstraintsSet.Solution.empty
       | _ ->
           let order = full_order ?dependency class_metadata_environment ~assumptions in
-          TypeOrder.solve_less_or_equal
-            order
-            ~constraints:TypeConstraints.empty
-            ~left:instantiated
-            ~right
-          |> List.filter_map ~f:(TypeOrder.OrderedConstraints.solve ~order)
-          |> List.hd
+          TypeOrder.OrderedConstraintsSet.add
+            ConstraintsSet.empty
+            ~new_constraint:(LessOrEqual { left = instantiated; right })
+            ~order
+          |> TypeOrder.OrderedConstraintsSet.solve ~order
           (* TODO(T39598018): error in this case somehow, something must be wrong *)
-          |> Option.value ~default:TypeConstraints.Solution.empty
+          |> Option.value ~default:ConstraintsSet.Solution.empty
 
 
   (* In general, python expressions can be self-referential. This resolution only checks literals
@@ -2666,7 +2772,7 @@ module Implementation = struct
                     arguments )
                 with
                 | Some signature, Some arguments -> (
-                    let resolve expression =
+                    let resolve_with_locals ~locals:_ expression =
                       let resolved =
                         resolve_literal
                           ?dependency
@@ -2680,27 +2786,20 @@ module Implementation = struct
                         resolved
                     in
                     let callable =
-                      {
-                        Type.Callable.kind = Anonymous;
-                        implementation = signature;
-                        overloads = [];
-                        implicit = None;
-                      }
+                      { Type.Callable.kind = Anonymous; implementation = signature; overloads = [] }
                     in
                     match
                       signature_select
                         ?dependency
                         ~class_metadata_environment
                         ~assumptions
-                        ~resolve
+                        ~resolve_with_locals
                         ~arguments
                         ~callable
+                        ~self_argument:None
                     with
                     | SignatureSelectionTypes.Found
-                        {
-                          implementation = { annotation = Type.Callable { implementation; _ }; _ };
-                          _;
-                        } ->
+                        { selected_return_annotation = Type.Callable { implementation; _ }; _ } ->
                         Some implementation
                     | _ -> None )
                 | Some signature, None -> Some signature
@@ -2728,15 +2827,18 @@ module Implementation = struct
                   } -> (
                   let order = full_order ?dependency class_metadata_environment ~assumptions in
                   let decorated_annotation =
-                    TypeOrder.solve_less_or_equal
-                      order
-                      ~constraints:TypeConstraints.empty
-                      ~left:(Type.Callable.create ~parameters ~annotation ())
-                      ~right:parameter_annotation
-                    |> List.filter_map ~f:(TypeOrder.OrderedConstraints.solve ~order)
-                    |> List.hd
+                    TypeOrder.OrderedConstraintsSet.add
+                      ConstraintsSet.empty
+                      ~new_constraint:
+                        (LessOrEqual
+                           {
+                             left = Type.Callable.create ~parameters ~annotation ();
+                             right = parameter_annotation;
+                           })
+                      ~order
+                    |> TypeOrder.OrderedConstraintsSet.solve ~order
                     >>| fun solution ->
-                    TypeConstraints.Solution.instantiate solution return_annotation
+                    ConstraintsSet.Solution.instantiate solution return_annotation
                     (* If we failed, just default to the old annotation. *)
                   in
                   let decorated_annotation =
@@ -2806,25 +2908,17 @@ module Implementation = struct
       ~assumptions
       ~class_metadata_environment
       ?dependency
-      ~resolve
+      ~resolve_with_locals
       ~arguments
       ~callable:({ Type.Callable.implementation; overloads; _ } as callable)
+      ~self_argument
     =
     let open SignatureSelectionTypes in
     let order = full_order ~assumptions ?dependency class_metadata_environment in
     let open Expression in
     let open Type.Callable in
-    let match_arity ({ parameters = all_parameters; _ } as implementation) =
-      let all_arguments = arguments in
-      let base_signature_match =
-        {
-          callable = { callable with Type.Callable.implementation; overloads = [] };
-          argument_mapping = Parameter.Map.empty;
-          constraints_set = [TypeConstraints.empty];
-          ranks = { arity = 0; annotation = 0; position = 0 };
-          reasons = { arity = []; annotation = [] };
-        }
-      in
+    let all_arguments = arguments in
+    let match_arity ~all_parameters =
       let rec consume
           ({ argument_mapping; reasons = { arity; _ } as reasons; _ } as signature_match)
           ~arguments
@@ -2848,11 +2942,18 @@ module Implementation = struct
                 - List.length unreachable_parameters
                 - List.length matched_keyword_arguments
               in
+              let self_argument_adjustment =
+                if Option.is_some self_argument then
+                  1
+                else
+                  0
+              in
               let error =
                 TooManyArguments
                   {
-                    expected = positional_parameter_count;
-                    provided = positional_parameter_count + List.length arguments;
+                    expected = positional_parameter_count - self_argument_adjustment;
+                    provided =
+                      positional_parameter_count + List.length arguments - self_argument_adjustment;
                   }
               in
               { reasons with arity = error :: arity }
@@ -2969,55 +3070,65 @@ module Implementation = struct
               ~parameters:parameters_tail
               { signature_match with argument_mapping }
       in
-      let ordered_arguments () =
-        let create_argument index { Call.Argument.name; value } =
-          let expression, kind =
-            match value, name with
-            | { Node.value = Starred (Starred.Once expression); _ }, _ ->
-                expression, Argument.SingleStar
-            | { Node.value = Starred (Starred.Twice expression); _ }, _ -> expression, DoubleStar
-            | expression, Some name -> expression, Named name
-            | expression, None -> expression, Positional
-          in
-          let resolved = resolve expression in
-          { Argument.position = index + 1; expression; full_expression = value; kind; resolved }
-        in
-        let is_labeled = function
-          | { Argument.kind = Named _; _ } -> true
-          | _ -> false
-        in
-        let labeled_arguments, unlabeled_arguments =
-          arguments |> List.mapi ~f:create_argument |> List.partition_tf ~f:is_labeled
-        in
-        labeled_arguments @ unlabeled_arguments
-      in
-      match all_parameters with
-      | Defined parameters ->
-          consume base_signature_match ~arguments:(ordered_arguments ()) ~parameters
-      | Undefined -> base_signature_match
-      | ParameterVariadicTypeVariable { head; variable } -> (
-          let combines_into_variable ~positional_component ~keyword_component =
-            Type.Variable.Variadic.Parameters.Components.combine
-              { positional_component; keyword_component }
-            >>| Type.Variable.Variadic.Parameters.equal variable
-            |> Option.value ~default:false
-          in
-          match List.rev (ordered_arguments ()) with
-          | { kind = DoubleStar; resolved = keyword_component; _ }
-            :: { kind = SingleStar; resolved = positional_component; _ } :: reversed_arguments_head
-            when combines_into_variable ~positional_component ~keyword_component ->
-              let arguments = List.rev reversed_arguments_head in
-              consume
-                base_signature_match
-                ~arguments
-                ~parameters:(Type.Callable.prepend_anonymous_parameters ~head ~tail:[])
-          | _ ->
-              {
-                base_signature_match with
-                reasons = { arity = [CallingParameterVariadicTypeVariable]; annotation = [] };
-              } )
+      consume
     in
     let check_annotations ({ argument_mapping; _ } as signature_match) =
+      (* Check whether the parameter annotation is `Callable[[ParamVar], ReturnVar]`
+       * and the argument is `lambda parameter: body` *)
+      let is_generic_lambda parameter arguments =
+        match parameter, arguments with
+        | ( Parameter.PositionalOnly
+              {
+                annotation =
+                  Type.Callable
+                    {
+                      kind = Anonymous;
+                      implementation =
+                        {
+                          annotation = Type.Variable return_variable;
+                          parameters =
+                            Defined
+                              [
+                                Parameter.PositionalOnly
+                                  {
+                                    index = 0;
+                                    annotation = Type.Variable parameter_variable;
+                                    default = false;
+                                  };
+                              ];
+                        };
+                      overloads = [];
+                    } as annotation;
+                _;
+              },
+            [
+              SignatureSelectionTypes.Argument
+                {
+                  expression =
+                    {
+                      value =
+                        Lambda
+                          {
+                            body = lambda_body;
+                            parameters =
+                              [
+                                {
+                                  value =
+                                    { name = lambda_parameter; value = None; annotation = None };
+                                  _;
+                                };
+                              ];
+                          };
+                      _;
+                    };
+                  _;
+                };
+            ] )
+          when Type.Variable.Unary.is_free parameter_variable
+               && Type.Variable.Unary.is_free return_variable ->
+            Some (annotation, parameter_variable, return_variable, lambda_parameter, lambda_body)
+        | _ -> None
+      in
       let update ~key ~data ({ reasons = { arity; _ } as reasons; _ } as signature_match) =
         let bind_arguments_to_variadic ~expected ~arguments =
           let extract arguments =
@@ -3063,19 +3174,18 @@ module Implementation = struct
                      { variable = expected; mismatch = CantConcatenate extracted })
           in
           let solve concatenated =
-            match
-              List.concat_map signature_match.constraints_set ~f:(fun constraints ->
-                  TypeOrder.solve_ordered_types_less_or_equal
-                    order
-                    ~left:concatenated
-                    ~right:expected
-                    ~constraints)
-            with
-            | [] ->
-                Error
-                  (MismatchWithListVariadicTypeVariable
-                     { variable = expected; mismatch = ConstraintFailure concatenated })
-            | updated_constraints_set -> Ok updated_constraints_set
+            let updated_constraints_set =
+              TypeOrder.OrderedConstraintsSet.add
+                signature_match.constraints_set
+                ~new_constraint:(OrderedTypesLessOrEqual { left = concatenated; right = expected })
+                ~order
+            in
+            if ConstraintsSet.potentially_satisfiable updated_constraints_set then
+              Ok updated_constraints_set
+            else
+              Error
+                (MismatchWithListVariadicTypeVariable
+                   { variable = expected; mismatch = ConstraintFailure concatenated })
           in
           let make_signature_match = function
             | Ok constraints_set -> { signature_match with constraints_set }
@@ -3110,7 +3220,7 @@ module Implementation = struct
         | KeywordOnly { annotation = parameter_annotation; _ }, arguments
         | Named { annotation = parameter_annotation; _ }, arguments
         | Variable (Concrete parameter_annotation), arguments
-        | Keywords parameter_annotation, arguments ->
+        | Keywords parameter_annotation, arguments -> (
             let set_constraints_and_reasons
                 ~position
                 ~argument
@@ -3134,17 +3244,17 @@ module Implementation = struct
                 in
                 { reasons with annotation = mismatch :: annotation }
               in
-              match
-                List.concat_map constraints_set ~f:(fun constraints ->
-                    TypeOrder.solve_less_or_equal
-                      order
-                      ~constraints
-                      ~left:argument_annotation
-                      ~right:parameter_annotation)
-              with
-              | [] -> { signature_match with constraints_set; reasons = reasons_with_mismatch }
-              | updated_constraints_set ->
-                  { signature_match with constraints_set = updated_constraints_set }
+              let updated_constraints_set =
+                TypeOrder.OrderedConstraintsSet.add
+                  constraints_set
+                  ~new_constraint:
+                    (LessOrEqual { left = argument_annotation; right = parameter_annotation })
+                  ~order
+              in
+              if ConstraintsSet.potentially_satisfiable updated_constraints_set then
+                { signature_match with constraints_set = updated_constraints_set }
+              else
+                { signature_match with constraints_set; reasons = reasons_with_mismatch }
             in
             let rec check signature_match = function
               | [] -> signature_match
@@ -3184,25 +3294,21 @@ module Implementation = struct
                     in
                     let iterable_constraints =
                       if Type.is_unbound resolved then
-                        []
+                        ConstraintsSet.impossible
                       else
-                        TypeOrder.solve_less_or_equal
-                          order
-                          ~constraints:TypeConstraints.empty
-                          ~left:resolved
-                          ~right:solve_against
+                        TypeOrder.OrderedConstraintsSet.add
+                          ConstraintsSet.empty
+                          ~new_constraint:(LessOrEqual { left = resolved; right = solve_against })
+                          ~order
                     in
-                    match iterable_constraints with
-                    | [] -> signature_with_error
-                    | iterable_constraint :: _ ->
-                        TypeOrder.OrderedConstraints.solve ~order iterable_constraint
-                        >>| (fun solution ->
-                              TypeConstraints.Solution.instantiate_single_variable
-                                solution
-                                synthetic_variable
-                              |> Option.value ~default:Type.Any)
-                        >>| set_constraints_and_reasons
-                        |> Option.value ~default:signature_with_error
+                    match TypeOrder.OrderedConstraintsSet.solve iterable_constraints ~order with
+                    | None -> signature_with_error
+                    | Some solution ->
+                        ConstraintsSet.Solution.instantiate_single_variable
+                          solution
+                          synthetic_variable
+                        |> Option.value ~default:Type.Any
+                        |> set_constraints_and_reasons
                   in
                   match kind with
                   | DoubleStar ->
@@ -3227,7 +3333,7 @@ module Implementation = struct
                             ~assumptions
                             ~class_metadata_environment
                             ?dependency
-                            ~resolve
+                            ~resolve:(resolve_with_locals ~locals:[])
                             ~expression:(Some expression)
                             ~resolved
                             ~expected:parameter_annotation
@@ -3245,19 +3351,21 @@ module Implementation = struct
                       else
                         argument_annotation |> set_constraints_and_reasons )
             in
-            List.rev arguments |> check signature_match
+            match is_generic_lambda key arguments with
+            | Some _ -> signature_match (* Handle this later in `special_case_lambda_parameter` *)
+            | None -> List.rev arguments |> check signature_match )
       in
       let check_if_solution_exists
           ( { constraints_set; reasons = { annotation; _ } as reasons; callable; _ } as
           signature_match )
         =
-        let solutions =
-          let variables = Type.Variable.all_free_variables (Type.Callable callable) in
-          List.filter_map
+        let solution =
+          TypeOrder.OrderedConstraintsSet.solve
             constraints_set
-            ~f:(TypeOrder.OrderedConstraints.extract_partial_solution ~order ~variables)
+            ~order
+            ~only_solve_for:(Type.Variable.all_free_variables (Type.Callable callable))
         in
-        if not (List.is_empty solutions) then
+        if Option.is_some solution then
           signature_match
         else
           (* All other cases should have been able to been blamed on a specefic argument, this is
@@ -3294,17 +3402,77 @@ module Implementation = struct
           when String.equal (Reference.show name) "dict.__init__"
                && has_matched_keyword_parameter parameters ->
             let updated_constraints =
-              List.concat_map constraints_set ~f:(fun constraints ->
-                  TypeOrder.solve_less_or_equal order ~constraints ~left:Type.string ~right:key_type)
+              TypeOrder.OrderedConstraintsSet.add
+                constraints_set
+                ~new_constraint:(LessOrEqual { left = Type.string; right = key_type })
+                ~order
             in
-            if List.is_empty updated_constraints then (* TODO(T41074174): Error here *)
-              signature_match
-            else
+            if ConstraintsSet.potentially_satisfiable updated_constraints then
               { signature_match with constraints_set = updated_constraints }
+            else (* TODO(T41074174): Error here *)
+              signature_match
         | _ -> signature_match
+      in
+      let special_case_lambda_parameter ({ argument_mapping; _ } as signature_match) =
+        (* Special case: `Callable[[ParamVar], ReturnVar]` with `lambda parameter: body` *)
+        let update ~key ~data ({ constraints_set; _ } as signature_match) =
+          match is_generic_lambda key data with
+          | None -> signature_match
+          | Some (annotation, parameter_variable, _, lambda_parameter, lambda_body) -> (
+              (* Infer the parameter type using existing constraints. *)
+              let solution =
+                TypeOrder.OrderedConstraintsSet.solve
+                  constraints_set
+                  ~order
+                  ~only_solve_for:[Type.Record.Variable.Unary parameter_variable]
+                >>= fun solution ->
+                ConstraintsSet.Solution.instantiate_single_variable solution parameter_variable
+              in
+              match solution with
+              | None -> signature_match
+              | Some parameter_type ->
+                  (* Infer the return type by resolving the lambda body with the parameter type *)
+                  let updated_constraints =
+                    let resolved =
+                      let return_type =
+                        resolve_with_locals
+                          ~locals:
+                            [Reference.create lambda_parameter, Annotation.create parameter_type]
+                          lambda_body
+                        |> Type.weaken_literals
+                      in
+                      let parameters =
+                        Type.Callable.Parameter.create
+                          [
+                            {
+                              Type.Callable.Parameter.name = lambda_parameter;
+                              annotation = parameter_type;
+                              default = false;
+                            };
+                          ]
+                      in
+                      Type.Callable.create
+                        ~parameters:(Defined parameters)
+                        ~annotation:return_type
+                        ()
+                    in
+                    TypeOrder.OrderedConstraintsSet.add
+                      constraints_set
+                      ~new_constraint:(LessOrEqual { left = resolved; right = annotation })
+                      ~order
+                    (* Once we've used this solution, we have to commit to it *)
+                    |> TypeOrder.OrderedConstraintsSet.add
+                         ~new_constraint:
+                           (VariableIsExactly (UnaryPair (parameter_variable, parameter_type)))
+                         ~order
+                  in
+                  { signature_match with constraints_set = updated_constraints } )
+        in
+        Map.fold ~init:signature_match ~f:update argument_mapping
       in
       Map.fold ~init:signature_match ~f:update argument_mapping
       |> special_case_dictionary_constructor
+      |> special_case_lambda_parameter
       |> check_if_solution_exists
     in
     let calculate_rank ({ reasons = { arity; annotation; _ }; _ } as signature_match) =
@@ -3341,32 +3509,44 @@ module Implementation = struct
             else
               get_best_rank ~best_matches ~best_rank ~getter tail
       in
-      let determine_reason { callable; constraints_set; reasons = { arity; annotation; _ }; _ } =
-        let callable =
-          let instantiate annotation =
-            let solution =
-              let variables = Type.Variable.all_free_variables (Type.Callable callable) in
-              List.filter_map
-                constraints_set
-                ~f:(TypeOrder.OrderedConstraints.extract_partial_solution ~order ~variables)
-              |> List.map ~f:snd
-              |> List.hd
-              |> Option.value ~default:TypeConstraints.Solution.empty
-            in
-            TypeConstraints.Solution.instantiate solution annotation
-            |> Type.Variable.mark_all_free_variables_as_escaped
-            (* We need to do transformations of the form Union[T_escaped, int] => int in order to
-               properly handle some typeshed stubs which only sometimes bind type variables and
-               expect them to fall out in this way (see Mapping.get) *)
-            |> Type.Variable.collapse_all_escaped_variable_unions
+      let determine_reason
+          {
+            callable =
+              { implementation = { annotation = uninstantiated_return_annotation; _ }; _ } as
+              callable;
+            constraints_set;
+            reasons = { arity; annotation; _ };
+            _;
+          }
+        =
+        let instantiated_return_annotation =
+          let solution =
+            TypeOrder.OrderedConstraintsSet.solve
+              constraints_set
+              ~only_solve_for:(Type.Variable.all_free_variables (Type.Callable callable))
+              ~order
+            |> Option.value ~default:ConstraintsSet.Solution.empty
           in
-          Type.Callable.map ~f:instantiate callable
-          |> function
-          | Some callable -> callable
-          | _ -> failwith "Instantiate did not return a callable"
+          ConstraintsSet.Solution.instantiate solution uninstantiated_return_annotation
+          |> Type.Variable.mark_all_free_variables_as_escaped
+          (* We need to do transformations of the form Union[T_escaped, int] => int in order to
+             properly handle some typeshed stubs which only sometimes bind type variables and expect
+             them to fall out in this way (see Mapping.get) *)
+          |> Type.Variable.collapse_all_escaped_variable_unions
         in
-        match List.rev arity, List.rev annotation with
-        | [], [] -> Found callable
+        let rev_filter_out_self_argument_errors =
+          let is_not_self_argument = function
+            | Mismatch { Node.value = { position; _ }; _ } -> not (Int.equal position 0)
+            (* These would come from methods lacking a self argument called on an instance *)
+            | TooManyArguments { expected; _ } -> not (Int.equal expected (-1))
+            | _ -> true
+          in
+          List.rev_filter ~f:is_not_self_argument
+        in
+        match
+          rev_filter_out_self_argument_errors arity, rev_filter_out_self_argument_errors annotation
+        with
+        | [], [] -> Found { selected_return_annotation = instantiated_return_annotation }
         | reason :: reasons, _
         | [], reason :: reasons ->
             let importance = function
@@ -3389,8 +3569,9 @@ module Implementation = struct
                 best_reason
             in
             let reason = Some (List.fold ~init:reason ~f:get_most_important reasons) in
-            NotFound { callable; reason }
+            NotFound { closest_return_annotation = instantiated_return_annotation; reason }
       in
+      let { implementation = { annotation = default_return_annotation; _ }; _ } = callable in
       signature_matches
       |> get_best_rank ~best_matches:[] ~best_rank:Int.max_value ~getter:get_arity_rank
       |> get_best_rank ~best_matches:[] ~best_rank:Int.max_value ~getter:get_annotation_rank
@@ -3400,12 +3581,145 @@ module Implementation = struct
       |> List.rev
       |> List.hd
       >>| determine_reason
-      |> Option.value ~default:(NotFound { callable; reason = None })
+      |> Option.value
+           ~default:
+             (NotFound { closest_return_annotation = default_return_annotation; reason = None })
     in
+    let rec check_arity_and_annotations implementation ~arguments =
+      let base_signature_match =
+        {
+          callable = { callable with Type.Callable.implementation; overloads = [] };
+          argument_mapping = Parameter.Map.empty;
+          constraints_set = [TypeConstraints.empty];
+          ranks = { arity = 0; annotation = 0; position = 0 };
+          reasons = { arity = []; annotation = [] };
+        }
+      in
+      let { parameters = all_parameters; _ } = implementation in
+      match all_parameters with
+      | Defined parameters ->
+          match_arity base_signature_match ~arguments ~parameters ~all_parameters
+          |> check_annotations
+          |> fun signature_match -> [signature_match]
+      | Undefined -> [base_signature_match]
+      | ParameterVariadicTypeVariable { head; variable }
+        when Type.Variable.Variadic.Parameters.is_free variable -> (
+          let front, back =
+            let is_labeled = function
+              | { Argument.kind = Named _; _ } -> true
+              | _ -> false
+            in
+            let labeled, unlabeled = List.partition_tf arguments ~f:is_labeled in
+            let first_unlabeled, remainder = List.split_n unlabeled (List.length head) in
+            first_unlabeled, labeled @ remainder
+          in
+          let ( {
+                  constraints_set;
+                  reasons = { arity = head_arity; annotation = head_annotation };
+                  _;
+                } as head_signature )
+            =
+            match_arity
+              base_signature_match
+              ~arguments:front
+              ~parameters:(Type.Callable.prepend_anonymous_parameters ~head ~tail:[])
+              ~all_parameters
+            |> check_annotations
+          in
+          let solve_back parameters =
+            let constraints_set =
+              (* If we use this option, we have to commit to it as to not move away from it later *)
+              TypeOrder.OrderedConstraintsSet.add
+                constraints_set
+                ~new_constraint:(VariableIsExactly (ParameterVariadicPair (variable, parameters)))
+                ~order
+            in
+            check_arity_and_annotations { implementation with parameters } ~arguments:back
+            |> List.map
+                 ~f:(fun { reasons = { arity = tail_arity; annotation = tail_annotation }; _ } ->
+                   {
+                     base_signature_match with
+                     constraints_set;
+                     reasons =
+                       {
+                         arity = head_arity @ tail_arity;
+                         annotation = head_annotation @ tail_annotation;
+                       };
+                   })
+          in
+          TypeOrder.OrderedConstraintsSet.get_parameter_specification_possibilities
+            constraints_set
+            ~parameter_specification:variable
+            ~order
+          |> List.concat_map ~f:solve_back
+          |> function
+          | [] -> [head_signature]
+          | nonempty -> nonempty )
+      | ParameterVariadicTypeVariable { head; variable } -> (
+          let combines_into_variable ~positional_component ~keyword_component =
+            Type.Variable.Variadic.Parameters.Components.combine
+              { positional_component; keyword_component }
+            >>| Type.Variable.Variadic.Parameters.equal variable
+            |> Option.value ~default:false
+          in
+          match List.rev arguments with
+          | { kind = DoubleStar; resolved = keyword_component; _ }
+            :: { kind = SingleStar; resolved = positional_component; _ } :: reversed_arguments_head
+            when combines_into_variable ~positional_component ~keyword_component ->
+              let arguments = List.rev reversed_arguments_head in
+              match_arity
+                base_signature_match
+                ~arguments
+                ~parameters:(Type.Callable.prepend_anonymous_parameters ~head ~tail:[])
+                ~all_parameters
+              |> check_annotations
+              |> fun signature_match -> [signature_match]
+          | _ ->
+              [
+                {
+                  base_signature_match with
+                  reasons = { arity = [CallingParameterVariadicTypeVariable]; annotation = [] };
+                };
+              ] )
+    in
+
     let get_match signatures =
+      let arguments =
+        let create_argument index { Call.Argument.name; value } =
+          let expression, kind =
+            match value, name with
+            | { Node.value = Starred (Starred.Once expression); _ }, _ ->
+                expression, Argument.SingleStar
+            | { Node.value = Starred (Starred.Twice expression); _ }, _ -> expression, DoubleStar
+            | expression, Some name -> expression, Named name
+            | expression, None -> expression, Positional
+          in
+          let resolved = resolve_with_locals ~locals:[] expression in
+          { Argument.position = index + 1; expression; full_expression = value; kind; resolved }
+        in
+        let is_labeled = function
+          | { Argument.kind = Named _; _ } -> true
+          | _ -> false
+        in
+        let labeled_arguments, unlabeled_arguments =
+          arguments |> List.mapi ~f:create_argument |> List.partition_tf ~f:is_labeled
+        in
+        let self_argument =
+          self_argument
+          >>| (fun resolved ->
+                {
+                  Argument.position = 0;
+                  expression = Node.create_with_default_location Expression.Ellipsis;
+                  full_expression = Node.create_with_default_location Expression.Ellipsis;
+                  kind = Positional;
+                  resolved;
+                })
+          |> Option.to_list
+        in
+        self_argument @ labeled_arguments @ unlabeled_arguments
+      in
       signatures
-      |> List.map ~f:match_arity
-      |> List.map ~f:check_annotations
+      |> List.concat_map ~f:(check_arity_and_annotations ~arguments)
       |> List.map ~f:calculate_rank
       |> find_closest
     in
@@ -3438,10 +3752,12 @@ module Implementation = struct
       ~right
     =
     let order = full_order ?dependency class_metadata_environment ~assumptions in
-    not
-      ( TypeOrder.solve_less_or_equal order ~left ~right ~constraints:TypeConstraints.empty
-      |> List.filter_map ~f:(TypeOrder.OrderedConstraints.solve ~order)
-      |> List.is_empty )
+    TypeOrder.OrderedConstraintsSet.add
+      ConstraintsSet.empty
+      ~new_constraint:(LessOrEqual { left; right })
+      ~order
+    |> TypeOrder.OrderedConstraintsSet.solve ~order
+    |> Option.is_some
 
 
   let constructor
@@ -3519,7 +3835,7 @@ module Implementation = struct
     let new_signature, new_index =
       let new_signature, new_index = signature_and_index ~name:"__new__" in
       let drop_class_parameter = function
-        | Type.Callable { Type.Callable.kind; implementation; overloads; implicit } ->
+        | Type.Callable { Type.Callable.kind; implementation; overloads } ->
             let drop_parameter { Type.Callable.annotation; parameters } =
               let parameters =
                 match parameters with
@@ -3533,7 +3849,6 @@ module Implementation = struct
                 kind;
                 implementation = drop_parameter implementation;
                 overloads = List.map overloads ~f:drop_parameter;
-                implicit;
               }
         | annotation -> annotation
       in

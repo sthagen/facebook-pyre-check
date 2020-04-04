@@ -227,8 +227,13 @@ and read_without_indent state = parse
       IDENTIFIER ((lexbuf.lex_start_p, lexbuf.lex_curr_p), lexeme lexbuf)
     }
   (* Don't even try to do anything with Python 2 print statements. *)
-  | "print " { read_without_indent state lexbuf }
-  | "print" whitespace+ ">>" { read_without_indent state lexbuf }
+  | "print" whitespace+ [ ^ '=' '<' '>' '*' '+' '-' ] {
+      lexbuf.lex_curr_pos <- lexbuf.lex_start_pos + 5;
+      read_without_indent state lexbuf
+    }
+  | "print" whitespace+ ">>" {
+      read_without_indent state lexbuf
+  }
 
   | "is" whitespace+ "not" { ISNOT }
 
