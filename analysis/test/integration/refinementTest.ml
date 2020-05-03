@@ -318,6 +318,27 @@ let test_check_local_refinement context =
     ["Revealed type [-1]: Revealed type for `x` is `typing.Optional[int]` (inferred: `int`)."];
   assert_type_errors
     {|
+      def foo(x: typing.Union[int, str, None]) -> None:
+        if x:
+          reveal_type(x)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `x` is `typing.Union[None, int, str]` (inferred: \
+       `typing.Union[int, str]`).";
+    ];
+  assert_type_errors
+    {|
+      def foo(x: typing.Union[int, str, None]) -> None:
+        if x is None:
+          x = 42
+        reveal_type(x)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `x` is `typing.Union[None, int, str]` (inferred: \
+       `typing.Union[int, str]`).";
+    ];
+  assert_type_errors
+    {|
       class FakeTest(unittest.TestCase):
         def foo(self, x: typing.Optional[int]) -> None:
           self.assertIsNotNone(x)
@@ -353,7 +374,22 @@ let test_check_local_refinement context =
           reveal_type(x)
           return d[x]
     |}
-    ["Revealed type [-1]: Revealed type for `x` is `typing.Optional[str]` (inferred: `str`)."]
+    ["Revealed type [-1]: Revealed type for `x` is `typing.Optional[str]` (inferred: `str`)."];
+  (* We don't actually care about the errors here, just that this terminates *)
+  assert_type_errors
+    {|
+    def f(y):
+      while True:
+          if y in (None, []):
+             pass
+          if True:
+             pass
+    |}
+    [
+      "Missing return annotation [3]: Return type is not specified.";
+      "Missing parameter annotation [2]: Parameter `y` has no type specified.";
+    ];
+  ()
 
 
 let test_check_isinstance context =
@@ -419,7 +455,7 @@ let test_assert_contains_none context =
       def foo(x: None) -> None:
         assert None not in x
     |}
-    ["Undefined attribute [16]: Optional type has no attribute `__getitem__`."];
+    ["Undefined attribute [16]: `None` has no attribute `__getitem__`."];
   assert_type_errors
     {|
       def foo(x: Derp) -> None:

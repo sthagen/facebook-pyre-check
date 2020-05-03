@@ -3,7 +3,6 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import argparse
 import functools
 import logging
 import os
@@ -16,7 +15,7 @@ from time import time
 from typing import Dict, List, NamedTuple, Optional, Set, Tuple
 
 from . import buck, json_rpc, log
-from .buck import BuckBuilder
+from .buck import BuckBuilder, find_buck_root
 from .configuration import Configuration
 from .exceptions import EnvironmentException
 from .filesystem import (
@@ -28,6 +27,7 @@ from .filesystem import (
     is_empty,
     is_parent,
     remove_if_exists,
+    translate_path,
     translate_paths,
 )
 from .socket_connection import SocketConnection, SocketException
@@ -53,17 +53,18 @@ DONT_CARE_PROGRESS_VALUE = 1
 
 
 def _resolve_filter_paths(
-    arguments: argparse.Namespace,
+    source_directories: List[str],
+    targets: List[str],
     configuration: "Configuration",
     original_directory: str,
 ) -> Set[str]:
     filter_paths = set()
-    if arguments.source_directories or arguments.targets:
-        if arguments.source_directories:
-            filter_paths.update(arguments.source_directories)
-        if arguments.targets:
+    if source_directories or targets:
+        if source_directories:
+            filter_paths.update(source_directories)
+        if targets:
             filter_paths.update(
-                [buck.presumed_target_root(target) for target in arguments.targets]
+                [buck.presumed_target_root(target) for target in targets]
             )
     else:
         local_configuration_root = configuration.local_configuration_root
@@ -94,8 +95,12 @@ class AnalysisDirectory:
     def get_root(self) -> str:
         return self._path
 
-    def get_filter_root(self) -> Set[str]:
-        return self._filter_paths or {self.get_root()}
+    def get_filter_roots(self) -> Set[str]:
+        current_project_directories = self._filter_paths or {self.get_root()}
+        return {
+            translate_path(os.getcwd(), filter_root)
+            for filter_root in current_project_directories
+        }
 
     def prepare(self) -> None:
         pass
@@ -177,7 +182,7 @@ class SharedAnalysisDirectory(AnalysisDirectory):
     def get_scratch_directory(self) -> str:
         try:
             return (
-                subprocess.check_output(["scratch", "path", "--subdir", "pyre"])
+                subprocess.check_output(["mkscratch", "path", "--subdir", "pyre"])
                 .decode("utf-8")
                 .strip()
             )
@@ -192,8 +197,17 @@ class SharedAnalysisDirectory(AnalysisDirectory):
             self.get_scratch_directory(), "{}{}".format(path_to_root, suffix)
         )
 
-    def get_filter_root(self) -> Set[str]:
-        return self._filter_paths or {os.getcwd()}
+    def get_filter_roots(self) -> Set[str]:
+        current_project_directories = self._filter_paths or {os.getcwd()}
+        buck_root = find_buck_root(os.getcwd())
+        if buck_root is None:
+            raise EnvironmentException(
+                "Cannot find buck root when constructing filter directories"
+            )
+        return {
+            translate_path(buck_root, filter_root)
+            for filter_root in current_project_directories
+        }
 
     # Exposed for testing.
     def _resolve_source_directories(self) -> None:
@@ -556,45 +570,36 @@ class SharedAnalysisDirectory(AnalysisDirectory):
                 continue
 
 
-def _get_project_name(isolate: bool) -> Optional[str]:
-    return "isolated_{}".format(str(os.getpid())) if isolate else None
-
-
-def _get_fast_buck_builder(
-    arguments: argparse.Namespace, current_directory: str, isolate: bool
-) -> buck.FastBuckBuilder:
-    buck_root = buck.find_buck_root(current_directory)
-    if not buck_root:
-        raise EnvironmentException(
-            "No Buck configuration at `{}` or any of its ancestors.".format(
-                current_directory
-            )
-        )
-    return buck.FastBuckBuilder(
-        buck_root=buck_root,
-        buck_builder_binary=arguments.buck_builder_binary,
-        buck_builder_target=arguments.buck_builder_target,
-        debug_mode=arguments.buck_builder_debug,
-        buck_mode=arguments.buck_mode,
-        project_name=_get_project_name(isolate),
-    )
+def _get_project_name(
+    isolate_per_process: bool, relative_local_root: Optional[str]
+) -> Optional[str]:
+    if isolate_per_process:
+        return f"isolated_{os.getpid()}"
+    if relative_local_root:
+        return "_".join(Path(relative_local_root).parts)
+    return None
 
 
 def resolve_analysis_directory(
-    arguments: argparse.Namespace,
+    source_directories: List[str],
+    targets: List[str],
     configuration: Configuration,
     original_directory: str,
     current_directory: str,
-    build: bool = False,
+    filter_directory: Optional[str],
+    use_buck_builder: bool,
+    debug: bool,
+    buck_mode: Optional[str],
     isolate: bool = False,
+    relative_local_root: Optional[str] = None,
 ) -> AnalysisDirectory:
     # Only read from the configuration if no explicit targets are passed in.
-    if not arguments.source_directories and not arguments.targets:
+    if not source_directories and not targets:
         source_directories = configuration.source_directories
         targets = configuration.targets
     else:
-        source_directories = arguments.source_directories or []
-        targets = arguments.targets or []
+        source_directories = source_directories or []
+        targets = targets or []
         if targets:
             configuration_name = ".pyre_configuration.local"
             command = "pyre init --local"
@@ -607,11 +612,11 @@ def resolve_analysis_directory(
             command,
         )
 
-    if arguments.filter_directory:
-        filter_paths = {arguments.filter_directory}
+    if filter_directory:
+        filter_paths = {filter_directory}
     else:
         filter_paths = _resolve_filter_paths(
-            arguments, configuration, original_directory
+            source_directories, targets, configuration, original_directory
         )
 
     local_configuration_root = configuration.local_configuration_root
@@ -620,9 +625,7 @@ def resolve_analysis_directory(
             local_configuration_root, current_directory
         )
 
-    use_buck_builder = (
-        arguments.use_buck_builder or configuration.use_buck_builder
-    ) and not arguments.use_legacy_builder
+    use_buck_builder = use_buck_builder or configuration.use_buck_builder
 
     if len(source_directories) == 1 and len(targets) == 0:
         analysis_directory = AnalysisDirectory(
@@ -631,12 +634,24 @@ def resolve_analysis_directory(
             search_path=configuration.search_path,
         )
     else:
-        build = arguments.build or build
-        buck_builder = buck.SimpleBuckBuilder(build=build)
         if use_buck_builder:
-            buck_builder = _get_fast_buck_builder(arguments, os.getcwd(), isolate)
+            buck_root = buck.find_buck_root(os.getcwd())
+            if not buck_root:
+                raise EnvironmentException(
+                    f"No Buck configuration at `{current_directory}` or any of its ancestors."
+                )
+            project_name = _get_project_name(
+                isolate_per_process=isolate, relative_local_root=relative_local_root
+            )
+            buck_builder = buck.FastBuckBuilder(
+                buck_root=buck_root,
+                buck_builder_binary=configuration.buck_builder_binary,
+                debug_mode=debug,
+                buck_mode=buck_mode,
+                project_name=project_name,
+            )
         else:
-            buck_builder = buck.SimpleBuckBuilder(build=build)
+            buck_builder = buck.SimpleBuckBuilder()
 
         analysis_directory = SharedAnalysisDirectory(
             source_directories=source_directories,

@@ -13,7 +13,7 @@ from typing_extensions import Final
 from ..analysis_directory import AnalysisDirectory
 from ..configuration import Configuration
 from ..version import __version__
-from .command import Command
+from .command import Command, CommandArguments
 from .servers import Servers
 
 
@@ -25,16 +25,33 @@ class Rage(Command):
 
     def __init__(
         self,
+        command_arguments: CommandArguments,
+        *,
+        original_directory: str,
+        configuration: Optional[Configuration] = None,
+        analysis_directory: Optional[AnalysisDirectory] = None,
+        output_path: Optional[str],
+    ) -> None:
+        super(Rage, self).__init__(
+            command_arguments, original_directory, configuration, analysis_directory
+        )
+        self._log_directory_for_binary: str = self.log_directory
+        self._output_path: Final[Optional[str]] = output_path
+
+    @staticmethod
+    def from_arguments(
         arguments: argparse.Namespace,
         original_directory: str,
         configuration: Optional[Configuration] = None,
         analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> None:
-        super(Rage, self).__init__(
-            arguments, original_directory, configuration, analysis_directory
+    ) -> "Rage":
+        return Rage(
+            CommandArguments.from_arguments(arguments),
+            original_directory=original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+            output_path=arguments.output_path,
         )
-        self._output_path: Final[Optional[str]] = arguments.output_path
-        self._log_directory_for_binary: str = self.log_directory
 
     @classmethod
     def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
@@ -45,7 +62,7 @@ class Rage(Command):
             information to the terminal or to a file.
             """,
         )
-        rage.set_defaults(command=cls)
+        rage.set_defaults(command=cls.from_arguments)
         rage.add_argument(
             "--output-file",
             default=None,
@@ -67,12 +84,12 @@ class Rage(Command):
             self._rage(sys.stdout)
 
     def _call_client_for_root_project(self, output_file: IO[str]) -> None:
-        self._arguments.servers_subcommand = "list"
         all_servers = Servers(
-            self._arguments,
+            self._command_arguments,
             self._original_directory,
-            self._configuration,
-            self._analysis_directory,
+            configuration=self._configuration,
+            analysis_directory=self._analysis_directory,
+            subcommand="list",
         )._all_server_details()
         if any(server.is_root() for server in all_servers):
             self._call_client(

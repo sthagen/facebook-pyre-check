@@ -13,6 +13,7 @@ from ..profile import (
     StatisticsOverTime,
     TableStatistics,
     parse_event,
+    to_cold_start_phases,
     to_incremental_updates,
 )
 
@@ -214,6 +215,75 @@ class ProfileTest(unittest.TestCase):
             ],
         )
 
+    def test_to_cold_start_phases(self) -> None:
+        self.assertEqual(
+            to_cold_start_phases(
+                [
+                    DurationEvent(
+                        duration=11,
+                        metadata=EventMetadata(
+                            name="SomeUpdate",
+                            worker_id=0,
+                            pid=400,
+                            timestamp=42,
+                            tags={"phase_name": "phase1"},
+                        ),
+                    ),
+                    DurationEvent(
+                        duration=14,
+                        metadata=EventMetadata(
+                            name="SomeUpdate",
+                            worker_id=0,
+                            pid=400,
+                            timestamp=42,
+                            tags={"phase_name": "phase2"},
+                        ),
+                    ),
+                    DurationEvent(
+                        duration=12,
+                        metadata=EventMetadata(
+                            name="initialization",
+                            worker_id=1,
+                            pid=400,
+                            timestamp=42,
+                            tags={},
+                        ),
+                    ),
+                    DurationEvent(
+                        duration=40,
+                        metadata=EventMetadata(
+                            name="SomeUpdate",
+                            worker_id=0,
+                            pid=400,
+                            timestamp=42,
+                            tags={"phase_name": "phase1"},
+                        ),
+                    ),
+                    DurationEvent(
+                        duration=50,
+                        metadata=EventMetadata(
+                            name="SomeUpdate",
+                            worker_id=0,
+                            pid=400,
+                            timestamp=42,
+                            tags={"phase_name": "phase2"},
+                        ),
+                    ),
+                    DurationEvent(
+                        duration=1,
+                        metadata=EventMetadata(
+                            name="incremental check",
+                            worker_id=1,
+                            pid=400,
+                            timestamp=42,
+                            tags={},
+                        ),
+                    ),
+                ]
+            ),
+            {"phase1": 11, "phase2": 14, "total": 12},
+        )
+
     def test_table_statistics(self) -> None:
         statistics = TableStatistics()
         lines = [
@@ -292,6 +362,7 @@ class ProfileTest(unittest.TestCase):
     def test_statistics_over_time(self) -> None:
         statistics = StatisticsOverTime()
         lines = [
+            "2020-04-27 20:08:35 MEMORY Shared memory size post-typecheck (size: 42)",
             "2020-02-19 10:35:57 PERFORMANCE Check_TypeCheck: 1.767435s",
             "2020-02-19 10:35:57 PROGRESS Postprocessing 51 sources...",
             "2020-02-19 10:35:57 PROGRESS Postprocessed 51 of 51 sources",
@@ -325,5 +396,9 @@ class ProfileTest(unittest.TestCase):
             statistics.add(line + "\n")
         self.assertEqual(
             statistics._data,
-            [("2020-02-19 10:35:57", 2105), ("2020-02-19 10:36:09", 2106)],
+            [
+                ("2020-04-27 20:08:35", 42000000),
+                ("2020-02-19 10:35:57", 2105000000),
+                ("2020-02-19 10:36:09", 2106000000),
+            ],
         )

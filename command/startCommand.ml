@@ -146,8 +146,12 @@ let computation_thread
             | _ -> () );
             let { Request.state; response } = process_request ~state ~request in
             ( match response with
-            | Some (TypeCheckResponse response) ->
-                write_to_json_socket (Jsonrpc.Response.TypeErrors.to_json response)
+            | Some (TypeCheckResponse errors) ->
+                List.iter (errors_to_lsp_responses errors) ~f:(fun response ->
+                    Connections.broadcast_to_adapter_sockets
+                      ~response
+                      ~connections:state.connections);
+                write_to_json_socket (Jsonrpc.Response.TypeErrors.to_json errors)
             | Some (TypeQueryResponse response) ->
                 write_to_json_socket (TypeQuery.json_socket_response response)
             | Some (LanguageServerProtocolResponse response) ->
@@ -271,10 +275,10 @@ let request_handler_thread
     | End_of_file -> handle_disconnect ()
     | error when is_connection_reset_error error -> handle_disconnect ()
   in
-  let handle_readable_json_request socket =
+  let handle_readable_json_request ~remove_socket socket =
     let handle_disconnect () =
-      Log.log ~section:`Server "File notifier disconnected";
-      Connections.remove_json_socket ~connections ~socket
+      Log.log ~section:`Server "JSON socket notifier disconnected";
+      remove_socket ~connections ~socket
     in
     try
       Log.log ~section:`Server "A file notifier is readable.";
@@ -299,7 +303,16 @@ let request_handler_thread
   in
   let rec loop () =
     Connections.close_json_sockets ~connections;
-    let { socket = server_socket; json_socket; persistent_clients; json_sockets; _ } =
+    let {
+      socket = server_socket;
+      json_socket;
+      adapter_socket;
+      persistent_clients;
+      json_sockets;
+      adapter_sockets;
+      _;
+    }
+      =
       Mutex.critical_section lock ~f:(fun () -> !raw_connections)
     in
     if not (PyrePath.is_directory local_root) then (
@@ -310,7 +323,10 @@ let request_handler_thread
     let readable =
       Unix.select
         ~restart:true
-        ~read:((server_socket :: json_socket :: Map.keys persistent_clients) @ json_sockets)
+        ~read:
+          ( (server_socket :: json_socket :: adapter_socket :: Map.keys persistent_clients)
+          @ json_sockets
+          @ adapter_sockets )
         ~write:[]
         ~except:[]
         ~timeout:(`After (Time.of_sec 5.0))
@@ -318,6 +334,25 @@ let request_handler_thread
       |> fun { Unix.Select_fds.read; _ } -> read
     in
     let handle_socket socket =
+      let add_json_socket ~add_socket ~socket =
+        let new_socket, _ =
+          Log.log ~section:`Server "New json client connection";
+          Unix.accept socket
+        in
+        Jsonrpc.handshake_message (Option.value ~default:"-1" expected_version)
+        |> LanguageServer.Types.HandshakeServer.to_yojson
+        |> Connections.write_to_json_socket ~socket:new_socket;
+        new_socket
+        |> Unix.in_channel_of_descr
+        |> LanguageServer.Protocol.read_message
+        >>| LanguageServer.Types.HandshakeClient.of_yojson
+        |> function
+        | Some (Ok _) ->
+            add_socket ~connections ~socket:new_socket;
+            Jsonrpc.socket_added_message |> Connections.write_to_json_socket ~socket:new_socket
+        | Some (Error error) -> Log.warning "Failed to parse handshake: %s" error
+        | None -> Log.warning "Failed to parse handshake as LSP."
+      in
       if Unix.File_descr.equal socket server_socket then
         let new_socket, _ =
           Log.log ~section:`Server "New client connection";
@@ -337,42 +372,26 @@ let request_handler_thread
             Log.warning "ECONNRESET while reading from socket."
         | End_of_file -> Log.warning "New client socket unreadable"
       else if Unix.File_descr.equal socket json_socket then
-        try
-          let new_socket, _ =
-            Log.log ~section:`Server "New json client connection";
-            Unix.accept json_socket
-          in
-          Jsonrpc.handshake_message (Option.value ~default:"-1" expected_version)
-          |> LanguageServer.Types.HandshakeServer.to_yojson
-          |> Connections.write_to_json_socket ~socket:new_socket;
-          new_socket
-          |> Unix.in_channel_of_descr
-          |> LanguageServer.Protocol.read_message
-          >>| LanguageServer.Types.HandshakeClient.of_yojson
-          |> function
-          (* TODO: Once we have fully rolled out the socket fix - we can remove this special
-             handling. *)
-          | Some
-              (Ok
-                {
-                  parameters =
-                    Some { LanguageServer.Types.HandshakeClientParameters.send_confirmation = true };
-                  _;
-                }) ->
-              Connections.add_json_socket ~connections ~socket:new_socket;
-              Jsonrpc.socket_added_message |> Connections.write_to_json_socket ~socket:new_socket
-          | Some (Ok _) -> Connections.add_json_socket ~connections ~socket:new_socket
-          | Some (Error error) -> Log.warning "Failed to parse handshake: %s" error
-          | None -> Log.warning "Failed to parse handshake as LSP."
-        with
+        try add_json_socket ~add_socket:Connections.add_json_socket ~socket:json_socket with
+        | End_of_file -> Log.warning "Got end of file while waiting for handshake."
+        | Sys_error error
+        | Yojson.Json_error error ->
+            Log.warning "Failed to complete handshake: %s" error
+      else if Unix.File_descr.equal socket adapter_socket then
+        try add_json_socket ~add_socket:Connections.add_adapter_socket ~socket:adapter_socket with
         | End_of_file -> Log.warning "Got end of file while waiting for handshake."
         | Sys_error error
         | Yojson.Json_error error ->
             Log.warning "Failed to complete handshake: %s" error
       else if Mutex.critical_section lock ~f:(fun () -> Map.mem persistent_clients socket) then
         handle_readable_persistent socket
+      else if
+        Mutex.critical_section lock ~f:(fun () ->
+            List.mem ~equal:Unix.File_descr.equal adapter_sockets socket)
+      then
+        handle_readable_json_request ~remove_socket:Connections.remove_adapter_socket socket
       else
-        handle_readable_json_request socket
+        handle_readable_json_request ~remove_socket:Connections.remove_json_socket socket
     in
     List.iter ~f:handle_socket readable;
 
@@ -391,6 +410,7 @@ let request_handler_thread
 let serve
     ~socket
     ~json_socket
+    ~adapter_socket
     ~server_configuration:({ Configuration.Server.configuration; _ } as server_configuration)
   =
   Version.log_version_banner ();
@@ -406,9 +426,11 @@ let serve
             {
               socket;
               json_socket;
+              adapter_socket;
               persistent_clients = Socket.Map.empty;
               json_sockets = [];
               sockets_to_close = [];
+              adapter_sockets = [];
             };
       }
     in
@@ -436,7 +458,7 @@ let acquire_lock ~server_configuration:{ Configuration.Server.lock_path; pid_pat
 
 
 type run_server_daemon_entry =
-  ( Socket.t * Socket.t * Configuration.Server.t,
+  ( Socket.t * Socket.t * Socket.t * Configuration.Server.t,
     unit Daemon.in_channel,
     unit Daemon.out_channel )
   Daemon.entry
@@ -447,7 +469,9 @@ type run_server_daemon_entry =
 let run_server_daemon_entry : run_server_daemon_entry =
   Daemon.register_entry_point
     "server_daemon"
-    (fun (socket, json_socket, server_configuration) (parent_in_channel, parent_out_channel) ->
+    (fun (socket, json_socket, adapter_socket, server_configuration)
+         (parent_in_channel, parent_out_channel)
+         ->
       Daemon.close_in parent_in_channel;
       Daemon.close_out parent_out_channel;
 
@@ -459,7 +483,7 @@ let run_server_daemon_entry : run_server_daemon_entry =
         | Some _ -> ()
         | None -> Telemetry.reset_budget ()
       in
-      serve ~socket ~json_socket ~server_configuration)
+      serve ~socket ~json_socket ~adapter_socket ~server_configuration)
 
 
 let run
@@ -467,6 +491,7 @@ let run
         Configuration.Server.lock_path;
         socket = { path = socket_path; _ };
         json_socket = { path = json_socket_path; _ };
+        adapter_socket = { path = adapter_socket_path; _ };
         log_path;
         daemonize;
         configuration = { incremental_style; _ } as configuration;
@@ -490,6 +515,7 @@ let run
       Log.log ~section:`Server "Creating server socket at `%a`" Path.pp socket_path;
       let socket = Socket.initialize_unix_socket socket_path in
       let json_socket = Socket.initialize_unix_socket json_socket_path in
+      let adapter_socket = Socket.initialize_unix_socket adapter_socket_path in
       if daemonize then (
         let stdin = Daemon.null_fd () in
         let log_path = Log.rotate (Path.absolute log_path) in
@@ -499,7 +525,7 @@ let run
           Daemon.spawn
             (stdin, stdout, stdout)
             run_server_daemon_entry
-            (socket, json_socket, server_configuration)
+            (socket, json_socket, adapter_socket, server_configuration)
         in
         Daemon.close handle;
         Log.log ~section:`Server "Forked off daemon with pid %d" pid;
@@ -507,7 +533,7 @@ let run
         pid )
       else (
         acquire_lock ~server_configuration;
-        serve ~socket ~json_socket ~server_configuration )
+        serve ~socket ~json_socket ~adapter_socket ~server_configuration )
     with
     | AlreadyRunning ->
         Log.info "Server is already running";

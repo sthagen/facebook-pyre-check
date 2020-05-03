@@ -27,7 +27,7 @@ from ..statistics_collectors import (
     StrictCountCollector,
     StrictIssueCollector,
 )
-from .command import Command
+from .command import Command, CommandArguments
 
 
 def _get_paths(target_directory: Path) -> List[Path]:
@@ -113,25 +113,46 @@ class Statistics(Command):
 
     def __init__(
         self,
+        command_arguments: CommandArguments,
+        original_directory: str,
+        *,
+        configuration: Optional[Configuration] = None,
+        analysis_directory: Optional[AnalysisDirectory] = None,
+        filter_paths: List[str],
+        collect: QualityType,
+        log_results: bool,
+    ) -> None:
+        super(Statistics, self).__init__(
+            command_arguments, original_directory, configuration, analysis_directory
+        )
+        self._filter_paths: Set[str] = set(filter_paths)
+        self._strict: bool = self._configuration.strict
+        self._collect: QualityType = collect
+        self._log_results: bool = log_results
+
+    @staticmethod
+    def from_arguments(
         arguments: argparse.Namespace,
         original_directory: str,
         configuration: Optional[Configuration] = None,
         analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> None:
-        super(Statistics, self).__init__(
-            arguments, original_directory, configuration, analysis_directory
+    ) -> "Statistics":
+        return Statistics(
+            CommandArguments.from_arguments(arguments),
+            original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+            filter_paths=arguments.filter_paths,
+            collect=arguments.collect,
+            log_results=arguments.log_results,
         )
-        self._filter_paths: Set[str] = set(arguments.filter_paths)
-        self._strict: bool = self._configuration.strict
-        self._collect: QualityType = arguments.collect
-        self._log_results: bool = arguments.log_results
 
     @classmethod
     def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
         statistics = parser.add_parser(
             cls.NAME, epilog="Collect various syntactic metrics on type coverage."
         )
-        statistics.set_defaults(command=cls)
+        statistics.set_defaults(command=cls.from_arguments)
         # TODO[T60916205]: Rename this argument, it doesn't make sense anymore
         statistics.add_argument(
             "filter_paths", nargs="*", type=file_exists, help=argparse.SUPPRESS
@@ -152,7 +173,6 @@ class Statistics(Command):
 
     def _run(self) -> None:
         if self._collect is None:
-            self._analysis_directory.prepare()
             paths = self._find_paths()
             modules = []
             for path in _parse_paths(paths):
@@ -214,7 +234,7 @@ class Statistics(Command):
         if self._configuration and self._configuration.logger:
             root = str(_pyre_configuration_directory(self._local_configuration))
             statistics.log(
-                "perfpipe_pyre_annotation_counts",
+                statistics.LoggerCategory.ANNOTATION_COUNTS,
                 configuration=self._configuration,
                 integers=data["annotations"],
                 normals={"root": root},
@@ -222,7 +242,7 @@ class Statistics(Command):
             self._log_fixmes("fixme", data["fixmes"], root)
             self._log_fixmes("ignore", data["ignores"], root)
             statistics.log(
-                "perfpipe_pyre_strict_adoption",
+                statistics.LoggerCategory.STRICT_ADOPTION,
                 configuration=self._configuration,
                 integers=data["strict"],
                 normals={"root": root},
@@ -231,7 +251,7 @@ class Statistics(Command):
     def _log_fixmes(self, fixme_type: str, data: Dict[str, int], root: str) -> None:
         for error_code, count in data.items():
             statistics.log(
-                "perfpipe_pyre_fixme_counts",
+                statistics.LoggerCategory.FIXME_COUNTS,
                 configuration=self._configuration,
                 integers={"count": count},
                 normals={"root": root, "code": error_code, "type": fixme_type},

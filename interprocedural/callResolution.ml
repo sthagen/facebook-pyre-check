@@ -14,12 +14,18 @@ let defining_attribute ~resolution parent_type attribute =
   Type.split parent_type
   |> fst
   |> Type.primitive_name
-  >>= GlobalResolution.attribute_from_class_name
-        ~transitive:true
-        ~resolution:global_resolution
-        ~name:attribute
-        ~instantiated:parent_type
-  >>= fun attribute -> if Annotated.Attribute.defined attribute then Some attribute else None
+  >>= fun class_name ->
+  GlobalResolution.attribute_from_class_name
+    ~transitive:true
+    ~resolution:global_resolution
+    ~name:attribute
+    ~instantiated:parent_type
+    class_name
+  >>= fun instantiated_attribute ->
+  if Annotated.Attribute.defined instantiated_attribute then
+    Some instantiated_attribute
+  else
+    Resolution.fallback_attribute ~resolution ~name:attribute class_name
 
 
 let strip_optional annotation = Type.optional_value annotation |> Option.value ~default:annotation
@@ -191,7 +197,6 @@ let resolve_target ~resolution ?receiver_type callee =
         compute_indirect_targets ~resolution ~receiver_type:type_or_class name
         |> List.map ~f:(fun target -> target, self_argument)
     | _, _, Type.Union annotations, _, _ -> List.concat_map ~f:resolve_type annotations
-    | _, _, Type.Optional annotation, _, _ -> resolve_type annotation
     | _, _, _, _, _ when Type.is_meta callable_type -> (
         let class_type = Type.single_parameter callable_type in
         match Type.primitive_name class_type with

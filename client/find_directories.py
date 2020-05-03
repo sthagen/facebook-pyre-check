@@ -3,31 +3,18 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import json
-import logging
-import multiprocessing
-import os
-import platform
-import subprocess
-import sys
-import time
-import traceback
-from argparse import Namespace
-from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Optional, Set, TextIO
 
-from . import buck
-from .exceptions import EnvironmentException
-from .filesystem import find_root, translate_paths
+import logging
+import os
+from typing import Optional
+
+from .filesystem import find_root
 
 
 CONFIGURATION_FILE: str = ".pyre_configuration"
 LOCAL_CONFIGURATION_FILE: str = ".pyre_configuration.local"
 BINARY_NAME: str = "pyre.bin"
 CLIENT_NAME: str = "pyre-client"
-
-if TYPE_CHECKING:
-    from .configuration import Configuration
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -72,19 +59,6 @@ def _check_nested_configurations(local_root: Optional[str]) -> None:
                     parent_local_root
                 )
             )
-
-
-def find_log_directory(
-    current_directory: str, local_configuration: Optional[str], dot_pyre_directory: str
-) -> str:
-    """Pyre outputs all logs to a .pyre directory that lives in the project root."""
-    log_directory = dot_pyre_directory
-    if local_configuration:
-        # `log_directory` will never escape `.pyre/` because in `switch_root` we have
-        # guaranteed that configurations are never deeper than local configurations
-        relative = os.path.relpath(local_configuration, current_directory)
-        log_directory = os.path.join(log_directory, relative)
-    return log_directory
 
 
 def _find_directory_upwards(base: str, target: str) -> Optional[str]:

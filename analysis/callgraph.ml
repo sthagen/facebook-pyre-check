@@ -168,7 +168,7 @@ module DefaultBuilder : Builder = struct
         ->
           List.map2_exn elements callables ~f:method_callee |> List.concat
       | Some annotation, Some callables -> List.concat_map callables ~f:(method_callee annotation)
-      | Some (Type.Optional annotation), _ -> (
+      | Some (Type.Union ([Type.NoneType; annotation] | [annotation; Type.NoneType])), _ -> (
           match Node.value callee with
           | Expression.Name (Name.Attribute { attribute; _ }) -> (
               GlobalResolution.attribute_from_annotation
@@ -211,15 +211,16 @@ module DefaultBuilder : Builder = struct
          optional attributes.*)
       else
         match resolved_base with
-        | Type.Optional base -> (
+        | Type.Union [Type.NoneType; base]
+        | Type.Union [base; Type.NoneType] -> (
             Type.resolve_class base
             |> function
-            | Some [{ instantiated; class_attributes; class_name }] -> (
+            | Some [{ instantiated; accessed_through_class; class_name }] -> (
                 let attribute =
                   GlobalResolution.attribute_from_class_name
                     class_name
                     ~transitive:true
-                    ~class_attributes
+                    ~accessed_through_class
                     ~special_method:false
                     ~resolution:global_resolution
                     ~name

@@ -24,7 +24,7 @@ from ...commands.infer import (
     dequalify,
 )
 from ...error import Error
-from ..command import __name__ as client_name
+from ..command import CommandArguments, __name__ as client_name
 from .command_test import (
     mock_arguments as general_mock_arguments,
     mock_configuration as general_mock_configuration,
@@ -88,6 +88,7 @@ class PyreTest(unittest.TestCase):
         elif FieldStub.is_instance(error.inference):
             stub = FieldStub(error.inference)
         assert stub is not None
+        # pyre-fixme[16]: `None` has no attribute `get_typing_imports`.
         self.assertEqual(sorted(list(stub.get_typing_imports())), expected_imports)
 
     def test_get_typing_imports(self) -> None:
@@ -554,23 +555,8 @@ class PyreTest(unittest.TestCase):
         )
 
 
-def mock_arguments() -> MagicMock:
-    arguments = general_mock_arguments()
-    arguments.debug = False
-    arguments.additional_check = []
-    arguments.sequential = False
-    arguments.show_error_traces = False
-    arguments.verbose = False
-    arguments.hide_parse_errors = True
-    arguments.local_configuration = None
-    arguments.logging_sections = None
-    arguments.logger = None
-    arguments.log_identifier = None
-    arguments.enable_profiling = None
-    arguments.json = False
-    arguments.annotate_from_existing_stubs = False
-
-    return arguments
+def mock_arguments() -> CommandArguments:
+    return general_mock_arguments(hide_parse_errors=True)
 
 
 def mock_configuration() -> MagicMock:
@@ -595,14 +581,22 @@ class InferTest(unittest.TestCase):
     ) -> None:
         original_directory = "/original/directory"
         arguments = mock_arguments()
-        arguments.strict = False
-
         configuration = mock_configuration()
         configuration.get_typeshed.return_value = "stub"
 
         with patch.object(commands.Command, "_call_client") as call_client:
             command = Infer(
-                arguments, original_directory, configuration, AnalysisDirectory(".")
+                arguments,
+                original_directory,
+                configuration=configuration,
+                analysis_directory=AnalysisDirectory("."),
+                print_errors=True,
+                full_only=True,
+                recursive=False,
+                in_place=None,
+                errors_from_stdin=False,
+                annotate_from_existing_stubs=False,
+                debug_infer=False,
             )
             self.assertEqual(
                 command._flags(),
@@ -624,7 +618,17 @@ class InferTest(unittest.TestCase):
         with patch.object(commands.Command, "_call_client") as call_client:
 
             command = Infer(
-                arguments, original_directory, configuration, AnalysisDirectory(".")
+                arguments,
+                original_directory,
+                configuration=configuration,
+                analysis_directory=AnalysisDirectory("."),
+                print_errors=True,
+                full_only=True,
+                recursive=False,
+                in_place=None,
+                errors_from_stdin=False,
+                annotate_from_existing_stubs=False,
+                debug_infer=False,
             )
             self.assertEqual(
                 command._flags(),
@@ -644,9 +648,18 @@ class InferTest(unittest.TestCase):
             call_client.assert_called_once_with(command=commands.Infer.NAME)
 
         with patch.object(commands.Command, "_call_client") as call_client:
-            arguments.json = True
             command = Infer(
-                arguments, original_directory, configuration, AnalysisDirectory(".")
+                arguments,
+                original_directory,
+                configuration=configuration,
+                analysis_directory=AnalysisDirectory("."),
+                print_errors=True,
+                full_only=True,
+                recursive=False,
+                in_place=None,
+                errors_from_stdin=True,
+                annotate_from_existing_stubs=False,
+                debug_infer=False,
             )
             self.assertEqual(
                 command._flags(),
@@ -666,9 +679,18 @@ class InferTest(unittest.TestCase):
             call_client.assert_not_called()
         configuration.ignore_infer = ["path1.py", "path2.py"]
         with patch.object(commands.Command, "_call_client") as call_client:
-            arguments.json = True
             command = Infer(
-                arguments, original_directory, configuration, AnalysisDirectory(".")
+                arguments,
+                original_directory,
+                configuration=configuration,
+                analysis_directory=AnalysisDirectory("."),
+                print_errors=True,
+                full_only=True,
+                recursive=False,
+                in_place=None,
+                errors_from_stdin=True,
+                annotate_from_existing_stubs=False,
+                debug_infer=False,
             )
             self.assertEqual(
                 command._flags(),
@@ -698,14 +720,17 @@ class InferTest(unittest.TestCase):
         recursive_glob.return_value = [
             Path("/root/.pyre/my-project/types/foo/bar/baz.pyi")
         ]
-        arguments = Mock(in_place=[])
         infer.annotate_from_existing_stubs(
-            root, arguments, None, type_directory=Path("/root/.pyre/my-project/types")
+            root,
+            None,
+            type_directory=Path("/root/.pyre/my-project/types"),
+            in_place=[],
+            debug_infer=False,
         )
         annotate_path.assert_called_once_with(
-            arguments,
             "/root/.pyre/my-project/types/foo/bar/baz.pyi",
             "/root/my-project/foo/bar/baz.py",
+            False,
         )
 
     @patch.object(Path, "rglob")
@@ -717,14 +742,17 @@ class InferTest(unittest.TestCase):
         recursive_glob.return_value = [
             Path("/root/.pyre/my-project/types/foo/bar/baz.pyi")
         ]
-        arguments = Mock(in_place=["foo/bar"])
         infer.annotate_from_existing_stubs(
-            root, arguments, None, type_directory=Path("/root/.pyre/my-project/types")
+            root,
+            None,
+            type_directory=Path("/root/.pyre/my-project/types"),
+            in_place=["foo/bar"],
+            debug_infer=False,
         )
         annotate_path.assert_called_once_with(
-            arguments,
             "/root/.pyre/my-project/types/foo/bar/baz.pyi",
             "/root/my-project/foo/bar/baz.py",
+            False,
         )
 
     @patch.object(Path, "rglob")
@@ -736,9 +764,12 @@ class InferTest(unittest.TestCase):
         recursive_glob.return_value = [
             Path("/root/.pyre/my-project/types/foo/bar/baz.pyi")
         ]
-        arguments = Mock(in_place=["some_other_directory"])
         infer.annotate_from_existing_stubs(
-            root, arguments, None, type_directory=Path("/root/.pyre/my-project/types")
+            root,
+            None,
+            type_directory=Path("/root/.pyre/my-project/types"),
+            in_place=["some_other_directory"],
+            debug_infer=False,
         )
         annotate_path.assert_not_called()
 
@@ -751,14 +782,17 @@ class InferTest(unittest.TestCase):
         recursive_glob.return_value = [
             Path("/root/.pyre/my-project/types/foo/bar/baz.pyi")
         ]
-        arguments = Mock(in_place=["foo/bar/baz.py"])
         infer.annotate_from_existing_stubs(
-            root, arguments, None, type_directory=Path("/root/.pyre/my-project/types")
+            root,
+            None,
+            type_directory=Path("/root/.pyre/my-project/types"),
+            in_place=["foo/bar/baz.py"],
+            debug_infer=False,
         )
         annotate_path.assert_called_once_with(
-            arguments,
             "/root/.pyre/my-project/types/foo/bar/baz.pyi",
             "/root/my-project/foo/bar/baz.py",
+            False,
         )
 
     @patch.object(Path, "rglob")
@@ -768,14 +802,17 @@ class InferTest(unittest.TestCase):
     ) -> None:
         root = Path("/root")
         recursive_glob.return_value = [Path("/root/.pyre/types/foo/bar/types/baz.pyi")]
-        arguments = Mock(in_place=["foo/bar/types/baz.py"])
         infer.annotate_from_existing_stubs(
-            root, arguments, None, type_directory=Path("/root/.pyre/types")
+            root,
+            None,
+            type_directory=Path("/root/.pyre/types"),
+            in_place=["foo/bar/types/baz.py"],
+            debug_infer=False,
         )
         annotate_path.assert_called_once_with(
-            arguments,
             "/root/.pyre/types/foo/bar/types/baz.pyi",
             "/root/foo/bar/types/baz.py",
+            False,
         )
 
     @patch.object(Path, "rglob")
@@ -787,12 +824,15 @@ class InferTest(unittest.TestCase):
         recursive_glob.return_value = [
             Path("/root/.pyre/local-root/types/local-root/foo/bar/baz.pyi")
         ]
-        arguments = Mock(in_place=["local-root/foo/bar"])
         infer.annotate_from_existing_stubs(
-            root, arguments, None, type_directory=Path("/root/.pyre/local-root/types")
+            root,
+            None,
+            type_directory=Path("/root/.pyre/local-root/types"),
+            in_place=["local-root/foo/bar"],
+            debug_infer=False,
         )
         annotate_path.assert_called_once_with(
-            arguments,
             "/root/.pyre/local-root/types/local-root/foo/bar/baz.pyi",
             "/root/local-root/foo/bar/baz.py",
+            False,
         )

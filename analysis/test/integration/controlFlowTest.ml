@@ -136,6 +136,18 @@ let test_check_excepts context =
     [];
   assert_type_errors
     {|
+      class Exception: pass
+      class Foo(Exception): pass
+      class Bar(Exception): pass
+      def foo() -> None:
+        try:
+          pass
+        except (Foo, Bar) as e:
+          reveal_type(e)
+    |}
+    ["Revealed type [-1]: Revealed type for `e` is `typing.Union[Bar, Foo]`."];
+  assert_type_errors
+    {|
       def foo() -> typing.Optional[int]:
         try:
           x = 1
@@ -492,6 +504,90 @@ let test_check_nested context =
     ]
 
 
+let test_check_while context =
+  let assert_type_errors = assert_type_errors ~context in
+  assert_type_errors
+    {|
+      def produce() -> bool: ...
+
+      def foo() -> int:
+        x = "A"
+        while(produce()):
+         if (produce()):
+          x = 1
+          break
+        else:
+          x = 2
+        reveal_type(x)
+        return x
+    |}
+    ["Revealed type [-1]: Revealed type for `x` is `int`."];
+  assert_type_errors
+    {|
+      def foo() -> None:
+        x = "A"
+        while True:
+          x = 1
+          break
+        reveal_type(x)
+    |}
+    ["Revealed type [-1]: Revealed type for `x` is `typing_extensions.Literal[1]`."];
+  assert_type_errors
+    {|
+      from typing import Optional
+      def produces() -> Optional[int]: ...
+      def foo() -> None:
+        x = None
+        while not x:
+          x = produces()
+        reveal_type(x)
+    |}
+    ["Revealed type [-1]: Revealed type for `x` is `int`."];
+  assert_type_errors
+    {|
+      from typing import Optional
+      def produces() -> Optional[int]: ...
+      def foo() -> None:
+        x = None
+        i = 0
+        while not x:
+          x = produces()
+          if i > 10:
+           break
+          i += 1
+        else:
+          reveal_type(x)
+        reveal_type(x)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `x` is `int`.";
+      "Revealed type [-1]: Revealed type for `x` is `Optional[int]`.";
+    ];
+  assert_type_errors
+    {|
+      def foo() -> None:
+        while True:
+          print("infinity!")
+        beyond = impossible
+        reveal_type("never reached")
+    |}
+    [];
+  (* https://github.com/facebook/pyre-check/issues/251 *)
+  assert_type_errors
+    {|
+      def random() -> bool: ...
+
+      while True:
+          if random():
+              some_var = True
+              break
+
+      print(some_var)
+    |}
+    [];
+  ()
+
+
 let () =
   "controlFlow"
   >::: [
@@ -500,5 +596,6 @@ let () =
          "check_ternary" >:: test_check_ternary;
          "check_unbound_variables" >:: test_check_unbound_variables;
          "check_nested" >:: test_check_nested;
+         "check_while" >:: test_check_while;
        ]
   |> Test.run

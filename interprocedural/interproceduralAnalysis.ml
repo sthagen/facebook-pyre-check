@@ -473,7 +473,6 @@ type result = {
 
 (* Called on a worker with a set of functions to analyze. *)
 let one_analysis_pass ~analyses ~step ~environment ~callables =
-  Analysis.GlobalResolution.ClassDefinitionsCache.enable ();
   let analyses = List.map ~f:Result.get_abstract_analysis analyses in
   let analyze_and_cache callable =
     let timer = Timer.start () in
@@ -671,7 +670,13 @@ let compute_fixpoint
     let iterations = iterate ~iteration:0 all_callables in
     let dump_callable callable =
       let global_resolution = Analysis.TypeEnvironment.ReadOnly.global_resolution environment in
-      let resolution = Analysis.TypeCheck.resolution global_resolution () in
+      let resolution =
+        Analysis.TypeCheck.resolution
+          global_resolution
+          (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
+          (module Analysis.TypeCheck.DummyContext)
+      in
+
       let resolution = Analysis.Resolution.global_resolution resolution in
       let { Define.signature = { name; _ }; _ } =
         match callable with

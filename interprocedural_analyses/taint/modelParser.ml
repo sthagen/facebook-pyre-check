@@ -23,6 +23,55 @@ let _ = show_breadcrumbs (* unused but derived *)
 
 let add_breadcrumbs breadcrumbs init = List.rev_append breadcrumbs init
 
+module DefinitionsCache (Type : sig
+  type t
+end) =
+struct
+  let cache : Type.t Reference.Table.t = Reference.Table.create ()
+
+  let set key value = Hashtbl.set cache ~key ~data:value
+
+  let get = Hashtbl.find cache
+
+  let invalidate () = Hashtbl.clear cache
+end
+
+module ClassDefinitionsCache = DefinitionsCache (struct
+  type t = Class.t Node.t list option
+end)
+
+let containing_source resolution reference =
+  let ast_environment = GlobalResolution.ast_environment resolution in
+  let rec qualifier ~lead ~tail =
+    match tail with
+    | head :: (_ :: _ as tail) ->
+        let new_lead = Reference.create ~prefix:lead head in
+        if not (GlobalResolution.module_exists resolution new_lead) then
+          lead
+        else
+          qualifier ~lead:new_lead ~tail
+    | _ -> lead
+  in
+  qualifier ~lead:Reference.empty ~tail:(Reference.as_list reference)
+  |> AstEnvironment.ReadOnly.get_source ast_environment
+
+
+let class_definitions resolution reference =
+  match ClassDefinitionsCache.get reference with
+  | Some result -> result
+  | None ->
+      let result =
+        containing_source resolution reference
+        >>| Preprocessing.classes
+        >>| List.filter ~f:(fun { Node.value = { Class.name; _ }; _ } ->
+                Reference.equal reference (Node.value name))
+        (* Prefer earlier definitions. *)
+        >>| List.rev
+      in
+      ClassDefinitionsCache.set reference result;
+      result
+
+
 module T = struct
   type parse_result = {
     models: TaintResult.call_model Interprocedural.Callable.Map.t;
@@ -61,12 +110,12 @@ type taint_annotation =
 
 (* Don't propagate inferred model of methods with Sanitize *)
 
-let is_property define =
-  String.Set.exists Recognized.property_decorators ~f:(Define.has_decorator define)
+let decorators = String.Set.union Recognized.property_decorators Recognized.classproperty_decorators
 
+let is_property define = String.Set.exists decorators ~f:(Define.has_decorator define)
 
 let signature_is_property signature =
-  String.Set.exists Recognized.property_decorators ~f:(Define.Signature.has_decorator signature)
+  String.Set.exists decorators ~f:(Define.Signature.has_decorator signature)
 
 
 let rec parse_annotations ~configuration ~parameters annotation =
@@ -286,6 +335,50 @@ let rec parse_annotations ~configuration ~parameters annotation =
                       path = [];
                     };
                 ]
+            | Some "PartialSink" ->
+                let kind, label =
+                  match Node.value expression with
+                  | Call
+                      {
+                        callee =
+                          {
+                            Node.value =
+                              Name
+                                (Name.Attribute
+                                  {
+                                    base =
+                                      { Node.value = Expression.Name (Name.Identifier kind); _ };
+                                    attribute = "__getitem__";
+                                    _;
+                                  });
+                            _;
+                          };
+                        arguments =
+                          {
+                            Call.Argument.value = { Node.value = Name (Name.Identifier label); _ };
+                            _;
+                          }
+                          :: _;
+                      } ->
+                      if not (List.mem configuration.sinks kind ~equal:String.equal) then
+                        Format.asprintf "Unrecognized sink for partial sink: `%s`." kind
+                        |> raise_invalid_model;
+                      if not (String.Map.Tree.mem configuration.acceptable_sink_labels kind) then
+                        raise_invalid_model (Format.asprintf "No labels specified for `%s`" kind);
+                      let label_options =
+                        String.Map.Tree.find_exn configuration.acceptable_sink_labels kind
+                      in
+                      if not (List.mem label_options label ~equal:String.equal) then
+                        Format.asprintf
+                          "Unrecognized label `%s` for partial sink `%s` (choices: `%s`)"
+                          label
+                          kind
+                          (String.concat label_options ~sep:", ")
+                        |> raise_invalid_model;
+                      kind, label
+                  | _ -> raise_invalid_annotation ()
+                in
+                [Sink { sink = Sinks.PartialSink { kind; label }; breadcrumbs = []; path = [] }]
             | _ -> raise_invalid_annotation () )
         | Name (Name.Identifier "TaintInTaintOut") ->
             [Tito { tito = Sinks.LocalReturn; breadcrumbs = []; path = [] }]
@@ -527,7 +620,7 @@ let create ~resolution ?path ~configuration ~rule_filter source =
         let sources_to_keep, sinks_to_keep =
           let { Configuration.rules; _ } = configuration in
           let rules =
-            List.filter_map rules ~f:(fun { Configuration.code; sources; sinks; _ } ->
+            List.filter_map rules ~f:(fun { Configuration.Rule.code; sources; sinks; _ } ->
                 if Core.Set.mem rule_filter code then Some (sources, sinks) else None)
           in
           List.fold
@@ -611,7 +704,7 @@ let create ~resolution ?path ~configuration ~rule_filter source =
             List.filter_map bases ~f:class_source_base
           in
           if (not (List.is_empty sink_annotations)) || not (List.is_empty source_annotations) then
-            GlobalResolution.class_definitions global_resolution name
+            class_definitions global_resolution name
             >>= List.hd
             >>| (fun { Node.value = { Class.body; _ }; _ } ->
                   let signature { Node.value; location } =
@@ -790,7 +883,7 @@ let create ~resolution ?path ~configuration ~rule_filter source =
                   None
             | _ -> None
           in
-          GlobalResolution.class_definitions global_resolution parent
+          class_definitions global_resolution parent
           >>= List.hd
           >>| (fun definition -> definition.Node.value.Class.body)
           >>= List.find_map ~f:get_matching_define
@@ -828,6 +921,9 @@ let create ~resolution ?path ~configuration ~rule_filter source =
         |> Annotation.annotation
         |> function
         | Type.Callable t -> Some t
+        | Type.Parametric
+            { name = "BoundMethod"; parameters = [Type.Parameter.Single (Type.Callable t); _] } ->
+            Some t
         | _ -> None
       in
       let normalized_model_parameters =

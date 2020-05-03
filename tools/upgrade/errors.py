@@ -5,6 +5,7 @@
 
 import itertools
 import json
+import logging
 import re
 import subprocess
 import sys
@@ -13,7 +14,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from .ast import verify_stable_ast
-from .postprocess import LOG
+
+
+LOG: logging.Logger = logging.getLogger(__name__)
 
 
 def error_path(error: Dict[str, Any]) -> str:
@@ -62,12 +65,12 @@ def json_to_errors(
             return Errors(_filter_errors(errors, only_fix_error_code))
         except json.decoder.JSONDecodeError:
             LOG.error(
-                "Recevied invalid JSON as input."
+                "Received invalid JSON as input. "
                 "If piping from `pyre check` be sure to use `--output=json`."
             )
     else:
         LOG.error(
-            "Recevied no input."
+            "Received no input. "
             "If piping from `pyre check` be sure to use `--output=json`."
         )
     return Errors.empty()
@@ -202,6 +205,16 @@ def _fix_file(
     max_line_length: Optional[int] = None,
     truncate: bool = False,
 ) -> None:
+    _fix_file_unsafe(filename, errors, custom_comment, max_line_length, truncate)
+
+
+def _fix_file_unsafe(
+    filename: str,
+    errors: Dict[int, List[Dict[str, str]]],
+    custom_comment: Optional[str] = None,
+    max_line_length: Optional[int] = None,
+    truncate: bool = False,
+) -> None:
     path = Path(filename)
     text = path.read_text()
     if "@" "generated" in text:
@@ -283,14 +296,27 @@ def _build_error_map(
 
 
 def fix(
-    errors: Errors, comment: str = "", max_line_length: int = 0, truncate: bool = False
+    errors: Errors,
+    comment: str = "",
+    max_line_length: int = 0,
+    truncate: bool = False,
+    unsafe: bool = False,
 ) -> None:
     for path, errors in errors:
         LOG.info("Processing `%s`", path)
-        _fix_file(
-            path,
-            _build_error_map(errors),
-            comment,
-            max_line_length if max_line_length > 0 else None,
-            truncate,
-        )
+        if unsafe:
+            _fix_file_unsafe(
+                path,
+                _build_error_map(errors),
+                comment,
+                max_line_length if max_line_length > 0 else None,
+                truncate,
+            )
+        else:
+            _fix_file(
+                path,
+                _build_error_map(errors),
+                comment,
+                max_line_length if max_line_length > 0 else None,
+                truncate,
+            )

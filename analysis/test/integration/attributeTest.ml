@@ -590,7 +590,26 @@ let test_check_attributes context =
       from foo import Bar
       class Bar: pass
     |}
-    ["Redefined class [50]: Class `test.Bar` conflicts with imported class `foo.Bar`."]
+    ["Redefined class [50]: Class `test.Bar` conflicts with imported class `foo.Bar`."];
+
+  assert_type_errors
+    {|
+      class Foo:
+        n = None
+        l = typing.List
+      def g(f: Foo) -> None:
+        reveal_type(f.n)
+        reveal_type(f.l)
+    |}
+    [
+      "Missing attribute annotation [4]: Attribute `n` of class `Foo` has type `None` but no type \
+       is specified.";
+      "Missing attribute annotation [4]: Attribute `l` of class `Foo` has type `typing.Type[list]` \
+       but no type is specified.";
+      "Revealed type [-1]: Revealed type for `f.n` is `unknown`.";
+      "Revealed type [-1]: Revealed type for `f.l` is `unknown`.";
+    ];
+  ()
 
 
 let test_attribute_decorators context =
@@ -1129,6 +1148,29 @@ let test_check_missing_attribute context =
       "Uninitialized attribute [13]: Attribute `a` is declared in class `Foo` to have type \
        `typing.Any` but is never initialized.";
     ];
+  assert_strict_type_errors
+    ~context
+    ~update_environment_with:
+      [
+        {
+          handle = "other.pyi";
+          source =
+            {|
+             from typing import Any
+             class O:
+               x: Any
+           |};
+        };
+      ]
+    {|
+      from other import O
+      class H:
+        o: O
+        def __init__(self, x: str) -> None:
+          self.o = O()
+          self.o.x = x
+    |}
+    [];
   ()
 
 
@@ -1215,6 +1257,111 @@ let test_attribute_type_variable_resolution context =
         reveal_type(self.property)
   |}
     ["Revealed type [-1]: Revealed type for `self.property` is `B`."];
+  assert_type_errors
+    {|
+    _T = typing.TypeVar('_T')
+    _U = typing.TypeVar('_U')
+    class A:
+      @property
+      def property(self: typing.Callable[[_T], _U]) -> _T: ...
+      def __call__(self, x: int) -> str: ...
+    def foo(a : A) -> None:
+      reveal_type(a.property)
+  |}
+    ["Revealed type [-1]: Revealed type for `a.property` is `int`."];
+  assert_type_errors
+    {|
+    _T = typing.TypeVar('_T')
+    class A:
+      @property
+      def property(self: typing.Callable[..., _T]) -> _T: ...
+      def __call__(self, x: int) -> str: ...
+    def foo(a : A) -> None:
+      reveal_type(a.property)
+  |}
+    ["Revealed type [-1]: Revealed type for `a.property` is `str`."];
+  assert_type_errors
+    {|
+    _T = typing.TypeVar('_T')
+    _TParams = pyre_extensions.ParameterSpecification('_TParams')
+    class A:
+      @property
+      def property(self: typing.Callable[_TParams, _T]) -> typing.Callable[_TParams, bool]: ...
+      def __call__(self, __x: int) -> str: ...
+    def foo(a : A) -> None:
+      reveal_type(a.property)
+  |}
+    ["Revealed type [-1]: Revealed type for `a.property` is `typing.Callable[[int], bool]`."];
+  assert_type_errors
+    {|
+    _T = typing.TypeVar('_T')
+    _Ts = pyre_extensions.ListVariadic('_Ts')
+    class A(typing.Generic[_Ts]):
+      @property
+      def property(self : typing.Callable[[int], _T]) -> typing.Callable[_Ts, _T]: ...
+      def __call__(self, __x: int) -> str: ...
+    def foo(a : A[[bool, float]]) -> None:
+      reveal_type(a.property)
+  |}
+    ["Revealed type [-1]: Revealed type for `a.property` is `typing.Callable[[bool, float], str]`."];
+  assert_type_errors
+    {|
+      _T = typing.TypeVar('_T')
+      _U = typing.TypeVar('_U')
+      class A:
+        @property
+        def x(self: typing.Callable[[_T], _U]) -> _T: ...
+        @x.setter
+        def x(self: typing.Callable[[_U], _T], value: _T) -> None: ...
+        def __call__(self, x: int) -> str: ...
+      def foo(a : A) -> int:
+        return a.x
+      def bar(a : A) -> None:
+        a.x = "string"
+    |}
+    [];
+  assert_type_errors
+    {|
+      _T = typing.TypeVar('_T')
+      _U = typing.TypeVar('_U')
+      class A:
+        @property
+        def x(self: typing.Callable[[_T], _U]) -> _T: ...
+        @x.setter
+        def x(self: typing.Callable[[_U], _T], value: _T) -> None: ...
+        def __call__(self, x: int) -> str: ...
+      def foo(a : A) -> str:
+        return a.x
+    |}
+    ["Incompatible return type [7]: Expected `str` but got `int`."];
+  assert_type_errors
+    {|
+      _T = typing.TypeVar('_T')
+      _U = typing.TypeVar('_U')
+      class A:
+        @property
+        def x(self: typing.Callable[[_T], _U]) -> _T: ...
+        @x.setter
+        def x(self: typing.Callable[[_U], _T], value: _T) -> None: ...
+        def __call__(self, x: int) -> str: ...
+      def foo(a : A) -> None:
+        a.x = 1
+    |}
+    [
+      "Incompatible attribute type [8]: Attribute `x` declared in class `A` has type `str` but is \
+       used as type `int`.";
+    ];
+  assert_type_errors
+    {|
+    from abc import ABCMeta
+    _T = typing.TypeVar('_T')
+    class FooMeta(ABCMeta):
+      @property
+      def __members__(cls: typing.Type[_T]) -> _T: ...
+    class Foo(metaclass=FooMeta): ...
+    reveal_type(Foo.__members__)
+  |}
+    ["Revealed type [-1]: Revealed type for `test.Foo.__members__` is `Foo`."];
   assert_type_errors
     {|
     T = typing.TypeVar('T')

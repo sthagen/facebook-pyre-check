@@ -14,9 +14,9 @@ from enum import Enum, auto
 from typing import Callable, Iterable, List, Mapping, NamedTuple, Optional, Set, Union
 
 import _ast
-from tools.pyre.api import query
 from typing_extensions import Final
 
+from ...api import query
 from .inspect_parser import extract_annotation, extract_name, extract_qualified_name
 
 
@@ -50,6 +50,7 @@ class Parameter(NamedTuple):
     kind: ArgumentKind
 
     def __eq__(self, other: "Parameter") -> bool:
+        # pyre-fixme[25]: Assertion will always fail.
         if not isinstance(other, self.__class__):
             return False
         return self.name == other.name
@@ -147,7 +148,12 @@ class RawCallableModel(Model):
     # Need to explicitly define this(despite baseclass) as we are overriding eq
     def __hash__(self) -> int:
         parameter_names_string = ",".join(
-            map(lambda parameter: parameter.name, self.parameters)
+            map(
+                lambda parameter: f"{parameter.name}:{parameter.annotation}"
+                if parameter.annotation
+                else f"{parameter.name}:_empty",
+                self.parameters,
+            )
         )
         return hash((self.callable_name, parameter_names_string))
 

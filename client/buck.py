@@ -44,7 +44,6 @@ class FastBuckBuilder(BuckBuilder):
         buck_root: str,
         output_directory: Optional[str] = None,
         buck_builder_binary: Optional[str] = None,
-        buck_builder_target: Optional[str] = None,
         debug_mode: bool = False,
         buck_mode: Optional[str] = None,
         project_name: Optional[str] = None,
@@ -54,7 +53,6 @@ class FastBuckBuilder(BuckBuilder):
             prefix="pyre_tmp_"
         )
         self._buck_builder_binary = buck_builder_binary
-        self._buck_builder_target = buck_builder_target
         self._debug_mode = debug_mode
         self._buck_mode = buck_mode
         self._project_name = project_name
@@ -63,35 +61,12 @@ class FastBuckBuilder(BuckBuilder):
 
     def _get_builder_executable(self) -> str:
         builder_binary = self._buck_builder_binary
-        if not self._debug_mode:
-            if builder_binary is None:
-                raise BuckException(
-                    "--buck-builder-binary must be provided "
-                    "if --buck-builder-debug is not enabled."
-                )
-            return builder_binary
-        target = self._buck_builder_target
-        if target is None:
+        if builder_binary is None:
             raise BuckException(
-                "--buck-builder-target must be provided "
-                "if --buck-builder-debug is enabled."
+                "--buck-builder-binary must be provided "
+                "if fast buck builder is used."
             )
-        binary_relative_path = (
-            subprocess.check_output(
-                [
-                    "buck",
-                    "build",
-                    "--show-output",
-                    "//tools/pyre/facebook/tools/"
-                    "buck_project_builder:fb_buck_project_builder",
-                ],
-                stderr=subprocess.DEVNULL,
-            )
-            .decode()
-            .strip()
-            .split(" ")[1]
-        )
-        return os.path.join(self._buck_root, binary_relative_path)
+        return builder_binary
 
     def build(self, targets: Iterable[str]) -> List[str]:
         command = [
@@ -134,6 +109,8 @@ class FastBuckBuilder(BuckBuilder):
             if return_code == 0:
                 LOG.info("Finished building targets.")
                 if self._debug_mode:
+                    # pyre-fixme[6]: Expected `_Reader` for 1st param but got
+                    #  `Optional[typing.IO[typing.Any]]`.
                     debug_output = json.load(buck_builder_process.stdout)
                     self.conflicting_files += debug_output["conflictingFiles"]
                     self.unsupported_files += debug_output["unsupportedFiles"]
@@ -162,15 +139,12 @@ class FastBuckBuilder(BuckBuilder):
 
 
 class SimpleBuckBuilder(BuckBuilder):
-    def __init__(self, build: bool = True) -> None:
-        self._build = build
-
     def build(self, targets: Iterable[str]) -> Iterable[str]:
         """
             Shell out to buck to build the targets, then yield the paths to the
             link trees.
         """
-        return generate_source_directories(targets, build=self._build)
+        return generate_source_directories(targets)
 
 
 def presumed_target_root(target: str) -> str:
@@ -377,23 +351,13 @@ def query_buck_relative_paths(
     return results
 
 
-def generate_source_directories(
-    original_targets: Iterable[str], build: bool
-) -> Set[str]:
+def generate_source_directories(original_targets: Iterable[str]) -> Set[str]:
     original_targets = list(original_targets)
     targets_to_destinations = _normalize(original_targets)
     targets = [pair[0] for pair in targets_to_destinations]
-    if build:
-        _build_targets(targets, original_targets)
+    _build_targets(targets, original_targets)
     buck_out = _find_built_source_directories(targets_to_destinations)
     source_directories = buck_out.source_directories
-
-    if buck_out.targets_not_found:
-        if not build:
-            # Build all targets to ensure buck doesn't remove some link trees as we go.
-            _build_targets(targets, original_targets)
-            buck_out = _find_built_source_directories(targets_to_destinations)
-            source_directories = buck_out.source_directories
 
     if buck_out.targets_not_found:
         message_targets = _map_normalized_targets_to_original(

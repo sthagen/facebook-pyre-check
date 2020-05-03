@@ -10,12 +10,11 @@ import time
 from logging import Logger
 from typing import List, Optional
 
-from .. import configuration_monitor
+from .. import configuration_monitor, watchman
 from ..analysis_directory import AnalysisDirectory
 from ..configuration import Configuration
 from ..project_files_monitor import ProjectFilesMonitor
-from ..watchman_subscriber import WatchmanSubscriber
-from .command import ClientException, Command, State
+from .command import ClientException, Command, CommandArguments, State
 
 
 LOG: Logger = logging.getLogger(__name__)
@@ -26,21 +25,36 @@ class Stop(Command):
 
     def __init__(
         self,
-        arguments: argparse.Namespace,
+        command_arguments: CommandArguments,
         original_directory: str,
+        *,
         configuration: Optional[Configuration] = None,
         analysis_directory: Optional[AnalysisDirectory] = None,
         from_restart: bool = False,
     ) -> None:
         super(Stop, self).__init__(
-            arguments, original_directory, configuration, analysis_directory
+            command_arguments, original_directory, configuration, analysis_directory
         )
-        self.from_restart = from_restart
+        self._from_restart = from_restart
+
+    @staticmethod
+    def from_arguments(
+        arguments: argparse.Namespace,
+        original_directory: str,
+        configuration: Optional[Configuration] = None,
+        analysis_directory: Optional[AnalysisDirectory] = None,
+    ) -> "Stop":
+        return Stop(
+            CommandArguments.from_arguments(arguments),
+            original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+        )
 
     @classmethod
     def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
         stop = parser.add_parser(cls.NAME, epilog="Signals the Pyre server to stop.")
-        stop.set_defaults(command=cls)
+        stop.set_defaults(command=cls.from_arguments)
 
     def _flags(self) -> List[str]:
         log_directory = self._log_directory
@@ -60,7 +74,7 @@ class Stop(Command):
 
     def _run(self) -> None:
         if self._state() == State.DEAD:
-            if self.from_restart:
+            if self._from_restart:
                 LOG.info("No server running.")
             else:
                 LOG.warning("No server running.")
@@ -95,10 +109,10 @@ class Stop(Command):
             else:
                 LOG.info("Stopped server at `%s`", self._analysis_directory.get_root())
 
-        WatchmanSubscriber.stop_subscriber(
+        watchman.stop_subscriptions(
             ProjectFilesMonitor.base_path(self._configuration), ProjectFilesMonitor.NAME
         )
-        WatchmanSubscriber.stop_subscriber(
+        watchman.stop_subscriptions(
             configuration_monitor.ConfigurationMonitor.base_path(self._configuration),
             configuration_monitor.ConfigurationMonitor.NAME,
         )

@@ -365,15 +365,59 @@ let test_query context =
     (Protocol.TypeQuery.Response
        (Protocol.TypeQuery.Superclasses
           [
-            Type.integer;
-            Type.float;
-            Type.complex;
-            Primitive "numbers.Integral";
-            Primitive "numbers.Rational";
-            Primitive "numbers.Real";
-            Primitive "numbers.Complex";
-            Primitive "numbers.Number";
-            Type.object_primitive;
+            {
+              Protocol.TypeQuery.class_name = !&"test.C";
+              superclasses =
+                [
+                  Type.integer;
+                  Type.float;
+                  Type.complex;
+                  Primitive "numbers.Integral";
+                  Primitive "numbers.Rational";
+                  Primitive "numbers.Real";
+                  Primitive "numbers.Complex";
+                  Primitive "numbers.Number";
+                  Type.object_primitive;
+                ];
+            };
+          ]));
+  assert_type_query_response
+    ~source:{|
+    class C: pass
+
+    class D(C): pass
+  |}
+    ~query:"superclasses(test.C, test.D)"
+    (Protocol.TypeQuery.Response
+       (Protocol.TypeQuery.Superclasses
+          [
+            { Protocol.TypeQuery.class_name = !&"test.C"; superclasses = [Type.object_primitive] };
+            {
+              Protocol.TypeQuery.class_name = !&"test.D";
+              superclasses = [Primitive "test.C"; Type.object_primitive];
+            };
+          ]));
+  assert_type_query_response
+    ~source:""
+    ~query:"batch()"
+    (Protocol.TypeQuery.Response (Protocol.TypeQuery.Batch []));
+  assert_type_query_response
+    ~source:"class C(int): ..."
+    ~query:"batch(less_or_equal(int, str), meet(list[test.C], list[int]))"
+    (Protocol.TypeQuery.Response
+       (Protocol.TypeQuery.Batch
+          [
+            Protocol.TypeQuery.Response (Protocol.TypeQuery.Boolean false);
+            Protocol.TypeQuery.Response (Protocol.TypeQuery.Type Type.Bottom);
+          ]));
+  assert_type_query_response
+    ~source:""
+    ~query:"batch(less_or_equal(int, str), less_or_equal(int, Unknown))"
+    (Protocol.TypeQuery.Response
+       (Protocol.TypeQuery.Batch
+          [
+            Protocol.TypeQuery.Response (Protocol.TypeQuery.Boolean false);
+            Protocol.TypeQuery.Error "Type `Unknown` was not found in the type order.";
           ]));
   let assert_compatibility_response ~source ~query ~actual ~expected result =
     assert_type_query_response

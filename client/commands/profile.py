@@ -17,7 +17,7 @@ from typing_extensions import Final
 
 from ..analysis_directory import AnalysisDirectory
 from ..configuration import Configuration
-from .command import Command, ProfileOutput
+from .command import Command, CommandArguments, ProfileOutput
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -150,11 +150,11 @@ def split_pre_and_post_initialization(
 ) -> Tuple[Sequence[Event], Sequence[Event]]:
     initialization_point = next(
         (
-            index
+            index + 1
             for index, event in enumerate(events)
             if event.metadata.name == "initialization"
         ),
-        len(events) - 1,
+        len(events),
     )
     return events[:initialization_point], events[initialization_point:]
 
@@ -166,6 +166,8 @@ def to_cold_start_phases(events: Sequence[Event]) -> Dict[str, int]:
         if not isinstance(event, DurationEvent):
             continue
         event.add_phase_duration_to_result(result)
+        if event.metadata.name == "initialization":
+            result["total"] = event.duration
 
     return result
 
@@ -245,23 +247,34 @@ class StatisticsOverTime:
     _data: List[Tuple[str, int]] = []
 
     def add(self, line: str) -> None:
-        divider = " MEMORY Shared memory size (size: "
-        if divider in line:
-            time, size = line.split(divider)
-            self._data.append((time, int(size[:-2])))
+        dividers = [
+            " MEMORY Shared memory size (size: ",
+            " MEMORY Shared memory size post-typecheck (size: ",
+        ]
+        for divider in dividers:
+            if divider in line:
+                time, size_component = line.split(divider)
+                size_in_megabytes = int(size_component[:-2])
+                size_in_bytes = size_in_megabytes * (10 ** 6)
+                self._data.append((time, size_in_bytes))
 
     def graph_total_shared_memory_size_over_time(self) -> None:
         try:
             gnuplot = subprocess.Popen(["gnuplot"], stdin=subprocess.PIPE)
+            # pyre-fixme[16]: `Optional` has no attribute `write`.
             gnuplot.stdin.write(b"set term dumb 140 25\n")
             gnuplot.stdin.write(b"plot '-' using 1:2 title '' with linespoints \n")
             for (i, (_time, size)) in enumerate(self._data):
                 # This is graphing size against # of updates, not time
                 gnuplot.stdin.write(b"%f %f\n" % (i, size))
             gnuplot.stdin.write(b"e\n")
+            # pyre-fixme[16]: `Optional` has no attribute `flush`.
             gnuplot.stdin.flush()
         except FileNotFoundError:
             LOG.error("gnuplot is not installed")
+
+    def to_json(self) -> str:
+        return json.dumps(self._data)
 
 
 class Profile(Command):
@@ -270,20 +283,37 @@ class Profile(Command):
 
     def __init__(
         self,
+        command_arguments: CommandArguments,
+        original_directory: str,
+        *,
+        configuration: Optional[Configuration] = None,
+        analysis_directory: Optional[AnalysisDirectory] = None,
+        profile_output: ProfileOutput,
+    ) -> None:
+        super(Profile, self).__init__(
+            command_arguments, original_directory, configuration, analysis_directory
+        )
+        self._profile_output: ProfileOutput = profile_output
+
+    @staticmethod
+    def from_arguments(
         arguments: argparse.Namespace,
         original_directory: str,
         configuration: Optional[Configuration] = None,
         analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> None:
-        super(Profile, self).__init__(
-            arguments, original_directory, configuration, analysis_directory
+    ) -> "Profile":
+        return Profile(
+            CommandArguments.from_arguments(arguments),
+            original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+            profile_output=arguments.profile_output,
         )
-        self._profile_output: ProfileOutput = arguments.profile_output
 
     @classmethod
     def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
         profile = parser.add_parser(cls.NAME)
-        profile.set_defaults(command=cls)
+        profile.set_defaults(command=cls.from_arguments)
         profile.add_argument(
             "--profile-output",
             type=ProfileOutput,
@@ -300,6 +330,14 @@ class Profile(Command):
                 "Cannot find server output at `{}`.".format(server_stdout_path)
             )
         return server_stdout
+
+    def collect_memory_statistics_over_time(self) -> StatisticsOverTime:
+        server_stdout = self.get_stdout()
+        extracted = StatisticsOverTime()
+        with open(server_stdout) as server_stdout_file:
+            for line in server_stdout_file.readlines():
+                extracted.add(line)
+        return extracted
 
     def _run(self) -> None:
         output = self._profile_output
@@ -328,12 +366,11 @@ class Profile(Command):
             )
             print(combined)
         elif output == ProfileOutput.TOTAL_SHARED_MEMORY_SIZE_OVER_TIME:
-            server_stdout = self.get_stdout()
-            extracted = StatisticsOverTime()
-            with open(server_stdout) as server_stdout_file:
-                for line in server_stdout_file.readlines():
-                    extracted.add(line)
-            extracted.graph_total_shared_memory_size_over_time()
+            memory_over_time = self.collect_memory_statistics_over_time().to_json()
+            print(memory_over_time)
+        elif output == ProfileOutput.TOTAL_SHARED_MEMORY_SIZE_OVER_TIME_GRAPH:
+            statistics = self.collect_memory_statistics_over_time()
+            statistics.graph_total_shared_memory_size_over_time()
         else:
             try:
                 profiling_output = Path(self.profiling_log_path())

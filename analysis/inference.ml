@@ -66,8 +66,6 @@ module State (Context : Context) = struct
 
     let define = Context.define
 
-    let calls = Location.Table.create ()
-
     module Builder = Callgraph.NullBuilder
   end
 
@@ -286,6 +284,7 @@ module State (Context : Context) = struct
               ~expression
               ~resolved:actual
               ~expected:return_annotation
+            |> GlobalResolution.resolved_type
           in
           let contains_literal_any =
             return_annotation_expression
@@ -759,7 +758,6 @@ let run
         } as source )
   =
   Log.debug "Checking %s..." relative;
-  let resolution = TypeCheck.resolution global_resolution () in
   let dequalify_map = Preprocessing.dequalify_map source in
   let check
       ( {
@@ -775,6 +773,8 @@ let run
       let define = Node.create ~location define
     end)
     in
+    let resolution = TypeCheck.resolution global_resolution (module State.TypeCheckContext) in
+
     let module Fixpoint = Fixpoint.Make (State) in
     Log.log ~section:`Check "Checking %a" Reference.pp name;
     let dump = Define.dump define in
@@ -850,8 +850,7 @@ let run
   in
   let format_errors errors =
     errors
-    |> List.map
-         ~f:(Error.dequalify dequalify_map ~resolution:(Resolution.global_resolution resolution))
+    |> List.map ~f:(Error.dequalify dequalify_map ~resolution:global_resolution)
     |> List.map ~f:(fun ({ Error.kind; _ } as error) ->
            { error with kind = Error.weaken_literals kind })
     |> List.sort ~compare:Error.compare
@@ -861,8 +860,6 @@ let run
   else
     let results = source |> Preprocessing.defines ~include_toplevels:true |> List.map ~f:check in
     let errors =
-      List.concat results
-      |> Error.join_at_source ~resolution:(Resolution.global_resolution resolution)
-      |> format_errors
+      List.concat results |> Error.join_at_source ~resolution:global_resolution |> format_errors
     in
     errors

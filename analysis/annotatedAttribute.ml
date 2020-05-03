@@ -17,8 +17,8 @@ type visibility =
 [@@deriving eq, show, compare, sexp]
 
 type initialized =
-  | Explicitly
-  | Implicitly
+  | OnClass
+  | OnlyOnInstance
   | NotInitialized
 [@@deriving eq, show, compare, sexp]
 
@@ -26,20 +26,20 @@ type 'a t = {
   payload: 'a;
   abstract: bool;
   async: bool;
-  class_attribute: bool;
+  class_variable: bool;
   defined: bool;
   initialized: initialized;
   name: Identifier.t;
   parent: Type.Primitive.t;
   visibility: visibility;
   property: bool;
-  static: bool;
 }
 [@@deriving eq, show, compare, sexp]
 
 type instantiated_annotation = {
   annotation: Type.t;
   original_annotation: Type.t;
+  uninstantiated_annotation: Type.t option;
 }
 [@@deriving eq, show, compare, sexp]
 
@@ -50,27 +50,26 @@ let create
     ~annotation
     ~original_annotation
     ~async
-    ~class_attribute
+    ~class_variable
     ~defined
     ~initialized
     ~name
     ~parent
     ~visibility
     ~property
-    ~static
+    ~uninstantiated_annotation
   =
   {
-    payload = { annotation; original_annotation };
+    payload = { annotation; original_annotation; uninstantiated_annotation };
     abstract;
     async;
-    class_attribute;
+    class_variable;
     defined;
     initialized;
     name;
     parent;
     visibility;
     property;
-    static;
   }
 
 
@@ -78,31 +77,29 @@ let create_uninstantiated
     ~abstract
     ~uninstantiated_annotation
     ~async
-    ~class_attribute
+    ~class_variable
     ~defined
     ~initialized
     ~name
     ~parent
     ~visibility
     ~property
-    ~static
   =
   {
     payload = uninstantiated_annotation;
     abstract;
     async;
-    class_attribute;
+    class_variable;
     defined;
     initialized;
     name;
     parent;
     visibility;
     property;
-    static;
   }
 
 
-let annotation { payload = { annotation; original_annotation }; async; defined; visibility; _ } =
+let annotation { payload = { annotation; original_annotation; _ }; async; defined; visibility; _ } =
   let annotation, original =
     if async then
       Type.awaitable annotation, Type.awaitable original_annotation
@@ -139,13 +136,17 @@ let initialized { initialized; _ } = initialized
 
 let defined { defined; _ } = defined
 
-let class_attribute { class_attribute; _ } = class_attribute
+let class_variable { class_variable; _ } = class_variable
 
 let abstract { abstract; _ } = abstract
 
 let async { async; _ } = async
 
-let static { static; _ } = static
+let static { payload = { uninstantiated_annotation; _ }; _ } =
+  match uninstantiated_annotation with
+  | Some (Type.Parametric { name = "typing.StaticMethod"; _ }) -> true
+  | _ -> false
+
 
 let property { property; _ } = property
 
@@ -157,8 +158,8 @@ let is_final { visibility; _ } =
   | _ -> false
 
 
-let instantiate attribute ~annotation ~original_annotation =
-  { attribute with payload = { annotation; original_annotation } }
+let instantiate attribute ~annotation ~original_annotation ~uninstantiated_annotation =
+  { attribute with payload = { annotation; original_annotation; uninstantiated_annotation } }
 
 
 let with_initialized attribute ~initialized = { attribute with initialized }

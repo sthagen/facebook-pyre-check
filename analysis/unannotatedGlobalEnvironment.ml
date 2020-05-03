@@ -404,6 +404,88 @@ let missing_builtin_classes, missing_typing_classes, missing_typing_extensions_c
     ]
     |> List.map ~f:Node.create_with_default_location
   in
+  let make_dunder_get ~parent ~host ~host_type ~return =
+    let parent = Reference.create parent in
+    Statement.Define
+      {
+        signature =
+          {
+            name =
+              Node.create_with_default_location
+                (Reference.combine parent (Reference.create "__get__"));
+            parameters =
+              [
+                Node.create_with_default_location
+                  { Ast.Expression.Parameter.name = "self"; value = None; annotation = None };
+                Node.create_with_default_location
+                  {
+                    Ast.Expression.Parameter.name = "host";
+                    value = None;
+                    annotation = Some (Type.expression host);
+                  };
+                Node.create_with_default_location
+                  {
+                    Ast.Expression.Parameter.name = "host_type";
+                    value =
+                      Some
+                        (Node.create_with_default_location
+                           (Expression.Name
+                              (Ast.Expression.create_name ~location:Location.any "None")));
+                    annotation = Some (Type.expression host_type);
+                  };
+              ];
+            decorators = [];
+            return_annotation = Some (Type.expression return);
+            async = false;
+            generator = false;
+            parent = Some parent;
+            nesting_define = None;
+          };
+        captures = [];
+        body = [];
+      }
+  in
+  let classmethod_body =
+    (*
+     * _T = TypeVar("_T")
+     * _S = TypeVar("_S")
+     * class ClassMethod(Generic[_T]):
+     *   def __get__(self, host: object, host_type: _S = None) -> BoundMethod[_T, _S]: ...
+     *)
+    [
+      make_dunder_get
+        ~parent:"typing.ClassMethod"
+        ~host:Type.object_primitive
+        ~host_type:(Variable (Type.Variable.Unary.create "typing._S"))
+        ~return:
+          (Type.Parametric
+             {
+               name = "BoundMethod";
+               parameters =
+                 [
+                   Single (Variable (Type.Variable.Unary.create "typing._T"));
+                   Single (Variable (Type.Variable.Unary.create "typing._S"));
+                 ];
+             });
+    ]
+    |> List.map ~f:Node.create_with_default_location
+  in
+  let staticmethod_body =
+    (*
+     * _T = TypeVar("_T")
+     * class StaticMethod(Generic[_T]):
+     *   def __get__(self, host: object, host_type: object = None) -> _T: ...
+     *)
+    [
+      make_dunder_get
+        ~parent:"typing.StaticMethod"
+        ~host:Type.object_primitive
+        ~host_type:Type.object_primitive
+        ~return:(Variable (Type.Variable.Unary.create "typing._T"));
+    ]
+    |> List.map ~f:Node.create_with_default_location
+  in
+
   let typing_classes =
     [
       make "typing.Optional" ~bases:single_unary_generic;
@@ -417,6 +499,8 @@ let missing_builtin_classes, missing_typing_classes, missing_typing_extensions_c
       make "typing.Final" ~bases:catch_all_generic;
       make "typing.Union" ~bases:catch_all_generic;
       make ~metaclasses:[Primitive "typing.GenericMeta"] "typing.Generic";
+      make "typing.ClassMethod" ~bases:single_unary_generic ~body:classmethod_body;
+      make "typing.StaticMethod" ~bases:single_unary_generic ~body:staticmethod_body;
     ]
   in
   let typing_extension_classes =

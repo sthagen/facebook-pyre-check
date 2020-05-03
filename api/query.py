@@ -32,11 +32,24 @@ class Location(NamedTuple):
     stop: Position
 
 
-class CallGraphTarget(NamedTuple):
-    target: str
-    # We might want to turn this into an enum in the future.
-    kind: str
-    locations: List[Location]
+class CallGraphTarget:
+    def __init__(self, call: Dict[str, Any]) -> None:
+        self.target: str = ""
+        if "target" in call:
+            self.target = call["target"]
+        else:
+            self.target = call["direct_target"]
+        self.kind: str = call["kind"]
+        self.locations: List[Location] = [
+            _parse_location(location) for location in call["locations"]
+        ]
+
+    def __eq__(self, other: "CallGraphTarget") -> bool:
+        return (
+            self.target == other.target
+            and self.kind == other.kind
+            and self.locations == other.locations
+        )
 
 
 class ClassHierarchy:
@@ -64,7 +77,7 @@ class ClassHierarchy:
         return self.hierarchy.get(class_name)
 
 
-def defines(pyre_connection: PyreConnection, modules: Iterable[str]) -> List[Define]:
+def _defines(pyre_connection: PyreConnection, modules: Iterable[str]) -> List[Define]:
     query = "defines({})".format(",".join(modules))
     result = pyre_connection.query_server(query)
     if result is None or "response" not in result:
@@ -82,6 +95,28 @@ def defines(pyre_connection: PyreConnection, modules: Iterable[str]) -> List[Def
         )
         for element in result["response"]
     ]
+
+
+def defines(
+    pyre_connection: PyreConnection,
+    modules: Iterable[str],
+    batch_size: Optional[int] = None,
+) -> List[Define]:
+    modules = list(modules)
+    if batch_size is None:
+        return _defines(pyre_connection, modules)
+    if batch_size <= 0:
+        raise ValueError(
+            "batch_size must a positive integer, provided: `{}`".format(batch_size)
+        )
+    found_defines: List[Define] = []
+    module_chunks = [
+        modules[index : index + batch_size]
+        for index in range(0, len(modules), batch_size)
+    ]
+    for modules in module_chunks:
+        found_defines.extend(_defines(pyre_connection, modules))
+    return found_defines
 
 
 def get_class_hierarchy(pyre_connection: PyreConnection) -> Optional[ClassHierarchy]:
@@ -119,15 +154,9 @@ def get_call_graph(
     if result is None or "response" not in result:
         return None
     call_graph = {}
+
     for function, calls in result["response"].items():
-        call_graph[function] = [
-            CallGraphTarget(
-                target=call["target"],
-                kind=call["kind"],
-                locations=[_parse_location(location) for location in call["locations"]],
-            )
-            for call in calls
-        ]
+        call_graph[function] = [CallGraphTarget(call) for call in calls]
     return call_graph
 
 

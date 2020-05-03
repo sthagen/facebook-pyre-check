@@ -8,7 +8,7 @@ from typing import Optional
 
 from ..analysis_directory import AnalysisDirectory, resolve_analysis_directory
 from ..configuration import Configuration
-from .command import Command, ExitCode, IncrementalStyle
+from .command import Command, CommandArguments, ExitCode, IncrementalStyle
 from .incremental import Incremental
 from .start import Start  # noqa
 from .stop import Stop
@@ -19,25 +19,48 @@ class Restart(Command):
 
     def __init__(
         self,
+        command_arguments: CommandArguments,
+        original_directory: str,
+        *,
+        configuration: Optional[Configuration] = None,
+        analysis_directory: Optional[AnalysisDirectory] = None,
+        terminal: bool,
+        store_type_check_resolution: bool,
+        use_watchman: bool,
+        incremental_style: IncrementalStyle,
+    ) -> None:
+        super(Restart, self).__init__(
+            command_arguments, original_directory, configuration, analysis_directory
+        )
+        self._terminal: bool = terminal
+        self._store_type_check_resolution: bool = store_type_check_resolution
+        self._use_watchman: bool = use_watchman
+        self._incremental_style: IncrementalStyle = incremental_style
+
+    @staticmethod
+    def from_arguments(
         arguments: argparse.Namespace,
         original_directory: str,
         configuration: Optional[Configuration] = None,
         analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> None:
-        super(Restart, self).__init__(
-            arguments, original_directory, configuration, analysis_directory
+    ) -> "Restart":
+        return Restart(
+            CommandArguments.from_arguments(arguments),
+            original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+            terminal=arguments.terminal,
+            store_type_check_resolution=arguments.store_type_check_resolution,
+            use_watchman=not arguments.no_watchman,
+            incremental_style=arguments.incremental_style,
         )
-        self._terminal: bool = arguments.terminal
-        self._store_type_check_resolution: bool = arguments.store_type_check_resolution
-        self._use_watchman: bool = not arguments.no_watchman
-        self._incremental_style: IncrementalStyle = arguments.incremental_style
 
     @classmethod
     def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
         restart = parser.add_parser(
             cls.NAME, epilog="Restarts a server. Equivalent to `pyre stop && pyre`."
         )
-        restart.set_defaults(command=cls)
+        restart.set_defaults(command=cls.from_arguments)
         restart.add_argument(
             "--terminal", action="store_true", help="Run the server in the terminal."
         )
@@ -61,20 +84,25 @@ class Restart(Command):
 
     def generate_analysis_directory(self) -> AnalysisDirectory:
         return resolve_analysis_directory(
-            self._arguments,
+            self._source_directories,
+            self._targets,
             self._configuration,
             self._original_directory,
             self._current_directory,
-            build=True,
+            filter_directory=self._filter_directory,
+            use_buck_builder=self._use_buck_builder,
+            debug=self._debug,
+            buck_mode=self._buck_mode,
+            relative_local_root=self.relative_local_root,
         )
 
     def _run(self) -> None:
         exit_code = (
             Stop(
-                self._arguments,
+                self._command_arguments,
                 self._original_directory,
-                self._configuration,
-                self._analysis_directory,
+                configuration=self._configuration,
+                analysis_directory=self._analysis_directory,
                 from_restart=True,
             )
             .run()
@@ -83,15 +111,17 @@ class Restart(Command):
         if exit_code != ExitCode.SUCCESS:
             self._exit_code = ExitCode.FAILURE
             return
-        # Force the incremental run to be blocking.
-        self._arguments.nonblocking = False
-        self._arguments.no_start = False
         exit_code = (
             Incremental(
-                self._arguments,
+                self._command_arguments,
                 self._original_directory,
-                self._configuration,
-                self._analysis_directory,
+                configuration=self._configuration,
+                analysis_directory=self._analysis_directory,
+                # Force the incremental run to be blocking.
+                nonblocking=False,
+                incremental_style=self._incremental_style,
+                no_start_server=False,
+                no_watchman=not self._use_watchman,
             )
             .run()
             .exit_code()

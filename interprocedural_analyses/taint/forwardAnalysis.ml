@@ -23,6 +23,8 @@ module type FixpointState = sig
     t
 end
 
+type triggered_sinks = (AccessPath.Root.t * Sinks.t) list Location.Table.t
+
 module type FUNCTION_CONTEXT = sig
   val qualifier : Reference.t
 
@@ -38,9 +40,18 @@ module type FUNCTION_CONTEXT = sig
     sink_tree:BackwardState.Tree.t ->
     unit
 
+  val check_triggered_flows
+    :  triggered_sinks:Flow.triggered_sinks ->
+    location:Location.WithModule.t ->
+    source_tree:ForwardState.Tree.t ->
+    sink_tree:BackwardState.Tree.t ->
+    unit
+
   val return_sink : BackwardState.Tree.t
 
   val debug : bool
+
+  val add_triggered_sinks : location:Location.t -> triggered_sinks:(Root.t * Sinks.t) list -> unit
 end
 
 let number_regexp = Str.regexp "[0-9]+"
@@ -144,7 +155,18 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
       |>> ForwardState.Tree.join taint_accumulator
 
 
-    and apply_call_targets ~resolution ~callee call_location arguments state call_targets =
+    and apply_call_targets
+        ~resolution
+        ~callee
+        ?(collapse_tito = true)
+        call_location
+        arguments
+        state
+        call_targets
+      =
+      (* We keep a table of kind -> set of triggered labels across all targets, and merge triggered
+         sinks at the end. *)
+      let triggered_sinks = String.Hash_set.create () in
       let apply_call_target state argument_taint (call_target, _implicit) =
         let taint_model = Model.get_callsite_model ~call_target ~arguments in
         let { TaintResult.forward; backward; _ } = taint_model.model in
@@ -205,12 +227,18 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
               in
               let add_features features = List.rev_append breadcrumbs features in
               let taint_to_propagate =
-                ForwardState.Tree.read path argument_taint
-                |> ForwardState.Tree.collapse
-                |> ForwardTaint.transform
-                     ForwardTaint.simple_feature_set
-                     Abstract.Domain.(Map add_features)
-                |> ForwardState.Tree.create_leaf
+                if collapse_tito then
+                  ForwardState.Tree.read path argument_taint
+                  |> ForwardState.Tree.collapse
+                  |> ForwardTaint.transform
+                       ForwardTaint.simple_feature_set
+                       Abstract.Domain.(Map add_features)
+                  |> ForwardState.Tree.create_leaf
+                else
+                  ForwardState.Tree.read path argument_taint
+                  |> ForwardState.Tree.transform
+                       ForwardTaint.simple_feature_set
+                       Abstract.Domain.(Map add_features)
               in
               let return_paths =
                 match kind with
@@ -265,6 +293,15 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
           let sink_tree =
             List.fold sink_matches ~f:(combine_sink_taint location) ~init:BackwardState.Tree.empty
           in
+          (* Compute triggered partial sinks, if any. *)
+          let () =
+            FunctionContext.check_triggered_flows
+              ~triggered_sinks
+              ~location
+              ~source_tree:argument_taint
+              ~sink_tree
+          in
+
           (* Add features to arguments. *)
           let state =
             match AccessPath.of_expression ~resolution argument with
@@ -303,6 +340,25 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
           Map.Poly.find tito_effects Sinks.LocalReturn
           |> Option.value ~default:ForwardState.Tree.empty
         in
+        ( if not (Hash_set.is_empty triggered_sinks) then
+            let add_sink (key, taint) roots_and_sinks =
+              let add roots_and_sinks = function
+                | Sinks.PartialSink sink ->
+                    if Hash_set.mem triggered_sinks (Sinks.show_partial_sink sink) then
+                      (key, Sinks.TriggeredPartialSink sink) :: roots_and_sinks
+                    else
+                      roots_and_sinks
+                | _ -> roots_and_sinks
+              in
+              BackwardTaint.leaves (BackwardState.Tree.collapse taint)
+              |> List.fold ~f:add ~init:roots_and_sinks
+            in
+            let triggered_sinks =
+              BackwardState.fold BackwardState.KeyValue backward.sink_taint ~init:[] ~f:add_sink
+            in
+            let { Location.WithModule.start; stop; _ } = call_location in
+            FunctionContext.add_triggered_sinks ~location:{ Location.start; stop } ~triggered_sinks
+        );
         let apply_tito_side_effects tito_effects state =
           (* We also have to consider the cases when the updated parameter has a global model, in
              which case we need to capture the flow. *)
@@ -417,7 +473,7 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
     and analyze_comprehension_generators ~resolution ~state generators =
       let add_binding
           (state, resolution)
-          ({ Comprehension.Generator.target; iterator; _ } as generator)
+          ({ Comprehension.Generator.target; iterator; conditions; _ } as generator)
         =
         let taint, state =
           let iterator_is_dictionary =
@@ -446,7 +502,12 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
             (Ast.Statement.Statement.generator_assignment generator)
         in
         let access_path = AccessPath.of_expression ~resolution target in
-        store_taint_option access_path taint state, resolution
+        let state = store_taint_option access_path taint state in
+        (* Analyzing the conditions might have issues and side effects. *)
+        let analyze_condition state condiiton =
+          analyze_expression ~resolution ~state ~expression:condiiton |> snd
+        in
+        List.fold conditions ~init:state ~f:analyze_condition, resolution
       in
       List.fold ~f:add_binding generators ~init:(state, resolution)
 
@@ -555,6 +616,35 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
             let indirect_targets, receiver =
               Interprocedural.CallResolution.get_indirect_targets ~resolution ~receiver ~method_name
             in
+            let collapse_tito =
+              (* For most cases, it is simply incorrect to not collapse tito, as it will lead to
+               * incorrect mapping from input to output taint. However, the collapsing of tito
+               * adversely affects our analysis in the case of the builder pattern, i.e.
+               *
+               * class C:
+               *   def set_field(self, field) -> "C":
+               *   self.field = field
+               *   return self
+               *
+               * In this case, collapsing tito leads to field tainting the entire `self` for chained
+               * call. To prevent this problem, we special case builders to preserve the tito
+               * structure. *)
+              match Resolution.resolve_expression resolution callee with
+              | ( _,
+                  Type.Parametric
+                    {
+                      name = "BoundMethod";
+                      parameters =
+                        [
+                          Type.Parameter.Single (Type.Callable { Type.Callable.implementation; _ });
+                          Type.Parameter.Single implicit;
+                        ];
+                    } ) ->
+                  Type.Callable.Overload.return_annotation implementation
+                  |> Type.equal implicit
+                  |> not
+              | _ -> true
+            in
             let arguments = Option.to_list receiver @ arguments in
             let add_index_breadcrumb_if_necessary taint =
               if not (String.equal method_name "get") then
@@ -569,7 +659,14 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
                       taint
                 | _ -> taint
             in
-            apply_call_targets ~resolution ~callee location arguments state indirect_targets
+            apply_call_targets
+              ~resolution
+              ~callee
+              ~collapse_tito
+              location
+              arguments
+              state
+              indirect_targets
             |>> add_index_breadcrumb_if_necessary
         | None, Name (Name.Identifier _name) ->
             let constructor_targets =
@@ -964,6 +1061,18 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
     let analyze_statement ~resolution { Node.value = statement; location } state =
       match statement with
       | Statement.Assign { value = { Node.value = Expression.Ellipsis; _ }; _ } -> state
+      | Statement.Assign
+          { value = { Node.value = Expression.Name (Name.Identifier "None"); _ }; target; _ } -> (
+          match AccessPath.of_expression ~resolution target with
+          | Some { AccessPath.root; path } ->
+              (* We need to take some care to ensure we clear existing taint, without adding new
+                 taint. *)
+              let taint = ForwardState.read ~root ~path state.taint in
+              if not (ForwardState.Tree.is_bottom taint) then
+                { taint = ForwardState.assign ~root ~path ForwardState.Tree.bottom state.taint }
+              else
+                state
+          | _ -> state )
       | Statement.Assign { target = { Node.location; value = target_value } as target; value; _ }
         -> (
           match target_value with
@@ -1049,7 +1158,13 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
           match value with
           | None -> ForwardState.Tree.bottom, state
           | Some expression ->
-              let resolution = TypeCheck.resolution FunctionContext.global_resolution () in
+              let resolution =
+                TypeCheck.resolution
+                  FunctionContext.global_resolution
+                  (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
+                  (module TypeCheck.DummyContext)
+              in
+
               analyze_expression ~resolution ~state ~expression
         in
         let root = AccessPath.Root.Variable name in
@@ -1075,8 +1190,10 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
           ~global_resolution:FunctionContext.global_resolution
           ~local_annotations:FunctionContext.local_annotations
           ~parent
-          ~key
+          ~key (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
+          (module TypeCheck.DummyContext)
       in
+
       analyze_statement ~resolution statement state
 
 
@@ -1105,7 +1222,8 @@ let extract_features_to_attach existing_taint =
         | _ -> features
       in
       ForwardTaint.fold ForwardTaint.simple_feature_element ~f:gather_features ~init:[] taint
-  | None -> []
+      |> Features.SimpleSet.of_approximation
+  | None -> Features.SimpleSet.bottom
 
 
 let extract_source_model ~define ~resolution ~features_to_attach exit_taint =
@@ -1130,11 +1248,8 @@ let extract_source_model ~define ~resolution ~features_to_attach exit_taint =
     |> ForwardState.Tree.approximate_complex_access_paths
   in
   let attach_features taint =
-    if not (List.is_empty features_to_attach) then
-      ForwardState.transform
-        ForwardTaint.simple_feature_set
-        Abstract.Domain.(Map (List.rev_append features_to_attach))
-        taint
+    if not (Features.SimpleSet.is_bottom features_to_attach) then
+      ForwardState.transform Features.SimpleSet.Self Abstract.Domain.(Add features_to_attach) taint
     else
       taint
   in
@@ -1207,6 +1322,16 @@ let run ~environment ~qualifier ~define ~existing_model =
       add_flow_candidate flow_candidate
 
 
+    let check_triggered_flows ~triggered_sinks ~location ~source_tree ~sink_tree =
+      let triggered, candidates =
+        Flow.compute_triggered_sinks ~triggered_sinks ~location ~source_tree ~sink_tree
+      in
+
+      List.iter triggered ~f:(fun sink ->
+          Hash_set.add triggered_sinks (Sinks.show_partial_sink sink));
+      List.iter candidates ~f:add_flow_candidate
+
+
     let generate_issues () =
       let accumulate ~key:_ ~data:candidate issues =
         let new_issues = Flow.generate_issues ~define candidate in
@@ -1229,6 +1354,12 @@ let run ~environment ~qualifier ~define ~existing_model =
            (Location.with_module ~qualifier return_location)
            ~callees:[]
            ~port:AccessPath.Root.LocalResult
+
+
+    let triggered_sinks = Location.Table.create ()
+
+    let add_triggered_sinks ~location ~triggered_sinks:new_triggered_sinks =
+      Hashtbl.set triggered_sinks ~key:location ~data:new_triggered_sinks
   end
   in
   let module AnalysisInstance = AnalysisInstance (Context) in
@@ -1265,4 +1396,4 @@ let run ~environment ~qualifier ~define ~existing_model =
     ~normals:["callable", Reference.show name]
     ~timer
     ();
-  model, issues
+  model, issues, Context.triggered_sinks

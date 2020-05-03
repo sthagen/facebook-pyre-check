@@ -132,71 +132,13 @@ let module_exists ({ dependency; _ } as resolution) =
   AstEnvironment.ReadOnly.module_exists ?dependency (ast_environment resolution)
 
 
-module DefinitionsCache (Type : sig
-  type t
-end) =
-struct
-  let cache : Type.t Reference.Table.t = Reference.Table.create ()
-
-  let enabled =
-    (* Only enable this in nonincremental mode for now. *)
-    ref false
-
-
-  let enable () = enabled := true
-
-  let set key value = Hashtbl.set cache ~key ~data:value
-
-  let get key =
-    if !enabled then
-      Hashtbl.find cache key
-    else
-      None
-
-
-  let invalidate () = Hashtbl.clear cache
-end
-
-module ClassDefinitionsCache = DefinitionsCache (struct
-  type t = Class.t Node.t list option
-end)
-
-let containing_source resolution reference =
-  let ast_environment = ast_environment resolution in
-  let rec qualifier ~lead ~tail =
-    match tail with
-    | head :: (_ :: _ as tail) ->
-        let new_lead = Reference.create ~prefix:lead head in
-        if not (module_exists resolution new_lead) then
-          lead
-        else
-          qualifier ~lead:new_lead ~tail
-    | _ -> lead
-  in
-  qualifier ~lead:Reference.empty ~tail:(Reference.as_list reference)
-  |> AstEnvironment.ReadOnly.get_source ast_environment
-
-
-let function_definitions resolution reference =
+let function_definitions ({ dependency; _ } as resolution) reference =
   let unannotated_global_environment = unannotated_global_environment resolution in
-  UnannotatedGlobalEnvironment.ReadOnly.get_define unannotated_global_environment reference
+  UnannotatedGlobalEnvironment.ReadOnly.get_define
+    unannotated_global_environment
+    reference
+    ?dependency
   >>| FunctionDefinition.all_bodies
-
-
-let class_definitions resolution reference =
-  match ClassDefinitionsCache.get reference with
-  | Some result -> result
-  | None ->
-      let result =
-        containing_source resolution reference
-        >>| Preprocessing.classes
-        >>| List.filter ~f:(fun { Node.value = { Class.name; _ }; _ } ->
-                Reference.equal reference (Node.value name))
-        (* Prefer earlier definitions. *)
-        >>| List.rev
-      in
-      ClassDefinitionsCache.set reference result;
-      result
 
 
 let full_order ({ dependency; _ } as resolution) =
@@ -294,7 +236,7 @@ let global ({ dependency; _ } as resolution) reference =
 let attribute_from_class_name
     ~resolution:({ dependency; _ } as resolution)
     ?(transitive = false)
-    ?(class_attributes = false)
+    ?(accessed_through_class = false)
     ?(special_method = false)
     class_name
     ~name
@@ -313,23 +255,23 @@ let attribute_from_class_name
             AnnotatedAttribute.create
               ~annotation:Type.Top
               ~original_annotation:Type.Top
+              ~uninstantiated_annotation:(Some Type.Top)
               ~abstract:false
               ~async:false
-              ~class_attribute:class_attributes
+              ~class_variable:false
               ~defined:false
               ~initialized:NotInitialized
               ~name
               ~parent:class_name
               ~visibility:ReadWrite
               ~property:false
-              ~static:false
             |> Option.some
         | None -> None )
   in
   AttributeResolution.ReadOnly.attribute
     ~instantiated
     ~transitive
-    ~class_attributes
+    ~accessed_through_class
     ~special_method
     ~include_generated_attributes:true
     ?dependency
@@ -343,12 +285,12 @@ let attribute_from_annotation resolution ~parent:annotation ~name =
   match Type.resolve_class annotation with
   | None -> None
   | Some [] -> None
-  | Some [{ instantiated; class_attributes; class_name }] ->
+  | Some [{ instantiated; accessed_through_class; class_name }] ->
       attribute_from_class_name
         ~resolution
         ~transitive:true
         ~instantiated
-        ~class_attributes
+        ~accessed_through_class
         ~name
         class_name
       >>= fun attribute -> Option.some_if (AnnotatedAttribute.defined attribute) attribute
@@ -367,13 +309,13 @@ let is_typed_dictionary ~resolution:({ dependency; _ } as resolution) annotation
   |> Option.value ~default:false
 
 
+let resolved_type = AttributeResolution.resolved_type
+
 let is_consistent_with ({ dependency; _ } as resolution) ~resolve left right ~expression =
-  let comparator ~left ~right =
+  let comparator =
     AttributeResolution.ReadOnly.constraints_solution_exists
       ?dependency
       (attribute_resolution resolution)
-      ~left
-      ~right
   in
 
   let left =
@@ -384,8 +326,9 @@ let is_consistent_with ({ dependency; _ } as resolution) ~resolve left right ~ex
       ~resolved:left
       ~expected:right
       ~comparator
+    |> resolved_type
   in
-  comparator ~left ~right
+  comparator ~get_typed_dictionary_override:(fun _ -> None) ~left ~right
 
 
 let constructor ~resolution:({ dependency; _ } as resolution) =
@@ -431,14 +374,14 @@ let immediate_parents ~resolution = ClassHierarchy.immediate_parents (class_hier
 let attributes
     ~resolution:({ dependency; _ } as resolution)
     ?(transitive = false)
-    ?(class_attributes = false)
+    ?(accessed_through_class = false)
     ?(include_generated_attributes = true)
     name
   =
   AttributeResolution.ReadOnly.all_attributes
     (attribute_resolution resolution)
     ~transitive
-    ~class_attributes
+    ~accessed_through_class
     ~include_generated_attributes
     name
     ?dependency
@@ -513,6 +456,7 @@ end
 
 let constraints_solution_exists ({ dependency; _ } as resolution) =
   AttributeResolution.ReadOnly.constraints_solution_exists
+    ~get_typed_dictionary_override:(fun _ -> None)
     ?dependency
     (attribute_resolution resolution)
 
@@ -583,7 +527,7 @@ let annotation_parser ?(allow_invalid_type_parameters = false) resolution =
 let attribute_names
     ~resolution:({ dependency; _ } as resolution)
     ?(transitive = false)
-    ?(class_attributes = false)
+    ?(accessed_through_class = false)
     ?(include_generated_attributes = true)
     ?instantiated:_
     name
@@ -591,7 +535,7 @@ let attribute_names
   AttributeResolution.ReadOnly.attribute_names
     (attribute_resolution resolution)
     ~transitive
-    ~class_attributes
+    ~accessed_through_class
     ~include_generated_attributes
     name
     ?dependency
@@ -613,7 +557,7 @@ let overrides class_name ~resolution ~name =
   let find_override parent =
     attribute_from_class_name
       ~transitive:false
-      ~class_attributes:true
+      ~accessed_through_class:true
       ~name
       parent
       ~resolution

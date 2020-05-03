@@ -20,15 +20,15 @@ let make_attributes ~class_name =
     Attribute.create
       ~annotation
       ~original_annotation:annotation
+      ~uninstantiated_annotation:(Some annotation)
       ~visibility:ReadWrite
       ~abstract:false
       ~async:false
-      ~class_attribute:false
+      ~class_variable:false
       ~defined:true
-      ~initialized:Explicitly
+      ~initialized:OnClass
       ~parent:class_name
       ~property:false
-      ~static:false
       ~name
   in
   List.map ~f:parse_attribute
@@ -214,13 +214,18 @@ let test_add_constraint context =
         | Some attributes -> Some attributes
         | None -> (
             match Type.resolve_class annotation with
-            | Some [{ instantiated; class_attributes; class_name }] ->
+            | Some [{ instantiated; accessed_through_class; class_name }] ->
                 GlobalResolution.attributes
                   ~transitive:true
                   ~resolution
-                  ~class_attributes
+                  ~accessed_through_class
                   class_name
-                >>| List.map ~f:(GlobalResolution.instantiate_attribute ~resolution ~instantiated)
+                >>| List.map
+                      ~f:
+                        (GlobalResolution.instantiate_attribute
+                           ~resolution
+                           ~instantiated
+                           ~accessed_through_class)
             | _ -> None )
       in
       { order with all_attributes = attributes; attribute = attribute_from_attributes attributes }

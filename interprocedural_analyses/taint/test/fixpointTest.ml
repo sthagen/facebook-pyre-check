@@ -212,18 +212,18 @@ let test_fixpoint context =
               "qualifier.match_via_receiver";
             outcome
               ~kind:`Function
-              ~sink_parameters:[{ name = "arg"; sinks = [Taint.Sinks.Test] }]
+              ~sink_parameters:[{ name = "arg"; sinks = [Taint.Sinks.NamedSink "Test"] }]
               ~errors:[]
               "qualifier.qux";
             outcome
               ~kind:`Function
-              ~sink_parameters:[{ name = "arg"; sinks = [Taint.Sinks.Test] }]
+              ~sink_parameters:[{ name = "arg"; sinks = [Taint.Sinks.NamedSink "Test"] }]
               "qualifier.bad";
-            outcome ~kind:`Function ~returns:[Sources.Test] ~errors:[] "qualifier.bar";
-            outcome ~kind:`Function ~returns:[Sources.Test] "qualifier.some_source";
+            outcome ~kind:`Function ~returns:[Sources.NamedSource "Test"] ~errors:[] "qualifier.bar";
+            outcome ~kind:`Function ~returns:[Sources.NamedSource "Test"] "qualifier.some_source";
             outcome
               ~kind:`Function
-              ~sink_parameters:[{ name = "list"; sinks = [Taint.Sinks.Test] }]
+              ~sink_parameters:[{ name = "list"; sinks = [Taint.Sinks.NamedSink "Test"] }]
               "qualifier.list_sink";
             outcome ~kind:`Function ~errors:[] "qualifier.no_list_match";
             outcome
@@ -262,13 +262,13 @@ let test_fixpoint context =
               "qualifier.test_deep_tito_match";
             outcome
               ~kind:`Function
-              ~sink_parameters:[{ name = "input"; sinks = [Sinks.Test] }]
+              ~sink_parameters:[{ name = "input"; sinks = [Sinks.NamedSink "Test"] }]
               "qualifier.property_into_sink";
             outcome ~kind:`Method ~tito_parameters:["self"] "qualifier.Class.property";
             outcome
               ~kind:`Function
               ~tito_parameters:[]
-              ~returns:[Sources.Test]
+              ~returns:[Sources.NamedSource "Test"]
               "qualifier.uses_property";
             outcome
               ~kind:`Function
@@ -297,9 +297,12 @@ let test_combined_analysis context =
           [
             outcome
               ~kind:`Function
-              ~returns:[Sources.UserControlled]
+              ~returns:[Sources.NamedSource "UserControlled"]
               ~sink_parameters:
-                [{ name = "x"; sinks = [Sinks.Test] }; { name = "y"; sinks = [Sinks.Demo] }]
+                [
+                  { name = "x"; sinks = [Sinks.NamedSink "Test"] };
+                  { name = "y"; sinks = [Sinks.NamedSink "Demo"] };
+                ]
               ~tito_parameters:["x"; "z"]
               "qualifier.combined_model";
           ];
@@ -325,7 +328,7 @@ let test_skipped_analysis context =
           [
             outcome
               ~kind:`Function
-              ~sink_parameters:[{ name = "y"; sinks = [Sinks.Demo] }]
+              ~sink_parameters:[{ name = "y"; sinks = [Sinks.NamedSink "Demo"] }]
               ~tito_parameters:["z"]
               ~analysis_mode:Taint.Result.SkipAnalysis
               "qualifier.skipped_model";
@@ -353,7 +356,7 @@ let test_sanitized_analysis context =
           [
             outcome
               ~kind:`Function
-              ~sink_parameters:[{ name = "y"; sinks = [Sinks.Demo] }]
+              ~sink_parameters:[{ name = "y"; sinks = [Sinks.NamedSink "Demo"] }]
               ~tito_parameters:["z"]
               ~errors:[{ code = 5001; pattern = ".*" }]
               ~analysis_mode:Taint.Result.Sanitize
@@ -379,8 +382,8 @@ let test_primed_source_analysis context =
           [
             outcome
               ~kind:`Function
-              ~source_parameters:[{ name = "y"; sources = [Sources.UserControlled] }]
-              ~sink_parameters:[{ name = "y"; sinks = [Sinks.RemoteCodeExecution] }]
+              ~source_parameters:[{ name = "y"; sources = [Sources.NamedSource "UserControlled"] }]
+              ~sink_parameters:[{ name = "y"; sinks = [Sinks.NamedSink "RemoteCodeExecution"] }]
               ~errors:[{ code = 5001; pattern = ".*Possible shell injection.*" }]
               "qualifier.primed_model";
           ];
@@ -408,8 +411,8 @@ let test_primed_sink_analysis context =
           [
             outcome
               ~kind:`Function
-              ~returns:[Sources.Test]
-              ~source_parameters:[{ name = "y"; sources = [Sources.Test] }]
+              ~returns:[Sources.NamedSource "Test"]
+              ~source_parameters:[{ name = "y"; sources = [Sources.NamedSource "Test"] }]
               ~sink_parameters:[] (* No backward prop on return sinks *)
               ~tito_parameters:["y"]
               ~errors:[{ code = 5002; pattern = ".*Test.*" }]
@@ -469,28 +472,43 @@ let test_overrides context =
               "qualifier.test_obscure_override";
             outcome
               ~kind:`Override
-              ~returns:[Sources.Test; Sources.UserControlled]
+              ~returns:[Sources.NamedSource "Test"; Sources.NamedSource "UserControlled"]
               "qualifier.Base.some_source";
             outcome ~kind:`Method ~returns:[] "qualifier.Base.some_source";
             outcome ~kind:`Method "qualifier.Base.some_sink";
             outcome
               ~kind:`Override
-              ~sink_parameters:[{ name = "arg"; sinks = [Sinks.RemoteCodeExecution; Sinks.Test] }]
+              ~sink_parameters:
+                [
+                  {
+                    name = "arg";
+                    sinks = [Sinks.NamedSink "RemoteCodeExecution"; Sinks.NamedSink "Test"];
+                  };
+                ]
               "qualifier.Base.some_sink";
             outcome
               ~kind:`Method
-              ~sink_parameters:[{ name = "arg"; sinks = [Sinks.Test] }]
+              ~sink_parameters:[{ name = "arg"; sinks = [Sinks.NamedSink "Test"] }]
               "qualifier.C.some_sink";
             outcome
               ~kind:`Override
-              ~sink_parameters:[{ name = "arg"; sinks = [Sinks.RemoteCodeExecution; Sinks.Test] }]
+              ~sink_parameters:
+                [
+                  {
+                    name = "arg";
+                    sinks = [Sinks.NamedSink "RemoteCodeExecution"; Sinks.NamedSink "Test"];
+                  };
+                ]
               "qualifier.C.some_sink";
             outcome
               ~kind:`Method
-              ~sink_parameters:[{ name = "arg"; sinks = [Sinks.RemoteCodeExecution] }]
+              ~sink_parameters:[{ name = "arg"; sinks = [Sinks.NamedSink "RemoteCodeExecution"] }]
               "qualifier.D.some_sink";
-            outcome ~kind:`Method ~returns:[Sources.Test] "qualifier.D.some_source";
-            outcome ~kind:`Method ~returns:[Sources.UserControlled] "qualifier.E.some_source";
+            outcome ~kind:`Method ~returns:[Sources.NamedSource "Test"] "qualifier.D.some_source";
+            outcome
+              ~kind:`Method
+              ~returns:[Sources.NamedSource "UserControlled"]
+              "qualifier.E.some_source";
           ];
       }
 

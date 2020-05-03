@@ -100,12 +100,6 @@ val class_metadata : t -> Type.t -> ClassMetadataEnvironment.class_metadata opti
 
 val is_protocol : t -> Type.t -> bool
 
-module ClassDefinitionsCache : sig
-  val enable : unit -> unit
-
-  val invalidate : unit -> unit
-end
-
 val function_definitions : t -> Reference.t -> Define.t Node.t list option
 
 val is_suppressed_module : t -> Reference.t -> bool
@@ -145,7 +139,7 @@ val annotation_parser
   t ->
   AnnotatedCallable.annotation_parser
 
-val class_definitions : t -> Reference.t -> Class.t Node.t list option
+val resolved_type : AttributeResolution.weakened_type -> Type.t
 
 val resolve_mutable_literals
   :  t ->
@@ -153,7 +147,7 @@ val resolve_mutable_literals
   expression:Ast.Expression.t option ->
   resolved:Type.t ->
   expected:Type.t ->
-  Type.t
+  AttributeResolution.weakened_type
 
 val get_typed_dictionary
   :  resolution:t ->
@@ -180,7 +174,7 @@ val is_transitive_successor
 val attributes
   :  resolution:t ->
   ?transitive:bool ->
-  ?class_attributes:bool ->
+  ?accessed_through_class:bool ->
   ?include_generated_attributes:bool ->
   Type.Primitive.t ->
   AttributeResolution.uninstantiated_attribute list option
@@ -188,6 +182,7 @@ val attributes
 val instantiate_attribute
   :  resolution:t ->
   ?instantiated:Type.t ->
+  accessed_through_class:bool ->
   AttributeResolution.uninstantiated_attribute ->
   AnnotatedAttribute.instantiated
 
@@ -196,7 +191,7 @@ val metaclass : resolution:t -> ClassSummary.t Node.t -> Type.t
 val attribute_from_class_name
   :  resolution:t ->
   ?transitive:bool ->
-  ?class_attributes:bool ->
+  ?accessed_through_class:bool ->
   ?special_method:bool ->
   Type.Primitive.t ->
   name:Identifier.t ->
@@ -219,7 +214,7 @@ val signature_select
   :  global_resolution:t ->
   resolve_with_locals:
     (locals:(Reference.t * Annotation.t) list -> Expression.expression Node.t -> Type.t) ->
-  arguments:Expression.Call.Argument.t list ->
+  arguments:AttributeResolution.arguments ->
   callable:Type.Callable.t ->
   self_argument:Type.t option ->
   AttributeResolution.sig_t
@@ -231,7 +226,7 @@ val constructor : resolution:t -> Type.Primitive.t -> instantiated:Type.t -> Typ
 val attribute_names
   :  resolution:t ->
   ?transitive:bool ->
-  ?class_attributes:bool ->
+  ?accessed_through_class:bool ->
   ?include_generated_attributes:bool ->
   ?instantiated:Type.t ->
   Type.Primitive.t ->

@@ -33,7 +33,11 @@ include TaintResult.Register (struct
       List.fold sources ~init:(models, []) ~f:(fun (models, errors) (path, source) ->
           let { ModelParser.T.models; errors = new_errors } =
             ModelParser.parse
-              ~resolution:(Analysis.TypeCheck.resolution global_resolution ())
+              ~resolution:
+                (Analysis.TypeCheck.resolution
+                   global_resolution
+                   (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
+                   (module Analysis.TypeCheck.DummyContext))
               ~path
               ~source
               ~configuration
@@ -67,8 +71,12 @@ include TaintResult.Register (struct
 
 
   let analyze ~callable:_ ~environment ~qualifier ~define ~mode existing_model =
-    let forward, result = ForwardAnalysis.run ~environment ~qualifier ~define ~existing_model in
-    let backward = BackwardAnalysis.run ~environment ~qualifier ~define ~existing_model in
+    let forward, result, triggered_sinks =
+      ForwardAnalysis.run ~environment ~qualifier ~define ~existing_model
+    in
+    let backward =
+      BackwardAnalysis.run ~environment ~qualifier ~define ~existing_model ~triggered_sinks
+    in
     let model =
       if mode = Normal then
         { forward; backward; mode }

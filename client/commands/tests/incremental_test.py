@@ -15,7 +15,7 @@ from ... import commands, json_rpc
 from ...analysis_directory import AnalysisDirectory, SharedAnalysisDirectory
 from ...commands import command, incremental, stop  # noqa
 from ...socket_connection import SocketConnection
-from ..command import __name__ as client_name
+from ..command import IncrementalStyle, __name__ as client_name
 from .command_test import mock_arguments, mock_configuration
 
 
@@ -80,7 +80,14 @@ class IncrementalTest(unittest.TestCase):
             json, "loads", return_value=[]
         ):
             test_command = incremental.Incremental(
-                arguments, original_directory, configuration, analysis_directory
+                arguments,
+                original_directory,
+                configuration=configuration,
+                analysis_directory=analysis_directory,
+                nonblocking=False,
+                incremental_style=IncrementalStyle.FINE_GRAINED,
+                no_start_server=False,
+                no_watchman=False,
             )
             self.assertEqual(
                 test_command._flags(),
@@ -113,12 +120,15 @@ class IncrementalTest(unittest.TestCase):
             json, "loads", return_value=[]
         ):
             nonblocking_arguments = mock_arguments()
-            nonblocking_arguments.nonblocking = True
             test_command = incremental.Incremental(
                 nonblocking_arguments,
                 original_directory,
-                configuration,
-                analysis_directory,
+                configuration=configuration,
+                analysis_directory=analysis_directory,
+                nonblocking=True,
+                incremental_style=IncrementalStyle.FINE_GRAINED,
+                no_start_server=False,
+                no_watchman=False,
             )
             self.assertEqual(
                 test_command._flags(),
@@ -147,7 +157,14 @@ class IncrementalTest(unittest.TestCase):
             json, "loads", return_value=[]
         ):
             test_command = commands.Incremental(
-                arguments, original_directory, configuration, analysis_directory
+                arguments,
+                original_directory,
+                configuration=configuration,
+                analysis_directory=analysis_directory,
+                nonblocking=False,
+                incremental_style=IncrementalStyle.FINE_GRAINED,
+                no_start_server=False,
+                no_watchman=False,
             )
             self.assertEqual(
                 test_command._flags(),
@@ -167,7 +184,14 @@ class IncrementalTest(unittest.TestCase):
 
             test_command.run()
             commands_Start.assert_called_with(
-                arguments, original_directory, configuration, analysis_directory
+                arguments,
+                original_directory,
+                configuration=configuration,
+                analysis_directory=analysis_directory,
+                terminal=False,
+                store_type_check_resolution=False,
+                use_watchman=True,
+                incremental_style=command.IncrementalStyle.FINE_GRAINED,
             )
             connect.assert_called_once()
             restart_file_monitor_if_needed.assert_not_called()
@@ -177,7 +201,14 @@ class IncrementalTest(unittest.TestCase):
             json, "loads", return_value=[]
         ), patch.object(SharedAnalysisDirectory, "prepare") as prepare:
             test_command = incremental.Incremental(
-                arguments, original_directory, configuration, analysis_directory
+                arguments,
+                original_directory,
+                configuration=configuration,
+                analysis_directory=analysis_directory,
+                nonblocking=False,
+                incremental_style=IncrementalStyle.FINE_GRAINED,
+                no_start_server=False,
+                no_watchman=False,
             )
             self.assertEqual(
                 test_command._flags(),
@@ -210,7 +241,14 @@ class IncrementalTest(unittest.TestCase):
             json, "loads", return_value=[]
         ):
             test_command = commands.Incremental(
-                arguments, original_directory, configuration, analysis_directory
+                arguments,
+                original_directory,
+                configuration=configuration,
+                analysis_directory=analysis_directory,
+                nonblocking=False,
+                incremental_style=IncrementalStyle.FINE_GRAINED,
+                no_start_server=False,
+                no_watchman=False,
             )
             self.assertEqual(
                 test_command._flags(),
@@ -230,7 +268,14 @@ class IncrementalTest(unittest.TestCase):
 
             test_command.run()
             commands_Start.assert_called_with(
-                arguments, original_directory, configuration, analysis_directory
+                arguments,
+                original_directory,
+                configuration=configuration,
+                analysis_directory=analysis_directory,
+                terminal=False,
+                store_type_check_resolution=False,
+                use_watchman=True,
+                incremental_style=command.IncrementalStyle.FINE_GRAINED,
             )
             connect.assert_called_once()
             restart_file_monitor_if_needed.assert_not_called()
@@ -262,7 +307,14 @@ class IncrementalTest(unittest.TestCase):
             },
         ):
             test_command = incremental.Incremental(
-                arguments, original_directory, configuration, analysis_directory
+                arguments,
+                original_directory,
+                configuration=configuration,
+                analysis_directory=analysis_directory,
+                nonblocking=False,
+                incremental_style=IncrementalStyle.FINE_GRAINED,
+                no_start_server=False,
+                no_watchman=False,
             )
             self.assertEqual(
                 test_command._flags(),
@@ -289,7 +341,14 @@ class IncrementalTest(unittest.TestCase):
         start_exit_code.return_value = commands.ExitCode.FAILURE
         with patch.object(SocketConnection, "connect") as connect:
             test_command = incremental.Incremental(
-                arguments, original_directory, configuration, analysis_directory
+                arguments,
+                original_directory,
+                configuration=configuration,
+                analysis_directory=analysis_directory,
+                nonblocking=False,
+                incremental_style=IncrementalStyle.FINE_GRAINED,
+                no_start_server=False,
+                no_watchman=False,
             )
             test_command.run()
             connect.assert_not_called()
@@ -305,14 +364,18 @@ class IncrementalTest(unittest.TestCase):
         send_and_handle_socket_request: MagicMock,
     ) -> None:
         incremental_command = incremental.Incremental(
-            mock_arguments(no_watchman=True),
+            mock_arguments(),
             "/original/directory",
-            mock_configuration(version_hash="hash"),
-            AnalysisDirectory("/root"),
+            configuration=mock_configuration(version_hash="hash"),
+            analysis_directory=AnalysisDirectory("/root"),
+            nonblocking=False,
+            incremental_style=IncrementalStyle.FINE_GRAINED,
+            no_start_server=False,
+            no_watchman=True,
         )
         command_state.return_value = commands.command.State.DEAD
         incremental_command._run()
-        self.assertTrue(start_class.call_args[0][0].no_watchman)
+        self.assertFalse(start_class.call_args[1]["use_watchman"])
 
     @patch.object(incremental.Incremental, "_send_and_handle_socket_request")
     @patch.object(commands.Command, "_state")
@@ -324,24 +387,32 @@ class IncrementalTest(unittest.TestCase):
         send_and_handle_socket_request: MagicMock,
     ) -> None:
         incremental_command = incremental.Incremental(
-            mock_arguments(no_watchman=False),
+            mock_arguments(),
             "/original/directory",
-            mock_configuration(version_hash="hash"),
-            AnalysisDirectory("/root"),
+            configuration=mock_configuration(version_hash="hash"),
+            analysis_directory=AnalysisDirectory("/root"),
+            nonblocking=False,
+            incremental_style=IncrementalStyle.FINE_GRAINED,
+            no_start_server=False,
+            no_watchman=False,
         )
         command_state.return_value = commands.command.State.DEAD
         incremental_command._run()
-        self.assertFalse(start_class.call_args[0][0].no_watchman)
+        self.assertTrue(start_class.call_args[1]["use_watchman"])
 
     @patch.object(incremental.ProjectFilesMonitor, "restart_if_dead")
     def test_restart_file_monitor_if_needed_no_watchman(
         self, restart_if_dead: MagicMock
     ) -> None:
         incremental_command = incremental.Incremental(
-            mock_arguments(no_watchman=True),
+            mock_arguments(),
             "/original/directory",
-            mock_configuration(version_hash="hash"),
-            AnalysisDirectory("/root"),
+            configuration=mock_configuration(version_hash="hash"),
+            analysis_directory=AnalysisDirectory("/root"),
+            nonblocking=False,
+            incremental_style=IncrementalStyle.FINE_GRAINED,
+            no_start_server=False,
+            no_watchman=True,
         )
         incremental_command._restart_file_monitor_if_needed()
         restart_if_dead.assert_not_called()
@@ -349,10 +420,14 @@ class IncrementalTest(unittest.TestCase):
     @patch.object(incremental.ProjectFilesMonitor, "restart_if_dead")
     def test_restart_file_monitor_if_needed(self, restart_if_dead: MagicMock) -> None:
         incremental_command = incremental.Incremental(
-            mock_arguments(no_watchman=False),
+            mock_arguments(),
             "/original/directory",
-            mock_configuration(version_hash="hash"),
-            AnalysisDirectory("/root"),
+            configuration=mock_configuration(version_hash="hash"),
+            analysis_directory=AnalysisDirectory("/root"),
+            nonblocking=False,
+            incremental_style=IncrementalStyle.FINE_GRAINED,
+            no_start_server=False,
+            no_watchman=False,
         )
         incremental_command._restart_file_monitor_if_needed()
         restart_if_dead.assert_called_once()

@@ -10,7 +10,7 @@ from typing import List, Optional
 
 from ..analysis_directory import AnalysisDirectory, resolve_analysis_directory
 from ..configuration import Configuration
-from .command import ExitCode, typeshed_search_path
+from .command import CommandArguments, ExitCode, typeshed_search_path
 from .reporting import Reporting
 
 
@@ -22,13 +22,28 @@ class Check(Reporting):
 
     def __init__(
         self,
-        arguments: argparse.Namespace,
+        command_arguments: CommandArguments,
         original_directory: str,
+        *,
         configuration: Optional[Configuration] = None,
         analysis_directory: Optional[AnalysisDirectory] = None,
     ) -> None:
         super(Check, self).__init__(
-            arguments, original_directory, configuration, analysis_directory
+            command_arguments, original_directory, configuration, analysis_directory
+        )
+
+    @staticmethod
+    def from_arguments(
+        arguments: argparse.Namespace,
+        original_directory: str,
+        configuration: Optional[Configuration] = None,
+        analysis_directory: Optional[AnalysisDirectory] = None,
+    ) -> "Check":
+        return Check(
+            CommandArguments.from_arguments(arguments),
+            original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
         )
 
     @classmethod
@@ -39,15 +54,19 @@ class Check(Reporting):
           Runs a one-time check of a project without initializing a type check server.
         """,
         )
-        check.set_defaults(command=cls)
+        check.set_defaults(command=cls.from_arguments)
 
     def generate_analysis_directory(self) -> AnalysisDirectory:
         return resolve_analysis_directory(
-            self._arguments,
+            self._source_directories,
+            self._targets,
             self._configuration,
             self._original_directory,
             self._current_directory,
-            build=True,
+            filter_directory=self._filter_directory,
+            use_buck_builder=self._use_buck_builder,
+            debug=self._debug,
+            buck_mode=self._buck_mode,
             isolate=True,
         )
 

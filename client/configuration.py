@@ -132,7 +132,6 @@ class _ConfigurationFile:
         Return all keys not consumed yet. Some keys are explicitly whitelisted.
         """
         return self._configuration.keys() - {
-            "buck_builder_binary",
             "buck_mode",
             "differential",
             "stable_client",
@@ -152,7 +151,7 @@ class Configuration:
         search_path: Optional[List[str]] = None,
         binary: Optional[str] = None,
         typeshed: Optional[str] = None,
-        preserve_pythonpath: bool = False,
+        buck_builder_binary: Optional[str] = None,
         excludes: Optional[List[str]] = None,
         formatter: Optional[str] = None,
         logger: Optional[str] = None,
@@ -173,28 +172,12 @@ class Configuration:
         self._version_hash: Optional[str] = None
         self._binary: Optional[str] = None
         self._typeshed: Optional[str] = None
+        self._buck_builder_binary: Optional[str] = None
         self.strict: bool = False
         self._use_buck_builder: Optional[bool] = None
         self.ignore_infer: List[str] = []
 
-        # Handle search path from multiple sources
-        self._search_path = []
-        if preserve_pythonpath:
-            for path in os.getenv("PYTHONPATH", default="").split(":"):
-                if path != "":
-                    if os.path.isdir(path):
-                        self._search_path.append(SearchPathElement(path))
-                    else:
-                        LOG.warning(
-                            "`{}` is not a valid directory, dropping it "
-                            "from PYTHONPATH".format(path)
-                        )
-            # sys.path often includes '' and a zipped python version, so
-            # we don't log warnings for non-dir entries
-            sys_path = [
-                SearchPathElement(path) for path in sys.path if os.path.isdir(path)
-            ]
-            self._search_path.extend(sys_path)
+        self._search_path: List[SearchPathElement] = []
         if search_path:
             search_path_elements = [
                 SearchPathElement.expand(path) for path in search_path
@@ -208,6 +191,9 @@ class Configuration:
 
         if typeshed:
             self._typeshed = typeshed
+
+        if buck_builder_binary:
+            self._buck_builder_binary = buck_builder_binary
 
         self.excludes: List[str] = []
         if excludes:
@@ -223,6 +209,8 @@ class Configuration:
             self.ignore_all_errors.append(log_directory)
 
         self.autocomplete = False
+
+        self.other_critical_files: List[str] = []
 
         # Order matters. The values will only be updated if a field is None.
         self._read(CONFIGURATION_FILE)
@@ -362,6 +350,11 @@ class Configuration:
             # Validate elements of the search path.
             for element in self._search_path:
                 assert_readable_directory(element.path())
+
+            if not is_list_of_strings(self.other_critical_files):
+                raise InvalidConfiguration(
+                    "`critical_files` field must be a list of strings."
+                )
         except InvalidConfiguration as error:
             raise EnvironmentException("Invalid configuration: {}".format(str(error)))
 
@@ -382,6 +375,10 @@ class Configuration:
         if not typeshed:
             raise InvalidConfiguration("Configuration invalid: no typeshed specified")
         return typeshed
+
+    @property
+    def buck_builder_binary(self) -> Optional[str]:
+        return self._buck_builder_binary
 
     @property
     def use_buck_builder(self) -> bool:
@@ -521,6 +518,14 @@ class Configuration:
                     binary = expand_relative_path(configuration_path, binary)
                 self._binary = binary
 
+                buck_builder_binary = configuration.consume(
+                    "buck_builder_binary", current=self._buck_builder_binary
+                )
+                if buck_builder_binary is not None:
+                    self._buck_builder_binary = expand_relative_path(
+                        root=configuration_path, path=buck_builder_binary
+                    )
+
                 additional_search_path = configuration.consume(
                     "search_path", default=[]
                 )
@@ -584,6 +589,10 @@ class Configuration:
                     self._use_buck_builder = use_buck_builder
 
                 self.autocomplete = configuration.consume("autocomplete", default=False)
+
+                self.other_critical_files = configuration.consume(
+                    "critical_files", default=[]
+                )
 
                 # This block should be at the bottom to be effective.
                 unused_keys = configuration.unused_keys()

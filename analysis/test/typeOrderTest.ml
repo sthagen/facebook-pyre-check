@@ -38,15 +38,15 @@ let make_attributes ~class_name =
     Attribute.create
       ~annotation
       ~original_annotation:annotation
+      ~uninstantiated_annotation:(Some annotation)
       ~visibility:ReadWrite
       ~abstract:false
       ~async:false
-      ~class_attribute:false
+      ~class_variable:false
       ~defined:true
-      ~initialized:Explicitly
+      ~initialized:OnClass
       ~parent:class_name
       ~property:false
-      ~static:false
       ~name
   in
   List.map ~f:parse_attribute
@@ -634,11 +634,12 @@ let test_less_or_equal context =
        ~right:(Type.parametric "tuple" ![Type.integer]));
 
   (* Union types *)
+  assert_true (less_or_equal default ~left:Type.NoneType ~right:(Type.optional Type.integer));
   assert_true
     (less_or_equal
        default
-       ~left:(Type.Optional Type.string)
-       ~right:(Type.Union [Type.integer; Type.Optional Type.string]));
+       ~left:(Type.optional Type.string)
+       ~right:(Type.Union [Type.integer; Type.optional Type.string]));
 
   (* Undeclared. *)
   assert_false (less_or_equal default ~left:Type.undeclared ~right:Type.Top);
@@ -1310,9 +1311,14 @@ let test_less_or_equal context =
   assert_less_or_equal
     ~source:
       {|
-      import mypy_extensions
-      Alpha = mypy_extensions.TypedDict[('Alpha', True, ('foo', str), ('bar', int), ('baz', int))]
-      Beta = mypy_extensions.TypedDict[('Beta', True, ('foo', str), ('bar', int))]
+      from mypy_extensions import TypedDict
+      class Alpha(TypedDict):
+        foo: str
+        bar: int
+        baz: int
+      class Beta(TypedDict):
+        foo: str
+        bar: int
     |}
     ~left:"test.Alpha"
     ~right:"test.Beta"
@@ -1320,9 +1326,14 @@ let test_less_or_equal context =
   assert_less_or_equal
     ~source:
       {|
-      import mypy_extensions
-      Alpha = mypy_extensions.TypedDict[('Alpha', False, ('foo', str), ('bar', int), ('baz', int))]
-      Beta = mypy_extensions.TypedDict[('Beta', False, ('foo', str), ('bar', int))]
+      from mypy_extensions import TypedDict
+      class Alpha(TypedDict, total=False):
+        foo: str
+        bar: int
+        baz: int
+      class Beta(TypedDict, total=False):
+        foo: str
+        bar: int
     |}
     ~left:"test.Alpha"
     ~right:"test.Beta"
@@ -1330,9 +1341,14 @@ let test_less_or_equal context =
   assert_less_or_equal
     ~source:
       {|
-      import mypy_extensions
-      Alpha = mypy_extensions.TypedDict[('Alpha', False, ('foo', str), ('bar', int), ('baz', int))]
-      Beta = mypy_extensions.TypedDict[('Beta', True, ('foo', str), ('bar', int))]
+      from mypy_extensions import TypedDict
+      class Alpha(TypedDict, total=False):
+        foo: str
+        bar: int
+        baz: int
+      class Beta(TypedDict):
+        foo: str
+        bar: int
     |}
     ~left:"test.Alpha"
     ~right:"test.Beta"
@@ -1340,9 +1356,14 @@ let test_less_or_equal context =
   assert_less_or_equal
     ~source:
       {|
-      import mypy_extensions
-      Alpha = mypy_extensions.TypedDict[('Alpha', True, ('foo', str), ('bar', int), ('baz', int))]
-      Beta = mypy_extensions.TypedDict[('Beta', False, ('foo', str), ('bar', int))]
+      from mypy_extensions import TypedDict
+      class Alpha(TypedDict):
+        foo: str
+        bar: int
+        baz: int
+      class Beta(TypedDict, total=False):
+        foo: str
+        bar: int
     |}
     ~left:"test.Alpha"
     ~right:"test.Beta"
@@ -1350,9 +1371,13 @@ let test_less_or_equal context =
   assert_less_or_equal
     ~source:
       {|
-      import mypy_extensions
-      Alpha = mypy_extensions.TypedDict[('Alpha', True, ('foo', str), ('bar', float))]
-      Beta = mypy_extensions.TypedDict[('Beta', True, ('foo', str), ('bar', int))]
+      from mypy_extensions import TypedDict
+      class Alpha(TypedDict):
+        foo: str
+        bar: float
+      class Beta(TypedDict):
+        foo: str
+        bar: int
     |}
     ~left:"test.Alpha"
     ~right:"test.Beta"
@@ -1360,9 +1385,13 @@ let test_less_or_equal context =
   assert_less_or_equal
     ~source:
       {|
-      import mypy_extensions
-      Alpha = mypy_extensions.TypedDict[('Alpha', True, ('bar', int), ('foo', str))]
-      Beta = mypy_extensions.TypedDict[('Beta', True, ('foo', str), ('bar', int))]
+      from mypy_extensions import TypedDict
+      class Alpha(TypedDict):
+        bar: int
+        foo: str
+      class Beta(TypedDict):
+        foo: str
+        bar: int
     |}
     ~left:"test.Alpha"
     ~right:"test.Beta"
@@ -1370,8 +1399,10 @@ let test_less_or_equal context =
   assert_less_or_equal
     ~source:
       {|
-      import mypy_extensions
-      Alpha = mypy_extensions.TypedDict[('Alpha', True, ('bar', int), ('foo', int))]
+      from mypy_extensions import TypedDict
+      class Alpha(TypedDict):
+        bar: int
+        foo: int
     |}
     ~left:"test.Alpha"
     ~right:"typing.Mapping[str, typing.Any]"
@@ -1380,8 +1411,10 @@ let test_less_or_equal context =
   assert_less_or_equal
     ~source:
       {|
-      import mypy_extensions
-      Alpha = mypy_extensions.TypedDict[('Alpha', False, ('bar', int), ('foo', int))]
+      from mypy_extensions import TypedDict
+      class Alpha(TypedDict, total=False):
+        bar: int
+        foo: int
     |}
     ~left:"test.Alpha"
     ~right:"typing.Mapping[str, typing.Any]"
@@ -1389,8 +1422,10 @@ let test_less_or_equal context =
   assert_less_or_equal
     ~source:
       {|
-      import mypy_extensions
-      Alpha = mypy_extensions.TypedDict[('Alpha', True, ('bar', int), ('foo', int))]
+      from mypy_extensions import TypedDict
+      class Alpha(TypedDict):
+        bar: int
+        foo: int
     |}
     ~left:"test.Alpha"
     ~right:"typing.Mapping[str, int]"
@@ -1398,8 +1433,10 @@ let test_less_or_equal context =
   assert_less_or_equal
     ~source:
       {|
-      import mypy_extensions
-      Alpha = mypy_extensions.TypedDict[('Alpha', True, ('bar', int), ('foo', int))]
+      from mypy_extensions import TypedDict
+      class Alpha(TypedDict):
+        bar: int
+        foo: int
     |}
     ~left:"typing.Mapping[str, typing.Any]"
     ~right:"test.Alpha"
@@ -1407,8 +1444,10 @@ let test_less_or_equal context =
   assert_less_or_equal
     ~source:
       {|
-      import mypy_extensions
-      Alpha = mypy_extensions.TypedDict[('Alpha', True, ('bar', int), ('foo', int))]
+      from mypy_extensions import TypedDict
+      class Alpha(TypedDict):
+        bar: int
+        foo: int
     |}
     ~left:"test.Alpha"
     ~right:"dict[str, typing.Any]"
@@ -1886,13 +1925,22 @@ let test_join context =
 
   (* Optionals. *)
   assert_join "str" "typing.Optional[str]" "typing.Optional[str]";
-  assert_join "str" "typing.Optional[$bottom]" "typing.Optional[str]";
-  assert_join "typing.Optional[$bottom]" "str" "typing.Optional[str]";
+  assert_join "str" "typing.Optional[$bottom]" "str";
+  assert_join "typing.Optional[$bottom]" "str" "str";
 
   (* Handles `[] or optional_list`. *)
-  assert_join "typing.List[$bottom]" "typing.Optional[typing.List[int]]" "typing.List[int]";
-  assert_join "typing.Optional[typing.List[int]]" "typing.List[$bottom]" "typing.List[int]";
-  assert_join "typing.Optional[typing.Set[int]]" "typing.Set[$bottom]" "typing.Set[int]";
+  assert_join
+    "typing.List[$bottom]"
+    "typing.Optional[typing.List[int]]"
+    "typing.Optional[typing.List[int]]";
+  assert_join
+    "typing.Optional[typing.List[int]]"
+    "typing.List[$bottom]"
+    "typing.Optional[typing.List[int]]";
+  assert_join
+    "typing.Optional[typing.Set[int]]"
+    "typing.Set[$bottom]"
+    "typing.Optional[typing.Set[int]]";
 
   (* Union types. *)
   assert_join
@@ -1900,10 +1948,8 @@ let test_join context =
     "typing.Union[int, typing.Optional[bool]]"
     "typing.Union[int, typing.Optional[bool]]";
   assert_join "typing.Union[int, str]" "typing.Union[int, bytes]" "typing.Union[int, str, bytes]";
-  assert_join
-    "typing.Union[int, str]"
-    "typing.Optional[$bottom]"
-    "typing.Optional[typing.Union[int, str]]";
+  assert_join "typing.Union[int, str]" "typing.Optional[$bottom]" "typing.Union[int, str]";
+  assert_join "typing.Union[int, str]" "None" "typing.Union[int, str, None]";
   assert_join
     "typing.Dict[str, str]"
     "typing.Dict[str, typing.List[str]]"
@@ -2098,128 +2144,6 @@ let test_join context =
     "typing.Callable[[int], int]"
     "ParametricCallableToStr[int]"
     "typing.Callable[[int], typing.Union[int, str]]";
-
-  (* TypedDictionaries *)
-  assert_join
-    "mypy_extensions.TypedDict[('Alpha', True, ('bar', int), ('foo', str), ('ben', int))]"
-    "mypy_extensions.TypedDict[('Beta', True, ('foo', str), ('bar', int), ('baz', int))]"
-    "mypy_extensions.TypedDict[('$anonymous', True, ('foo', str), ('bar', int))]";
-  assert_join
-    "mypy_extensions.TypedDict[('Alpha', False, ('bar', int), ('foo', str), ('ben', int))]"
-    "mypy_extensions.TypedDict[('Beta', False, ('foo', str), ('bar', int), ('baz', int))]"
-    "mypy_extensions.TypedDict[('$anonymous', False, ('foo', str), ('bar', int))]";
-  assert_join
-    "mypy_extensions.TypedDict[('Alpha', True, ('bar', int), ('ben', int))]"
-    "mypy_extensions.TypedDict[('Beta', True, ('foo', str))]"
-    "mypy_extensions.TypedDict[('$anonymous', True)]";
-  assert_join
-    "mypy_extensions.TypedDict[('Alpha', True, ('bar', int), ('foo', str), ('ben', int))]"
-    "mypy_extensions.TypedDict[('Beta', True, ('foo', int))]"
-    "typing.Mapping[str, object]";
-  assert_join
-    "mypy_extensions.TypedDict[('Alpha', True, ('bar', int), ('foo', str), ('ben', int))]"
-    "mypy_extensions.TypedDict[('Beta', False, ('foo', str), ('bar', int), ('baz', int))]"
-    "typing.Mapping[str, object]";
-  assert_join
-    "mypy_extensions.TypedDict[('Alpha', True, ('bar', str), ('foo', str), ('ben', str))]"
-    "typing.Mapping[str, str]"
-    "typing.Mapping[str, object]";
-  assert_join
-    "mypy_extensions.TypedDict[('Alpha', False, ('bar', str), ('foo', str), ('ben', str))]"
-    "typing.Mapping[str, str]"
-    "typing.Mapping[str, object]";
-  assert_join
-    "mypy_extensions.TypedDict[('Alpha', True, ('bar', str), ('foo', str), ('ben', str))]"
-    "typing.Mapping[int, str]"
-    "typing.Union[typing.Mapping[int, str], mypy_extensions.TypedDict[('Alpha', True, ('bar', \
-     str), ('foo', str), ('ben', str))]]";
-  assert_join
-    "mypy_extensions.TypedDict[('Alpha', True, ('bar', str), ('foo', str), ('ben', str))]"
-    "typing.Dict[str, str]"
-    ( "typing.Union["
-    ^ "mypy_extensions.TypedDict[('Alpha', True, ('bar', str), ('foo', str), ('ben', str))], "
-    ^ "typing.Dict[str, str]"
-    ^ "]" );
-  let empty_typed_dictionary = Type.TypedDictionary.anonymous [] in
-  let foo_required_typed_dictionary =
-    Type.TypedDictionary.anonymous [{ name = "foo"; annotation = Type.integer; required = true }]
-  in
-  let foo_not_required_typed_dictionary =
-    Type.TypedDictionary.anonymous [{ name = "foo"; annotation = Type.integer; required = false }]
-  in
-  let bar_required_typed_dictionary =
-    Type.TypedDictionary.anonymous [{ name = "bar"; annotation = Type.integer; required = true }]
-  in
-  let bar_not_required_typed_dictionary =
-    Type.TypedDictionary.anonymous [{ name = "bar"; annotation = Type.integer; required = false }]
-  in
-  let foo_required_bar_not_required =
-    Type.TypedDictionary.anonymous
-      [
-        { name = "foo"; annotation = Type.integer; required = true };
-        { name = "bar"; annotation = Type.integer; required = false };
-      ]
-  in
-  let foo_not_required_bar_required =
-    Type.TypedDictionary.anonymous
-      [
-        { name = "foo"; annotation = Type.integer; required = false };
-        { name = "bar"; annotation = Type.integer; required = true };
-      ]
-  in
-  let mapping_str_to_object =
-    Type.parametric "typing.Mapping" ![Type.string; Type.object_primitive]
-  in
-  assert_type_equal
-    empty_typed_dictionary
-    (join default empty_typed_dictionary empty_typed_dictionary);
-  assert_type_equal
-    empty_typed_dictionary
-    (join default empty_typed_dictionary foo_required_typed_dictionary);
-  assert_type_equal
-    empty_typed_dictionary
-    (join default empty_typed_dictionary foo_not_required_typed_dictionary);
-  assert_type_equal
-    empty_typed_dictionary
-    (join default empty_typed_dictionary foo_required_bar_not_required);
-
-  assert_type_equal
-    foo_required_typed_dictionary
-    (join default foo_required_typed_dictionary foo_required_typed_dictionary);
-  assert_type_equal
-    mapping_str_to_object
-    (join default foo_required_typed_dictionary foo_not_required_typed_dictionary);
-  assert_type_equal
-    foo_required_typed_dictionary
-    (join default foo_required_typed_dictionary foo_required_bar_not_required);
-
-  assert_type_equal
-    foo_not_required_typed_dictionary
-    (join default foo_not_required_typed_dictionary foo_not_required_typed_dictionary);
-  assert_type_equal
-    mapping_str_to_object
-    (join default foo_not_required_typed_dictionary foo_required_bar_not_required);
-  assert_type_equal
-    foo_not_required_typed_dictionary
-    (join default foo_not_required_typed_dictionary foo_not_required_bar_required);
-
-  assert_type_equal
-    mapping_str_to_object
-    (join default foo_required_bar_not_required foo_not_required_bar_required);
-
-  (* TypedDicts with distinct keys. *)
-  assert_type_equal
-    empty_typed_dictionary
-    (join default foo_required_typed_dictionary bar_required_typed_dictionary);
-  assert_type_equal
-    empty_typed_dictionary
-    (join default foo_required_typed_dictionary bar_not_required_typed_dictionary);
-  assert_type_equal
-    empty_typed_dictionary
-    (join default foo_not_required_typed_dictionary bar_required_typed_dictionary);
-  assert_type_equal
-    empty_typed_dictionary
-    (join default foo_not_required_typed_dictionary bar_not_required_typed_dictionary);
 
   (* Variables. *)
   assert_type_equal
@@ -2504,9 +2428,14 @@ let test_meet _ =
   assert_meet "typing.Union[int, str]" "typing.Union[int, bytes]" "int";
   assert_meet "typing.Union[int, str]" "typing.Union[str, int]" "typing.Union[int, str]";
 
-  (* TODO(T39185893): current implementation of meet has some limitations which need to be fixed *)
-  assert_meet "typing.Union[int, str]" "typing.Union[int, typing.Optional[str]]" "$bottom";
-  assert_meet "typing.Union[int, typing.Optional[str]]" "typing.Optional[str]" "$bottom";
+  assert_meet
+    "typing.Union[int, str]"
+    "typing.Union[int, typing.Optional[str]]"
+    "typing.Union[int, str]";
+  assert_meet
+    "typing.Union[int, typing.Optional[str]]"
+    "typing.Optional[str]"
+    "typing.Optional[str]";
 
   (* Parametric types. *)
   assert_meet "typing.List[int]" "typing.Iterator[int]" "typing.List[int]";
@@ -2516,84 +2445,6 @@ let test_meet _ =
   assert_meet ~order:disconnected_order "A" "B" "$bottom";
   assert_meet "GenericContainer[int, str]" "DifferentGenericContainer[int, str]" "$bottom";
   assert_meet "GenericContainer[int, str]" "DifferentGenericContainer[str, int]" "$bottom";
-
-  (* TypedDictionaries *)
-  assert_meet
-    "mypy_extensions.TypedDict[('Alpha', True, ('bar', int), ('foo', str), ('ben', int))]"
-    "mypy_extensions.TypedDict[('Beta', True, ('foo', str), ('bar', int), ('baz', int))]"
-    ( "mypy_extensions.TypedDict"
-    ^ "[('$anonymous', True, ('bar', int), ('baz', int), ('ben', int), ('foo', str))]" );
-  assert_meet
-    "mypy_extensions.TypedDict[('Alpha', False, ('bar', int), ('foo', str), ('ben', int))]"
-    "mypy_extensions.TypedDict[('Beta', False, ('foo', str), ('bar', int), ('baz', int))]"
-    ( "mypy_extensions.TypedDict"
-    ^ "[('$anonymous', False, ('bar', int), ('baz', int), ('ben', int), ('foo', str))]" );
-  assert_meet
-    "mypy_extensions.TypedDict[('Alpha', True, ('bar', int), ('foo', str), ('ben', int))]"
-    "mypy_extensions.TypedDict[('Beta', True, ('foo', int))]"
-    "$bottom";
-  assert_meet
-    "mypy_extensions.TypedDict[('Alpha', False, ('bar', int), ('foo', str), ('ben', int))]"
-    "mypy_extensions.TypedDict[('Beta', True, ('foo', str), ('bar', int), ('baz', int))]"
-    "$bottom";
-  assert_meet
-    "mypy_extensions.TypedDict[('Alpha', True, ('bar', int), ('foo', str), ('ben', int))]"
-    "typing.Mapping[str, typing.Any]"
-    "$bottom";
-  let empty_typed_dictionary = Type.TypedDictionary.anonymous [] in
-  let foo_required_typed_dictionary =
-    Type.TypedDictionary.anonymous [{ name = "foo"; annotation = Type.integer; required = true }]
-  in
-  let foo_not_required_typed_dictionary =
-    Type.TypedDictionary.anonymous [{ name = "foo"; annotation = Type.integer; required = false }]
-  in
-  let foo_required_bar_not_required =
-    Type.TypedDictionary.anonymous
-      [
-        { name = "bar"; annotation = Type.integer; required = false };
-        { name = "foo"; annotation = Type.integer; required = true };
-      ]
-  in
-  let foo_not_required_bar_required =
-    Type.TypedDictionary.anonymous
-      [
-        { name = "bar"; annotation = Type.integer; required = true };
-        { name = "foo"; annotation = Type.integer; required = false };
-      ]
-  in
-  assert_type_equal
-    foo_required_typed_dictionary
-    (meet default empty_typed_dictionary foo_required_typed_dictionary);
-  assert_type_equal
-    foo_not_required_typed_dictionary
-    (meet default empty_typed_dictionary foo_not_required_typed_dictionary);
-  assert_type_equal
-    foo_required_bar_not_required
-    (meet default empty_typed_dictionary foo_required_bar_not_required);
-
-  assert_type_equal
-    foo_required_typed_dictionary
-    (meet default foo_required_typed_dictionary foo_required_typed_dictionary);
-  assert_type_equal
-    Type.Bottom
-    (meet default foo_required_typed_dictionary foo_not_required_typed_dictionary);
-  assert_type_equal
-    foo_required_bar_not_required
-    (meet default foo_required_typed_dictionary foo_required_bar_not_required);
-
-  assert_type_equal
-    foo_not_required_typed_dictionary
-    (meet default foo_not_required_typed_dictionary foo_not_required_typed_dictionary);
-  assert_type_equal
-    Type.Bottom
-    (meet default foo_not_required_typed_dictionary foo_required_bar_not_required);
-  assert_type_equal
-    foo_not_required_bar_required
-    (meet default foo_not_required_typed_dictionary foo_not_required_bar_required);
-
-  assert_type_equal
-    Type.Bottom
-    (meet default foo_required_bar_not_required foo_not_required_bar_required);
 
   (* Variables. *)
   assert_type_equal (meet default Type.integer (Type.variable "T")) Type.Bottom;

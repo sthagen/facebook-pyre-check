@@ -172,6 +172,9 @@ class TimedStreamHandler(logging.StreamHandler):
 def initialize(noninteractive: bool) -> None:
     global __handler
 
+    if __handler:
+        LOG.debug("Log handler already exists, skipping initialization.")
+        return
     if noninteractive:
         stream_handler = logging.StreamHandler()
         stream_handler.setFormatter(SectionFormatter())
@@ -200,9 +203,11 @@ def start_logging_to_directory(noninteractive: bool, log_directory: str) -> None
 
 
 def cleanup() -> None:
+    global __handler
     handler = __handler
     if handler:
         handler.terminate()
+        __handler = None
 
     output = stdout.getvalue()
     if output:

@@ -214,8 +214,8 @@ let test_resolve_literal context =
   assert_resolve_literal "G" Type.Top;
 
   (* None *)
-  assert_resolve_literal "None" Type.none;
-  assert_resolve_literal "[None]" (Type.list Type.none);
+  assert_resolve_literal "None" Type.Top;
+  assert_resolve_literal "[None]" Type.Any;
 
   (* Dictionary *)
   assert_resolve_literal "{'a': 1}" (Type.dictionary ~key:Type.string ~value:Type.integer);
@@ -298,10 +298,16 @@ let test_resolve_exports context =
 
 let test_resolve_mutable_literals context =
   let resolution =
-    make_resolution ~context {|
+    make_resolution
+      ~context
+      {|
+      import enum
       class C: ...
       class D(C): ...
       class Q: ...
+      class MyEnum(enum.Enum):
+        ONE = 1
+        TWO = 2
     |}
   in
   let assert_resolve_mutable_literals ~source ~against expected_output =
@@ -318,15 +324,21 @@ let test_resolve_mutable_literals context =
     let resolved = Resolution.resolve_expression_to_type resolution expression in
     let expression = Some expression in
     let expected = parse_annotation against in
+    let actual_weakened_type =
+      GlobalResolution.resolve_mutable_literals
+        (Resolution.global_resolution resolution)
+        ~resolve:(Resolution.resolve_expression_to_type resolution)
+        ~expression
+        ~resolved
+        ~expected
+    in
+    let expected_weakened_type =
+      AttributeResolution.make_weakened_type (parse_annotation expected_output)
+    in
     assert_equal
-      ~printer:Type.show
-      (parse_annotation expected_output)
-      (GlobalResolution.resolve_mutable_literals
-         (Resolution.global_resolution resolution)
-         ~resolve:(Resolution.resolve_expression_to_type resolution)
-         ~expression
-         ~resolved
-         ~expected)
+      ~printer:[%show: AttributeResolution.weakened_type]
+      expected_weakened_type
+      actual_weakened_type
   in
   assert_resolve_mutable_literals
     ~source:"[test.D()]"
@@ -540,6 +552,40 @@ let test_resolve_mutable_literals context =
     ~source:"{test.Q()}"
     ~against:"typing.AbstractSet[test.C]"
     "typing.AbstractSet[test.Q]";
+
+  (* Literal literals. *)
+  assert_resolve_mutable_literals
+    ~source:"['a']"
+    ~against:"typing.List[typing_extensions.Literal['a']]"
+    "typing.List[typing_extensions.Literal['a']]";
+  assert_resolve_mutable_literals
+    ~source:"['a']"
+    ~against:"typing.List[typing_extensions.Literal['b']]"
+    "typing.List[typing_extensions.Literal['a']]";
+  assert_resolve_mutable_literals
+    ~source:"[1]"
+    ~against:"typing.List[typing_extensions.Literal[1]]"
+    "typing.List[typing_extensions.Literal[1]]";
+  assert_resolve_mutable_literals
+    ~source:"[1]"
+    ~against:"typing.List[typing_extensions.Literal[2]]"
+    "typing.List[typing_extensions.Literal[1]]";
+  assert_resolve_mutable_literals
+    ~source:"[True]"
+    ~against:"typing.List[typing_extensions.Literal[True]]"
+    "typing.List[typing_extensions.Literal[True]]";
+  assert_resolve_mutable_literals
+    ~source:"[True]"
+    ~against:"typing.List[typing_extensions.Literal[False]]"
+    "typing.List[typing_extensions.Literal[True]]";
+  assert_resolve_mutable_literals
+    ~source:"test.MyEnum.ONE"
+    ~against:"typing_extensions.Literal[test.MyEnum.ONE]"
+    "typing_extensions.Literal[test.MyEnum.ONE]";
+  assert_resolve_mutable_literals
+    ~source:"test.MyEnum.TWO"
+    ~against:"typing_extensions.Literal[test.MyEnum.ONE]"
+    "typing_extensions.Literal[test.MyEnum.TWO]";
   ()
 
 
@@ -562,15 +608,21 @@ let test_resolve_mutable_literal_to_complex_type context =
     let resolved = Resolution.resolve_expression_to_type resolution expression in
     let expression = Some expression in
     let expected = parse_annotation against in
+    let actual_weakened_type =
+      GlobalResolution.resolve_mutable_literals
+        (Resolution.global_resolution resolution)
+        ~resolve:(Resolution.resolve_expression_to_type resolution)
+        ~expression
+        ~resolved
+        ~expected
+    in
+    let expected_weakened_type =
+      AttributeResolution.make_weakened_type (parse_annotation expected_output)
+    in
     assert_equal
-      ~printer:Type.show
-      (parse_annotation expected_output)
-      (GlobalResolution.resolve_mutable_literals
-         (Resolution.global_resolution resolution)
-         ~resolve:(Resolution.resolve_expression_to_type resolution)
-         ~expression
-         ~resolved
-         ~expected)
+      ~printer:[%show: AttributeResolution.weakened_type]
+      expected_weakened_type
+      actual_weakened_type
   in
   (* Optionals. *)
   assert_resolve_mutable_literals
@@ -654,6 +706,7 @@ let test_resolve_mutable_literals_typed_dictionary context =
 
       class OuterTypedDict(mypy_extensions.TypedDict):
         outer_foo: ClassBasedMovie
+        outer_bar: ClassBasedMovie
 
       class Child(ClassBasedMovie):
         rating: int
@@ -672,156 +725,303 @@ let test_resolve_mutable_literals_typed_dictionary context =
         name: str
     |}
   in
-  let assert_resolve_mutable_literals ~source ~against_type expected_output_type =
-    let expression =
-      match parse_single_statement source with
-      | { Node.value = Statement.Expression expression; _ } -> expression
-      | _ -> failwith "No Assign to parse"
-    in
-    let resolved = Resolution.resolve_expression_to_type resolution expression in
-    let expression = Some expression in
-    assert_equal
-      ~printer:Type.show
-      expected_output_type
-      (GlobalResolution.resolve_mutable_literals
-         (Resolution.global_resolution resolution)
-         ~resolve:(Resolution.resolve_expression_to_type resolution)
-         ~expression
-         ~resolved
-         ~expected:against_type)
+  let open AttributeResolution in
+  let resolve_expression_with_fresh_namespace resolution expression =
+    Type.Variable.Namespace.reset ();
+    Resolution.resolve_expression_to_type resolution expression
   in
-  let slightly_wrong_movie_type =
-    Type.TypedDictionary.anonymous
+  let assert_resolve_mutable_literals ~source ~against_type expected_weakened_type =
+    let expression = parse_single_expression source in
+    let resolved = resolve_expression_with_fresh_namespace resolution expression in
+    let expression = Some expression in
+    let location_insensitive_equal_mismatch
+        { Node.value = expected_mismatch; _ }
+        { Node.value = actual_mismatch; _ }
+      =
+      AttributeResolution.equal_typed_dictionary_mismatch expected_mismatch actual_mismatch
+    in
+    let location_insensitive_equal_weakened_type
+        { resolved = expected_resolved; typed_dictionary_errors = expected }
+        { resolved = actual_resolved; typed_dictionary_errors = actual }
+      =
+      List.equal location_insensitive_equal_mismatch expected actual
+      && Type.equal expected_resolved actual_resolved
+    in
+    let actual_weakened_type =
+      GlobalResolution.resolve_mutable_literals
+        (Resolution.global_resolution resolution)
+        ~resolve:(Resolution.resolve_expression_to_type resolution)
+        ~expression
+        ~resolved
+        ~expected:against_type
+    in
+    assert_equal
+      ~cmp:location_insensitive_equal_weakened_type
+      ~printer:[%show: weakened_type]
+      expected_weakened_type
+      actual_weakened_type
+  in
+  let parse_annotation annotation =
+    annotation
+    |> parse_single_expression
+    |> GlobalResolution.parse_annotation (Resolution.global_resolution resolution)
+  in
+  let create_failed_typed_dictionary_type ~resolved_type mismatches =
+    make_weakened_type
+      ~typed_dictionary_errors:(List.map ~f:Node.create_with_default_location mismatches)
+      resolved_type
+  in
+  let name_type_mismatch ~resolved =
+    create_failed_typed_dictionary_type
+      ~resolved_type:(parse_annotation resolved)
       [
-        { name = "name"; annotation = Type.literal_integer 37; required = true };
-        { name = "year"; annotation = Type.integer; required = true };
+        FieldTypeMismatch
+          {
+            field_name = "name";
+            expected_type = Type.string;
+            actual_type = Type.literal_integer 37;
+            class_name = "test.ClassBasedMovie";
+          };
       ]
   in
-  let slightly_wrong_nested_type =
-    Type.TypedDictionary.anonymous
-      [{ name = "outer_foo"; annotation = slightly_wrong_movie_type; required = true }]
+  let name_and_year_type_mismatch ~resolved =
+    create_failed_typed_dictionary_type
+      ~resolved_type:(parse_annotation resolved)
+      [
+        FieldTypeMismatch
+          {
+            field_name = "name";
+            expected_type = Type.string;
+            actual_type = Type.literal_integer 37;
+            class_name = "test.ClassBasedMovie";
+          };
+        FieldTypeMismatch
+          {
+            field_name = "year";
+            expected_type = Type.integer;
+            actual_type = Type.literal_string "NaN";
+            class_name = "test.ClassBasedMovie";
+          };
+      ]
   in
   assert_resolve_mutable_literals
     ~source:"{}"
     ~against_type:(Type.Primitive "test.ClassBasedMovie")
-    (Type.TypedDictionary.anonymous []);
+    (create_failed_typed_dictionary_type
+       ~resolved_type:
+         (resolve_expression_with_fresh_namespace resolution (parse_single_expression "{}"))
+       [
+         MissingRequiredField { field_name = "name"; class_name = "test.ClassBasedMovie" };
+         MissingRequiredField { field_name = "year"; class_name = "test.ClassBasedMovie" };
+       ]);
   assert_resolve_mutable_literals
     ~source:"{ 'name': 'The Matrix', 'year': 1999 }"
     ~against_type:(Type.Primitive "test.ClassBasedMovie")
-    (Type.Primitive "test.ClassBasedMovie");
+    (make_weakened_type (Type.Primitive "test.ClassBasedMovie"));
   assert_resolve_mutable_literals
     ~source:"{ 'name': 'The Matrix', 'year': 1999, 'rating': 10 }"
     ~against_type:(Type.Primitive "test.Child")
-    (Type.Primitive "test.Child");
+    (make_weakened_type (Type.Primitive "test.Child"));
   assert_resolve_mutable_literals
     ~source:"{ 'name': 'The Matrix', 'year': 1999 }"
     ~against_type:(Type.Primitive "test.RegularClass")
-    (Type.dictionary ~key:Type.string ~value:(Type.union [Type.integer; Type.string]));
+    (make_weakened_type
+       (Type.dictionary ~key:Type.string ~value:(Type.union [Type.integer; Type.string])));
   assert_resolve_mutable_literals
     ~source:"{ 'name': 'The Matrix', 'year': 1999 }"
     ~against_type:(Type.Primitive "test.Child")
-    (Type.TypedDictionary.anonymous
-       [
-         { name = "name"; annotation = Type.string; required = true };
-         { name = "year"; annotation = Type.integer; required = true };
-       ]);
+    (create_failed_typed_dictionary_type
+       ~resolved_type:(parse_annotation "typing.Dict[str, typing.Union[int, str]]")
+       [MissingRequiredField { field_name = "rating"; class_name = "test.Child" }]);
   assert_resolve_mutable_literals
     ~source:"{ 'name': 37, 'year': 1999 }"
     ~against_type:(Type.Primitive "test.ClassBasedMovie")
-    slightly_wrong_movie_type;
+    (name_type_mismatch ~resolved:"typing.Dict[str, int]");
   assert_resolve_mutable_literals
     ~source:"{ 'name': 'The Matrix', 'year': 1999, 'extra_key': 1 }"
     ~against_type:(Type.Primitive "test.ClassBasedMovie")
-    (Type.Primitive "test.ClassBasedMovie");
+    (make_weakened_type (Type.Primitive "test.ClassBasedMovie"));
   assert_resolve_mutable_literals
     ~source:"{'hello': { 'name': 'The Matrix', 'year': 1999 }}"
     ~against_type:(Type.dictionary ~key:Type.string ~value:(Type.Primitive "test.ClassBasedMovie"))
-    (Type.dictionary ~key:Type.string ~value:(Type.Primitive "test.ClassBasedMovie"));
+    (make_weakened_type
+       (Type.dictionary ~key:Type.string ~value:(Type.Primitive "test.ClassBasedMovie")));
   assert_resolve_mutable_literals
-    ~source:"{'outer_foo': { 'name': 'The Matrix', 'year': 1999 }}"
+    ~source:
+      "{'outer_foo': { 'name': 'The Matrix', 'year': 1999 }, 'outer_bar': { 'name': 'The Matrix', \
+       'year': 1999 }}"
     ~against_type:(Type.Primitive "test.OuterTypedDict")
-    (Type.Primitive "test.OuterTypedDict");
+    (make_weakened_type (Type.Primitive "test.OuterTypedDict"));
+  assert_resolve_mutable_literals
+    ~source:
+      "{'hello': { 'name': 'The Matrix', 'year': 1999 }, 'world': { 'name': 37, 'year': 1999 }}"
+    ~against_type:(Type.dictionary ~key:Type.string ~value:(Type.Primitive "test.ClassBasedMovie"))
+    (name_type_mismatch
+       ~resolved:
+         "typing.Dict[str, typing.Union[typing.Dict[str, int], typing.Dict[str, typing.Union[int, \
+          str]], test.ClassBasedMovie]]");
   assert_resolve_mutable_literals
     ~source:"{'hello': { 'name': 37, 'year': 1999 }}"
     ~against_type:(Type.dictionary ~key:Type.string ~value:(Type.Primitive "test.ClassBasedMovie"))
-    (Type.dictionary ~key:Type.string ~value:slightly_wrong_movie_type);
+    (name_type_mismatch ~resolved:"typing.Dict[str, typing.Dict[str, int]]");
   assert_resolve_mutable_literals
-    ~source:"{'outer_foo': { 'name': 37, 'year': 1999 }}"
+    ~source:
+      "{'outer_foo': { 'name': 37, 'year': 1999 }, 'outer_bar': { 'name': 'The Matrix', 'year': \
+       'NaN' }}"
     ~against_type:(Type.Primitive "test.OuterTypedDict")
-    slightly_wrong_nested_type;
+    (name_and_year_type_mismatch
+       ~resolved:"typing.Dict[str, typing.Union[typing.Dict[str, int], typing.Dict[str, str]]]");
   assert_resolve_mutable_literals
     ~source:"{'outer_dict': {'outer_foo': { 'name': 37, 'year': 1999 }}}"
     ~against_type:(Type.dictionary ~key:Type.string ~value:(Type.Primitive "test.OuterTypedDict"))
-    (Type.dictionary ~key:Type.string ~value:slightly_wrong_nested_type);
+    (name_type_mismatch ~resolved:"typing.Dict[str, typing.Dict[str, typing.Dict[str, int]]]");
+  let source = "{'outer_dict': {'outer_foo': {}}}" in
   assert_resolve_mutable_literals
-    ~source:"{'outer_dict': {'outer_foo': {}}}"
+    ~source
     ~against_type:(Type.dictionary ~key:Type.string ~value:(Type.Primitive "test.OuterTypedDict"))
-    (Type.dictionary
-       ~key:Type.string
-       ~value:
-         (Type.TypedDictionary.anonymous
-            [
-              { name = "outer_foo"; annotation = Type.TypedDictionary.anonymous []; required = true };
-            ]));
+    (create_failed_typed_dictionary_type
+       ~resolved_type:
+         (resolve_expression_with_fresh_namespace resolution (parse_single_expression source))
+       [
+         MissingRequiredField { field_name = "name"; class_name = "test.ClassBasedMovie" };
+         MissingRequiredField { field_name = "year"; class_name = "test.ClassBasedMovie" };
+       ]);
   assert_resolve_mutable_literals
     ~source:"{ 'name': 'The Matrix', 'year': 1999 }"
     ~against_type:(Type.union [Type.Primitive "test.ClassBasedMovie"; Type.integer])
-    (Type.union [Type.Primitive "test.ClassBasedMovie"; Type.integer]);
+    (make_weakened_type (Type.union [Type.Primitive "test.ClassBasedMovie"; Type.integer]));
   assert_resolve_mutable_literals
     ~source:"{ 'name': 'The Matrix', 'year': 1999 }"
     ~against_type:(Type.optional (Type.Primitive "test.ClassBasedMovie"))
-    (Type.optional (Type.Primitive "test.ClassBasedMovie"));
+    (make_weakened_type (Type.optional (Type.Primitive "test.ClassBasedMovie")));
   assert_resolve_mutable_literals
     ~source:"{ 'name': 37, 'year': 1999 }"
     ~against_type:(Type.optional (Type.Primitive "test.ClassBasedMovie"))
-    slightly_wrong_movie_type;
+    (name_type_mismatch ~resolved:"typing.Dict[str, int]");
+  assert_resolve_mutable_literals
+    ~source:"{ 'name': 'The Matrix', 'year': 1999 }"
+    ~against_type:(Type.union [Type.Primitive "test.ClassBasedMovie"; Type.integer])
+    (make_weakened_type (Type.union [Type.Primitive "test.ClassBasedMovie"; Type.integer]));
+  assert_resolve_mutable_literals
+    ~source:"{ 'name': 37, 'year': 1999 }"
+    ~against_type:(Type.union [Type.Primitive "test.ClassBasedMovie"; Type.integer])
+    (name_type_mismatch ~resolved:"typing.Dict[str, int]");
+
+  (* Weaken to get the dictionary in a Union instead of giving an error for the TypedDict. *)
+  assert_resolve_mutable_literals
+    ~source:"{ 'name': 37, 'year': 1999 }"
+    ~against_type:
+      (Type.union
+         [
+           Type.Primitive "test.ClassBasedMovie";
+           Type.dictionary ~key:Type.string ~value:Type.integer;
+         ])
+    (make_weakened_type
+       (Type.union
+          [
+            Type.Primitive "test.ClassBasedMovie";
+            Type.dictionary ~key:Type.string ~value:Type.integer;
+          ]));
+
+  assert_resolve_mutable_literals
+    ~source:"[{ 'name': 'The Matrix', 'year': 1999 }]"
+    ~against_type:(Type.list (Type.Primitive "test.ClassBasedMovie"))
+    (make_weakened_type (Type.list (Type.Primitive "test.ClassBasedMovie")));
+  assert_resolve_mutable_literals
+    ~source:"[{ 'name': 37, 'year': 1999 }, { 'name': 'The Matrix', 'year': 'NaN' }]"
+    ~against_type:(Type.list (Type.Primitive "test.ClassBasedMovie"))
+    (name_and_year_type_mismatch
+       ~resolved:"typing.List[typing.Union[typing.Dict[str, int], typing.Dict[str, str]]]");
+  assert_resolve_mutable_literals
+    ~source:"({ 'name': 'The Matrix', 'year': 1999 },)"
+    ~against_type:(Type.tuple [Type.Primitive "test.ClassBasedMovie"])
+    (make_weakened_type (Type.tuple [Type.Primitive "test.ClassBasedMovie"]));
+  assert_resolve_mutable_literals
+    ~source:"({ 'name': 37, 'year': 1999 }, { 'name': 'The Matrix', 'year': 'NaN' })"
+    ~against_type:
+      (Type.tuple [Type.Primitive "test.ClassBasedMovie"; Type.Primitive "test.ClassBasedMovie"])
+    (name_and_year_type_mismatch
+       ~resolved:"typing.Tuple[typing.Dict[str, int], typing.Dict[str, str]];");
+  assert_resolve_mutable_literals
+    ~source:"({ 'name': 37, 'year': 1999 }, { 'name': 'The Matrix', 'year': 'NaN' })"
+    ~against_type:(Type.Tuple (Type.Unbounded (Type.Primitive "test.ClassBasedMovie")))
+    (name_and_year_type_mismatch
+       ~resolved:"typing.Tuple[typing.Dict[str, int], typing.Dict[str, str]];");
+  assert_resolve_mutable_literals
+    ~source:"[{ 'name': 37, 'year': 1999 }, { 'name': 'The Matrix', 'year': 'NaN' }]"
+    ~against_type:(Type.sequence (Type.Primitive "test.ClassBasedMovie"))
+    (name_and_year_type_mismatch
+       ~resolved:"typing.Sequence[typing.Union[typing.Dict[str, int], typing.Dict[str, str]]];");
 
   (* Non-total typed dictionary. *)
   assert_resolve_mutable_literals
     ~source:"{ 'name': 'The Matrix', 'year': 1999 }"
     ~against_type:(Type.Primitive "test.NonTotalMovie")
-    (Type.Primitive "test.NonTotalMovie");
+    (make_weakened_type (Type.Primitive "test.NonTotalMovie"));
   assert_resolve_mutable_literals
     ~source:"{ 'name': 'The Matrix'}"
     ~against_type:(Type.Primitive "test.NonTotalMovie")
-    (Type.Primitive "test.NonTotalMovie");
+    (make_weakened_type (Type.Primitive "test.NonTotalMovie"));
   assert_resolve_mutable_literals
     ~source:"{}"
     ~against_type:(Type.Primitive "test.NonTotalMovie")
-    (Type.Primitive "test.NonTotalMovie");
+    (make_weakened_type (Type.Primitive "test.NonTotalMovie"));
   assert_resolve_mutable_literals
     ~source:"{ 'name': 'The Matrix', 'year': 1999 }"
     ~against_type:(Type.Primitive "test.NameNotRequiredYearRequired")
-    (Type.Primitive "test.NameNotRequiredYearRequired");
+    (make_weakened_type (Type.Primitive "test.NameNotRequiredYearRequired"));
   assert_resolve_mutable_literals
     ~source:"{'year': 1999 }"
     ~against_type:(Type.Primitive "test.NameNotRequiredYearRequired")
-    (Type.Primitive "test.NameNotRequiredYearRequired");
+    (make_weakened_type (Type.Primitive "test.NameNotRequiredYearRequired"));
   (* Note that we don't add [year] to the resolved type for a mismatch because [year] is a required
      field. *)
   assert_resolve_mutable_literals
     ~source:"{'name': 'The Matrix' }"
     ~against_type:(Type.Primitive "test.NameNotRequiredYearRequired")
-    (Type.TypedDictionary.anonymous [{ name = "name"; annotation = Type.string; required = false }]);
+    (create_failed_typed_dictionary_type
+       ~resolved_type:(parse_annotation "typing.Dict[str, str]")
+       [
+         MissingRequiredField
+           { field_name = "year"; class_name = "test.NameNotRequiredYearRequired" };
+       ]);
   assert_resolve_mutable_literals
     ~source:"{}"
     ~against_type:(Type.Primitive "test.NameNotRequiredYearRequired")
-    (Type.TypedDictionary.anonymous []);
+    (create_failed_typed_dictionary_type
+       ~resolved_type:
+         (resolve_expression_with_fresh_namespace resolution (parse_single_expression "{}"))
+       [
+         MissingRequiredField
+           { field_name = "year"; class_name = "test.NameNotRequiredYearRequired" };
+       ]);
   assert_resolve_mutable_literals
     ~source:"{ 'name': 37}"
     ~against_type:(Type.Primitive "test.NonTotalMovie")
-    (Type.TypedDictionary.anonymous
+    (create_failed_typed_dictionary_type
+       ~resolved_type:(parse_annotation "typing.Dict[str, int]")
        [
-         { name = "name"; annotation = Type.literal_integer 37; required = false };
-         { name = "year"; annotation = Type.integer; required = false };
+         FieldTypeMismatch
+           {
+             field_name = "name";
+             expected_type = Type.string;
+             actual_type = Type.literal_integer 37;
+             class_name = "test.NonTotalMovie";
+           };
        ]);
   assert_resolve_mutable_literals
     ~source:"{ 'name': 37, 'year': 1999 }"
     ~against_type:(Type.Primitive "test.NameNotRequiredYearRequired")
-    (Type.TypedDictionary.anonymous
+    (create_failed_typed_dictionary_type
+       ~resolved_type:(parse_annotation "typing.Dict[str, int]")
        [
-         { name = "name"; annotation = Type.literal_integer 37; required = false };
-         { name = "year"; annotation = Type.integer; required = true };
+         FieldTypeMismatch
+           {
+             field_name = "name";
+             expected_type = Type.string;
+             actual_type = Type.literal_integer 37;
+             class_name = "test.NameNotRequiredYearRequired";
+           };
        ]);
   ()
 
@@ -958,72 +1158,6 @@ let test_function_definitions context =
   ()
 
 
-let test_class_definitions context =
-  let assert_classes sources class_name expected =
-    let project = ScratchProject.setup ~context sources in
-    let resolution = ScratchProject.build_resolution project in
-    let resolution = Resolution.global_resolution resolution in
-    let classes =
-      GlobalResolution.class_definitions resolution !&class_name
-      >>| List.map ~f:(fun { Node.value = { Class.name; body; _ }; _ } ->
-              Reference.show (Node.value name), List.length body)
-      |> Option.value ~default:[]
-    in
-    let show_element (name, number_of_statements) =
-      Format.sprintf "%s: %d" name number_of_statements
-    in
-    assert_equal
-      ~printer:(fun elements -> List.map elements ~f:show_element |> String.concat ~sep:", ")
-      expected
-      classes
-  in
-  assert_classes ["foo.py", {|
-    class Foo:
-      pass
-  |}] "foo.Foo" ["foo.Foo", 1];
-  assert_classes
-    ["foo.py", {|
-    class Foo:
-      class Bar:
-        pass
-  |}]
-    "foo.Foo.Bar"
-    ["foo.Foo.Bar", 1];
-  assert_classes
-    ["foo.py", {|
-    if sun_is_out():
-      class Foo:
-        pass
-  |}]
-    "foo.Foo"
-    ["foo.Foo", 1];
-  assert_classes
-    [
-      ( "foo.py",
-        {|
-    if sun_is_out():
-      class Foo:
-        pass
-    else:
-      class Foo:
-        a = 1
-        b = 2
-    |}
-      );
-    ]
-    "foo.Foo"
-    ["foo.Foo", 1; "foo.Foo", 2];
-
-  (* Also handle the case where foo.bar is a class but foo.bar the module exists. *)
-  assert_classes
-    ["foo.py", {|
-         class bar:
-           a = 1
-       |}; "foo/bar.py", "pass"]
-    "foo.bar"
-    ["foo.bar", 1]
-
-
 (* We don't reverse order when returning the classes. *)
 
 let test_source_is_unit_test context =
@@ -1068,7 +1202,8 @@ let test_fallback_attribute context =
       ScratchProject.setup ~context ["test.py", source] |> ScratchProject.build_global_environment
     in
     let global_resolution = GlobalResolution.create global_environment in
-    let resolution = TypeCheck.resolution global_resolution () in
+    let resolution = TypeCheck.resolution global_resolution (module TypeCheck.DummyContext) in
+
     let attribute =
       let source =
         AstEnvironment.ReadOnly.get_source
@@ -1242,7 +1377,6 @@ let () =
          >:: test_resolve_mutable_literals_typed_dictionary;
          "get_typed_dictionary " >:: test_get_typed_dictionary;
          "function_definitions" >:: test_function_definitions;
-         "class_definitions" >:: test_class_definitions;
          "source_is_unit_test" >:: test_source_is_unit_test;
          "fallback_attribute" >:: test_fallback_attribute;
        ]

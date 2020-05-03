@@ -235,7 +235,6 @@ let is_consistent_with ({ global_resolution; _ } as resolution) =
 let global_resolution { global_resolution; _ } = global_resolution
 
 let fallback_attribute ~resolution ~name class_name =
-  let open Ast.Expression in
   let class_name_reference = Reference.create class_name in
   let global_resolution = global_resolution resolution in
   let compound_backup =
@@ -262,7 +261,7 @@ let fallback_attribute ~resolution ~name class_name =
         GlobalResolution.attribute_from_class_name
           ~resolution:global_resolution
           class_name
-          ~class_attributes:false
+          ~accessed_through_class:false
           ~transitive:true
           ~instantiated:(Type.Primitive class_name)
           ~name
@@ -272,7 +271,7 @@ let fallback_attribute ~resolution ~name class_name =
     let fallback =
       GlobalResolution.attribute_from_class_name
         class_name
-        ~class_attributes:false
+        ~accessed_through_class:false
         ~transitive:true
         ~resolution:global_resolution
         ~name:"__getattr__"
@@ -288,25 +287,20 @@ let fallback_attribute ~resolution ~name class_name =
               parameters =
                 [Single (Callable ({ implementation; _ } as callable)); Single self_argument];
             } ->
-            let arguments =
-              let name_argument =
-                {
-                  Call.Argument.name = None;
-                  value =
-                    {
-                      Node.location = Location.any;
-                      value = Expression.String (StringLiteral.create name);
-                    };
-                }
-              in
-              [name_argument]
-            in
             let return_annotation =
               match
                 GlobalResolution.signature_select
                   ~global_resolution
                   ~resolve_with_locals:(resolve_expression_to_type_with_locals resolution)
-                  ~arguments
+                  ~arguments:
+                    (Resolved
+                       [
+                         {
+                           expression = None;
+                           kind = Positional;
+                           resolved = Type.literal_string name;
+                         };
+                       ])
                   ~callable
                   ~self_argument:(Some self_argument)
               with
@@ -319,16 +313,16 @@ let fallback_attribute ~resolution ~name class_name =
               (AnnotatedAttribute.create
                  ~annotation:return_annotation
                  ~original_annotation:return_annotation
+                 ~uninstantiated_annotation:(Some return_annotation)
                  ~abstract:false
                  ~async:false
-                 ~class_attribute:false
+                 ~class_variable:false
                  ~defined:true
                  ~initialized:NotInitialized
                  ~name
                  ~parent:(Reference.show class_name_reference)
                  ~visibility:ReadWrite
-                 ~property:false
-                 ~static:false)
+                 ~property:false)
         | _ -> None )
     | _ -> None
   in

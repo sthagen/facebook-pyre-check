@@ -30,10 +30,7 @@ type invalid_class_instantiation =
 [@@deriving compare, eq, sexp, show, hash]
 
 type origin =
-  | Class of {
-      annotation: Type.t;
-      class_attribute: bool;
-    }
+  | Class of Type.t
   | Module of Reference.t
 
 and mismatch = {
@@ -59,6 +56,18 @@ and typed_dictionary_field_mismatch =
       annotation_and_parent2: annotation_and_parent;
     }
 
+and typed_dictionary_initialization_mismatch =
+  | MissingRequiredField of {
+      field_name: Identifier.t;
+      class_name: Identifier.t;
+    }
+  | FieldTypeMismatch of {
+      field_name: Identifier.t;
+      class_name: Identifier.t;
+      expected_type: Type.t;
+      actual_type: Type.t;
+    }
+
 and incompatible_type = {
   name: Reference.t;
   mismatch: mismatch;
@@ -66,11 +75,11 @@ and incompatible_type = {
 
 and invalid_argument =
   | Keyword of {
-      expression: Expression.t;
+      expression: Expression.t option;
       annotation: Type.t;
     }
   | ConcreteVariable of {
-      expression: Expression.t;
+      expression: Expression.t option;
       annotation: Type.t;
     }
   | ListVariadicVariable of {
@@ -312,6 +321,7 @@ type kind =
       method_name: Identifier.t;
       mismatch: mismatch;
     }
+  | TypedDictionaryInitializationError of typed_dictionary_initialization_mismatch
   (* Additional errors. *)
   | DeadStore of Identifier.t
   | Deobfuscation of Source.t

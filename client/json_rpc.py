@@ -118,7 +118,6 @@ def read_request(file: BinaryIO) -> Optional[Request]:
     payload = _read_payload(file)
     if payload and Request.validate_payload(payload):
         return Request(
-            # pyre-fixme[6]: Expected `str` for 1st param but got `Optional[Any]`.
             method=payload.get("method"),
             id=payload.get("id"),
             parameters=payload.get("params"),
@@ -128,13 +127,13 @@ def read_request(file: BinaryIO) -> Optional[Request]:
 
 def read_response(file: BinaryIO) -> Response:
     payload = _read_payload(file)
-    if payload and Response.validate_payload(payload):
-        return Response(
-            result=payload.get("result"),
-            error=payload.get("error"),
-            id=payload.get("id"),
-        )
-    raise JSONRPCException
+    if not payload:
+        raise JSONRPCException("Received empty response.")
+    if not Response.validate_payload(payload):
+        raise JSONRPCException(f"Unable to validate response: {str(payload)}")
+    return Response(
+        result=payload.get("result"), error=payload.get("error"), id=payload.get("id")
+    )
 
 
 def perform_handshake(

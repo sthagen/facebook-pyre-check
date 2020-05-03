@@ -18,6 +18,11 @@ let help () =
         Some
           "run_check('check_name', 'path1.py', 'path2.py'): Runs the `check_name` static analysis \
            on the provided list of paths."
+    | Batch _ ->
+        Some
+          "batch(query1(arg), query2(arg)): Runs a batch of queries and returns a map of \
+           responses. List of given queries may include any combination of other valid queries \
+           except for `batch` itself."
     | Attributes _ ->
         Some
           "attributes(class_name): Returns a list of attributes, including functions, for a class."
@@ -51,7 +56,9 @@ let help () =
     | Signature _ ->
         Some "signature(a, b, ...): Gives a human-readable signature for the given function names."
     | Superclasses _ ->
-        Some "superclasses(class_name): Returns the list of superclasses for `class_name`."
+        Some
+          "superclasses(class_name1, class_name2, ...): Returns a mapping of class_name to the \
+           list of superclasses for `class_name`."
     | Type _ -> Some "type(expression): Evaluates the type of `expression`."
     | TypeAtPosition _ ->
         Some "type_at_position('path', line, column): Returns the type for the given cursor."
@@ -71,6 +78,7 @@ let help () =
     ~f:help
     [
       RunCheck { check_name = ""; paths = [] };
+      Batch [];
       Attributes (Reference.create "");
       Callees (Reference.create "");
       CalleesWithLocation (Reference.create "");
@@ -89,7 +97,7 @@ let help () =
       PathOfModule (Reference.create "");
       SaveServerState path;
       Signature [Reference.create ""];
-      Superclasses empty;
+      Superclasses [empty];
       Type (Node.create_with_default_location Expression.True);
       TypeAtPosition { path; position = Location.any_position };
       TypesInFiles [path];
@@ -100,7 +108,7 @@ let help () =
   |> Format.sprintf "Possible queries:\n  %s"
 
 
-let parse_query
+let rec parse_query
     ~configuration:({ Configuration.Analysis.local_root = root; _ } as configuration)
     query
   =
@@ -135,6 +143,19 @@ let parse_query
       let string argument = argument |> expression |> string_of_expression in
       match String.lowercase name, arguments with
       | "attributes", [name] -> Request.TypeQueryRequest (Attributes (reference name))
+      | "batch", queries ->
+          let construct_batch batch_queries query =
+            match query with
+            | Request.TypeQueryRequest (Batch _) -> raise (InvalidQuery "cannot nest batch queries")
+            | Request.TypeQueryRequest query -> query :: batch_queries
+            | _ -> raise (InvalidQuery "unexpected query")
+          in
+          List.map ~f:expression queries
+          |> List.map ~f:Expression.show
+          |> List.map ~f:(parse_query ~configuration)
+          |> List.fold ~f:construct_batch ~init:[]
+          |> List.rev
+          |> fun query_list -> Request.TypeQueryRequest (Batch query_list)
       | "callees", [name] -> Request.TypeQueryRequest (Callees (reference name))
       | "callees_with_location", [name] ->
           Request.TypeQueryRequest (CalleesWithLocation (reference name))
@@ -232,7 +253,7 @@ let parse_query
           Request.TypeQueryRequest
             (SaveServerState (Path.create_absolute ~follow_symbolic_links:false (string path)))
       | "signature", names -> Request.TypeQueryRequest (Signature (List.map names ~f:reference))
-      | "superclasses", [name] -> Request.TypeQueryRequest (Superclasses (access name))
+      | "superclasses", names -> Request.TypeQueryRequest (Superclasses (List.map ~f:access names))
       | "type", [argument] -> Request.TypeQueryRequest (Type (expression argument))
       | ( "type_at_position",
           [

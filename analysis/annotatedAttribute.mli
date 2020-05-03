@@ -16,8 +16,8 @@ type visibility =
 [@@deriving eq, show, compare, sexp]
 
 type initialized =
-  | Explicitly
-  | Implicitly
+  | OnClass
+  | OnlyOnInstance
   | NotInitialized
 [@@deriving eq, show, compare, sexp]
 
@@ -32,28 +32,27 @@ val create
   annotation:Type.t ->
   original_annotation:Type.t ->
   async:bool ->
-  class_attribute:bool ->
+  class_variable:bool ->
   defined:bool ->
   initialized:initialized ->
   name:Identifier.t ->
   parent:Type.Primitive.t ->
   visibility:visibility ->
   property:bool ->
-  static:bool ->
+  uninstantiated_annotation:Type.t option ->
   instantiated
 
 val create_uninstantiated
   :  abstract:bool ->
   uninstantiated_annotation:'a ->
   async:bool ->
-  class_attribute:bool ->
+  class_variable:bool ->
   defined:bool ->
   initialized:initialized ->
   name:Identifier.t ->
   parent:Type.Primitive.t ->
   visibility:visibility ->
   property:bool ->
-  static:bool ->
   'a t
 
 val annotation : instantiated -> Annotation.t
@@ -74,9 +73,9 @@ val initialized : 'a t -> initialized
 
 val defined : 'a t -> bool
 
-val class_attribute : 'a t -> bool
+val class_variable : 'a t -> bool
 
-val static : 'a t -> bool
+val static : instantiated -> bool
 
 val property : 'a t -> bool
 
@@ -86,4 +85,9 @@ val is_final : 'a t -> bool
 
 val with_initialized : 'a t -> initialized:initialized -> 'a t
 
-val instantiate : 'a t -> annotation:Type.t -> original_annotation:Type.t -> instantiated
+val instantiate
+  :  'a t ->
+  annotation:Type.t ->
+  original_annotation:Type.t ->
+  uninstantiated_annotation:Type.t option ->
+  instantiated

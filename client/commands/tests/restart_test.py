@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from ... import commands, configuration_monitor, project_files_monitor
 from ...analysis_directory import AnalysisDirectory
 from ...commands import restart
+from ..command import IncrementalStyle
 from .command_test import mock_arguments, mock_configuration
 
 
@@ -32,24 +33,37 @@ class RestartTest(unittest.TestCase):
         state.running = ["."]
         original_directory = "/original/directory"
         arguments = mock_arguments()
-        arguments.terminal = False
         configuration = mock_configuration()
         analysis_directory = AnalysisDirectory(".")
 
         commands_Stop().run().exit_code.return_value = commands.ExitCode.SUCCESS
 
         commands.Restart(
-            arguments, original_directory, configuration, analysis_directory
+            arguments,
+            original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+            terminal=False,
+            incremental_style=IncrementalStyle.FINE_GRAINED,
+            use_watchman=True,
+            store_type_check_resolution=False,
         )._run()
         commands_Stop.assert_called_with(
             arguments,
             original_directory,
-            configuration,
-            analysis_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
             from_restart=True,
         )
         commands_Incremental.assert_called_with(
-            arguments, original_directory, configuration, analysis_directory
+            arguments,
+            original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+            nonblocking=False,
+            incremental_style=IncrementalStyle.FINE_GRAINED,
+            no_start_server=False,
+            no_watchman=False,
         )
         commands_Start.assert_not_called()
 
@@ -57,13 +71,20 @@ class RestartTest(unittest.TestCase):
         commands_Incremental.reset_mock()
         commands_Stop().run().exit_code.return_value = commands.ExitCode.FAILURE
         commands.Restart(
-            arguments, original_directory, configuration, analysis_directory
+            arguments,
+            original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+            terminal=False,
+            incremental_style=IncrementalStyle.FINE_GRAINED,
+            use_watchman=True,
+            store_type_check_resolution=False,
         )._run()
         commands_Stop.assert_called_with(
             arguments,
             original_directory,
-            configuration,
-            analysis_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
             from_restart=True,
         )
         commands_Incremental.assert_not_called()

@@ -417,6 +417,10 @@ module T = struct
     | Boolean of bool
     | Integer of int
     | String of string
+    | EnumerationMember of {
+        enumeration_type: t;
+        member_name: Identifier.t;
+      }
 
   and tuple =
     | Bounded of t Record.OrderedTypes.record
@@ -428,7 +432,7 @@ module T = struct
     | Callable of t Record.Callable.record
     | Any
     | Literal of literal
-    | Optional of t
+    | NoneType
     | Parametric of {
         name: Identifier.t;
         parameters: t Record.Parameter.record list;
@@ -438,7 +442,6 @@ module T = struct
     | Primitive of Primitive.t
     | Top
     | Tuple of tuple
-    | TypedDictionary of t Record.TypedDictionary.record
     | Union of t list
     | Variable of t Record.Variable.RecordUnary.record
   [@@deriving compare, eq, sexp, show, hash]
@@ -450,7 +453,7 @@ let _ = show (* shadowed below *)
 
 type class_data = {
   instantiated: t;
-  class_attributes: bool;
+  accessed_through_class: bool;
   class_name: Primitive.t;
 }
 
@@ -548,7 +551,7 @@ let is_meta = function
 
 
 let is_none = function
-  | Optional Bottom -> true
+  | NoneType -> true
   | _ -> false
 
 
@@ -563,7 +566,9 @@ let is_object = function
 
 
 let is_optional = function
-  | Optional _ -> true
+  | Union [NoneType; _]
+  | Union [_; NoneType] ->
+      true
   | Parametric { name = "typing.Optional" | "Optional"; _ } -> true
   | _ -> false
 
@@ -594,11 +599,6 @@ let is_type_alias = function
   | _ -> false
 
 
-let is_typed_dictionary = function
-  | TypedDictionary _ -> true
-  | _ -> false
-
-
 let is_unbound = function
   | Bottom -> true
   | _ -> false
@@ -606,6 +606,14 @@ let is_unbound = function
 
 let is_union = function
   | Union _ -> true
+  | _ -> false
+
+
+let is_falsy = function
+  | NoneType
+  | Literal (Boolean false)
+  | Literal (Integer 0) ->
+      true
   | _ -> false
 
 
@@ -690,8 +698,9 @@ let rec pp format annotation =
       Format.fprintf format "typing_extensions.Literal[%s]" (if literal then "True" else "False")
   | Literal (Integer literal) -> Format.fprintf format "typing_extensions.Literal[%d]" literal
   | Literal (String literal) -> Format.fprintf format "typing_extensions.Literal['%s']" literal
-  | Optional Bottom -> Format.fprintf format "None"
-  | Optional parameter -> Format.fprintf format "typing.Optional[%a]" pp parameter
+  | Literal (EnumerationMember { enumeration_type; member_name }) ->
+      Format.fprintf format "typing_extensions.Literal[%s.%s]" (show enumeration_type) member_name
+  | NoneType -> Format.fprintf format "None"
   | Parametric { name; parameters } ->
       let name = reverse_substitute name in
       Format.fprintf format "%s[%a]" name (pp_parameters ~pp_type:pp) parameters
@@ -707,28 +716,9 @@ let rec pp format annotation =
         | Unbounded parameter -> Format.asprintf "%a, ..." pp parameter
       in
       Format.fprintf format "typing.Tuple[%s]" parameters
-  | TypedDictionary { Record.TypedDictionary.name; fields } ->
-      let fields =
-        fields
-        |> List.map ~f:(Format.asprintf "%a" (pp_typed_dictionary_field ~pp_type:pp))
-        |> String.concat ~sep:", "
-      in
-      let name =
-        if String.equal name "$anonymous" then
-          ""
-        else
-          Format.sprintf " `%s`" name
-      in
-      let fields =
-        let fields_message = Format.sprintf " with fields (%s)" fields in
-        if String.equal name "" then
-          fields_message
-        else if String.length fields_message < 80 then
-          fields_message
-        else
-          ""
-      in
-      Format.fprintf format "TypedDict%s%s" name fields
+  | Union [NoneType; parameter]
+  | Union [parameter; NoneType] ->
+      Format.fprintf format "typing.Optional[%a]" pp parameter
   | Union parameters ->
       Format.fprintf
         format
@@ -788,8 +778,9 @@ let rec pp_concise format annotation =
       Format.fprintf format "typing_extensions.Literal[%s]" (if literal then "True" else "False")
   | Literal (Integer literal) -> Format.fprintf format "typing_extensions.Literal[%d]" literal
   | Literal (String literal) -> Format.fprintf format "typing_extensions.Literal['%s']" literal
-  | Optional Bottom -> Format.fprintf format "None"
-  | Optional parameter -> Format.fprintf format "Optional[%a]" pp_concise parameter
+  | Literal (EnumerationMember { enumeration_type; member_name }) ->
+      Format.fprintf format "typing_extensions.Literal[%s.%s]" (show enumeration_type) member_name
+  | NoneType -> Format.fprintf format "None"
   | Parametric { name; parameters } ->
       let name = strip_qualification (reverse_substitute name) in
       Format.fprintf format "%s[%a]" name (pp_parameters ~pp_type:pp) parameters
@@ -804,14 +795,9 @@ let rec pp_concise format annotation =
         (Record.OrderedTypes.pp_concise ~pp_type:pp_concise)
         parameters
   | Tuple (Unbounded parameter) -> Format.fprintf format "Tuple[%a, ...]" pp_concise parameter
-  | TypedDictionary { name = "$anonymous"; fields; _ } ->
-      let fields =
-        fields
-        |> List.map ~f:(Format.asprintf "%a" (pp_typed_dictionary_field ~pp_type:pp))
-        |> String.concat ~sep:", "
-      in
-      Format.fprintf format "TypedDict(%s)" fields
-  | TypedDictionary { name; _ } -> Format.fprintf format "%s" (strip_qualification name)
+  | Union [NoneType; parameter]
+  | Union [parameter; NoneType] ->
+      Format.fprintf format "Optional[%a]" pp_concise parameter
   | Union parameters -> Format.fprintf format "Union[%a]" pp_comma_separated parameters
   | Variable { variable; _ } -> Format.fprintf format "%s" (strip_qualification variable)
 
@@ -860,12 +846,14 @@ let float = Primitive "float"
 let number = Primitive "numbers.Number"
 
 let generator ?(async = false) parameter =
-  let none = Optional Bottom in
   if async then
-    Parametric { name = "typing.AsyncGenerator"; parameters = [Single parameter; Single none] }
+    Parametric { name = "typing.AsyncGenerator"; parameters = [Single parameter; Single NoneType] }
   else
     Parametric
-      { name = "typing.Generator"; parameters = [Single parameter; Single none; Single none] }
+      {
+        name = "typing.Generator";
+        parameters = [Single parameter; Single NoneType; Single NoneType];
+      }
 
 
 let generic_primitive = Primitive "typing.Generic"
@@ -888,16 +876,9 @@ let meta annotation = Parametric { name = "type"; parameters = [Single annotatio
 
 let named_tuple = Primitive "typing.NamedTuple"
 
-let none = Optional Bottom
+let none = NoneType
 
 let object_primitive = Primitive "object"
-
-let optional parameter =
-  match parameter with
-  | Top -> Top
-  | Optional _ -> parameter
-  | _ -> Optional parameter
-
 
 let sequence parameter = Parametric { name = "typing.Sequence"; parameters = [Single parameter] }
 
@@ -913,48 +894,34 @@ let undeclared = Primitive "typing.Undeclared"
 
 let union parameters =
   let parameters =
-    let rec flattened parameters =
-      let flatten sofar = function
-        | Union parameters -> flattened parameters @ sofar
-        | parameter -> parameter :: sofar
-      in
-      List.fold ~init:[] ~f:flatten parameters
+    let parameter_set = Hash_set.create () in
+    let rec add_parameter = function
+      | Union parameters -> List.iter parameters ~f:add_parameter
+      | Bottom -> ()
+      | parameter -> Base.Hash_set.add parameter_set parameter
     in
-    let parameters = Set.of_list (flattened parameters) in
-    let filter_redundant_annotations sofar annotation =
-      match annotation with
-      | Optional _ -> annotation :: sofar
-      | _ when Set.mem parameters (Optional annotation) -> sofar
-      | _ -> annotation :: sofar
-    in
-    Set.fold ~init:[] ~f:filter_redundant_annotations parameters |> List.sort ~compare
+    List.iter parameters ~f:add_parameter;
+    Base.Hash_set.to_list parameter_set |> List.sort ~compare
   in
   if List.mem ~equal parameters undeclared then
     Union parameters
   else if List.exists ~f:is_top parameters then
     Top
+  else if List.exists ~f:is_any parameters then
+    Any
   else
-    let normalize parameters =
-      let parameters =
-        List.filter parameters ~f:(function parameter -> not (is_unbound parameter))
-      in
-      match parameters with
-      | [] -> Bottom
-      | [parameter] -> parameter
-      | parameters -> Union parameters
-    in
-    let extract_optional_parameter = function
-      | Optional parameter -> parameter
-      | parameter -> parameter
-    in
-    if List.exists parameters ~f:is_optional then
-      parameters
-      |> List.filter ~f:(fun parameter -> not (is_none parameter))
-      |> List.map ~f:extract_optional_parameter
-      |> normalize
-      |> fun union -> Optional union
-    else
-      normalize parameters
+    match parameters with
+    | [] -> Bottom
+    | [parameter] -> parameter
+    | parameters -> Union parameters
+
+
+let optional parameter =
+  match parameter with
+  | Top -> Top
+  | Any -> Any
+  | Bottom -> Bottom
+  | _ -> union [NoneType; parameter]
 
 
 let variable ?constraints ?variance name =
@@ -1125,11 +1092,13 @@ let rec expression annotation =
           | Boolean false -> Expression.False
           | Integer literal -> Expression.Integer literal
           | String literal -> Expression.String { value = literal; kind = StringLiteral.String }
+          | EnumerationMember { enumeration_type; member_name } ->
+              Expression.Name
+                (Attribute
+                   { base = expression enumeration_type; attribute = member_name; special = false })
         in
         get_item_call "typing_extensions.Literal" [Node.create ~location literal]
-    | Optional Bottom -> create_name "None"
-    | Optional parameter -> get_item_call "typing.Optional" [expression parameter]
-    | Parametric { name = "typing.Optional"; parameters = [Single Bottom] } -> create_name "None"
+    | NoneType -> create_name "None"
     | Parametric { name; parameters } ->
         let parameters =
           let expression_of_ordered = function
@@ -1167,30 +1136,9 @@ let rec expression annotation =
           | Unbounded parameter -> List.map ~f:expression [parameter; Primitive "..."]
         in
         get_item_call "typing.Tuple" parameters
-    | TypedDictionary { name; fields } ->
-        let argument =
-          let tail =
-            let field_to_tuple { Record.TypedDictionary.name; annotation; _ } =
-              Node.create_with_default_location
-                (Expression.Tuple
-                   [
-                     Node.create_with_default_location
-                       (Expression.String { value = name; kind = StringLiteral.String });
-                     expression annotation;
-                   ])
-            in
-            List.map fields ~f:field_to_tuple
-          in
-          let totality =
-            (if are_fields_total fields then Expression.True else Expression.False)
-            |> Node.create_with_default_location
-          in
-          Expression.String { value = name; kind = StringLiteral.String }
-          |> Node.create_with_default_location
-          |> (fun name -> Expression.Tuple (name :: totality :: tail))
-          |> Node.create_with_default_location
-        in
-        get_item_call "mypy_extensions.TypedDict" [argument]
+    | Union [NoneType; parameter]
+    | Union [parameter; NoneType] ->
+        get_item_call "typing.Optional" [expression parameter]
     | Union parameters -> get_item_call "typing.Union" (List.map ~f:expression parameters)
     | Variable { variable; _ } -> create_name variable
   in
@@ -1297,6 +1245,7 @@ module Transform = struct
           | parameter -> parameter
         in
         match annotation with
+        | NoneType -> NoneType
         | Annotated annotation -> Annotated (visit_annotation annotation ~state)
         | Callable ({ implementation; overloads; _ } as callable) ->
             let open Record.Callable in
@@ -1313,7 +1262,6 @@ module Transform = struct
                 implementation = visit_overload implementation;
                 overloads = List.map overloads ~f:visit_overload;
               }
-        | Optional annotation -> optional (visit_annotation annotation ~state)
         | Parametric { name; parameters } ->
             let visit = function
               | Record.Parameter.Group ordered ->
@@ -1324,11 +1272,6 @@ module Transform = struct
             Parametric { name; parameters = List.map parameters ~f:visit }
         | Tuple (Bounded ordered) -> Tuple (Bounded (visit_ordered_types ordered))
         | Tuple (Unbounded annotation) -> Tuple (Unbounded (visit_annotation annotation ~state))
-        | TypedDictionary ({ fields; _ } as typed_dictionary) ->
-            let visit_field ({ Record.TypedDictionary.annotation; _ } as field) =
-              { field with annotation = visit_annotation annotation ~state }
-            in
-            TypedDictionary { typed_dictionary with fields = List.map fields ~f:visit_field }
         | Union annotations -> union (List.map annotations ~f:(visit_annotation ~state))
         | Variable ({ constraints; _ } as variable) ->
             let constraints =
@@ -1339,6 +1282,13 @@ module Transform = struct
               | LiteralIntegers -> LiteralIntegers
             in
             Variable { variable with constraints }
+        | Literal (EnumerationMember ({ enumeration_type; _ } as enumeration_member)) ->
+            Literal
+              (EnumerationMember
+                 {
+                   enumeration_member with
+                   enumeration_type = visit_annotation ~state enumeration_type;
+                 })
         | ParameterVariadicComponent _
         | Literal _
         | Bottom
@@ -1671,6 +1621,27 @@ let create_concatenation_operator_from_annotation annotation ~variable_aliases =
           Some
             (Record.OrderedTypes.RecordConcatenate.empty_wrap
                { Record.OrderedTypes.RecordConcatenate.Middle.variable; mappers = [] })
+      | _ -> None )
+  | _ -> None
+
+
+let create_literal = function
+  | Expression.True -> Some (Literal (Boolean true))
+  | Expression.False -> Some (Literal (Boolean false))
+  | Expression.Integer literal -> Some (Literal (Integer literal))
+  | Expression.String { StringLiteral.kind = StringLiteral.String; value } ->
+      Some (Literal (String value))
+  | Expression.Name
+      (Attribute { base = { Node.value = Expression.Name base_name; _ }; attribute; _ }) -> (
+      match name_to_reference base_name with
+      | Some reference ->
+          Some
+            (Literal
+               (EnumerationMember
+                  {
+                    enumeration_type = Primitive (Reference.show_sanitized reference);
+                    member_name = attribute;
+                  }))
       | _ -> None )
   | _ -> None
 
@@ -2020,59 +1991,6 @@ let rec create_logic ~aliases ~variable_aliases { Node.value = expression; _ } =
         }
       when name_is ~name:"typing_extensions.IntVar" callee ->
         variable value ~constraints:LiteralIntegers
-    | Call
-        {
-          callee;
-          arguments =
-            [
-              {
-                Call.Argument.name = None;
-                value =
-                  {
-                    Node.value =
-                      Expression.Tuple
-                        ({ Node.value = Expression.String { value = typed_dictionary_name; _ }; _ }
-                        :: { Node.value = true_or_false; _ } :: fields);
-                    _;
-                  };
-              };
-            ];
-        }
-      when name_is ~name:"mypy_extensions.TypedDict.__getitem__" callee ->
-        let total =
-          match true_or_false with
-          | Expression.True -> Some true
-          | Expression.False -> Some false
-          | _ -> None
-        in
-        let parse_typed_dictionary total =
-          let fields =
-            let tuple_to_field = function
-              | {
-                  Node.value =
-                    Expression.Tuple
-                      [
-                        { Node.value = Expression.String { value = field_name; _ }; _ };
-                        field_annotation;
-                      ];
-                  _;
-                } ->
-                  Some
-                    {
-                      Record.TypedDictionary.name = field_name;
-                      annotation = create_logic field_annotation;
-                      required = total;
-                    }
-              | _ -> None
-            in
-            fields |> List.filter_map ~f:tuple_to_field
-          in
-          TypedDictionary { name = typed_dictionary_name; fields }
-        in
-        let undefined_primitive =
-          Primitive (Expression.show (Node.create_with_default_location expression))
-        in
-        total >>| parse_typed_dictionary |> Option.value ~default:undefined_primitive
     | Call { callee; arguments } when name_is ~name:"typing_extensions.Literal.__getitem__" callee
       ->
         let arguments =
@@ -2083,15 +2001,11 @@ let rec create_logic ~aliases ~variable_aliases { Node.value = expression; _ } =
           | [{ Call.Argument.name = None; value = { Node.value = argument; _ } }] -> Some [argument]
           | _ -> None
         in
-        let parse = function
-          | Expression.True -> Some (Literal (Boolean true))
-          | Expression.False -> Some (Literal (Boolean false))
-          | Expression.Integer literal -> Some (literal_integer literal)
-          | Expression.String { StringLiteral.kind = StringLiteral.String; value } ->
-              Some (literal_string value)
-          | _ -> None
-        in
-        arguments >>| List.map ~f:parse >>= Option.all >>| union |> Option.value ~default:Top
+        arguments
+        >>| List.map ~f:create_literal
+        >>= Option.all
+        >>| union
+        |> Option.value ~default:Top
     | Call { callee = { Node.value = callee; _ }; _ } when is_typing_callable callee ->
         parse_callable expression
     | Call
@@ -2305,16 +2219,18 @@ let elements annotation =
         | Annotated _ -> "typing.Annotated" :: sofar
         | Callable _ -> "typing.Callable" :: sofar
         | Literal _ -> "typing_extensions.Literal" :: sofar
-        | Optional _ -> "typing.Optional" :: sofar
+        | Union [NoneType; _]
+        | Union [_; NoneType] ->
+            "typing.Optional" :: sofar
         | Parametric { name; _ } -> name :: sofar
         | Primitive annotation -> annotation :: sofar
         | Tuple _ -> "tuple" :: sofar
-        | TypedDictionary _ -> typed_dictionary_class_name ~total:true :: sofar
         | Union _ -> "typing.Union" :: sofar
         | ParameterVariadicComponent _
         | Bottom
         | Any
         | Top
+        | NoneType
         | Variable _ ->
             sofar
       in
@@ -2342,7 +2258,9 @@ let is_variable = function
 let contains_variable = exists ~predicate:is_variable
 
 let optional_value = function
-  | Optional annotation -> Some annotation
+  | Union [NoneType; annotation]
+  | Union [annotation; NoneType] ->
+      Some annotation
   | _ -> None
 
 
@@ -2401,6 +2319,7 @@ let weaken_literals annotation =
     | Literal (Integer _) -> Some integer
     | Literal (String _) -> Some string
     | Literal (Boolean _) -> Some bool
+    | Literal (EnumerationMember { enumeration_type; _ }) -> Some enumeration_type
     | _ -> None
   in
   instantiate ~constraints annotation
@@ -2534,7 +2453,9 @@ end
 let split annotation =
   let open Record.Parameter in
   match annotation with
-  | Optional parameter -> Primitive "typing.Optional", [Single parameter]
+  | Union [NoneType; parameter]
+  | Union [parameter; NoneType] ->
+      Primitive "typing.Optional", [Single parameter]
   | Parametric { name; parameters } -> Primitive name, parameters
   | Tuple tuple ->
       let parameters =
@@ -2543,8 +2464,6 @@ let split annotation =
         | Unbounded parameter -> [Single parameter]
       in
       Primitive "tuple", parameters
-  | TypedDictionary { fields; _ } ->
-      Primitive (typed_dictionary_class_name ~total:(are_fields_total fields)), []
   | Literal _ as literal -> weaken_literals literal, []
   | Callable _ -> Primitive "typing.Callable", []
   | annotation -> annotation, []
@@ -3615,7 +3534,7 @@ let is_concrete annotation =
     type state = bool
 
     let visit_children_before _ = function
-      | Optional Bottom -> false
+      | NoneType -> false
       | Parametric { name = "typing.Optional" | "Optional"; parameters = [Single Bottom] } -> false
       | _ -> true
 
@@ -3650,8 +3569,9 @@ let dequalify map annotation =
     let visit _ annotation =
       let transformed_annotation =
         match annotation with
-        | Optional Bottom -> Optional Bottom
-        | Optional parameter ->
+        | NoneType -> NoneType
+        | Union [NoneType; parameter]
+        | Union [parameter; NoneType] ->
             Parametric
               { name = dequalify_string "typing.Optional"; parameters = [Single parameter] }
         | Parametric { name; parameters } ->
@@ -3691,11 +3611,15 @@ let dequalify map annotation =
 module TypedDictionary = struct
   open Record.TypedDictionary
 
-  let anonymous fields = TypedDictionary { name = "$anonymous"; fields }
+  let anonymous fields = { name = "$anonymous"; fields }
 
   let create_field ~name ~annotation ~required = { name; annotation; required }
 
   let are_fields_total = are_fields_total
+
+  let same_name { name = left_name; required = _; _ } { name = right_name; required = _; _ } =
+    String.equal left_name right_name
+
 
   let same_name_different_requiredness
       { name = left_name; required = left_required; _ }
@@ -3815,7 +3739,7 @@ module TypedDictionary = struct
       let overloads { name; annotation; _ } =
         [
           {
-            annotation = Optional annotation;
+            annotation = union [annotation; NoneType];
             parameters = Defined [self_parameter; key_parameter name];
           };
           {
@@ -4139,6 +4063,18 @@ let resolve_class annotation =
     | Bottom
     | Any ->
         Some []
+    (* TODO (T65870612): Stop treating NoneType as Optional *)
+    | NoneType
+    | Union [NoneType; _]
+    | Union [_; NoneType] ->
+        Some
+          [
+            {
+              instantiated = original_annotation;
+              accessed_through_class = meta;
+              class_name = "typing.Optional";
+            };
+          ]
     | Union annotations ->
         let flatten_optional sofar optional =
           match sofar, optional with
@@ -4153,7 +4089,7 @@ let resolve_class annotation =
     | _ -> (
         match split annotation |> fst |> primitive_name with
         | Some class_name ->
-            Some [{ instantiated = original_annotation; class_attributes = meta; class_name }]
+            Some [{ instantiated = original_annotation; accessed_through_class = meta; class_name }]
         | None -> None )
   in
   extract ~meta:false annotation

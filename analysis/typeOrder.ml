@@ -149,21 +149,19 @@ module OrderImplementation = struct
         | Type.ParameterVariadicComponent _, _
         | _, Type.ParameterVariadicComponent _ ->
             union
+        | Type.NoneType, _
+        | _, Type.NoneType ->
+            union
         | Type.Annotated left, _ -> Type.annotated (join order left right)
         | _, Type.Annotated right -> Type.annotated (join order left right)
         (* n: A_n = B_n -> Union[A_i] <= Union[B_i]. *)
         | Type.Union left, Type.Union right -> Type.union (left @ right)
         | (Type.Union elements as union), other
-        | other, (Type.Union elements as union) -> (
+        | other, (Type.Union elements as union) ->
             if always_less_or_equal order ~left:other ~right:union then
               union
             else
-              match other with
-              | Type.Optional Type.Bottom -> Type.Optional union
-              | Type.Optional element -> Type.Optional (Type.union (element :: elements))
-              | _ ->
-                  List.map elements ~f:(join order other)
-                  |> List.fold ~f:(join order) ~init:Type.Bottom )
+              List.map elements ~f:(join order other) |> List.fold ~f:(join order) ~init:Type.Bottom
         | _, Type.Variable _
         | Type.Variable _, _ ->
             union
@@ -254,17 +252,6 @@ module OrderImplementation = struct
                 | _ -> None
               in
               target >>= handle_target |> Option.value ~default:union
-        (* Special case joins of optional collections with their uninstantated counterparts. *)
-        | ( Type.Parametric ({ parameters = [Single Type.Bottom]; _ } as other),
-            Type.Optional (Type.Parametric ({ parameters = [Single parameter]; _ } as collection)) )
-        | ( Type.Optional (Type.Parametric ({ parameters = [Single parameter]; _ } as collection)),
-            Type.Parametric ({ parameters = [Single Type.Bottom]; _ } as other) )
-          when Identifier.equal other.name collection.name ->
-            Type.Parametric { other with parameters = [Single parameter] }
-        (* A <= B -> lub(A, Optional[B]) = Optional[B]. *)
-        | other, Type.Optional parameter
-        | Type.Optional parameter, other ->
-            Type.optional (join order other parameter)
         (* Tuple variables are covariant. *)
         | Type.Tuple (Type.Bounded (Concatenation _)), other
         | other, Type.Tuple (Type.Bounded (Concatenation _)) ->
@@ -295,43 +282,6 @@ module OrderImplementation = struct
             Type.Callable { Callable.kind = Callable.Named right; _ } )
           when Reference.equal left right ->
             callable
-        | ( Type.TypedDictionary { fields = left_fields; _ },
-            Type.TypedDictionary { fields = right_fields; _ } ) ->
-            if Type.TypedDictionary.fields_have_colliding_keys left_fields right_fields then
-              Type.Parametric
-                {
-                  name = "typing.Mapping";
-                  parameters = [Single Type.string; Single Type.object_primitive];
-                }
-            else
-              let join_fields =
-                if always_less_or_equal order ~left ~right then
-                  right_fields
-                else if always_less_or_equal order ~left:right ~right:left then
-                  left_fields
-                else
-                  let found_match field =
-                    List.exists
-                      left_fields
-                      ~f:
-                        (Type.Record.TypedDictionary.equal_typed_dictionary_field
-                           Type.equal_type_t
-                           field)
-                  in
-                  List.filter right_fields ~f:found_match
-              in
-              Type.TypedDictionary.anonymous join_fields
-        | Type.TypedDictionary _, other
-        | other, Type.TypedDictionary _ ->
-            let class_join =
-              join order (Type.Primitive (Type.TypedDictionary.class_name ~total:true)) other
-            in
-            let failed =
-              Type.exists class_join ~predicate:(function
-                  | Type.Primitive "TypedDictionary" -> true
-                  | _ -> false)
-            in
-            if failed then union else class_join
         | Type.Callable left, Type.Callable right ->
             if List.is_empty left.Callable.overloads && List.is_empty right.Callable.overloads then
               let kind =
@@ -403,6 +353,9 @@ module OrderImplementation = struct
         | Type.ParameterVariadicComponent _, _
         | _, Type.ParameterVariadicComponent _ ->
             Type.Bottom
+        | Type.NoneType, _
+        | _, Type.NoneType ->
+            Type.Bottom
         | Type.Annotated left, _ -> Type.annotated (meet order left right)
         | _, Type.Annotated right -> Type.annotated (meet order left right)
         | (Type.Variable _ as variable), other
@@ -426,13 +379,6 @@ module OrderImplementation = struct
               left
             else if always_less_or_equal order ~left:right ~right:left then
               right
-            else
-              Type.Bottom
-        (* A <= B -> glb(A, Optional[B]) = A. *)
-        | other, Type.Optional parameter
-        | Type.Optional parameter, other ->
-            if always_less_or_equal order ~left:other ~right:parameter then
-              other
             else
               Type.Bottom
         (* Tuple variables are covariant. *)
@@ -486,26 +432,6 @@ module OrderImplementation = struct
             >>= constructor ~protocol_assumptions
             >>| meet order (Type.Callable callable)
             |> Option.value ~default:Type.Bottom
-        | ( Type.TypedDictionary { fields = left_fields; _ },
-            Type.TypedDictionary { fields = right_fields; _ } ) ->
-            if Type.TypedDictionary.fields_have_colliding_keys left_fields right_fields then
-              Type.Bottom
-            else
-              let meet_fields =
-                if always_less_or_equal order ~left ~right then
-                  left_fields
-                else if always_less_or_equal order ~left:right ~right:left then
-                  right_fields
-                else
-                  List.dedup_and_sort
-                    (left_fields @ right_fields)
-                    ~compare:
-                      [%compare: Type.type_t Type.Record.TypedDictionary.typed_dictionary_field]
-              in
-              Type.TypedDictionary.anonymous meet_fields
-        | Type.TypedDictionary _, _
-        | _, Type.TypedDictionary _ ->
-            Type.Bottom
         | Type.Literal _, _
         | _, Type.Literal _ ->
             Type.Bottom
@@ -548,10 +474,8 @@ let rec is_compatible_with order ~left ~right =
   (* Top *)
   | _, Type.Top -> true
   | Type.Top, _ -> false
-  (* Optional *)
-  | Type.Optional left, Type.Optional right -> is_compatible_with order ~left ~right
-  | _, Type.Optional parameter -> is_compatible_with order ~left ~right:parameter
-  | Type.Optional _, _ -> false
+  (* None *)
+  | Type.NoneType, Type.NoneType -> true
   (* Tuple *)
   | Type.Tuple (Type.Bounded (Concrete left)), Type.Tuple (Type.Bounded (Concrete right))
     when List.length left = List.length right ->

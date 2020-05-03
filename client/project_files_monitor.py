@@ -8,14 +8,15 @@ import functools
 import os
 from typing import Any, Dict, List, Sequence, Set
 
-from . import json_rpc
+from . import json_rpc, watchman
 from .analysis_directory import AnalysisDirectory
+from .buck import BuckException
 from .configuration import Configuration
 from .filesystem import find_root
 from .socket_connection import SocketConnection
 
-# We use the `LOG` from watchman_subscriber due to its better formatting in log files
-from .watchman_subscriber import LOG, Subscription, WatchmanSubscriber
+# We use the `LOG` from watchman due to its better formatting in log files
+from .watchman import LOG, Subscriber, Subscription
 
 
 class MonitorException(Exception):
@@ -32,7 +33,7 @@ def _log_paths(message: str, paths: Sequence[str]) -> None:
         LOG.info(f"{message} {paths[:log_threshold]} (and {additional_count} more)")
 
 
-class ProjectFilesMonitor(WatchmanSubscriber):
+class ProjectFilesMonitor(Subscriber):
     """
         Logs from this monitor are found in
         .pyre/<local root>/file_monitor/file_monitor.log
@@ -95,7 +96,7 @@ class ProjectFilesMonitor(WatchmanSubscriber):
 
     @staticmethod
     def is_alive(configuration: Configuration) -> bool:
-        pid_path = ProjectFilesMonitor._compute_pid_path(
+        pid_path = watchman.compute_pid_path(
             ProjectFilesMonitor.base_path(configuration), ProjectFilesMonitor.NAME
         )
         try:
@@ -140,6 +141,14 @@ class ProjectFilesMonitor(WatchmanSubscriber):
 
         except KeyError:
             pass
+
+        except BuckException:
+            LOG.info("Unable to build project.")
+            pass
+
+        except Exception as exception:
+            LOG.info(f"Exception during handling of file update: {exception}")
+            raise exception
 
     @staticmethod
     def _find_watchman_path(directory: str) -> str:

@@ -139,16 +139,17 @@ let test_create _ =
   assert_create "typing.Set[int]" (Type.set Type.integer);
   assert_create "typing.Union[int, str]" (Type.union [Type.integer; Type.string]);
   assert_create "typing.Union[int, typing.Any]" (Type.union [Type.integer; Type.Any]);
-  assert_create "typing.Union[int, typing.Optional[$bottom]]" (Type.optional Type.integer);
+  assert_create "typing.Union[int, typing.Optional[$bottom]]" Type.integer;
+  assert_create "typing.Union[int, None]" (Type.optional Type.integer);
   assert_create
-    "typing.Union[int, typing.Optional[$bottom], str, typing.Tuple[int, str]]"
-    (Type.optional (Type.union [Type.integer; Type.string; Type.tuple [Type.integer; Type.string]]));
+    "typing.Union[int, None, str, typing.Tuple[int, str]]"
+    (Type.union [Type.NoneType; Type.integer; Type.string; Type.tuple [Type.integer; Type.string]]);
   assert_create
     "typing.Union[typing.Optional[int], typing.Optional[str]]"
-    (Type.optional (Type.union [Type.integer; Type.string]));
+    (Type.union [Type.NoneType; Type.integer; Type.string]);
   assert_create
     "typing.Union[typing.Optional[int], str]"
-    (Type.optional (Type.union [Type.integer; Type.string]));
+    (Type.union [Type.NoneType; Type.integer; Type.string]);
 
   (* Annotated. *)
   assert_create "typing.Annotated[int]" (Type.annotated Type.integer);
@@ -399,28 +400,6 @@ let test_create _ =
     "typing.Callable[..., function]"
     (Type.Callable.create ~annotation:(Type.Callable.create ~annotation:Type.Any ()) ());
   assert_create
-    "mypy_extensions.TypedDict[('Movie', True, ('year', int), ('name', str))]"
-    (Type.TypedDictionary
-       {
-         name = "Movie";
-         fields =
-           [
-             { name = "year"; annotation = Type.integer; required = true };
-             { name = "name"; annotation = Type.string; required = true };
-           ];
-       });
-  assert_create
-    "mypy_extensions.TypedDict[('Movie', False, ('year', int), ('name', str))]"
-    (Type.TypedDictionary
-       {
-         name = "Movie";
-         fields =
-           [
-             { name = "year"; annotation = Type.integer; required = false };
-             { name = "name"; annotation = Type.string; required = false };
-           ];
-       });
-  assert_create
     ~aliases:(function
       | "Ts" -> Some (Type.VariableAlias (ListVariadic (Type.Variable.Variadic.List.create "Ts")))
       | _ -> None)
@@ -466,6 +445,22 @@ let test_create _ =
        (Bounded
           (Concatenation
              (create_concatenation ~mappers:["list"] (Type.Variable.Variadic.List.create "Ts")))));
+
+  assert_create "typing_extensions.Literal['foo']" (Type.literal_string "foo");
+  assert_create
+    "typing_extensions.Literal[Foo.ONE]"
+    (Type.Literal
+       (Type.EnumerationMember { enumeration_type = Type.Primitive "Foo"; member_name = "ONE" }));
+  assert_create
+    "typing_extensions.Literal[Foo.ONE, Foo.TWO]"
+    (Type.union
+       [
+         Type.Literal
+           (Type.EnumerationMember { enumeration_type = Type.Primitive "Foo"; member_name = "ONE" });
+         Type.Literal
+           (Type.EnumerationMember { enumeration_type = Type.Primitive "Foo"; member_name = "TWO" });
+       ]);
+  assert_create "typing_extensions.Literal[ONE]" Type.Top;
   ()
 
 
@@ -482,9 +477,9 @@ let test_instantiate _ =
 
   (* Union[_T, _VT] + (_T = int, _VT = None) -> Optional[int] *)
   assert_instantiate
-    [Type.variable "_T", Type.integer; Type.variable "_VT", Type.Optional Type.Bottom]
+    [Type.variable "_T", Type.integer; Type.variable "_VT", Type.NoneType]
     ~generic:(Type.Union [Type.variable "_T"; Type.variable "_VT"])
-    ~expected:(Type.Optional Type.integer)
+    ~expected:(Type.optional Type.integer)
 
 
 let test_expression _ =
@@ -596,28 +591,6 @@ let test_expression _ =
        ())
     ("typing.Callable.__getitem__(([Named($0, int), Variable(int), " ^ "Keywords(str)], int))");
   assert_expression
-    (Type.TypedDictionary
-       {
-         name = "Movie";
-         fields =
-           [
-             { name = "title"; annotation = Type.string; required = true };
-             { name = "year"; annotation = Type.integer; required = true };
-           ];
-       })
-    "mypy_extensions.TypedDict[(\"Movie\", True, (\"title\", str), (\"year\", int))]";
-  assert_expression
-    (Type.TypedDictionary
-       {
-         name = "Movie";
-         fields =
-           [
-             { name = "title"; annotation = Type.string; required = false };
-             { name = "year"; annotation = Type.integer; required = false };
-           ];
-       })
-    "mypy_extensions.TypedDict[(\"Movie\", False, (\"title\", str), (\"year\", int))]";
-  assert_expression
     (Type.Parametric
        {
          name = "G";
@@ -629,6 +602,11 @@ let test_expression _ =
            ];
        })
     "G[TParams]";
+  assert_expression
+    (Type.Literal
+       (Type.EnumerationMember
+          { enumeration_type = Type.Primitive "test.MyEnum"; member_name = "ONE" }))
+    "typing_extensions.Literal[test.MyEnum.ONE]";
   ()
 
 
@@ -705,68 +683,75 @@ let test_concise _ =
        ())
     "(callable: (x: int) -> float) -> int";
   assert_concise Type.Any "Any";
-  assert_concise (Type.Optional Type.Bottom) "None";
-  assert_concise (Type.Optional Type.integer) "Optional[int]";
+  assert_concise Type.NoneType "None";
+  assert_concise (Type.optional Type.integer) "Optional[int]";
   assert_concise (Type.parametric "parametric" ![Type.Top; Type.Top]) "parametric[]";
   assert_concise (Type.parametric "parametric" ![Type.Top; Type.float]) "parametric[unknown, float]";
   assert_concise (Type.Primitive "a.b.c") "c";
   assert_concise (Type.tuple [Type.integer; Type.Any]) "Tuple[int, Any]";
   assert_concise (Type.Tuple (Type.Unbounded Type.integer)) "Tuple[int, ...]";
-  assert_concise
-    (Type.TypedDictionary
-       {
-         name = "Movie";
-         fields =
-           [
-             { name = "year"; annotation = Type.integer; required = true };
-             { name = "name"; annotation = Type.string; required = true };
-           ];
-       })
-    "Movie";
-  assert_concise
-    (Type.TypedDictionary
-       {
-         name = "$anonymous";
-         fields =
-           [
-             { name = "year"; annotation = Type.integer; required = true };
-             { name = "name"; annotation = Type.string; required = true };
-           ];
-       })
-    "TypedDict(year: int, name: str)";
   assert_concise (Type.union [Type.integer; Type.string]) "Union[int, str]";
-  assert_concise (Type.variable ~constraints:(Type.Variable.Explicit [Type.Top]) "T") "T"
+  assert_concise (Type.variable ~constraints:(Type.Variable.Explicit [Type.Top]) "T") "T";
+  assert_concise
+    (Type.Literal
+       (Type.EnumerationMember
+          { enumeration_type = Type.Primitive "test.MyEnum"; member_name = "ONE" }))
+    "typing_extensions.Literal[test.MyEnum.ONE]";
+  ()
+
+
+let test_weaken_literals _ =
+  let assert_weakened_literal literal expected =
+    assert_equal ~printer:Type.show ~cmp:Type.equal expected (Type.weaken_literals literal)
+  in
+  assert_weakened_literal (Type.literal_integer 1) Type.integer;
+  assert_weakened_literal (Type.literal_string "foo") Type.string;
+  assert_weakened_literal (Type.Literal (Type.Boolean true)) Type.bool;
+  assert_weakened_literal
+    (Type.Literal
+       (Type.EnumerationMember
+          { enumeration_type = Type.Primitive "test.MyEnum"; member_name = "ONE" }))
+    (Type.Primitive "test.MyEnum");
+  assert_weakened_literal (Type.list (Type.literal_integer 1)) (Type.list Type.integer);
+  ()
 
 
 let test_union _ =
-  assert_equal (Type.union [Type.string; Type.float]) (Type.Union [Type.float; Type.string]);
-  assert_equal (Type.union [Type.float; Type.string]) (Type.Union [Type.float; Type.string]);
-  assert_equal
-    (Type.union [Type.optional Type.string; Type.float])
-    (Type.Optional (Type.Union [Type.string; Type.float]));
-  assert_equal
-    (Type.union [Type.float; Type.string; Type.optional Type.float])
-    (Type.Optional (Type.Union [Type.float; Type.string]));
-  assert_false (Type.equal (Type.union [Type.float; Type.Any]) Type.Any);
-  assert_true (Type.equal (Type.union [Type.float; Type.Top]) Type.Top);
-  assert_true
-    (Type.equal (Type.union [Type.string; Type.float]) (Type.Union [Type.float; Type.string]));
-  assert_true
-    (Type.equal (Type.union [Type.float; Type.string]) (Type.Union [Type.float; Type.string]));
-  assert_true (Type.equal (Type.union [Type.float]) Type.float);
-  assert_true (Type.equal (Type.union [Type.float; Type.Bottom]) Type.float);
-  assert_true (Type.equal (Type.union [Type.Bottom; Type.Bottom]) Type.Bottom);
+  let assert_union arguments expected =
+    assert_equal ~printer:Type.show ~cmp:Type.equal expected (Type.union arguments)
+  in
+  assert_union
+    [Type.string; Type.optional (Type.Union [Type.integer; Type.string])]
+    (Type.Union [Type.none; Type.integer; Type.string]);
+  assert_union [Type.string; Type.float] (Type.Union [Type.float; Type.string]);
+  assert_union [Type.float; Type.string] (Type.Union [Type.float; Type.string]);
+  assert_union
+    [Type.optional Type.string; Type.float]
+    (Type.Union [Type.NoneType; Type.float; Type.string]);
+  assert_union
+    [Type.float; Type.string; Type.optional Type.float]
+    (Type.Union [Type.NoneType; Type.float; Type.string]);
+  assert_union [Type.float; Type.Any] Type.Any;
+  assert_union [Type.float; Type.Top] Type.Top;
+  assert_union [Type.string; Type.float] (Type.Union [Type.float; Type.string]);
+  assert_union [Type.float; Type.string] (Type.Union [Type.float; Type.string]);
+  assert_union [Type.float] Type.float;
+  assert_union [Type.float; Type.Bottom] Type.float;
+  assert_union [Type.Bottom; Type.Bottom] Type.Bottom;
 
   (* Flatten unions. *)
-  assert_equal
-    (Type.union [Type.float; Type.union [Type.string; Type.bytes]])
-    (Type.union [Type.float; Type.string; Type.bytes]);
-  assert_equal
-    (Type.union [Type.Optional (Type.list Type.integer); Type.list Type.integer])
-    (Type.Optional (Type.list Type.integer));
-  assert_equal
-    (Type.union [Type.Optional (Type.variable "A"); Type.variable "A"])
-    (Type.Optional (Type.variable "A"));
+  assert_union
+    [Type.float; Type.union [Type.string; Type.bytes]]
+    (Type.Union [Type.bytes; Type.float; Type.string]);
+  assert_union
+    [Type.optional (Type.list Type.integer); Type.list Type.integer]
+    (Type.optional (Type.list Type.integer));
+  assert_union
+    [Type.optional (Type.variable "A"); Type.variable "A"]
+    (Type.optional (Type.variable "A"));
+  assert_union
+    [Type.string; Type.optional (Type.Union [Type.integer; Type.string])]
+    (Type.Union [Type.NoneType; Type.integer; Type.string]);
   ()
 
 
@@ -800,18 +785,7 @@ let test_primitives _ =
   assert_equal [] (Type.primitives Type.Bottom);
   assert_equal [Type.integer] (Type.primitives Type.integer);
   assert_equal [] (Type.primitives Type.Any);
-  assert_equal
-    [Type.integer; Type.string]
-    ( Type.TypedDictionary
-        {
-          name = "Movie";
-          fields =
-            [
-              { name = "year"; annotation = Type.integer; required = true };
-              { name = "name"; annotation = Type.string; required = true };
-            ];
-        }
-    |> Type.primitives )
+  ()
 
 
 let test_elements _ =
@@ -844,18 +818,7 @@ let test_elements _ =
   assert_equal [] (Type.elements Type.Bottom);
   assert_equal ["int"] (Type.elements Type.integer);
   assert_equal [] (Type.elements Type.Any);
-  assert_equal
-    ["int"; "str"; "TypedDictionary"]
-    ( Type.TypedDictionary
-        {
-          name = "Movie";
-          fields =
-            [
-              { name = "year"; annotation = Type.integer; required = true };
-              { name = "name"; annotation = Type.string; required = true };
-            ];
-        }
-    |> Type.elements )
+  ()
 
 
 let test_exists _ =
@@ -899,7 +862,7 @@ let test_is_generator _ =
 let test_contains_callable _ =
   assert_true (Type.contains_callable (Type.Callable.create ~annotation:Type.integer ()));
   assert_true
-    (Type.contains_callable (Type.Optional (Type.Callable.create ~annotation:Type.integer ())));
+    (Type.contains_callable (Type.optional (Type.Callable.create ~annotation:Type.integer ())));
   assert_true
     (Type.contains_callable
        (Type.union [Type.string; Type.Callable.create ~annotation:Type.integer ()]));
@@ -919,7 +882,7 @@ let test_is_concrete _ =
 let test_is_not_instantiated _ =
   assert_true (Type.is_not_instantiated Type.Bottom);
   assert_true (Type.is_not_instantiated (Type.dictionary ~key:Type.Bottom ~value:Type.Bottom));
-  assert_true (Type.is_not_instantiated (Type.Optional Type.Bottom));
+  assert_false (Type.is_not_instantiated Type.NoneType);
   assert_false (Type.is_not_instantiated Type.Top);
   assert_true (Type.is_not_instantiated (Type.variable "_T"))
 
@@ -935,7 +898,7 @@ let test_is_none _ =
   assert_false (Type.is_none (Type.Primitive "None"));
   assert_false (Type.is_none Type.integer);
   assert_false (Type.is_none (Type.Primitive "foo"));
-  assert_true (Type.is_none (Type.Optional Type.Bottom))
+  assert_true (Type.is_none Type.NoneType)
 
 
 let test_is_type_alias _ =
@@ -950,7 +913,7 @@ let test_contains_unknown _ =
   assert_false (Type.contains_unknown (Type.optional Type.integer));
   assert_true
     (Type.contains_unknown
-       (Type.Optional (Type.Parametric { name = "foo"; parameters = ![Type.integer; Type.Top] })));
+       (Type.optional (Type.Parametric { name = "foo"; parameters = ![Type.integer; Type.Top] })));
   assert_true
     (Type.contains_unknown
        (Type.Parametric { name = "foo"; parameters = ![Type.integer; Type.Top] }));
@@ -1018,7 +981,7 @@ let test_optional_value _ =
   assert_equal
     (Option.value_exn
        (Type.optional_value
-          (Type.Optional (Type.Parametric { name = "foo"; parameters = ![Type.integer; Type.Top] }))))
+          (Type.optional (Type.Parametric { name = "foo"; parameters = ![Type.integer; Type.Top] }))))
     (Type.Parametric { name = "foo"; parameters = ![Type.integer; Type.Top] });
   assert_true
     (Option.is_none
@@ -1032,15 +995,9 @@ let test_async_generator_value _ =
     (Option.value_exn
        (Type.async_generator_value
           (Type.Parametric
-             {
-               name = "typing.AsyncGenerator";
-               parameters = ![Type.integer; Type.Optional Type.Bottom];
-             })))
+             { name = "typing.AsyncGenerator"; parameters = ![Type.integer; Type.NoneType] })))
     (Type.Parametric
-       {
-         name = "typing.Generator";
-         parameters = ![Type.integer; Type.Optional Type.Bottom; Type.Optional Type.Bottom];
-       })
+       { name = "typing.Generator"; parameters = ![Type.integer; Type.NoneType; Type.NoneType] })
 
 
 let test_dequalify _ =
@@ -1073,6 +1030,13 @@ let test_dequalify _ =
   assert_dequalify
     (Type.parametric "A.B.C" ![Type.optional Type.integer])
     (Type.parametric "C" ![Type.parametric "Optional" ![Type.integer]]);
+  assert_dequalify
+    (Type.Literal
+       (Type.EnumerationMember
+          { enumeration_type = Type.Primitive "A.B.C.MyEnum"; member_name = "ONE" }))
+    (Type.Literal
+       (Type.EnumerationMember { enumeration_type = Type.Primitive "C.MyEnum"; member_name = "ONE" }));
+
   let assert_dequalify_variable source expected =
     assert_equal
       ~cmp:Type.Variable.equal
@@ -1253,6 +1217,10 @@ let test_visit _ =
   let end_state, transformed = CountTransform.visit 0 (create "Foo[Bar[Baz, Bop], Bang]") in
   assert_types_equal transformed Type.integer;
   assert_equal ~printer:string_of_int 5 end_state;
+  let end_state, transformed = CountTransform.visit 0 (create "typing.Literal[test.MyEnum.ONE]") in
+  assert_types_equal transformed Type.integer;
+  assert_equal ~printer:string_of_int 2 end_state;
+
   let module SubstitutionTransform = Type.Transform.Make (struct
     type state = int
 
@@ -1266,7 +1234,9 @@ let test_visit _ =
 
 
     let visit_children_before _ = function
-      | Type.Optional _ -> false
+      | Type.Union [Type.NoneType; _]
+      | Type.Union [_; Type.NoneType] ->
+          false
       | _ -> true
 
 
@@ -1282,15 +1252,6 @@ let test_visit _ =
     SubstitutionTransform.visit 1 (create "typing.Callable[[typing.Optional[int], int], int]")
   in
   assert_types_equal transformed (create "typing.Callable[[typing.Optional[int], str], int]");
-  assert_equal ~printer:string_of_int 0 end_state;
-  let end_state, transformed =
-    SubstitutionTransform.visit
-      1
-      (create "mypy_extensions.TypedDict[('int', True, ('int', int), ('str', int))]")
-  in
-  assert_types_equal
-    transformed
-    (create "mypy_extensions.TypedDict[('int', True, ('int', str), ('str', int))]");
   assert_equal ~printer:string_of_int 0 end_state;
   let module ConcatenateTransform = Type.Transform.Make (struct
     type state = string
@@ -2256,9 +2217,8 @@ let test_infer_transform _ =
     ~expected:(Type.Primitive "string");
   assert_transform
     ~annotation:
-      (Type.Parametric
-         { name = "Union"; parameters = ![Type.Optional Bottom; Type.Primitive "string"] })
-    ~expected:(Type.Optional (Type.Primitive "string"))
+      (Type.Parametric { name = "Union"; parameters = ![Type.NoneType; Type.Primitive "string"] })
+    ~expected:(Type.optional (Type.Primitive "string"))
 
 
 let test_fields_from_constructor _ =
@@ -2306,6 +2266,7 @@ let () =
          "instantiate" >:: test_instantiate;
          "expression" >:: test_expression;
          "concise" >:: test_concise;
+         "weaken_literals" >:: test_weaken_literals;
          "union" >:: test_union;
          "primitives" >:: test_primitives;
          "elements" >:: test_elements;

@@ -5,21 +5,20 @@
 
 open Core
 
+type partial_sink = {
+  kind: string;
+  label: string;
+}
+[@@deriving compare, eq, sexp, show, hash]
+
 type t =
-  | Demo
-  | FileSystem
-  | GetAttr
   | Attach
+  | PartialSink of partial_sink
+  | TriggeredPartialSink of partial_sink
   | LocalReturn (* Special marker to describe function in-out behavior *)
-  | Logging
   | NamedSink of string
   | ParameterUpdate of int (* Special marker to describe function in-out behavior *)
-  | RemoteCodeExecution
-  | SQL
   | AddFeatureToArgument
-  | Test
-  | XMLParser
-  | XSS
 [@@deriving compare, eq, sexp, show, hash]
 
 val name : string

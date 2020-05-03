@@ -16,13 +16,12 @@ from typing import Optional
 
 import psutil
 
-from .. import configuration_monitor
+from .. import configuration_monitor, watchman
 from ..analysis_directory import AnalysisDirectory
 from ..configuration import Configuration
 from ..find_directories import BINARY_NAME, CLIENT_NAME
 from ..project_files_monitor import ProjectFilesMonitor
-from ..watchman_subscriber import WatchmanSubscriber
-from .command import Command
+from .command import Command, CommandArguments
 from .rage import Rage
 
 
@@ -75,20 +74,37 @@ class Kill(Command):
 
     def __init__(
         self,
+        command_arguments: CommandArguments,
+        *,
+        original_directory: str,
+        configuration: Optional[Configuration] = None,
+        analysis_directory: Optional[AnalysisDirectory] = None,
+        with_fire: bool,
+    ) -> None:
+        super(Kill, self).__init__(
+            command_arguments, original_directory, configuration, analysis_directory
+        )
+        self._with_fire = with_fire
+
+    @staticmethod
+    def from_arguments(
         arguments: argparse.Namespace,
         original_directory: str,
         configuration: Optional[Configuration] = None,
         analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> None:
-        super(Kill, self).__init__(
-            arguments, original_directory, configuration, analysis_directory
+    ) -> "Kill":
+        return Kill(
+            CommandArguments.from_arguments(arguments),
+            original_directory=original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+            with_fire=arguments.with_fire,
         )
-        self._with_fire: bool = arguments.with_fire
 
     @classmethod
     def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
         kill = parser.add_parser(cls.NAME)
-        kill.set_defaults(command=cls)
+        kill.set_defaults(command=cls.from_arguments)
         kill.add_argument(
             "--with-fire", action="store_true", help="A no-op flag that adds emphasis."
         )
@@ -167,10 +183,10 @@ class Kill(Command):
 
     def _kill_client_processes(self) -> None:
         self._kill_processes_by_name(CLIENT_NAME)
-        WatchmanSubscriber.stop_subscriber(
+        watchman.stop_subscriptions(
             ProjectFilesMonitor.base_path(self._configuration), ProjectFilesMonitor.NAME
         )
-        WatchmanSubscriber.stop_subscriber(
+        watchman.stop_subscriptions(
             configuration_monitor.ConfigurationMonitor.base_path(self._configuration),
             configuration_monitor.ConfigurationMonitor.NAME,
         )
@@ -199,17 +215,16 @@ class Kill(Command):
             prefix="pyre-rage-", suffix=".log", delete=False
         ) as output:
             LOG.warning("Saving the output of `pyre rage` into `%s`", output.name)
-            arguments = self._arguments
-            arguments.output_path = output.name
             Rage(
-                arguments,
-                self._original_directory,
-                self._configuration,
-                self._analysis_directory,
+                self._command_arguments,
+                original_directory=self._original_directory,
+                configuration=self._configuration,
+                analysis_directory=self._analysis_directory,
+                output_path=output.name,
             ).run()
 
     def _run(self) -> None:
-        explicit_local = self._arguments.local_configuration
+        explicit_local = self.local_configuration
         if explicit_local:
             LOG.warning(
                 "Pyre kill will terminate all running servers. "
@@ -220,7 +235,7 @@ class Kill(Command):
         self._delete_server_files()
         self._delete_caches()
         self._kill_client_processes()
-        if self._arguments.with_fire:
+        if self._with_fire:
             LOG.warning(
                 "Note that `--with-fire` adds emphasis to `pyre kill` but does not affect its behavior."
                 f"\n{PYRE_FIRE}"

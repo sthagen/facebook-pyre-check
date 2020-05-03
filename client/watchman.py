@@ -26,7 +26,11 @@ Subscription = NamedTuple(
 )
 
 
-class WatchmanSubscriber(object):
+def compute_pid_path(base_path: str, name: str) -> str:
+    return str(Path(base_path, f"{name}.pid"))
+
+
+class Subscriber(object):
     def __init__(self, base_path: str) -> None:
         self._base_path: str = base_path
         self._alive: bool = True
@@ -53,10 +57,6 @@ class WatchmanSubscriber(object):
         """
         raise NotImplementedError
 
-    @staticmethod
-    def _compute_pid_path(base_path: str, name: str) -> str:
-        return str(Path(base_path, f"{name}.pid"))
-
     @property
     @functools.lru_cache(1)
     def _watchman_client(self) -> "pywatchman.client":  # noqa
@@ -81,63 +81,54 @@ class WatchmanSubscriber(object):
         except OSError:
             pass
         lock_path: str = os.path.join(self._base_path, "{}.lock".format(self._name))
-        LOG.debug(f"WatchmanSubscriber: Trying to acquire lock file {lock_path}.")
-
-        def cleanup() -> None:
-            LOG.info("Cleaning up lock and pid files before exiting.")
-            remove_if_exists(lock_path)
-
-        def interrupt_handler(_signal_number=None, _frame=None) -> None:
-            LOG.info("Interrupt signal received.")
-            cleanup()
-            sys.exit(0)
-
-        signal.signal(signal.SIGINT, interrupt_handler)
+        LOG.debug(f"Subscriber: Trying to acquire lock file {lock_path}.")
 
         # Die silently if unable to acquire the lock.
-        with acquire_lock(lock_path, blocking=False), (
-            register_unique_process(
-                os.getpid(), self._compute_pid_path(self._base_path, self._name)
-            )
-        ):
-            LOG.debug(f"Acquired lock on {lock_path}")
-            file_handler = logging.FileHandler(
-                os.path.join(self._base_path, f"{self._name}.log"), mode="w"
-            )
-            file_handler.setFormatter(
-                logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-            )
-            LOG.addHandler(file_handler)
-
-            subscriptions = self._subscriptions
-            for subscription in subscriptions:
-                self._subscribe_to_watchman(subscription)
-
-            if not subscriptions:
-                LOG.info("No watchman roots to subscribe to.")
-
-            connection = self._watchman_client.recvConn
-            if not connection:
-                LOG.error(
-                    f"Connection to Watchman for {self._name} not found", self._name
+        try:
+            with acquire_lock(lock_path, blocking=False), (
+                register_unique_process(
+                    os.getpid(), compute_pid_path(self._base_path, self._name)
                 )
-                sys.exit(1)
+            ):
+                LOG.debug(f"Acquired lock on {lock_path}")
+                file_handler = logging.FileHandler(
+                    os.path.join(self._base_path, f"{self._name}.log"), mode="w"
+                )
+                file_handler.setFormatter(
+                    logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+                )
+                LOG.addHandler(file_handler)
 
-            while self._alive:
-                # This call is blocking, which prevents this loop from burning CPU.
-                response = connection.receive()
-                if response.get("is_fresh_instance", False):
-                    # TODO: is_fresh_instance can occur at any time, not just the first
-                    # response.  Ignoring the initial response is fine, but if we
-                    # receive a fresh instance response later we should assume that all
-                    # files may have been changed.
-                    root = response.get("root", "<no-root-found>")
-                    LOG.info(f"Ignoring is_fresh_instance message for {root}")
-                else:
-                    self._handle_response(response)
-                self._ready.set()  # At least one message has been received.
+                subscriptions = self._subscriptions
+                for subscription in subscriptions:
+                    self._subscribe_to_watchman(subscription)
 
-            cleanup()
+                if not subscriptions:
+                    LOG.info("No watchman roots to subscribe to.")
+
+                connection = self._watchman_client.recvConn
+                if not connection:
+                    LOG.error(
+                        f"Connection to Watchman for {self._name} not found", self._name
+                    )
+                    sys.exit(1)
+
+                while self._alive:
+                    # This call is blocking, which prevents this loop from burning CPU.
+                    response = connection.receive()
+                    if response.get("is_fresh_instance", False):
+                        # TODO: is_fresh_instance can occur at any time, not just the
+                        # first response. Ignoring the initial response is fine,
+                        # but if we receive a fresh instance response later we
+                        # should assume that all files may have been changed.
+                        root = response.get("root", "<no-root-found>")
+                        LOG.info(f"Ignoring is_fresh_instance message for {root}")
+                    else:
+                        self._handle_response(response)
+                    self._ready.set()  # At least one message has been received.
+        finally:
+            LOG.info("Cleaning up lock and pid files before exiting.")
+            remove_if_exists(lock_path)
 
     def daemonize(self) -> None:
         """We double-fork here to detach the daemon process from the parent.
@@ -161,19 +152,17 @@ class WatchmanSubscriber(object):
             else:
                 sys.exit(0)
 
-    @staticmethod
-    def stop_subscriber(base_path: str, subscriber_name: str) -> None:
-        try:
-            pid_path = Path(
-                WatchmanSubscriber._compute_pid_path(base_path, subscriber_name)
-            )
-            pid = int(pid_path.read_text())
-            os.kill(pid, signal.SIGINT)
-            LOG.debug(f"Stopped the {subscriber_name} with pid {pid}.")
-        except FileNotFoundError:
-            LOG.debug(f"Could not stop the {subscriber_name} because it was not found.")
-        except (OSError, ValueError) as exception:
-            LOG.debug(
-                f"Could not stop the {subscriber_name} "
-                f"because of exception `{exception}`."
-            )
+
+def stop_subscriptions(base_path: str, subscriber_name: str) -> None:
+    try:
+        pid_path = Path(compute_pid_path(base_path, subscriber_name))
+        pid = int(pid_path.read_text())
+        os.kill(pid, signal.SIGINT)
+        LOG.debug(f"Stopped the {subscriber_name} with pid {pid}.")
+    except FileNotFoundError:
+        LOG.debug(f"Could not stop the {subscriber_name} because it was not found.")
+    except (OSError, ValueError) as exception:
+        LOG.debug(
+            f"Could not stop the {subscriber_name} "
+            f"because of exception `{exception}`."
+        )

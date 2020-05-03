@@ -3,6 +3,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import logging
 import re
 import subprocess
 from enum import Enum
@@ -11,7 +12,9 @@ from typing import Dict, List
 
 from ...client.filesystem import get_filesystem
 from .ast import verify_stable_ast
-from .postprocess import LOG
+
+
+LOG: logging.Logger = logging.getLogger(__name__)
 
 
 class LocalMode(Enum):
@@ -132,3 +135,17 @@ def remove_non_pyre_ignores(subdirectory: Path) -> None:
             r"s/# \?type: \?ignore$//g",
         ] + python_files
         subprocess.check_output(remove_type_ignore_command)
+
+
+def find_files(directory: Path, name: str) -> List[str]:
+    output = (
+        subprocess.check_output(
+            ["find", str(directory), "-name", name], stderr=subprocess.DEVNULL
+        )
+        .decode("utf-8")
+        .strip()
+    )
+    if output == "":
+        return []
+    files = output.split("\n")
+    return [file.strip() for file in files]

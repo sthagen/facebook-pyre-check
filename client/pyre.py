@@ -23,9 +23,30 @@ from .version import __version__
 LOG: logging.Logger = logging.getLogger(__name__)
 
 
+def _set_default_command(arguments: argparse.Namespace) -> None:
+    if shutil.which("watchman"):
+        arguments.command = commands.Incremental.from_arguments
+        arguments.nonblocking = False
+        arguments.incremental_style = IncrementalStyle.FINE_GRAINED
+        arguments.no_start = False
+    else:
+        watchman_link = "https://facebook.github.io/watchman/docs/install.html"
+        LOG.warning(
+            "No watchman binary found. \n"
+            "To enable pyre incremental, "
+            "you can install watchman: {}".format(watchman_link)
+        )
+        LOG.warning("Defaulting to non-incremental check.")
+        arguments.command = commands.Check.from_arguments
+
+
 def main(argv: List[str]) -> int:
+    start = time.time()
+
     parser = argparse.ArgumentParser(
         allow_abbrev=False,
+        # pyre-fixme[6]: Expected `_FormatterClass` for 2nd param but got
+        #  `Type[argparse.RawTextHelpFormatter]`.
         formatter_class=argparse.RawTextHelpFormatter,
         epilog="environment variables:"
         "\n   `PYRE_BINARY` overrides the pyre binary used."
@@ -54,27 +75,13 @@ def main(argv: List[str]) -> int:
     log.initialize(arguments.noninteractive)
 
     if not hasattr(arguments, "command"):
-        if shutil.which("watchman"):
-            arguments.command = commands.Incremental
-            arguments.nonblocking = False
-            arguments.incremental_style = IncrementalStyle.FINE_GRAINED
-            arguments.no_start = False
-        else:
-            watchman_link = "https://facebook.github.io/watchman/docs/install.html"
-            LOG.warning(
-                "No watchman binary found. \n"
-                "To enable pyre incremental, "
-                "you can install watchman: {}".format(watchman_link)
-            )
-            LOG.warning("Defaulting to non-incremental check.")
-            arguments.command = commands.Check
+        _set_default_command(arguments)
 
     command: Optional[CommandParser] = None
     client_exception_message = ""
     # Having this as a fails-by-default helps flag unexpected exit
     # from exception flows.
     exit_code = ExitCode.FAILURE
-    start = time.time()
     try:
         original_directory = os.getcwd()
         # TODO(T57959968): Stop changing the directory in the client
@@ -100,8 +107,8 @@ def main(argv: List[str]) -> int:
                 arguments.noninteractive, command.log_directory
             )
             exit_code = command.run().exit_code()
-    except buck.BuckException as error:
-        if arguments.command == commands.Persistent:
+    except (buck.BuckException, EnvironmentException) as error:
+        if arguments.command == commands.Persistent.from_arguments:
             try:
                 commands.Persistent.run_null_server(timeout=3600 * 12)
                 exit_code = ExitCode.SUCCESS
@@ -113,21 +120,11 @@ def main(argv: List[str]) -> int:
                 exit_code = ExitCode.SUCCESS
         else:
             client_exception_message = str(error)
-            exit_code = ExitCode.BUCK_ERROR
-    except EnvironmentException as error:
-        if arguments.command == commands.Persistent:
-            try:
-                commands.Persistent.run_null_server(timeout=3600 * 12)
-                exit_code = ExitCode.SUCCESS
-            except Exception as error:
-                client_exception_message = str(error)
-                exit_code = ExitCode.FAILURE
-            except KeyboardInterrupt:
-                LOG.warning("Interrupted by user")
-                exit_code = ExitCode.SUCCESS
-        else:
-            client_exception_message = str(error)
-            exit_code = ExitCode.FAILURE
+            exit_code = (
+                ExitCode.BUCK_ERROR
+                if isinstance(error, buck.BuckException)
+                else ExitCode.FAILURE
+            )
     except commands.ClientException as error:
         client_exception_message = str(error)
         exit_code = ExitCode.FAILURE
@@ -143,11 +140,13 @@ def main(argv: List[str]) -> int:
             LOG.error(client_exception_message)
         log.cleanup()
         if command:
+            result = command.result()
+            error_message = result.error if result else None
             command.cleanup()
             configuration = command.configuration
             if configuration and configuration.logger:
                 statistics.log(
-                    "perfpipe_pyre_usage",
+                    category=statistics.LoggerCategory.USAGE,
                     arguments=arguments,
                     configuration=configuration,
                     integers={
@@ -160,6 +159,7 @@ def main(argv: List[str]) -> int:
                         "client_version": __version__,
                         "command": command.NAME,
                         "client_exception": client_exception_message,
+                        "error_message": error_message,
                     },
                 )
 

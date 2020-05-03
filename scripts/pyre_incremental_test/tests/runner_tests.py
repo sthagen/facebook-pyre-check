@@ -3,8 +3,14 @@ import unittest
 from dataclasses import asdict
 from pathlib import Path
 from typing import List, Optional
+from unittest.mock import MagicMock, patch
 
-from ..runner import InconsistentOutput, PyreError, compare_server_to_full
+from ..runner import (
+    InconsistentOutput,
+    PyreError,
+    ResultComparison,
+    compare_server_to_full,
+)
 from ..specification import Specification
 from .test_environment import (
     CommandInput,
@@ -14,7 +20,20 @@ from .test_environment import (
 )
 
 
+def mock_stat(_path: str) -> MagicMock:
+    stat = MagicMock()
+    stat.st_size = 4002
+    return stat
+
+
+mock_temp_file_class: MagicMock = MagicMock()
+mock_temp_file_context_manager: MagicMock = mock_temp_file_class.return_value.__enter__
+mock_temp_file_context_manager.return_value.name = "tempfile"
+
+
 class RunnerTest(unittest.TestCase):
+    @patch("os.stat", new=mock_stat)
+    @patch("tempfile.NamedTemporaryFile", new=mock_temp_file_class)
     def assert_run(
         self,
         mock_execute: MockExecuteCallable,
@@ -24,7 +43,7 @@ class RunnerTest(unittest.TestCase):
         pyre_binary_override: Optional[str] = None,
         typeshed_override: Optional[str] = None,
         pyre_client_override: Optional[str] = None,
-    ) -> None:
+    ) -> ResultComparison:
         self.maxDiff = None
         environment = TestEnvironment(mock_execute)
         environment.pyre_binary_override = pyre_binary_override
@@ -34,6 +53,7 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(actual_result.discrepancy, expected_discrepancy)
         actual_commands = environment.command_history
         self.assertEqual(actual_commands, expected_commands)
+        return actual_result
 
     def test_basic(self) -> None:
         specification = Specification.from_json(
@@ -52,7 +72,7 @@ class RunnerTest(unittest.TestCase):
             }
         )
 
-        initial_hash = "initial_hash"
+        initial_hash: str = "initial_hash"
         expected_commands = [
             CommandInput(Path("old_root"), "hg whereami"),
             CommandInput(Path("old_root"), "hg update --clean old_hash"),
@@ -63,6 +83,11 @@ class RunnerTest(unittest.TestCase):
             CommandInput(
                 Path("old_root"), "pyre profile --profile-output=cold_start_phases"
             ),
+            CommandInput(
+                Path("old_root"),
+                "pyre profile --profile-output=total_shared_memory_size_over_time",
+            ),
+            CommandInput(Path("old_root"), "pyre query save_server_state('tempfile')"),
             CommandInput(Path("old_root"), "hg update --clean new_hash"),
             CommandInput(
                 Path("old_root"), "pyre profile --profile-output=incremental_updates"
@@ -78,29 +103,38 @@ class RunnerTest(unittest.TestCase):
             CommandInput(Path("old_root"), f"hg update --clean {initial_hash}"),
         ]
 
-        # pyre-fixme[53]: Captured variable `initial_hash` is not annotated.
         def always_clean_execute(command_input: CommandInput) -> CommandOutput:
             if command_input.command.startswith("hg whereami"):
                 return CommandOutput(return_code=0, stdout=initial_hash, stderr="")
+            elif "total_shared_memory_size_over_time" in command_input.command:
+                return CommandOutput(return_code=0, stdout='[["time", 42]]', stderr="")
+            elif "cold_start_phases" in command_input.command:
+                return CommandOutput(return_code=0, stdout="{}", stderr="")
             elif " profile" in command_input.command:
                 return CommandOutput(return_code=0, stdout="[{}, {}, {}]", stderr="")
             else:
                 return CommandOutput(return_code=0, stdout="", stderr="")
 
-        self.assert_run(
+        comparison = self.assert_run(
             mock_execute=always_clean_execute,
             specification=specification,
             expected_commands=expected_commands,
             expected_discrepancy=None,
         )
+        cold_start_logs = comparison.profile_logs.cold_start_log
+        self.assertEqual(cold_start_logs["heap_size"], 42)
+        self.assertEqual(cold_start_logs["saved_state_size"], 4002)
 
-        # pyre-fixme[53]: Captured variable `initial_hash` is not annotated.
         def consistent_not_clean_execute(command_input: CommandInput) -> CommandOutput:
             pyre_error = PyreError(
                 line=1, column=1, path="test.py", description="Something is wrong"
             )
             if command_input.command.startswith("hg whereami"):
                 return CommandOutput(return_code=0, stdout=initial_hash, stderr="")
+            elif "total_shared_memory_size_over_time" in command_input.command:
+                return CommandOutput(return_code=0, stdout='[["time", 42]]', stderr="")
+            elif "cold_start_phases" in command_input.command:
+                return CommandOutput(return_code=0, stdout="{}", stderr="")
             elif " profile" in command_input.command:
                 return CommandOutput(return_code=0, stdout="[{}, {}, {}]", stderr="")
             elif command_input.command.endswith(
@@ -119,13 +153,16 @@ class RunnerTest(unittest.TestCase):
             expected_discrepancy=None,
         )
 
-        # pyre-fixme[53]: Captured variable `initial_hash` is not annotated.
         def inconsistent_execute0(command_input: CommandInput) -> CommandOutput:
             pyre_error = PyreError(
                 line=1, column=1, path="test.py", description="Something is wrong"
             )
             if command_input.command.startswith("hg whereami"):
                 return CommandOutput(return_code=0, stdout=initial_hash, stderr="")
+            elif "total_shared_memory_size_over_time" in command_input.command:
+                return CommandOutput(return_code=0, stdout='[["time", 42]]', stderr="")
+            elif "cold_start_phases" in command_input.command:
+                return CommandOutput(return_code=0, stdout="{}", stderr="")
             elif " profile" in command_input.command:
                 return CommandOutput(return_code=0, stdout="[{}, {}, {}]", stderr="")
             elif command_input.command.endswith("check"):
@@ -152,7 +189,6 @@ class RunnerTest(unittest.TestCase):
             ),
         )
 
-        # pyre-fixme[53]: Captured variable `initial_hash` is not annotated.
         def inconsistent_execute1(command_input: CommandInput) -> CommandOutput:
             pyre_error0 = PyreError(
                 line=1, column=1, path="test.py", description="Something is wrong"
@@ -165,6 +201,10 @@ class RunnerTest(unittest.TestCase):
             )
             if command_input.command.startswith("hg whereami"):
                 return CommandOutput(return_code=0, stdout=initial_hash, stderr="")
+            elif "total_shared_memory_size_over_time" in command_input.command:
+                return CommandOutput(return_code=0, stdout='[["time", 42]]', stderr="")
+            elif "cold_start_phases" in command_input.command:
+                return CommandOutput(return_code=0, stdout="{}", stderr="")
             elif " profile" in command_input.command:
                 return CommandOutput(return_code=0, stdout="[{}, {}, {}]", stderr="")
             elif command_input.command.endswith("check"):
@@ -221,6 +261,16 @@ class RunnerTest(unittest.TestCase):
                 Path("old_root"),
                 "client --binary bin --typeshed bikeshed profile "
                 "--profile-output=cold_start_phases",
+            ),
+            CommandInput(
+                Path("old_root"),
+                "client --binary bin --typeshed bikeshed profile "
+                "--profile-output=total_shared_memory_size_over_time",
+            ),
+            CommandInput(
+                Path("old_root"),
+                "client --binary bin --typeshed bikeshed query "
+                "save_server_state('tempfile')",
             ),
             CommandInput(Path("old_root"), "hg update --clean new_hash"),
             CommandInput(
@@ -283,7 +333,7 @@ class RunnerTest(unittest.TestCase):
             }
         )
 
-        initial_hash = "initial_hash"
+        initial_hash: str = "initial_hash"
         expected_commands = [
             CommandInput(Path("old_root"), "hg whereami"),
             CommandInput(Path("old_root"), "hg update --clean old_hash"),
@@ -293,6 +343,11 @@ class RunnerTest(unittest.TestCase):
             CommandInput(
                 Path("old_root"), "pyre profile --profile-output=cold_start_phases"
             ),
+            CommandInput(
+                Path("old_root"),
+                "pyre profile --profile-output=total_shared_memory_size_over_time",
+            ),
+            CommandInput(Path("old_root"), "pyre query save_server_state('tempfile')"),
             CommandInput(Path("old_root"), "patch -p1", patch_content),
             CommandInput(
                 Path("old_root"), "pyre profile --profile-output=incremental_updates"
@@ -307,10 +362,13 @@ class RunnerTest(unittest.TestCase):
             CommandInput(Path("old_root"), f"hg update --clean {initial_hash}"),
         ]
 
-        # pyre-fixme[53]: Captured variable `initial_hash` is not annotated.
         def always_clean_execute(command_input: CommandInput) -> CommandOutput:
             if command_input.command.startswith("hg whereami"):
                 return CommandOutput(return_code=0, stdout=initial_hash, stderr="")
+            elif "total_shared_memory_size_over_time" in command_input.command:
+                return CommandOutput(return_code=0, stdout='[["time", 42]]', stderr="")
+            elif "cold_start_phases" in command_input.command:
+                return CommandOutput(return_code=0, stdout="{}", stderr="")
             elif " profile" in command_input.command:
                 return CommandOutput(return_code=0, stdout="[{}, {}, {}]", stderr="")
             else:
@@ -353,6 +411,11 @@ class RunnerTest(unittest.TestCase):
             CommandInput(
                 Path("old_root"), "pyre profile --profile-output=cold_start_phases"
             ),
+            CommandInput(
+                Path("old_root"),
+                "pyre profile --profile-output=total_shared_memory_size_over_time",
+            ),
+            CommandInput(Path("old_root"), "pyre query save_server_state('tempfile')"),
             CommandInput(Path("old_root"), "mkdir -p foo"),
             CommandInput(Path("old_root"), f"tee {handle_a}", content_a),
             CommandInput(Path("old_root"), "mkdir -p foo"),
@@ -376,6 +439,10 @@ class RunnerTest(unittest.TestCase):
         def always_clean_execute(command_input: CommandInput) -> CommandOutput:
             if command_input.command.startswith("hg whereami"):
                 return CommandOutput(return_code=0, stdout=initial_hash, stderr="")
+            elif "total_shared_memory_size_over_time" in command_input.command:
+                return CommandOutput(return_code=0, stdout='[["time", 42]]', stderr="")
+            elif "cold_start_phases" in command_input.command:
+                return CommandOutput(return_code=0, stdout="{}", stderr="")
             elif " profile" in command_input.command:
                 return CommandOutput(return_code=0, stdout="[{}, {}, {}]", stderr="")
             else:
@@ -406,7 +473,7 @@ class RunnerTest(unittest.TestCase):
             }
         )
 
-        initial_hash = "initial_hash"
+        initial_hash: str = "initial_hash"
         expected_commands = [
             CommandInput(Path("old_root"), "hg whereami"),
             CommandInput(Path("old_root"), "hg update --clean old_hash"),
@@ -416,6 +483,11 @@ class RunnerTest(unittest.TestCase):
             CommandInput(
                 Path("old_root"), "pyre profile --profile-output=cold_start_phases"
             ),
+            CommandInput(
+                Path("old_root"),
+                "pyre profile --profile-output=total_shared_memory_size_over_time",
+            ),
+            CommandInput(Path("old_root"), "pyre query save_server_state('tempfile')"),
             CommandInput(Path("old_root"), "hg update --clean new_hashA"),
             CommandInput(
                 Path("old_root"), "pyre profile --profile-output=incremental_updates"
@@ -434,10 +506,13 @@ class RunnerTest(unittest.TestCase):
             CommandInput(Path("old_root"), f"hg update --clean {initial_hash}"),
         ]
 
-        # pyre-fixme[53]: Captured variable `initial_hash` is not annotated.
         def always_clean_execute(command_input: CommandInput) -> CommandOutput:
             if command_input.command.startswith("hg whereami"):
                 return CommandOutput(return_code=0, stdout=initial_hash, stderr="")
+            elif "total_shared_memory_size_over_time" in command_input.command:
+                return CommandOutput(return_code=0, stdout='[["time", 42]]', stderr="")
+            elif "cold_start_phases" in command_input.command:
+                return CommandOutput(return_code=0, stdout="{}", stderr="")
             elif " profile" in command_input.command:
                 return CommandOutput(return_code=0, stdout="[{}, {}, {}]", stderr="")
             else:
@@ -484,6 +559,11 @@ class RunnerTest(unittest.TestCase):
             CommandInput(
                 Path("/mock/tmp"), "pyre profile --profile-output=cold_start_phases"
             ),
+            CommandInput(
+                Path("/mock/tmp"),
+                "pyre profile --profile-output=total_shared_memory_size_over_time",
+            ),
+            CommandInput(Path("/mock/tmp"), "pyre query save_server_state('tempfile')"),
             CommandInput(Path("/mock/tmp"), f"rm -f {handle_a}"),
             CommandInput(
                 Path("/mock/tmp"), "pyre profile --profile-output=incremental_updates"
@@ -502,6 +582,10 @@ class RunnerTest(unittest.TestCase):
         def always_clean_execute(command_input: CommandInput) -> CommandOutput:
             if command_input.command.startswith("mktemp"):
                 return CommandOutput(return_code=0, stdout="/mock/tmp", stderr="")
+            elif "total_shared_memory_size_over_time" in command_input.command:
+                return CommandOutput(return_code=0, stdout='[["time", 42]]', stderr="")
+            elif "cold_start_phases" in command_input.command:
+                return CommandOutput(return_code=0, stdout="{}", stderr="")
             elif " profile" in command_input.command:
                 return CommandOutput(return_code=0, stdout="[{}, {}, {}]", stderr="")
             elif "watchman watch" in command_input.command:
@@ -535,7 +619,7 @@ class RunnerTest(unittest.TestCase):
             }
         )
 
-        initial_hash = "initial_hash"
+        initial_hash: str = "initial_hash"
         expected_commands = [
             CommandInput(Path("old_root"), "hg whereami"),
             CommandInput(Path("old_root"), "hg update --clean old_hash"),
@@ -547,6 +631,11 @@ class RunnerTest(unittest.TestCase):
             CommandInput(
                 Path("old_root"), "pyre profile --profile-output=cold_start_phases"
             ),
+            CommandInput(
+                Path("old_root"),
+                "pyre profile --profile-output=total_shared_memory_size_over_time",
+            ),
+            CommandInput(Path("old_root"), "pyre query save_server_state('tempfile')"),
             CommandInput(Path("old_root"), "hg update --clean new_hashC"),
             CommandInput(
                 Path("old_root"), "pyre profile --profile-output=incremental_updates"
@@ -561,10 +650,13 @@ class RunnerTest(unittest.TestCase):
             CommandInput(Path("old_root"), f"hg update --clean {initial_hash}"),
         ]
 
-        # pyre-fixme[53]: Captured variable `initial_hash` is not annotated.
         def always_clean_execute(command_input: CommandInput) -> CommandOutput:
             if command_input.command.startswith("hg whereami"):
                 return CommandOutput(return_code=0, stdout=initial_hash, stderr="")
+            elif "total_shared_memory_size_over_time" in command_input.command:
+                return CommandOutput(return_code=0, stdout='[["time", 42]]', stderr="")
+            elif "cold_start_phases" in command_input.command:
+                return CommandOutput(return_code=0, stdout="{}", stderr="")
             elif " profile" in command_input.command:
                 return CommandOutput(return_code=0, stdout="[{}, {}, {}]", stderr="")
             else:

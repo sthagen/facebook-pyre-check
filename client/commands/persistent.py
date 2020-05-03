@@ -13,7 +13,7 @@ from typing import List, Optional
 
 from ..analysis_directory import AnalysisDirectory
 from ..configuration import Configuration
-from .command import Command, IncrementalStyle
+from .command import Command, CommandArguments, IncrementalStyle
 from .start import Start
 
 
@@ -22,15 +22,32 @@ class Persistent(Command):
 
     def __init__(
         self,
+        command_arguments: CommandArguments,
+        original_directory: str,
+        *,
+        configuration: Optional[Configuration] = None,
+        analysis_directory: Optional[AnalysisDirectory] = None,
+        no_watchman: bool,
+    ) -> None:
+        super(Persistent, self).__init__(
+            command_arguments, original_directory, configuration, analysis_directory
+        )
+        self._no_watchman: bool = no_watchman
+
+    @staticmethod
+    def from_arguments(
         arguments: argparse.Namespace,
         original_directory: str,
         configuration: Optional[Configuration] = None,
         analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> None:
-        super(Persistent, self).__init__(
-            arguments, original_directory, configuration, analysis_directory
+    ) -> "Persistent":
+        return Persistent(
+            CommandArguments.from_arguments(arguments),
+            original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+            no_watchman=arguments.no_watchman,
         )
-        self._no_watchman: bool = arguments.no_watchman
 
     @classmethod
     def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
@@ -42,7 +59,7 @@ class Persistent(Command):
             writing diagnostics and responses from the Pyre server to stdout.
             """,
         )
-        persistent.set_defaults(command=cls, noninteractive=True)
+        persistent.set_defaults(command=cls.from_arguments, noninteractive=True)
         persistent.add_argument(
             "--no-watchman",
             action="store_true",
@@ -50,15 +67,15 @@ class Persistent(Command):
         )
 
     def _run(self) -> None:
-        arguments = self._arguments
-        arguments.terminal = False
-        arguments.store_type_check_resolution = False
-        arguments.incremental_style = IncrementalStyle.FINE_GRAINED
         Start(
-            arguments,
+            self._command_arguments,
             self._original_directory,
-            self._configuration,
-            self._analysis_directory,
+            terminal=False,
+            store_type_check_resolution=False,
+            use_watchman=not self._no_watchman,
+            incremental_style=IncrementalStyle.FINE_GRAINED,
+            configuration=self._configuration,
+            analysis_directory=self._analysis_directory,
         ).run()
 
         self._call_client(command=self.NAME, capture_output=False).check()

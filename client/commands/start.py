@@ -5,7 +5,6 @@
 
 import argparse
 import errno
-import json
 import logging
 import os
 from logging import Logger
@@ -16,7 +15,7 @@ from typing_extensions import Final
 from .. import configuration_monitor, filesystem, project_files_monitor
 from ..analysis_directory import AnalysisDirectory
 from ..configuration import Configuration
-from .command import IncrementalStyle, typeshed_search_path
+from .command import CommandArguments, IncrementalStyle, typeshed_search_path
 from .reporting import Reporting
 
 
@@ -28,20 +27,23 @@ class Start(Reporting):
 
     def __init__(
         self,
-        arguments: argparse.Namespace,
+        command_arguments: CommandArguments,
         original_directory: str,
+        *,
         configuration: Optional[Configuration] = None,
         analysis_directory: Optional[AnalysisDirectory] = None,
+        terminal: bool,
+        store_type_check_resolution: bool,
+        use_watchman: bool,
+        incremental_style: IncrementalStyle,
     ) -> None:
         super(Start, self).__init__(
-            arguments, original_directory, configuration, analysis_directory
+            command_arguments, original_directory, configuration, analysis_directory
         )
-        self._terminal: bool = arguments.terminal
-        self._store_type_check_resolution: bool = arguments.store_type_check_resolution
-        self._use_watchman: bool = not arguments.no_watchman
-
-        self._incremental_style: IncrementalStyle = arguments.incremental_style
-
+        self._terminal = terminal
+        self._store_type_check_resolution = store_type_check_resolution
+        self._use_watchman = use_watchman
+        self._incremental_style = incremental_style
         if self._no_saved_state:
             self._save_initial_state_to: Final[Optional[str]] = None
             self._changed_files_path: Final[Optional[str]] = None
@@ -50,10 +52,28 @@ class Start(Reporting):
 
         self._enable_logging_section("environment")
 
+    @staticmethod
+    def from_arguments(
+        arguments: argparse.Namespace,
+        original_directory: str,
+        configuration: Optional[Configuration] = None,
+        analysis_directory: Optional[AnalysisDirectory] = None,
+    ) -> "Start":
+        return Start(
+            CommandArguments.from_arguments(arguments),
+            original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+            terminal=arguments.terminal,
+            store_type_check_resolution=arguments.store_type_check_resolution,
+            use_watchman=not arguments.no_watchman,
+            incremental_style=arguments.incremental_style,
+        )
+
     @classmethod
     def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
         start = parser.add_parser(cls.NAME, epilog="Starts a pyre server as a daemon.")
-        start.set_defaults(command=cls)
+        start.set_defaults(command=cls.from_arguments)
         start.add_argument(
             "--terminal", action="store_true", help="Run the server in the terminal."
         )
@@ -78,12 +98,13 @@ class Start(Reporting):
     def _start_configuration_monitor(self) -> None:
         if self._use_watchman:
             configuration_monitor.ConfigurationMonitor(
-                self._arguments,
+                self._command_arguments,
                 self._configuration,
                 self._analysis_directory,
                 self._current_directory,
                 self._original_directory,
                 self.local_configuration,
+                self._configuration.other_critical_files,
             ).daemonize()
 
     def _run(self) -> None:

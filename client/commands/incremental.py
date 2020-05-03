@@ -4,20 +4,16 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
-import atexit
-import json
 import logging
-import os
-import subprocess
 from logging import Logger
 from typing import List, Optional
 
 from .. import json_rpc
 from ..analysis_directory import AnalysisDirectory
 from ..configuration import Configuration
-from ..project_files_monitor import MonitorException, ProjectFilesMonitor
+from ..project_files_monitor import ProjectFilesMonitor
 from .command import (
-    ClientException,
+    CommandArguments,
     ExitCode,
     IncrementalStyle,
     Result,
@@ -31,28 +27,46 @@ from .start import Start
 LOG: Logger = logging.getLogger(__name__)
 
 
-def _convert_to_result(response: json_rpc.Response) -> Result:
-    error_code = ExitCode.FAILURE if response.error else ExitCode.SUCCESS
-    return Result(output=json.dumps(response.result), code=error_code)
-
-
 class Incremental(Reporting):
     NAME = "incremental"
 
     def __init__(
         self,
+        command_arguments: CommandArguments,
+        original_directory: str,
+        *,
+        configuration: Optional[Configuration] = None,
+        analysis_directory: Optional[AnalysisDirectory] = None,
+        nonblocking: bool,
+        incremental_style: IncrementalStyle,
+        no_start_server: bool,
+        no_watchman: bool,
+    ) -> None:
+        super(Incremental, self).__init__(
+            command_arguments, original_directory, configuration, analysis_directory
+        )
+        self._nonblocking = nonblocking
+        self._incremental_style = incremental_style
+        self._no_start_server = no_start_server
+        self._no_watchman = no_watchman
+
+    @staticmethod
+    def from_arguments(
         arguments: argparse.Namespace,
         original_directory: str,
         configuration: Optional[Configuration] = None,
         analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> None:
-        super(Incremental, self).__init__(
-            arguments, original_directory, configuration, analysis_directory
+    ) -> "Incremental":
+        return Incremental(
+            CommandArguments.from_arguments(arguments),
+            original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+            nonblocking=arguments.nonblocking,
+            incremental_style=arguments.incremental_style,
+            no_start_server=arguments.no_start,
+            no_watchman=getattr(arguments, "no_watchman", False),
         )
-        self._nonblocking: bool = arguments.nonblocking
-        self._incremental_style: bool = arguments.incremental_style
-        self._no_start_server: bool = arguments.no_start
-        self._no_watchman: bool = getattr(arguments, "no_watchman", False)
 
     @classmethod
     def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
@@ -66,7 +80,7 @@ class Incremental(Reporting):
         results eagerly, you can run `pyre incremental --nonblocking`.
         """
         incremental = parser.add_parser(cls.NAME, epilog=incremental_help)
-        incremental.set_defaults(command=cls)
+        incremental.set_defaults(command=cls.from_arguments)
         incremental.add_argument(
             "--nonblocking",
             action="store_true",
@@ -93,16 +107,16 @@ class Incremental(Reporting):
     def _run(self) -> None:
         if (not self._no_start_server) and self._state() == State.DEAD:
             LOG.info("Starting server at `%s`.", self._analysis_directory.get_root())
-            arguments = self._arguments
-            arguments.no_watchman = self._no_watchman
-            arguments.terminal = False
-            arguments.store_type_check_resolution = False
             exit_code = (
                 Start(
-                    arguments,
+                    self._command_arguments,
                     self._original_directory,
-                    self._configuration,
-                    self._analysis_directory,
+                    configuration=self._configuration,
+                    analysis_directory=self._analysis_directory,
+                    terminal=False,
+                    store_type_check_resolution=False,
+                    use_watchman=not self._no_watchman,
+                    incremental_style=self._incremental_style,
                 )
                 .run()
                 .exit_code()

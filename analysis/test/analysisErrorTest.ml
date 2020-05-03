@@ -81,8 +81,7 @@ let incompatible_return_type
 
 
 let undefined_attribute actual =
-  Error.UndefinedAttribute
-    { attribute = "foo"; origin = Error.Class { annotation = actual; class_attribute = false } }
+  Error.UndefinedAttribute { attribute = "foo"; origin = Error.Class actual }
 
 
 let unexpected_keyword name callee =
@@ -131,15 +130,6 @@ let test_due_to_analysis_limitations _ =
        });
 
   (* Initialization *)
-  assert_due_to_analysis_limitations
-    (Error.UninitializedAttribute
-       {
-         name = "";
-         parent = mock_parent;
-         mismatch =
-           { Error.actual = Type.Top; expected = Type.Optional Type.Top; due_to_invariance = false };
-         kind = Class;
-       });
   assert_not_due_to_analysis_limitations
     (Error.UninitializedAttribute
        {
@@ -148,7 +138,7 @@ let test_due_to_analysis_limitations _ =
          mismatch =
            {
              Error.actual = Type.string;
-             expected = Type.Optional Type.string;
+             expected = Type.optional Type.string;
              due_to_invariance = false;
            };
          kind = Class;
@@ -698,8 +688,8 @@ let test_filter context =
   assert_filtered (undefined_attribute (Type.Primitive "test.MockChild"));
   assert_filtered (undefined_attribute (Type.Primitive "test.NonCallableChild"));
   assert_unfiltered (undefined_attribute (Type.Primitive "test.NonMockChild"));
-  assert_filtered (undefined_attribute (Type.Optional (Type.Primitive "test.NonCallableChild")));
-  assert_unfiltered (incompatible_return_type (Type.Optional Type.Bottom) Type.integer);
+  assert_filtered (undefined_attribute (Type.optional (Type.Primitive "test.NonCallableChild")));
+  assert_unfiltered (incompatible_return_type Type.NoneType Type.integer);
   assert_filtered (unexpected_keyword "foo" (Some "unittest.mock.call"));
   assert_unfiltered (unexpected_keyword "foo" None);
 
@@ -757,23 +747,13 @@ let test_filter context =
     (UndefinedAttribute
        {
          attribute = "something";
-         origin =
-           Class
-             {
-               annotation = Type.Callable.create ~annotation:Type.integer ();
-               class_attribute = false;
-             };
+         origin = Class (Type.Callable.create ~annotation:Type.integer ());
        });
   assert_filtered
     (UndefinedAttribute
        {
          attribute = "assert_not_called";
-         origin =
-           Class
-             {
-               annotation = Type.Callable.create ~annotation:Type.integer ();
-               class_attribute = false;
-             };
+         origin = Class (Type.Callable.create ~annotation:Type.integer ());
        });
   assert_unfiltered
     (UndefinedAttribute
@@ -781,19 +761,12 @@ let test_filter context =
          attribute = "something";
          origin =
            Class
-             {
-               annotation =
-                 Type.Parametric
-                   {
-                     name = "BoundMethod";
-                     parameters =
-                       [
-                         Single (Type.Callable.create ~annotation:Type.integer ());
-                         Single Type.integer;
-                       ];
-                   };
-               class_attribute = false;
-             };
+             (Type.Parametric
+                {
+                  name = "BoundMethod";
+                  parameters =
+                    [Single (Type.Callable.create ~annotation:Type.integer ()); Single Type.integer];
+                });
        });
   assert_filtered
     (UndefinedAttribute
@@ -801,19 +774,12 @@ let test_filter context =
          attribute = "assert_not_called";
          origin =
            Class
-             {
-               annotation =
-                 Type.Parametric
-                   {
-                     name = "BoundMethod";
-                     parameters =
-                       [
-                         Single (Type.Callable.create ~annotation:Type.integer ());
-                         Single Type.integer;
-                       ];
-                   };
-               class_attribute = false;
-             };
+             (Type.Parametric
+                {
+                  name = "BoundMethod";
+                  parameters =
+                    [Single (Type.Callable.create ~annotation:Type.integer ()); Single Type.integer];
+                });
        });
 
   ()
@@ -948,32 +914,18 @@ let test_description _ =
     assert_equal ~printer:Fn.id expected actual
   in
   assert_messages
-    (UndefinedAttribute
-       { attribute = "at"; origin = Class { annotation = Type.integer; class_attribute = false } })
+    (UndefinedAttribute { attribute = "at"; origin = Class Type.integer })
     "Undefined attribute [16]: `int` has no attribute `at`.";
   assert_messages
     (UndefinedAttribute
-       {
-         attribute = "at";
-         origin =
-           Class
-             {
-               annotation = Type.Callable.create ~annotation:Type.integer ();
-               class_attribute = false;
-             };
-       })
+       { attribute = "at"; origin = Class (Type.Callable.create ~annotation:Type.integer ()) })
     "Undefined attribute [16]: Anonymous callable has no attribute `at`.";
   assert_messages
     (UndefinedAttribute
        {
          attribute = "at";
          origin =
-           Class
-             {
-               annotation =
-                 Type.Callable.create ~name:(Reference.create "named") ~annotation:Type.integer ();
-               class_attribute = false;
-             };
+           Class (Type.Callable.create ~name:(Reference.create "named") ~annotation:Type.integer ());
        })
     "Undefined attribute [16]: Callable `named` has no attribute `at`.";
   (* TODO(T64161566): Don't pretend these are just Callables *)
@@ -983,19 +935,12 @@ let test_description _ =
          attribute = "at";
          origin =
            Class
-             {
-               annotation =
-                 Type.Parametric
-                   {
-                     name = "BoundMethod";
-                     parameters =
-                       [
-                         Single (Type.Callable.create ~annotation:Type.integer ());
-                         Single Type.integer;
-                       ];
-                   };
-               class_attribute = false;
-             };
+             (Type.Parametric
+                {
+                  name = "BoundMethod";
+                  parameters =
+                    [Single (Type.Callable.create ~annotation:Type.integer ()); Single Type.integer];
+                });
        })
     "Undefined attribute [16]: Anonymous callable has no attribute `at`.";
   assert_messages
@@ -1004,23 +949,19 @@ let test_description _ =
          attribute = "at";
          origin =
            Class
-             {
-               annotation =
-                 Type.Parametric
-                   {
-                     name = "BoundMethod";
-                     parameters =
-                       [
-                         Single
-                           (Type.Callable.create
-                              ~name:(Reference.create "named")
-                              ~annotation:Type.integer
-                              ());
-                         Single Type.integer;
-                       ];
-                   };
-               class_attribute = false;
-             };
+             (Type.Parametric
+                {
+                  name = "BoundMethod";
+                  parameters =
+                    [
+                      Single
+                        (Type.Callable.create
+                           ~name:(Reference.create "named")
+                           ~annotation:Type.integer
+                           ());
+                      Single Type.integer;
+                    ];
+                });
        })
     "Undefined attribute [16]: Callable `named` has no attribute `at`.";
   ()

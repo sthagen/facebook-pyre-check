@@ -15,6 +15,7 @@ from ..analysis_directory import AnalysisDirectory, resolve_analysis_directory
 from ..configuration import Configuration
 from ..filesystem import readable_directory, writable_directory
 from .check import Check
+from .command import CommandArguments
 
 
 class Analyze(Check):
@@ -22,28 +23,60 @@ class Analyze(Check):
 
     def __init__(
         self,
+        command_arguments: CommandArguments,
+        original_directory: str,
+        *,
+        configuration: Optional[Configuration] = None,
+        analysis_directory: Optional[AnalysisDirectory] = None,
+        analysis: str,
+        taint_models_path: List[str],
+        no_verify: bool,
+        save_results_to: Optional[str],
+        dump_call_graph: bool,
+        repository_root: Optional[str],
+        rules: Optional[List[int]],
+    ) -> None:
+        super(Analyze, self).__init__(
+            command_arguments,
+            original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+        )
+        self._analysis: str = analysis
+        self._taint_models_path: List[str] = (
+            taint_models_path or self._configuration.taint_models_path
+        )
+        self._no_verify: bool = no_verify
+        self._save_results_to: Final[Optional[str]] = save_results_to
+        self._dump_call_graph: bool = dump_call_graph
+        self._repository_root: Final[Optional[str]] = repository_root
+        self._rules: Final[Optional[List[int]]] = rules
+
+    @staticmethod
+    def from_arguments(
         arguments: argparse.Namespace,
         original_directory: str,
         configuration: Optional[Configuration] = None,
         analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> None:
-        super(Analyze, self).__init__(
-            arguments, original_directory, configuration, analysis_directory
+    ) -> "Analyze":
+        return Analyze(
+            CommandArguments.from_arguments(arguments),
+            original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+            analysis=arguments.analysis,
+            taint_models_path=arguments.taint_models_path,
+            no_verify=arguments.no_verify,
+            save_results_to=arguments.save_results_to,
+            dump_call_graph=arguments.dump_call_graph,
+            repository_root=arguments.repository_root,
+            rules=arguments.rule,
         )
-        self._analysis: str = arguments.analysis
-        self._taint_models_path: List[str] = (
-            arguments.taint_models_path or self._configuration.taint_models_path
-        )
-        self._no_verify: bool = arguments.no_verify
-        self._save_results_to: Final[Optional[str]] = arguments.save_results_to
-        self._dump_call_graph: bool = arguments.dump_call_graph
-        self._repository_root: Final[Optional[str]] = arguments.repository_root
-        self._rules: Final[Optional[List[int]]] = arguments.rule
 
     @classmethod
     def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
         analyze = parser.add_parser(cls.NAME)
-        analyze.set_defaults(command=cls)
+        analyze.set_defaults(command=cls.from_arguments)
         analyze.add_argument(
             "analysis",
             nargs="?",
@@ -74,11 +107,15 @@ class Analyze(Check):
 
     def generate_analysis_directory(self) -> AnalysisDirectory:
         return resolve_analysis_directory(
-            self._arguments,
+            self._source_directories,
+            self._targets,
             self._configuration,
             self._original_directory,
             self._current_directory,
-            build=True,
+            filter_directory=self._filter_directory,
+            use_buck_builder=self._use_buck_builder,
+            debug=self._debug,
+            buck_mode=self._buck_mode,
             isolate=True,
         )
 

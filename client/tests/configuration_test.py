@@ -247,6 +247,7 @@ class ConfigurationTest(unittest.TestCase):
             configuration = Configuration()
             self.assertEqual(configuration.binary, "/root/some/dir/pyre.bin")
             self.assertEqual(configuration.typeshed, "/root/some/typeshed")
+            self.assertIsNone(configuration.buck_builder_binary)
 
             json_load.side_effect = [
                 {"binary": "~/some/dir/pyre.bin", "typeshed": "~/some/typeshed"},
@@ -279,6 +280,24 @@ class ConfigurationTest(unittest.TestCase):
             configuration = Configuration()
             self.assertEqual(configuration.binary, "/home/user/some/VERSION/pyre.bin")
             self.assertEqual(configuration.typeshed, "/home/user/some/VERSION/typeshed")
+
+            json_load.side_effect = [
+                {"buck_builder_binary": "/some/dir/buck_builder"},
+                {},
+            ]
+            configuration = Configuration()
+            self.assertEqual(
+                configuration.buck_builder_binary, "/some/dir/buck_builder"
+            )
+
+            json_load.side_effect = [
+                {"buck_builder_binary": "some/dir/buck_builder"},
+                {},
+            ]
+            configuration = Configuration()
+            self.assertEqual(
+                configuration.buck_builder_binary, "/root/some/dir/buck_builder"
+            )
 
             json_load.side_effect = [
                 {"ignore_all_errors": ["abc/def", "/abc/def", "~/abc/def"]},
@@ -374,46 +393,6 @@ class ConfigurationTest(unittest.TestCase):
         self.assertEqual(configuration.source_directories, ["a", "/home/user/b"])
         self.assertEqual(configuration.binary, "/home/user/bin")
 
-        # Test loading of additional directories in the search path
-        # via environment $PYTHONPATH.
-        json_load.side_effect = [
-            {"search_path": ["json/", "file/"], "typeshed": "/TYPESHED/"},
-            {},
-        ]
-        with patch.object(os, "getenv", return_value="additional/:directories/"):
-            with patch.object(os.path, "isdir", return_value=True):
-                configuration = Configuration(
-                    search_path=["command/", "line/"], preserve_pythonpath=True
-                )
-                self.assertEqual(configuration.typeshed, "/TYPESHED/")
-                self.assertEqual(
-                    configuration.search_path,
-                    [
-                        SearchPathElement("additional/"),
-                        SearchPathElement("directories/"),
-                        *[SearchPathElement(i) for i in sys.path if os.path.isdir(i)],
-                        SearchPathElement("command/"),
-                        SearchPathElement("line/"),
-                        SearchPathElement("json/"),
-                        SearchPathElement("file/"),
-                    ],
-                )
-
-        # Test case where we ignore the PYTHONPATH environment variable.
-        json_load.side_effect = [
-            {"search_path": ["json/", "file/"], "typeshed": "/TYPESHED/"},
-            {},
-        ]
-        with patch.object(os, "getenv", return_value="additional/:directories/"):
-            with patch.object(os.path, "isdir", return_value=True):
-                configuration = Configuration(
-                    search_path=["command/", "line/"], preserve_pythonpath=False
-                )
-                self.assertEqual(configuration.typeshed, "/TYPESHED/")
-                self.assertEqual(
-                    configuration.search_path, ["command/", "line/", "json/", "file/"]
-                )
-
         # Test manual loading of the binary
         json_load.side_effect = [{}, {}]
         configuration = Configuration(binary="some/file/path/")
@@ -495,6 +474,13 @@ class ConfigurationTest(unittest.TestCase):
         json_load.side_effect = [{"autocomplete": True}, {}]
         configuration = Configuration()
         self.assertEqual(configuration.autocomplete, True)
+
+        json_load.side_effect = [{}, {}]
+        configuration = Configuration()
+        self.assertEqual(configuration.other_critical_files, [])
+        json_load.side_effect = [{"critical_files": ["critical", "files"]}, {}]
+        configuration = Configuration()
+        self.assertEqual(configuration.other_critical_files, ["critical", "files"])
 
     @patch("os.path.isfile")
     @patch("os.path.isdir")

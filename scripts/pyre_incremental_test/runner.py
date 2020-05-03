@@ -1,10 +1,12 @@
 import json
 import logging
+import os
+import tempfile
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import sleep
-from typing import Any, Dict, Iterator, List, Mapping, Optional, overload
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple, overload
 
 from typing_extensions import Final, Literal
 
@@ -105,7 +107,23 @@ class PyreRunner:
             command=pyre_start_command,
             expected_return_codes=(0, 1),
         )
-        return self.run_profile("cold_start_phases")
+        cold_start_time_phases = self.run_profile("cold_start_phases")
+        shared_memory_over_time = self.run_profile("total_shared_memory_size_over_time")
+        _, cold_start_total_memory = shared_memory_over_time[0]
+        with tempfile.NamedTemporaryFile() as temporary_file:
+            self._environment.checked_run(
+                working_directory=self._working_directory,
+                command=(
+                    f"{self._pyre_invocation} "
+                    f"query save_server_state('{temporary_file.name}')"
+                ),
+            )
+            saved_state_size = os.stat(temporary_file.name).st_size
+        return {
+            **cold_start_time_phases,
+            "heap_size": cold_start_total_memory,
+            "saved_state_size": saved_state_size,
+        }
 
     def run_stop(self) -> None:
         self._environment.checked_run(
@@ -144,6 +162,12 @@ class PyreRunner:
     def run_profile(
         self, output_kind: Literal["cold_start_phases"]
     ) -> Mapping[str, int]:
+        ...
+
+    @overload  # noqa T20027161
+    def run_profile(
+        self, output_kind: Literal["total_shared_memory_size_over_time"]
+    ) -> List[Tuple[str, int]]:
         ...
 
     def run_profile(self, output_kind: str) -> object:  # noqa T20027161

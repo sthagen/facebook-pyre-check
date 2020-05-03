@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, Mock, call, patch
 
 import psutil
 
-from ... import commands
+from ... import watchman
 from ...analysis_directory import AnalysisDirectory
 from .. import kill
 from ..kill import Kill, _get_process_name
@@ -30,17 +30,21 @@ class KillTest(unittest.TestCase):
         self.assertEqual(_get_process_name("PYRE_BINARY", "foo"), "main.exe")
 
     @patch.object(kill, "Rage")
-    @patch.object(
-        tempfile, "NamedTemporaryFile", return_value=MagicMock(name="/tmp/file")
-    )
+    @patch.object(tempfile, "NamedTemporaryFile")
     def test_rage(self, named_temporary_file: MagicMock, rage: MagicMock) -> None:
         original_directory = "/original/directory"
         arguments = mock_arguments()
         configuration = mock_configuration()
         analysis_directory = AnalysisDirectory(".")
 
+        named_temporary_file.return_value.__enter__.return_value.name = "/tmp/file"
+
         kill_command = Kill(
-            arguments, original_directory, configuration, analysis_directory
+            arguments,
+            original_directory=original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+            with_fire=False,
         )
         kill_command._rage()
 
@@ -48,7 +52,11 @@ class KillTest(unittest.TestCase):
             prefix="pyre-rage-", suffix=".log", delete=False
         )
         rage.assert_called_with(
-            arguments, original_directory, configuration, analysis_directory
+            arguments,
+            original_directory=original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+            output_path="/tmp/file",
         )
 
     @patch.object(psutil, "process_iter")
@@ -70,36 +78,60 @@ class KillTest(unittest.TestCase):
             Mock(info={"name": "not-pyre-client"}, pid=4321),
             Mock(info={"name": "pyre-client"}, pid=9101),
         ]
-        kill_command = Kill(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        kill_command = Kill(
+            MagicMock(),
+            original_directory=MagicMock(),
+            configuration=MagicMock(),
+            analysis_directory=MagicMock(),
+            with_fire=MagicMock(),
+        )
         kill_command._kill_processes_by_name("pyre-client")
         os_kill.assert_has_calls(
             [call(5678, signal.SIGKILL), call(9101, signal.SIGKILL)]
         )
 
-        kill_command = Kill(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        kill_command = Kill(
+            MagicMock(),
+            original_directory=MagicMock(),
+            configuration=MagicMock(),
+            analysis_directory=MagicMock(),
+            with_fire=MagicMock(),
+        )
         os_kill.side_effect = ProcessLookupError
         # Ensure that we don't crash even if os.kill fails to find a process.
         kill_command._kill_processes_by_name("pyre-client")
 
-        kill_command = Kill(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        kill_command = Kill(
+            MagicMock(),
+            original_directory=MagicMock(),
+            configuration=MagicMock(),
+            analysis_directory=MagicMock(),
+            with_fire=MagicMock(),
+        )
         os_kill.side_effect = PermissionError
         # Ensure that we don't crash even if os.kill fails due to permissions.
         kill_command._kill_processes_by_name("pyre-client")
 
-    @patch.object(commands.stop.WatchmanSubscriber, "stop_subscriber")
+    @patch.object(watchman, "stop_subscriptions")
     @patch.object(Kill, "_kill_processes_by_name")
     @patch.object(Kill, "__init__", return_value=None)
     def test_kill_client_processes(
         self,
         kill_init: MagicMock,
         kill_processes_by_name: MagicMock,
-        stop_subscriber: MagicMock,
+        stop_subscriptions: MagicMock,
     ) -> None:
-        kill_command = Kill(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        kill_command = Kill(
+            MagicMock(),
+            original_directory=MagicMock(),
+            configuration=MagicMock(),
+            analysis_directory=MagicMock(),
+            with_fire=MagicMock(),
+        )
         kill_command._configuration = MagicMock(log_directory=".pyre")
         kill_command._kill_client_processes()
         kill_processes_by_name.assert_called_with("pyre-client")
-        stop_subscriber.assert_has_calls(
+        stop_subscriptions.assert_has_calls(
             [
                 call(".pyre/file_monitor", "file_monitor"),
                 call(".pyre/configuration_monitor", "configuration_monitor"),
@@ -119,7 +151,13 @@ class KillTest(unittest.TestCase):
         check_output: MagicMock,
         path_glob: MagicMock,
     ) -> None:
-        kill_command = Kill(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        kill_command = Kill(
+            MagicMock(),
+            original_directory=MagicMock(),
+            configuration=MagicMock(),
+            analysis_directory=MagicMock(),
+            with_fire=MagicMock(),
+        )
         kill_command._current_directory = "/root"
         kill_command._dot_pyre_directory = Path("/some/log/directory/.pyre")
         kill_command._log_directory = "/some/log/directory/.pyre/foo"
@@ -142,7 +180,13 @@ class KillTest(unittest.TestCase):
     def test_delete_caches_scratch_path_exception(
         self, kill_init: MagicMock, remove_tree: MagicMock, check_output: MagicMock
     ) -> None:
-        kill_command = Kill(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        kill_command = Kill(
+            MagicMock(),
+            original_directory=MagicMock(),
+            configuration=MagicMock(),
+            analysis_directory=MagicMock(),
+            with_fire=MagicMock(),
+        )
         kill_command._current_directory = "/root"
         kill_command._dot_pyre_directory = Path("/some/log/directory/.pyre")
         kill_command._log_directory = "/some/log/directory/.pyre/foo"
@@ -170,7 +214,13 @@ class KillTest(unittest.TestCase):
         kill_processes_by_name: MagicMock,
         get_process_name: MagicMock,
     ) -> None:
-        kill_command = Kill(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        kill_command = Kill(
+            MagicMock(),
+            original_directory=MagicMock(),
+            configuration=MagicMock(),
+            analysis_directory=MagicMock(),
+            with_fire=MagicMock(),
+        )
         kill_command._kill_binary_processes()
         kill_processes_by_name.assert_called_with("foo.exe")
 
@@ -180,7 +230,13 @@ class KillTest(unittest.TestCase):
     def test_delete_server_files(
         self, kill_init: MagicMock, glob: MagicMock, delete_linked_path: MagicMock
     ) -> None:
-        kill_command = Kill(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        kill_command = Kill(
+            MagicMock(),
+            original_directory=MagicMock(),
+            configuration=MagicMock(),
+            analysis_directory=MagicMock(),
+            with_fire=MagicMock(),
+        )
         kill_command._dot_pyre_directory = Path("/root/.pyre")
         kill_command._delete_server_files()
         self.assertEqual(delete_linked_path.call_count, 6)
@@ -190,20 +246,26 @@ class KillTest(unittest.TestCase):
     @patch.object(Kill, "_kill_client_processes")
     @patch.object(Kill, "_kill_binary_processes")
     @patch.object(Kill, "_rage")
-    @patch.object(Kill, "__init__", return_value=None)
     def test_kill(
         self,
-        kill_init: MagicMock,
         rage: MagicMock,
         kill_binary_processes: MagicMock,
         kill_client_processes: MagicMock,
         delete_caches: MagicMock,
         delete_server_files: MagicMock,
     ) -> None:
-        kill_command = Kill(MagicMock(), MagicMock(), MagicMock(), MagicMock())
-        kill_command._log_directory = ".pyre"
-        kill_command._arguments = Mock(with_fire=False)
-        kill_command._configuration = Mock()
+        original_directory = "/original/directory"
+        arguments = mock_arguments()
+        configuration = mock_configuration()
+        analysis_directory = AnalysisDirectory(".")
+
+        kill_command = Kill(
+            arguments,
+            original_directory=original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+            with_fire=False,
+        )
         kill_command._run()
 
         rage.assert_called_once()
@@ -212,7 +274,18 @@ class KillTest(unittest.TestCase):
         delete_caches.assert_called_once()
         delete_server_files.assert_called_once()
 
-        kill_command._arguments = Mock(with_fire=True)
+        original_directory = "/original/directory"
+        arguments = mock_arguments()
+        configuration = mock_configuration()
+        analysis_directory = AnalysisDirectory(".")
+
+        kill_command = Kill(
+            arguments,
+            original_directory=original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+            with_fire=True,
+        )
         kill_command._run()
 
         self.assertEqual(rage.call_count, 2)

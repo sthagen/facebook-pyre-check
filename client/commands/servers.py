@@ -13,7 +13,7 @@ from typing import List, NamedTuple, Optional
 from .. import log
 from ..analysis_directory import AnalysisDirectory
 from ..configuration import Configuration
-from .command import JSON, Command
+from .command import JSON, Command, CommandArguments
 from .stop import Stop
 
 
@@ -54,15 +54,32 @@ class Servers(Command):
 
     def __init__(
         self,
+        command_arguments: CommandArguments,
+        original_directory: str,
+        *,
+        configuration: Optional[Configuration] = None,
+        analysis_directory: Optional[AnalysisDirectory] = None,
+        subcommand: Optional[str],
+    ) -> None:
+        super(Servers, self).__init__(
+            command_arguments, original_directory, configuration, analysis_directory
+        )
+        self._subcommand = subcommand
+
+    @staticmethod
+    def from_arguments(
         arguments: argparse.Namespace,
         original_directory: str,
         configuration: Optional[Configuration] = None,
         analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> None:
-        super(Servers, self).__init__(
-            arguments, original_directory, configuration, analysis_directory
+    ) -> "Servers":
+        return Servers(
+            CommandArguments.from_arguments(arguments),
+            original_directory,
+            configuration=configuration,
+            analysis_directory=analysis_directory,
+            subcommand=arguments.servers_subcommand,
         )
-        self._subcommand: Optional[str] = arguments.servers_subcommand
 
     @classmethod
     def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
@@ -72,7 +89,7 @@ class Servers(Command):
             Command to manipulate multiple Pyre servers.
             """,
         )
-        servers_parser.set_defaults(command=cls)
+        servers_parser.set_defaults(command=cls.from_arguments)
         subparsers = servers_parser.add_subparsers(dest="servers_subcommand")
 
         subparsers.add_parser("list", help="List running servers.")
@@ -112,7 +129,7 @@ class Servers(Command):
         for server in servers:
             LOG.warning("Stopping server for `%s` with pid %d", server.name, server.pid)
             Stop(
-                arguments=self._arguments,
+                command_arguments=self._command_arguments,
                 original_directory=str(
                     Path(self._current_directory, server.local_root)
                 ),
@@ -121,8 +138,7 @@ class Servers(Command):
     def _run(self) -> None:
         all_server_details = self._all_server_details()
 
-        subcommand = self._subcommand
-        if subcommand == "list" or subcommand is None:
+        if self._subcommand == "list" or self._subcommand is None:
             self._print_server_details(all_server_details, self._output)
-        elif subcommand == "stop":
+        elif self._subcommand == "stop":
             self._stop_servers(all_server_details)

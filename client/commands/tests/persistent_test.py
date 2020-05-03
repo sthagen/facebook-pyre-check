@@ -26,19 +26,23 @@ class PersistentTest(unittest.TestCase):
         Monitor: MagicMock,
     ) -> None:
         original_directory = "/original/directory"
-        arguments = mock_arguments()
         configuration = mock_configuration()
         configuration.version_hash = "hash"
         configuration.number_of_workers = 42
 
         # Check start without watchman.
         with patch.object(commands.Command, "_call_client") as call_client:
-            arguments.no_watchman = True
-            arguments.features = json.dumps(
-                {"click_to_fix": True, "go_to_definition": True, "hover": True}
+            arguments = mock_arguments(
+                features=json.dumps(
+                    {"click_to_fix": True, "go_to_definition": True, "hover": True}
+                )
             )
             command = commands.Persistent(
-                arguments, original_directory, configuration, AnalysisDirectory(".")
+                arguments,
+                original_directory,
+                configuration=configuration,
+                analysis_directory=AnalysisDirectory("."),
+                no_watchman=True,
             )
             self.assertEqual(
                 command._flags(),
@@ -53,7 +57,6 @@ class PersistentTest(unittest.TestCase):
                     '{"click_to_fix": true, "go_to_definition": true, "hover": true}',
                 ],
             )
-            self.assertEqual(arguments.store_type_check_resolution, False)
             command.run()
             call_client.assert_has_calls(
                 [
@@ -64,7 +67,11 @@ class PersistentTest(unittest.TestCase):
 
         # Check null server initialize output
         command = commands.Persistent(
-            arguments, original_directory, configuration, AnalysisDirectory(".")
+            mock_arguments(),
+            original_directory,
+            configuration=configuration,
+            analysis_directory=AnalysisDirectory("."),
+            no_watchman=True,
         )
         self.assertEqual(
             command._initialize_response(5),

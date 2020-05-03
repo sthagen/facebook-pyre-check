@@ -374,8 +374,9 @@ let test_class_attributes context =
   in
   let create_simple_attribute
       ?(annotation = Type.integer)
-      ?(class_attribute = false)
-      ?(initialized = Attribute.Explicitly)
+      ?(uninstantiated_annotation = Some Type.integer)
+      ?(class_variable = false)
+      ?(initialized = Attribute.OnClass)
       ~parent
       name
     =
@@ -383,15 +384,15 @@ let test_class_attributes context =
       ~abstract:false
       ~annotation
       ~original_annotation:annotation
+      ~uninstantiated_annotation
       ~async:false
-      ~class_attribute
+      ~class_variable
       ~defined:true
       ~initialized
       ~name
       ~parent
       ~visibility:ReadWrite
       ~property:false
-      ~static:false
   in
   (* Test `Class.attributes`. *)
   let assert_attributes definition attributes =
@@ -414,7 +415,8 @@ let test_class_attributes context =
       ~pp_diff:(diff ~print)
       ( GlobalResolution.attributes ~resolution definition
       |> (fun a -> Option.value_exn a)
-      |> List.map ~f:(GlobalResolution.instantiate_attribute ~resolution) )
+      |> List.map
+           ~f:(GlobalResolution.instantiate_attribute ~resolution ~accessed_through_class:false) )
       attributes
   in
   let constructor =
@@ -446,15 +448,16 @@ let test_class_attributes context =
       create_simple_attribute
         ~parent:"test.foo"
         ~annotation:constructor
-        ~initialized:Implicitly
+        ~uninstantiated_annotation:None
+        ~initialized:OnClass
         "__init__";
       create_simple_attribute
         ~parent:"test.foo"
-        ~class_attribute:true
+        ~class_variable:true
         ~initialized:NotInitialized
         "class_attribute";
       create_simple_attribute ~parent:"test.foo" ~initialized:NotInitialized "first";
-      create_simple_attribute ~parent:"test.foo" ~initialized:Implicitly "implicit";
+      create_simple_attribute ~parent:"test.foo" ~initialized:OnlyOnInstance "implicit";
       create_simple_attribute ~parent:"test.foo" ~initialized:NotInitialized "second";
       create_simple_attribute ~parent:"test.foo" "third";
     ];
@@ -504,7 +507,7 @@ let test_class_attributes context =
       |}
   in
   let assert_attribute ~parent ~parent_instantiated_type ~attribute_name ~expected_attribute =
-    let instantiated, class_attributes =
+    let instantiated, accessed_through_class =
       if Type.is_meta parent_instantiated_type then
         Type.single_parameter parent_instantiated_type, true
       else
@@ -514,7 +517,7 @@ let test_class_attributes context =
       GlobalResolution.attribute_from_class_name
         parent
         ~transitive:true
-        ~class_attributes
+        ~accessed_through_class
         ~resolution
         ~name:attribute_name
         ~instantiated
@@ -530,9 +533,11 @@ let test_class_attributes context =
       ?(property = false)
       ?(visibility = Attribute.ReadWrite)
       ?(parent = "test.Attributes")
-      ?(initialized = Annotated.Attribute.Implicitly)
+      ?(initialized = Annotated.Attribute.OnClass)
       ?(defined = true)
+      ?(class_variable = false)
       ?callable_name
+      ?uninstantiated_annotation
       name
       callable
     =
@@ -541,16 +546,16 @@ let test_class_attributes context =
       (Annotated.Attribute.create
          ~annotation
          ~original_annotation:annotation
+         ~uninstantiated_annotation
          ~abstract:false
          ~async:false
-         ~class_attribute:false
+         ~class_variable
          ~defined
          ~initialized
          ~name
          ~parent
          ~property
-         ~visibility
-         ~static:false)
+         ~visibility)
   in
   assert_attribute
     ~parent:"test.Attributes"
@@ -585,13 +590,23 @@ let test_class_attributes context =
     ~parent_instantiated_type:(Type.meta (Type.Primitive "test.Attributes"))
     ~attribute_name:"property"
     ~expected_attribute:
-      (create_expected_attribute ~property:true ~visibility:(ReadOnly Unrefinable) "property" "str");
+      (create_expected_attribute
+         ~initialized:OnlyOnInstance
+         ~property:true
+         ~visibility:(ReadOnly Unrefinable)
+         "property"
+         "str");
   assert_attribute
     ~parent:"test.Attributes"
     ~parent_instantiated_type:(Type.Primitive "Nonsense")
     ~attribute_name:"property"
     ~expected_attribute:
-      (create_expected_attribute ~property:true ~visibility:(ReadOnly Unrefinable) "property" "str");
+      (create_expected_attribute
+         ~property:true
+         ~initialized:OnlyOnInstance
+         ~visibility:(ReadOnly Unrefinable)
+         "property"
+         "str");
   assert_attribute
     ~parent:"test.DC"
     ~parent_instantiated_type:(Type.Primitive "test.DC")
@@ -600,7 +615,8 @@ let test_class_attributes context =
       (create_expected_attribute
          ~parent:"test.DC"
          ~visibility:ReadWrite
-         ~initialized:Implicitly
+         ~initialized:OnlyOnInstance
+         ~uninstantiated_annotation:Type.integer
          "x"
          "int");
   assert_attribute
@@ -611,7 +627,8 @@ let test_class_attributes context =
       (create_expected_attribute
          ~parent:"test.Parent"
          ~visibility:ReadWrite
-         ~initialized:Implicitly
+         ~initialized:OnlyOnInstance
+         ~uninstantiated_annotation:Type.integer
          "inherited"
          "int");
   assert_attribute
@@ -622,7 +639,8 @@ let test_class_attributes context =
       (create_expected_attribute
          ~parent:"test.NT"
          ~visibility:ReadWrite
-         ~initialized:Implicitly
+         ~initialized:OnlyOnInstance
+         ~uninstantiated_annotation:Type.integer
          "x"
          "int");
   assert_attribute
@@ -633,7 +651,6 @@ let test_class_attributes context =
       (create_expected_attribute
          ~parent:"test.Prot"
          ~visibility:ReadWrite
-         ~initialized:Implicitly
          "method"
          "typing.Callable[[Named(x, int)], str]");
   (* This is still not great, since the signature of ExplicitProtChild.method is probably actually
@@ -647,7 +664,6 @@ let test_class_attributes context =
       (create_expected_attribute
          ~parent:"test.Prot"
          ~visibility:ReadWrite
-         ~initialized:Implicitly
          ~callable_name:(Reference.create "test.Prot.method")
          "method"
          "BoundMethod[typing.Callable[[Named(self, test.Prot), Named(x, int)], str], \
@@ -680,7 +696,8 @@ let test_class_attributes context =
       (create_expected_attribute
          ~parent:"typing.Callable"
          ~visibility:ReadWrite
-         ~initialized:Explicitly
+         ~initialized:OnClass
+         ~uninstantiated_annotation:Type.object_primitive
          "__call__"
          "typing.Callable[[Named(x, str)], int]");
   assert_attribute
@@ -691,7 +708,6 @@ let test_class_attributes context =
       (create_expected_attribute
          ~parent:"test.ChildOfPlaceholderStub"
          ~visibility:ReadWrite
-         ~initialized:Implicitly
          "__getattr__"
          "BoundMethod[typing.Callable[..., typing.Any], test.ChildOfPlaceholderStub]");
   ()
@@ -705,7 +721,7 @@ let test_typed_dictionary_attributes context =
     let attributes =
       GlobalResolution.attributes
         ~resolution
-        ~class_attributes:true
+        ~accessed_through_class:true
         ~transitive:true
         ~include_generated_attributes:true
         class_name
@@ -817,7 +833,7 @@ let test_typed_dictionary_individual_attributes context =
     let attribute =
       GlobalResolution.attribute_from_class_name
         ~transitive:true
-        ~class_attributes:false
+        ~accessed_through_class:false
         ~resolution
         parent_name
         ~name:attribute_name
@@ -829,8 +845,9 @@ let test_typed_dictionary_individual_attributes context =
       ?(property = false)
       ?(visibility = Attribute.ReadWrite)
       ?(parent = "test.Attributes")
-      ?(initialized = Annotated.Attribute.Implicitly)
+      ?(initialized = Annotated.Attribute.OnClass)
       ?(defined = true)
+      ?uninstantiated_annotation
       ~annotation
       name
     =
@@ -838,16 +855,16 @@ let test_typed_dictionary_individual_attributes context =
       (Annotated.Attribute.create
          ~annotation
          ~original_annotation:annotation
+         ~uninstantiated_annotation
          ~abstract:false
          ~async:false
-         ~class_attribute:false
+         ~class_variable:false
          ~defined
          ~initialized
          ~name
          ~parent
          ~property
-         ~visibility
-         ~static:false)
+         ~visibility)
   in
   assert_attribute
     ~parent_name:"test.RegularClass"
@@ -857,6 +874,7 @@ let test_typed_dictionary_individual_attributes context =
          "non_existent"
          ~parent:"test.RegularClass"
          ~annotation:Type.Top
+         ~uninstantiated_annotation:Type.Top
          ~defined:false
          ~initialized:Annotated.Attribute.NotInitialized);
   assert_attribute
@@ -867,6 +885,7 @@ let test_typed_dictionary_individual_attributes context =
          "non_existent"
          ~parent:"test.Movie"
          ~annotation:Type.Top
+         ~uninstantiated_annotation:Type.Top
          ~defined:false
          ~initialized:Annotated.Attribute.NotInitialized);
   assert_attribute
@@ -877,6 +896,7 @@ let test_typed_dictionary_individual_attributes context =
          "name"
          ~parent:"test.Movie"
          ~annotation:Type.Top
+         ~uninstantiated_annotation:Type.Top
          ~defined:false
          ~initialized:Annotated.Attribute.NotInitialized);
   assert_attribute
@@ -887,6 +907,7 @@ let test_typed_dictionary_individual_attributes context =
          "year"
          ~parent:"test.Movie"
          ~annotation:Type.Top
+         ~uninstantiated_annotation:Type.Top
          ~defined:false
          ~initialized:Annotated.Attribute.NotInitialized);
   assert_attribute
@@ -897,6 +918,7 @@ let test_typed_dictionary_individual_attributes context =
          "year"
          ~parent:"test.ChildMovie"
          ~annotation:Type.Top
+         ~uninstantiated_annotation:Type.Top
          ~defined:false
          ~initialized:Annotated.Attribute.NotInitialized);
   assert_attribute

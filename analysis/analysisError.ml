@@ -39,10 +39,7 @@ type invalid_class_instantiation =
 [@@deriving compare, eq, sexp, show, hash]
 
 type origin =
-  | Class of {
-      annotation: Type.t;
-      class_attribute: bool;
-    }
+  | Class of Type.t
   | Module of Reference.t
 
 and mismatch = {
@@ -68,6 +65,18 @@ and typed_dictionary_field_mismatch =
       annotation_and_parent2: annotation_and_parent;
     }
 
+and typed_dictionary_initialization_mismatch =
+  | MissingRequiredField of {
+      field_name: Identifier.t;
+      class_name: Identifier.t;
+    }
+  | FieldTypeMismatch of {
+      field_name: Identifier.t;
+      class_name: Identifier.t;
+      expected_type: Type.t;
+      actual_type: Type.t;
+    }
+
 and incompatible_type = {
   name: Reference.t;
   mismatch: mismatch;
@@ -75,11 +84,11 @@ and incompatible_type = {
 
 and invalid_argument =
   | Keyword of {
-      expression: Expression.t;
+      expression: Expression.t option;
       annotation: Type.t;
     }
   | ConcreteVariable of {
-      expression: Expression.t;
+      expression: Expression.t option;
       annotation: Type.t;
     }
   | ListVariadicVariable of {
@@ -321,6 +330,7 @@ type kind =
       method_name: Identifier.t;
       mismatch: mismatch;
     }
+  | TypedDictionaryInitializationError of typed_dictionary_initialization_mismatch
   (* Additional errors. *)
   (* TODO(T38384376): split this into a separate module. *)
   | DeadStore of Identifier.t
@@ -384,6 +394,7 @@ let code = function
   | PrivateProtocolProperty _ -> 52
   | MissingCaptureAnnotation _ -> 53
   | TypedDictionaryInvalidOperation _ -> 54
+  | TypedDictionaryInitializationError _ -> 55
   (* Additional errors. *)
   | UnawaitedAwaitable _ -> 1001
   | Deobfuscation _ -> 1002
@@ -433,6 +444,7 @@ let name = function
   | TooManyArguments _ -> "Too many arguments"
   | Top -> "Undefined error"
   | TypedDictionaryAccessWithNonLiteral _ -> "TypedDict accessed with a non-literal"
+  | TypedDictionaryInitializationError _ -> "TypedDict initialization error"
   | TypedDictionaryInvalidOperation _ -> "Invalid TypedDict operation"
   | TypedDictionaryKeyNotFound _ -> "TypedDict accessed with a missing key"
   | UnawaitedAwaitable _ -> "Unawaited awaitable"
@@ -511,6 +523,19 @@ let weaken_literals kind =
   | NotCallable annotation -> NotCallable (Type.weaken_literals annotation)
   | TypedDictionaryInvalidOperation ({ mismatch; _ } as record) ->
       TypedDictionaryInvalidOperation { record with mismatch = weaken_mismatch mismatch }
+  | TypedDictionaryInitializationError mismatch ->
+      let mismatch =
+        match mismatch with
+        | FieldTypeMismatch ({ expected_type; actual_type; _ } as field_record) ->
+            FieldTypeMismatch
+              {
+                field_record with
+                expected_type = Type.weaken_literals expected_type;
+                actual_type = Type.weaken_literals actual_type;
+              }
+        | _ -> mismatch
+      in
+      TypedDictionaryInitializationError mismatch
   | _ -> kind
 
 
@@ -532,6 +557,9 @@ let messages ~concise ~signature location kind =
   in
   let show_sanitized_expression expression =
     Ast.Transform.sanitize_expression expression |> Expression.show
+  in
+  let show_sanitized_optional_expression expression =
+    expression >>| show_sanitized_expression >>| Format.sprintf " `%s`" |> Option.value ~default:""
   in
   let ordinal number =
     let suffix =
@@ -850,16 +878,16 @@ let messages ~concise ~signature location kind =
       | Keyword { expression; annotation } ->
           [
             Format.asprintf
-              "Keyword argument `%s` has type `%a` but must be a mapping with string keys."
-              (show_sanitized_expression expression)
+              "Keyword argument%s has type `%a` but must be a mapping with string keys."
+              (show_sanitized_optional_expression expression)
               pp_type
               annotation;
           ]
       | ConcreteVariable { expression; annotation } ->
           [
             Format.asprintf
-              "Variable argument `%s` has type `%a` but must be an iterable."
-              (show_sanitized_expression expression)
+              "Variable argument%s has type `%a` but must be an iterable."
+              (show_sanitized_optional_expression expression)
               pp_type
               annotation;
           ]
@@ -875,9 +903,9 @@ let messages ~concise ~signature location kind =
       | ListVariadicVariable { variable; mismatch = NotDefiniteTuple { expression; annotation } } ->
           [
             Format.asprintf
-              "Variable argument `%s` has type `%a` but must be a definite tuple to be included in \
+              "Variable argument%s has type `%a` but must be a definite tuple to be included in \
                variadic type variable `%a`."
-              (show_sanitized_expression expression)
+              (show_sanitized_optional_expression expression)
               pp_type
               annotation
               (Type.Record.OrderedTypes.pp_concise ~pp_type)
@@ -1716,6 +1744,21 @@ let messages ~concise ~signature location kind =
             pp_type
             mismatch.actual;
         ]
+  | TypedDictionaryInitializationError mismatch -> (
+      match mismatch with
+      | MissingRequiredField { field_name; class_name } ->
+          [Format.asprintf "Missing required field `%s` for TypedDict `%s`." field_name class_name]
+      | FieldTypeMismatch { field_name; expected_type; actual_type; class_name } ->
+          [
+            Format.asprintf
+              "Expected type `%a` for `%s` field `%s` but got `%a`."
+              pp_type
+              expected_type
+              class_name
+              field_name
+              pp_type
+              actual_type;
+          ] )
   | Unpack { expected_count; unpack_problem } -> (
       match unpack_problem with
       | UnacceptableType bad_type ->
@@ -1754,19 +1797,15 @@ let messages ~concise ~signature location kind =
       let target =
         match origin with
         | Class
-            {
-              annotation =
-                ( Callable { kind; _ }
-                (* TODO(T64161566): Don't pretend these are just Callables *)
-                | Parametric
-                    { name = "BoundMethod"; parameters = [Single (Callable { kind; _ }); Single _] }
-                  );
-              _;
-            } -> (
+            ( Callable { kind; _ }
+            (* TODO(T64161566): Don't pretend these are just Callables *)
+            | Parametric
+                { name = "BoundMethod"; parameters = [Single (Callable { kind; _ }); Single _] } )
+          -> (
             match kind with
             | Anonymous -> "Anonymous callable"
             | Named name -> Format.asprintf "Callable `%a`" pp_reference name )
-        | Class { annotation; _ } ->
+        | Class annotation ->
             let annotation, _ = Type.split annotation in
             let name =
               if Type.is_optional_primitive annotation then
@@ -1777,16 +1816,7 @@ let messages ~concise ~signature location kind =
             name
         | Module name -> Format.asprintf "Module `%a`" pp_reference name
       in
-      let trace =
-        match origin with
-        | Class { class_attribute; _ } when class_attribute ->
-            [
-              "This attribute is accessed as a class variable; did you mean to declare it with "
-              ^ "`typing.ClassVar`?";
-            ]
-        | _ -> []
-      in
-      [Format.asprintf "%s has no attribute `%a`." target pp_identifier attribute] @ trace
+      [Format.asprintf "%s has no attribute `%a`." target pp_identifier attribute]
   | UndefinedName name when concise ->
       [Format.asprintf "Global name `%a` is undefined." pp_reference name]
   | UndefinedName name ->
@@ -1923,8 +1953,7 @@ let inference_information
       in
       let annotation =
         match kind with
-        | MissingParameterAnnotation
-            { name = parameter_name; annotation = Some (Optional Bottom); _ }
+        | MissingParameterAnnotation { name = parameter_name; annotation = Some NoneType; _ }
           when Reference.equal_sanitized (Reference.create name) parameter_name ->
             `Null
         | MissingParameterAnnotation
@@ -1932,7 +1961,7 @@ let inference_information
           when Reference.equal_sanitized (Reference.create name) parameter_name
                && value_is_none
                && not (Type.is_optional parameter_annotation) ->
-            Type.Optional parameter_annotation |> print_annotation |> fun string -> `String string
+            Type.optional parameter_annotation |> print_annotation |> fun string -> `String string
         | MissingParameterAnnotation
             { name = parameter_name; annotation = Some parameter_annotation; _ }
           when Reference.equal_sanitized (Reference.create name) parameter_name ->
@@ -1993,8 +2022,7 @@ let inference_information
           "decorators", `List decorators;
           "async", `Bool async;
         ]
-  | MissingAttributeAnnotation
-      { missing_annotation = { annotation = Some (Optional Bottom); _ }; _ } ->
+  | MissingAttributeAnnotation { missing_annotation = { annotation = Some NoneType; _ }; _ } ->
       `Assoc []
   | MissingAttributeAnnotation { parent; missing_annotation = { name; annotation; _ } } -> (
       let attributes =
@@ -2007,7 +2035,7 @@ let inference_information
       | Some annotation ->
           `Assoc (("annotation", `String (print_annotation annotation)) :: attributes)
       | None -> `Assoc attributes )
-  | MissingGlobalAnnotation { annotation = Some (Optional Bottom); _ } -> `Assoc []
+  | MissingGlobalAnnotation { annotation = Some NoneType; _ } -> `Assoc []
   | MissingGlobalAnnotation { name; annotation; _ } -> (
       let attributes =
         ["parent", `Null; "attribute_name", `String (Reference.show_sanitized name)]
@@ -2047,6 +2075,7 @@ let due_to_analysis_limitations { kind; _ } =
   | IncompatibleAwaitableType actual
   | IncompatibleParameterType { mismatch = { actual; _ }; _ }
   | TypedDictionaryInvalidOperation { mismatch = { actual; _ }; _ }
+  | TypedDictionaryInitializationError (FieldTypeMismatch { actual_type = actual; _ })
   | IncompatibleReturnType { mismatch = { actual; _ }; _ }
   | IncompatibleAttributeType { incompatible_type = { mismatch = { actual; _ }; _ }; _ }
   | IncompatibleVariableType { incompatible_type = { mismatch = { actual; _ }; _ }; _ }
@@ -2069,7 +2098,7 @@ let due_to_analysis_limitations { kind; _ } =
       || Type.is_type_alias actual
       || Type.is_undeclared actual
   | Top -> true
-  | UndefinedAttribute { origin = Class { annotation; _ }; _ } -> Type.contains_unknown annotation
+  | UndefinedAttribute { origin = Class annotation; _ } -> Type.contains_unknown annotation
   | AnalysisFailure _
   | DeadStore _
   | Deobfuscation _
@@ -2101,6 +2130,7 @@ let due_to_analysis_limitations { kind; _ } =
   | TooManyArguments _
   | TypedDictionaryAccessWithNonLiteral _
   | TypedDictionaryKeyNotFound _
+  | TypedDictionaryInitializationError _
   | Unpack _
   | RedefinedClass _
   | RevealedType _
@@ -2180,10 +2210,10 @@ let less_or_equal ~resolution left right =
           less_or_equal_mismatch left_mismatch right_mismatch
       | _ -> false )
   | InvalidArgument (Keyword left), InvalidArgument (Keyword right)
-    when Expression.equal left.expression right.expression ->
+    when Option.equal Expression.equal left.expression right.expression ->
       GlobalResolution.less_or_equal resolution ~left:left.annotation ~right:right.annotation
   | InvalidArgument (ConcreteVariable left), InvalidArgument (ConcreteVariable right)
-    when Expression.equal left.expression right.expression ->
+    when Option.equal Expression.equal left.expression right.expression ->
       GlobalResolution.less_or_equal resolution ~left:left.annotation ~right:right.annotation
   | InvalidMethodSignature left, InvalidMethodSignature right -> (
       match left.annotation, right.annotation with
@@ -2277,6 +2307,29 @@ let less_or_equal ~resolution left right =
       Option.equal Reference.equal_sanitized left.callee right.callee
       && left.expected = right.expected
       && left.provided = right.provided
+  | ( TypedDictionaryInitializationError
+        (FieldTypeMismatch
+          {
+            field_name = left_field_name;
+            class_name = left_class_name;
+            actual_type = left_actual_type;
+            expected_type = left_expected_type;
+          }),
+      TypedDictionaryInitializationError
+        (FieldTypeMismatch
+          {
+            field_name = right_field_name;
+            class_name = right_class_name;
+            actual_type = right_actual_type;
+            expected_type = right_expected_type;
+          }) ) ->
+      Identifier.equal left_field_name right_field_name
+      && Identifier.equal left_class_name right_class_name
+      && GlobalResolution.less_or_equal resolution ~left:left_actual_type ~right:right_actual_type
+      && GlobalResolution.less_or_equal
+           resolution
+           ~left:left_expected_type
+           ~right:right_expected_type
   | UninitializedAttribute left, UninitializedAttribute right when String.equal left.name right.name
     ->
       less_or_equal_mismatch left.mismatch right.mismatch
@@ -2284,8 +2337,7 @@ let less_or_equal ~resolution left right =
   | UndefinedAttribute left, UndefinedAttribute right
     when Identifier.equal_sanitized left.attribute right.attribute -> (
       match left.origin, right.origin with
-      | Class left, Class right when Bool.equal left.class_attribute right.class_attribute ->
-          GlobalResolution.less_or_equal resolution ~left:left.annotation ~right:right.annotation
+      | Class left, Class right -> GlobalResolution.less_or_equal resolution ~left ~right
       | Module left, Module right -> Reference.equal_sanitized left right
       | _ -> false )
   | UndefinedName left, UndefinedName right when Reference.equal_sanitized left right -> true
@@ -2354,6 +2406,7 @@ let less_or_equal ~resolution left right =
   | Top, _
   | TypedDictionaryAccessWithNonLiteral _, _
   | TypedDictionaryInvalidOperation _, _
+  | TypedDictionaryInitializationError _, _
   | TypedDictionaryKeyNotFound _, _
   | UnawaitedAwaitable _, _
   | UndefinedAttribute _, _
@@ -2536,7 +2589,7 @@ let join ~resolution left right =
         let mismatch = join_mismatch left_mismatch right_mismatch in
         InconsistentOverride { left with override = WeakenedPostcondition mismatch }
     | InvalidArgument (Keyword left), InvalidArgument (Keyword right)
-      when Expression.equal left.expression right.expression ->
+      when Option.equal Expression.equal left.expression right.expression ->
         InvalidArgument
           (Keyword
              {
@@ -2544,7 +2597,7 @@ let join ~resolution left right =
                annotation = GlobalResolution.join resolution left.annotation right.annotation;
              })
     | InvalidArgument (ConcreteVariable left), InvalidArgument (ConcreteVariable right)
-      when Expression.equal left.expression right.expression ->
+      when Option.equal Expression.equal left.expression right.expression ->
         InvalidArgument
           (ConcreteVariable
              {
@@ -2594,8 +2647,8 @@ let join ~resolution left right =
     | ( UndefinedAttribute { origin = Class left; attribute = left_attribute },
         UndefinedAttribute { origin = Class right; attribute = right_attribute } )
       when Identifier.equal_sanitized left_attribute right_attribute ->
-        let annotation = GlobalResolution.join resolution left.annotation right.annotation in
-        UndefinedAttribute { origin = Class { left with annotation }; attribute = left_attribute }
+        let annotation = GlobalResolution.join resolution left right in
+        UndefinedAttribute { origin = Class annotation; attribute = left_attribute }
     | ( UndefinedAttribute { origin = Module left; attribute = left_attribute },
         UndefinedAttribute { origin = Module right; attribute = right_attribute } )
       when Identifier.equal_sanitized left_attribute right_attribute
@@ -2643,6 +2696,39 @@ let join ~resolution left right =
            && Identifier.equal_sanitized left.method_name right.method_name ->
         let mismatch = join_mismatch left.mismatch right.mismatch in
         TypedDictionaryInvalidOperation { left with mismatch }
+    | ( TypedDictionaryInitializationError
+          (FieldTypeMismatch
+            ( {
+                field_name = left_field_name;
+                class_name = left_class_name;
+                actual_type = left_actual_type;
+                expected_type = left_expected_type;
+              } as mismatch )),
+        TypedDictionaryInitializationError
+          (FieldTypeMismatch
+            {
+              field_name = right_field_name;
+              class_name = right_class_name;
+              actual_type = right_actual_type;
+              expected_type = right_expected_type;
+            }) )
+      when Identifier.equal left_field_name right_field_name
+           && Identifier.equal left_class_name right_class_name ->
+        TypedDictionaryInitializationError
+          (FieldTypeMismatch
+             {
+               mismatch with
+               actual_type = GlobalResolution.join resolution left_actual_type right_actual_type;
+               expected_type =
+                 GlobalResolution.join resolution left_expected_type right_expected_type;
+             })
+    | ( TypedDictionaryInitializationError
+          (MissingRequiredField { field_name = left_field_name; class_name = left_class_name }),
+        TypedDictionaryInitializationError
+          (MissingRequiredField { field_name = right_field_name; class_name = right_class_name }) )
+      when Identifier.equal left_field_name right_field_name
+           && Identifier.equal left_class_name right_class_name ->
+        left.kind
     | Top, _
     | _, Top ->
         Top
@@ -2690,6 +2776,7 @@ let join ~resolution left right =
     | TypedDictionaryAccessWithNonLiteral _, _
     | TypedDictionaryKeyNotFound _, _
     | TypedDictionaryInvalidOperation _, _
+    | TypedDictionaryInitializationError _, _
     | UnawaitedAwaitable _, _
     | UndefinedAttribute _, _
     | UndefinedImport _, _
@@ -2747,7 +2834,7 @@ let join_at_define ~resolution errors =
     | { kind = MissingParameterAnnotation { name; _ }; _ }
     | { kind = MissingReturnAnnotation { name; _ }; _ } ->
         add_error_to_map (Reference.show_sanitized name)
-    | { kind = UndefinedAttribute { attribute; origin = Class { annotation; _ } }; _ } ->
+    | { kind = UndefinedAttribute { attribute; origin = Class annotation }; _ } ->
         (* Only error once per define on accesses or assigns to an undefined class attribute. *)
         add_error_to_map (attribute ^ Type.show annotation)
     | _ -> error :: errors
@@ -2803,7 +2890,7 @@ let filter ~resolution errors =
       | IncompatibleReturnType { mismatch = { actual; _ }; _ }
       | IncompatibleVariableType { incompatible_type = { mismatch = { actual; _ }; _ }; _ }
       | TypedDictionaryInvalidOperation { mismatch = { actual; _ }; _ }
-      | UndefinedAttribute { origin = Class { annotation = actual; _ }; _ } ->
+      | UndefinedAttribute { origin = Class actual; _ } ->
           let is_subclass_of_mock annotation =
             try
               match annotation with
@@ -2816,8 +2903,10 @@ let filter ~resolution errors =
                       ~predecessor
                   in
                   is_transitive_successor ~successor:"unittest.mock.Base"
-                  || (* Special-case mypy's workaround for mocks. *)
-                  is_transitive_successor ~successor:"unittest.mock.NonCallableMock"
+                  || is_transitive_successor ~successor:"mock.Base"
+                  (* Special-case mypy's workaround for mocks. *)
+                  || is_transitive_successor ~successor:"unittest.mock.NonCallableMock"
+                  || is_transitive_successor ~successor:"mock.NonCallableMock"
               | _ -> false
             with
             | ClassHierarchy.Untracked _ -> false
@@ -2883,20 +2972,17 @@ let filter ~resolution errors =
     let is_callable_attribute_error { kind; _ } =
       (* TODO(T53616545): Remove once our decorators are more expressive. *)
       match kind with
-      | UndefinedAttribute { origin = Class { annotation = Callable _; _ }; attribute = "command" }
-        ->
-          true
+      | UndefinedAttribute { origin = Class (Callable _); attribute = "command" } -> true
       (* We also need to filter errors for common mocking patterns. *)
       | UndefinedAttribute
           {
-            origin = Class { annotation = Callable _ | Parametric { name = "BoundMethod"; _ }; _ };
+            origin = Class (Callable _ | Parametric { name = "BoundMethod"; _ });
             attribute =
               ( "assert_not_called" | "assert_called_once" | "assert_called_once_with"
               | "reset_mock" | "assert_has_calls" | "assert_any_call" );
           } ->
           true
-      | UndefinedAttribute
-          { origin = Class { annotation = Callable { kind = Named name; _ }; _ }; _ } ->
+      | UndefinedAttribute { origin = Class (Callable { kind = Named name; _ }); _ } ->
           Reference.last name = "patch"
       | _ -> false
     in
@@ -3275,6 +3361,25 @@ let dequalify
             typed_dictionary_name = dequalify_identifier typed_dictionary_name;
             mismatch = dequalify_mismatch mismatch;
           }
+    | TypedDictionaryInitializationError mismatch ->
+        let mismatch =
+          match mismatch with
+          | MissingRequiredField { field_name; class_name } ->
+              MissingRequiredField
+                {
+                  field_name = dequalify_identifier field_name;
+                  class_name = dequalify_identifier class_name;
+                }
+          | FieldTypeMismatch { field_name; expected_type; actual_type; class_name } ->
+              FieldTypeMismatch
+                {
+                  field_name = dequalify_identifier field_name;
+                  expected_type = dequalify expected_type;
+                  actual_type = dequalify actual_type;
+                  class_name = dequalify_identifier class_name;
+                }
+        in
+        TypedDictionaryInitializationError mismatch
     | UninitializedAttribute ({ mismatch; parent; kind; _ } as inconsistent_usage) ->
         UninitializedAttribute
           {
@@ -3289,7 +3394,7 @@ let dequalify
     | UndefinedAttribute { attribute; origin } ->
         let origin : origin =
           match origin with
-          | Class { annotation; class_attribute } ->
+          | Class annotation ->
               let annotation =
                 (* Don't dequalify optionals because we special case their display. *)
                 if Type.is_optional_primitive annotation then
@@ -3297,7 +3402,7 @@ let dequalify
                 else
                   dequalify annotation
               in
-              Class { annotation; class_attribute }
+              Class annotation
           | Module module_name -> Module (dequalify_reference module_name)
         in
         UndefinedAttribute { attribute; origin }

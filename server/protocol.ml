@@ -46,6 +46,7 @@ module TypeQuery = struct
 
   type request =
     | Attributes of Reference.t
+    | Batch of request list
     | Callees of Reference.t
     | CalleesWithLocation of Reference.t
     | ComputeHashesToKeys
@@ -68,7 +69,7 @@ module TypeQuery = struct
       }
     | SaveServerState of Path.t
     | Signature of Reference.t list
-    | Superclasses of Expression.t
+    | Superclasses of Expression.t list
     | Type of Expression.t
     | TypeAtPosition of {
         path: Path.t;
@@ -196,9 +197,16 @@ module TypeQuery = struct
   }
   [@@deriving eq, show]
 
+  type superclasses_mapping = {
+    class_name: Reference.t;
+    superclasses: Type.t list;
+  }
+  [@@deriving eq, show, to_yojson]
+
   let _ = show_compatibility (* unused, but pp is *)
 
   type base_response =
+    | Batch of response list
     | Boolean of bool
     | Callees of Callgraph.callee list
     | CalleesWithLocation of callee_with_instantiated_locations list
@@ -218,13 +226,19 @@ module TypeQuery = struct
     | Path of Path.t
     | References of Reference.t list
     | Success of string
-    | Superclasses of Type.t list
+    | Superclasses of superclasses_mapping list
     | Type of Type.t
     | TypeAtLocation of type_at_location
     | TypesByFile of types_at_file list
   [@@deriving eq, show]
 
-  let base_response_to_yojson = function
+  and response =
+    | Response of base_response
+    | Error of string
+  [@@deriving eq, show]
+
+  let rec base_response_to_yojson = function
+    | Batch responses -> `List (List.map ~f:response_to_yojson responses)
     | Boolean boolean -> `Assoc ["boolean", `Bool boolean]
     | Callees callees -> `Assoc ["callees", `List (List.map callees ~f:Callgraph.callee_to_yojson)]
     | CalleesWithLocation callees ->
@@ -353,19 +367,26 @@ module TypeQuery = struct
         in
         `Assoc ["references", `List json_references]
     | Success message -> `Assoc ["message", `String message]
-    | Superclasses classes -> `Assoc ["superclasses", `List (List.map classes ~f:Type.to_yojson)]
+    | Superclasses class_to_superclasses_mapping -> (
+        match class_to_superclasses_mapping with
+        | [{ superclasses; _ }] ->
+            `Assoc ["superclasses", `List (List.map superclasses ~f:Type.to_yojson)]
+        | _ ->
+            let superclasses_to_json { class_name; superclasses } =
+              `Assoc
+                [
+                  "class_name", `String (Reference.show class_name);
+                  "superclasses", `List (List.map superclasses ~f:Type.to_yojson);
+                ]
+            in
+            `List (List.map class_to_superclasses_mapping ~f:superclasses_to_json) )
     | Type annotation -> `Assoc ["type", Type.to_yojson annotation]
     | TypeAtLocation annotation -> type_at_location_to_yojson annotation
     | TypesByFile paths_to_annotations ->
         `List (List.map paths_to_annotations ~f:types_at_file_to_yojson)
 
 
-  type response =
-    | Response of base_response
-    | Error of string
-  [@@deriving eq, show]
-
-  let response_to_yojson = function
+  and response_to_yojson = function
     | Response base_response -> `Assoc ["response", base_response_to_yojson base_response]
     | Error message -> `Assoc ["error", `String message]
 

@@ -376,7 +376,6 @@ class FilesystemTest(unittest.TestCase):
     ) -> None:
         arguments = MagicMock()
         arguments.source_directories = []
-        arguments.build = False
         arguments.command = commands.Check
         arguments.use_buck_builder = False
         arguments.ignore_unbuilt_dependencies = False
@@ -389,7 +388,7 @@ class FilesystemTest(unittest.TestCase):
         configuration.ignore_unbuilt_dependencies = False
 
         with self.assertRaises(EnvironmentException):
-            buck_builder = buck.SimpleBuckBuilder(build=False)
+            buck_builder = buck.SimpleBuckBuilder()
             analysis_directory = SharedAnalysisDirectory(
                 [],
                 [],
@@ -406,7 +405,7 @@ class FilesystemTest(unittest.TestCase):
             arguments.source_directories = ["arguments_source_directory"]
             configuration.source_directories = ["configuration_source_directory"]
 
-            buck_builder = buck.SimpleBuckBuilder(build=False)
+            buck_builder = buck.SimpleBuckBuilder()
             analysis_directory = SharedAnalysisDirectory(
                 ["some_source_directory"],
                 ["configuration_source_directory"],
@@ -416,7 +415,7 @@ class FilesystemTest(unittest.TestCase):
             )
             analysis_directory._resolve_source_directories()
             buck_source_directories.assert_called_with(
-                {"configuration_source_directory"}, build=False
+                {"configuration_source_directory"}
             )
             self.assertEqual(
                 analysis_directory._source_directories, {"some_source_directory"}
@@ -431,11 +430,13 @@ class FilesystemTest(unittest.TestCase):
             arguments.targets = ["arguments_target"]
             configuration.source_directories = ["configuration_source_directory"]
 
-            command = commands.Check(arguments, original_directory, configuration)
+            command = commands.Check(
+                arguments, original_directory, configuration=configuration
+            )
             analysis_directory = command._analysis_directory
             assert isinstance(analysis_directory, SharedAnalysisDirectory)
             analysis_directory._resolve_source_directories()
-            buck_source_directories.assert_called_with({"arguments_target"}, build=True)
+            buck_source_directories.assert_called_with({"arguments_target"})
             self.assertEqual(
                 analysis_directory._source_directories,
                 {"realpath(root/arguments_target)"},
@@ -447,13 +448,19 @@ class FilesystemTest(unittest.TestCase):
             # same test as above, but Start instead of Check; build should be False
             cwd.return_value = "/"
             original_directory = "/root"
-            command = commands.Start(arguments, original_directory, configuration)
+            command = commands.Start(
+                arguments,
+                original_directory,
+                terminal=False,
+                store_type_check_resolution=False,
+                use_watchman=True,
+                incremental_style=commands.command.IncrementalStyle.FINE_GRAINED,
+                configuration=configuration,
+            )
             analysis_directory = command._analysis_directory
             assert isinstance(analysis_directory, SharedAnalysisDirectory)
             analysis_directory._resolve_source_directories()
-            buck_source_directories.assert_called_with(
-                {"arguments_target"}, build=False
-            )
+            buck_source_directories.assert_called_with({"arguments_target"})
             self.assertEqual(
                 analysis_directory._source_directories,
                 {"realpath(root/arguments_target)"},
@@ -465,18 +472,32 @@ class FilesystemTest(unittest.TestCase):
         ) as buck_source_directories:
             cwd.side_effect = ["/", "/", "/"]
             original_directory = "/root"
-            command = commands.Start(arguments, original_directory, configuration)
-            analysis_directory = command._analysis_directory
-            assert isinstance(analysis_directory, SharedAnalysisDirectory)
-            analysis_directory._resolve_source_directories()
-            buck_source_directories.assert_called_with(
-                {"arguments_target"}, build=False
+            command = commands.Start(
+                arguments,
+                original_directory,
+                terminal=False,
+                store_type_check_resolution=False,
+                use_watchman=True,
+                incremental_style=commands.command.IncrementalStyle.FINE_GRAINED,
+                configuration=configuration,
             )
-            command = commands.Restart(arguments, original_directory, configuration)
             analysis_directory = command._analysis_directory
             assert isinstance(analysis_directory, SharedAnalysisDirectory)
             analysis_directory._resolve_source_directories()
-            buck_source_directories.assert_called_with({"arguments_target"}, build=True)
+            buck_source_directories.assert_called_with({"arguments_target"})
+            command = commands.Restart(
+                arguments,
+                original_directory,
+                configuration=configuration,
+                terminal=False,
+                incremental_style=commands.command.IncrementalStyle.FINE_GRAINED,
+                use_watchman=True,
+                store_type_check_resolution=False,
+            )
+            analysis_directory = command._analysis_directory
+            assert isinstance(analysis_directory, SharedAnalysisDirectory)
+            analysis_directory._resolve_source_directories()
+            buck_source_directories.assert_called_with({"arguments_target"})
 
         # Configuration is picked up when no arguments provided.
         with patch.object(
@@ -489,18 +510,17 @@ class FilesystemTest(unittest.TestCase):
             arguments.source_directories = []
             arguments.targets = []
             arguments.command = commands.Check
-            arguments.build = True
             configuration.targets = ["configuration_target"]
             configuration.source_directories = []
 
-            command = commands.Check(arguments, original_directory, configuration)
+            command = commands.Check(
+                arguments, original_directory, configuration=configuration
+            )
             analysis_directory = command._analysis_directory
             assert isinstance(analysis_directory, SharedAnalysisDirectory)
             analysis_directory._resolve_source_directories()
 
-            buck_source_directories.assert_called_with(
-                {"configuration_target"}, build=True
-            )
+            buck_source_directories.assert_called_with({"configuration_target"})
             self.assertEqual(
                 analysis_directory._source_directories,
                 {"realpath(root/configuration_source_directory)"},
@@ -516,7 +536,9 @@ class FilesystemTest(unittest.TestCase):
             arguments.targets = []
             configuration.targets = ["."]
 
-            command = commands.Check(arguments, original_directory, configuration)
+            command = commands.Check(
+                arguments, original_directory, configuration=configuration
+            )
             analysis_directory = command._analysis_directory
             assert isinstance(analysis_directory, SharedAnalysisDirectory)
             analysis_directory._resolve_source_directories()
@@ -531,7 +553,7 @@ class FilesystemTest(unittest.TestCase):
         self.assertEqual(find_root("/a/b/c/d", "configuration"), "/a")
         os_mock_isfile.side_effect = [True]
         self.assertEqual(find_root("/a", "configuration"), "/a")
-        os_mock_isfile.side_effect = [False, False]
+        os_mock_isfile.side_effect = [False, False, False]
         self.assertEqual(find_root("/a/b", "configuration"), None)
 
     @patch("os.unlink")

@@ -8,13 +8,16 @@ open Pyre
 module SharedMemory = Memory
 module Json = Yojson.Safe
 
-type rule = {
-  sources: Sources.t list;
-  sinks: Sinks.t list;
-  code: int;
-  name: string;
-  message_format: string; (* format *)
-}
+module Rule = struct
+  type t = {
+    sources: Sources.t list;
+    sinks: Sinks.t list;
+    code: int;
+    name: string;
+    message_format: string; (* format *)
+  }
+  [@@deriving eq, show]
+end
 
 type implicit_sinks = { conditional_test: Sinks.t list }
 
@@ -29,16 +32,28 @@ let analysis_model_constraints =
   { maximum_model_width = 25; maximum_complex_access_path_length = 10 }
 
 
+type partial_sink_converter = (Sources.t * Sinks.t) list String.Map.Tree.t
+
 type t = {
   sources: string list;
   sinks: string list;
   features: string list;
-  rules: rule list;
+  rules: Rule.t list;
   implicit_sinks: implicit_sinks;
+  partial_sink_converter: partial_sink_converter;
+  acceptable_sink_labels: string list String.Map.Tree.t;
 }
 
 let empty =
-  { sources = []; sinks = []; features = []; rules = []; implicit_sinks = empty_implicit_sinks }
+  {
+    sources = [];
+    sinks = [];
+    features = [];
+    rules = [];
+    partial_sink_converter = String.Map.Tree.empty;
+    implicit_sinks = empty_implicit_sinks;
+    acceptable_sink_labels = String.Map.Tree.empty;
+  }
 
 
 (* There's only a single taint configuration *)
@@ -69,7 +84,44 @@ exception
     parse_error: string;
   }
 
-let parse source =
+module PartialSinkConverter = struct
+  let mangle { Sinks.kind; label } = Format.sprintf "%s$%s" kind label
+
+  let add map ~first_source ~first_sinks ~second_source ~second_sinks =
+    let add map (first_sink, second_sink) =
+      (* Trigger second sink when the first sink matches a source, and vice versa. *)
+      String.Map.Tree.add_multi
+        map
+        ~key:(mangle first_sink)
+        ~data:(first_source, Sinks.TriggeredPartialSink second_sink)
+      |> String.Map.Tree.add_multi
+           ~key:(mangle second_sink)
+           ~data:(second_source, Sinks.TriggeredPartialSink first_sink)
+    in
+    List.cartesian_product first_sinks second_sinks |> List.fold ~f:add ~init:map
+
+
+  let merge left right =
+    String.Map.Tree.merge
+      ~f:(fun ~key:_ -> function
+        | `Left value
+        | `Right value ->
+            Some value
+        | `Both (left, right) -> Some (left @ right))
+      left
+      right
+
+
+  let get_triggered_sink sink_to_sources ~partial_sink ~source =
+    match mangle partial_sink |> String.Map.Tree.find sink_to_sources with
+    | Some source_and_sink_list ->
+        List.find source_and_sink_list ~f:(fun (supported_source, _) ->
+            Sources.equal source supported_source)
+        >>| snd
+    | _ -> None
+end
+
+let parse source_jsons =
   let member name json =
     try Json.Util.member name json with
     | Not_found -> `Null
@@ -79,37 +131,133 @@ let parse source =
     | `Null -> []
     | json -> Json.Util.to_list json
   in
+  let parse_string_list json = Json.Util.to_list json |> List.map ~f:Json.Util.to_string in
   let parse_sources json =
     let parse_source json = Json.Util.member "name" json |> Json.Util.to_string in
     array_member "sources" json |> List.map ~f:parse_source
   in
   let parse_sinks json =
-    let parse_sink json = Json.Util.member "name" json |> Json.Util.to_string in
-    array_member "sinks" json |> List.map ~f:parse_sink
+    let parse_sink (sinks, acceptable_sink_labels) json =
+      let sink = Json.Util.member "name" json |> Json.Util.to_string in
+      let acceptable_sink_labels =
+        if List.exists ~f:(( = ) "multi_sink_labels") (Json.Util.keys json) then
+          Json.Util.member "multi_sink_labels" json
+          |> Json.Util.to_list
+          |> List.map ~f:Json.Util.to_string
+          |> fun data -> String.Map.Tree.set acceptable_sink_labels ~key:sink ~data
+        else
+          acceptable_sink_labels
+      in
+      sink :: sinks, acceptable_sink_labels
+    in
+    array_member "sinks" json |> List.fold ~init:([], String.Map.Tree.empty) ~f:parse_sink
   in
   let parse_features json =
     let parse_feature json = Json.Util.member "name" json |> Json.Util.to_string in
     array_member "features" json |> List.map ~f:parse_feature
   in
-  let parse_rules ~allowed_sources ~allowed_sinks json =
-    let parse_string_list json = Json.Util.to_list json |> List.map ~f:Json.Util.to_string in
+  let seen_rules = Int.Hash_set.create () in
+  let validate_code_uniqueness code =
+    if Hash_set.mem seen_rules code then
+      failwith (Format.sprintf "Multiple rules share the same code `%d`." code);
+    Hash_set.add seen_rules code
+  in
+  let parse_rules ~allowed_sources ~allowed_sinks ~acceptable_sink_labels json =
     let parse_rule json =
       let sources =
         Json.Util.member "sources" json
         |> parse_string_list
         |> List.map ~f:(Sources.parse ~allowed:allowed_sources)
       in
+      let validate sink =
+        (* Ensure that the sink used for a normal rule is not a multi sink. *)
+        if String.Map.Tree.mem acceptable_sink_labels sink then
+          failwith (Format.sprintf "Multi sink `%s` can't be used for a regular rule." sink);
+        sink
+      in
       let sinks =
         Json.Util.member "sinks" json
         |> parse_string_list
+        |> List.map ~f:validate
         |> List.map ~f:(Sinks.parse ~allowed:allowed_sinks)
       in
       let name = Json.Util.member "name" json |> Json.Util.to_string in
       let message_format = Json.Util.member "message_format" json |> Json.Util.to_string in
       let code = Json.Util.member "code" json |> Json.Util.to_int in
-      { sources; sinks; name; code; message_format }
+      validate_code_uniqueness code;
+      { Rule.sources; sinks; name; code; message_format }
     in
     array_member "rules" json |> List.map ~f:parse_rule
+  in
+  let parse_combined_source_rules ~allowed_sources ~acceptable_sink_labels json =
+    let parse_combined_source_rule (rules, partial_sink_converter) json =
+      let name = Json.Util.member "name" json |> Json.Util.to_string in
+      let message_format = Json.Util.member "message_format" json |> Json.Util.to_string in
+      let code = Json.Util.member "code" json |> Json.Util.to_int in
+      validate_code_uniqueness code;
+      let sources = Json.Util.member "sources" json in
+      let keys = Json.Util.keys sources in
+      match keys with
+      | [first; second] ->
+          let first_source =
+            Json.Util.member first sources
+            |> Json.Util.to_string
+            |> Sources.parse ~allowed:allowed_sources
+          in
+          let second_source =
+            Json.Util.member second sources
+            |> Json.Util.to_string
+            |> Sources.parse ~allowed:allowed_sources
+          in
+
+          let sinks = Json.Util.member "sinks" json |> parse_string_list in
+          let create_partial_sink label sink =
+            begin
+              match String.Map.Tree.find acceptable_sink_labels sink with
+              | Some labels when not (List.mem ~equal:String.equal labels label) ->
+                  failwith
+                    (Format.sprintf
+                       "Error when parsing configuration: `%s` is an invalid label For multi sink \
+                        `%s` (choices: `%s`)"
+                       label
+                       sink
+                       (String.concat labels ~sep:", "))
+              | None ->
+                  failwith
+                    (Format.sprintf
+                       "Error when parsing configuration: `%s` is not a multi sink."
+                       sink)
+              | _ -> ()
+            end;
+            { Sinks.kind = sink; label }
+          in
+          let first_sinks = List.map sinks ~f:(create_partial_sink first) in
+          let second_sinks = List.map sinks ~f:(create_partial_sink second) in
+          ( {
+              Rule.sources = [first_source];
+              sinks = List.map first_sinks ~f:(fun sink -> Sinks.TriggeredPartialSink sink);
+              name;
+              code;
+              message_format;
+            }
+            :: {
+                 Rule.sources = [second_source];
+                 sinks = List.map second_sinks ~f:(fun sink -> Sinks.TriggeredPartialSink sink);
+                 name;
+                 code;
+                 message_format;
+               }
+            :: rules,
+            PartialSinkConverter.add
+              partial_sink_converter
+              ~first_source
+              ~first_sinks
+              ~second_source
+              ~second_sinks )
+      | _ -> failwith "Combined source rules must be of the form {\"a\": SourceA, \"b\": SourceB}"
+    in
+    array_member "combined_source_rules" json
+    |> List.fold ~init:([], String.Map.Tree.empty) ~f:parse_combined_source_rule
   in
   let parse_implicit_sinks ~allowed_sinks json =
     match member "implicit_sinks" json with
@@ -122,13 +270,61 @@ let parse source =
         in
         { conditional_test }
   in
-  let json = Json.from_string source in
-  let sources = parse_sources json in
-  let sinks = parse_sinks json in
-  let features = parse_features json in
-  let rules = parse_rules ~allowed_sources:sources ~allowed_sinks:sinks json in
-  let implicit_sinks = parse_implicit_sinks ~allowed_sinks:sinks json in
-  { sources; sinks; features; rules; implicit_sinks }
+  let sources = List.concat_map source_jsons ~f:parse_sources in
+  let sinks, acceptable_sink_labels =
+    List.map source_jsons ~f:parse_sinks
+    |> List.unzip
+    |> fun (sinks, acceptable_sink_labels) ->
+    ( List.concat sinks,
+      List.fold acceptable_sink_labels ~init:String.Map.Tree.empty ~f:PartialSinkConverter.merge )
+  in
+  let features = List.concat_map source_jsons ~f:parse_features in
+  let rules =
+    List.concat_map
+      source_jsons
+      ~f:(parse_rules ~allowed_sources:sources ~allowed_sinks:sinks ~acceptable_sink_labels)
+  in
+  let generated_combined_rules, partial_sink_converter =
+    List.map
+      source_jsons
+      ~f:(parse_combined_source_rules ~allowed_sources:sources ~acceptable_sink_labels)
+    |> List.unzip
+    |> fun (generated_combined_rules, partial_sink_converters) ->
+    ( List.concat generated_combined_rules,
+      List.fold partial_sink_converters ~init:String.Map.Tree.empty ~f:PartialSinkConverter.merge )
+  in
+
+  let merge_implicit_sinks left right =
+    { conditional_test = left.conditional_test @ right.conditional_test }
+  in
+  let implicit_sinks =
+    List.map source_jsons ~f:(parse_implicit_sinks ~allowed_sinks:sinks)
+    |> List.fold ~init:{ conditional_test = [] } ~f:merge_implicit_sinks
+  in
+  {
+    sources;
+    sinks;
+    features;
+    rules = List.rev_append rules generated_combined_rules;
+    partial_sink_converter;
+    implicit_sinks;
+    acceptable_sink_labels;
+  }
+
+
+let validate { sources; sinks; features; _ } =
+  let ensure_list_unique ~kind elements =
+    let seen = String.Hash_set.create () in
+    let ensure_unique element =
+      if Hash_set.mem seen element then
+        failwith (Format.sprintf "Duplicate entry for %s: `%s`" kind element);
+      Hash_set.add seen element
+    in
+    List.iter elements ~f:ensure_unique
+  in
+  ensure_list_unique ~kind:"source" sources;
+  ensure_list_unique ~kind:"sink" sinks;
+  ensure_list_unique ~kind:"feature" features
 
 
 let register configuration =
@@ -141,8 +337,19 @@ let register configuration =
 
 let default =
   {
-    sources = [];
-    sinks = [];
+    sources = ["Demo"; "Test"; "UserControlled"; "PII"; "Secrets"; "Cookies"];
+    sinks =
+      [
+        "Demo";
+        "FileSystem";
+        "GetAttr";
+        "Logging";
+        "RemoteCodeExecution";
+        "SQL";
+        "Test";
+        "XMLParser";
+        "XSS";
+      ];
     features =
       [
         "copy";
@@ -156,64 +363,77 @@ let default =
     rules =
       [
         {
-          sources = [Sources.UserControlled];
-          sinks = [Sinks.RemoteCodeExecution];
+          sources = [Sources.NamedSource "UserControlled"];
+          sinks = [Sinks.NamedSink "RemoteCodeExecution"];
           code = 5001;
           name = "Possible shell injection.";
           message_format =
             "Possible remote code execution due to [{$sources}] data reaching [{$sinks}] sink(s)";
         };
         {
-          sources = [Sources.Test; Sources.UserControlled];
-          sinks = [Sinks.Test];
+          sources = [Sources.NamedSource "Test"; Sources.NamedSource "UserControlled"];
+          sinks = [Sinks.NamedSink "Test"];
           code = 5002;
           name = "Test flow.";
           message_format = "Data from [{$sources}] source(s) may reach [{$sinks}] sink(s)";
         };
         {
-          sources = [Sources.UserControlled];
-          sinks = [Sinks.SQL];
+          sources = [Sources.NamedSource "UserControlled"];
+          sinks = [Sinks.NamedSink "SQL"];
           code = 5005;
           name = "User controlled data to SQL execution.";
           message_format = "Data from [{$sources}] source(s) may reach [{$sinks}] sink(s)";
         };
         {
-          sources = [Sources.Cookies; Sources.PII; Sources.Secrets];
-          sinks = [Sinks.Logging];
+          sources =
+            [
+              Sources.NamedSource "Cookies"; Sources.NamedSource "PII"; Sources.NamedSource "Secrets";
+            ];
+          sinks = [Sinks.NamedSink "Logging"];
           code = 5006;
           name = "Restricted data being logged.";
           message_format = "Data from [{$sources}] source(s) may reach [{$sinks}] sink(s)";
         };
         {
-          sources = [Sources.UserControlled];
-          sinks = [Sinks.XMLParser];
+          sources = [Sources.NamedSource "UserControlled"];
+          sinks = [Sinks.NamedSink "XMLParser"];
           code = 5007;
           name = "User data to XML Parser.";
           message_format = "Data from [{$sources}] source(s) may reach [{$sinks}] sink(s)";
         };
         {
-          sources = [Sources.UserControlled];
-          sinks = [Sinks.XSS];
+          sources = [Sources.NamedSource "UserControlled"];
+          sinks = [Sinks.NamedSink "XSS"];
           code = 5008;
           name = "XSS";
           message_format = "Possible XSS due to [{$sources}] data reaching [{$sinks}] sink(s)";
         };
         {
-          sources = [Sources.Demo];
-          sinks = [Sinks.Demo];
+          sources = [Sources.NamedSource "Demo"];
+          sinks = [Sinks.NamedSink "Demo"];
           code = 5009;
           name = "Demo flow.";
           message_format = "Data from [{$sources}] source(s) may reach [{$sinks}] sink(s)";
         };
         {
-          sources = [Sources.UserControlled];
-          sinks = [Sinks.GetAttr];
+          sources = [Sources.NamedSource "UserControlled"];
+          sinks = [Sinks.NamedSink "GetAttr"];
           code = 5010;
           name = "User data to getattr.";
           message_format = "Attacker may control at least one argument to getattr(,).";
         };
+        {
+          sources = [Sources.NamedSource "Demo"];
+          sinks = [Sinks.NamedSink "Demo"];
+          code = 6001;
+          name = "Duplicate demo flow.";
+          message_format =
+            "Possible remote code execution due to [{$sources}] data reaching [{$sinks}] sink(s)";
+        };
       ];
+    partial_sink_converter = String.Map.Tree.empty;
     implicit_sinks = empty_implicit_sinks;
+    acceptable_sink_labels = String.Map.Tree.empty;
   }
 
 
@@ -235,28 +455,18 @@ let create ~rule_filter ~paths =
         |> File.create
         |> File.content
         |> Option.value ~default:""
-        |> parse
+        |> Json.from_string
         |> Option.some
       with
-      | Yojson.Json_error parse_error ->
+      | Yojson.Json_error parse_error
+      | Failure parse_error ->
           raise (MalformedConfiguration { path = Path.absolute config_file; parse_error })
-  in
-  let merge_implicit_sinks left right =
-    { conditional_test = left.conditional_test @ right.conditional_test }
-  in
-  let merge left right =
-    {
-      sources = left.sources @ right.sources;
-      sinks = left.sinks @ right.sinks;
-      features = left.features @ right.features;
-      rules = left.rules @ right.rules;
-      implicit_sinks = merge_implicit_sinks left.implicit_sinks right.implicit_sinks;
-    }
   in
   let configurations = file_paths |> List.filter_map ~f:parse_configuration in
   if List.is_empty configurations then
     raise (Invalid_argument "No `.config` was found in the taint directories.");
-  let ({ rules; _ } as configuration) = List.fold_left configurations ~f:merge ~init:empty in
+  let ({ rules; _ } as configuration) = parse configurations in
+  validate configuration;
   match rule_filter with
   | None -> configuration
   | Some rule_filter ->
@@ -268,3 +478,8 @@ let create ~rule_filter ~paths =
 let conditional_test_sinks () =
   match get () with
   | { implicit_sinks = { conditional_test }; _ } -> conditional_test
+
+
+let get_triggered_sink ~partial_sink ~source =
+  let { partial_sink_converter; _ } = get () in
+  PartialSinkConverter.get_triggered_sink partial_sink_converter ~partial_sink ~source

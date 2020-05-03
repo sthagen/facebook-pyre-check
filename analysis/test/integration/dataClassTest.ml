@@ -132,6 +132,33 @@ let test_check_data_class context =
           b = Foo(1)
     |}
     [];
+  assert_type_errors
+    {|
+      @dataclass(frozen=True)
+      class F:
+        x = 1
+    |}
+    [
+      "Missing attribute annotation [4]: Attribute `x` of class `F` has type `int` but no type is \
+       specified.";
+    ];
+  (* Actually a test of descriptors to make sure it doesn't infinitely loop *)
+  assert_type_errors
+    {|
+      @dataclass
+      class D:
+        x: C = C()
+      @dataclass
+      class C:
+        x: D = D()
+      def foo() -> None:
+        reveal_type(D().x)
+        reveal_type(D().x.x.x)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `test.D().x` is `C`.";
+      "Revealed type [-1]: Revealed type for `test.D().x.x.x` is `C`.";
+    ];
   ()
 
 

@@ -361,12 +361,20 @@ let run_with_taint_models tests ~name =
     in
     let { Taint.Model.models; errors } =
       Model.parse
-        ~resolution:(TypeCheck.resolution global_resolution ())
+        ~resolution:
+          (TypeCheck.resolution
+             global_resolution
+             (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
+             (module TypeCheck.DummyContext))
         ~source:model_source
         ~configuration:TaintConfiguration.default
         Callable.Map.empty
     in
-    assert_bool "The models shouldn't have any parsing errors." (List.is_empty errors);
+    assert_bool
+      (Format.sprintf
+         "The models shouldn't have any parsing errors: %s."
+         (List.to_string errors ~f:ident))
+      (List.is_empty errors);
     Callable.Map.map models ~f:(Interprocedural.Result.make_model Taint.Result.kind)
     |> Interprocedural.Analysis.record_initial_models ~functions:[] ~stubs:[]
   in
@@ -469,12 +477,20 @@ let initialize
       | Some source ->
           let { Taint.Model.models; errors } =
             Model.parse
-              ~resolution:(TypeCheck.resolution global_resolution ())
+              ~resolution:
+                (TypeCheck.resolution
+                   global_resolution
+                   (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
+                   (module TypeCheck.DummyContext))
               ~source:(Test.trim_extra_indentation source)
               ~configuration:taint_configuration
               inferred_models
           in
-          assert_bool "The models shouldn't have any parsing errors." (List.is_empty errors);
+          assert_bool
+            (Format.sprintf
+               "The models shouldn't have any parsing errors: %s."
+               (List.to_string errors ~f:ident))
+            (List.is_empty errors);
           models
     in
     initial_models

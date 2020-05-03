@@ -28,6 +28,15 @@ module type Connections = sig
   val write_to_json_socket : socket:Network.Socket.t -> Yojson.Safe.t -> unit
 
   val write_lsp_response_to_json_socket : socket:Network.Socket.t -> string -> unit
+
+  val add_adapter_socket : connections:State.connections -> socket:Network.Socket.t -> unit
+
+  val remove_adapter_socket : connections:State.connections -> socket:Network.Socket.t -> unit
+
+  val broadcast_to_adapter_sockets
+    :  connections:State.connections ->
+    response:Protocol.response ->
+    unit
 end
 
 module Make (Socket : sig

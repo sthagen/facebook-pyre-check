@@ -85,12 +85,13 @@ class ServersCommandTest(unittest.TestCase):
         self, stop_class: MagicMock, make_directory: MagicMock
     ) -> None:
         servers = Servers(
-            arguments=mock_arguments(
+            command_arguments=mock_arguments(
                 dot_pyre_directory=Path("/dot-pyre-directory/.pyre")
             ),
             original_directory="/root",
             configuration=mock_configuration(),
             analysis_directory=AnalysisDirectory("."),
+            subcommand="stop",
         )
         servers._stop_servers(
             [
@@ -118,9 +119,18 @@ class ServersCommandTest(unittest.TestCase):
         self.assertEqual(servers._current_directory, "/root")
         stop_class.assert_has_calls(
             [
-                call(arguments=servers._arguments, original_directory="/root"),
-                call(arguments=servers._arguments, original_directory="/root/bar/baz"),
-                call(arguments=servers._arguments, original_directory="/root/foo"),
+                call(
+                    command_arguments=servers._command_arguments,
+                    original_directory="/root",
+                ),
+                call(
+                    command_arguments=servers._command_arguments,
+                    original_directory="/root/bar/baz",
+                ),
+                call(
+                    command_arguments=servers._command_arguments,
+                    original_directory="/root/foo",
+                ),
             ],
             any_order=True,
         )
@@ -137,23 +147,37 @@ class ServersCommandTest(unittest.TestCase):
         fetch_server_details: MagicMock,
     ) -> None:
         arguments = mock_arguments()
-        arguments.servers_subcommand = None
         servers = Servers(
             arguments,
             original_directory="/",
             configuration=mock_configuration(),
             analysis_directory=AnalysisDirectory("."),
+            subcommand=None,
         )
         servers._run()
         print_server_details.assert_called_once()
         print_server_details.reset_mock()
 
-        servers._subcommand = "list"
+        arguments = mock_arguments()
+        servers = Servers(
+            arguments,
+            original_directory="/",
+            configuration=mock_configuration(),
+            analysis_directory=AnalysisDirectory("."),
+            subcommand="list",
+        )
         servers._run()
         print_server_details.assert_called_once()
         print_server_details.reset_mock()
 
-        servers._subcommand = "stop"
+        arguments = mock_arguments()
+        servers = Servers(
+            arguments,
+            original_directory="/",
+            configuration=mock_configuration(),
+            analysis_directory=AnalysisDirectory("."),
+            subcommand="stop",
+        )
         servers._run()
         stop_servers.assert_called_once()
         print_server_details.assert_not_called()

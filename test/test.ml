@@ -474,6 +474,14 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         class type:
           __name__: str = ...
           def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
+          @overload
+          def __init__(self, o: object) -> None: ...
+          @overload
+          def __init__(self, name: str, bases: Tuple[type, ...], dict: Dict[str, Any]) -> None: ...
+          @overload
+          def __new__(cls, o: object) -> type: ...
+          @overload
+          def __new__(cls, name: str, bases: Tuple[type, ...], namespace: Dict[str, Any]) -> type: ...
 
         class object():
           __doc__: str
@@ -803,12 +811,49 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
            def __init__(self, f: Callable[..., Any]): ...
 
         def callable(__o: object) -> bool: ...
+
+        if sys.version_info >= (3,):
+          class _Writer(Protocol):
+              def write(self, __s: str) -> Any: ...
+          def print(
+              *values: object, sep: Optional[Text] = ..., end: Optional[Text] = ..., file: Optional[_Writer] = ..., flush: bool = ...
+          ) -> None: ...
+        else:
+          class _Writer(Protocol):
+              def write(self, __s: Any) -> Any: ...
+          # This is only available after from __future__ import print_function.
+          def print( *values: object, sep: Optional[Text] = ..., end: Optional[Text] = ..., file: Optional[_Writer] = ...) -> None: ...
       |}
     in
     if include_helper_builtins then
       String.concat ~sep:"\n" [String.rstrip builtin_stubs; helper_builtin_stubs]
     else
       builtin_stubs
+  in
+  let sqlalchemy_stubs =
+    [
+      (* These are simplified versions of the SQLAlchemy stubs. *)
+      ( "sqlalchemy/ext/declarative/__init__.pyi",
+        {|
+            from .api import (
+                declarative_base as declarative_base,
+                DeclarativeMeta as DeclarativeMeta,
+            )
+          |}
+      );
+      ( "sqlalchemy/ext/declarative/api.pyi",
+        {|
+            def declarative_base(bind: Optional[Any] = ..., metadata: Optional[Any] = ...,
+                                 mapper: Optional[Any] = ..., cls: Any = ..., name: str = ...,
+                                 constructor: Any = ..., class_registry: Optional[Any] = ...,
+                                 metaclass: Any = ...): ...
+
+            class DeclarativeMeta(type):
+                def __init__(cls, classname, bases, dict_) -> None: ...
+                def __setattr__(cls, key, value): ...
+          |}
+      );
+    ]
   in
   [
     "sys.py", "";
@@ -990,6 +1035,13 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         def abstractmethod(callable: _FuncT) -> _FuncT: ...
         class abstractproperty(property): ...
         class ABC(metaclass=ABCMeta): ...
+        |}
+    );
+    ( "mock.pyi",
+      {|
+        class Base: ...
+        class Mock(Base): ...
+        class NonCallableMock: ...
         |}
     );
     ( "unittest/mock.pyi",
@@ -1240,6 +1292,7 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         def safe_cast(new_type: Type[_T], value: Any) -> _T: ...
         def ParameterSpecification(__name: str) -> List[Type]: ...
         def ListVariadic(__name: str) -> Type: ...
+        def classproperty(f: Any) -> Any: ...
         |}
     );
     ( "pyre_extensions/type_variable_operators.pyi",
@@ -1402,6 +1455,7 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         # pyre-placeholder-stub
         |};
   ]
+  @ sqlalchemy_stubs
 
 
 let mock_signature =
@@ -1425,7 +1479,7 @@ let create_type_alias_table type_aliases =
 
 
 let mock_scheduler () =
-  Analysis.GlobalResolution.ClassDefinitionsCache.invalidate ();
+  Taint.ModelParser.ClassDefinitionsCache.invalidate ();
   Scheduler.create_sequential ()
 
 
@@ -1645,7 +1699,9 @@ module ScratchProject = struct
   let build_resolution project =
     let { BuiltGlobalEnvironment.global_environment; _ } = build_global_environment project in
     let global_resolution = GlobalResolution.create global_environment in
-    TypeCheck.resolution global_resolution ()
+    TypeCheck.resolution
+      global_resolution (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
+      (module TypeCheck.DummyContext)
 
 
   let build_global_resolution project =
@@ -1751,7 +1807,11 @@ let assert_equivalent_attributes ~context source expected =
     >>= GlobalResolution.attributes ~transitive:false ~resolution:global_resolution
     |> (fun attributes -> Option.value_exn attributes)
     |> List.sort ~compare:compare_by_name
-    |> List.map ~f:(GlobalResolution.instantiate_attribute ~resolution:global_resolution)
+    |> List.map
+         ~f:
+           (GlobalResolution.instantiate_attribute
+              ~resolution:global_resolution
+              ~accessed_through_class:false)
   in
   let class_names =
     let expected =

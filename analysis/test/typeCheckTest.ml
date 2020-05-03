@@ -468,8 +468,9 @@ let test_forward_expression context =
     let new_resolution, resolved =
       let resolution =
         let annotation_store = create_annotation_store precondition in
-        TypeCheck.resolution ~annotation_store global_resolution ()
+        TypeCheck.resolution ~annotation_store global_resolution (module TypeCheck.DummyContext)
       in
+
       Resolution.resolve_expression resolution expression
     in
     assert_annotation_store ~expected:(create_annotation_store postcondition) new_resolution;
@@ -485,6 +486,41 @@ let test_forward_expression context =
   assert_forward "undefined or 1" Type.Top;
   assert_forward "1 or undefined" Type.Top;
   assert_forward "undefined and undefined" Type.Top;
+  assert_forward
+    ~precondition:["y", Type.string]
+    ~postcondition:["y", Type.string]
+    "0 or y"
+    Type.string;
+  assert_forward
+    ~precondition:["y", Type.string]
+    ~postcondition:["y", Type.string]
+    "False or y"
+    Type.string;
+  assert_forward
+    ~precondition:["y", Type.string]
+    ~postcondition:["y", Type.string]
+    "None or y"
+    Type.string;
+  assert_forward
+    ~precondition:["x", Type.NoneType; "y", Type.integer]
+    ~postcondition:["x", Type.NoneType; "y", Type.integer]
+    "x or y"
+    Type.integer;
+  assert_forward
+    ~precondition:["x", Type.literal_integer 0; "y", Type.integer]
+    ~postcondition:["x", Type.literal_integer 0; "y", Type.integer]
+    "x or y"
+    Type.integer;
+  assert_forward
+    ~precondition:["x", Type.Literal (Type.Boolean false); "y", Type.integer]
+    ~postcondition:["x", Type.Literal (Type.Boolean false); "y", Type.integer]
+    "x or y"
+    Type.integer;
+  assert_forward
+    ~precondition:["x", Type.union [Type.NoneType; Type.integer; Type.string]]
+    ~postcondition:["x", Type.union [Type.NoneType; Type.integer; Type.string]]
+    "x or 1"
+    (Type.Union [Type.integer; Type.string]);
   let assert_optional_forward ?(postcondition = ["x", Type.optional Type.integer]) =
     assert_forward ~precondition:["x", Type.optional Type.integer] ~postcondition
   in
@@ -795,7 +831,10 @@ let test_forward_expression context =
   assert_forward "yield" (Type.generator Type.none);
 
   (* Meta-types *)
-  assert_forward "typing.Optional[int]" (Type.meta (Type.optional Type.integer));
+  assert_forward
+    "typing.Optional[int]"
+    (* TODO (T65870531): This should be typing.Union or typing._GenericAlias *)
+    (Type.meta (Type.parametric "typing.Optional" [Type.Parameter.Single Type.integer]));
   assert_forward
     "typing.Callable[[int, str], int]"
     (Type.meta (Type.Callable.create ~annotation:Type.integer ()));
@@ -855,8 +894,9 @@ let test_forward_expression context =
         |> ScratchProject.build_global_resolution
       in
       let annotation_store = create_annotation_store precondition in
-      TypeCheck.resolution ~annotation_store global_resolution ()
+      TypeCheck.resolution ~annotation_store global_resolution (module TypeCheck.DummyContext)
     in
+
     let resolved_annotation = Resolution.resolve_expression_to_annotation resolution expression in
     assert_equal ~cmp:Annotation.equal ~printer:Annotation.show annotation resolved_annotation
   in
@@ -923,8 +963,9 @@ let test_forward_statement context =
         let annotation_store =
           create_annotation_store ~immutables:precondition_immutables precondition
         in
-        TypeCheck.resolution global_resolution ~annotation_store ()
+        TypeCheck.resolution global_resolution ~annotation_store (module TypeCheck.DummyContext)
       in
+
       let rec process_statement resolution = function
         | [] -> Some resolution
         | statement :: rest -> (
@@ -1118,10 +1159,7 @@ let test_forward_statement context =
     ["x", Type.optional Type.integer; "y", Type.optional Type.float]
     "assert x or y"
     ["x", Type.optional Type.integer; "y", Type.optional Type.float];
-  assert_forward
-    ["x", Type.optional Type.integer]
-    "assert x is None"
-    ["x", Type.optional Type.Bottom];
+  assert_forward ["x", Type.optional Type.integer] "assert x is None" ["x", Type.none];
   assert_forward
     ["x", Type.optional Type.integer]
     "assert (not x) or 1"

@@ -176,6 +176,10 @@ type literal =
   | Boolean of bool
   | Integer of int
   | String of string
+  | EnumerationMember of {
+      enumeration_type: t;
+      member_name: Identifier.t;
+    }
 
 and tuple =
   | Bounded of t Record.OrderedTypes.record
@@ -187,7 +191,7 @@ and t =
   | Callable of t Record.Callable.record
   | Any
   | Literal of literal
-  | Optional of t
+  | NoneType
   | Parametric of {
       name: Identifier.t;
       parameters: t Record.Parameter.record list;
@@ -196,14 +200,13 @@ and t =
   | Primitive of Primitive.t
   | Top
   | Tuple of tuple
-  | TypedDictionary of t Record.TypedDictionary.record
   | Union of t list
   | Variable of t Record.Variable.RecordUnary.record
 [@@deriving compare, eq, sexp, show, hash]
 
 type class_data = {
   instantiated: t;
-  class_attributes: bool;
+  accessed_through_class: bool;
   class_name: Primitive.t;
 }
 
@@ -457,11 +460,11 @@ val is_tuple : t -> bool
 
 val is_type_alias : t -> bool
 
-val is_typed_dictionary : t -> bool
-
 val is_unbound : t -> bool
 
 val is_union : t -> bool
+
+val is_falsy : t -> bool
 
 val contains_any : t -> bool
 
@@ -477,6 +480,8 @@ val contains_literal : t -> bool
 val contains_final : t -> bool
 
 val primitive_name : t -> Identifier.t option
+
+val create_literal : Expression.expression -> t option
 
 val primitives : t -> t list
 
@@ -821,11 +826,13 @@ val is_concrete : t -> bool
 module TypedDictionary : sig
   open Record.TypedDictionary
 
-  val anonymous : t typed_dictionary_field list -> t
+  val anonymous : t typed_dictionary_field list -> t record
 
   val create_field : name:string -> annotation:t -> required:bool -> t typed_dictionary_field
 
   val are_fields_total : t typed_dictionary_field list -> bool
+
+  val same_name : t typed_dictionary_field -> t typed_dictionary_field -> bool
 
   val same_name_different_requiredness
     :  t typed_dictionary_field ->
