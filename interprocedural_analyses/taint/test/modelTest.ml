@@ -38,7 +38,10 @@ let assert_model ?source ?rules ~context ~model_source ~expect () =
   let models =
     let source = Test.trim_extra_indentation model_source in
     let resolution =
-      let global_resolution = Analysis.GlobalResolution.create global_environment in
+      let global_resolution =
+        Analysis.AnnotatedGlobalEnvironment.read_only global_environment
+        |> Analysis.GlobalResolution.create
+      in
       TypeCheck.resolution global_resolution (module TypeCheck.DummyContext)
     in
 
@@ -48,7 +51,7 @@ let assert_model ?source ?rules ~context ~model_source ~expect () =
           Some (List.map rules ~f:(fun { Taint.TaintConfiguration.Rule.code; _ } -> code))
       | None -> None
     in
-    let { Taint.Model.models; errors } =
+    let { Taint.Model.models; errors; _ } =
       Taint.Model.parse ~resolution ?rule_filter ~source ~configuration Callable.Map.empty
     in
     assert_bool
@@ -167,7 +170,6 @@ let test_source_models context =
     |}
     ~expect:[outcome ~kind:`Method ~returns:[Sources.NamedSource "Test"] "test.C.foo"]
     ();
-
   ()
 
 
@@ -281,6 +283,34 @@ let test_sink_models context =
           ~sink_parameters:
             [{ name = "parameter"; sinks = [Sinks.NamedSink "Demo"; Sinks.NamedSink "XSS"] }]
           "test.multiple";
+      ]
+    ();
+  ()
+
+
+let test_cross_repository_models context =
+  let assert_model = assert_model ~context in
+  assert_model
+    ~source:{|
+      def cross_repository_source(source_parameter): ...
+    |}
+    ~model_source:
+      {|
+      def test.cross_repository_source(
+        source_parameter: CrossRepositoryTaint[
+          TaintSource[UserControlled],
+          'crossRepositorySource',
+          'formal(0)',
+          0
+        ]): ...
+    |}
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~source_parameters:
+            [{ name = "source_parameter"; sources = [Sources.NamedSource "UserControlled"] }]
+          "test.cross_repository_source";
       ]
     ()
 
@@ -980,6 +1010,63 @@ let test_invalid_models context =
       "def test.partial_sink(x: PartialSink[Nonexistent[a]], y: PartialSink[Nonexistent[b]]): ..."
     ~expect:
       "Invalid model for `test.partial_sink`: Unrecognized sink for partial sink: `Nonexistent`."
+    ();
+  assert_invalid_model
+    ~source:"def f(parameter): ..."
+    ~model_source:"def test.f(parameter: CrossRepositoryTaint[TaintSource[UserControlled]]): ..."
+    ~expect:
+      "Invalid model for `test.f`: Cross repository taint must be of the form \
+       CrossRepositoryTaint[taint, canonical_name, canonical_port, producer_id]."
+    ();
+  assert_invalid_model
+    ~source:"def f(parameter): ..."
+    ~model_source:
+      "def test.f(parameter: CrossRepositoryTaint[TaintSource[UserControlled], \
+       some_canonical_name, 'formal(0)', 0]): ..."
+    ~expect:
+      "Invalid model for `test.f`: Cross repository taint must be of the form \
+       CrossRepositoryTaint[taint, canonical_name, canonical_port, producer_id]."
+    ();
+  assert_invalid_model
+    ~source:"def f(parameter): ..."
+    ~model_source:
+      "def test.f(parameter: CrossRepositoryTaint[TaintSource[UserControlled], \
+       'some_canonical_name', 0, 0]): ..."
+    ~expect:
+      "Invalid model for `test.f`: Cross repository taint must be of the form \
+       CrossRepositoryTaint[taint, canonical_name, canonical_port, producer_id]."
+    ();
+  (* Ensure that we're verifying models against the undecorated signature. *)
+  assert_valid_model
+    ~source:
+      {|
+    from typing import Callable
+    def decorate(f: Callable[[int], int]) -> Callable[[], int]:
+      def g() -> int:
+        return f(42)
+      return g
+    @decorate
+    def foo(parameter: int) -> int:
+      return parameter
+    |}
+    ~model_source:"def test.foo(parameter): ..."
+    ();
+  assert_invalid_model
+    ~source:
+      {|
+    from typing import Callable
+    def decorate(f: Callable[[int], int]) -> Callable[[], int]:
+      def g() -> int:
+        return f(42)
+      return g
+    @decorate
+    def foo(parameter: int) -> int:
+      return parameter
+    |}
+    ~model_source:"def test.foo(): ..."
+    ~expect:
+      "Invalid model for `test.foo`: Model signature parameters do not match implementation `def \
+       foo(parameter: int) -> int: ...`. Reason(s): missing named parameters: `parameter`."
     ()
 
 
@@ -1065,6 +1152,7 @@ let () =
   "taint_model"
   >::: [
          "attach_features" >:: test_attach_features;
+         "cross_repository_models" >:: test_cross_repository_models;
          "class_models" >:: test_class_models;
          "demangle_class_attributes" >:: test_demangle_class_attributes;
          "filter_by_rules" >:: test_filter_by_rules;

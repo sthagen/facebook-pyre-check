@@ -10,6 +10,7 @@ open Ast
 open Pyre
 open Statement
 open Test
+open WeakenMutableLiterals
 
 let test_set_local context =
   let assert_local ~resolution ~name ~expected =
@@ -200,21 +201,21 @@ let test_resolve_literal context =
       expected
       (GlobalResolution.resolve_literal resolution expression)
   in
-  assert_resolve_literal "i" Type.Top;
-  assert_resolve_literal "await i" Type.Top;
-  assert_resolve_literal "await awaitable" Type.Top;
+  assert_resolve_literal "i" Type.Any;
+  assert_resolve_literal "await i" Type.Any;
+  assert_resolve_literal "await awaitable" Type.Any;
   assert_resolve_literal "\"\"" Type.string;
   assert_resolve_literal "1" Type.integer;
-  assert_resolve_literal "1+1" Type.Top;
-  assert_resolve_literal "j" Type.Top;
-  assert_resolve_literal "foo()" Type.Top;
+  assert_resolve_literal "1+1" Type.Any;
+  assert_resolve_literal "j" Type.Any;
+  assert_resolve_literal "foo()" Type.Any;
   assert_resolve_literal "C()" (Type.Primitive "C");
-  assert_resolve_literal "G(7)" Type.Top;
+  assert_resolve_literal "G(7)" Type.Any;
   assert_resolve_literal "C" (Type.meta (Type.Primitive "C"));
-  assert_resolve_literal "G" Type.Top;
+  assert_resolve_literal "G" Type.Any;
 
   (* None *)
-  assert_resolve_literal "None" Type.Top;
+  assert_resolve_literal "None" Type.Any;
   assert_resolve_literal "[None]" Type.Any;
 
   (* Dictionary *)
@@ -243,7 +244,7 @@ let test_resolve_literal context =
   assert_resolve_literal
     "(1, 'string')"
     (Type.Tuple (Bounded (Concrete [Type.integer; Type.string])));
-  assert_resolve_literal "(1, i)" (Type.Tuple (Bounded (Concrete [Type.integer; Type.Top])));
+  assert_resolve_literal "(1, i)" (Type.Tuple (Bounded (Concrete [Type.integer; Type.Any])));
 
   (* Ternary *)
   assert_resolve_literal "1 if x else 2" Type.integer;
@@ -257,7 +258,7 @@ let test_resolve_exports context =
       ScratchProject.setup ~context sources |> ScratchProject.build_global_resolution
     in
     let reference =
-      GlobalResolution.resolve_exports resolution ~reference:(Reference.create name)
+      GlobalResolution.legacy_resolve_exports resolution ~reference:(Reference.create name)
     in
     assert_equal ~printer:Reference.show ~cmp:Reference.equal (Reference.create expected) reference
   in
@@ -333,10 +334,10 @@ let test_resolve_mutable_literals context =
         ~expected
     in
     let expected_weakened_type =
-      AttributeResolution.make_weakened_type (parse_annotation expected_output)
+      WeakenMutableLiterals.make_weakened_type (parse_annotation expected_output)
     in
     assert_equal
-      ~printer:[%show: AttributeResolution.weakened_type]
+      ~printer:[%show: WeakenMutableLiterals.weakened_type]
       expected_weakened_type
       actual_weakened_type
   in
@@ -590,10 +591,13 @@ let test_resolve_mutable_literals context =
 
 
 let test_resolve_mutable_literal_to_complex_type context =
-  let resolution = make_resolution ~context {|
+  let resolution =
+    make_resolution ~context {|
       class C: ...
       class D(C): ...
-    |} in
+      class Q: ...
+    |}
+  in
   let assert_resolve_mutable_literals ~source ~against expected_output =
     let parse_annotation annotation =
       annotation
@@ -617,10 +621,10 @@ let test_resolve_mutable_literal_to_complex_type context =
         ~expected
     in
     let expected_weakened_type =
-      AttributeResolution.make_weakened_type (parse_annotation expected_output)
+      WeakenMutableLiterals.make_weakened_type (parse_annotation expected_output)
     in
     assert_equal
-      ~printer:[%show: AttributeResolution.weakened_type]
+      ~printer:[%show: WeakenMutableLiterals.weakened_type]
       expected_weakened_type
       actual_weakened_type
   in
@@ -691,6 +695,34 @@ let test_resolve_mutable_literal_to_complex_type context =
     ~source:"{1: test.D()}"
     ~against:"typing.Union[typing.Mapping[int, test.C], int, str]"
     "typing.Union[typing.Mapping[int, test.C], int, str]";
+
+  (* Distribute the resolved Union type over the mutable container before weakening. For example,
+     List[Union[List[C], List[Q]]] to List[List[Union[C, Q]]]. *)
+  assert_resolve_mutable_literals
+    ~source:"[[test.C()], [test.Q()]]"
+    ~against:"typing.List[typing.List[typing.Union[test.C, test.Q]]]"
+    "typing.List[typing.List[typing.Union[test.C, test.Q]]]";
+  assert_resolve_mutable_literals
+    ~source:"[{test.C()}, {test.Q()}]"
+    ~against:"typing.List[typing.Set[typing.Union[test.C, test.Q]]]"
+    "typing.List[typing.Set[typing.Union[test.C, test.Q]]]";
+  assert_resolve_mutable_literals
+    ~source:"[{'foo': test.C()}, {'bar': test.Q()}]"
+    ~against:"typing.List[typing.Dict[str, typing.Union[test.C, test.Q]]]"
+    "typing.List[typing.Dict[str, typing.Union[test.C, test.Q]]]";
+  assert_resolve_mutable_literals
+    ~source:"[{'foo': None}, {'foo': 'bar'}]"
+    ~against:"typing.List[typing.Dict[str, typing.Optional[str]]]"
+    "typing.List[typing.Dict[str,typing.Optional[str]]]";
+  assert_resolve_mutable_literals
+    ~source:"{'hello': {'foo': None}, 'world': {'foo': 'bar'}}"
+    ~against:"typing.Dict[str, typing.Dict[str, typing.Optional[str]]]"
+    "typing.Dict[str,typing.Dict[str, typing.Optional[str]]]";
+  (* Weakening against an explicit List[Union[List[C], List[Q]]] still works. *)
+  assert_resolve_mutable_literals
+    ~source:"[[test.C()], [test.Q()]]"
+    ~against:"typing.List[typing.Union[typing.List[test.C], typing.List[test.Q]]]"
+    "typing.List[typing.Union[typing.List[test.C], typing.List[test.Q]]]";
   ()
 
 
@@ -725,7 +757,6 @@ let test_resolve_mutable_literals_typed_dictionary context =
         name: str
     |}
   in
-  let open AttributeResolution in
   let resolve_expression_with_fresh_namespace resolution expression =
     Type.Variable.Namespace.reset ();
     Resolution.resolve_expression_to_type resolution expression
@@ -738,11 +769,11 @@ let test_resolve_mutable_literals_typed_dictionary context =
         { Node.value = expected_mismatch; _ }
         { Node.value = actual_mismatch; _ }
       =
-      AttributeResolution.equal_typed_dictionary_mismatch expected_mismatch actual_mismatch
+      WeakenMutableLiterals.equal_typed_dictionary_mismatch expected_mismatch actual_mismatch
     in
     let location_insensitive_equal_weakened_type
-        { resolved = expected_resolved; typed_dictionary_errors = expected }
-        { resolved = actual_resolved; typed_dictionary_errors = actual }
+        { WeakenMutableLiterals.resolved = expected_resolved; typed_dictionary_errors = expected }
+        { WeakenMutableLiterals.resolved = actual_resolved; typed_dictionary_errors = actual }
       =
       List.equal location_insensitive_equal_mismatch expected actual
       && Type.equal expected_resolved actual_resolved
@@ -840,7 +871,13 @@ let test_resolve_mutable_literals_typed_dictionary context =
   assert_resolve_mutable_literals
     ~source:"{ 'name': 'The Matrix', 'year': 1999, 'extra_key': 1 }"
     ~against_type:(Type.Primitive "test.ClassBasedMovie")
-    (make_weakened_type (Type.Primitive "test.ClassBasedMovie"));
+    (make_weakened_type
+       ~typed_dictionary_errors:
+         [
+           UndefinedField { field_name = "extra_key"; class_name = "test.ClassBasedMovie" }
+           |> Node.create_with_default_location;
+         ]
+       (Type.Primitive "test.ClassBasedMovie"));
   assert_resolve_mutable_literals
     ~source:"{'hello': { 'name': 'The Matrix', 'year': 1999 }}"
     ~against_type:(Type.dictionary ~key:Type.string ~value:(Type.Primitive "test.ClassBasedMovie"))
@@ -1026,6 +1063,47 @@ let test_resolve_mutable_literals_typed_dictionary context =
   ()
 
 
+let test_distribute_union_over_parametric _ =
+  let assert_distributed actual expected =
+    assert_equal ~cmp:[%equal: Type.t option] ~printer:[%show: Type.t option] expected actual
+  in
+  assert_distributed
+    (distribute_union_over_parametric ~parametric_name:"list" ~number_of_parameters:1 Type.integer)
+    None;
+  assert_distributed
+    (distribute_union_over_parametric
+       ~parametric_name:"list"
+       ~number_of_parameters:1
+       (Type.union [Type.list Type.integer; Type.integer]))
+    None;
+  assert_distributed
+    (distribute_union_over_parametric
+       ~parametric_name:"list"
+       ~number_of_parameters:2
+       (Type.union [Type.list Type.integer; Type.list Type.string]))
+    None;
+  assert_distributed
+    (distribute_union_over_parametric
+       ~parametric_name:"list"
+       ~number_of_parameters:1
+       (Type.union [Type.list Type.integer; Type.list Type.string]))
+    (Some (Type.list (Type.union [Type.integer; Type.string])));
+  assert_distributed
+    (distribute_union_over_parametric
+       ~parametric_name:"dict"
+       ~number_of_parameters:2
+       (Type.union
+          [
+            Type.dictionary ~key:Type.integer ~value:Type.string;
+            Type.dictionary ~key:Type.string ~value:Type.integer;
+          ]))
+    (Some
+       (Type.dictionary
+          ~key:(Type.union [Type.integer; Type.string])
+          ~value:(Type.union [Type.integer; Type.string])));
+  ()
+
+
 let test_get_typed_dictionary context =
   let resolution =
     make_resolution
@@ -1162,14 +1240,16 @@ let test_function_definitions context =
 
 let test_source_is_unit_test context =
   let assert_is_unit_test ?(expected = true) ?(extra_sources = []) source =
-    let { ScratchProject.BuiltGlobalEnvironment.ast_environment; global_environment; _ } =
+    let { ScratchProject.BuiltGlobalEnvironment.global_environment; _ } =
       ScratchProject.setup ~context (["test.py", source] @ extra_sources)
       |> ScratchProject.build_global_environment
     in
-    let resolution = GlobalResolution.create global_environment in
+    let resolution =
+      AnnotatedGlobalEnvironment.read_only global_environment |> GlobalResolution.create
+    in
     let source =
-      AstEnvironment.ReadOnly.get_source
-        (AstEnvironment.read_only ast_environment)
+      AstEnvironment.ReadOnly.get_processed_source
+        (AnnotatedGlobalEnvironment.ast_environment global_environment |> AstEnvironment.read_only)
         (Reference.create "test")
       |> fun option -> Option.value_exn option
     in
@@ -1198,17 +1278,20 @@ let test_source_is_unit_test context =
 
 let test_fallback_attribute context =
   let assert_fallback_attribute ~name source annotation =
-    let { ScratchProject.BuiltGlobalEnvironment.ast_environment; global_environment; _ } =
+    let { ScratchProject.BuiltGlobalEnvironment.global_environment; _ } =
       ScratchProject.setup ~context ["test.py", source] |> ScratchProject.build_global_environment
     in
-    let global_resolution = GlobalResolution.create global_environment in
+    let global_resolution =
+      AnnotatedGlobalEnvironment.read_only global_environment |> GlobalResolution.create
+    in
     let resolution = TypeCheck.resolution global_resolution (module TypeCheck.DummyContext) in
 
     let attribute =
+      let qualifier = Reference.create "test" in
       let source =
-        AstEnvironment.ReadOnly.get_source
-          (AstEnvironment.read_only ast_environment)
-          (Reference.create "test")
+        AstEnvironment.ReadOnly.get_processed_source
+          (AnnotatedGlobalEnvironment.ast_environment global_environment |> AstEnvironment.read_only)
+          qualifier
       in
       let last_statement_exn = function
         | { Source.statements; _ } when List.length statements > 0 -> List.last_exn statements
@@ -1219,7 +1302,7 @@ let test_fallback_attribute context =
       last_statement_exn source
       |> Node.value
       |> (function
-           | Statement.Class definition -> ClassSummary.create definition
+           | Statement.Class definition -> ClassSummary.create ~qualifier definition
            | _ -> failwith "Last statement was not a class")
       |> ClassSummary.name
       |> Reference.show
@@ -1375,6 +1458,7 @@ let () =
          "resolve_mutable_literal_to_complex_type" >:: test_resolve_mutable_literal_to_complex_type;
          "resolve_mutable_literals_typed_dictionary"
          >:: test_resolve_mutable_literals_typed_dictionary;
+         "distribute_union_over_parametric" >:: test_distribute_union_over_parametric;
          "get_typed_dictionary " >:: test_get_typed_dictionary;
          "function_definitions" >:: test_function_definitions;
          "source_is_unit_test" >:: test_source_is_unit_test;

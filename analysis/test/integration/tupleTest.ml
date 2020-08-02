@@ -10,6 +10,7 @@ let test_check_tuple context =
   let assert_type_errors = assert_type_errors ~context in
   assert_type_errors
     {|
+      from builtins import return_tuple
       def derp()->int:
           a, b = return_tuple()
           return a+b
@@ -17,6 +18,7 @@ let test_check_tuple context =
     [];
   assert_type_errors
     {|
+      import typing
       def f(l: typing.List[int]) -> int:
         [a, b] = l
         return a + b
@@ -24,6 +26,7 @@ let test_check_tuple context =
     [];
   assert_type_errors
     {|
+      import typing
       def foo(a: typing.Tuple[int, int]) -> None:
         a.tuple_method(1.0)
     |}
@@ -34,12 +37,14 @@ let test_check_tuple context =
     ];
   assert_type_errors
     {|
+      import typing
       def foo() -> typing.Tuple[int, ...]:
         return (1, 2, 3)
     |}
     [];
   assert_type_errors
     {|
+      import typing
       def foo() -> typing.Tuple[int, str]:
         return (1, "string", 3)
     |}
@@ -49,6 +54,7 @@ let test_check_tuple context =
     ];
   assert_type_errors
     {|
+      import typing
       def foo() -> typing.Tuple[int, ...]:
         return (1, "string", 3)
     |}
@@ -58,12 +64,14 @@ let test_check_tuple context =
     ];
   assert_type_errors
     {|
+      import typing
       def foo()-> typing.Tuple[int, ...]:
         return tuple([1,2,3])
     |}
     [];
   assert_type_errors
     {|
+      import typing
       def foo() -> typing.Tuple[int, ...]:
         return tuple([""])
     |}
@@ -73,28 +81,35 @@ let test_check_tuple context =
     ];
   assert_type_errors
     {|
+      import typing
       def foo() -> typing.Tuple[float, ...]:
         return tuple([1])
     |}
     [];
-  assert_type_errors {|
-      def foo() -> typing.Tuple[float, ...]:
-        return (1, 2)
-    |} [];
   assert_type_errors
     {|
+      import typing
+      def foo() -> typing.Tuple[float, ...]:
+        return (1, 2)
+    |}
+    [];
+  assert_type_errors
+    {|
+      import typing
       def foo() -> typing.Tuple[float, ...]:
         return (1.0, 2.0)
     |}
     [];
   assert_type_errors
     {|
+      import typing
       def foo() -> typing.Tuple[float, ...]:
         return (1.0, 2)
     |}
     [];
   assert_type_errors
     {|
+      import typing
       def foo(x: typing.Tuple[int, int, str]) -> typing.Tuple[str, int]:
         a, *b = x
         return b
@@ -116,12 +131,10 @@ let test_check_tuple context =
         (x, y), z = 0
         return x + y + z
     |}
-    [
-      "Unable to unpack [23]: Unable to unpack `int` into 2 values.";
-      "Incompatible return type [7]: Expected `int` but got `unknown`.";
-    ];
+    ["Unable to unpack [23]: Unable to unpack `int` into 2 values."];
   assert_type_errors
     {|
+      import typing
       class Foo:
         def __init__(self, coord: typing.Tuple[int, int]) -> None:
             self.xxx, self.yyy = coord
@@ -132,49 +145,66 @@ let test_check_tuple context =
       "Missing attribute annotation [4]: Attribute `yyy` of class `Foo` "
       ^ "has type `int` but no type is specified.";
     ];
-  assert_type_errors {|
-      def foo() -> typing.Sized:
-        return (1,)
-    |} [];
-  assert_type_errors {|
-      def foo() -> typing.Sized:
-        return (1, "")
-    |} [];
   assert_type_errors
     {|
+      import typing
+      def foo() -> typing.Sized:
+        return (1,)
+    |}
+    [];
+  assert_type_errors
+    {|
+      import typing
+      def foo() -> typing.Sized:
+        return (1, "")
+    |}
+    [];
+  assert_type_errors
+    {|
+      import typing
       def foo() -> typing.Tuple:
         return ()
     |}
-    [
-      "Missing return annotation [3]: Return type must be specified as "
-      ^ "type that does not contain `Any`.";
-    ];
-  assert_type_errors {|
-      def foo() -> typing.Tuple[()]:
-        return ()
-    |} [];
+    ["Invalid type parameters [24]: Generic type `tuple` expects at least 1 type parameter."];
   assert_type_errors
     {|
+      import typing
+      def foo() -> typing.Tuple[()]:
+        return ()
+    |}
+    [];
+  assert_type_errors
+    {|
+      import typing
       def foo() -> typing.Tuple[int, str]:
         return ()
     |}
     ["Incompatible return type [7]: Expected `typing.Tuple[int, str]` but got `typing.Tuple[]`."];
-  assert_type_errors {|
-      def foo() -> typing.Tuple[int, ...]:
-        return ()
-    |} [];
-  assert_type_errors {|
-      def foo() -> typing.Iterable[int]:
-        return ()
-    |} [];
   assert_type_errors
     {|
+      import typing
+      def foo() -> typing.Tuple[int, ...]:
+        return ()
+    |}
+    [];
+  assert_type_errors
+    {|
+      import typing
+      def foo() -> typing.Iterable[int]:
+        return ()
+    |}
+    [];
+  assert_type_errors
+    {|
+      from builtins import int_to_int
+      import typing
       def bar(z: typing.Optional[int]) -> typing.Tuple[int, typing.Optional[int]]:
           return 1, int_to_int(z) if z is not None else None
     |}
     [];
   assert_type_errors
     {|
+      import typing
       def foo( *args: int) -> typing.Iterable[str]:
         return args
     |}
@@ -184,6 +214,7 @@ let test_check_tuple context =
     ];
   assert_type_errors
     {|
+      import collections
       T = collections.namedtuple('T', 'a b c')
       def b(d: T) -> None:
         a = d.a + d.d
@@ -202,14 +233,21 @@ let test_check_tuple context =
     ];
   assert_type_errors
     {|
+      import collections
+      import typing
       class C(collections.namedtuple('T', 'a b')):
         def __new__(cls, a: int) -> typing.Type[C]:
           ...
       C(1,2)
     |}
-    ["Too many arguments [19]: Call `C.__new__` expects 1 positional argument, 2 were provided."];
+    [
+      "Unbound name [10]: Name `T` is used but not defined in the current scope.";
+      "Unbound name [10]: Name `$unparsed_annotation` is used but not defined in the current scope.";
+      "Too many arguments [19]: Call `C.__new__` expects 1 positional argument, 2 were provided.";
+    ];
   assert_type_errors
     {|
+      import collections
       T = collections.namedtuple('T', 'a b c')
       def foo(t: T) -> None:
         x, y = t
@@ -231,6 +269,7 @@ let test_check_tuple context =
     ];
   assert_type_errors
     {|
+      import collections
       T = collections.namedtuple('T', 'a')
       T(a=1)
       def foo() -> None:
@@ -243,6 +282,7 @@ let test_check_tuple context =
     ];
   assert_type_errors
     {|
+      import typing
       T = typing.NamedTuple('T', [('a', str), ('b', int)])
       def takes_int(x: int) -> None: pass
       def foo(x: T) -> None:
@@ -257,6 +297,7 @@ let test_check_tuple context =
     ];
   assert_type_errors
     {|
+      import typing
       class TestNamedTupleUnpackingFieldsNotInAlphabeticalOrder(typing.NamedTuple):
         foo: str
         bar: int
@@ -288,6 +329,7 @@ let test_check_tuple context =
     |} [];
   assert_type_errors
     {|
+      import typing
       class FooNotNamedTuple:
         bar: typing.Optional[str] = None
         baz: typing.Dict[int, typing.Any] = {}
@@ -301,6 +343,7 @@ let test_check_tuple context =
     (* The parameter `baz` in the __new__ method for NamedTuple will not throw a duplicate error for
        Any. *)
     {|
+      import typing
       class Foo(typing.NamedTuple):
         bar: typing.Optional[str] = None
         baz: typing.Dict[int, typing.Any] = {}
@@ -315,6 +358,7 @@ let test_check_tuple context =
   assert_type_errors
     (* A __new__ method for a non-NamedTuple will throw error on Any. *)
     {|
+      import typing
       class Foo:
         def __new__(cls, foo: typing.Dict[int, typing.Any] = {}) -> Foo:
             return super(Foo, cls).__new__(cls)
@@ -326,6 +370,7 @@ let test_check_tuple context =
   assert_type_errors
     (* If __new__ is not a method of some class, it will throw the Any error. *)
     {|
+      import typing
       def __new__(foo: typing.Dict[int, typing.Any] = {}) -> None:
         pass
     |}
@@ -335,6 +380,7 @@ let test_check_tuple context =
     ];
   assert_type_errors
     {|
+      import typing
       X = typing.NamedTuple(
         "x",
         dates=str
@@ -342,6 +388,19 @@ let test_check_tuple context =
       X(dates="foo")
     |}
     [];
+  assert_type_errors
+    {|
+      from typing import List, Tuple, Union
+      def foo() -> None:
+        union_of_bounded_tuples: Union[Tuple[int, str], Tuple[bool, List[int]]]
+        a, b = union_of_bounded_tuples
+        reveal_type(a)
+        reveal_type(b)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `a` is `Union[bool, int]`.";
+      "Revealed type [-1]: Revealed type for `b` is `Union[List[int], str]`.";
+    ];
   ()
 
 
@@ -389,6 +448,7 @@ let test_tuple_literal_access context =
   (* TODO(T41500251): This would ideally work as well *)
   assert_type_errors
     {|
+      import typing
       def foo() -> typing.Tuple[int, int]:
         x = (0, 1, "two")
         return x[0:2]
@@ -443,12 +503,12 @@ let test_custom_tuple context =
     |}
     [
       "Missing return annotation [3]: Returning `int` but type `Any` is specified.";
+      "Unable to unpack [23]: Unable to unpack `test.C` into 3 values.";
       "Revealed type [-1]: Revealed type for `x` is `typing.Any`.";
       "Revealed type [-1]: Revealed type for `y` is `typing.Any`.";
       "Revealed type [-1]: Revealed type for `z` is `typing.Any`.";
     ];
 
-  (* We still error when your class doesn't have getitem. *)
   assert_type_errors
     {|
       def foo() -> None:
@@ -459,9 +519,9 @@ let test_custom_tuple context =
     |}
     [
       "Unable to unpack [23]: Unable to unpack `object` into 3 values.";
-      "Revealed type [-1]: Revealed type for `x` is `unknown`.";
-      "Revealed type [-1]: Revealed type for `y` is `unknown`.";
-      "Revealed type [-1]: Revealed type for `z` is `unknown`.";
+      "Revealed type [-1]: Revealed type for `x` is `typing.Any`.";
+      "Revealed type [-1]: Revealed type for `y` is `typing.Any`.";
+      "Revealed type [-1]: Revealed type for `z` is `typing.Any`.";
     ]
 
 

@@ -17,6 +17,7 @@ let test_reveal_type context =
     ["Revealed type [-1]: Revealed type for `x` is `str`."];
   assert_type_errors
     {|
+      import typing
       def foo(x: typing.Union[int, str]) -> None:
         x = 1
         reveal_type(x)
@@ -39,6 +40,7 @@ let test_reveal_type context =
     ["Revealed type [-1]: Revealed type for `x.__add__(y)` is `int`."];
   assert_type_errors
     {|
+      from builtins import int_to_str
       def foo(x: int) -> None:
 
         reveal_type(int_to_str(x))
@@ -54,6 +56,7 @@ let test_reveal_type context =
     ["Revealed type [-1]: Revealed type for `bar` is `int`."];
   assert_type_errors
     {|
+      import typing
       def foo(s: typing.Sequence[float]) -> list[float]:
         l = list(s)
         bar, baz = l
@@ -76,6 +79,7 @@ let test_reveal_type context =
     ];
   assert_type_errors
     {|
+      import typing
       def foo(map: typing.Mapping[str, int]) -> dict[str, int]:
         d = dict(map)
         bar = d['a']
@@ -85,6 +89,7 @@ let test_reveal_type context =
     ["Revealed type [-1]: Revealed type for `bar` is `int`."];
   assert_type_errors
     {|
+      import typing
       def foo(t: typing.Iterable[typing.Tuple[str, int]]) -> dict[str, int]:
         d = dict(t)
         bar = d['a']
@@ -94,6 +99,7 @@ let test_reveal_type context =
     ["Revealed type [-1]: Revealed type for `bar` is `int`."];
   assert_type_errors
     {|
+      import typing
       def foo(bar: typing.Union[int, str]) -> None:
         if type(bar) is int:
           reveal_type(bar)
@@ -106,6 +112,7 @@ let test_reveal_type context =
     ];
   assert_type_errors
     {|
+      import typing
       reveal_type(typing.List[int])
     |}
     ["Revealed type [-1]: Revealed type for `typing.List[int]` is `typing.Type[typing.List[int]]`."];
@@ -120,6 +127,7 @@ let test_reveal_type context =
     ["Revealed type [-1]: Revealed type for `x` is `float`."];
   assert_type_errors
     {|
+       import typing
        class Foo:
          attribute: typing.Optional[int] = 1
        def foo() -> None:
@@ -128,6 +136,7 @@ let test_reveal_type context =
     ["Revealed type [-1]: Revealed type for `test.Foo.attribute` is `typing.Optional[int]`."];
   assert_type_errors
     {|
+       import typing
        class Foo:
          attribute: typing.Optional[int] = 1
        def foo() -> None:

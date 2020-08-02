@@ -14,6 +14,8 @@ val is_local : Identifier.t -> bool
 (* Evaluates to the representation of literal strings, integers and enums. *)
 val extract_constant_name : Expression.t -> string option
 
+val resolve_target : resolution:Resolution.t -> ?receiver_type:Type.t -> Expression.t -> target list
+
 (* Evaluates to the list of indirect targets and the implicit self that needs to be passed in, if
    any. *)
 val get_indirect_targets
@@ -33,7 +35,7 @@ val resolve_property_targets
 (* Returns all call targets from Call expressions in the given access *)
 val resolve_call_targets : resolution:Resolution.t -> Call.t -> target list
 
-val transform_special_calls : Call.t -> Call.t option
+val transform_special_calls : resolution:Resolution.t -> Call.t -> Call.t option
 
 val redirect_special_calls : resolution:Resolution.t -> Call.t -> Call.t
 

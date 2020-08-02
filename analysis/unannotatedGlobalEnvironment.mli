@@ -8,21 +8,26 @@ open Statement
 open SharedMemoryKeys
 open Core
 
-type unannotated_global =
-  | SimpleAssign of {
-      explicit_annotation: Expression.t option;
-      value: Expression.t;
-      target_location: Location.t;
-    }
-  | TupleAssign of {
-      value: Expression.t;
-      target_location: Location.t;
-      index: int;
-      total_length: int;
-    }
-  | Imported of Reference.t
-  | Define of Define.Signature.t Node.t list
-[@@deriving compare, show, sexp]
+module ResolvedReference : sig
+  type export =
+    | FromModuleGetattr
+    | Exported of Module.Export.Name.t
+  [@@deriving sexp, compare, hash]
+
+  type t =
+    | Module of Reference.t
+    | ModuleAttribute of {
+        from: Reference.t;
+        name: Identifier.t;
+        export: export;
+        remaining: Identifier.t list;
+      }
+    | PlaceholderStub of {
+        stub_module: Reference.t;
+        remaining: Identifier.t list;
+      }
+  [@@deriving sexp, compare, hash]
+end
 
 module ReadOnly : sig
   type t
@@ -35,9 +40,9 @@ module ReadOnly : sig
 
   val ast_environment : t -> AstEnvironment.ReadOnly.t
 
-  val class_exists : t -> ?dependency:dependency -> string -> bool
+  val class_exists : t -> ?dependency:DependencyKey.registered -> string -> bool
 
-  val contains_untracked : t -> ?dependency:dependency -> Type.t -> bool
+  val contains_untracked : t -> ?dependency:DependencyKey.registered -> Type.t -> bool
 
   val unannotated_global_environment : t -> t
 
@@ -54,19 +59,66 @@ module ReadOnly : sig
 
   val all_defines_in_module : t -> Reference.t -> Reference.t list
 
-  val get_class_definition : t -> ?dependency:dependency -> string -> ClassSummary.t Node.t option
+  val get_class_definition
+    :  t ->
+    ?dependency:DependencyKey.registered ->
+    string ->
+    ClassSummary.t Node.t option
 
   val get_unannotated_global
     :  t ->
-    ?dependency:dependency ->
+    ?dependency:DependencyKey.registered ->
     Reference.t ->
-    unannotated_global option
+    UnannotatedGlobal.t option
 
-  val get_define : t -> ?dependency:dependency -> Reference.t -> FunctionDefinition.t option
+  val get_define
+    :  t ->
+    ?dependency:DependencyKey.registered ->
+    Reference.t ->
+    FunctionDefinition.t option
 
-  val get_define_body : t -> ?dependency:dependency -> Reference.t -> Define.t Node.t option
+  val get_define_body
+    :  t ->
+    ?dependency:DependencyKey.registered ->
+    Reference.t ->
+    Define.t Node.t option
 
-  val is_protocol : t -> ?dependency:dependency -> Type.t -> bool
+  val is_protocol : t -> ?dependency:DependencyKey.registered -> Type.t -> bool
+
+  val get_module_metadata
+    :  t ->
+    ?dependency:DependencyKey.registered ->
+    Reference.t ->
+    Module.t option
+
+  val module_exists : t -> ?dependency:DependencyKey.registered -> Reference.t -> bool
+
+  val legacy_resolve_exports
+    :  t ->
+    ?dependency:DependencyKey.registered ->
+    Reference.t ->
+    Reference.t
+
+  val resolve_exports
+    :  t ->
+    ?dependency:DependencyKey.registered ->
+    ?from:Reference.t ->
+    Reference.t ->
+    ResolvedReference.t option
+
+  val resolve_decorator_if_matches
+    :  t ->
+    ?dependency:SharedMemoryKeys.DependencyKey.registered ->
+    Ast.Statement.Decorator.t ->
+    target:string ->
+    Ast.Statement.Decorator.t option
+
+  val get_decorator
+    :  t ->
+    ?dependency:SharedMemoryKeys.DependencyKey.registered ->
+    ClassSummary.t Node.t ->
+    decorator:string ->
+    Ast.Statement.Decorator.t list
 end
 
 module UpdateResult : sig
@@ -84,21 +136,30 @@ module UpdateResult : sig
 
   val define_additions : t -> Reference.Set.t
 
-  val locally_triggered_dependencies : t -> DependencyKey.KeySet.t
+  val locally_triggered_dependencies : t -> DependencyKey.RegisteredSet.t
 
   val upstream : t -> AstEnvironment.UpdateResult.t
 
-  val all_triggered_dependencies : t -> DependencyKey.KeySet.t list
+  val all_triggered_dependencies : t -> DependencyKey.RegisteredSet.t list
 
   val unannotated_global_environment_update_result : t -> t
+
+  val ast_environment_update_result : t -> AstEnvironment.UpdateResult.t
 
   val read_only : t -> read_only
 end
 
+type t
+
+val create : AstEnvironment.t -> t
+
+val ast_environment : t -> AstEnvironment.t
+
+val read_only : t -> ReadOnly.t
+
 val update_this_and_all_preceding_environments
-  :  AstEnvironment.ReadOnly.t ->
+  :  t ->
   scheduler:Scheduler.t ->
   configuration:Configuration.Analysis.t ->
-  ast_environment_update_result:AstEnvironment.UpdateResult.t ->
-  Reference.Set.t ->
+  AstEnvironment.trigger ->
   UpdateResult.t

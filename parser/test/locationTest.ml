@@ -933,8 +933,8 @@ let test_class_locations _ =
              Class.name = node ~start:(2, 6) ~stop:(2, 9) !&"foo";
              bases = [];
              body = [node ~start:(3, 1) ~stop:(3, 5) Statement.Pass];
-             decorators =
-               [node ~start:(1, 1) ~stop:(1, 4) (Expression.Name (Name.Identifier "bar"))];
+             decorators = [{ name = node ~start:(1, 1) ~stop:(1, 4) !&"bar"; arguments = None }];
+             top_level_unbound_names = [];
            });
     ];
   assert_source_locations
@@ -966,10 +966,12 @@ let test_class_locations _ =
                             nesting_define = None;
                           };
                         captures = [];
+                        unbound_names = [];
                         body = [node ~start:(2, 12) ~stop:(2, 16) Statement.Pass];
                       });
                ];
              decorators = [];
+             top_level_unbound_names = [];
            });
     ];
   assert_source_locations
@@ -1000,6 +1002,7 @@ let test_class_locations _ =
                    (Statement.Expression (node ~start:(2, 1) ~stop:(2, 2) (Expression.Integer 1)));
                ];
              decorators = [];
+             top_level_unbound_names = [];
            });
     ];
   assert_source_locations
@@ -1045,6 +1048,7 @@ let test_class_locations _ =
                                        nesting_define = None;
                                      };
                                    captures = [];
+                                   unbound_names = [];
                                    body = [node ~start:(5, 6) ~stop:(5, 10) Statement.Pass];
                                  });
                           ];
@@ -1052,6 +1056,7 @@ let test_class_locations _ =
                       });
                ];
              decorators = [];
+             top_level_unbound_names = [];
            });
     ]
 
@@ -1077,6 +1082,7 @@ let test_define_locations _ =
                  nesting_define = None;
                };
              captures = [];
+             unbound_names = [];
              body =
                [
                  node
@@ -1112,6 +1118,7 @@ let test_define_locations _ =
                  nesting_define = None;
                };
              captures = [];
+             unbound_names = [];
              body =
                [
                  node
@@ -1131,6 +1138,7 @@ let test_define_locations _ =
                             nesting_define = None;
                           };
                         captures = [];
+                        unbound_names = [];
                         body =
                           [
                             node
@@ -1197,6 +1205,7 @@ let test_define_locations _ =
                  nesting_define = None;
                };
              captures = [];
+             unbound_names = [];
              body = [node ~start:(6, 2) ~stop:(6, 6) Statement.Pass];
            });
     ];
@@ -1242,6 +1251,7 @@ let test_define_locations _ =
                  nesting_define = None;
                };
              captures = [];
+             unbound_names = [];
              body =
                [
                  node
@@ -1794,12 +1804,12 @@ let test_import_locations _ =
                [
                  {
                    Import.name = node ~start:(1, 14) ~stop:(1, 15) !&"a";
-                   alias = Some (node ~start:(1, 19) ~stop:(1, 20) !&"b");
+                   alias = Some (node ~start:(1, 19) ~stop:(1, 20) "b");
                  };
                  { Import.name = node ~start:(1, 22) ~stop:(1, 23) !&"c"; alias = None };
                  {
                    Import.name = node ~start:(1, 25) ~stop:(1, 26) !&"d";
-                   alias = Some (node ~start:(1, 30) ~stop:(1, 31) !&"e");
+                   alias = Some (node ~start:(1, 30) ~stop:(1, 31) "e");
                  };
                ];
            });
@@ -1817,12 +1827,12 @@ let test_import_locations _ =
                [
                  {
                    Import.name = node ~start:(1, 7) ~stop:(1, 8) !&"a";
-                   alias = Some (node ~start:(1, 12) ~stop:(1, 13) !&"b");
+                   alias = Some (node ~start:(1, 12) ~stop:(1, 13) "b");
                  };
                  { Import.name = node ~start:(1, 15) ~stop:(1, 16) !&"c"; alias = None };
                  {
                    Import.name = node ~start:(1, 18) ~stop:(1, 19) !&"d";
-                   alias = Some (node ~start:(1, 23) ~stop:(1, 24) !&"e");
+                   alias = Some (node ~start:(1, 23) ~stop:(1, 24) "e");
                  };
                ];
            });
@@ -2676,6 +2686,7 @@ let test_stub_locations _ =
                  nesting_define = None;
                };
              captures = [];
+             unbound_names = [];
              body =
                [
                  node
@@ -2713,7 +2724,7 @@ let test_stub_locations _ =
                        };
                    ];
                  decorators =
-                   [node ~start:(1, 1) ~stop:(1, 9) (Expression.Name (Name.Identifier "overload"))];
+                   [{ name = node ~start:(1, 1) ~stop:(1, 9) !&"overload"; arguments = None }];
                  return_annotation = None;
                  async = false;
                  generator = false;
@@ -2721,6 +2732,7 @@ let test_stub_locations _ =
                  nesting_define = None;
                };
              captures = [];
+             unbound_names = [];
              body =
                [
                  node
@@ -2760,6 +2772,7 @@ let test_stub_locations _ =
                       });
                ];
              decorators = [];
+             top_level_unbound_names = [];
            });
     ];
   assert_source_locations
@@ -2780,6 +2793,7 @@ let test_stub_locations _ =
                    (Statement.Expression (node ~start:(1, 13) ~stop:(1, 16) Expression.Ellipsis));
                ];
              decorators = [];
+             top_level_unbound_names = [];
            });
     ]
 

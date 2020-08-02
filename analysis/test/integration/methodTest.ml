@@ -32,6 +32,7 @@ let test_check_method_returns context =
   assert_type_errors
     ~context
     {|
+      import typing
       def foo() -> typing.Optional[typing.List[int]]:
           return [3]
     |}
@@ -40,6 +41,7 @@ let test_check_method_returns context =
   assert_type_errors
     ~context
     {|
+      import typing
       class C:
           pass
       class D(C):
@@ -51,6 +53,7 @@ let test_check_method_returns context =
   assert_type_errors
     ~context
     {|
+      import typing
       class C:
           pass
       class D(C):
@@ -62,6 +65,7 @@ let test_check_method_returns context =
   assert_type_errors
     ~context
     {|
+      import typing
       class C:
           pass
       class D(C):
@@ -73,6 +77,7 @@ let test_check_method_returns context =
   assert_type_errors
     ~context
     {|
+      import typing
       class C:
           pass
       class D(C):
@@ -84,6 +89,7 @@ let test_check_method_returns context =
   assert_type_errors
     ~context
     {|
+      import typing
       class C:
           pass
       class D(C):
@@ -95,6 +101,7 @@ let test_check_method_returns context =
   assert_type_errors
     ~context
     {|
+      import typing
       class C:
           pass
       class D(C):
@@ -106,6 +113,7 @@ let test_check_method_returns context =
   assert_type_errors
     ~context
     {|
+      import typing
       class C:
           pass
       class D(C):
@@ -117,6 +125,7 @@ let test_check_method_returns context =
   assert_type_errors
     ~context
     {|
+      import typing
       class C:
           pass
       class D(C):
@@ -128,6 +137,7 @@ let test_check_method_returns context =
   assert_type_errors
     ~context
     {|
+      import typing
       def foo() -> typing.Dict[int, typing.Optional[bool]]:
         return {
           **{1: True},
@@ -138,6 +148,7 @@ let test_check_method_returns context =
   assert_type_errors
     ~context
     {|
+      import typing
       def foo() -> typing.Dict[int, typing.Optional[bool]]:
         d1 = {1: True}
         d2 = {3: False}
@@ -150,6 +161,7 @@ let test_check_method_returns context =
   assert_type_errors
     ~context
     {|
+      import typing
       class C: ...
       class D(C): ...
       def foo() -> typing.Mapping[C, C]:
@@ -160,10 +172,153 @@ let test_check_method_returns context =
       bar({'foo': 'foo'})
     |}
     [];
+  assert_type_errors
+    ~context
+    {|
+      from typing import Dict, Mapping, Optional, Sequence, Tuple, Union
+      from enum import Enum
+      class FooEnum(Enum, str):
+          FOO_FIELD = "hello"
+
+      dict_string_to_int: Dict[str, int]
+      dict_string_to_string: Dict[str, str]
+      d1: Mapping[str, Union[int, str]] = {**dict_string_to_int, FooEnum.FOO_FIELD: FooEnum.FOO_FIELD}
+      d2: Dict[str, Union[int, str]] = {**dict_string_to_int, "hello": "world"}
+      d3: Dict[str, Union[int, str]] = {**dict_string_to_int, **dict_string_to_string}
+
+      xs: Sequence[Tuple[int, int, str, Dict[str, Optional[str]]]] = [
+          (1, 2, "hello", {"foo": "hello", "bar": None, "baz": None}),
+          (3, 4, "world", {"foo": "hello", "bar": "hello", "baz": "hello"}),
+      ]
+    |}
+    [];
+  assert_type_errors
+    ~context
+    {|
+      import typing
+      def foo() -> None:
+          f: typing.Callable
+          f(1, 2)
+    |}
+    ["Invalid type parameters [24]: Generic type `typing.Callable` expects 2 type parameters."];
+  assert_type_errors
+    ~context
+    {|
+      import typing
+      def foo() -> None:
+          x: typing.Tuple
+          x = (1, 2)
+    |}
+    ["Invalid type parameters [24]: Generic type `tuple` expects at least 1 type parameter."];
   ()
 
 
 let test_check_inverse_operator context =
+  assert_type_errors
+    ~context
+    {|
+      from typing import Optional, Tuple
+      x: int
+      optional_x: Optional[int]
+
+      class C:
+        def __rrshift__(self, other: int) -> int: ...
+
+      class D:
+        def __rshift__(self, other: int) -> int: ...
+
+      # Only one of them has the operator.
+      x < optional_x
+      optional_x < x
+      x + optional_x
+      optional_x + x
+      optional_x == x
+      optional_x != x
+
+      # Both have the operator.
+      "foo" >> C()
+      D() >> "foo"
+      D() >> C()
+
+      # Neither has the operator.
+      D() + C()
+      C() << C()
+    |}
+    [
+      "Incompatible parameter type [6]: `<` is not supported for operand types `int` and \
+       `Optional[int]`.";
+      "Incompatible parameter type [6]: `<` is not supported for operand types `Optional[int]` and \
+       `int`.";
+      "Incompatible parameter type [6]: `+` is not supported for operand types `int` and \
+       `Optional[int]`.";
+      "Incompatible parameter type [6]: `+` is not supported for operand types `Optional[int]` and \
+       `int`.";
+      "Incompatible parameter type [6]: `>>` is not supported for operand types `str` and `C`.";
+      "Incompatible parameter type [6]: `>>` is not supported for operand types `D` and `str`.";
+      "Incompatible parameter type [6]: `>>` is not supported for operand types `D` and `C`.";
+      "Incompatible parameter type [6]: `+` is not supported for operand types `D` and `C`.";
+      "Incompatible parameter type [6]: `<<` is not supported for operand types `C` and `C`.";
+    ];
+  (* Explicit use of `__lt__` gets the full error message. *)
+  assert_type_errors
+    ~context
+    {|
+      from typing import Optional
+
+      x: int
+      optional_x: Optional[int]
+      x.__lt__(optional_x)
+      x < optional_x
+    |}
+    [
+      "Incompatible parameter type [6]: Expected `int` for 1st positional only parameter to call \
+       `int.__lt__` but got `Optional[int]`.";
+      "Incompatible parameter type [6]: `<` is not supported for operand types `int` and \
+       `Optional[int]`.";
+    ];
+  (* TODO(T69286342): Inferred literal types give the incompatible parameter type error. *)
+  assert_type_errors
+    ~context
+    {|
+      def foo() -> None:
+        y = 1
+        reveal_type(y)
+        y += "some string"
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `y` is `typing_extensions.Literal[1]`.";
+      "Incompatible parameter type [6]: Expected `int` for 1st positional only parameter to call \
+       `int.__add__` but got `str`.";
+    ];
+  assert_type_errors
+    ~context
+    {|
+      class C:
+        pass
+
+      class D:
+        def __gt__(self, other: object) -> bool: ...
+        def __lt__(self, other: object) -> bool: ...
+        def __le__(self, other: object) -> bool: ...
+        def __ge__(self, other: object) -> bool: ...
+
+      def expects_bool(x: bool) -> None: ...
+
+      expects_bool(C() < D())
+      expects_bool(C() > D())
+      expects_bool(C() <= D())
+      expects_bool(C() >= D())
+    |}
+    [];
+  assert_type_errors
+    ~context
+    {|
+      x1: bool = 5 < 6.0
+      x2: bool = 5 > 6.0
+      x3: bool = 5 <= 6.0
+      x4: bool = 5 >= 6.0
+    |}
+    [];
   assert_type_errors
     ~context
     {|
@@ -188,10 +343,7 @@ let test_check_inverse_operator context =
       def foo() -> int:
         return (C() >> D())
     |}
-    [
-      "Incompatible return type [7]: Expected `int` but got `unknown`.";
-      "Undefined attribute [16]: `C` has no attribute `__rshift__`.";
-    ];
+    ["Incompatible parameter type [6]: `>>` is not supported for operand types `C` and `D`."];
   assert_type_errors
     ~context
     {|
@@ -241,14 +393,11 @@ let test_check_inverse_operator context =
       def foo() -> None:
         z = ("foo" >> C())
     |}
-    (* Make sure that if the operands don't typecheck, we raise an error for the left operand. *)
-    [
-      "Incompatible parameter type [6]: Expected `int` for 1st positional only parameter to call \
-       `C.__rrshift__` but got `str`.";
-    ];
+    ["Incompatible parameter type [6]: `>>` is not supported for operand types `str` and `C`."];
   assert_type_errors
     ~context
     {|
+      import typing
       def foo() -> None:
         d: typing.Dict[str, typing.Any] = {"foo": 3}
         z = d["foo"] + d["foo"]
@@ -258,6 +407,7 @@ let test_check_inverse_operator context =
   assert_type_errors
     ~context
     {|
+      import typing
       def foo(xs: typing.Iterable[typing.Any]) -> None:
         a, b = xs
         reveal_type(a)
@@ -275,6 +425,7 @@ let test_check_inverse_operator context =
        for dealing with edge cases with old-style format strings when the format string happens to
        be typed as Any. *)
     {|
+      import typing
       def baz(d: typing.Dict[str, typing.Any]) -> None:
         a = d["foo"]
         reveal_type(a)
@@ -282,12 +433,13 @@ let test_check_inverse_operator context =
     |}
     [
       "Revealed type [-1]: Revealed type for `a` is `typing.Any`.";
-      "Revealed type [-1]: Revealed type for `a.__mod__(3)` is `unknown`.";
+      "Revealed type [-1]: Revealed type for `a.__mod__(3)` is `typing.Any`.";
     ];
   assert_type_errors
     ~context
     (* Bottom % int should return unknown, not int (via the int __mod__ operator). *)
     {|
+      import typing
       def foo(xs: typing.Iterable[typing.Any]) -> None:
         a, b = xs
         reveal_type(a)
@@ -297,7 +449,7 @@ let test_check_inverse_operator context =
       "Missing parameter annotation [2]: Parameter `xs` must have a type that does not contain \
        `Any`.";
       "Revealed type [-1]: Revealed type for `a` is `typing.Any`.";
-      "Revealed type [-1]: Revealed type for `a.__mod__(3)` is `unknown`.";
+      "Revealed type [-1]: Revealed type for `a.__mod__(3)` is `typing.Any`.";
     ];
   assert_type_errors
     ~context
@@ -423,10 +575,7 @@ let test_check_method_parameters context =
       def foo(input: str) -> None:
         input + 1
     |}
-    [
-      "Incompatible parameter type [6]: "
-      ^ "Expected `int` for 1st positional only parameter to call `int.__radd__` but got `str`.";
-    ];
+    ["Incompatible parameter type [6]: `+` is not supported for operand types `str` and `int`."];
   assert_type_errors
     {|
       def foo(input: str) -> str:
@@ -448,18 +597,21 @@ let test_check_method_parameters context =
   (* Special Methods *)
   assert_strict_type_errors
     {|
+      import typing
       def foo(x: typing.Type[int]) -> str:
         return str(x)
     |}
     [];
   assert_strict_type_errors
     {|
+      import typing
       def foo(x: typing.Iterable[int]) -> int:
         return x[0]
     |}
     ["Undefined attribute [16]: `typing.Iterable` has no attribute `__getitem__`."];
   assert_strict_type_errors
     {|
+      import typing
       def foo(x: typing.Type[int], y: object) -> bool:
         return x == y
     |}
@@ -485,7 +637,7 @@ let test_check_method_parameters context =
     ["Revealed type [-1]: Revealed type for `x` is `typing.Type[typing.Mapping[int, str]]`."];
   assert_strict_type_errors
     {|
-      class Meta:
+      class Meta(type):
           def foo(self) -> None: ...
 
       class Foo(metaclass=Meta):
@@ -502,7 +654,7 @@ let test_check_method_parameters context =
     ];
   assert_strict_type_errors
     {|
-      class Meta:
+      class Meta(type):
           def __getitem__(self, item: int) -> int: ...
 
       class Foo(metaclass=Meta):
@@ -571,6 +723,7 @@ let test_check_method_parameters context =
     ["Invalid method signature [47]: Non-static method must specify `cls` parameter."];
   assert_type_errors
     {|
+      import typing
       class Foo:
         @classmethod
         def bar(x: typing.Type[Foo]) -> None:
@@ -602,6 +755,7 @@ let test_check_method_parameters context =
     [];
   assert_type_errors
     {|
+    import typing
     class Foo:
       @staticmethod
       def __new__(cls) -> typing.Type[Foo]: ...
@@ -626,7 +780,94 @@ let test_check_method_parameters context =
         def foo(self, x: typing.Optional[typing.Set[int]] = ...) -> None:
           self.x = x
     |}
-    ["Undefined attribute [16]: `Foo` has no attribute `x`."]
+    ["Undefined attribute [16]: `Foo` has no attribute `x`."];
+  assert_type_errors
+    {|
+      from typing import List, TypeVar
+      T = TypeVar("T")
+      def wrap(x: T) -> List[T]:
+        return [x]
+      class Foo:
+        @wrap
+        @classmethod
+        def bar(cls) -> None:
+          return
+      reveal_type(Foo.bar)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `test.Foo.bar` is \
+       `List[typing.ClassMethod[typing.Callable(Foo.bar)[[Named(cls, typing.Type[Foo])], None]]]`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import List, TypeVar
+      T = TypeVar("T")
+      def wrap(x: T) -> List[T]:
+        return [x]
+      class Foo:
+        def __init_subclass__(cls) -> None:
+          return
+        @classmethod # shouldn't "double wrap" this
+        def __class_getitem__(cls) -> None:
+          return
+      reveal_type(Foo().__init_subclass__)
+      reveal_type(Foo().__class_getitem__)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `test.Foo().__init_subclass__` is \
+       `BoundMethod[typing.Callable(Foo.__init_subclass__)[[Named(cls, typing.Type[Foo])], None], \
+       typing.Type[Foo]]`.";
+      "Revealed type [-1]: Revealed type for `test.Foo().__class_getitem__` is \
+       `BoundMethod[typing.Callable(Foo.__class_getitem__)[[Named(cls, typing.Type[Foo])], None], \
+       typing.Type[Foo]]`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import List, TypeVar, Callable
+      T = TypeVar("T")
+      def wrap(x: T) -> List[T]:
+        return [x]
+      class CallableClass:
+        def __call__(self, x: int) -> str:
+          return "A"
+      def masquerade(x: object) -> Callable[[int], str]:
+        return CallableClass()
+      class Foo:
+        @wrap # the magic should only be triggered on "plain functions", so this should be skipped
+        def __init_subclass__(cls) -> None:
+          return
+                    # the type system isn't smart enough to distinguish that callable from a function,
+        @masquerade # so we erroneously wrap it
+        def __class_getitem__(cls) -> None:
+          return
+
+      reveal_type(Foo().__init_subclass__)
+      reveal_type(Foo().__class_getitem__)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `test.Foo().__init_subclass__` is \
+       `List[typing.Callable(Foo.__init_subclass__)[[Named(cls, typing.Type[Foo])], None]]`.";
+      "Revealed type [-1]: Revealed type for `test.Foo().__class_getitem__` is \
+       `BoundMethod[typing.Callable[[int], str], typing.Type[Foo]]`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import List, TypeVar
+      T = TypeVar("T")
+      def wrap(x: T) -> List[T]:
+        return [x]
+      class Foo:
+        @wrap
+        @staticmethod
+        def s() -> None:
+          return
+      reveal_type(Foo().s)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `test.Foo().s` is \
+       `List[typing.StaticMethod[typing.Callable(Foo.s)[[], None]]]`.";
+    ];
+  ()
 
 
 let test_check_abstract_methods context =
@@ -811,6 +1052,7 @@ let test_check_behavioral_subtyping context =
   assert_type_errors
     ~show_error_traces:true
     {|
+      import typing
       class Foo():
         def bar(self, x: int) -> int:
           return 1
@@ -907,6 +1149,7 @@ let test_check_behavioral_subtyping context =
   assert_type_errors
     ~show_error_traces:true
     {|
+      import typing
       class Foo():
         def bar(self, x: typing.Union[str, int]) -> None:
           pass
@@ -921,6 +1164,7 @@ let test_check_behavioral_subtyping context =
     ];
   assert_type_errors
     {|
+      import typing
       _T = typing.TypeVar('_T')
       class Foo(typing.Generic[_T]):
         def bar(self, x: typing.Union[str, _T]) -> None:
@@ -936,6 +1180,7 @@ let test_check_behavioral_subtyping context =
     ];
   assert_type_errors
     {|
+      import typing
       _T = typing.TypeVar('_T')
       class Foo(typing.Generic[_T]):
         def bar(self, x: typing.Union[str, _T]) -> None:
@@ -947,6 +1192,7 @@ let test_check_behavioral_subtyping context =
     [];
   assert_type_errors
     {|
+      import typing
       _T = typing.TypeVar('_T')
       class Foo(typing.Generic[_T]):
         def bar(self, x: typing.Union[str, _T]) -> None:
@@ -963,6 +1209,7 @@ let test_check_behavioral_subtyping context =
     ];
   assert_type_errors
     {|
+      import typing
       _T = typing.TypeVar('_T')
       class Foo(typing.Generic[_T]):
         def bar(self, x: typing.Union[str, _T]) -> None:
@@ -1047,7 +1294,11 @@ let test_check_behavioral_subtyping context =
       class Bar(Foo):
         def __dunder__(self, a: int) -> None: pass
     |}
-    [];
+    [
+      "Inconsistent override [14]: `test.Bar.__dunder__` overrides method defined in `Foo` \
+       inconsistently. Parameter of type `int` is not a supertype of the overridden parameter \
+       `float`.";
+    ];
 
   (* Dunder methods must end with dunder. *)
   assert_type_errors
@@ -1085,6 +1336,7 @@ let test_check_behavioral_subtyping context =
   (* Ignore anything involving `Any`. *)
   assert_default_type_errors
     {|
+      import typing
       class Foo():
         def __eq__(self, o: typing.Any) -> typing.Any: ...
       class Bar(Foo):
@@ -1095,6 +1347,7 @@ let test_check_behavioral_subtyping context =
   (* Overrides when both *args and **kwargs exist are not inconsistent. *)
   assert_default_type_errors
     {|
+      import typing
       class Foo():
         def f(self, a: float) -> None: ...
       class Bar(Foo):
@@ -1106,6 +1359,7 @@ let test_check_behavioral_subtyping context =
     ];
   assert_default_type_errors
     {|
+      import typing
       class Foo():
         def f(self, b: int) -> None: ...
       class Bar(Foo):
@@ -1117,6 +1371,7 @@ let test_check_behavioral_subtyping context =
     ];
   assert_default_type_errors
     {|
+      import typing
       class Foo():
         def f(self, c: str) -> None: ...
       class Bar(Foo):
@@ -1206,10 +1461,7 @@ let test_check_method_resolution context =
       def foo() -> None:
         bar().baz()
     |}
-    [
-      "Undefined name [18]: Global name `bar` is not defined, or there is at least one control \
-       flow path that doesn't define `bar`.";
-    ];
+    ["Unbound name [10]: Name `bar` is used but not defined in the current scope."];
   assert_type_errors ~context {|
       def foo(input: str) -> None:
         input.lower()
@@ -1217,6 +1469,7 @@ let test_check_method_resolution context =
   assert_type_errors
     ~context
     {|
+      import typing
       class Foo:
         def __getattr__(self, name: str) -> typing.Any: ...
       def foo(x: Foo) -> None:
@@ -1230,6 +1483,7 @@ let test_check_method_resolution context =
   assert_type_errors
     ~context
     {|
+      import typing
       def foo(input: typing.Type[typing.Protocol]) -> None:
         reveal_type(input[42])
     |}
@@ -1246,11 +1500,13 @@ let test_check_callables context =
     |}
     ["Call error [29]: `int` is not a function."];
   assert_type_errors {|
+      import typing
       x: typing.Type[int]
       x()
     |} [];
   assert_type_errors
     {|
+    import typing
     class A:
       def __init__(self) -> None: pass
     class B:
@@ -1262,10 +1518,13 @@ let test_check_callables context =
       [A, B][0]()
     |}
     [];
-  assert_type_errors {|
+  assert_type_errors
+    {|
+    import typing
     x: typing.Type[typing.Union[int, str]]
     x()
-    |} [];
+    |}
+    [];
   assert_type_errors {|
     types = [int, str]
     types[0]()
@@ -1287,8 +1546,8 @@ let test_check_callables context =
       x()
     |}
     [
-      "Missing global annotation [5]: Globally accessible variable `x` "
-      ^ "has type `typing.Callable[[], None]` but no type is specified.";
+      "Incompatible variable type [9]: x is declared to have type `typing.Callable(foo)[[], None]` \
+       but is used as type `typing.Callable(bar)[[], None]`.";
     ];
   assert_type_errors
     {|
@@ -1303,12 +1562,13 @@ let test_check_callables context =
       x()
     |}
     [
-      "Missing global annotation [5]: Globally accessible variable `x` "
-      ^ "has type `typing.Callable[[], None]` but no type is specified.";
-      "Revealed type [-1]: Revealed type for `x` is `typing.Callable[[], None]`.";
+      "Incompatible variable type [9]: x is declared to have type `typing.Callable(foo)[[], None]` \
+       but is used as type `typing.Callable(bar)[[], None]`.";
+      "Revealed type [-1]: Revealed type for `x` is `typing.Callable(foo)[[], None]`.";
     ];
   assert_type_errors
     {|
+      import typing
       class A:
         def __init__(self) -> None: pass
       class B:
@@ -1325,13 +1585,41 @@ let test_check_callables context =
     [];
   assert_type_errors
     {|
+      import typing
       class A:
         def __init__(self) -> None: pass
       def foo() -> None: pass
       def bar(x: typing.Union[typing.Type[A], typing.Callable[[], None]]) -> None:
         x()
     |}
-    []
+    [];
+  assert_type_errors
+    {|
+      from typing import Any
+      def foo(x: BoundMethod[Any, int]) -> None:
+        y = x()
+        reveal_type(y)
+    |}
+    [
+      "Missing parameter annotation [2]: Parameter `x` must have a type that does not contain `Any`.";
+      "Revealed type [-1]: Revealed type for `y` is `typing.Any`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import overload, TypeVar, Tuple
+      T = TypeVar("T")
+      class CallableClass:
+        @overload
+        def __call__(self, x: str, t: T) -> Tuple[str, T]: ...
+        @overload
+        def __call__(self, x: int, t: T) -> Tuple[int, T]: ...
+        def __call__(self, x: object, t: object) -> object: ...
+      def foo(x: BoundMethod[CallableClass, int]) -> None:
+        y = x(1.0)
+        reveal_type(y)
+    |}
+    ["Revealed type [-1]: Revealed type for `y` is `Tuple[int, float]`."];
+  ()
 
 
 let test_check_callable_protocols context =
@@ -1348,6 +1636,7 @@ let test_check_callable_protocols context =
     [];
   assert_type_errors
     {|
+      import typing
       T = typing.TypeVar("T")
       class Call(typing.Generic[T]):
         def __call__(self) -> T: ...
@@ -1358,6 +1647,7 @@ let test_check_callable_protocols context =
 
   assert_type_errors
     {|
+      import typing
       class Call:
         def __call__(self: typing.Callable[[int], str], x: int) -> str: ...
       def foo(call: Call) -> None:
@@ -1367,6 +1657,7 @@ let test_check_callable_protocols context =
 
   assert_type_errors
     {|
+      import typing
       class Call:
         def __call__(self: typing.Callable[[int], str], x: int) -> int: ...
       def foo(call: Call) -> None:
@@ -1380,6 +1671,7 @@ let test_check_callable_protocols context =
   (* We handle subclassing. *)
   assert_type_errors
     {|
+      import typing
       class BaseClass:
         def __call__(self, val: typing.Optional[str] = None) -> "BaseClass":
           ...
@@ -1396,10 +1688,7 @@ let test_check_callable_protocols context =
       def foo(call: Call) -> int:
         return call()
     |}
-    [
-      "Incompatible return type [7]: Expected `int` but got `unknown`.";
-      "Call error [29]: `Call` is not a function.";
-    ];
+    ["Call error [29]: `Call` is not a function."];
   assert_default_type_errors {|
       def foo(call) -> int:
         return call()
@@ -1478,6 +1767,7 @@ let test_check_callable_protocols context =
      errors. *)
   assert_type_errors
     {|
+      import typing
       def foo_try_with_tuple(obj: typing.Tuple[int, ...]) -> None:
         type(obj)(v for v in obj)
     |}
@@ -1502,10 +1792,125 @@ let test_check_callable_protocols context =
     ];
   assert_type_errors
     {|
+      import typing
       def foo_try_with_list(obj: typing.List[int]) -> None:
         type(obj)(v for v in obj)
     |}
-    []
+    [];
+
+  (* Calling is a special method access of `__call__`, thus calling Type[X] prefers a `__call__` in
+     a metaclass over both the constructor and a `__call__` on X *)
+  assert_type_errors
+    {|
+      from typing import Type
+
+      class Metaclass(type):
+        def __call__(self, x: int) -> str:
+          return "A"
+
+      class C(metaclass=Metaclass):
+        def __call__(self, y: str) -> bool:
+          return True
+
+      def f() -> None:
+        x = C(1)
+        reveal_type(x)
+    |}
+    ["Revealed type [-1]: Revealed type for `x` is `str`."];
+  assert_type_errors
+    {|
+      from typing import Callable
+      def foo() -> None:
+        q = Callable[[int], str]
+        reveal_type(q)
+        f = q(1)
+        reveal_type(f)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `q` is `typing.Type[typing.Callable[..., str]]`.";
+      "Too many arguments [19]: Call `object.__init__` expects 0 positional arguments, 1 was \
+       provided.";
+      "Revealed type [-1]: Revealed type for `f` is `typing.Callable[..., str]`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Callable
+      class C:
+        def __init__(self, x: int) -> None:
+          pass
+
+      f: Callable[[int], C] = C
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Callable
+      class C:
+        def __init__(self, x: int) -> None:
+          pass
+        def __call__(self, x: str) -> int:
+          return 42
+
+      f: Callable[[C, str], int] = C
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Callable
+      class C:
+        def __init__(self, x: int) -> None:
+          pass
+        def __call__(self, x: str) -> int:
+          return 42
+
+      f: Callable[[int], C] = C
+    |}
+    [
+      "Incompatible variable type [9]: f is declared to have type `typing.Callable[[int], C]` but \
+       is used as type `typing.Type[C]`.";
+    ];
+  assert_default_type_errors
+    {|
+      from typing import Any
+
+      class C:
+        __call__: Any = 1
+
+      def foo(c: C) -> None:
+        x = c()
+        reveal_type(x)
+    |}
+    ["Revealed type [-1]: Revealed type for `x` is `typing.Any`."];
+  assert_default_type_errors
+    {|
+      from typing import Any
+
+      class C:
+        __init__: Any = 1
+
+      def foo() -> None:
+        x = C()
+        reveal_type(x)
+    |}
+    ["Revealed type [-1]: Revealed type for `x` is `typing.Any`."];
+  assert_default_type_errors
+    {|
+      from typing import Any
+
+      def unannotated_decorator(x):
+        return x
+
+      class C:
+        @unannotated_decorator
+        def __init__(self) -> None:
+          pass
+
+      def foo() -> None:
+        x = C()
+        reveal_type(x)
+    |}
+    ["Revealed type [-1]: Revealed type for `x` is `typing.Any`."];
+  ()
 
 
 let test_check_explicit_method_call context =
@@ -1993,6 +2398,7 @@ let test_check_in context =
     ["Revealed type [-1]: Revealed type for `1 in test.WeirdContains()` is `int`."];
   assert_type_errors
     {|
+      import typing
       class WeirdIterator:
         def __eq__(self, other: object) -> str:
           ...
@@ -2003,17 +2409,19 @@ let test_check_in context =
     ["Revealed type [-1]: Revealed type for `1 in test.WeirdIterator()` is `str`."];
   assert_type_errors
     {|
+      import typing
       class WeirdEqual:
         def __eq__(self, other: object) -> typing.List[int]:
           ...
       class WeirdGetItem:
         def __getitem__(self, x: int) -> WeirdEqual:
           ...
-      reveal_type(1 in test.WeirdGetItem())
+      reveal_type(1 in WeirdGetItem())
     |}
     ["Revealed type [-1]: Revealed type for `1 in test.WeirdGetItem()` is `typing.List[int]`."];
   assert_type_errors
     {|
+      import typing
       class Equal:
         def __eq__(self, other: object) -> str:
           ...
@@ -2040,6 +2448,7 @@ let test_check_in context =
     ["Revealed type [-1]: Revealed type for `1 in test.Multiple()` is `int`."];
   assert_type_errors
     {|
+      import typing
       class Equal:
         def __eq__(self, other: object) -> typing.List[int]:
           ...
@@ -2057,6 +2466,7 @@ let test_check_in context =
   (* Unions of classes and `in`. *)
   assert_type_errors
     {|
+      import typing
       class UsesContainsStr:
         def __contains__(self, o: object) -> str:
           ...
@@ -2071,7 +2481,7 @@ let test_check_in context =
     ["Revealed type [-1]: Revealed type for `5 in a` is `typing.Union[int, str]`."];
   assert_type_errors
     {|
-      from typing import TypeVar, Generic
+      from typing import TypeVar, Generic, Union
       T = TypeVar("T")
       class Equal(Generic[T]):
         def __eq__(self, other: object) -> T:
@@ -2088,10 +2498,10 @@ let test_check_in context =
         def __next__(self) -> Equal[int]:
           ...
 
-      def foo(a: typing.Union[WeirdIterator, UsesContainsStr]) -> None:
+      def foo(a: Union[WeirdIterator, UsesContainsStr]) -> None:
         reveal_type(5 in a)
     |}
-    ["Revealed type [-1]: Revealed type for `5 in a` is `typing.Union[int, str]`."]
+    ["Revealed type [-1]: Revealed type for `5 in a` is `Union[int, str]`."]
 
 
 let test_check_enter context =
@@ -2166,6 +2576,7 @@ let test_check_private_member_access context =
   assert_type_errors
     ~context
     {|
+      import typing
       class Base:
         def __init__(self) -> None:
           self.__private = True
@@ -2224,6 +2635,7 @@ let test_check_private_member_access context =
   assert_type_errors
     ~context
     {|
+      import typing
       T = typing.TypeVar('T')
       class GenericBase(typing.Generic[T]):
         def __init__(self, x: T) -> None:

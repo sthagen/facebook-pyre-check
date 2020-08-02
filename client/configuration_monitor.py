@@ -3,7 +3,6 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import argparse
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -71,7 +70,6 @@ class ConfigurationMonitor(Subscriber):
                     "expression": [
                         "allof",
                         ["type", "f"],
-                        ["not", "empty"],
                         [
                             "anyof",
                             ["suffix", "pyre_configuration.local"],

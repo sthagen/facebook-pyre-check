@@ -30,10 +30,7 @@ let test_check_isinstance context =
     {|
       isinstance(1, NonexistentClass)
     |}
-    [
-      "Undefined name [18]: Global name `NonexistentClass` is not defined, or there is at least \
-       one control flow path that doesn't define `NonexistentClass`.";
-    ];
+    ["Unbound name [10]: Name `NonexistentClass` is used but not defined in the current scope."];
   assert_type_errors
     {|
       def foo(x: int) -> None:
@@ -45,6 +42,14 @@ let test_check_isinstance context =
       "Revealed type [-1]: Revealed type for `x` is `str`.";
       "Revealed type [-1]: Revealed type for `x` is `typing.Union[int, str]`.";
     ];
+  assert_type_errors
+    {|
+      def foo(x: int) -> None:
+        if not isinstance(x, int):
+          reveal_type(x)
+        reveal_type(x)
+    |}
+    ["Revealed type [-1]: Revealed type for `x` is `int`."];
   assert_strict_type_errors
     {|
       def foo(x: int) -> None:
@@ -53,13 +58,13 @@ let test_check_isinstance context =
         reveal_type(x)
     |}
     [
-      "Undefined name [18]: Global name `NonexistentClass` is not defined, or there is at least \
-       one control flow path that doesn't define `NonexistentClass`.";
+      "Unbound name [10]: Name `NonexistentClass` is used but not defined in the current scope.";
       "Revealed type [-1]: Revealed type for `x` is `int`.";
       "Revealed type [-1]: Revealed type for `x` is `int`.";
     ];
   assert_type_errors
     {|
+      import typing
       def foo(x: typing.Union[int, typing.List[int]]) -> None:
         if isinstance(x, list):
           reveal_type(x)
@@ -72,6 +77,7 @@ let test_check_isinstance context =
     ];
   assert_type_errors
     {|
+      import typing
       def foo(x: typing.Union[int, typing.List[str], str, typing.List[int]]) -> None:
         if isinstance(x, list):
           reveal_type(x)
@@ -85,6 +91,7 @@ let test_check_isinstance context =
     ];
   assert_type_errors
     {|
+      import typing
       def foo(x: typing.Union[int, typing.Set[str], str, typing.Set[int]]) -> None:
         if isinstance(x, set):
           reveal_type(x)
@@ -98,6 +105,7 @@ let test_check_isinstance context =
     ];
   assert_type_errors
     {|
+      import typing
       class CommonBase(): pass
       class ChildA(CommonBase): pass
       class ChildB(CommonBase): pass
@@ -114,6 +122,7 @@ let test_check_isinstance context =
     ];
   assert_type_errors
     {|
+      import typing
       def foo(x: typing.Union[int, float, bool]) -> None:
         if isinstance(x, str):
           reveal_type(x)
@@ -170,7 +179,18 @@ let test_check_isinstance context =
       "Incompatible parameter type [6]: Expected `typing.Union[typing.Type[typing.Any], \
        typing.Tuple[typing.Type[typing.Any], ...]]` for 2nd positional only parameter to call \
        `isinstance` but got `int`.";
-    ]
+    ];
+  assert_type_errors
+    {|
+      from typing import List, Dict
+      def foo(x: int) -> None:
+        isinstance(x, List)
+        isinstance(x, Dict)
+        Y = Dict
+        isinstance(x, Y)
+    |}
+    [];
+  ()
 
 
 let () = "isinstance" >::: ["check_isinstance" >:: test_check_isinstance] |> Test.run

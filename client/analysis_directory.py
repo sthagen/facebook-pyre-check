@@ -12,7 +12,7 @@ import textwrap
 from itertools import chain
 from pathlib import Path
 from time import time
-from typing import Dict, List, NamedTuple, Optional, Set, Tuple
+from typing import ContextManager, Dict, List, NamedTuple, Optional, Set, Tuple
 
 from . import buck, json_rpc, log
 from .buck import BuckBuilder, find_buck_root
@@ -21,8 +21,10 @@ from .exceptions import EnvironmentException
 from .filesystem import (
     _compute_symbolic_link_mapping,
     _delete_symbolic_link,
+    acquire_lock,
     acquire_lock_if_needed,
     add_symbolic_link,
+    do_nothing,
     find_python_paths,
     is_empty,
     is_parent,
@@ -30,6 +32,7 @@ from .filesystem import (
     translate_path,
     translate_paths,
 )
+from .find_directories import CONFIGURATION_FILE, LOCAL_CONFIGURATION_FILE
 from .socket_connection import SocketConnection, SocketException
 
 
@@ -51,11 +54,20 @@ REBUILD_THRESHOLD_FOR_NEW_OR_DELETED_PATHS: int = 50
 
 DONT_CARE_PROGRESS_VALUE = 1
 
+BUCK_BUILDER_CACHE_PREFIX = ".buck_builder_cache"
+
+
+READER_WRITER_LOCK = "analysis_directory_reader_writer.lock"
+
+
+class NotWithinLocalConfigurationException(Exception):
+    pass
+
 
 def _resolve_filter_paths(
     source_directories: List[str],
     targets: List[str],
-    configuration: "Configuration",
+    configuration: Configuration,
     original_directory: str,
 ) -> Set[str]:
     filter_paths = set()
@@ -67,7 +79,7 @@ def _resolve_filter_paths(
                 [buck.presumed_target_root(target) for target in targets]
             )
     else:
-        local_configuration_root = configuration.local_configuration_root
+        local_configuration_root = configuration.local_root
         if local_configuration_root:
             filter_paths = {local_configuration_root}
     return translate_paths(filter_paths, original_directory)
@@ -90,7 +102,9 @@ class AnalysisDirectory:
     ) -> None:
         self._path = path
         self._filter_paths: Set[str] = filter_paths or set()
-        self._search_path: List[str] = search_path or []
+        self._search_path_directories: List[str] = self._get_search_path_directories(
+            search_path or []
+        )
 
     def get_root(self) -> str:
         return self._path
@@ -133,19 +147,30 @@ class AnalysisDirectory:
     def cleanup(self) -> None:
         pass
 
+    @staticmethod
+    def _get_search_path_directories(search_path: List[str]) -> List[str]:
+        return [os.path.abspath(os.path.join(*path.split("$"))) for path in search_path]
+
     @property
     @functools.lru_cache(1)
     def _tracked_directories(self) -> List[str]:
-        tracked_directories = [
-            self.get_root(),
-            *[os.path.join(*path.split("$")) for path in self._search_path],
-        ]
-        return [os.path.abspath(path) for path in tracked_directories]
+        return [os.path.abspath(self.get_root()), *self._search_path_directories]
 
     def _is_tracked(self, path: str) -> bool:
         return any(
             is_parent(directory, path) for directory in self._tracked_directories
         )
+
+    def _is_in_search_path(self, path: str) -> bool:
+        return any(
+            is_parent(directory, path) for directory in self._search_path_directories
+        )
+
+    def acquire_shared_reader_lock(self) -> ContextManager[Optional[int]]:
+        return do_nothing()
+
+    def acquire_writer_lock(self) -> ContextManager[Optional[int]]:
+        return do_nothing()
 
 
 class SharedAnalysisDirectory(AnalysisDirectory):
@@ -153,6 +178,7 @@ class SharedAnalysisDirectory(AnalysisDirectory):
         self,
         source_directories: List[str],
         targets: List[str],
+        project_root: str,
         original_directory: Optional[str] = None,
         filter_paths: Optional[Set[str]] = None,
         local_configuration_root: Optional[str] = None,
@@ -165,10 +191,13 @@ class SharedAnalysisDirectory(AnalysisDirectory):
         self._source_directories: Set[str] = set(source_directories)
         self._targets: Set[str] = set(targets)
         self._original_directory = original_directory
+        self._project_root = project_root
         self._filter_paths: Set[str] = filter_paths or set()
         self._local_configuration_root = local_configuration_root
         self._extensions: Set[str] = set(extensions or []) | {"py", "pyi"}
-        self._search_path: List[str] = search_path or []
+        self._search_path_directories: List[str] = self._get_search_path_directories(
+            search_path or []
+        )
         self._isolate = isolate
         self._buck_builder: BuckBuilder = buck_builder or buck.SimpleBuckBuilder()
 
@@ -187,7 +216,7 @@ class SharedAnalysisDirectory(AnalysisDirectory):
                 .strip()
             )
         except Exception:
-            return os.path.join(os.getcwd(), ".pyre")
+            return os.path.join(self._project_root, ".pyre")
 
     @functools.lru_cache(1)
     def get_root(self) -> str:
@@ -198,16 +227,22 @@ class SharedAnalysisDirectory(AnalysisDirectory):
         )
 
     def get_filter_roots(self) -> Set[str]:
-        current_project_directories = self._filter_paths or {os.getcwd()}
-        buck_root = find_buck_root(os.getcwd())
-        if buck_root is None:
-            raise EnvironmentException(
-                "Cannot find buck root when constructing filter directories"
-            )
-        return {
-            translate_path(buck_root, filter_root)
-            for filter_root in current_project_directories
-        }
+        current_project_directories = self._filter_paths or {self._project_root}
+        if len(self._targets) == 0:
+            return {
+                translate_path(os.getcwd(), filter_root)
+                for filter_root in current_project_directories
+            }
+        else:
+            buck_root = find_buck_root(self._project_root)
+            if buck_root is None:
+                raise EnvironmentException(
+                    "Cannot find buck root when constructing filter directories"
+                )
+            return {
+                translate_path(buck_root, filter_root)
+                for filter_root in current_project_directories
+            }
 
     # Exposed for testing.
     def _resolve_source_directories(self) -> None:
@@ -231,7 +266,7 @@ class SharedAnalysisDirectory(AnalysisDirectory):
             If it is in directory foo/, you can also run `pyre -l foo`.)
             See `pyre --help` for more details.
             """
-            raise EnvironmentException(textwrap.dedent(message).strip())
+            raise NotWithinLocalConfigurationException(textwrap.dedent(message).strip())
 
     def prepare(self) -> None:
         start = time()
@@ -395,12 +430,28 @@ class SharedAnalysisDirectory(AnalysisDirectory):
 
         old_symbolic_links = self._symbolic_links
         old_paths = set(self._symbolic_links.keys())
+
+        # We need to inform the server of any files updated in place by the
+        # rebuild, such as .pyi files from thrift.
+        rebuild_start_time = time()
+
         self.rebuild()
         new_paths = set(self._symbolic_links.keys())
 
         self._notify_about_rebuild(is_start_message=False)
 
-        tracked_paths.extend(new_paths - old_paths)
+        newly_created_paths = new_paths - old_paths
+        tracked_paths.extend(newly_created_paths)
+
+        # Using the modified time instead of a Watchman `since` query because
+        # these files will be in the buck builder cache or in /tmp, and Watchman
+        # doesn't track those.
+        updated_paths = [
+            shared_analysis_path
+            for shared_analysis_path, original_path in self._symbolic_links.items()
+            if os.path.getmtime(original_path) > rebuild_start_time
+        ]
+        tracked_paths.extend(updated_paths)
 
         # Translate the paths here because we need the old symbolic links
         # mapping to get their old scratch path.
@@ -466,8 +517,9 @@ class SharedAnalysisDirectory(AnalysisDirectory):
             path
             for path in paths
             if path not in self._symbolic_links
+            and not self._is_in_search_path(path)
             and os.path.isfile(path)
-            and is_parent(os.getcwd(), path)
+            and is_parent(self._project_root, path)
         ]
         tracked_paths = [
             path
@@ -478,7 +530,7 @@ class SharedAnalysisDirectory(AnalysisDirectory):
         ]
         return new_paths, deleted_paths, tracked_paths
 
-    def process_updated_files(self, paths: List[str]) -> UpdatedPaths:
+    def _process_updated_files(self, paths: List[str]) -> UpdatedPaths:
         """Update the analysis directory for any new or deleted files.
         Rebuild the directory using buck if needed.
         Return the updated and deleted paths."""
@@ -519,12 +571,29 @@ class SharedAnalysisDirectory(AnalysisDirectory):
             updated_paths=tracked_scratch_paths, deleted_paths=deleted_scratch_paths
         )
 
+    def process_updated_files(self, paths: List[str]) -> UpdatedPaths:
+        with self.acquire_writer_lock():
+            return self._process_updated_files(paths)
+
+    def _directories_to_clean_up(self) -> List[str]:
+        if not self._isolate:
+            return []
+
+        if not isinstance(self._buck_builder, buck.FastBuckBuilder):
+            return [self.get_root()]
+
+        project_name = _get_project_name(self._isolate, self._local_configuration_root)
+        buck_builder_cache_path = os.path.join(
+            self.get_scratch_directory(), f"{BUCK_BUILDER_CACHE_PREFIX}_{project_name}"
+        )
+        return [self.get_root(), buck_builder_cache_path]
+
     def cleanup(self) -> None:
         try:
-            if self._isolate:
-                shutil.rmtree(self.get_root())
-        except Exception:
-            pass
+            for directory in self._directories_to_clean_up():
+                shutil.rmtree(directory)
+        except Exception as exception:
+            LOG.debug(f"Could not clean up analysis directory: {exception}")
 
     def _clear(self) -> None:
         root = self.get_root()
@@ -569,6 +638,19 @@ class SharedAnalysisDirectory(AnalysisDirectory):
             except FileNotFoundError:
                 continue
 
+    def _reader_writer_lock_path(self) -> str:
+        return os.path.join(self.get_root(), READER_WRITER_LOCK)
+
+    def acquire_shared_reader_lock(self) -> ContextManager[Optional[int]]:
+        return acquire_lock(
+            self._reader_writer_lock_path(), blocking=True, is_shared_reader=True
+        )
+
+    def acquire_writer_lock(self) -> ContextManager[Optional[int]]:
+        return acquire_lock(
+            self._reader_writer_lock_path(), blocking=True, is_shared_reader=False
+        )
+
 
 def _get_project_name(
     isolate_per_process: bool, relative_local_root: Optional[str]
@@ -585,14 +667,22 @@ def resolve_analysis_directory(
     targets: List[str],
     configuration: Configuration,
     original_directory: str,
-    current_directory: str,
+    project_root: str,
     filter_directory: Optional[str],
-    use_buck_builder: bool,
+    use_buck_builder: Optional[bool],
     debug: bool,
     buck_mode: Optional[str],
     isolate: bool = False,
     relative_local_root: Optional[str] = None,
 ) -> AnalysisDirectory:
+    # Generate filter directories based on command-line input.
+    if filter_directory:
+        filter_paths = {filter_directory}
+    else:
+        filter_paths = _resolve_filter_paths(
+            source_directories, targets, configuration, original_directory
+        )
+
     # Only read from the configuration if no explicit targets are passed in.
     if not source_directories and not targets:
         source_directories = configuration.source_directories
@@ -601,10 +691,10 @@ def resolve_analysis_directory(
         source_directories = source_directories or []
         targets = targets or []
         if targets:
-            configuration_name = ".pyre_configuration.local"
+            configuration_name = LOCAL_CONFIGURATION_FILE
             command = "pyre init --local"
         else:
-            configuration_name = ".pyre_configuration"
+            configuration_name = CONFIGURATION_FILE
             command = "pyre init"
         LOG.warning(
             "Setting up a `%s` with `%s` may reduce overhead.",
@@ -612,20 +702,17 @@ def resolve_analysis_directory(
             command,
         )
 
-    if filter_directory:
-        filter_paths = {filter_directory}
-    else:
-        filter_paths = _resolve_filter_paths(
-            source_directories, targets, configuration, original_directory
-        )
-
-    local_configuration_root = configuration.local_configuration_root
+    local_configuration_root = configuration.local_root
     if local_configuration_root:
         local_configuration_root = os.path.relpath(
-            local_configuration_root, current_directory
+            local_configuration_root, project_root
         )
 
-    use_buck_builder = use_buck_builder or configuration.use_buck_builder
+    use_buck_builder: bool = (
+        use_buck_builder
+        if use_buck_builder is not None
+        else configuration.use_buck_builder
+    )
 
     if len(source_directories) == 1 and len(targets) == 0:
         analysis_directory = AnalysisDirectory(
@@ -635,10 +722,10 @@ def resolve_analysis_directory(
         )
     else:
         if use_buck_builder:
-            buck_root = buck.find_buck_root(os.getcwd())
+            buck_root = find_buck_root(project_root)
             if not buck_root:
                 raise EnvironmentException(
-                    f"No Buck configuration at `{current_directory}` or any of its ancestors."
+                    f"No Buck configuration at `{project_root}` or any of its ancestors."
                 )
             project_name = _get_project_name(
                 isolate_per_process=isolate, relative_local_root=relative_local_root
@@ -658,6 +745,7 @@ def resolve_analysis_directory(
             targets=targets,
             buck_builder=buck_builder,
             original_directory=original_directory,
+            project_root=project_root,
             filter_paths=filter_paths,
             local_configuration_root=local_configuration_root,
             extensions=configuration.extensions,

@@ -25,7 +25,7 @@ let environment ?source context =
 
 let resolution ?source context =
   let environment = environment ?source context in
-  GlobalResolution.create environment
+  AnnotatedGlobalEnvironment.read_only environment |> GlobalResolution.create
 
 
 let concrete_connect ?parameters =
@@ -41,13 +41,15 @@ let make_attributes ~class_name =
       ~uninstantiated_annotation:(Some annotation)
       ~visibility:ReadWrite
       ~abstract:false
-      ~async:false
+      ~async_property:false
       ~class_variable:false
       ~defined:true
       ~initialized:OnClass
       ~parent:class_name
       ~property:false
       ~name
+      ~undecorated_signature:None
+      ~problem:None
   in
   List.map ~f:parse_attribute
 
@@ -78,7 +80,6 @@ let attribute_from_attributes attributes =
 
 
 let less_or_equal
-    ?(constructor = fun _ ~protocol_assumptions:_ -> None)
     ?(attributes = fun _ ~assumptions:_ -> None)
     ?(is_protocol = fun _ ~protocol_assumptions:_ -> false)
     handler
@@ -87,7 +88,6 @@ let less_or_equal
   always_less_or_equal
     {
       class_hierarchy;
-      constructor;
       all_attributes = attributes;
       attribute = attribute_from_attributes attributes;
       is_protocol;
@@ -95,18 +95,18 @@ let less_or_equal
         {
           protocol_assumptions = ProtocolAssumptions.empty;
           callable_assumptions = CallableAssumptions.empty;
+          decorator_assumptions = DecoratorAssumptions.empty;
         };
       get_typed_dictionary;
       metaclass = (fun _ ~assumptions:_ -> Some (Type.Primitive "type"));
     }
 
 
-let is_compatible_with ?(constructor = fun _ ~protocol_assumptions:_ -> None) handler =
+let is_compatible_with handler =
   let class_hierarchy = hierarchy handler in
   is_compatible_with
     {
       class_hierarchy;
-      constructor;
       all_attributes = (fun _ ~assumptions:_ -> None);
       attribute = (fun _ ~assumptions:_ ~name:_ -> None);
       is_protocol = (fun _ ~protocol_assumptions:_ -> false);
@@ -114,22 +114,18 @@ let is_compatible_with ?(constructor = fun _ ~protocol_assumptions:_ -> None) ha
         {
           protocol_assumptions = ProtocolAssumptions.empty;
           callable_assumptions = CallableAssumptions.empty;
+          decorator_assumptions = DecoratorAssumptions.empty;
         };
       get_typed_dictionary;
       metaclass = (fun _ ~assumptions:_ -> Some (Type.Primitive "type"));
     }
 
 
-let join
-    ?(constructor = fun _ ~protocol_assumptions:_ -> None)
-    ?(attributes = fun _ ~assumptions:_ -> None)
-    handler
-  =
+let join ?(attributes = fun _ ~assumptions:_ -> None) handler =
   let class_hierarchy = hierarchy handler in
   join
     {
       class_hierarchy;
-      constructor;
       all_attributes = attributes;
       attribute = attribute_from_attributes attributes;
       is_protocol = (fun _ ~protocol_assumptions:_ -> false);
@@ -137,18 +133,18 @@ let join
         {
           protocol_assumptions = ProtocolAssumptions.empty;
           callable_assumptions = CallableAssumptions.empty;
+          decorator_assumptions = DecoratorAssumptions.empty;
         };
       get_typed_dictionary;
       metaclass = (fun _ ~assumptions:_ -> Some (Type.Primitive "type"));
     }
 
 
-let meet ?(constructor = fun _ ~protocol_assumptions:_ -> None) handler =
+let meet handler =
   let class_hierarchy = hierarchy handler in
   meet
     {
       class_hierarchy;
-      constructor;
       all_attributes = (fun _ ~assumptions:_ -> None);
       attribute = (fun _ ~assumptions:_ ~name:_ -> None);
       is_protocol = (fun _ ~protocol_assumptions:_ -> false);
@@ -156,6 +152,7 @@ let meet ?(constructor = fun _ ~protocol_assumptions:_ -> None) handler =
         {
           protocol_assumptions = ProtocolAssumptions.empty;
           callable_assumptions = CallableAssumptions.empty;
+          decorator_assumptions = DecoratorAssumptions.empty;
         };
       get_typed_dictionary;
       metaclass = (fun _ ~assumptions:_ -> Some (Type.Primitive "type"));
@@ -641,12 +638,6 @@ let test_less_or_equal context =
        ~left:(Type.optional Type.string)
        ~right:(Type.Union [Type.integer; Type.optional Type.string]));
 
-  (* Undeclared. *)
-  assert_false (less_or_equal default ~left:Type.undeclared ~right:Type.Top);
-  assert_false (less_or_equal default ~left:Type.Top ~right:Type.undeclared);
-  assert_false (less_or_equal default ~left:Type.undeclared ~right:Type.Bottom);
-  assert_true (less_or_equal default ~left:Type.Bottom ~right:Type.undeclared);
-
   (* Tuples. *)
   assert_true
     (less_or_equal
@@ -1007,7 +998,7 @@ let test_less_or_equal context =
        order
        ~left:"typing.Callable('bar')[[str], int]"
        ~right:"typing.Callable('foo')[[int], int]");
-  assert_true
+  assert_false
     (less_or_equal
        order
        ~left:"typing.Callable('foo')[[int], int]"
@@ -1017,6 +1008,28 @@ let test_less_or_equal context =
        order
        ~left:"typing.Callable('foo')[[str], int]"
        ~right:"typing.Callable('foo')[[int], int]");
+
+  (* Callables with keyword-only parameters. *)
+  assert_true
+    (less_or_equal
+       order
+       ~left:"typing.Callable[[Named(foo, bool, default)], int]"
+       ~right:"typing.Callable[[KeywordOnly(foo, bool, default)], int]");
+  assert_true
+    (less_or_equal
+       order
+       ~left:"typing.Callable[[Named(foo, bool, default)], int]"
+       ~right:"typing.Callable[[KeywordOnly(foo, bool)], int]");
+  assert_true
+    (less_or_equal
+       order
+       ~left:"typing.Callable[[Named(foo, bool)], int]"
+       ~right:"typing.Callable[[KeywordOnly(foo, bool)], int]");
+  assert_false
+    (less_or_equal
+       order
+       ~left:"typing.Callable[[Named(foo, bool)], int]"
+       ~right:"typing.Callable[[KeywordOnly(foo, bool, default)], int]");
 
   (* Undefined callables. *)
   assert_true
@@ -1966,18 +1979,6 @@ let test_join context =
     "typing.Union[float, int]"
     "typing.Optional[typing.Union[float, int]]";
 
-  (* Undeclared. *)
-  assert_join "typing.Undeclared" "int" "typing.Union[typing.Undeclared, int]";
-  assert_join "int" "typing.Undeclared" "typing.Union[typing.Undeclared, int]";
-  let assert_join_types ?(order = default) left right expected =
-    assert_type_equal expected (join order left right)
-  in
-  assert_join_types Type.undeclared Type.Top (Type.Union [Type.undeclared; Type.Top]);
-  assert_join_types Type.Top Type.undeclared (Type.Union [Type.undeclared; Type.Top]);
-  assert_join_types Type.undeclared Type.Bottom Type.undeclared;
-  assert_join_types Type.Bottom Type.undeclared Type.undeclared;
-  assert_join_types ~order !!"0" Type.undeclared (Type.Union [!!"0"; Type.undeclared]);
-  assert_join_types ~order Type.undeclared !!"0" (Type.Union [!!"0"; Type.undeclared]);
   assert_join
     "typing.Tuple[int, int]"
     "typing.Tuple[int, int, str]"
@@ -2063,7 +2064,7 @@ let test_join context =
   assert_join
     "typing.Callable('derp')[..., int]"
     "typing.Callable('other')[..., int]"
-    "typing.Callable[..., int]";
+    "typing.Union[typing.Callable(derp)[..., int], typing.Callable(other)[..., int]]";
 
   (* Do not join with overloads. *)
   assert_join
@@ -2457,10 +2458,6 @@ let test_meet _ =
        Type.string
        (Type.variable ~constraints:(Type.Variable.Explicit [Type.float; Type.string]) "T"))
     Type.Bottom;
-
-  (* Undeclared. *)
-  assert_type_equal (meet default Type.undeclared Type.Bottom) Type.Bottom;
-  assert_type_equal (meet default Type.Bottom Type.undeclared) Type.Bottom;
 
   (* Variance. *)
   assert_type_equal

@@ -88,15 +88,12 @@ let should_type_check
   && not (List.exists ignore_all_errors ~f:(directory_contains ~path))
 
 
-let create
-    ~configuration:({ Configuration.Analysis.local_root; search_path; excludes; _ } as configuration)
-    path
-  =
+let create ~configuration:({ Configuration.Analysis.excludes; _ } as configuration) path =
   let absolute_path = Path.absolute path in
   match List.exists excludes ~f:(fun regexp -> Str.string_match regexp absolute_path 0) with
   | true -> None
   | false ->
-      let search_paths = List.append search_path [SearchPath.Root local_root] in
+      let search_paths = Configuration.Analysis.search_path configuration in
       let is_external = not (should_type_check ~configuration path) in
       create_from_search_path ~is_external ~search_paths path
 
@@ -174,3 +171,35 @@ let same_module_compare
 
 
 let is_stub { is_stub; _ } = is_stub
+
+let expand_relative_import ~from:{ Node.value = from; location } { is_init; qualifier; _ } =
+  match Reference.show from with
+  | "builtins" -> Node.create ~location Reference.empty
+  | serialized ->
+      (* Expand relative imports according to PEP 328 *)
+      let dots = String.take_while ~f:(fun dot -> Char.equal dot '.') serialized in
+      let postfix =
+        match String.drop_prefix serialized (String.length dots) with
+        (* Special case for single `.`, `..`, etc. in from clause. *)
+        | "" -> Reference.empty
+        | nonempty -> Reference.create nonempty
+      in
+      let prefix =
+        if not (String.is_empty dots) then
+          let initializer_module_offset =
+            (* `.` corresponds to the directory containing the module. For non-init modules, the
+               qualifier matches the path, so we drop exactly the number of dots. However, for
+               __init__ modules, the directory containing it represented by the qualifier. *)
+            if is_init then
+              1
+            else
+              0
+          in
+          List.rev (Reference.as_list qualifier)
+          |> (fun reversed -> List.drop reversed (String.length dots - initializer_module_offset))
+          |> List.rev
+          |> Reference.create_from_list
+        else
+          Reference.empty
+      in
+      Node.create ~location (Reference.combine prefix postfix)

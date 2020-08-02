@@ -8,9 +8,16 @@
 import ast
 import textwrap
 import unittest
+from typing import Union
 from unittest.mock import patch
 
 from .. import model
+from ..generator_specifications import (
+    AllParametersAnnotation,
+    AnnotationSpecification,
+    ParameterAnnotation,
+    WhitelistSpecification,
+)
 
 
 def test_function(argument: str, *variable: str, **keyword: str) -> None:
@@ -23,7 +30,10 @@ class ModelTest(unittest.TestCase):
         self.assertEqual(
             str(
                 model.CallableModel(
-                    callable_object=test_function, arg="TaintSource[tainted]"
+                    callable_object=test_function,
+                    parameter_annotation=AllParametersAnnotation(
+                        arg="TaintSource[tainted]"
+                    ),
                 )
             ),
             f"def {name}(argument: TaintSource[tainted], *variable, **keyword): ...",
@@ -31,7 +41,10 @@ class ModelTest(unittest.TestCase):
         self.assertEqual(
             str(
                 model.CallableModel(
-                    callable_object=test_function, vararg="TaintSource[tainted]"
+                    callable_object=test_function,
+                    parameter_annotation=AllParametersAnnotation(
+                        vararg="TaintSource[tainted]"
+                    ),
                 )
             ),
             f"def {name}(argument, *variable: TaintSource[tainted], **keyword): ...",
@@ -39,7 +52,10 @@ class ModelTest(unittest.TestCase):
         self.assertEqual(
             str(
                 model.CallableModel(
-                    callable_object=test_function, kwarg="TaintSource[tainted]"
+                    callable_object=test_function,
+                    parameter_annotation=AllParametersAnnotation(
+                        kwarg="TaintSource[tainted]"
+                    ),
                 )
             ),
             f"def {name}(argument, *variable, **keyword: TaintSource[tainted]): ...",
@@ -51,6 +67,26 @@ class ModelTest(unittest.TestCase):
                 )
             ),
             f"def {name}(argument, *variable, **keyword) -> TaintSink[returned]: ...",
+        )
+
+        # We handle the combined AnnotationSpecification
+        annotations = AnnotationSpecification(
+            parameter_annotation=AllParametersAnnotation(
+                arg="TaintSource[tainted]",
+                vararg="TaintSource[tainted]",
+                kwarg="TaintSource[tainted]",
+            ),
+            returns="TaintSink[returned]",
+        )
+        self.assertEqual(
+            str(
+                model.CallableModel(
+                    callable_object=test_function, annotations=annotations
+                )
+            ),
+            f"def {name}(argument: TaintSource[tainted],"
+            + " *variable: TaintSource[tainted],"
+            + " **keyword: TaintSource[tainted]) -> TaintSink[returned]: ...",
         )
 
         # We don't generate models for local functions.
@@ -70,7 +106,9 @@ class ModelTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             model.CallableModel(callable_object=CallMe)
 
-    def assert_modeled(self, source: str, expected: str, **kwargs: str) -> None:
+    def assert_modeled(
+        self, source: str, expected: str, **kwargs: Union[str, ParameterAnnotation]
+    ) -> None:
         parsed_function = ast.parse(textwrap.dedent(source)).body[0]
 
         parsed_function: model.FunctionDefinition
@@ -80,6 +118,24 @@ class ModelTest(unittest.TestCase):
             # 2nd positional only parameter to call
             # `model.FunctionDefinitionModel.__init__` but got `str`.
             str(model.FunctionDefinitionModel(definition=parsed_function, **kwargs)),
+            expected,
+        )
+
+        # We handle the combined AnnotationSpecification
+        annotations = AnnotationSpecification(
+            # pyre-ignore[6]: Too dynamic.
+            parameter_annotation=kwargs.get("parameter_annotation"),
+            returns=kwargs.get("returns"),
+        )
+        self.assertEqual(
+            str(
+                model.FunctionDefinitionModel(
+                    definition=parsed_function,
+                    annotations=annotations,
+                    # pyre-ignore[6]: Too dynamic.
+                    qualifier=kwargs.get("qualifier"),
+                )
+            ),
             expected,
         )
 
@@ -93,19 +149,19 @@ class ModelTest(unittest.TestCase):
         self.assert_modeled(
             all_args_source,
             "def test_fn(arg1: Arg, arg2: Arg, *v, **kw): ...",
-            arg="Arg",
+            parameter_annotation=AllParametersAnnotation(arg="Arg"),
         )
 
         self.assert_modeled(
             all_args_source,
             "def test_fn(arg1, arg2, *v: Vararg, **kw): ...",
-            vararg="Vararg",
+            parameter_annotation=AllParametersAnnotation(vararg="Vararg"),
         )
 
         self.assert_modeled(
             all_args_source,
             "def test_fn(arg1, arg2, *v, **kw: Kwarg): ...",
-            kwarg="Kwarg",
+            parameter_annotation=AllParametersAnnotation(kwarg="Kwarg"),
         )
 
         self.assert_modeled(
@@ -125,9 +181,9 @@ class ModelTest(unittest.TestCase):
             all_args_source,
             "def qualifier.test_fn(arg1: Arg, arg2: Arg, *v: Vararg, "
             "**kw: Kwarg) -> Return: ...",
-            arg="Arg",
-            vararg="Vararg",
-            kwarg="Kwarg",
+            parameter_annotation=AllParametersAnnotation(
+                arg="Arg", vararg="Vararg", kwarg="Kwarg"
+            ),
             returns="Return",
             qualifier="qualifier",
         )
@@ -139,7 +195,7 @@ class ModelTest(unittest.TestCase):
                 pass
             """,
             "def test_fn(arg1: Arg, arg2: Arg): ...",
-            arg="Arg",
+            parameter_annotation=AllParametersAnnotation(arg="Arg"),
         )
 
         self.assert_modeled(
@@ -148,7 +204,7 @@ class ModelTest(unittest.TestCase):
                 pass
             """,
             "def test_fn(*v: Vararg): ...",
-            vararg="Vararg",
+            parameter_annotation=AllParametersAnnotation(vararg="Vararg"),
         )
 
         self.assert_modeled(
@@ -157,7 +213,7 @@ class ModelTest(unittest.TestCase):
                 pass
             """,
             "def test_fn(**kw: Kwarg): ...",
-            kwarg="Kwarg",
+            parameter_annotation=AllParametersAnnotation(kwarg="Kwarg"),
         )
 
         # Check that we handle async functions
@@ -168,9 +224,9 @@ class ModelTest(unittest.TestCase):
             """,
             "def qualifier.test_fn(arg1: Arg, arg2: Arg, *v: Vararg, "
             "**kw: Kwarg) -> Return: ...",
-            arg="Arg",
-            vararg="Vararg",
-            kwarg="Kwarg",
+            parameter_annotation=AllParametersAnnotation(
+                arg="Arg", vararg="Vararg", kwarg="Kwarg"
+            ),
             returns="Return",
             qualifier="qualifier",
         )
@@ -182,9 +238,9 @@ class ModelTest(unittest.TestCase):
                 pass
             """,
             "def qualifier.test_fn() -> Return: ...",
-            arg="Arg",
-            vararg="Vararg",
-            kwarg="Kwarg",
+            parameter_annotation=AllParametersAnnotation(
+                arg="Arg", vararg="Vararg", kwarg="Kwarg"
+            ),
             returns="Return",
             qualifier="qualifier",
         )
@@ -194,9 +250,9 @@ class ModelTest(unittest.TestCase):
                 pass
             """,
             "def qualifier.test_fn(x: Arg, *, keyword_only: Arg) -> Return: ...",
-            arg="Arg",
-            vararg="Vararg",
-            kwarg="Kwarg",
+            parameter_annotation=AllParametersAnnotation(
+                arg="Arg", vararg="Vararg", kwarg="Kwarg"
+            ),
             returns="Return",
             qualifier="qualifier",
         )
@@ -224,6 +280,8 @@ class ModelTest(unittest.TestCase):
                 annotation="TaintSink[Test]", target="do-not-generate"
             )
 
+    # pyre-fixme[56]: Argument `set()` to decorator factory
+    #  `unittest.mock.patch.object` could not be resolved in a global scope.
     @patch.object(model.RawCallableModel, "__abstractmethods__", set())
     def test_raw_callable_model(self) -> None:
 
@@ -236,13 +294,19 @@ class ModelTest(unittest.TestCase):
                 model.RawCallableModel,
                 "_generate_parameters",
                 return_value=[
-                    model.Parameter("self", None, model.ArgumentKind.ARG),
-                    model.Parameter("a", None, model.ArgumentKind.ARG),
+                    model.Parameter("self", None, model.Parameter.Kind.ARG),
+                    model.Parameter("a", None, model.Parameter.Kind.ARG),
                 ],
             ):
                 self.assertEqual(
-                    # pyre-ignore[45]: Cannot instantiate abstract class
-                    str(model.RawCallableModel(arg="TaintSource[UserControlled]")),
+                    str(
+                        # pyre-ignore[45]: Cannot instantiate abstract class
+                        model.RawCallableModel(
+                            parameter_annotation=AllParametersAnnotation(
+                                arg="TaintSource[UserControlled]"
+                            )
+                        )
+                    ),
                     "def qualified.C.name(self: TaintSource[UserControlled], "
                     "a: TaintSource[UserControlled]): ...",
                 )
@@ -251,13 +315,19 @@ class ModelTest(unittest.TestCase):
                 model.RawCallableModel,
                 "_generate_parameters",
                 return_value=[
-                    model.Parameter("self", None, model.ArgumentKind.ARG),
-                    model.Parameter("*args", None, model.ArgumentKind.VARARG),
+                    model.Parameter("self", None, model.Parameter.Kind.ARG),
+                    model.Parameter("*args", None, model.Parameter.Kind.VARARG),
                 ],
             ):
                 self.assertEqual(
-                    # pyre-ignore[45]: Cannot instantiate abstract class
-                    str(model.RawCallableModel(vararg="TaintSource[Var]")),
+                    str(
+                        # pyre-ignore[45]: Cannot instantiate abstract class
+                        model.RawCallableModel(
+                            parameter_annotation=AllParametersAnnotation(
+                                vararg="TaintSource[Var]"
+                            )
+                        )
+                    ),
                     "def qualified.C.name(self, *args: TaintSource[Var]): ...",
                 )
 
@@ -265,13 +335,19 @@ class ModelTest(unittest.TestCase):
                 model.RawCallableModel,
                 "_generate_parameters",
                 return_value=[
-                    model.Parameter("self", None, model.ArgumentKind.ARG),
-                    model.Parameter("**kwargs", None, model.ArgumentKind.KWARG),
+                    model.Parameter("self", None, model.Parameter.Kind.ARG),
+                    model.Parameter("**kwargs", None, model.Parameter.Kind.KWARG),
                 ],
             ):
                 self.assertEqual(
-                    # pyre-ignore[45]: Cannot instantiate abstract class
-                    str(model.RawCallableModel(kwarg="TaintSource[UC]")),
+                    str(
+                        # pyre-ignore[45]: Cannot instantiate abstract class
+                        model.RawCallableModel(
+                            parameter_annotation=AllParametersAnnotation(
+                                kwarg="TaintSource[UC]"
+                            )
+                        )
+                    ),
                     "def qualified.C.name(self, **kwargs: TaintSource[UC]): ...",
                 )
 
@@ -279,15 +355,18 @@ class ModelTest(unittest.TestCase):
                 model.RawCallableModel,
                 "_generate_parameters",
                 return_value=[
-                    model.Parameter("a", "int", model.ArgumentKind.ARG),
-                    model.Parameter("b", None, model.ArgumentKind.ARG),
+                    model.Parameter("a", "int", model.Parameter.Kind.ARG),
+                    model.Parameter("b", None, model.Parameter.Kind.ARG),
                 ],
             ):
                 self.assertEqual(
                     str(
                         # pyre-ignore[45]: Cannot instantiate abstract class
                         model.RawCallableModel(
-                            arg="TaintSource[UC]", parameter_type_whitelist=["int"]
+                            parameter_annotation=AllParametersAnnotation(
+                                arg="TaintSource[UC]"
+                            ),
+                            parameter_type_whitelist=["int"],
                         )
                     ),
                     "def qualified.C.name(a, b: TaintSource[UC]): ...",
@@ -297,15 +376,18 @@ class ModelTest(unittest.TestCase):
                 model.RawCallableModel,
                 "_generate_parameters",
                 return_value=[
-                    model.Parameter("a", None, model.ArgumentKind.ARG),
-                    model.Parameter("b", None, model.ArgumentKind.ARG),
+                    model.Parameter("a", None, model.Parameter.Kind.ARG),
+                    model.Parameter("b", None, model.Parameter.Kind.ARG),
                 ],
             ):
                 self.assertEqual(
                     str(
                         # pyre-ignore[45]: Cannot instantiate abstract class
                         model.RawCallableModel(
-                            arg="TaintSource[UC]", parameter_name_whitelist={"b"}
+                            parameter_annotation=AllParametersAnnotation(
+                                arg="TaintSource[UC]"
+                            ),
+                            parameter_name_whitelist={"b"},
                         )
                     ),
                     "def qualified.C.name(a: TaintSource[UC], b): ...",
@@ -315,22 +397,68 @@ class ModelTest(unittest.TestCase):
                 model.RawCallableModel,
                 "_generate_parameters",
                 return_value=[
-                    model.Parameter("a", None, model.ArgumentKind.ARG),
-                    model.Parameter("b", None, model.ArgumentKind.ARG),
+                    model.Parameter("a", "int", model.Parameter.Kind.ARG),
+                    model.Parameter("b", None, model.Parameter.Kind.ARG),
+                ],
+            ):
+                self.assertEqual(
+                    str(
+                        # pyre-ignore[45]: Cannot instantiate abstract class
+                        model.RawCallableModel(
+                            parameter_annotation=AllParametersAnnotation(
+                                arg="TaintSource[UC]"
+                            ),
+                            whitelist=WhitelistSpecification(parameter_type={"int"}),
+                        )
+                    ),
+                    "def qualified.C.name(a, b: TaintSource[UC]): ...",
+                )
+
+            with patch.object(
+                model.RawCallableModel,
+                "_generate_parameters",
+                return_value=[
+                    model.Parameter("a", None, model.Parameter.Kind.ARG),
+                    model.Parameter("b", None, model.Parameter.Kind.ARG),
+                ],
+            ):
+                self.assertEqual(
+                    str(
+                        # pyre-ignore[45]: Cannot instantiate abstract class
+                        model.RawCallableModel(
+                            parameter_annotation=AllParametersAnnotation(
+                                arg="TaintSource[UC]"
+                            ),
+                            whitelist=WhitelistSpecification(parameter_name={"b"}),
+                        )
+                    ),
+                    "def qualified.C.name(a: TaintSource[UC], b): ...",
+                )
+
+            with patch.object(
+                model.RawCallableModel,
+                "_generate_parameters",
+                return_value=[
+                    model.Parameter("a", None, model.Parameter.Kind.ARG),
+                    model.Parameter("b", None, model.Parameter.Kind.ARG),
                 ],
             ):
                 # pyre-ignore[45]: Cannot instantiate abstract class
                 model_1 = model.RawCallableModel(
-                    arg="TaintSource[A]",
-                    vararg="TaintSource[A]",
-                    kwarg="TaintSource[A]",
+                    parameter_annotation=AllParametersAnnotation(
+                        arg="TaintSource[A]",
+                        vararg="TaintSource[A]",
+                        kwarg="TaintSource[A]",
+                    ),
                     returns="TaintSource[A]",
                 )
                 # pyre-ignore[45]: Cannot instantiate abstract class
                 model_2 = model.RawCallableModel(
-                    arg="TaintSource[B]",
-                    vararg="TaintSource[B]",
-                    kwarg="TaintSource[B]",
+                    parameter_annotation=AllParametersAnnotation(
+                        arg="TaintSource[B]",
+                        vararg="TaintSource[B]",
+                        kwarg="TaintSource[B]",
+                    ),
                     returns="TaintSource[B]",
                 )
                 self.assertEqual(model_1, model_2)
@@ -345,16 +473,19 @@ class ModelTest(unittest.TestCase):
                 model.RawCallableModel,
                 "_generate_parameters",
                 return_value=[
-                    model.Parameter("a", None, model.ArgumentKind.ARG),
-                    model.Parameter("*", None, model.ArgumentKind.ARG),
-                    model.Parameter("keyword_only", None, model.ArgumentKind.ARG),
+                    model.Parameter("a", None, model.Parameter.Kind.ARG),
+                    model.Parameter("*", None, model.Parameter.Kind.ARG),
+                    model.Parameter("keyword_only", None, model.Parameter.Kind.ARG),
                 ],
             ):
                 self.assertEqual(
                     str(
                         # pyre-ignore[45]: Cannot instantiate abstract class
                         model.RawCallableModel(
-                            arg="TaintSource[A]", returns="TaintSource[A]"
+                            parameter_annotation=AllParametersAnnotation(
+                                arg="TaintSource[A]"
+                            ),
+                            returns="TaintSource[A]",
                         )
                     ),
                     "def qualified.C.name(a: TaintSource[A], *, keyword_only: TaintSource[A]) -> TaintSource[A]: ...",

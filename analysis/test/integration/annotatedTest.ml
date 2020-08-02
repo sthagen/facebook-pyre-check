@@ -10,6 +10,8 @@ let test_annotated context =
   assert_type_errors
     ~context
     {|
+      from builtins import expect_int
+      import typing_extensions
       def foo(annotated: typing_extensions.Annotated[int]) -> int:
         expect_int(annotated)
         reveal_type(annotated)
@@ -20,6 +22,8 @@ let test_annotated context =
   assert_type_errors
     ~context
     {|
+      from builtins import expect_int
+      import typing
       def foo(annotated: typing.Annotated[int]) -> int:
         expect_int(annotated)
         reveal_type(annotated)

@@ -21,9 +21,11 @@ let test_check_imports context =
       import typing, durp
     |}
     ["Undefined import [21]: Could not find a module corresponding to import `durp`."];
-  assert_type_errors {|
+  assert_type_errors
+    {|
       from typing import durp
-    |} [];
+    |}
+    ["Undefined import [21]: Could not find a name `durp` defined in module `typing`."];
   assert_type_errors
     {|
       from durp import typing
@@ -37,8 +39,7 @@ let test_check_imports context =
     |}
     [
       "Missing global annotation [5]: Globally accessible variable `a` has no type specified.";
-      "Undefined name [18]: Global name `durp` is not defined, or there is at least one control \
-       flow path that doesn't define `durp`.";
+      "Unbound name [10]: Name `durp` is used but not defined in the current scope.";
     ];
   assert_type_errors
     {|
@@ -95,11 +96,12 @@ let test_check_imports context =
     {|
       from durp.Foo import a
       from durp.b import b
-      from durp.c import c  # This is ok
+      from durp.c import c  # This is NOT ok
     |}
     [
       "Undefined import [21]: Could not find a module corresponding to import `durp.Foo`.";
       "Undefined import [21]: Could not find a module corresponding to import `durp.b`.";
+      "Undefined import [21]: Could not find a module corresponding to import `durp.c`.";
     ];
   assert_type_errors
     ~update_environment_with:
@@ -125,44 +127,8 @@ let test_check_imports context =
     [
       "Undefined import [21]: Could not find a module corresponding to import `durp.Foo`.";
       "Undefined import [21]: Could not find a module corresponding to import `durp.b`.";
+      "Undefined import [21]: Could not find a module corresponding to import `durp.c`.";
     ];
-  assert_type_errors
-    ~update_environment_with:
-      [
-        {
-          handle = "derp.py";
-          source =
-            {|
-                from typing import Any
-                a: Any = ...
-            |};
-        };
-      ]
-    {|
-      import derp
-      import derp.a
-      import derp.a.b
-      import derp.a.b.c
-    |}
-    [];
-  assert_type_errors
-    ~update_environment_with:
-      [
-        {
-          handle = "derp.py";
-          source =
-            {|
-                from typing import Any
-                a: Any = ...
-            |};
-        };
-      ]
-    {|
-      from derp import a
-      from derp.a import b
-      from derp.a.b import c
-    |}
-    [];
   assert_type_errors
     ~update_environment_with:
       [

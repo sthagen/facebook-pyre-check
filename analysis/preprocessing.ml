@@ -10,7 +10,9 @@ open Pyre
 open PyreParser
 open Statement
 
-let expand_relative_imports ({ Source.source_path = { SourcePath.qualifier; _ }; _ } as source) =
+let expand_relative_imports
+    ({ Source.source_path = { SourcePath.qualifier; _ } as source_path; _ } as source)
+  =
   let module Transform = Transform.MakeStatementTransformer (struct
     type t = Reference.t
 
@@ -21,7 +23,7 @@ let expand_relative_imports ({ Source.source_path = { SourcePath.qualifier; _ };
           when (not (String.equal (Reference.show (Node.value from)) "builtins"))
                && not (String.equal (Reference.show (Node.value from)) "future.builtins") ->
             Statement.Import
-              { Import.from = Some (Source.expand_relative_import source ~from); imports }
+              { Import.from = Some (SourcePath.expand_relative_import source_path ~from); imports }
         | _ -> value
       in
       qualifier, [{ Node.location; value }]
@@ -661,7 +663,7 @@ let qualify
           List.map
             decorators
             ~f:
-              (qualify_expression
+              (qualify_decorator
                  ~qualify_strings:false
                  ~scope:{ scope with use_forward_references = true })
         in
@@ -697,9 +699,7 @@ let qualify
             Call.Argument.value = qualify_expression ~qualify_strings:false ~scope value;
           }
         in
-        let decorators =
-          List.map decorators ~f:(qualify_expression ~qualify_strings:false ~scope)
-        in
+        let decorators = List.map decorators ~f:(qualify_decorator ~qualify_strings:false ~scope) in
         let body =
           let qualifier = Reference.combine qualifier name in
           let original_scope =
@@ -726,16 +726,21 @@ let qualify
                   let return_annotation =
                     return_annotation >>| qualify_expression ~scope ~qualify_strings:true
                   in
-                  let qualify_decorator ({ Node.value; _ } as decorator) =
-                    match value with
-                    | Expression.Name
-                        (Name.Identifier ("staticmethod" | "classmethod" | "property"))
-                    | Name (Name.Attribute { attribute = "getter" | "setter" | "deleter"; _ }) ->
+                  let qualify_decorator
+                      ({ Decorator.name = { Node.value = name; _ }; _ } as decorator)
+                    =
+                    match name |> Reference.as_list |> List.rev with
+                    | ["staticmethod"]
+                    | ["classmethod"]
+                    | ["property"]
+                    | "getter" :: _
+                    | "setter" :: _
+                    | "deleter" :: _ ->
                         decorator
                     | _ ->
                         (* TODO (T41755857): Decorator qualification logic should be slightly more
                            involved than this. *)
-                        qualify_expression ~qualify_strings:false ~scope decorator
+                        qualify_decorator ~qualify_strings:false ~scope decorator
                   in
                   let decorators = List.map decorators ~f:qualify_decorator in
                   let signature =
@@ -834,7 +839,7 @@ let qualify
                 (* Add `alias -> from.name`. *)
                 Map.set
                   aliases
-                  ~key:alias
+                  ~key:(Reference.create alias)
                   ~data:(local_alias ~qualifier ~name:(Reference.combine from name))
             | None ->
                 (* Add `name -> from.name`. *)
@@ -849,7 +854,7 @@ let qualify
             match alias with
             | Some { Node.value = alias; _ } ->
                 (* Add `alias -> from.name`. *)
-                Map.set aliases ~key:alias ~data:(local_alias ~qualifier ~name)
+                Map.set aliases ~key:(Reference.create alias) ~data:(local_alias ~qualifier ~name)
             | None -> aliases
           in
           { scope with aliases = List.fold imports ~init:aliases ~f:import }, value
@@ -1026,28 +1031,16 @@ let qualify
             }
       | Call { callee; arguments } ->
           let callee = qualify_expression ~qualify_strings ~scope callee in
-          let qualify_argument { Call.Argument.name; value } =
-            let qualify_strings =
-              if name_is ~name:"typing.TypeVar" callee then
-                true
-              else if name_is ~name:"typing_extensions.Literal.__getitem__" callee then
-                false
-              else
-                qualify_strings
-            in
-            let name =
-              let rename identifier =
-                let parameter_prefix = "$parameter$" in
-                if String.is_prefix identifier ~prefix:parameter_prefix then
-                  identifier
-                else
-                  parameter_prefix ^ identifier
-              in
-              name >>| Node.map ~f:rename
-            in
-            { Call.Argument.name; value = qualify_expression ~qualify_strings ~scope value }
+          let qualify_strings =
+            if name_is ~name:"typing.TypeVar" callee then
+              true
+            else if name_is ~name:"typing_extensions.Literal.__getitem__" callee then
+              false
+            else
+              qualify_strings
           in
-          Call { callee; arguments = List.map ~f:qualify_argument arguments }
+          Call
+            { callee; arguments = List.map ~f:(qualify_argument ~qualify_strings ~scope) arguments }
       | ComparisonOperator { ComparisonOperator.left; operator; right } ->
           ComparisonOperator
             {
@@ -1148,6 +1141,23 @@ let qualify
           value
     in
     { expression with Node.value }
+  and qualify_decorator ~qualify_strings ~scope { Decorator.name; arguments } =
+    {
+      Decorator.name = Node.map name ~f:(qualify_reference ~scope);
+      arguments = arguments >>| List.map ~f:(qualify_argument ~qualify_strings ~scope);
+    }
+  and qualify_argument { Call.Argument.name; value } ~qualify_strings ~scope =
+    let name =
+      let rename identifier =
+        let parameter_prefix = "$parameter$" in
+        if String.is_prefix identifier ~prefix:parameter_prefix then
+          identifier
+        else
+          parameter_prefix ^ identifier
+      in
+      name >>| Node.map ~f:rename
+    in
+    { Call.Argument.name; value = qualify_expression ~qualify_strings ~scope value }
   in
   let scope =
     {
@@ -1421,15 +1431,8 @@ let defines
 
 
     let predicate = function
-      | {
-          Node.location;
-          value = Statement.Class { Class.name = { Node.value = name; _ }; body; _ };
-          _;
-        }
-        when include_toplevels ->
-          Define.create_class_toplevel ~parent:name ~statements:body
-          |> Node.create ~location
-          |> Option.some
+      | { Node.location; value = Statement.Class class_; _ } when include_toplevels ->
+          Class.toplevel_define class_ |> Node.create ~location |> Option.some
       | { Node.location; value = Define define } when Define.is_stub define ->
           if include_stubs then
             Some { Node.location; Node.value = define }
@@ -1499,7 +1502,7 @@ let dequalify_map ({ Source.source_path = { SourcePath.qualifier; _ }; _ } as so
             match alias with
             | Some { Node.value = alias; _ } ->
                 (* Add `name -> alias`. *)
-                Map.set map ~key:name ~data:alias
+                Map.set map ~key:name ~data:(Reference.create alias)
             | None -> map
           in
           List.fold_left imports ~f:add_import ~init:map, [statement]
@@ -1508,7 +1511,7 @@ let dequalify_map ({ Source.source_path = { SourcePath.qualifier; _ }; _ } as so
             match alias with
             | Some { Node.value = alias; _ } ->
                 (* Add `from.name -> alias`. *)
-                Map.set map ~key:(Reference.combine from name) ~data:alias
+                Map.set map ~key:(Reference.combine from name) ~data:(Reference.create alias)
             | None ->
                 (* Add `from.name -> name`. *)
                 Map.set map ~key:(Reference.combine from name) ~data:name
@@ -1642,6 +1645,7 @@ let expand_typed_dictionary_declarations
                        [non_total_base] );
                    decorators = [];
                    body = assignments;
+                   top_level_unbound_names = [];
                  })
         | _ -> None
       in
@@ -1741,6 +1745,7 @@ let expand_typed_dictionary_declarations
               :: bases_tail;
             body;
             decorators = _;
+            top_level_unbound_names = _;
           } ->
           let fields =
             let extract = function
@@ -1907,20 +1912,47 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
     in
     let tuple_attributes ~parent ~location attributes =
       let attribute_statements =
-        let attribute (name, annotation, value) =
+        let attribute { Node.value = name, annotation, _value; location } =
           let target = Reference.create ~prefix:parent name |> from_reference ~location in
+          let annotation =
+            let location = Node.location annotation in
+            {
+              Node.location;
+              value =
+                Expression.Call
+                  {
+                    callee =
+                      {
+                        Node.location;
+                        value =
+                          Expression.Name
+                            (Attribute
+                               {
+                                 base =
+                                   Reference.create "typing.Final"
+                                   |> Ast.Expression.from_reference ~location;
+                                 attribute = "__getitem__";
+                                 special = true;
+                               });
+                      };
+                    arguments = [{ name = None; value = annotation }];
+                  };
+            }
+          in
           Statement.Assign
             {
               Assign.target;
               annotation = Some annotation;
-              value = Option.value value ~default:(Node.create Expression.Ellipsis ~location);
+              value = Node.create Expression.Ellipsis ~location;
               parent = Some parent;
             }
           |> Node.create ~location
         in
         List.map attributes ~f:attribute
       in
-      let fields_attribute = fields_attribute ~parent ~location attributes in
+      let fields_attribute =
+        List.map attributes ~f:Node.value |> fields_attribute ~parent ~location
+      in
       fields_attribute :: attribute_statements
     in
     let tuple_constructors ~parent ~location attributes =
@@ -2002,6 +2034,7 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                 nesting_define = None;
               };
             captures = [];
+            unbound_names = [];
             body = assignments;
           }
         |> Node.create ~location
@@ -2028,13 +2061,17 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
           (* TODO (T42893621): properly handle the excluded case *)
             when not (Reference.is_prefix ~prefix:(Reference.create "$parameter$cls") name) ->
               let constructors = tuple_constructors ~parent:name ~location attributes in
-              let attributes = tuple_attributes ~parent:name ~location attributes in
+              let attributes =
+                List.map attributes ~f:(Node.create ~location)
+                |> tuple_attributes ~parent:name ~location
+              in
               Statement.Class
                 {
                   Class.name = Node.create ~location:target_location name;
                   bases = [tuple_base ~location];
                   body = constructors @ attributes;
                   decorators = [];
+                  top_level_unbound_names = [];
                 }
           | _ -> value )
       | Class ({ Class.name = { Node.value = name; _ }; bases; body; _ } as original) ->
@@ -2063,7 +2100,7 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                   Node.value =
                     Statement.Assign
                       { Assign.target = { Node.value = Name target; _ }; value; annotation; _ };
-                  _;
+                  location;
                 } ->
                   let last =
                     match target with
@@ -2076,13 +2113,15 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                     in
                     Option.value annotation ~default:any
                   in
-                  Some (last, annotation, Some value)
-              | _ -> None
+                  Either.First (Node.create ~location (last, annotation, Some value))
+              | statement -> Either.Second statement
             in
-            let attributes = List.filter_map body ~f:extract_assign in
-            let constructors = tuple_constructors ~parent:name ~location attributes in
-            let fields_attribute = fields_attribute ~parent:name ~location attributes in
-            Class { original with Class.body = constructors @ (fields_attribute :: body) }
+            let attributes, other = List.partition_map body ~f:extract_assign in
+            let constructors =
+              List.map attributes ~f:Node.value |> tuple_constructors ~parent:name ~location
+            in
+            let tuple_attributes = tuple_attributes ~parent:name ~location attributes in
+            Class { original with Class.body = constructors @ tuple_attributes @ other }
           else
             let extract_named_tuples (bases, attributes_sofar) ({ Call.Argument.value; _ } as base) =
               match extract_attributes value with
@@ -2105,7 +2144,10 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                     else
                       tuple_constructors ~parent:name ~location attributes
                   in
-                  let attributes = tuple_attributes ~parent:name ~location attributes in
+                  let attributes =
+                    List.map attributes ~f:(Node.create ~location)
+                    |> tuple_attributes ~parent:name ~location
+                  in
                   tuple_base ~location :: bases, attributes_sofar @ constructors @ attributes
               | None -> base :: bases, attributes_sofar
             in
@@ -2193,6 +2235,7 @@ let expand_new_types ({ Source.statements; source_path = { SourcePath.qualifier;
                     nesting_define = None;
                   };
                 captures = [];
+                unbound_names = [];
                 body = [Node.create Statement.Pass ~location];
               }
             |> Node.create ~location
@@ -2203,6 +2246,7 @@ let expand_new_types ({ Source.statements; source_path = { SourcePath.qualifier;
               bases = [base_argument];
               body = [constructor];
               decorators = [];
+              top_level_unbound_names = [];
             }
       | _ -> value
     in
@@ -2232,6 +2276,7 @@ let expand_sqlalchemy_declarative_base ({ Source.statements; _ } as source) =
                bases = [metaclass];
                decorators = [];
                body = [Node.create ~location Statement.Pass];
+               top_level_unbound_names = [];
              })
       in
       match value with
@@ -2265,12 +2310,13 @@ let populate_nesting_defines ({ Source.statements; _ } as source) =
          {
            Define.signature = { Define.Signature.name = { Node.value = name; _ }; _ } as signature;
            captures;
+           unbound_names;
            body;
          };
     } ->
         let signature = { signature with Define.Signature.nesting_define } in
         let body = transform_statements ~nesting_define:(Some name) body in
-        { Node.location; value = Define { signature; captures; body } }
+        { Node.location; value = Define { signature; captures; unbound_names; body } }
     | { Node.location; value = Class class_ } ->
         let body = transform_statements ~nesting_define:None class_.body in
         { Node.location; value = Class { class_ with body } }
@@ -2306,186 +2352,217 @@ let populate_nesting_defines ({ Source.statements; _ } as source) =
   { source with Source.statements = transform_statements ~nesting_define:None statements }
 
 
+module NameAccessSet = Set.Make (Define.NameAccess)
 module CaptureSet = Set.Make (Define.Capture)
 
-let populate_captures ({ Source.statements; _ } as source) =
-  let open Scope in
-  let collect_accesses ~decorators statements =
-    let rec collect_from_expression collected { Node.value; _ } =
-      let open Expression in
-      let collect_from_entry collected { Dictionary.Entry.key; value } =
-        let collected = collect_from_expression collected key in
-        collect_from_expression collected value
-      in
-      match value with
-      (* Lambdas are speical -- they bind their own names, which we want to exclude *)
-      | Lambda { Lambda.parameters; body } ->
-          let collected =
-            let collect_from_parameter collected { Node.value = { Parameter.value; _ }; _ } =
-              Option.value_map value ~f:(collect_from_expression collected) ~default:collected
-            in
-            List.fold parameters ~init:collected ~f:collect_from_parameter
+module AccessCollector = struct
+  let rec from_expression collected { Node.value; location = expression_location } =
+    let open Expression in
+    let from_entry collected { Dictionary.Entry.key; value } =
+      let collected = from_expression collected key in
+      from_expression collected value
+    in
+    match value with
+    (* Lambdas are speical -- they bind their own names, which we want to exclude *)
+    | Lambda { Lambda.parameters; body } ->
+        let collected =
+          let from_parameter collected { Node.value = { Parameter.value; _ }; _ } =
+            Option.value_map value ~f:(from_expression collected) ~default:collected
           in
-          let bound_names =
-            List.map parameters ~f:(fun { Node.value = { Parameter.name; _ }; _ } -> name)
-            |> Identifier.Set.of_list
-          in
-          let names_in_body = collect_from_expression Identifier.Set.empty body in
-          let unbound_names_in_body = Set.diff names_in_body bound_names in
-          Set.union unbound_names_in_body collected
-      | Name (Name.Identifier identifier) ->
-          (* For simple names, add them to the result *)
-          Set.add collected identifier
-      | Name (Name.Attribute { Name.Attribute.base; _ }) ->
-          (* For attribute access, only count the base *)
-          collect_from_expression collected base
-      (* The rest is boilerplates to make sure that expressions are visited recursively *)
-      | Await await -> collect_from_expression collected await
-      | BooleanOperator { BooleanOperator.left; right; _ }
-      | ComparisonOperator { ComparisonOperator.left; right; _ } ->
-          let collected = collect_from_expression collected left in
-          collect_from_expression collected right
-      | Call { Call.callee; arguments } ->
-          let collected = collect_from_expression collected callee in
-          List.fold arguments ~init:collected ~f:(fun collected { Call.Argument.name; value } ->
+          List.fold parameters ~init:collected ~f:from_parameter
+        in
+        let bound_names =
+          List.map parameters ~f:(fun { Node.value = { Parameter.name; _ }; _ } ->
+              Identifier.split_star name |> snd)
+          |> Identifier.Set.of_list
+        in
+        let names_in_body = from_expression NameAccessSet.empty body in
+        let unbound_names_in_body =
+          Set.filter names_in_body ~f:(fun { Define.NameAccess.name; _ } ->
+              not (Identifier.Set.mem bound_names name))
+        in
+        Set.union unbound_names_in_body collected
+    | Name (Name.Identifier identifier) ->
+        (* For simple names, add them to the result *)
+        Set.add collected { Define.NameAccess.name = identifier; location = expression_location }
+    | Name (Name.Attribute { Name.Attribute.base; _ }) ->
+        (* For attribute access, only count the base *)
+        from_expression collected base
+    (* The rest is boilerplates to make sure that expressions are visited recursively *)
+    | Await await -> from_expression collected await
+    | BooleanOperator { BooleanOperator.left; right; _ }
+    | ComparisonOperator { ComparisonOperator.left; right; _ } ->
+        let collected = from_expression collected left in
+        from_expression collected right
+    | Call { Call.callee; arguments } ->
+        let collected = from_expression collected callee in
+        List.fold arguments ~init:collected ~f:(fun collected { Call.Argument.value; _ } ->
+            from_expression collected value)
+    | Dictionary { Dictionary.entries; keywords } ->
+        let collected = List.fold entries ~init:collected ~f:from_entry in
+        List.fold keywords ~init:collected ~f:from_expression
+    | DictionaryComprehension comprehension -> from_comprehension from_entry collected comprehension
+    | Generator comprehension
+    | ListComprehension comprehension
+    | SetComprehension comprehension ->
+        from_comprehension from_expression collected comprehension
+    | List expressions
+    | Set expressions
+    | Tuple expressions
+    | String { kind = StringLiteral.Format expressions; _ } ->
+        List.fold expressions ~init:collected ~f:from_expression
+    | Starred (Starred.Once expression)
+    | Starred (Starred.Twice expression) ->
+        from_expression collected expression
+    | Ternary { Ternary.target; test; alternative } ->
+        let collected = from_expression collected target in
+        let collected = from_expression collected test in
+        from_expression collected alternative
+    | UnaryOperator { UnaryOperator.operand; _ } -> from_expression collected operand
+    | WalrusOperator { WalrusOperator.target; value } ->
+        let collected = from_expression collected target in
+        from_expression collected value
+    | Yield yield -> Option.value_map yield ~default:collected ~f:(from_expression collected)
+    | String _
+    | Complex _
+    | Ellipsis
+    | False
+    | Float _
+    | Integer _
+    | True ->
+        collected
+
+
+  (* Generators are as special as lambdas -- they bind their own names, which we want to exclude *)
+  and from_comprehension :
+        'a. (NameAccessSet.t -> 'a -> NameAccessSet.t) -> NameAccessSet.t -> 'a Comprehension.t ->
+        NameAccessSet.t
+    =
+   fun from_element collected { Comprehension.element; generators } ->
+    let bound_names =
+      List.fold
+        generators
+        ~init:Identifier.Set.empty
+        ~f:(fun sofar { Comprehension.Generator.target; _ } ->
+          from_expression NameAccessSet.empty target
+          |> Set.fold ~init:sofar ~f:(fun sofar { Define.NameAccess.name; _ } -> Set.add sofar name))
+    in
+    let names =
+      from_element NameAccessSet.empty element
+      |> fun init ->
+      List.fold
+        generators
+        ~init
+        ~f:(fun sofar { Comprehension.Generator.iterator; conditions; _ } ->
+          let sofar = from_expression sofar iterator in
+          List.fold conditions ~init:sofar ~f:from_expression)
+    in
+    let unbound_names =
+      Set.filter names ~f:(fun { Define.NameAccess.name; _ } ->
+          not (Identifier.Set.mem bound_names name))
+    in
+    Set.union unbound_names collected
+
+
+  and from_statement collected { Node.value; location = statement_location } =
+    let from_optional_expression collected =
+      Option.value_map ~default:collected ~f:(from_expression collected)
+    in
+    (* Boilerplates to visit all statements that may contain accesses *)
+    match value with
+    | Statement.Assign { Assign.target; value; annotation; _ } ->
+        let collected = from_expression collected target in
+        let collected = from_optional_expression collected annotation in
+        from_expression collected value
+    | Assert { Assert.test; message; _ } ->
+        let collected = from_expression collected test in
+        Option.value_map message ~f:(from_expression collected) ~default:collected
+    | Class { Class.bases; decorators; _ } ->
+        let collected =
+          List.fold bases ~init:collected ~f:(fun sofar { Call.Argument.value; _ } ->
+              from_expression sofar value)
+        in
+        List.map decorators ~f:Decorator.to_expression
+        |> List.fold ~init:collected ~f:from_expression
+    | Define
+        { Define.signature = { Define.Signature.decorators; parameters; return_annotation; _ }; _ }
+      ->
+        let collected =
+          List.map decorators ~f:Decorator.to_expression
+          |> List.fold ~init:collected ~f:from_expression
+        in
+        let collected =
+          List.fold
+            parameters
+            ~init:collected
+            ~f:(fun sofar { Node.value = { Parameter.annotation; value; _ }; _ } ->
+              let sofar = from_optional_expression sofar annotation in
+              from_optional_expression sofar value)
+        in
+        from_optional_expression collected return_annotation
+    | Delete expression
+    | Expression expression
+    | Yield expression
+    | YieldFrom expression ->
+        from_expression collected expression
+    | For { For.target; iterator; body; orelse; _ } ->
+        let collected = from_expression collected target in
+        let collected = from_expression collected iterator in
+        let collected = from_statements collected body in
+        from_statements collected orelse
+    | If { If.test; body; orelse }
+    | While { While.test; body; orelse } ->
+        let collected = from_expression collected test in
+        let collected = from_statements collected body in
+        from_statements collected orelse
+    | Raise { Raise.expression; from } ->
+        let collected = from_optional_expression collected expression in
+        from_optional_expression collected from
+    | Return { Return.expression; _ } -> from_optional_expression collected expression
+    | Try { Try.body; handlers; orelse; finally } ->
+        let collected = from_statements collected body in
+        let collected =
+          List.fold handlers ~init:collected ~f:(fun collected { Try.Handler.kind; name; body } ->
+              let collected =
+                Option.value_map kind ~f:(from_expression collected) ~default:collected
+              in
               let collected =
                 Option.value_map
                   name
-                  ~f:(fun { Node.value; _ } -> Set.add collected value)
+                  ~f:(fun name ->
+                    Set.add collected { Define.NameAccess.name; location = statement_location })
                   ~default:collected
               in
-              collect_from_expression collected value)
-      | Dictionary { Dictionary.entries; keywords } ->
-          let collected = List.fold entries ~init:collected ~f:collect_from_entry in
-          List.fold keywords ~init:collected ~f:collect_from_expression
-      | DictionaryComprehension comprehension ->
-          collect_from_comprehension collect_from_entry collected comprehension
-      | Generator comprehension
-      | ListComprehension comprehension
-      | SetComprehension comprehension ->
-          collect_from_comprehension collect_from_expression collected comprehension
-      | List expressions
-      | Set expressions
-      | Tuple expressions
-      | String { kind = StringLiteral.Format expressions; _ } ->
-          List.fold expressions ~init:collected ~f:collect_from_expression
-      | Starred (Starred.Once expression)
-      | Starred (Starred.Twice expression) ->
-          collect_from_expression collected expression
-      | Ternary { Ternary.target; test; alternative } ->
-          let collected = collect_from_expression collected target in
-          let collected = collect_from_expression collected test in
-          collect_from_expression collected alternative
-      | UnaryOperator { UnaryOperator.operand; _ } -> collect_from_expression collected operand
-      | WalrusOperator { WalrusOperator.target; value } ->
-          let collected = collect_from_expression collected target in
-          collect_from_expression collected value
-      | Yield yield ->
-          Option.value_map yield ~default:collected ~f:(collect_from_expression collected)
-      | String _
-      | Complex _
-      | Ellipsis
-      | False
-      | Float _
-      | Integer _
-      | True ->
-          collected
-    (* Generators are as special as lambdas -- they bind their own names, which we want to exclude *)
-    and collect_from_comprehension
-          : 'a. (Identifier.Set.t -> 'a -> Identifier.Set.t) -> Identifier.Set.t ->
-            'a Comprehension.t -> Identifier.Set.t
-      =
-     fun collect_from_element collected { Comprehension.element; generators } ->
-      let collected =
-        let collect_from_generator collected { Comprehension.Generator.iterator; _ } =
-          collect_from_expression collected iterator
+              from_statements collected body)
         in
-        List.fold generators ~init:collected ~f:collect_from_generator
-      in
-      let bound_names =
-        List.fold
-          generators
-          ~init:Identifier.Set.empty
-          ~f:(fun sofar { Comprehension.Generator.target; _ } ->
-            collect_from_expression sofar target)
-      in
-      let names =
-        collect_from_element Identifier.Set.empty element
-        |> fun init ->
-        List.fold generators ~init ~f:(fun init { Comprehension.Generator.conditions; _ } ->
-            List.fold conditions ~init ~f:collect_from_expression)
-      in
-      let unbound_names = Set.diff names bound_names in
-      Set.union unbound_names collected
-    in
-    let rec collect_from_statement collected { Node.value; _ } =
-      (* Boilerplates to visit all statements that may contain accesses *)
-      match value with
-      | Statement.Assign { Assign.target; value; _ } ->
-          let collected = collect_from_expression collected target in
-          collect_from_expression collected value
-      | Assert { Assert.test; message; _ } ->
-          let collected = collect_from_expression collected test in
-          Option.value_map message ~f:(collect_from_expression collected) ~default:collected
-      | Delete expression
-      | Expression expression
-      | Yield expression
-      | YieldFrom expression ->
-          collect_from_expression collected expression
-      | For { For.target; iterator; body; orelse; _ } ->
-          let collected = collect_from_expression collected target in
-          let collected = collect_from_expression collected iterator in
-          let collected = collect_from_statements collected body in
-          collect_from_statements collected orelse
-      | If { If.test; body; orelse }
-      | While { While.test; body; orelse } ->
-          let collected = collect_from_expression collected test in
-          let collected = collect_from_statements collected body in
-          collect_from_statements collected orelse
-      | Raise { Raise.expression; from } ->
-          let collected =
-            Option.value_map expression ~f:(collect_from_expression collected) ~default:collected
-          in
-          Option.value_map from ~f:(collect_from_expression collected) ~default:collected
-      | Return { Return.expression; _ } ->
-          Option.value_map expression ~f:(collect_from_expression collected) ~default:collected
-      | Try { Try.body; handlers; orelse; finally } ->
-          let collected = collect_from_statements collected body in
-          let collected =
-            List.fold handlers ~init:collected ~f:(fun collected { Try.Handler.kind; name; body } ->
-                let collected =
-                  Option.value_map kind ~f:(collect_from_expression collected) ~default:collected
-                in
-                let collected = Option.value_map name ~f:(Set.add collected) ~default:collected in
-                collect_from_statements collected body)
-          in
-          let collected = collect_from_statements collected orelse in
-          collect_from_statements collected finally
-      | With { With.items; body; _ } ->
-          let collected =
-            List.fold items ~init:collected ~f:(fun collected (value, target) ->
-                let collected = collect_from_expression collected value in
-                Option.value_map target ~f:(collect_from_expression collected) ~default:collected)
-          in
-          collect_from_statements collected body
-      | Break
-      | Continue
-      | Global _
-      | Import _
-      | Nonlocal _
-      | Pass
-      (* Nested classes and defines are not part of the visit because their accesses belong to
-         themselves. *)
-      | Class _
-      | Define _ ->
-          collected
-    and collect_from_statements init statements =
-      List.fold statements ~init ~f:collect_from_statement
-    in
-    ( List.fold decorators ~init:Identifier.Set.empty ~f:collect_from_expression,
-      collect_from_statements Identifier.Set.empty statements )
-  in
-  let to_capture ~is_decorator ~scopes name =
+        let collected = from_statements collected orelse in
+        from_statements collected finally
+    | With { With.items; body; _ } ->
+        let collected =
+          List.fold items ~init:collected ~f:(fun collected (value, target) ->
+              let collected = from_expression collected value in
+              from_optional_expression collected target)
+        in
+        from_statements collected body
+    | Break
+    | Continue
+    | Global _
+    | Import _
+    | Nonlocal _
+    | Pass ->
+        collected
+
+
+  and from_statements init statements = List.fold statements ~init ~f:from_statement
+
+  let from_define { Define.body; _ } = from_statements NameAccessSet.empty body
+
+  let from_class { Class.body; _ } = from_statements NameAccessSet.empty body
+end
+
+let populate_captures ({ Source.statements; _ } as source) =
+  let open Scope in
+  let to_capture ~is_decorator ~scopes { Define.NameAccess.name; _ } =
     match ScopeStack.lookup scopes name with
     | None -> None
     | Some
@@ -2682,20 +2759,14 @@ let populate_captures ({ Source.statements; _ } as source) =
                     Some { Define.Capture.name; kind = Annotation annotation }
                 | Binding.Kind.DefineName signature ->
                     Some { Define.Capture.name; kind = DefineSignature signature }
-                | Binding.Kind.(ComprehensionTarget | ForTarget | WithTarget) ->
+                | Binding.Kind.(ComprehensionTarget | ForTarget | WalrusTarget | WithTarget) ->
                     Some { Define.Capture.name; kind = Annotation None } ) ) )
   in
   let rec transform_statement ~scopes statement =
     match statement with
-    (* Process each defines *)
-    | {
-     Node.location;
-     value =
-       Statement.Define
-         ({ signature = { Define.Signature.decorators; _ } as signature; body; _ } as define);
-    } ->
-        let decorator_accesses, body_accesses = collect_accesses ~decorators body in
-        let parent_scopes = scopes in
+    (* Process each define *)
+    | { Node.location; value = Statement.Define ({ body; _ } as define) } ->
+        let accesses = AccessCollector.from_define define in
         let scopes = ScopeStack.extend scopes ~with_:(Scope.of_define_exn define) in
         let captures =
           let to_capture ~is_decorator ~scopes sofar name =
@@ -2703,20 +2774,11 @@ let populate_captures ({ Source.statements; _ } as source) =
             | None -> sofar
             | Some capture -> CaptureSet.add sofar capture
           in
-          let decorator_captures =
-            Set.fold
-              ~init:CaptureSet.empty
-              decorator_accesses
-              ~f:(to_capture ~is_decorator:true ~scopes:parent_scopes)
-          in
-          Set.fold
-            ~init:decorator_captures
-            body_accesses
-            ~f:(to_capture ~is_decorator:false ~scopes)
+          Set.fold ~init:CaptureSet.empty accesses ~f:(to_capture ~is_decorator:false ~scopes)
           |> CaptureSet.to_list
         in
         let body = transform_statements ~scopes body in
-        { Node.location; value = Statement.Define { signature; body; captures } }
+        { Node.location; value = Statement.Define { define with body; captures } }
     (* The rest is just boilerplates to make sure every nested define gets visited *)
     | { Node.location; value = Class class_ } ->
         let body = transform_statements ~scopes class_.body in
@@ -2754,20 +2816,115 @@ let populate_captures ({ Source.statements; _ } as source) =
   { source with Source.statements = transform_statements ~scopes statements }
 
 
+let populate_unbound_names source =
+  let open Scope in
+  let to_unbound_name ~scopes ({ Define.NameAccess.name; _ } as access) =
+    match ScopeStack.lookup scopes name with
+    | Some _ -> None
+    | None -> Option.some_if (not (Builtins.mem name)) access
+  in
+  let compute_unbound_names ~scopes accesses =
+    let deduplicate_access access_set =
+      (* Only keep one access for each name *)
+      let accumulate_names sofar ({ Define.NameAccess.name; _ } as access) =
+        match Map.add sofar ~key:name ~data:access with
+        | `Ok sofar -> sofar
+        | `Duplicate -> sofar
+      in
+      NameAccessSet.fold access_set ~init:Identifier.Map.empty ~f:accumulate_names
+      |> Identifier.Map.data
+      |> NameAccessSet.of_list
+    in
+    let to_unbound_name ~scopes sofar name =
+      match to_unbound_name ~scopes name with
+      | None -> sofar
+      | Some name -> NameAccessSet.add sofar name
+    in
+    deduplicate_access accesses
+    |> Set.fold ~init:NameAccessSet.empty ~f:(to_unbound_name ~scopes)
+    |> NameAccessSet.to_list
+  in
+  let rec transform_statement ~scopes statement =
+    match statement with
+    (* Process each define *)
+    | { Node.location; value = Statement.Define ({ body; _ } as define) } ->
+        let scopes =
+          if Define.is_toplevel define then
+            scopes
+          else
+            ScopeStack.extend scopes ~with_:(Scope.of_define_exn define)
+        in
+        let unbound_names = AccessCollector.from_define define |> compute_unbound_names ~scopes in
+        let body = transform_statements ~scopes body in
+        { Node.location; value = Statement.Define { define with body; unbound_names } }
+    | { Node.location; value = Class ({ Class.body; _ } as class_) } ->
+        let top_level_unbound_names =
+          let scopes =
+            ScopeStack.extend scopes ~with_:(Scope.of_define_exn (Class.toplevel_define class_))
+          in
+          AccessCollector.from_class class_ |> compute_unbound_names ~scopes
+        in
+        (* Use parent scope here as classes do not open up new scopes for the methods defined in it. *)
+        let body = transform_statements ~scopes body in
+        { Node.location; value = Class { class_ with body; top_level_unbound_names } }
+    (* The rest is just boilerplates to make sure every nested define gets visited *)
+    | { Node.location; value = For for_ } ->
+        let body = transform_statements ~scopes for_.body in
+        let orelse = transform_statements ~scopes for_.orelse in
+        { Node.location; value = For { for_ with body; orelse } }
+    | { Node.location; value = If if_ } ->
+        let body = transform_statements ~scopes if_.body in
+        let orelse = transform_statements ~scopes if_.orelse in
+        { Node.location; value = If { if_ with body; orelse } }
+    | { Node.location; value = Try { Try.body; orelse; finally; handlers } } ->
+        let body = transform_statements ~scopes body in
+        let orelse = transform_statements ~scopes orelse in
+        let finally = transform_statements ~scopes finally in
+        let handlers =
+          List.map handlers ~f:(fun ({ Try.Handler.body; _ } as handler) ->
+              let body = transform_statements ~scopes body in
+              { handler with body })
+        in
+        { Node.location; value = Try { Try.body; orelse; finally; handlers } }
+    | { Node.location; value = With with_ } ->
+        let body = transform_statements ~scopes with_.body in
+        { Node.location; value = With { with_ with body } }
+    | { Node.location; value = While while_ } ->
+        let body = transform_statements ~scopes while_.body in
+        let orelse = transform_statements ~scopes while_.orelse in
+        { Node.location; value = While { while_ with body; orelse } }
+    | statement -> statement
+  and transform_statements ~scopes statements =
+    List.map statements ~f:(transform_statement ~scopes)
+  in
+  let scopes = ScopeStack.create source in
+  let top_level_unbound_names, statements =
+    let top_level_statement =
+      let { Node.value = define; location } = Source.top_level_define_node source in
+      Node.create ~location (Statement.Define define)
+    in
+    match transform_statement ~scopes top_level_statement |> Node.value with
+    | Statement.Define { Define.unbound_names; body; _ } -> unbound_names, body
+    | _ -> failwith "Define should not be transformed into other kinds of statements"
+  in
+  { source with Source.top_level_unbound_names; statements }
+
+
 let preprocess_phase0 source =
   source
   |> expand_relative_imports
   |> replace_platform_specific_code
   |> replace_version_specific_code
   |> expand_type_checking_imports
+  |> expand_string_annotations
+  |> expand_format_string
+  |> expand_implicit_returns
 
 
 let preprocess_phase1 source =
   source
-  |> expand_string_annotations
-  |> expand_format_string
+  |> populate_unbound_names
   |> qualify
-  |> expand_implicit_returns
   |> replace_mypy_extensions_stub
   |> expand_typed_dictionary_declarations
   |> expand_sqlalchemy_declarative_base

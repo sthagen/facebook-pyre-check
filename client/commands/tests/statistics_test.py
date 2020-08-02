@@ -47,6 +47,8 @@ class StatisticsTest(unittest.TestCase):
             ),
         )
 
+    # pyre-fixme[56]: Argument `[]` to decorator factory
+    #  `unittest.mock.patch.object` could not be resolved in a global scope.
     @patch.object(Statistics, "_find_paths", return_value=[])
     @patch.object(Statistics, "_log_to_scuba")
     def test_log_results(self, log: MagicMock, _find_paths: MagicMock) -> None:
@@ -61,7 +63,6 @@ class StatisticsTest(unittest.TestCase):
             configuration=configuration,
             analysis_directory=analysis_directory,
             filter_paths=["a.py", "b.py"],
-            collect=None,
             log_results=False,
         )._run()
         log.assert_not_called()
@@ -72,7 +73,6 @@ class StatisticsTest(unittest.TestCase):
             configuration=configuration,
             analysis_directory=analysis_directory,
             filter_paths=["a.py", "b.py"],
-            collect=None,
             log_results=True,
         )._run()
         log.assert_called()
@@ -94,6 +94,10 @@ class StatisticsTest(unittest.TestCase):
 
         path.read_text = MagicMock(return_value=textwrap.dedent(valid_python.rstrip()))
         self.assertIsNotNone(parse_path_to_module(path))
+
+    @patch.object(Path, "read_text", side_effect=FileNotFoundError)
+    def test_parse_module__file_not_found(self, read_text: MagicMock) -> None:
+        self.assertIsNone(parse_path_to_module(Path("foo.txt")))
 
 
 class AnnotationCountCollectorTest(unittest.TestCase):

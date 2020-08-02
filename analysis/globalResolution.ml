@@ -9,7 +9,7 @@ open Ast
 open Statement
 
 type t = {
-  dependency: SharedMemoryKeys.dependency option;
+  dependency: SharedMemoryKeys.DependencyKey.registered option;
   annotated_global_environment: AnnotatedGlobalEnvironment.ReadOnly.t;
 }
 
@@ -25,11 +25,6 @@ let attribute_resolution resolution =
 let class_metadata_environment resolution =
   annotated_global_environment resolution
   |> AnnotatedGlobalEnvironment.ReadOnly.class_metadata_environment
-
-
-let undecorated_function_environment resolution =
-  class_metadata_environment resolution
-  |> ClassMetadataEnvironment.ReadOnly.undecorated_function_environment
 
 
 let class_hierarchy_environment resolution =
@@ -112,12 +107,6 @@ let is_suppressed_module ({ dependency; _ } as resolution) reference =
     reference
 
 
-let undecorated_signature ({ dependency; _ } as resolution) =
-  UndecoratedFunctionEnvironment.ReadOnly.get_undecorated_function
-    ?dependency
-    (undecorated_function_environment resolution)
-
-
 let aliases ({ dependency; _ } as resolution) =
   AliasEnvironment.ReadOnly.get_alias ?dependency (alias_environment resolution)
 
@@ -129,7 +118,15 @@ let base_is_from_placeholder_stub resolution =
 
 
 let module_exists ({ dependency; _ } as resolution) =
-  AstEnvironment.ReadOnly.module_exists ?dependency (ast_environment resolution)
+  UnannotatedGlobalEnvironment.ReadOnly.module_exists
+    ?dependency
+    (unannotated_global_environment resolution)
+
+
+let get_module_metadata ({ dependency; _ } as resolution) =
+  UnannotatedGlobalEnvironment.ReadOnly.get_module_metadata
+    ?dependency
+    (unannotated_global_environment resolution)
 
 
 let function_definitions ({ dependency; _ } as resolution) reference =
@@ -220,15 +217,15 @@ let global ({ dependency; _ } as resolution) reference =
   | "__name__"
   | "__package__" ->
       let annotation = Annotation.create_immutable Type.string in
-      Some annotation
+      Some { AttributeResolution.Global.annotation; undecorated_signature = None; problem = None }
   | "__dict__" ->
       let annotation =
         Type.dictionary ~key:Type.string ~value:Type.Any |> Annotation.create_immutable
       in
-      Some annotation
+      Some { annotation; undecorated_signature = None; problem = None }
   | _ ->
-      AnnotatedGlobalEnvironment.ReadOnly.get_global
-        (annotated_global_environment resolution)
+      AttributeResolution.ReadOnly.get_global
+        (attribute_resolution resolution)
         ?dependency
         reference
 
@@ -257,7 +254,7 @@ let attribute_from_class_name
               ~original_annotation:Type.Top
               ~uninstantiated_annotation:(Some Type.Top)
               ~abstract:false
-              ~async:false
+              ~async_property:false
               ~class_variable:false
               ~defined:false
               ~initialized:NotInitialized
@@ -265,6 +262,8 @@ let attribute_from_class_name
               ~parent:class_name
               ~visibility:ReadWrite
               ~property:false
+              ~undecorated_signature:None
+              ~problem:None
             |> Option.some
         | None -> None )
   in
@@ -281,7 +280,7 @@ let attribute_from_class_name
   |> access
 
 
-let attribute_from_annotation resolution ~parent:annotation ~name =
+let attribute_from_annotation ?special_method resolution ~parent:annotation ~name =
   match Type.resolve_class annotation with
   | None -> None
   | Some [] -> None
@@ -292,6 +291,7 @@ let attribute_from_annotation resolution ~parent:annotation ~name =
         ~instantiated
         ~accessed_through_class
         ~name
+        ?special_method
         class_name
       >>= fun attribute -> Option.some_if (AnnotatedAttribute.defined attribute) attribute
   | Some (_ :: _) -> None
@@ -309,7 +309,7 @@ let is_typed_dictionary ~resolution:({ dependency; _ } as resolution) annotation
   |> Option.value ~default:false
 
 
-let resolved_type = AttributeResolution.resolved_type
+let resolved_type = WeakenMutableLiterals.resolved_type
 
 let is_consistent_with ({ dependency; _ } as resolution) ~resolve left right ~expression =
   let comparator =
@@ -319,7 +319,7 @@ let is_consistent_with ({ dependency; _ } as resolution) ~resolve left right ~ex
   in
 
   let left =
-    AttributeResolution.weaken_mutable_literals
+    WeakenMutableLiterals.weaken_mutable_literals
       resolve
       ~get_typed_dictionary:(get_typed_dictionary ~resolution)
       ~expression
@@ -329,10 +329,6 @@ let is_consistent_with ({ dependency; _ } as resolution) ~resolve left right ~ex
     |> resolved_type
   in
   comparator ~get_typed_dictionary_override:(fun _ -> None) ~left ~right
-
-
-let constructor ~resolution:({ dependency; _ } as resolution) =
-  AttributeResolution.ReadOnly.constructor ?dependency (attribute_resolution resolution)
 
 
 let is_transitive_successor ?placeholder_subclass_extends_all resolution ~predecessor ~successor =
@@ -404,16 +400,27 @@ let resolve_mutable_literals ({ dependency; _ } as resolution) =
     (attribute_resolution resolution)
 
 
-let create_overload ~resolution:({ dependency; _ } as resolution) =
-  AttributeResolution.ReadOnly.create_overload ?dependency (attribute_resolution resolution)
+let resolve_define ~resolution:({ dependency; _ } as resolution) =
+  AttributeResolution.ReadOnly.resolve_define ?dependency (attribute_resolution resolution)
 
 
 let signature_select ~global_resolution:({ dependency; _ } as resolution) =
   AttributeResolution.ReadOnly.signature_select ?dependency (attribute_resolution resolution)
 
 
-let resolve_exports ({ dependency; _ } as resolution) ~reference =
-  AstEnvironment.ReadOnly.resolve_exports ?dependency (ast_environment resolution) reference
+let legacy_resolve_exports ({ dependency; _ } as resolution) ~reference =
+  UnannotatedGlobalEnvironment.ReadOnly.legacy_resolve_exports
+    ?dependency
+    (unannotated_global_environment resolution)
+    reference
+
+
+let resolve_exports ({ dependency; _ } as resolution) ?from reference =
+  UnannotatedGlobalEnvironment.ReadOnly.resolve_exports
+    ?dependency
+    (unannotated_global_environment resolution)
+    ?from
+    reference
 
 
 let widen resolution = full_order resolution |> TypeOrder.widen
@@ -460,8 +467,6 @@ let constraints_solution_exists ({ dependency; _ } as resolution) =
     ?dependency
     (attribute_resolution resolution)
 
-
-let solve_constraints resolution = TypeOrder.OrderedConstraints.solve ~order:(full_order resolution)
 
 let extract_type_parameters resolution ~source ~target =
   match source with

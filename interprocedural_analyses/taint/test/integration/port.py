@@ -1,3 +1,6 @@
+from builtins import __test_sink, __test_source
+
+
 def source_field():
     result = {}
     result.a = __test_source()
@@ -48,7 +51,7 @@ def match_star_star_arg_directly():
 
 
 class Foo:
-    # @cached_property
+    @property
     def some_source():
         return __test_source()
 

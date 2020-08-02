@@ -13,28 +13,27 @@ open Test
 let test_simple_registration context =
   let assert_registers source name ?original expected =
     let project = ScratchProject.setup ["test.py", source] ~context in
-    let ast_environment, ast_environment_update_result = ScratchProject.parse_sources project in
-    let ast_environment = AstEnvironment.read_only ast_environment in
-    let update_result =
+    let ast_environment = ScratchProject.build_ast_environment project in
+    let _, update_result =
       update_environments
         ~ast_environment
         ~configuration:(ScratchProject.configuration_of project)
-        ~ast_environment_update_result
-        ~qualifiers:(Reference.Set.singleton (Reference.create "test"))
-        ()
+        ColdStart
     in
-    let read_only = AnnotatedGlobalEnvironment.UpdateResult.read_only update_result in
-    let printer global =
-      global >>| Annotation.sexp_of_t >>| Sexp.to_string_hum |> Option.value ~default:"None"
+    let read_only =
+      AnnotatedGlobalEnvironment.UpdateResult.read_only update_result
+      |> AnnotatedGlobalEnvironment.ReadOnly.attribute_resolution
     in
     let location_insensitive_compare left right =
       Option.compare Annotation.compare left right = 0
     in
-    assert_equal
-      ~cmp:location_insensitive_compare
-      ~printer
-      (expected >>| Annotation.create_immutable ?original)
-      (AnnotatedGlobalEnvironment.ReadOnly.get_global read_only (Reference.create name))
+    let printer global =
+      global >>| Annotation.sexp_of_t >>| Sexp.to_string_hum |> Option.value ~default:"None"
+    in
+    let expectation = expected >>| Annotation.create_immutable ?original in
+    AttributeResolution.ReadOnly.get_global read_only (Reference.create name)
+    >>| (fun { annotation; _ } -> annotation)
+    |> assert_equal ~cmp:location_insensitive_compare ~printer expectation
   in
   assert_registers "x = 1" "test.x" (Some Type.integer);
   assert_registers "x, y, z  = 'A', True, 1.8" "test.x" (Some Type.string);
@@ -88,34 +87,32 @@ let test_updates context =
         sources
         ~context
     in
-    let ast_environment, ast_environment_update_result = ScratchProject.parse_sources project in
-    let read_only_ast_environment = AstEnvironment.read_only ast_environment in
-    let update_result =
+    let ast_environment = ScratchProject.build_ast_environment project in
+    let _, update_result =
       update_environments
-        ~ast_environment:read_only_ast_environment
+        ~ast_environment
         ~configuration:(ScratchProject.configuration_of project)
-        ~ast_environment_update_result
-        ~qualifiers:(Reference.Set.singleton (Reference.create "test"))
-        ()
+        ColdStart
     in
     let configuration = ScratchProject.configuration_of project in
-    let read_only = AnnotatedGlobalEnvironment.UpdateResult.read_only update_result in
+    let read_only =
+      AnnotatedGlobalEnvironment.UpdateResult.read_only update_result
+      |> AnnotatedGlobalEnvironment.ReadOnly.attribute_resolution
+    in
     let execute_action = function
       | global_name, dependency, expectation ->
           let location_insensitive_compare left right =
-            Option.compare AnnotatedGlobalEnvironment.compare_global left right = 0
+            Option.compare Annotation.compare left right = 0
           in
           let printer global =
-            global
-            >>| AnnotatedGlobalEnvironment.sexp_of_global
-            >>| Sexp.to_string_hum
-            |> Option.value ~default:"None"
+            global >>| Annotation.sexp_of_t >>| Sexp.to_string_hum |> Option.value ~default:"None"
           in
           let expectation = expectation >>| Annotation.create_immutable in
-          AnnotatedGlobalEnvironment.ReadOnly.get_global
+          AttributeResolution.ReadOnly.get_global
             read_only
             (Reference.create global_name)
             ~dependency
+          >>| (fun { annotation; _ } -> annotation)
           |> assert_equal ~cmp:location_insensitive_compare ~printer expectation
     in
     List.iter middle_actions ~f:execute_action;
@@ -140,37 +137,37 @@ let test_updates context =
     let { ScratchProject.module_tracker; _ } = project in
     let { Configuration.Analysis.local_root; _ } = configuration in
     let path = Path.create_relative ~root:local_root ~relative:"test.py" in
-    let update_result =
-      let ast_environment_update_result =
-        ModuleTracker.update ~configuration ~paths:[path] module_tracker
-        |> (fun updates -> AstEnvironment.Update updates)
-        |> AstEnvironment.update ~configuration ~scheduler:(mock_scheduler ()) ast_environment
-      in
-      update_environments
-        ~ast_environment:(AstEnvironment.read_only ast_environment)
-        ~configuration:(ScratchProject.configuration_of project)
-        ~ast_environment_update_result
-        ~qualifiers:(Reference.Set.singleton (Reference.create "test"))
-        ()
+    let _, update_result =
+      ModuleTracker.update ~configuration ~paths:[path] module_tracker
+      |> (fun updates -> AstEnvironment.Update updates)
+      |> update_environments
+           ~ast_environment
+           ~configuration:(ScratchProject.configuration_of project)
     in
     let printer set =
-      SharedMemoryKeys.DependencyKey.KeySet.elements set
+      SharedMemoryKeys.DependencyKey.RegisteredSet.elements set
+      |> List.map ~f:SharedMemoryKeys.DependencyKey.get_key
       |> List.to_string ~f:SharedMemoryKeys.show_dependency
     in
-    let expected_triggers = SharedMemoryKeys.DependencyKey.KeySet.of_list expected_triggers in
+    let expected_triggers =
+      SharedMemoryKeys.DependencyKey.RegisteredSet.of_list expected_triggers
+    in
     let triggered_type_check_define_dependencies =
       AnnotatedGlobalEnvironment.UpdateResult.all_triggered_dependencies update_result
       |> List.fold
-           ~f:SharedMemoryKeys.DependencyKey.KeySet.union
-           ~init:SharedMemoryKeys.DependencyKey.KeySet.empty
-      |> SharedMemoryKeys.DependencyKey.KeySet.filter (function
+           ~f:SharedMemoryKeys.DependencyKey.RegisteredSet.union
+           ~init:SharedMemoryKeys.DependencyKey.RegisteredSet.empty
+      |> SharedMemoryKeys.DependencyKey.RegisteredSet.filter (function registered ->
+             ( match SharedMemoryKeys.DependencyKey.get_key registered with
              | SharedMemoryKeys.TypeCheckDefine _ -> true
-             | _ -> false)
+             | _ -> false ))
     in
     assert_equal ~printer expected_triggers triggered_type_check_define_dependencies;
     post_actions >>| List.iter ~f:execute_action |> Option.value ~default:()
   in
-  let dependency = SharedMemoryKeys.TypeCheckDefine (Reference.create "dep") in
+  let dependency =
+    SharedMemoryKeys.DependencyKey.Registry.register (TypeCheckDefine (Reference.create "dep"))
+  in
   assert_updates
     ~original_source:{|
       x = 7

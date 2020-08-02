@@ -148,7 +148,7 @@ def get_attributes(pyre_connection: PyreConnection, class_name: str) -> List[str
 
 
 def get_call_graph(
-    pyre_connection: PyreConnection
+    pyre_connection: PyreConnection,
 ) -> Optional[Dict[str, List[CallGraphTarget]]]:
     result = pyre_connection.query_server("dump_call_graph()")
     if result is None or "response" not in result:

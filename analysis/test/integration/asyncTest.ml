@@ -19,12 +19,14 @@ let test_check_async context =
     [];
   assert_type_errors
     {|
+      import typing
       def bar(a: typing.Awaitable[int]) -> int:
         return await a
     |}
     [];
   assert_type_errors
     {|
+      from builtins import IsAwaitable
       def bar(a: IsAwaitable) -> int:
         await a
         return 0
@@ -32,6 +34,8 @@ let test_check_async context =
     [];
   assert_type_errors
     {|
+      from builtins import IsAwaitable
+      import typing
       T = typing.TypeVar("T")
       class C(typing.Awaitable[T]): ...
 
@@ -41,6 +45,7 @@ let test_check_async context =
     ["Invalid type parameters [24]: Generic type `C` expects 1 type parameter."];
   assert_strict_type_errors
     {|
+      import typing
       T = typing.TypeVar("T")
       class C(typing.Awaitable[T]): ...
 
@@ -48,22 +53,29 @@ let test_check_async context =
         return (await c)
     |}
     ["Invalid type parameters [24]: Generic type `C` expects 1 type parameter."];
-  assert_type_errors {|
+  assert_type_errors
+    {|
+      from builtins import IsAwaitable
       def bar(a: IsAwaitable) -> int:
         return (await a)
-    |} [];
+    |}
+    [];
   assert_type_errors
     {|
       def bar(a: int) -> None:
         await a
     |}
     ["Incompatible awaitable type [12]: Expected an awaitable but got `int`."];
-  assert_default_type_errors {|
+  assert_default_type_errors
+    {|
+      import typing
       def bar(a: typing.Any) -> None:
         await a
-    |} [];
+    |}
+    [];
   assert_type_errors
     {|
+      import typing
       async def read(file: typing.AsyncIterable[str]) -> typing.List[str]:
         return [data async for data in file]
     |}
@@ -107,6 +119,7 @@ let test_check_async context =
     ];
   assert_type_errors
     {|
+      import typing
       async def foo() -> typing.AsyncGenerator[bool, None]:
         # not a generator; this gets wrapped in a coroutine
         ...
@@ -119,11 +132,11 @@ let test_check_async context =
     [
       "Revealed type [-1]: Revealed type for `test.foo()` is "
       ^ "`typing.Coroutine[typing.Any, typing.Any, typing.AsyncGenerator[bool, None]]`.";
-      "Incompatible awaitable type [12]: Expected an awaitable but got `unknown`.";
       "Undefined attribute [16]: `typing.Coroutine` has no attribute `__aiter__`.";
     ];
   assert_type_errors
     {|
+      import typing
       async def foo() -> typing.AsyncGenerator[bool, None]:
         yield
 
@@ -135,6 +148,7 @@ let test_check_async context =
     ["Revealed type [-1]: Revealed type for `test.foo()` is `typing.AsyncGenerator[bool, None]`."];
   assert_type_errors
     {|
+      import typing
       async def foo(x: typing.AsyncGenerator[int, None]) -> None:
         async for a in x:
           reveal_type(a)
@@ -142,6 +156,7 @@ let test_check_async context =
     ["Revealed type [-1]: Revealed type for `a` is `int`."];
   assert_type_errors
     {|
+      import typing
       class C:
           async def foo(self) -> typing.AsyncGenerator[bool, None]:
               yield
@@ -157,6 +172,7 @@ let test_check_async context =
     ];
   assert_type_errors
     {|
+      import typing
       class C:
           async def foo(self) -> typing.AsyncGenerator[bool, None]:
             # not a generator; this gets wrapped in a coroutine
@@ -170,11 +186,11 @@ let test_check_async context =
     [
       "Revealed type [-1]: Revealed type for `test.C().foo()` is "
       ^ "`typing.Coroutine[typing.Any, typing.Any, typing.AsyncGenerator[bool, None]]`.";
-      "Incompatible awaitable type [12]: Expected an awaitable but got `unknown`.";
       "Undefined attribute [16]: `typing.Coroutine` has no attribute `__aiter__`.";
     ];
   assert_type_errors
     {|
+        import typing
         class A:
             async def f(self) -> typing.AsyncIterator[str]:
                 yield "A"
@@ -204,9 +220,51 @@ let test_check_async context =
         async with 1:
           return 0
     |}
+    ["Undefined attribute [16]: `int` has no attribute `__aenter__`."];
+  assert_type_errors
+    {|
+      from typing import Iterable, AsyncGenerator
+      async def foo() -> Iterable[str]:
+        yield "a"
+    |}
     [
-      "Incompatible awaitable type [12]: Expected an awaitable but got `unknown`.";
-      "Undefined attribute [16]: `int` has no attribute `__aenter__`.";
+      "Incompatible async generator return type [57]: Expected return annotation to be"
+      ^ " AsyncGenerator or a superclass "
+      ^ "but got `Iterable[str]`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Iterable, AsyncGenerator
+      async def foo() -> object:
+        yield "a"
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Iterable, AsyncGenerator
+      async def foo() -> AsyncGenerator[str, str]:
+        yield "a"
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Iterable, AsyncGenerator
+      async def foo() -> AsyncGenerator[str, None]:
+        yield "a"
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Iterable, AsyncGenerator
+      class MyExtendedAsyncGenerator(AsyncGenerator[int,int]):
+        pass
+      async def foo() -> MyExtendedAsyncGenerator:
+        yield "a"
+    |}
+    [
+      "Incompatible async generator return type [57]: Expected return annotation to be"
+      ^ " AsyncGenerator or a superclass "
+      ^ "but got `MyExtendedAsyncGenerator`.";
     ]
 
 

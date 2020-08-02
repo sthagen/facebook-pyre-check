@@ -18,7 +18,6 @@ type class_hierarchy = {
 
 type order = {
   class_hierarchy: class_hierarchy;
-  constructor: Type.t -> protocol_assumptions:ProtocolAssumptions.t -> Type.t option;
   all_attributes:
     Type.t -> assumptions:Assumptions.t -> AnnotatedAttribute.instantiated list option;
   attribute:
@@ -77,7 +76,7 @@ end
 
 let resolve_callable_protocol
     ~assumption
-    ~order:{ attribute; assumptions = { protocol_assumptions; callable_assumptions }; _ }
+    ~order:{ attribute; assumptions = { callable_assumptions; _ } as assumptions; _ }
     annotation
   =
   match
@@ -87,7 +86,7 @@ let resolve_callable_protocol
   | None -> (
       let new_assumptions =
         {
-          protocol_assumptions;
+          assumptions with
           callable_assumptions =
             CallableAssumptions.add ~candidate:annotation ~callable:assumption callable_assumptions;
         }
@@ -182,12 +181,19 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               :: right_parameters )
           | ( Parameter.Named ({ annotation = left_annotation; _ } as left) :: left_parameters,
               Parameter.Named ({ annotation = right_annotation; _ } as right) :: right_parameters )
-            ->
+          | ( Parameter.Named ({ annotation = left_annotation; default = true; _ } as left)
+              :: left_parameters,
+              Parameter.KeywordOnly ({ annotation = right_annotation; _ } as right)
+              :: right_parameters )
+          | ( Parameter.Named ({ annotation = left_annotation; default = false; _ } as left)
+              :: left_parameters,
+              Parameter.KeywordOnly ({ annotation = right_annotation; default = false; _ } as right)
+              :: right_parameters ) ->
               if Parameter.names_compatible (Parameter.Named left) (Parameter.Named right) then
                 solve_less_or_equal order ~constraints ~left:right_annotation ~right:left_annotation
                 |> List.concat_map ~f:(solve_parameters ~left_parameters ~right_parameters)
               else
-                []
+                impossible
           | ( Parameter.Variable (Concrete left_annotation) :: _,
               Parameter.PositionalOnly { annotation = right_annotation; _ } :: right_parameters ) ->
               solve_less_or_equal order ~constraints ~left:right_annotation ~right:left_annotation
@@ -223,7 +229,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                   ~right:keywords_annotation
                 |> List.concat_map ~f:(solve_parameters ~left_parameters ~right_parameters)
               else
-                []
+                impossible
           | Parameter.Variable _ :: left_parameters, right_parameters
           | Parameter.Keywords _ :: left_parameters, right_parameters ->
               solve_parameters ~left_parameters ~right_parameters constraints
@@ -231,9 +237,9 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               if Parameter.default left then
                 solve_parameters ~left_parameters ~right_parameters:[] constraints
               else
-                []
+                impossible
           | [], [] -> [constraints]
-          | _ -> []
+          | _ -> impossible
         in
         match implementation.parameters, called_as.parameters with
         | Undefined, Undefined -> [initial_constraints]
@@ -279,9 +285,9 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         | ParameterVariadicTypeVariable left, ParameterVariadicTypeVariable right
           when Type.Callable.equal_parameter_variadic_type_variable Type.equal left right ->
             [initial_constraints]
-        | _, _ -> []
+        | _, _ -> impossible
       with
-      | _ -> []
+      | _ -> impossible
     in
     let overload_to_instantiated_return_and_altered_constraints overload =
       let namespace = Type.Variable.Namespace.create_fresh () in
@@ -362,7 +368,6 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
       ( {
           class_hierarchy =
             { instantiate_successors_parameters; variables; is_transitive_successor; _ };
-          constructor;
           is_protocol;
           assumptions = { protocol_assumptions; _ } as assumptions;
           get_typed_dictionary;
@@ -389,21 +394,26 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
       then
         [constraints]
       else
-        []
+        impossible
     in
     match left, right with
     | _, _ when Type.equal left right -> [constraints]
     | _, Type.Primitive "object" -> [constraints]
     | other, Type.Any -> [add_fallbacks other]
-    | other, Type.Top ->
-        if Type.exists other ~predicate:(fun annotation -> Type.equal annotation Type.undeclared)
-        then
-          []
-        else
-          [constraints]
-    | Type.ParameterVariadicComponent _, _
-    | _, Type.ParameterVariadicComponent _ ->
-        []
+    | _, Type.Top -> [constraints]
+    | Type.ParameterVariadicComponent component, _ ->
+        let left =
+          match Type.Variable.Variadic.Parameters.Components.component component with
+          | KeywordArguments ->
+              Type.Parametric
+                {
+                  name = Type.mapping_primitive;
+                  parameters = [Single Type.string; Single Type.object_primitive];
+                }
+          | PositionalArguments -> Type.Tuple (Unbounded Type.object_primitive)
+        in
+        solve_less_or_equal order ~constraints ~left ~right
+    | _, Type.ParameterVariadicComponent _ -> impossible
     | Type.Annotated left, _ -> solve_less_or_equal order ~constraints ~left ~right
     | _, Type.Annotated right -> solve_less_or_equal order ~constraints ~left ~right
     | Type.Any, other -> [add_fallbacks other]
@@ -434,9 +444,9 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         OrderedConstraints.add_lower_bound constraints ~order ~pair |> Option.to_list
     | _, Type.Bottom
     | Type.Top, _ ->
-        []
+        impossible
     | Type.Bottom, _ -> [constraints]
-    | _, Type.NoneType -> []
+    | _, Type.NoneType -> impossible
     | Type.Callable _, Type.Primitive protocol when is_protocol right ~protocol_assumptions ->
         if
           [%compare.equal: Type.Parameter.t list option]
@@ -445,12 +455,12 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         then
           [constraints]
         else
-          []
+          impossible
     | Type.Callable _, Type.Parametric { name; _ } when is_protocol right ~protocol_assumptions ->
         instantiate_protocol_parameters order ~protocol:name ~candidate:left
         >>| Type.parametric name
         >>| (fun left -> solve_less_or_equal order ~constraints ~left ~right)
-        |> Option.value ~default:[]
+        |> Option.value ~default:impossible
     | Type.Union lefts, right ->
         solve_ordered_types_less_or_equal
           order
@@ -463,7 +473,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         [constraints]
     | Type.NoneType, Type.Union rights ->
         List.concat_map rights ~f:(fun right -> solve_less_or_equal order ~constraints ~left ~right)
-    | Type.NoneType, _ -> []
+    | Type.NoneType, _ -> impossible
     (* We have to consider both the variables' constraint and its full value against the union. *)
     | Type.Variable bound_variable, Type.Union union ->
         solve_less_or_equal
@@ -480,7 +490,14 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           ~constraints
           ~left:(Type.Variable.Unary.upper_bound bound_variable)
           ~right
-    | _, Type.Variable _bound_variable -> []
+    | _, Type.Variable _bound_variable -> impossible
+    | Type.IntExpression _, _
+    | _, Type.IntExpression _ ->
+        Type.solve_less_or_equal_polynomial
+          ~left
+          ~right
+          ~impossible
+          ~solve:(solve_less_or_equal order ~constraints)
     | _, Type.Union rights ->
         if
           Type.Variable.all_variables_are_resolved left
@@ -494,15 +511,53 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           if List.exists rights ~f:simple_solve then
             [constraints]
           else
-            []
+            impossible
         else
           List.concat_map rights ~f:(fun right ->
               solve_less_or_equal order ~constraints ~left ~right)
-    | ( Type.Parametric { name = "type"; parameters = [Single (Type.Primitive left)] },
-        Type.Primitive _ ) ->
-        metaclass left ~assumptions
-        >>| (fun left -> solve_less_or_equal order ~left ~right ~constraints)
-        |> Option.value ~default:[]
+    | ( Type.Parametric { name = "type"; parameters = [Single left] },
+        Type.Parametric { name = "type"; parameters = [Single right] } ) ->
+        solve_less_or_equal order ~constraints ~left ~right
+    | Type.Parametric { name = "type"; parameters = [Single meta_parameter] }, _ ->
+        let through_meta_hierarchy =
+          match meta_parameter, right with
+          | Primitive meta_parameter, Primitive _ ->
+              metaclass meta_parameter ~assumptions
+              >>| (fun left -> solve_less_or_equal order ~left ~right ~constraints)
+              |> Option.value ~default:impossible
+          | _ -> impossible
+        in
+        let through_protocol_hierarchy =
+          match right, is_protocol right ~protocol_assumptions with
+          | Primitive right_name, true ->
+              if
+                [%compare.equal: Type.Parameter.t list option]
+                  (instantiate_protocol_parameters order ~candidate:left ~protocol:right_name)
+                  (Some [])
+              then
+                [constraints]
+              else
+                impossible
+          | Parametric { name = right_name; _ }, true ->
+              instantiate_protocol_parameters order ~protocol:right_name ~candidate:left
+              >>| Type.parametric right_name
+              >>| (fun left -> solve_less_or_equal order ~left ~right ~constraints)
+              |> Option.value ~default:impossible
+          | Callable _, _ -> (
+              match meta_parameter with
+              | Type.Union types ->
+                  solve_less_or_equal
+                    order
+                    ~constraints
+                    ~left:(Type.union (List.map ~f:Type.meta types))
+                    ~right
+              | _ ->
+                  resolve_callable_protocol ~order ~assumption:right left
+                  >>| (fun left -> solve_less_or_equal order ~constraints ~left ~right)
+                  |> Option.value ~default:impossible )
+          | _ -> impossible
+        in
+        List.append through_protocol_hierarchy through_meta_hierarchy
     | _, Type.Parametric { name = right_name; parameters = right_parameters } ->
         let solve_parameters left_parameters =
           let handle_variables constraints (left, right, variable) =
@@ -514,7 +569,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
             | _, Type.Parameter.Single Type.Top, _ ->
                 (* T[_T2] is a subtype of T[Top], for any _T2 and regardless of its variance. *)
                 constraints
-            | Single Top, _, _ -> []
+            | Single Top, _, _ -> impossible
             | ( Single left,
                 Single right,
                 Type.Variable.Unary { Type.Variable.Unary.variance = Covariant; _ } ) ->
@@ -552,7 +607,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                 let right = Type.Callable.create ~parameters:right ~annotation:Type.Any () in
                 List.concat_map constraints ~f:(fun constraints ->
                     solve_less_or_equal order ~constraints ~left ~right)
-            | _ -> []
+            | _ -> impossible
           in
           variables right_name
           >>= Type.Variable.zip_on_two_parameter_lists ~left_parameters ~right_parameters
@@ -565,7 +620,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               instantiate_protocol_parameters order ~protocol:right_name ~candidate:left
           | _ -> parameters
         in
-        parameters >>= solve_parameters |> Option.value ~default:[]
+        parameters >>= solve_parameters |> Option.value ~default:impossible
     | Type.Primitive source, Type.Primitive target -> (
         let left_typed_dictionary = get_typed_dictionary left in
         let right_typed_dictionary = get_typed_dictionary right in
@@ -580,7 +635,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
             if not (List.exists right_fields ~f:field_not_found) then
               [constraints]
             else
-              []
+              impossible
         | Some { fields; _ }, None ->
             let left =
               Type.Primitive
@@ -619,14 +674,16 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           ~left:(Type.parametric "tuple" [Single (Type.union members)])
           ~right
     | Type.Primitive name, Type.Tuple _ ->
-        if Type.Primitive.equal name "tuple" then [constraints] else []
+        if Type.Primitive.equal name "tuple" then [constraints] else impossible
     | Type.Tuple _, _
     | _, Type.Tuple _ ->
-        []
+        impossible
     | ( Type.Callable { Callable.kind = Callable.Named left; _ },
-        Type.Callable { Callable.kind = Callable.Named right; _ } )
-      when Reference.equal left right ->
-        [constraints]
+        Type.Callable { Callable.kind = Callable.Named right; _ } ) ->
+        if Reference.equal left right then
+          [constraints]
+        else
+          impossible
     | ( Type.Callable
           {
             Callable.kind = Callable.Anonymous;
@@ -641,7 +698,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           } )
       when Callable.equal_overload Type.equal left_implementation right_implementation
            && List.equal (Callable.equal_overload Type.equal) left_overloads right_overloads ->
-        []
+        impossible
     | Type.Callable callable, Type.Callable { implementation; overloads; _ } ->
         let fold_overload sofar called_as =
           let call_as_overload constraints =
@@ -652,24 +709,12 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           List.concat_map sofar ~f:call_as_overload
         in
         List.fold (implementation :: overloads) ~f:fold_overload ~init:[constraints]
-    | _, Type.Callable _ when Type.is_meta left -> (
-        match Type.single_parameter left with
-        | Type.Union types ->
-            solve_less_or_equal
-              order
-              ~constraints
-              ~left:(Type.union (List.map ~f:Type.meta types))
-              ~right
-        | single_parameter ->
-            constructor ~protocol_assumptions single_parameter
-            >>| (fun left -> solve_less_or_equal order ~constraints ~left ~right)
-            |> Option.value ~default:[] )
     | left, Type.Callable _ ->
         resolve_callable_protocol ~order ~assumption:right left
         >>| (fun left -> solve_less_or_equal order ~constraints ~left ~right)
-        |> Option.value ~default:[]
-    | Type.Callable _, _ -> []
-    | _, Type.Literal _ -> []
+        |> Option.value ~default:impossible
+    | Type.Callable _, _ -> impossible
+    | _, Type.Literal _ -> impossible
     | Type.Literal _, _ ->
         solve_less_or_equal order ~constraints ~left:(Type.weaken_literals left) ~right
 
@@ -686,7 +731,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
       in
       match folded_constraints with
       | List.Or_unequal_lengths.Ok constraints -> constraints
-      | List.Or_unequal_lengths.Unequal_lengths -> []
+      | List.Or_unequal_lengths.Unequal_lengths -> impossible
     in
     let solve_concrete_against_concatenation ~is_lower_bound ~bound ~concatenation =
       let variable = Type.OrderedTypes.Concatenation.variable concatenation in
@@ -746,7 +791,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                       ( new_synthetic_variable :: synthetics_created_sofar,
                         List.concat_map constraints_set ~f:solve_against_concrete )
                     in
-                    List.foldi concrete ~f:synthetic_solve ~init:([], [constraints])
+                    List.foldi concrete ~f:synthetic_solve ~init:(impossible, [constraints])
                   in
                   let consider_synthetic_variable_constraints synthetic_variable_constraints =
                     let instantiate_synthetic_variables solution =
@@ -793,9 +838,9 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         in
         Type.OrderedTypes.Concatenation.zip concatenation ~against:bound
         >>| handle_paired
-        |> Option.value ~default:[]
+        |> Option.value ~default:impossible
       else
-        []
+        impossible
     in
     let open Type.OrderedTypes in
     let open Type.Variable.Variadic.List in
@@ -843,7 +888,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               ~order
               ~pair:(Type.Variable.ListVariadicPair (variable, Concatenation left))
             |> Option.to_list
-        | _ -> [] )
+        | _ -> impossible )
 
 
   and instantiate_protocol_parameters
@@ -962,11 +1007,20 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                         ~name:(AnnotatedAttribute.name protocol_attribute)
                       >>| attribute_annotation
                       >>| (fun left ->
+                            let right =
+                              match attribute_annotation protocol_attribute with
+                              | Type.Parametric { name = "BoundMethod"; _ } as bound_method ->
+                                  attribute ~assumptions bound_method ~name:"__call__"
+                                  >>| attribute_annotation
+                                  |> Option.value ~default:Type.object_primitive
+                              | annotation -> annotation
+                            in
+
                             List.concat_map constraints_set ~f:(fun constraints ->
                                 solve_less_or_equal
                                   order_with_new_assumption
                                   ~left
-                                  ~right:(attribute_annotation protocol_attribute)
+                                  ~right
                                   ~constraints))
                       |> Option.value ~default:[]
                 in

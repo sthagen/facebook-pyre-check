@@ -1,11 +1,13 @@
+# Copyright (c) 2016-present, Facebook, Inc.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
+# pyre-strict
+
 import logging
 from typing import Callable, Iterable
 
-from .generator_specifications import DecoratorAnnotationSpecification
-from .get_annotated_free_functions_with_decorator import (
-    AnnotatedFreeFunctionWithDecoratorGenerator,
-)
-from .get_REST_api_sources import RESTApiSourceGenerator
 from .model import Model
 from .model_generator import ModelGenerator
 
@@ -13,9 +15,11 @@ from .model_generator import ModelGenerator
 LOG: logging.Logger = logging.getLogger(__name__)
 
 
-class FilteredSourceGenerator(ModelGenerator):
+class FilteredSourceGenerator(ModelGenerator[Model]):
     def __init__(
-        self, superset_generator: ModelGenerator, subset_generator: ModelGenerator
+        self,
+        superset_generator: ModelGenerator[Model],
+        subset_generator: ModelGenerator[Model],
     ) -> None:
         self.superset_generator = superset_generator
         self.subset_generator = subset_generator

@@ -117,7 +117,6 @@ module OrderImplementation = struct
         ( {
             ConstraintsSet.class_hierarchy =
               { least_upper_bound; instantiate_successors_parameters; variables; _ };
-            constructor;
             is_protocol;
             assumptions = { protocol_assumptions; _ };
             _;
@@ -138,8 +137,6 @@ module OrderImplementation = struct
         | Type.Bottom, other
         | other, Type.Bottom ->
             other
-        | undeclared, _ when Type.equal undeclared Type.undeclared -> Type.union [left; right]
-        | _, undeclared when Type.equal undeclared Type.undeclared -> Type.union [left; right]
         | Type.Top, _
         | _, Type.Top ->
             Type.Top
@@ -162,6 +159,13 @@ module OrderImplementation = struct
               union
             else
               List.map elements ~f:(join order other) |> List.fold ~f:(join order) ~init:Type.Bottom
+        | Type.IntExpression polynomial, other when Type.Polynomial.is_base_case polynomial ->
+            join order other (Type.polynomial_to_type polynomial)
+        | other, Type.IntExpression polynomial when Type.Polynomial.is_base_case polynomial ->
+            join order other (Type.polynomial_to_type polynomial)
+        | Type.IntExpression _, other
+        | other, Type.IntExpression _ ->
+            join order other (Type.Primitive "int")
         | _, Type.Variable _
         | Type.Variable _, _ ->
             union
@@ -278,10 +282,12 @@ module OrderImplementation = struct
         | Type.Tuple _, _
         | _, Type.Tuple _ ->
             Type.union [left; right]
-        | ( (Type.Callable { Callable.kind = Callable.Named left; _ } as callable),
-            Type.Callable { Callable.kind = Callable.Named right; _ } )
-          when Reference.equal left right ->
-            callable
+        | ( (Type.Callable { Callable.kind = Callable.Named left_name; _ } as callable),
+            Type.Callable { Callable.kind = Callable.Named right_name; _ } ) ->
+            if Reference.equal left_name right_name then
+              callable
+            else
+              Type.union [left; right]
         | Type.Callable left, Type.Callable right ->
             if List.is_empty left.Callable.overloads && List.is_empty right.Callable.overloads then
               let kind =
@@ -301,16 +307,12 @@ module OrderImplementation = struct
             else
               union
         | Type.Callable callable, other
-        | other, Type.Callable callable ->
-            let default =
-              match ConstraintsSet.resolve_callable_protocol ~order ~assumption:right other with
-              | Some other_callable -> join order other_callable (Type.Callable callable)
-              | None -> Type.union [left; right]
-            in
-            Option.some_if (Type.is_meta other) other
-            >>= constructor ~protocol_assumptions
-            >>| join order (Type.Callable callable)
-            |> Option.value ~default
+        | other, Type.Callable callable -> (
+            match
+              ConstraintsSet.resolve_callable_protocol ~order ~assumption:(Callable callable) other
+            with
+            | Some other_callable -> join order other_callable (Type.Callable callable)
+            | None -> Type.union [left; right] )
         | (Type.Literal _ as literal), other
         | other, (Type.Literal _ as literal) ->
             join order other (Type.weaken_literals literal)
@@ -333,11 +335,7 @@ module OrderImplementation = struct
             | None -> union )
 
 
-    and meet
-        ({ constructor; is_protocol; assumptions = { protocol_assumptions; _ }; _ } as order)
-        left
-        right
-      =
+    and meet ({ is_protocol; assumptions = { protocol_assumptions; _ }; _ } as order) left right =
       if Type.equal left right then
         left
       else
@@ -426,15 +424,17 @@ module OrderImplementation = struct
             Type.Callable { Callable.kind = Callable.Named right; _ } )
           when Reference.equal left right ->
             callable
-        | Type.Callable callable, other
-        | other, Type.Callable callable ->
-            Option.some_if (Type.is_meta other) other
-            >>= constructor ~protocol_assumptions
-            >>| meet order (Type.Callable callable)
-            |> Option.value ~default:Type.Bottom
-        | Type.Literal _, _
-        | _, Type.Literal _ ->
-            Type.Bottom
+        | Type.Callable _, _
+        | _, Type.Callable _ ->
+            Bottom
+        | (Type.IntExpression _ as int_expression), other
+        | other, (Type.IntExpression _ as int_expression)
+        | (Type.Literal _ as int_expression), other
+        | other, (Type.Literal _ as int_expression) ->
+            if always_less_or_equal order ~left:int_expression ~right:other then
+              int_expression
+            else
+              Type.Bottom
         | Type.Primitive _, _ when always_less_or_equal order ~left ~right -> left
         | _, Type.Primitive _ when always_less_or_equal order ~left:right ~right:left -> right
         | _ when is_protocol right ~protocol_assumptions && always_less_or_equal order ~left ~right

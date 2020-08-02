@@ -28,12 +28,15 @@ let test_is_method _ =
           nesting_define = None;
         };
       captures = [];
+      unbound_names = [];
       body = [+Statement.Pass];
     }
   in
   assert_true (Define.is_method (define ~name:"path.source.foo" ~parent:(Some "path.source")));
   assert_false (Define.is_method (define ~name:"foo" ~parent:None))
 
+
+let decorator ?arguments name = { Decorator.name = + !&name; arguments }
 
 let test_is_classmethod _ =
   let define name decorators =
@@ -50,12 +53,13 @@ let test_is_classmethod _ =
           nesting_define = None;
         };
       captures = [];
+      unbound_names = [];
       body = [+Statement.Pass];
     }
   in
   assert_false (Define.is_class_method (define "foo" []));
   assert_false (Define.is_class_method (define "__init__" []));
-  assert_true (Define.is_class_method (define "foo" [!"classmethod"]));
+  assert_true (Define.is_class_method (define "foo" [decorator "classmethod"]));
   assert_true (Define.is_class_method (define "__init_subclass__" []));
   assert_true (Define.is_class_method (define "__new__" []));
   assert_true (Define.is_class_method (define "__class_getitem__" []))
@@ -76,12 +80,13 @@ let test_is_class_property _ =
           nesting_define = None;
         };
       captures = [];
+      unbound_names = [];
       body = [+Statement.Pass];
     }
   in
   assert_false (Define.is_class_property (define "foo" []));
   assert_false (Define.is_class_property (define "__init__" []));
-  assert_true (Define.is_class_property (define "foo" [!"pyre_extensions.classproperty"]));
+  assert_true (Define.is_class_property (define "foo" [decorator "pyre_extensions.classproperty"]));
   assert_false (Define.is_class_property (define "__new__" []))
 
 
@@ -100,25 +105,26 @@ let test_decorator _ =
           nesting_define = None;
         };
       captures = [];
+      unbound_names = [];
       body = [+Statement.Pass];
     }
   in
   assert_false (Define.is_static_method (define []));
-  assert_false (Define.is_static_method (define [!"foo"]));
-  assert_true (Define.is_static_method (define [!"staticmethod"]));
-  assert_true (Define.is_static_method (define [!"foo"; !"staticmethod"]));
+  assert_false (Define.is_static_method (define [decorator "foo"]));
+  assert_true (Define.is_static_method (define [decorator "staticmethod"]));
+  assert_true (Define.is_static_method (define [decorator "foo"; decorator "staticmethod"]));
   assert_false (Define.is_abstract_method (define []));
-  assert_false (Define.is_abstract_method (define [!"foo"]));
-  assert_true (Define.is_abstract_method (define [!"abstractmethod"]));
-  assert_true (Define.is_abstract_method (define [!"foo"; !"abstractmethod"]));
-  assert_true (Define.is_abstract_method (define [!"abc.abstractmethod"]));
-  assert_true (Define.is_abstract_method (define [!"abstractproperty"]));
-  assert_true (Define.is_abstract_method (define [!"abc.abstractproperty"]));
-  assert_true (Define.is_overloaded_function (define [!"overload"]));
-  assert_true (Define.is_overloaded_function (define [!"typing.overload"]));
-  assert_true (Define.is_property_setter (define [!"foo.setter"]));
-  assert_false (Define.is_property_setter (define [!"setter"]));
-  assert_false (Define.is_property_setter (define [!"bar.setter"]))
+  assert_false (Define.is_abstract_method (define [decorator "foo"]));
+  assert_true (Define.is_abstract_method (define [decorator "abstractmethod"]));
+  assert_true (Define.is_abstract_method (define [decorator "foo"; decorator "abstractmethod"]));
+  assert_true (Define.is_abstract_method (define [decorator "abc.abstractmethod"]));
+  assert_true (Define.is_abstract_method (define [decorator "abstractproperty"]));
+  assert_true (Define.is_abstract_method (define [decorator "abc.abstractproperty"]));
+  assert_true (Define.is_overloaded_function (define [decorator "overload"]));
+  assert_true (Define.is_overloaded_function (define [decorator "typing.overload"]));
+  assert_true (Define.is_property_setter (define [decorator "foo.setter"]));
+  assert_false (Define.is_property_setter (define [decorator "setter"]));
+  assert_false (Define.is_property_setter (define [decorator "bar.setter"]))
 
 
 let test_is_constructor _ =
@@ -137,6 +143,7 @@ let test_is_constructor _ =
             nesting_define = None;
           };
         captures = [];
+        unbound_names = [];
         body = [+Statement.Pass];
       }
     in
@@ -290,7 +297,9 @@ let test_attributes _ =
       in
       List.map expected ~f:attribute
     in
-    let definition = { Class.name = + !&""; bases = []; body = []; decorators = [] } in
+    let definition =
+      { Class.name = + !&""; bases = []; body = []; decorators = []; top_level_unbound_names = [] }
+    in
     assert_equal
       ~cmp:(List.equal (fun left right -> Attribute.location_insensitive_compare left right = 0))
       ~printer:(fun attributes -> List.map ~f:Attribute.show attributes |> String.concat ~sep:"\n")
@@ -339,7 +348,7 @@ let test_attributes _ =
       def foo(self, argument: str):
         self.attribute = argument
     |}
-    ["attribute", None, Some "argument", true];
+    ["attribute", Some Type.string, Some "argument", true];
   assert_implicit_attributes
     {|
       def foo(self, attribute: str):
@@ -845,16 +854,16 @@ let test_assume _ =
 let test_pp _ =
   let assert_pretty_print ~expected source =
     let pretty_print_expected =
-      expected |> String.lstrip ~drop:(( = ) '\n') |> Test.trim_extra_indentation
+      expected |> String.lstrip ~drop:(Char.equal '\n') |> Test.trim_extra_indentation
     in
-    let source = Test.trim_extra_indentation source |> String.rstrip ~drop:(( = ) '\n') in
+    let source = Test.trim_extra_indentation source |> String.rstrip ~drop:(Char.equal '\n') in
     let pretty_print_of_source =
       source
       |> String.split_on_chars ~on:['\n']
       |> Parser.parse
       |> List.map ~f:show
       |> String.concat ~sep:"\n"
-      |> String.rstrip ~drop:(( = ) '\n')
+      |> String.rstrip ~drop:(Char.equal '\n')
     in
     assert_equal ~printer:Fn.id pretty_print_expected pretty_print_of_source
   in

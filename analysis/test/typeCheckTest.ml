@@ -76,8 +76,11 @@ let description ~resolution error =
   let ast_environment =
     Resolution.global_resolution resolution |> GlobalResolution.ast_environment
   in
-  Error.instantiate ~lookup:(AstEnvironment.ReadOnly.get_relative ast_environment) error
-  |> Error.Instantiated.description ~show_error_traces:false
+  Error.instantiate
+    ~show_error_traces:false
+    ~lookup:(AstEnvironment.ReadOnly.get_relative ast_environment)
+    error
+  |> Error.Instantiated.description
 
 
 let test_initial context =
@@ -358,7 +361,7 @@ let test_module_exports context =
   assert_exports_resolved "wildcard.cyclic" Type.Top;
   assert_exports_resolved "wildcard.aliased()" Type.integer;
   assert_exports_resolved "wildcard_default.constant" Type.integer;
-  assert_exports_resolved "wildcard_default.aliased()" Type.Top;
+  assert_exports_resolved "wildcard_default.aliased()" Type.Any;
   let assert_fixpoint_stop =
     assert_resolved
       ~context
@@ -550,11 +553,6 @@ let test_forward_expression context =
     "test.foo(unknown).attribute"
     Type.Top;
   assert_forward
-    ~precondition:["undefined", Type.Union [Type.integer; Type.undeclared]]
-    ~postcondition:["undefined", Type.Union [Type.integer; Type.undeclared]]
-    "undefined()"
-    Type.Top;
-  assert_forward
     ~precondition:["foo_instance", Type.Primitive "Foo"]
     ~postcondition:["foo_instance", Type.Primitive "Foo"]
     ~environment:
@@ -624,14 +622,14 @@ let test_forward_expression context =
     ~postcondition:["Container", dictionary_set_union]
     "1 in Container"
     Type.bool;
-  assert_forward "undefined < 1" Type.Top;
-  assert_forward "undefined == undefined" Type.Top;
+  assert_forward "undefined < 1" Type.bool;
+  assert_forward "undefined == undefined" Type.Any;
 
   (* Complex literal. *)
   assert_forward "1j" Type.complex;
   assert_forward "1" (Type.literal_integer 1);
-  assert_forward "\"\"" (Type.literal_string "");
-  assert_forward "b\"\"" Type.bytes;
+  assert_forward {|""|} (Type.literal_string "");
+  assert_forward {|b""|} (Type.literal_bytes "");
 
   (* Dictionaries. *)
   assert_forward "{1: 1}" (Type.dictionary ~key:Type.integer ~value:Type.integer);
@@ -646,18 +644,10 @@ let test_forward_expression context =
   assert_forward "{**{1: 1}}" (Type.dictionary ~key:Type.integer ~value:Type.integer);
   assert_forward
     "{**{1: 1}, **{'a': 'b'}}"
-    (Type.union
-       [
-         Type.dictionary ~key:Type.integer ~value:Type.integer;
-         Type.dictionary ~key:Type.string ~value:Type.string;
-       ]);
-  assert_forward
-    "{1: 'string', **{undefined: 1}}"
-    (Type.union
-       [
-         Type.dictionary ~key:Type.integer ~value:Type.string;
-         Type.dictionary ~key:Type.Top ~value:Type.integer;
-       ]);
+    (Type.dictionary
+       ~key:(Type.union [Type.integer; Type.string])
+       ~value:(Type.union [Type.integer; Type.string]));
+  assert_forward "{1: 'string', **{undefined: 1}}" Type.Top;
   assert_forward "{undefined: 1}" (Type.dictionary ~key:Type.Top ~value:Type.integer);
   assert_forward "{1: undefined}" (Type.dictionary ~key:Type.integer ~value:Type.Top);
   assert_forward
@@ -684,7 +674,7 @@ let test_forward_expression context =
     (Type.generator (Type.tuple [Type.integer; Type.string]));
   assert_forward "(nested for element in [[1]] for nested in element)" (Type.generator Type.integer);
   assert_forward "(undefined for element in [1])" (Type.generator Type.Top);
-  assert_forward "(element for element in undefined)" (Type.generator Type.Top);
+  assert_forward "(element for element in undefined)" (Type.generator Type.Any);
 
   (* Lambda. *)
   let callable ~parameters ~annotation =
@@ -743,11 +733,6 @@ let test_forward_expression context =
     ~postcondition:["x", Type.list Type.integer]
     "['', *x]"
     (Type.list (Type.union [Type.string; Type.integer]));
-  assert_forward
-    ~precondition:["x", Type.undeclared]
-    ~postcondition:["x", Type.undeclared]
-    "[x]"
-    (Type.list Type.undeclared);
 
   (* Name. *)
   assert_forward
@@ -790,7 +775,13 @@ let test_forward_expression context =
   assert_forward "f'string{undefined}'" Type.string;
 
   (* Ternaries. *)
-  assert_forward "3 if True else 1" Type.integer;
+  assert_forward "3 if True else 1" (Type.union [Type.literal_integer 3; Type.literal_integer 1]);
+  assert_forward
+    "True if True else False"
+    (Type.union [Type.Literal (Type.Boolean true); Type.Literal (Type.Boolean false)]);
+  assert_forward
+    "'foo' if True else 'bar'"
+    (Type.union [Type.literal_string "foo"; Type.literal_string "bar"]);
   assert_forward "1.0 if True else 1" Type.float;
   assert_forward "1 if True else 1.0" Type.float;
   assert_forward "undefined if True else 1" Type.Top;
@@ -818,7 +809,7 @@ let test_forward_expression context =
   assert_forward "-1" (Type.Literal (Integer (-1)));
   assert_forward "+1" Type.integer;
   assert_forward "~1" Type.integer;
-  assert_forward "-undefined" Type.Top;
+  assert_forward "-undefined" Type.Any;
 
   (* Walrus operator. *)
   assert_forward
@@ -978,6 +969,7 @@ let test_forward_statement context =
     match forwarded with
     | None -> assert_true bottom
     | Some actual_resolution ->
+        assert_false bottom;
         assert_annotation_store
           ~expected:(create_annotation_store ~immutables:postcondition_immutables postcondition)
           actual_resolution
@@ -993,16 +985,6 @@ let test_forward_statement context =
     ["z", Type.integer]
     "x = y = z"
     ["x", Type.integer; "y", Type.integer; "z", Type.integer];
-  assert_forward ["y", Type.undeclared] "x = y" ["x", Type.Any; "y", Type.undeclared];
-  assert_forward
-    ["y", Type.Union [Type.integer; Type.undeclared]]
-    "x = y"
-    ["x", Type.integer; "y", Type.Union [Type.integer; Type.undeclared]];
-  assert_forward ["y", Type.undeclared] "x = [y]" ["x", Type.list Type.Any; "y", Type.undeclared];
-  assert_forward
-    ["y", Type.Union [Type.integer; Type.undeclared]]
-    "x = [y]"
-    ["x", Type.list Type.integer; "y", Type.Union [Type.integer; Type.undeclared]];
   assert_forward ~postcondition_immutables:["x", Type.Any] [] "x: Derp" ["x", Type.Any];
   assert_forward ~postcondition_immutables:["x", Type.string] [] "x: str = 1" ["x", Type.string];
   assert_forward
@@ -1016,11 +998,11 @@ let test_forward_statement context =
     ["c", Type.integer; "d", Type.Top]
     "a, b = c, d"
     ["a", Type.integer; "b", Type.Top; "c", Type.integer; "d", Type.Top];
-  assert_forward ["z", Type.integer] "x, y = z" ["x", Type.Top; "y", Type.Top; "z", Type.integer];
+  assert_forward ["z", Type.integer] "x, y = z" ["x", Type.Any; "y", Type.Any; "z", Type.integer];
   assert_forward
     ["z", Type.tuple [Type.integer; Type.string; Type.string]]
     "x, y = z"
-    ["x", Type.Top; "y", Type.Top; "z", Type.tuple [Type.integer; Type.string; Type.string]];
+    ["x", Type.Any; "y", Type.Any; "z", Type.tuple [Type.integer; Type.string; Type.string]];
   assert_forward
     ["y", Type.integer; "z", Type.Top]
     "x = y, z"
@@ -1038,7 +1020,7 @@ let test_forward_statement context =
     ["z", Type.Tuple (Type.Unbounded Type.integer)]
     "x, y = z"
     ["x", Type.integer; "y", Type.integer; "z", Type.Tuple (Type.Unbounded Type.integer)];
-  assert_forward [] "(x, y), z = 1" ["x", Type.Top; "y", Type.Top; "z", Type.Top];
+  assert_forward [] "(x, y), z = 1" ["x", Type.Any; "y", Type.Any; "z", Type.Any];
   assert_forward
     ["z", Type.list Type.integer]
     "x, y = z"

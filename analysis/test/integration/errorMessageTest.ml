@@ -22,13 +22,17 @@ let test_show_error_traces context =
       ^ "Type `str` expected on line 1, specified on line 1.";
     ];
   assert_type_errors
-    "def foo() -> typing.List[str]: return 1"
+    {|
+      import typing
+      def foo() -> typing.List[str]: return 1
+    |}
     [
       "Incompatible return type [7]: Expected `typing.List[str]` but got `int`. Type "
-      ^ "`typing.List[str]` expected on line 1, specified on line 1.";
+      ^ "`typing.List[str]` expected on line 3, specified on line 3.";
     ];
   assert_type_errors
     {|
+      import typing
       def f() -> dict: return {}
       def foo() -> typing.Dict[typing.Any, typing.Any]: return f()
     |}
@@ -119,8 +123,8 @@ let test_show_error_traces context =
       "Missing attribute annotation [4]: Attribute `attribute` of class `Foo` has type `str` but \
        no type is specified. Attribute `attribute` declared on line 3, type `str` deduced from \
        test.py:7:4.";
-      "Undefined name [18]: Global name `x` is not defined, or there is at least one control flow \
-       path that doesn't define `x`.";
+      "Unbound name [10]: Name `x` is used but not defined in the current scope. Did you forget to \
+       import it or assign to it?";
       "Incompatible return type [7]: Expected `str` but got `unknown`. Type `str` expected on line \
        8, specified on line 5.";
     ];
@@ -135,8 +139,8 @@ let test_show_error_traces context =
       "Missing global annotation [5]: Globally accessible variable `constant` has type `int` but \
        no type is specified. Global variable `constant` declared on line 2, type `int` deduced \
        from test.py:5:2.";
-      "Undefined name [18]: Global name `x` is not defined, or there is at least one control flow \
-       path that doesn't define `x`.";
+      "Unbound name [10]: Name `x` is used but not defined in the current scope. Did you forget to \
+       import it or assign to it?";
     ];
   assert_type_errors
     {|
@@ -150,8 +154,8 @@ let test_show_error_traces context =
       "Missing global annotation [5]: Globally accessible variable `constant` has type \
        `typing.Union[int, str]` but no type is specified. Global variable `constant` declared on \
        line 2, type `typing.Union[int, str]` deduced from test.py:5:2, test.py:6:2.";
-      "Undefined name [18]: Global name `x` is not defined, or there is at least one control flow \
-       path that doesn't define `x`.";
+      "Unbound name [10]: Name `x` is used but not defined in the current scope. Did you forget to \
+       import it or assign to it?";
     ];
   assert_type_errors
     {|
@@ -164,11 +168,12 @@ let test_show_error_traces context =
       "Missing attribute annotation [4]: Attribute `attribute` of class `Other` has type `int` but \
        no type is specified. Attribute `attribute` declared on line 3, type `int` deduced from \
        test.py:5:4.";
-      "Undefined name [18]: Global name `x` is not defined, or there is at least one control flow \
-       path that doesn't define `x`.";
+      "Unbound name [10]: Name `x` is used but not defined in the current scope. Did you forget to \
+       import it or assign to it?";
     ];
   assert_type_errors
     {|
+      import typing
       def foo() -> None:
         a: typing.List[float] = [1]
         b: typing.List[int] = [2]
@@ -176,22 +181,37 @@ let test_show_error_traces context =
     |}
     [
       "Incompatible variable type [9]: a is declared to have type `typing.List[float]` but is used \
-       as type `typing.List[int]`. Redeclare `a` on line 5 if you wish to override the previously \
+       as type `typing.List[int]`. Redeclare `a` on line 6 if you wish to override the previously \
        declared type. See \
        https://pyre-check.org/docs/error-types.html#list-and-dictionary-mismatches-with-subclassing \
        for mutable container errors.";
     ];
   assert_type_errors
     {|
+      import typing
       def foo() -> typing.List[float]:
         l = [1]
         return l
     |}
     [
       "Incompatible return type [7]: Expected `typing.List[float]` but got `typing.List[int]`. \
-       Type `typing.List[float]` expected on line 4, specified on line 2. See \
+       Type `typing.List[float]` expected on line 5, specified on line 3. See \
        https://pyre-check.org/docs/error-types.html#list-and-dictionary-mismatches-with-subclassing \
        for mutable container errors.";
+    ];
+  assert_type_errors
+    {|
+      from typing import TypeVar
+      T = TypeVar("T")
+      class C:
+        x: T
+    |}
+    [
+      "Uninitialized attribute [13]: Attribute `x` is declared in class `C` to have type \
+       `Variable[T]` but is never initialized.";
+      "Invalid type variable [34]: The current class isn't generic with respect to the type \
+       variable `Variable[T]`. To reference the type variable, you can modify the class to inherit \
+       from `typing.Generic[T]`.";
     ]
 
 
@@ -207,14 +227,6 @@ let test_concise context =
       "Illegal annotation target [35]: Target cannot be annotated.";
       "Undefined attribute [16]: `Foo` has no attribute `a`.";
     ];
-
-  (* Impossible Isinstance *)
-  assert_type_errors
-    {|
-      def foo(x: int) -> None:
-        assert not isinstance(x, int)
-    |}
-    ["Impossible assertion [25]: Assertion will always fail."];
 
   (* Incompatible Awaitable *)
   assert_type_errors
@@ -232,6 +244,7 @@ let test_concise context =
   (* Prohibited Any *)
   assert_type_errors
     {|
+      import typing
       def foo() -> None:
         x: typing.Any = 1
     |}
@@ -240,6 +253,7 @@ let test_concise context =
   (* Missing Annotation *)
   assert_type_errors
     {|
+      import typing
       x: typing.Any = 1
     |}
     ["Missing global annotation [5]: Global annotation cannot be `Any`."];
@@ -259,6 +273,7 @@ let test_concise context =
   (* Incompatible Annotation *)
   assert_type_errors
     {|
+      import typing
       def foo(x: typing.Union[int, str] = 1.0) -> None:
         return
     |}
@@ -369,15 +384,20 @@ let test_concise context =
   (* TypedDict *)
   assert_type_errors
     {|
+      import mypy_extensions
       Cat = mypy_extensions.TypedDict('Cat', {'name': str, 'breed': str})
       def foo(x: Cat) -> None:
           y = x["year"]
     |}
-    ["TypedDict accessed with a missing key [27]: TypedDict `Cat` has no key `year`."];
+    [
+      "Undefined import [21]: Could not find module `mypy_extensions`.";
+      "TypedDict accessed with a missing key [27]: TypedDict `Cat` has no key `year`.";
+    ];
 
   (* Redundant Cast *)
   assert_type_errors
     {|
+      import typing
       x: int
       y: int = typing.cast(int, x)
     |}
@@ -388,19 +408,19 @@ let test_concise context =
     {|
       from a.b import c
     |}
-    ["Undefined import [21]: Could not find `a`."];
+    ["Undefined import [21]: Could not find module `a.b`."];
   assert_type_errors
     {|
       def foo() -> None:
         y = x
     |}
-    ["Undefined name [18]: Global name `x` is undefined."];
+    ["Unbound name [10]: Name `x` is used but not defined."];
   assert_type_errors
     {|
       def foo(x: X) -> None:
         return
     |}
-    ["Undefined or invalid type [11]: Annotation `X` is not defined as a type."];
+    ["Unbound name [10]: Name `X` is used but not defined."];
 
   (* Uninitialized Attribute *)
   assert_type_errors
@@ -433,7 +453,26 @@ let test_concise context =
     ["Invalid class instantiation [45]: Cannot instantiate abstract class `Foo`."]
 
 
+let test_reveal_type context =
+  let assert_type_errors = assert_type_errors ~context ~handle:"test.py" in
+  assert_type_errors
+    {|
+      class A: pass
+      a: A
+      reveal_type(a)
+      reveal_type(a, qualify=True)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `a` is `A`.";
+      "Revealed type [-1]: Revealed type for `a` is `test.A`.";
+    ]
+
+
 let () =
   "errorMessage"
-  >::: ["check_show_error_traces" >:: test_show_error_traces; "check_concise" >:: test_concise]
+  >::: [
+         "check_show_error_traces" >:: test_show_error_traces;
+         "check_concise" >:: test_concise;
+         "reveal_types" >:: test_reveal_type;
+       ]
   |> Test.run

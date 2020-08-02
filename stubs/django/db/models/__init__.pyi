@@ -14,17 +14,33 @@ from django.db.aggregates import (
     Sum as Sum,
     Variance as Variance,
 )
+from django.db.models.deletion import (
+    CASCADE,
+    DO_NOTHING,
+    PROTECT,
+    RESTRICT,
+    SET_DEFAULT,
+    SET_NULL,
+)
+from django.db.models.enums import IntegerChoices, TextChoices
 from django.db.models.fields import (
-    AutoField as AutoField,
-    BigIntegerField as BigIntegerField,
-    BooleanField as BooleanField,
-    CharField as CharField,
-    DateTimeField as DateTimeField,
-    IntegerField as IntegerField,
-    NullBooleanField as NullBooleanField,
-    PositiveIntegerField as PositiveIntegerField,
-    PositiveSmallIntegerField as PositiveSmallIntegerField,
-    TextField as TextField,
+    AutoField,
+    BigIntegerField,
+    BooleanField,
+    CharField,
+    DateField,
+    DateTimeField,
+    DecimalField,
+    EmailField,
+    FloatField,
+    IntegerField,
+    NullBooleanField,
+    PositiveIntegerField,
+    PositiveSmallIntegerField,
+    SmallAutoField,
+    TextField,
+    TimeField,
+    URLField,
 )
 from django.db.models.fields.related import ForeignKey
 from django.db.models.fields.subclassing import SubfieldBase

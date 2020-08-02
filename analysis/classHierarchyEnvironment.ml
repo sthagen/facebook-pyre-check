@@ -1,5 +1,4 @@
 (* Copyright (c) 2016-present, Facebook, Inc.
- *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree. *)
 
@@ -35,15 +34,13 @@ module EdgesValue = struct
   let compare = Option.compare compare_edges
 end
 
-let get_parents alias_environment name ~track_dependencies =
+let get_parents alias_environment name ~dependency =
   let object_index = IndexTracker.index "object" in
   let parse_annotation =
-    let dependency = Option.some_if track_dependencies (SharedMemoryKeys.ClassConnect name) in
     AliasEnvironment.ReadOnly.parse_annotation_without_validating_type_parameters
       ?dependency
       alias_environment
   in
-  let dependency = Option.some_if track_dependencies (SharedMemoryKeys.ClassConnect name) in
   (* Register normal annotations. *)
   let extract_supertype { Call.Argument.value; _ } =
     let value = delocalize value in
@@ -143,7 +140,7 @@ module Edges = Environment.EnvironmentTable.WithCache (struct
   module Key = IndexTracker.IndexKey
   module Value = EdgesValue
 
-  type trigger = string
+  type trigger = string [@@deriving sexp, compare]
 
   let convert_trigger = IndexTracker.index
 
@@ -159,6 +156,8 @@ module Edges = Environment.EnvironmentTable.WithCache (struct
     | SharedMemoryKeys.ClassConnect name -> Some name
     | _ -> None
 
+
+  let trigger_to_dependency name = SharedMemoryKeys.ClassConnect name
 
   let legacy_invalidated_keys = UnannotatedGlobalEnvironment.UpdateResult.previous_classes
 
@@ -251,20 +250,26 @@ module ReadOnly = struct
     ClassHierarchy.variables ~default (class_hierarchy ?dependency read_only) class_name
 end
 
+type t = { edges: Edges.t }
+
+let create ast_environment = { edges = Edges.create ast_environment }
+
+let ast_environment { edges } = Edges.ast_environment edges
+
+let read_only { edges } = Edges.read_only edges
+
 let update_this_and_all_preceding_environments
-    ast_environment
+    { edges }
     ~scheduler
     ~configuration:({ Configuration.Analysis.debug; _ } as configuration)
-    ~ast_environment_update_result
-    qualifiers
+    ast_environment_trigger
   =
   let result =
     Edges.update_this_and_all_preceding_environments
-      ast_environment
+      edges
       ~scheduler
       ~configuration
-      ~ast_environment_update_result
-      qualifiers
+      ast_environment_trigger
   in
   let read_only = Edges.UpdateResult.read_only result in
   if debug then

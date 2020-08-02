@@ -4,27 +4,35 @@
  * LICENSE file in the root directory of this source tree. *)
 
 open Ast
+open Core
 open SharedMemoryKeys
 
 type t
+
+module ParserError : sig
+  type t = {
+    source_path: SourcePath.t;
+    message: string;
+  }
+  [@@deriving sexp, compare, hash]
+end
 
 module ReadOnly : sig
   type t
 
   val create
-    :  ?get_source:(Reference.t -> Source.t option) ->
-    ?get_wildcard_exports:(Reference.t -> Reference.t list option) ->
+    :  ?get_processed_source:(track_dependency:bool -> Reference.t -> Source.t option) ->
+    ?get_raw_source:(Reference.t -> (Source.t, ParserError.t) Result.t option) ->
     ?get_source_path:(Reference.t -> SourcePath.t option) ->
     ?is_module:(Reference.t -> bool) ->
     ?all_explicit_modules:(unit -> Reference.t list) ->
-    ?get_module_metadata:(?dependency:dependency -> Reference.t -> Module.t option) ->
-    ?module_exists:(?dependency:dependency -> Reference.t -> bool) ->
+    ?is_module_tracked:(Reference.t -> bool) ->
     unit ->
     t
 
-  val get_source : t -> Reference.t -> Source.t option
+  val get_processed_source : t -> ?track_dependency:bool -> Reference.t -> Source.t option
 
-  val get_wildcard_exports : t -> Reference.t -> Reference.t list option
+  val get_raw_source : t -> Reference.t -> (Source.t, ParserError.t) Result.t option
 
   val get_source_path : t -> Reference.t -> SourcePath.t option
 
@@ -46,32 +54,10 @@ module ReadOnly : sig
 
   val all_explicit_modules : t -> Reference.t list
 
-  val get_module_metadata : t -> ?dependency:dependency -> Reference.t -> Module.t option
-
-  val module_exists : t -> ?dependency:dependency -> Reference.t -> bool
-
-  val resolve_exports : t -> ?dependency:dependency -> Reference.t -> Reference.t
-
-  type decorator = {
-    name: string;
-    arguments: Expression.Call.Argument.t list option;
-  }
-  [@@deriving compare, eq, sexp, show, hash]
-
-  val matches_decorator
-    :  t ->
-    ?dependency:SharedMemoryKeys.dependency ->
-    Expression.expression Node.t ->
-    target:string ->
-    decorator option
-
-  val get_decorator
-    :  t ->
-    ?dependency:SharedMemoryKeys.dependency ->
-    ClassSummary.t Node.t ->
-    decorator:string ->
-    decorator list
+  val is_module_tracked : t -> Reference.t -> bool
 end
+
+val module_tracker : t -> ModuleTracker.t
 
 (* Store the environment to saved-state *)
 val store : t -> unit
@@ -91,13 +77,9 @@ val create : ModuleTracker.t -> t
 module UpdateResult : sig
   type t
 
-  val triggered_dependencies : t -> DependencyKey.KeySet.t
+  val triggered_dependencies : t -> DependencyKey.RegisteredSet.t
 
-  val reparsed : t -> Reference.t list
-
-  val syntax_errors : t -> SourcePath.t list
-
-  val system_errors : t -> SourcePath.t list
+  val invalidated_modules : t -> Reference.t list
 
   val create_for_testing : unit -> t
 end

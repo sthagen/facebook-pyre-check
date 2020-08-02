@@ -16,11 +16,15 @@ import sys
 from collections import defaultdict
 from logging import Logger
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Set, Union
+from typing import IO, Any, List, Optional, Sequence, Set, Union
 
+import libcst
+from libcst._version import LIBCST_VERSION
+from libcst.codemod import CodemodContext
+from libcst.codemod.visitors._apply_type_annotations import ApplyTypeAnnotationsVisitor
 from typing_extensions import Final
 
-from .. import apply_annotations, log
+from .. import log
 from ..analysis_directory import AnalysisDirectory
 from ..configuration import Configuration
 from ..error import Error
@@ -239,6 +243,7 @@ class StubFile:
         """
         classes = defaultdict(list)
         typing_imports = set()
+        alphabetical_imports = []
         contents = ""
         stubs_in_file = []
         for stub in self._fields:
@@ -269,15 +274,14 @@ class StubFile:
         for stub in stubs_in_file:
             typing_imports.update(stub.get_typing_imports())
             alphabetical_imports = sorted(list(typing_imports))
-            if alphabetical_imports and contents != "":
-                contents = (
-                    "from typing import {}\n\n".format(
-                        ", ".join(
-                            str(type_import) for type_import in alphabetical_imports
-                        )
-                    )
-                    + contents
+
+        if alphabetical_imports and contents != "":
+            contents = (
+                "from typing import {}\n\n".format(
+                    ", ".join(str(type_import) for type_import in alphabetical_imports)
                 )
+                + contents
+            )
         return contents
 
     def is_empty(self):
@@ -341,11 +345,24 @@ def filter_paths(
     ]
 
 
+def _parse(file: IO[str]) -> libcst.Module:
+    contents = file.read()
+    return libcst.parse_module(contents)
+
+
+def apply_stub_annotations(stub_path: str, file_path: str) -> str:
+    with open(stub_path) as stub_file, open(file_path) as source_file:
+        stub = _parse(stub_file)
+        source = _parse(source_file)
+        context = CodemodContext()
+        ApplyTypeAnnotationsVisitor.store_stub_in_context(context, stub)
+        modified_tree = ApplyTypeAnnotationsVisitor(context).transform_module(source)
+        return modified_tree.code
+
+
 def annotate_path(stub_path: str, file_path: str, debug_infer: bool) -> None:
     try:
-        annotated_content = apply_annotations.apply_stub_annotations(
-            stub_path, file_path
-        )
+        annotated_content = apply_stub_annotations(stub_path, file_path)
         with open(file_path, "w") as source_file:
             source_file.write(annotated_content)
         LOG.info("Annotated {}".format(file_path))
@@ -546,7 +563,7 @@ class Infer(Reporting):
             if self._in_place is not None:
                 LOG.info("Annotating files")
                 annotate_paths(
-                    self._configuration.local_configuration_root,
+                    self._configuration.local_root,
                     self._formatter,
                     stubs,
                     type_directory,
@@ -560,6 +577,8 @@ class Infer(Reporting):
         flags = super()._flags()
         filter_directories = self._get_directories_to_analyze()
         if len(filter_directories):
+            # pyre-fixme[6]: Expected `Iterable[Variable[_LT (bound to
+            #  _SupportsLessThan)]]` for 1st param but got `Set[str]`.
             flags.extend(["-filter-directories", ";".join(sorted(filter_directories))])
         search_path = self._configuration.search_path + typeshed_search_path(
             self._configuration.typeshed

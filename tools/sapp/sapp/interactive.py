@@ -24,6 +24,7 @@ from typing import (
 )
 
 import click
+import graphene
 import IPython
 from IPython import paths
 from IPython.core import page
@@ -58,7 +59,9 @@ from .models import (
     TraceFrame,
     TraceFrameLeafAssoc,
     TraceKind,
+    create as create_models,
 )
+from .query_builder import IssueQueryBuilder
 
 
 T = TypeVar("T")
@@ -79,6 +82,23 @@ class IssueQueryResult(NamedTuple):
     message: str
     min_trace_length_to_sources: int
     min_trace_length_to_sinks: int
+
+
+class IssueQueryResultType(graphene.ObjectType):
+    class Meta:
+        interfaces = (graphene.relay.Node,)
+
+    issue_id = graphene.ID()
+    filename = graphene.String()
+    location = graphene.String()
+    code = graphene.Int()
+    callable = graphene.String()
+    message = graphene.String()
+    min_trace_length_to_sources = graphene.Int()
+    min_trace_length_to_sinks = graphene.Int()
+
+    def resolve_issue_id(self, info):
+        return self.id
 
 
 class TraceFrameQueryResult(NamedTuple):
@@ -216,6 +236,7 @@ details              show additional information about the current trace frame
         self.prompt_history: Dict[str, History] = {}
 
     def setup(self) -> Dict[str, Callable]:
+        create_models(self.db)
         with self.db.make_session() as session:
             latest_run_id = (
                 session.query(func.max(Run.id))
@@ -223,10 +244,17 @@ details              show additional information about the current trace frame
                 .scalar()
             )
 
+            # pyre-fixme[6]: Expected `SharedTextKind` for 2nd param but got `(cls:
+            #  SharedTextKind) -> Any`.
             self.sources_dict = self._all_leaves_by_kind(session, SharedTextKind.SOURCE)
+            # pyre-fixme[6]: Expected `SharedTextKind` for 2nd param but got `(cls:
+            #  SharedTextKind) -> Any`.
             self.sinks_dict = self._all_leaves_by_kind(session, SharedTextKind.SINK)
             self.features_dict = self._all_leaves_by_kind(
-                session, SharedTextKind.FEATURE
+                session,
+                # pyre-fixme[6]: Expected `SharedTextKind` for 2nd param but got
+                #  `(cls: SharedTextKind) -> Any`.
+                SharedTextKind.FEATURE,
             )
 
         print("=" * len(self.welcome_message))
@@ -454,8 +482,11 @@ details              show additional information about the current trace frame
         codes: Optional[Union[int, List[int]]] = None,
         callables: Optional[Union[str, List[str]]] = None,
         filenames: Optional[Union[str, List[str]]] = None,
-        exact_trace_length_to_sources: Optional[Union[int, List[int]]] = None,
-        exact_trace_length_to_sinks: Optional[Union[int, List[int]]] = None,
+        all_features: Optional[Union[str, List[str]]] = None,
+        any_features: Optional[Union[str, List[str]]] = None,
+        exclude_features: Optional[Union[str, List[str]]] = None,
+        exact_trace_length_to_sources: Optional[int] = None,
+        exact_trace_length_to_sinks: Optional[int] = None,
         max_trace_length_to_sources: Optional[int] = None,
         max_trace_length_to_sinks: Optional[int] = None,
     ):
@@ -466,9 +497,13 @@ details              show additional information about the current trace frame
             codes: int or list[int]        issue codes to filter on
             callables: str or list[str]    callables to filter on (supports wildcards)
             filenames: str or list[str]    filenames to filter on (supports wildcards)
-            exact_trace_length_to_sources: int or list[int]
+            all_features: str or list[str] features to filter on
+            any_features: str or list[str] features to inclusively filter on
+            exclude_features: str or list[str]
+                features to exclude issues based upon
+            exact_trace_length_to_sources: int
                 exact values for min trace length to sources to filter on
-            exact_trace_length_to_sinks: int or list[int]
+            exact_trace_length_to_sinks: int
                 exact values for min trace length to sinks to filter on
             max_trace_length_to_sources: int
                 maximum value for min trace length to sources to filter on
@@ -489,137 +524,113 @@ details              show additional information about the current trace frame
         """
         pager = self._resolve_pager(use_pager)
 
+        builder = IssueQueryBuilder(self.current_run_id)
+
+        if codes is not None:
+            if not isinstance(codes, int) and not isinstance(codes, list):
+                raise UserError("'codes' should be int or list of int.")
+            if isinstance(codes, int):
+                codes = [codes]
+            builder = builder.where_codes_is_any_of(codes)
+
+        if callables is not None:
+            if not isinstance(callables, str) and not isinstance(callables, list):
+                raise UserError("'callables' should be str or list of str.")
+            if isinstance(callables, str):
+                callables = [callables]
+            builder = builder.where_callables_is_any_of(callables)
+
+        if filenames is not None:
+            if not isinstance(filenames, str) and not isinstance(filenames, list):
+                raise UserError("'filenames' should be str or list of str.")
+            if isinstance(filenames, str):
+                filenames = [filenames]
+            builder = builder.where_file_names_is_any_of(filenames)
+
+        if (exact_trace_length_to_sources is not None) and (
+            max_trace_length_to_sources is not None
+        ):
+            raise UserError(
+                (
+                    "'exact_trace_length_to_sources' and "
+                    "'max_trace_length_to_sources' can't be set together"
+                )
+            )
+
+        if (exact_trace_length_to_sinks is not None) and (
+            max_trace_length_to_sinks is not None
+        ):
+            raise UserError(
+                (
+                    "'exact_trace_length_to_sinks' and "
+                    "'max_trace_length_to_sinks' can't be set together"
+                )
+            )
+
+        if exact_trace_length_to_sources is not None:
+            if not isinstance(exact_trace_length_to_sources, int):
+                raise UserError("'exact_trace_length_to_sources' should be int.")
+            builder = builder.where_trace_length_to_sources(
+                exact_trace_length_to_sources, exact_trace_length_to_sources
+            )
+
+        if exact_trace_length_to_sinks is not None:
+            if not isinstance(exact_trace_length_to_sinks, int):
+                raise UserError("'exact_trace_length_to_sinks' should be int.")
+            builder = builder.where_trace_length_to_sinks(
+                exact_trace_length_to_sinks, exact_trace_length_to_sinks
+            )
+
+        if max_trace_length_to_sources is not None:
+            if not isinstance(max_trace_length_to_sources, int):
+                raise UserError("'max_trace_length_to_sources' should be int.")
+            builder = builder.where_trace_length_to_sources(
+                0, max_trace_length_to_sources
+            )
+
+        if max_trace_length_to_sinks is not None:
+            if not isinstance(max_trace_length_to_sinks, int):
+                raise UserError("'max_trace_length_to_sinks' should be int.")
+            builder = builder.where_trace_length_to_sinks(0, max_trace_length_to_sinks)
+
+        if all_features is not None:
+            if not isinstance(all_features, str) and not isinstance(all_features, list):
+                raise UserError("'all_features' should be str or list of str.")
+            if isinstance(all_features, str):
+                all_features = [all_features]
+            builder = builder.where_all_features(all_features)
+
+        if any_features is not None:
+            if not isinstance(any_features, str) and not isinstance(any_features, list):
+                raise UserError("'any_features' should be str or list of str.")
+            if isinstance(any_features, str):
+                any_features = [any_features]
+            builder = builder.where_any_features(any_features)
+
+        if exclude_features is not None:
+            if not isinstance(exclude_features, str) and not isinstance(
+                exclude_features, list
+            ):
+                raise UserError("'any_features' should be str or list of str.")
+            if isinstance(exclude_features, str):
+                exclude_features = [exclude_features]
+            builder = builder.where_exclude_features(exclude_features)
+
         with self.db.make_session() as session:
-            query = (
-                session.query(
-                    IssueInstance.id,
-                    FilenameText.contents.label("filename"),
-                    IssueInstance.location,
-                    Issue.code,
-                    CallableText.contents.label("callable"),
-                    MessageText.contents.label("message"),
-                    IssueInstance.min_trace_length_to_sources,
-                    IssueInstance.min_trace_length_to_sinks,
-                )
-                .filter(IssueInstance.run_id == self.current_run_id)
-                .join(FilenameText, FilenameText.id == IssueInstance.filename_id)
-                .join(CallableText, CallableText.id == IssueInstance.callable_id)
-            )
+            builder = builder.with_session(session)
+            issues = builder.get()
+            sources_list = builder.sources(issues)
+            sinks_list = builder.sinks(issues)
+            features_list = builder.features(issues)
 
-            if codes is not None:
-                query = self._add_list_or_int_filter_to_query(
-                    # pyre-fixme[6]: Expected `Union[List[int], int]` for 1st param
-                    #  but got `Union[None, List[int], int]`.
-                    codes,
-                    query,
-                    Issue.code,
-                    "codes",
-                )
-
-            if callables is not None:
-                query = self._add_list_or_string_filter_to_query(
-                    # pyre-fixme[6]: Expected `Union[List[str], str]` for 1st param
-                    #  but got `Union[None, List[str], str]`.
-                    callables,
-                    query,
-                    CallableText.contents,
-                    "callables",
-                )
-
-            if filenames is not None:
-                query = self._add_list_or_string_filter_to_query(
-                    # pyre-fixme[6]: Expected `Union[List[str], str]` for 1st param
-                    #  but got `Union[None, List[str], str]`.
-                    filenames,
-                    query,
-                    FilenameText.contents,
-                    "filenames",
-                )
-
-            if (exact_trace_length_to_sources is not None) and (
-                max_trace_length_to_sources is not None
-            ):
-                raise UserError(
-                    (
-                        f"'exact_trace_length_to_sources' and "
-                        f"'max_trace_length_to_sources' can't be set together"
-                    )
-                )
-
-            if (exact_trace_length_to_sinks is not None) and (
-                max_trace_length_to_sinks is not None
-            ):
-                raise UserError(
-                    (
-                        f"'exact_trace_length_to_sinks' and "
-                        f"'max_trace_length_to_sinks' can't be set together"
-                    )
-                )
-
-            if exact_trace_length_to_sources is not None:
-                query = self._add_list_or_int_filter_to_query(
-                    # pyre-fixme[6]: Expected `Union[List[int], int]` for 1st param
-                    #  but got `Union[None, List[int], int]`.
-                    exact_trace_length_to_sources,
-                    query,
-                    IssueInstance.min_trace_length_to_sources,
-                    "exact_trace_length_to_sources",
-                )
-
-            if exact_trace_length_to_sinks is not None:
-                query = self._add_list_or_int_filter_to_query(
-                    # pyre-fixme[6]: Expected `Union[List[int], int]` for 1st param
-                    #  but got `Union[None, List[int], int]`.
-                    exact_trace_length_to_sinks,
-                    query,
-                    IssueInstance.min_trace_length_to_sinks,
-                    "exact_trace_length_to_sinks",
-                )
-
-            if max_trace_length_to_sources is not None:
-                query = self._add_max_int_filter_to_query(
-                    max_trace_length_to_sources,
-                    query,
-                    IssueInstance.min_trace_length_to_sources,
-                    "max_trace_length_to_sources",
-                )
-
-            if max_trace_length_to_sinks is not None:
-                query = self._add_max_int_filter_to_query(
-                    max_trace_length_to_sinks,
-                    query,
-                    IssueInstance.min_trace_length_to_sinks,
-                    "max_trace_length_to_sinks",
-                )
-
-            issues = query.join(Issue, IssueInstance.issue_id == Issue.id).join(
-                MessageText, MessageText.id == IssueInstance.message_id
-            )
-
-            sources_list = [
-                self._get_leaves_issue_instance(
-                    session, int(issue.id), SharedTextKind.SOURCE
-                )
-                for issue in issues
-            ]
-            sinks_list = [
-                self._get_leaves_issue_instance(
-                    session, int(issue.id), SharedTextKind.SINK
-                )
-                for issue in issues
-            ]
-            features_list = [
-                self._get_leaves_issue_instance(
-                    session, int(issue.id), SharedTextKind.FEATURE
-                )
-                for issue in issues
-            ]
-            issue_strings = [
+        issue_strings = []
+        for issue, sources, sinks, features in zip(
+            issues, sources_list, sinks_list, features_list
+        ):
+            issue_strings.append(
                 self._create_issue_output_string(issue, sources, sinks, features)
-                for issue, sources, sinks, features in zip(
-                    issues, sources_list, sinks_list, features_list
-                )
-            ]
+            )
+
         issue_output = f"\n{'-' * 80}\n".join(issue_strings)
         pager(issue_output)
         print(f"Found {len(issue_strings)} issues with run_id {self.current_run_id}.")
@@ -693,22 +704,12 @@ details              show additional information about the current trace frame
 
             if callers is not None:
                 query = self._add_list_or_string_filter_to_query(
-                    # pyre-fixme[6]: Expected `Union[List[str], str]` for 1st param
-                    #  but got `Union[None, List[str], str]`.
-                    callers,
-                    query,
-                    CallerText.contents,
-                    "callers",
+                    callers, query, CallerText.contents, "callers"
                 )
 
             if callees is not None:
                 query = self._add_list_or_string_filter_to_query(
-                    # pyre-fixme[6]: Expected `Union[List[str], str]` for 1st param
-                    #  but got `Union[None, List[str], str]`.
-                    callees,
-                    query,
-                    CalleeText.contents,
-                    "callees",
+                    callees, query, CalleeText.contents, "callees"
                 )
 
             if kind is not None:
@@ -752,12 +753,20 @@ details              show additional information about the current trace frame
             if selected_frame.kind == TraceKind.POSTCONDITION:
                 self.sinks = set()
                 self.sources = self._get_leaves_trace_frame(
-                    session, int(selected_frame.id), SharedTextKind.SOURCE
+                    session,
+                    int(selected_frame.id),
+                    # pyre-fixme[6]: Expected `SharedTextKind` for 3rd param but got
+                    #  `(cls: SharedTextKind) -> Any`.
+                    SharedTextKind.SOURCE,
                 )
 
             else:
                 self.sinks = self._get_leaves_trace_frame(
-                    session, int(selected_frame.id), SharedTextKind.SINK
+                    session,
+                    int(selected_frame.id),
+                    # pyre-fixme[6]: Expected `SharedTextKind` for 3rd param but got
+                    #  `(cls: SharedTextKind) -> Any`.
+                    SharedTextKind.SINK,
                 )
 
                 self.sources = set()
@@ -1181,6 +1190,7 @@ details              show additional information about the current trace frame
         if isinstance(filter, list):
             if not filter:
                 raise UserError(f"'{argument_name}' should be non-empty.")
+            # pyre-fixme[6]: Expected `str` for 1st param but got `T`.
             return query.filter(or_(*[column.like(item) for item in filter]))
         raise UserError(
             f"'{argument_name}' should be {element_type} or " f"list of {element_type}."
@@ -1206,7 +1216,6 @@ details              show additional information about the current trace frame
         )
         assert trace_frame.callee_location is not None
         location = trace_frame.callee_location
-        # pyre-fixme[16]: `Optional` has no attribute `line_no`.
         center_line_number = location.line_no
         begin_lineno = max(center_line_number - context, 1)
         end_lineno = min(center_line_number + context, len(file_lines))
@@ -1233,9 +1242,7 @@ details              show additional information about the current trace frame
             print(f"{prefix} {line}")
             if i == center_line_number:
                 print(
-                    # pyre-fixme[16]: `Optional` has no attribute `begin_column`.
                     " " * (len(prefix) + location.begin_column),
-                    # pyre-fixme[16]: `Optional` has no attribute `end_column`.
                     "^" * (location.end_column - location.begin_column),
                 )
 
@@ -1569,6 +1576,7 @@ details              show additional information about the current trace frame
 
         with self.db.make_session() as session:
             leaves_output = f"\n{' ' * 13}".join(
+                # pyre-fixme[6]: Expected `int` for 2nd param but got `DBID`.
                 self._get_leaves_trace_frame(session, trace_frame.id, leaf_kind)
             )
 

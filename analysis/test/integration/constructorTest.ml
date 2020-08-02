@@ -147,6 +147,7 @@ let test_check_init context =
     [];
   assert_type_errors
     {|
+      from builtins import condition
       class Foo:
         attribute: int
         def __init__(self) -> None:
@@ -168,6 +169,7 @@ let test_check_init context =
     [];
   assert_type_errors
     {|
+      from builtins import condition
       class Foo:
         attribute: int
         def __init__(self) -> None:
@@ -178,6 +180,7 @@ let test_check_init context =
     [];
   assert_type_errors
     {|
+      from builtins import condition
       class Foo:
         attribute: int
         def __init__(self) -> None:
@@ -186,10 +189,8 @@ let test_check_init context =
     [
       "Incompatible attribute type [8]: Attribute `attribute` declared in class `Foo` "
       ^ "has type `int` but is used as type `unknown`.";
-      "Undefined name [18]: Global name `unknown` is not defined, or there is at least one control \
-       flow path that doesn't define `unknown`.";
-      "Undefined name [18]: Global name `unknown2` is not defined, or there is at least one \
-       control flow path that doesn't define `unknown2`.";
+      "Unbound name [10]: Name `unknown` is used but not defined in the current scope.";
+      "Unbound name [10]: Name `unknown2` is used but not defined in the current scope.";
     ];
 
   (* No need to initialize properties. *)
@@ -223,6 +224,7 @@ let test_check_init context =
     [];
   assert_type_errors
     {|
+      import typing
       class Foo:
         attribute: typing.Optional[int]
         def __init__(self) -> None:
@@ -234,6 +236,7 @@ let test_check_init context =
     ];
   assert_type_errors
     {|
+      import typing
       class Foo:
         attribute: typing.Optional[int]
         def __init__(self) -> None:
@@ -267,14 +270,24 @@ let test_check_init context =
     {|
       class C:
         def __init__(self, x: int) -> None:
+          self._a = x
+        def a(self) -> int:
+          return self._a
+    |}
+    [];
+  assert_type_errors
+    {|
+      class C:
+        def __init__(self, x: int) -> None:
           self.a = x
         def a(self) -> int:
           return self.a
     |}
     [
-      "Missing attribute annotation [4]: Attribute `a` of class `C` has type `int` "
-      ^ "but no type is specified.";
-      "Incompatible return type [7]: Expected `int` but got `unknown`.";
+      "Incompatible attribute type [8]: Attribute `a` declared in class `C` has type "
+      ^ "`BoundMethod[typing.Callable(C.a)[[Named(self, C)], int], C]` but is used as type `int`.";
+      "Incompatible return type [7]: Expected `int` but got "
+      ^ "`BoundMethod[typing.Callable(C.a)[[Named(self, C)], int], C]`.";
     ];
   assert_type_errors
     {|
@@ -294,10 +307,8 @@ let test_check_init context =
             self.y = y
     |}
     [
-      "Missing attribute annotation [4]: Attribute `attribute` of class `C` has type `int` "
-      ^ "but no type is specified.";
-      "Missing attribute annotation [4]: Attribute `y` of class `C` has type `int` "
-      ^ "but no type is specified.";
+      "Missing attribute annotation [4]: Attribute `y` of class `C` has type `int` but no type is \
+       specified.";
     ];
   assert_type_errors
     {|
@@ -305,12 +316,12 @@ let test_check_init context =
         return x
       class C:
         def __init__(self, x: int) -> None:
-          self.a = identity(x)
+          self._a = identity(x)
         def a(self) -> int:
-          return self.a
+          return self._a
     |}
     [
-      "Missing attribute annotation [4]: Attribute `a`"
+      "Missing attribute annotation [4]: Attribute `_a`"
       ^ " of class `C` has type `int` but no type is specified.";
       "Incompatible return type [7]: Expected `int` but got `unknown`.";
     ];
@@ -504,6 +515,7 @@ let test_check_constructors context =
     ];
   assert_type_errors
     {|
+      import typing
       class Foo:
         def __init__(self, i: int, s: typing.Optional[str] = None) -> None:
           pass
@@ -776,6 +788,7 @@ let test_check_constructors context =
      the subclass, regardless of order. *)
   assert_type_errors
     {|
+      from builtins import A, B
       class Subclass(A, B):
         def foo(self)->A:
           return super()
@@ -785,6 +798,7 @@ let test_check_constructors context =
     [];
   assert_type_errors
     {|
+      import typing
       class Class:
         def __init__(self, i: int) -> None: ...
       def foo(x: typing.Type[Class]) -> Class:
@@ -793,37 +807,39 @@ let test_check_constructors context =
     [];
   assert_type_errors
     {|
+      import typing
       class Class:
         def __init__(self, i: int) -> None: ...
       def foo(x: typing.Type[Clss]) -> Class:
         return x(7)
     |}
-    [
-      "Undefined or invalid type [11]: Annotation `Clss` is not defined as a type.";
-      "Incompatible return type [7]: Expected `Class` but got `unknown`.";
-    ];
+    ["Unbound name [10]: Name `Clss` is used but not defined in the current scope."];
   assert_default_type_errors
     {|
+      import typing
       def foo(x: typing.Type[typing.Any]) -> typing.Any:
         return x()
     |}
     [];
   assert_default_type_errors
     {|
+      import typing
       def foo(x: typing.Type[typing.Any]) -> typing.Any:
         return x(42)
     |}
     [];
   assert_strict_type_errors
     {|
+      import typing
       class Class:
         def __init__(self, i: int) -> None: ...
       def foo(x: typing.Type[Clss]) -> Class:
         return x(7)
     |}
-    ["Undefined or invalid type [11]: Annotation `Clss` is not defined as a type."];
+    ["Unbound name [10]: Name `Clss` is used but not defined in the current scope."];
   assert_type_errors
     {|
+      import typing
       class Class:
         def __init__(self, i: int) -> None:
           ...
@@ -833,6 +849,7 @@ let test_check_constructors context =
     [];
   assert_type_errors
     {|
+      import typing
       class Class:
         def __init__(self, i: int) -> None:
           ...
@@ -856,6 +873,18 @@ let test_check_constructors context =
         foo(c)
     |}
     [];
+  assert_type_errors
+    {|
+      class Foo:
+        def __init__(self, x: int, y: str) -> None:
+          pass
+      reveal_type(Foo.__call__)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `test.Foo.__call__` is \
+       `BoundMethod[typing.Callable(Foo.__init__)[[Named(self, Foo), Named(x, int), Named(y, \
+       str)], Foo], Foo]`.";
+    ];
   ()
 
 
@@ -889,6 +918,27 @@ let test_infer_constructor_attributes context =
       "Too many arguments [19]: Call `object.__init__` expects 0 positional arguments, 4 were"
       ^ " provided.";
       "Incompatible return type [7]: Expected `int` but got `C`.";
+    ];
+  assert_type_errors
+    ~context
+    {|
+      class A:
+          def __init__(self, x: int) -> None:
+              self.y = x
+              self.x = x
+              self._x = x
+              self.__x = x
+      def foo(a: A) -> None:
+        reveal_type(a.y)
+        reveal_type(a.x)
+        reveal_type(a._x)
+        reveal_type(a.__x)
+     |}
+    [
+      "Revealed type [-1]: Revealed type for `a.y` is `int`.";
+      "Revealed type [-1]: Revealed type for `a.x` is `int`.";
+      "Revealed type [-1]: Revealed type for `a._x` is `int`.";
+      "Revealed type [-1]: Revealed type for `a.__x` is `int`.";
     ]
 
 
@@ -896,6 +946,7 @@ let test_newtype context =
   assert_type_errors
     ~context
     {|
+      import typing
       class C():
         def __init__(self, a: int, b: str) -> None: pass
       T = typing.NewType('T', C)
@@ -906,6 +957,7 @@ let test_newtype context =
   assert_type_errors
     ~context
     {|
+      import typing
       class C():
         def __init__(self, a: int, b: str) -> None: pass
       T = typing.NewType('T', C)
@@ -913,6 +965,42 @@ let test_newtype context =
         return T(7, "A")
     |}
     ["Too many arguments [19]: Call `T.__init__` expects 1 positional argument, 2 were provided."];
+  ()
+
+
+let test_dictionary_constructor context =
+  assert_type_errors
+    ~context
+    {|
+    from typing import Optional, Dict
+    def expand(x: Optional[Dict[str, int]] = None) -> None:
+      new_dict = {
+          **x,
+          "param": 7,
+      }
+      reveal_type(new_dict)
+    |}
+    [
+      "Invalid argument [32]: Keyword argument `x` has type `Optional[Dict[str, int]]` but must be \
+       a mapping.";
+      "Revealed type [-1]: Revealed type for `new_dict` is `unknown`.";
+    ];
+  assert_type_errors
+    ~context
+    {|
+    from typing import Dict, Mapping
+    def combine(x: Dict[str, int], y: Mapping[float, bool]) -> None:
+      new_dict = {
+          **x,
+          True: "A",
+          **y,
+      }
+      reveal_type(new_dict)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `new_dict` is `Dict[typing.Union[bool, float, str], \
+       typing.Union[bool, int, str]]`.";
+    ];
   ()
 
 
@@ -924,5 +1012,6 @@ let () =
          "check_constructors" >:: test_check_constructors;
          "check_infer_constructor_attributes" >:: test_infer_constructor_attributes;
          "newtype" >:: test_newtype;
+         "check_dictionary_constructor" >:: test_dictionary_constructor;
        ]
   |> Test.run

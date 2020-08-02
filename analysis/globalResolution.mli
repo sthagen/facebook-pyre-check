@@ -8,7 +8,10 @@ open Statement
 
 type t
 
-val create : ?dependency:SharedMemoryKeys.dependency -> AnnotatedGlobalEnvironment.ReadOnly.t -> t
+val create
+  :  ?dependency:SharedMemoryKeys.DependencyKey.registered ->
+  AnnotatedGlobalEnvironment.ReadOnly.t ->
+  t
 
 val resolve_literal : t -> Expression.t -> Type.t
 
@@ -25,8 +28,6 @@ val define_body : t -> Reference.t -> Define.t Node.t option
 val function_definition : t -> Reference.t -> FunctionDefinition.t option
 
 val source_is_unit_test : t -> source:Ast.Source.t -> bool
-
-val solve_constraints : t -> TypeConstraints.t -> TypeConstraints.Solution.t option
 
 val constraints_solution_exists : t -> left:Type.t -> right:Type.t -> bool
 
@@ -72,15 +73,19 @@ val meet : t -> Type.t -> Type.t -> Type.t
 
 val widen : t -> widening_threshold:int -> previous:Type.t -> next:Type.t -> iteration:int -> Type.t
 
-val resolve_exports : t -> reference:Reference.t -> Reference.t
+val legacy_resolve_exports : t -> reference:Reference.t -> Reference.t
+
+val resolve_exports
+  :  t ->
+  ?from:Reference.t ->
+  Reference.t ->
+  UnannotatedGlobalEnvironment.ResolvedReference.t option
 
 val ast_environment : t -> AstEnvironment.ReadOnly.t
 
 val annotated_global_environment : t -> AnnotatedGlobalEnvironment.ReadOnly.t
 
 val class_metadata_environment : t -> ClassMetadataEnvironment.ReadOnly.t
-
-val undecorated_function_environment : t -> UndecoratedFunctionEnvironment.ReadOnly.t
 
 val class_hierarchy_environment : t -> ClassHierarchyEnvironment.ReadOnly.t
 
@@ -96,6 +101,8 @@ val base_is_from_placeholder_stub : t -> Expression.Call.Argument.t -> bool
 
 val module_exists : t -> Reference.t -> bool
 
+val get_module_metadata : t -> Reference.t -> Module.t option
+
 val class_metadata : t -> Type.t -> ClassMetadataEnvironment.class_metadata option
 
 val is_protocol : t -> Type.t -> bool
@@ -103,9 +110,6 @@ val is_protocol : t -> Type.t -> bool
 val function_definitions : t -> Reference.t -> Define.t Node.t list option
 
 val is_suppressed_module : t -> Reference.t -> bool
-
-(* Exposed only for parallelism. Future not guaranteed. *)
-val undecorated_signature : t -> Reference.t -> Type.t Type.Callable.overload option
 
 val less_or_equal : t -> left:Type.t -> right:Type.t -> bool
 
@@ -124,12 +128,13 @@ val parse_as_parameter_specification_instance_annotation
   keywords_parameter_annotation:Expression.t ->
   Type.Variable.Variadic.Parameters.t option
 
-val global : t -> Reference.t -> AnnotatedGlobalEnvironment.global option
+val global : t -> Reference.t -> AttributeResolution.Global.t option
 
 val class_hierarchy : t -> (module ClassHierarchy.Handler)
 
 val attribute_from_annotation
-  :  t ->
+  :  ?special_method:bool ->
+  t ->
   parent:Type.t ->
   name:string ->
   AnnotatedAttribute.instantiated option
@@ -139,7 +144,7 @@ val annotation_parser
   t ->
   AnnotatedCallable.annotation_parser
 
-val resolved_type : AttributeResolution.weakened_type -> Type.t
+val resolved_type : WeakenMutableLiterals.weakened_type -> Type.t
 
 val resolve_mutable_literals
   :  t ->
@@ -147,7 +152,7 @@ val resolve_mutable_literals
   expression:Ast.Expression.t option ->
   resolved:Type.t ->
   expected:Type.t ->
-  AttributeResolution.weakened_type
+  WeakenMutableLiterals.weakened_type
 
 val get_typed_dictionary
   :  resolution:t ->
@@ -186,7 +191,7 @@ val instantiate_attribute
   AttributeResolution.uninstantiated_attribute ->
   AnnotatedAttribute.instantiated
 
-val metaclass : resolution:t -> ClassSummary.t Node.t -> Type.t
+val metaclass : resolution:t -> Type.Primitive.t -> Type.t option
 
 val attribute_from_class_name
   :  resolution:t ->
@@ -217,11 +222,13 @@ val signature_select
   arguments:AttributeResolution.arguments ->
   callable:Type.Callable.t ->
   self_argument:Type.t option ->
-  AttributeResolution.sig_t
+  SignatureSelectionTypes.sig_t
 
-val create_overload : resolution:t -> Define.Signature.t -> Type.t Type.Callable.overload
-
-val constructor : resolution:t -> Type.Primitive.t -> instantiated:Type.t -> Type.t
+val resolve_define
+  :  resolution:t ->
+  implementation:Define.Signature.t option ->
+  overloads:Define.Signature.t list ->
+  AttributeResolution.resolved_define
 
 val attribute_names
   :  resolution:t ->
@@ -232,7 +239,7 @@ val attribute_names
   Type.Primitive.t ->
   string list option
 
-val global_location : t -> Reference.t -> Location.t option
+val global_location : t -> Reference.t -> Location.WithModule.t option
 
 val class_exists : t -> Type.Primitive.t -> bool
 

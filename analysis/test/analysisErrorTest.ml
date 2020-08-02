@@ -26,7 +26,12 @@ let signature_value ?(return_annotation = Some !"int") ?(name = "foo") () =
 
 
 let define_value ?(return_annotation = Some !"int") ?(body = []) ?(name = "foo") () =
-  { Define.signature = signature_value ~return_annotation ~name (); captures = []; body }
+  {
+    Define.signature = signature_value ~return_annotation ~name ();
+    captures = [];
+    unbound_names = [];
+    body;
+  }
 
 
 let untyped_signature = +signature_value ~return_annotation:None ()
@@ -51,7 +56,8 @@ let error
 
 
 let revealed_type expression annotation =
-  Error.RevealedType { expression = parse_single_expression expression; annotation }
+  Error.RevealedType
+    { expression = parse_single_expression expression; annotation; qualify = false }
 
 
 let missing_return annotation =
@@ -259,41 +265,47 @@ let test_due_to_analysis_limitations _ =
   (* Parameter. *)
   assert_due_to_analysis_limitations
     (Error.IncompatibleParameterType
-       {
-         name = Some "";
-         position = 1;
-         callee = Some !&"callee";
-         mismatch = { Error.actual = Type.Top; expected = Type.Top; due_to_invariance = false };
-       });
+       (Argument
+          {
+            name = Some "";
+            position = 1;
+            callee = Some !&"callee";
+            mismatch = { Error.actual = Type.Top; expected = Type.Top; due_to_invariance = false };
+          }));
   assert_due_to_analysis_limitations
     (Error.IncompatibleParameterType
-       {
-         name = Some "";
-         position = 1;
-         callee = Some !&"callee";
-         mismatch = { Error.actual = Type.Top; expected = Type.string; due_to_invariance = false };
-       });
+       (Argument
+          {
+            name = Some "";
+            position = 1;
+            callee = Some !&"callee";
+            mismatch =
+              { Error.actual = Type.Top; expected = Type.string; due_to_invariance = false };
+          }));
   assert_not_due_to_analysis_limitations
     (Error.IncompatibleParameterType
-       {
-         name = Some "";
-         position = 1;
-         callee = Some !&"callee";
-         mismatch = { Error.actual = Type.string; expected = Type.Top; due_to_invariance = false };
-       });
+       (Argument
+          {
+            name = Some "";
+            position = 1;
+            callee = Some !&"callee";
+            mismatch =
+              { Error.actual = Type.string; expected = Type.Top; due_to_invariance = false };
+          }));
   assert_due_to_analysis_limitations
     (Error.IncompatibleParameterType
-       {
-         name = Some "";
-         position = 1;
-         callee = Some !&"callee";
-         mismatch =
-           {
-             Error.actual = Type.Primitive "typing.TypeAlias";
-             expected = Type.Top;
-             due_to_invariance = false;
-           };
-       });
+       (Argument
+          {
+            name = Some "";
+            position = 1;
+            callee = Some !&"callee";
+            mismatch =
+              {
+                Error.actual = Type.Primitive "typing.TypeAlias";
+                expected = Type.Top;
+                due_to_invariance = false;
+              };
+          }));
 
   (* Return. *)
   assert_due_to_analysis_limitations
@@ -367,31 +379,34 @@ let test_join context =
   assert_join
     (error
        (Error.IncompatibleParameterType
-          {
-            name = Some "";
-            position = 1;
-            callee = Some !&"callee";
-            mismatch =
-              { Error.actual = Type.integer; expected = Type.string; due_to_invariance = false };
-          }))
+          (Argument
+             {
+               name = Some "";
+               position = 1;
+               callee = Some !&"callee";
+               mismatch =
+                 { Error.actual = Type.integer; expected = Type.string; due_to_invariance = false };
+             })))
     (error
        (Error.IncompatibleParameterType
-          {
-            name = Some "";
-            position = 1;
-            callee = Some !&"callee";
-            mismatch =
-              { Error.actual = Type.float; expected = Type.string; due_to_invariance = false };
-          }))
+          (Argument
+             {
+               name = Some "";
+               position = 1;
+               callee = Some !&"callee";
+               mismatch =
+                 { Error.actual = Type.float; expected = Type.string; due_to_invariance = false };
+             })))
     (error
        (Error.IncompatibleParameterType
-          {
-            name = Some "";
-            position = 1;
-            callee = Some !&"callee";
-            mismatch =
-              { Error.actual = Type.float; expected = Type.string; due_to_invariance = false };
-          }));
+          (Argument
+             {
+               name = Some "";
+               position = 1;
+               callee = Some !&"callee";
+               mismatch =
+                 { Error.actual = Type.float; expected = Type.string; due_to_invariance = false };
+             })));
   let create_mock_location path =
     {
       Location.WithPath.path;
@@ -580,15 +595,16 @@ let test_join context =
     (error (revealed_type "a" (Annotation.create Type.integer)))
     (error (revealed_type "b" (Annotation.create Type.float)))
     (error Error.Top);
+  let stop = { Location.line = 42; column = 42 } in
   assert_join
     (error
-       ~location:{ Location.synthetic with Location.start = { Location.line = 1; column = 0 } }
+       ~location:{ Location.start = { Location.line = 1; column = 0 }; stop }
        (revealed_type "a" (Annotation.create Type.integer)))
     (error
-       ~location:{ Location.synthetic with Location.start = { Location.line = 2; column = 1 } }
+       ~location:{ Location.start = { Location.line = 2; column = 1 }; stop }
        (revealed_type "a" (Annotation.create Type.float)))
     (error
-       ~location:{ Location.synthetic with Location.start = { Location.line = 1; column = 0 } }
+       ~location:{ Location.start = { Location.line = 1; column = 0 }; stop }
        (revealed_type "a" (Annotation.create Type.float)))
 
 
@@ -693,46 +709,15 @@ let test_filter context =
   assert_filtered (unexpected_keyword "foo" (Some "unittest.mock.call"));
   assert_unfiltered (unexpected_keyword "foo" None);
 
-  (* Always filter synthetic locations. *)
-  assert_filtered ~location:Location.synthetic (missing_return Type.integer);
-
-  (* Suppress return errors in unimplemented defines. *)
+  (* Return errors are not suppressed for unimplemented defines because they are shown in strict
+     mode. *)
   assert_unfiltered (incompatible_return_type Type.integer Type.float);
-  assert_filtered (incompatible_return_type Type.integer Type.float ~is_unimplemented:true);
+  assert_unfiltered (incompatible_return_type Type.integer Type.float ~is_unimplemented:true);
 
-  (* Suppress errors due to importing builtins. *)
-  let undefined_import import = UndefinedImport !&import in
-  assert_filtered (undefined_import "builtins");
-  assert_unfiltered (undefined_import "sys");
-  let inconsistent_override name override =
-    InconsistentOverride
-      {
-        overridden_method = name;
-        parent = !&(Type.show mock_parent);
-        override;
-        override_kind = Method;
-      }
-  in
   let abstract_class_instantiation name =
     InvalidClassInstantiation
       (AbstractClassInstantiation { class_name = !&name; abstract_methods = [] })
   in
-  (* Suppress parameter errors on override of dunder methods *)
-  assert_unfiltered
-    (inconsistent_override "foo" (StrengthenedPrecondition (NotFound (Keywords Type.integer))));
-  assert_unfiltered
-    (inconsistent_override
-       "__foo__"
-       (WeakenedPostcondition
-          { actual = Type.Top; expected = Type.integer; due_to_invariance = false }));
-  assert_unfiltered
-    (inconsistent_override
-       "__foo__"
-       (StrengthenedPrecondition
-          (Found { actual = Type.none; expected = Type.integer; due_to_invariance = false })));
-  assert_filtered
-    (inconsistent_override "__foo__" (StrengthenedPrecondition (NotFound (Keywords Type.integer))));
-
   (* Suppress errors due to typeshed inconsistencies. *)
   assert_filtered (abstract_class_instantiation "int");
   assert_filtered (abstract_class_instantiation "float");
@@ -806,9 +791,7 @@ let test_suppress _ =
   assert_suppressed Source.Strict (Error.IncompatibleAwaitableType Type.Top);
   assert_not_suppressed Source.Strict (missing_return Type.Any);
   assert_not_suppressed Source.Strict (Error.AnalysisFailure Type.integer);
-  assert_not_suppressed Source.Unsafe (missing_return Type.integer);
   assert_suppressed Source.Unsafe (missing_return Type.Top);
-  assert_not_suppressed Source.Unsafe (incompatible_return_type Type.integer Type.float);
 
   (* Should not be made *)
   assert_not_suppressed Source.Unsafe (incompatible_return_type Type.integer Type.Any);
@@ -817,20 +800,34 @@ let test_suppress _ =
     ~signature:untyped_signature
     Source.Unsafe
     (revealed_type "a" (Annotation.create Type.integer));
-  assert_suppressed Source.Unsafe (Error.UndefinedName !&"reveal_type");
   assert_not_suppressed Source.Unsafe (Error.AnalysisFailure Type.integer);
   assert_suppressed
     Source.Unsafe
     (Error.InvalidTypeParameters
-       { name = "dict"; kind = IncorrectNumberOfParameters { expected = 2; actual = 0 } });
+       {
+         name = "dict";
+         kind =
+           IncorrectNumberOfParameters
+             { expected = 2; actual = 0; can_accept_more_parameters = false };
+       });
   assert_not_suppressed
     Source.Unsafe
     (Error.InvalidTypeParameters
-       { name = "dict"; kind = IncorrectNumberOfParameters { expected = 2; actual = 1 } });
+       {
+         name = "dict";
+         kind =
+           IncorrectNumberOfParameters
+             { expected = 2; actual = 1; can_accept_more_parameters = false };
+       });
   assert_not_suppressed
     Source.Strict
     (Error.InvalidTypeParameters
-       { name = "dict"; kind = IncorrectNumberOfParameters { expected = 2; actual = 0 } });
+       {
+         name = "dict";
+         kind =
+           IncorrectNumberOfParameters
+             { expected = 2; actual = 0; can_accept_more_parameters = false };
+       });
   let suppress_missing_return = [Error.code (error (missing_return Type.Any))] in
   assert_suppressed
     Source.Unsafe
@@ -847,10 +844,6 @@ let test_suppress _ =
     Source.Unsafe
     ~ignore_codes:suppress_missing_return
     (incompatible_return_type Type.integer Type.float);
-  assert_suppressed
-    Source.Unsafe
-    ~ignore_codes:suppress_missing_return
-    (Error.UndefinedName !&"reveal_type");
 
   assert_suppressed
     Source.Declare
@@ -901,6 +894,7 @@ let test_description _ =
   let assert_messages error expected =
     let actual =
       Error.instantiate
+        ~show_error_traces:false
         ~lookup:(fun _ -> None)
         {
           kind = error;
@@ -909,7 +903,7 @@ let test_description _ =
             Node.create_with_default_location
               (Ast.Statement.Define.Signature.create_toplevel ~qualifier:None);
         }
-      |> Error.Instantiated.description ~show_error_traces:false
+      |> Error.Instantiated.description
     in
     assert_equal ~printer:Fn.id expected actual
   in

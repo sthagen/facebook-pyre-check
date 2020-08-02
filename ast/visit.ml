@@ -140,13 +140,13 @@ module MakeNodeVisitor (Visitor : NodeVisitor) = struct
           visit_node ~state ~visitor (Reference name);
           List.iter bases ~f:(visit_argument ~visit_expression);
           List.iter body ~f:visit_statement;
-          List.iter decorators ~f:visit_expression
-      | Define { Define.signature; captures; body } ->
+          List.map decorators ~f:Decorator.to_expression |> List.iter ~f:visit_expression
+      | Define { Define.signature; captures; body; unbound_names = _ } ->
           let iter_signature { Define.Signature.name; parameters; decorators; return_annotation; _ }
             =
             visit_node ~state ~visitor (Reference name);
             List.iter parameters ~f:(visit_parameter ~state ~visitor ~visit_expression);
-            List.iter decorators ~f:visit_expression;
+            List.map decorators ~f:Decorator.to_expression |> List.iter ~f:visit_expression;
             Option.iter ~f:visit_expression return_annotation
           in
           let iter_capture { Define.Capture.kind; _ } =
@@ -174,7 +174,7 @@ module MakeNodeVisitor (Visitor : NodeVisitor) = struct
       | Import { Import.from; imports } ->
           let visit_import { Import.name; alias } =
             visit_node ~state ~visitor (Reference name);
-            Option.iter ~f:(fun alias -> visit_node ~state ~visitor (Reference alias)) alias
+            Option.iter ~f:(fun alias -> visit_node ~state ~visitor (Identifier alias)) alias
           in
           Option.iter ~f:(fun from -> visit_node ~state ~visitor (Reference from)) from;
           List.iter ~f:visit_import imports
@@ -476,3 +476,16 @@ let collect_base_identifiers statement =
   end)
   in
   Collector.collect (Source.create [statement])
+
+
+let rec collect_non_generic_type_names { Node.value; _ } =
+  match value with
+  | Expression.Call { Call.arguments; _ } ->
+      List.concat_map
+        ~f:(fun { Call.Argument.value; _ } -> collect_non_generic_type_names value)
+        arguments
+  | Tuple elements
+  | List elements ->
+      List.concat_map ~f:collect_non_generic_type_names elements
+  | Name name -> name_to_reference name >>| Reference.show |> Option.to_list
+  | _ -> []

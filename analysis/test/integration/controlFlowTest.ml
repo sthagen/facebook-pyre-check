@@ -11,10 +11,7 @@ let test_scheduling context =
   (* Top-level is scheduled. *)
   assert_type_errors
     "'string' + 1"
-    [
-      "Incompatible parameter type [6]: "
-      ^ "Expected `int` for 1st positional only parameter to call `int.__radd__` but got `str`.";
-    ];
+    ["Incompatible parameter type [6]: `+` is not supported for operand types `str` and `int`."];
 
   (* Functions are scheduled. *)
   assert_type_errors
@@ -23,20 +20,14 @@ let test_scheduling context =
       def foo() -> None:
         'string' + 1
     |}
-    [
-      "Incompatible parameter type [6]: "
-      ^ "Expected `int` for 1st positional only parameter to call `int.__radd__` but got `str`.";
-    ];
+    ["Incompatible parameter type [6]: `+` is not supported for operand types `str` and `int`."];
   assert_type_errors
     {|
       def bar() -> None:
         def foo() -> None:
           'string' + 1
     |}
-    [
-      "Incompatible parameter type [6]: "
-      ^ "Expected `int` for 1st positional only parameter to call `int.__radd__` but got `str`.";
-    ];
+    ["Incompatible parameter type [6]: `+` is not supported for operand types `str` and `int`."];
 
   (* Class bodies are scheduled. *)
   assert_type_errors
@@ -44,10 +35,7 @@ let test_scheduling context =
       class Foo:
         'string' + 1
     |}
-    [
-      "Incompatible parameter type [6]: "
-      ^ "Expected `int` for 1st positional only parameter to call `int.__radd__` but got `str`.";
-    ];
+    ["Incompatible parameter type [6]: `+` is not supported for operand types `str` and `int`."];
 
   (* Methods are scheduled. *)
   assert_type_errors
@@ -56,10 +44,7 @@ let test_scheduling context =
         def foo(self) -> None:
           'string' + 1
     |}
-    [
-      "Incompatible parameter type [6]: "
-      ^ "Expected `int` for 1st positional only parameter to call `int.__radd__` but got `str`.";
-    ];
+    ["Incompatible parameter type [6]: `+` is not supported for operand types `str` and `int`."];
 
   (* Property getters and setters are both scheduled *)
   assert_type_errors
@@ -148,6 +133,7 @@ let test_check_excepts context =
     ["Revealed type [-1]: Revealed type for `e` is `typing.Union[Bar, Foo]`."];
   assert_type_errors
     {|
+      import typing
       def foo() -> typing.Optional[int]:
         try:
           x = 1
@@ -186,12 +172,12 @@ let test_check_ternary context =
           return 1
     |}
     [
-      "Undefined attribute [16]: `Optional` has no attribute `__gt__`.";
-      (* TODO: We might want to get rid of this in the future *)
-      "Undefined attribute [16]: `Optional` has no attribute `__le__`.";
+      "Incompatible parameter type [6]: `>` is not supported for operand types `Optional[int]` and \
+       `int`.";
     ];
   assert_type_errors
     {|
+      import typing
       def foo() -> int:
         x: typing.Optional[int]
         y: int
@@ -201,6 +187,7 @@ let test_check_ternary context =
     [];
   assert_type_errors
     {|
+      import typing
       def foo() -> int:
         y: typing.Optional[int]
         return y if y else 5
@@ -219,6 +206,7 @@ let test_check_ternary context =
     [];
   assert_type_errors
     {|
+      import typing
       def foo() -> int:
         y: typing.Optional[int]
         x: int
@@ -227,24 +215,32 @@ let test_check_ternary context =
     ["Incompatible return type [7]: Expected `int` but got `typing.Optional[int]`."];
   assert_type_errors
     {|
+      from builtins import int_to_str
+      import typing
       def foo(a:typing.Optional[int])->str:
         return int_to_str(a) if a else ""
     |}
     [];
   assert_type_errors
     {|
+      from builtins import int_to_int
+      import typing
       def foo(x: typing.Optional[int]) -> None:
           int_to_int(x) if x else 0
     |}
     [];
   assert_type_errors
     {|
+      from builtins import int_to_int
+      import typing
       def foo(x: typing.Optional[int]) -> int:
           return int_to_int(x if x is not None else 1)
     |}
     [];
   assert_type_errors
     {|
+      from builtins import int_to_int
+      import typing
       def foo(x: typing.Optional[int]) -> int:
         a, b = ("hi", int_to_int(x) if x is not None else 1)
         return b
@@ -252,6 +248,7 @@ let test_check_ternary context =
     [];
   assert_type_errors
     {|
+      import typing
       def f(s: str) -> None:
         pass
 
@@ -272,6 +269,7 @@ let test_check_ternary context =
     [];
   assert_type_errors
     {|
+      import typing
       def foo(x: typing.Optional[bytes]) -> None: ...
       def bar() -> None:
         a: typing.Union[int, bytes]
@@ -291,12 +289,7 @@ let test_check_unbound_variables context =
           other = 1
         return result
     |}
-    [
-      "Incompatible return type [7]: Expected `int` but got "
-      ^ "`typing.Union[int, typing.Undeclared]`.";
-      "Undefined name [18]: Global name `result` is not defined, or there is at least one control \
-       flow path that doesn't define `result`.";
-    ];
+    [];
   assert_type_errors
     {|
       def foo(flag: bool) -> int:
@@ -304,14 +297,7 @@ let test_check_unbound_variables context =
           result = narnia()
         return result
     |}
-    [
-      "Undefined name [18]: Global name `narnia` is not defined, or there is at least one control \
-       flow path that doesn't define `narnia`.";
-      "Incompatible return type [7]: Expected `int` but got "
-      ^ "`typing.Union[typing.Undeclared, unknown]`.";
-      "Undefined name [18]: Global name `result` is not defined, or there is at least one control \
-       flow path that doesn't define `result`.";
-    ];
+    ["Unbound name [10]: Name `narnia` is used but not defined in the current scope."];
   assert_type_errors
     {|
       def foo(flag: bool) -> int:
@@ -321,14 +307,7 @@ let test_check_unbound_variables context =
           other = 1
         return result
     |}
-    [
-      "Undefined name [18]: Global name `narnia` is not defined, or there is at least one control \
-       flow path that doesn't define `narnia`.";
-      "Incompatible return type [7]: Expected `int` but got "
-      ^ "`typing.Union[typing.Undeclared, unknown]`.";
-      "Undefined name [18]: Global name `result` is not defined, or there is at least one control \
-       flow path that doesn't define `result`.";
-    ];
+    ["Unbound name [10]: Name `narnia` is used but not defined in the current scope."];
   assert_type_errors
     {|
       def foo() -> int:
@@ -336,8 +315,7 @@ let test_check_unbound_variables context =
         return unknown
     |}
     [
-      "Undefined name [18]: Global name `unknown` is not defined, or there is at least one control \
-       flow path that doesn't define `unknown`.";
+      "Unbound name [10]: Name `unknown` is used but not defined in the current scope.";
       "Incompatible return type [7]: Expected `int` but got `unknown`.";
     ];
   assert_type_errors
@@ -357,6 +335,7 @@ let test_check_nested context =
   let assert_default_type_errors = assert_default_type_errors ~context in
   assert_type_errors
     {|
+      from builtins import int_to_int
       def foo() -> None:
         def nested() -> None:
           int_to_int(1.0)
@@ -378,6 +357,7 @@ let test_check_nested context =
     [];
   assert_type_errors
     {|
+      import collections
       class Derp:
           Word = collections.namedtuple("word", ("verb", "noun"))
       def foo() -> Derp.Word: pass
@@ -568,7 +548,6 @@ let test_check_while context =
       def foo() -> None:
         while True:
           print("infinity!")
-        beyond = impossible
         reveal_type("never reached")
     |}
     [];
@@ -585,6 +564,62 @@ let test_check_while context =
       print(some_var)
     |}
     [];
+  assert_type_errors
+    {|
+      def foo(x: int) -> None:
+        while x < 1.0:
+          pass
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Dict, Any
+
+      def foo() -> Dict[str, Any]: ...
+      def bar() -> None:
+        try:
+          x = foo()
+        except Exception as ex:
+          x = {"a": False}
+        reveal_type(x)
+    |}
+    ["Revealed type [-1]: Revealed type for `x` is `Dict[str, bool]`."];
+  assert_type_errors
+    {|
+      from typing import Dict, Any
+
+      def foo() -> Dict[str, Any]: ...
+      def bar(b: bool) -> None:
+        if b:
+          x = foo()
+        else:
+          x = {"a": False}
+        reveal_type(x)
+    |}
+    ["Revealed type [-1]: Revealed type for `x` is `Dict[str, bool]`."];
+  assert_type_errors
+    {|
+      from typing import NoReturn
+
+      def foo() -> NoReturn: ...
+
+      def bar() -> None:
+        try:
+          reveal_type(1)
+        except:
+          pass
+        foo()
+
+      def baz() -> None:
+        try:
+          reveal_type(2)
+        except:
+          pass
+      |}
+    [
+      "Revealed type [-1]: Revealed type for `1` is `typing_extensions.Literal[1]`.";
+      "Revealed type [-1]: Revealed type for `2` is `typing_extensions.Literal[2]`.";
+    ];
   ()
 
 

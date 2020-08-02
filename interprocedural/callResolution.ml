@@ -172,6 +172,11 @@ let resolve_target ~resolution ?receiver_type callee =
     is_super callee
   in
   let is_all_names = is_all_names (Node.value callee) in
+  let is_local_variable =
+    match Node.value callee with
+    | Expression.Name (Name.Identifier name) -> is_local name
+    | _ -> false
+  in
   let rec resolve_type callable_type =
     let underlying_callable, self_argument =
       match callable_type with
@@ -197,14 +202,22 @@ let resolve_target ~resolution ?receiver_type callee =
         compute_indirect_targets ~resolution ~receiver_type:type_or_class name
         |> List.map ~f:(fun target -> target, self_argument)
     | _, _, Type.Union annotations, _, _ -> List.concat_map ~f:resolve_type annotations
-    | _, _, _, _, _ when Type.is_meta callable_type -> (
-        let class_type = Type.single_parameter callable_type in
-        match Type.primitive_name class_type with
-        | Some class_name when class_name <> "super" ->
-            let resolution = Resolution.global_resolution resolution in
-            Callable.resolve_method ~resolution ~class_type ~method_name:"__init__"
-            >>| (fun callable -> [callable, Some callable_type])
-            |> Option.value ~default:[]
+    | Some { kind = Named name; _ }, _, _, _, _ when is_local_variable -> (
+        match self_argument with
+        | Some _ -> [Callable.create_method name, self_argument]
+        | None -> [Callable.create_function name, None] )
+    | _
+      when is_all_names
+           && Set.mem SpecialCallResolution.recognized_callable_target_types callable_type -> (
+        let name =
+          Node.value callee
+          |> (function
+               | Name name -> Some name
+               | _ -> None)
+          >>= Ast.Expression.name_to_reference
+        in
+        match name with
+        | Some name -> [Callable.create_function name, None]
         | _ -> [] )
     | _ -> []
   in
@@ -259,7 +272,7 @@ let resolve_call_targets ~resolution call =
   | Name (Name.Attribute { base; _ }) ->
       let receiver_type = resolve_ignoring_optional ~resolution base in
       resolve_target ~resolution ~receiver_type callee
-  | Name (Name.Identifier name) when name <> "super" ->
+  | Name (Name.Identifier name) when not (String.equal name "super") ->
       let receiver_type = resolve_ignoring_optional ~resolution callee in
       if Type.is_meta receiver_type then
         let callee =
@@ -315,7 +328,7 @@ let get_global_targets ~resolution reference =
     GlobalTargets (resolve_target ~resolution callee)
 
 
-let transform_special_calls { Call.callee; arguments } =
+let transform_special_calls ~resolution { Call.callee; arguments } =
   match callee, arguments with
   | ( {
         Node.value =
@@ -354,10 +367,10 @@ let transform_special_calls { Call.callee; arguments } =
           arguments =
             List.map process_arguments ~f:(fun value -> { Call.Argument.value; name = None });
         }
-  | _ -> None
+  | _ -> SpecialCallResolution.redirect ~resolution { Call.callee; arguments }
 
 
 let redirect_special_calls ~resolution call =
-  match transform_special_calls call with
+  match transform_special_calls ~resolution call with
   | Some call -> call
   | None -> Annotated.Call.redirect_special_calls ~resolution call

@@ -30,6 +30,7 @@ let test_check_attributes context =
     [];
   assert_type_errors
     {|
+      import typing
       class Bar: ...
       class Foo(Bar):
         bar: typing.Optional[int] = None
@@ -127,6 +128,7 @@ let test_check_attributes context =
     ];
   assert_type_errors
     {|
+      import typing
       class Foo:
         bar: typing.Any
     |}
@@ -150,6 +152,7 @@ let test_check_attributes context =
     ];
   assert_type_errors
     {|
+      import typing
       class Foo:
         bar: typing.Dict[str, typing.Any] = {}
         baz: typing.Dict[typing.Any, typing.Any] = {}
@@ -160,6 +163,7 @@ let test_check_attributes context =
     ];
   assert_type_errors
     {|
+      import typing
       class Foo:
         bar: typing.Any
         def foo(self) -> int:
@@ -262,6 +266,7 @@ let test_check_attributes context =
     ["Incompatible return type [7]: Expected `str` but got `int`."];
   assert_type_errors
     {|
+      import typing
       class Foo:
         bar: typing.Optional[int]
       def foo() -> int:
@@ -276,6 +281,7 @@ let test_check_attributes context =
     ];
   assert_type_errors
     {|
+      import typing
       class Foo:
         bar: typing.Optional[int]
       def foo(a: typing.Optional[Foo]) -> int:
@@ -290,6 +296,7 @@ let test_check_attributes context =
     ];
   assert_type_errors
     {|
+      import typing
       class Foo:
         bar: typing.Optional[int]
       def foo(a: typing.Optional[Foo]) -> int:
@@ -331,6 +338,7 @@ let test_check_attributes context =
     ];
   assert_type_errors
     {|
+      import typing
       class Foo:
         def foo(self, bar: typing.Optional[int]) -> int:
           self.baz = bar
@@ -358,6 +366,7 @@ let test_check_attributes context =
   (* TODO(T25072735): support attribute tests for: class variables, generic annotations *)
   assert_type_errors
     {|
+      import typing
       class Foo:
         bar: typing.ClassVar[int] = 1
       def foo() -> int:
@@ -370,6 +379,8 @@ let test_check_attributes context =
     ];
   assert_type_errors
     {|
+      import typing
+      _T = typing.TypeVar('_T')
       class Foo:
         bar: typing.Generic[_T]
         def foo(self) -> int:
@@ -389,6 +400,7 @@ let test_check_attributes context =
   (* Static attributes are properly resolved. *)
   assert_type_errors
     {|
+      import typing
       class Foo:
         attribute: typing.ClassVar[int] = 1
 
@@ -408,6 +420,7 @@ let test_check_attributes context =
     ["Incompatible return type [7]: Expected `str` but got `int`."];
   assert_type_errors
     {|
+      import typing
       class Foo:
         DERP: typing.ClassVar[str] = "test"
 
@@ -429,8 +442,8 @@ let test_check_attributes context =
     [];
   assert_type_errors
     {|
-      class unittest.TestCase: ...
-      class Foo(unittest.TestCase):
+      from unittest import TestCase
+      class Foo(TestCase):
         def setUp(self) -> None:
           self.attribute: int = 1
         def foo(self) -> str:
@@ -439,8 +452,8 @@ let test_check_attributes context =
     ["Incompatible return type [7]: Expected `str` but got `int`."];
   assert_type_errors
     {|
-      class unittest.case.TestCase: ...
-      class Foo(unittest.case.TestCase):
+      from unittest.case import TestCase
+      class Foo(TestCase):
         def setUp(self) -> None:
           self.attribute: int = 1
         def foo(self) -> str:
@@ -449,13 +462,27 @@ let test_check_attributes context =
     ["Incompatible return type [7]: Expected `str` but got `int`."];
   assert_type_errors
     {|
-      class unittest.case.TestCase: ...
-      class Foo(unittest.case.TestCase):
+      from unittest.case import TestCase
+      class Foo(TestCase):
         x: int
         def setUp(self) -> None:
           self.x = 1
     |}
     [];
+  assert_type_errors
+    {|
+      from unittest.case import TestCase
+      class Base():
+        def setUp(self) -> None:
+          self.x: int = 1
+      class Foo(Base, TestCase):
+        def foo(self) -> None:
+          y = self.x
+    |}
+    [
+      "Undefined attribute [16]: `Base` has no attribute `x`.";
+      "Undefined attribute [16]: `Foo` has no attribute `x`.";
+    ];
   assert_type_errors
     {|
       class Foo:
@@ -561,6 +588,7 @@ let test_check_attributes context =
   (* Check attribute type propagation. *)
   assert_type_errors
     {|
+      from builtins import not_annotated
       class Foo:
         attribute: int = 1
         def foo(self) -> None:
@@ -572,6 +600,7 @@ let test_check_attributes context =
   (* Do not resolve optional attributes to the optional type. *)
   assert_type_errors
     {|
+      import typing
       class Foo:
         debug: int = 1
       def foo(f: typing.Optional[Foo]) -> int:
@@ -582,18 +611,9 @@ let test_check_attributes context =
       "Undefined attribute [16]: Optional type has no attribute `debug`.";
     ];
 
-  (* Check for class definitions that conflict with imports *)
-  assert_type_errors
-    ~handle:"test.py"
-    ~update_environment_with:[{ handle = "foo.py"; source = "class Bar: pass" }]
-    {|
-      from foo import Bar
-      class Bar: pass
-    |}
-    ["Redefined class [50]: Class `test.Bar` conflicts with imported class `foo.Bar`."];
-
   assert_type_errors
     {|
+      import typing
       class Foo:
         n = None
         l = typing.List
@@ -614,6 +634,7 @@ let test_check_attributes context =
 
 let test_attribute_decorators context =
   let assert_type_errors = assert_type_errors ~context in
+  let assert_strict_type_errors = assert_strict_type_errors ~context in
   (* Attributes defined with property decorators. *)
   assert_type_errors
     {|
@@ -626,6 +647,31 @@ let test_attribute_decorators context =
     ["Incompatible return type [7]: Expected `str` but got `int`."];
 
   (* Attributes defined with getters and setters. *)
+  assert_strict_type_errors
+    {|
+      class Foo:
+        _a: int = 1
+        def __init__(self) -> None:
+          self.a = 1 + 1
+        @property
+        def a(self) -> int:
+          return self._a
+        @a.setter
+        def a(self, value: int) -> None:
+          self._a = value
+    |}
+    [];
+  assert_strict_type_errors
+    {|
+      class Foo:
+        _a: int = 1
+        def __init__(self) -> None:
+          self.a = 1 + 1
+        @property
+        def a(self) -> int:
+          return self._a
+    |}
+    ["Invalid assignment [41]: `self.a` cannot be reassigned. It is a read-only property."];
   assert_type_errors
     {|
       class Foo:
@@ -650,6 +696,7 @@ let test_attribute_decorators context =
     ];
   assert_type_errors
     {|
+      import typing
       x: typing.Optional[int]
       class Foo:
         @property
@@ -671,6 +718,7 @@ let test_attribute_decorators context =
     ];
   assert_type_errors
     {|
+      import typing
       __property__: typing.Any = ...
       x: typing.Optional[int]
       class Foo:
@@ -700,6 +748,7 @@ let test_attribute_strict context =
   (* Annotations containing `Any` in strict are not permitted. *)
   assert_type_errors
     {|
+      import typing
       class Foo:
         bar: typing.Any
         def foo(self) -> int:
@@ -718,6 +767,7 @@ let test_attribute_strict context =
      are thrown in debug that are filtered away in strict. *)
   assert_strict_type_errors
     {|
+      import typing
       MyType = typing.Any
       class Foo:
         bar: MyType
@@ -756,6 +806,7 @@ let test_attribute_strict context =
     ];
   assert_strict_type_errors
     {|
+      import typing
       class Bar:
         def bar(self) -> None:
           pass
@@ -769,12 +820,14 @@ let test_attribute_strict context =
   (* Any has all attributes in default mode, but not strict mode. *)
   assert_strict_type_errors
     {|
+      import typing
       def foo(any: typing.Any) -> int:
         return any.attribute
     |}
     ["Missing parameter annotation [2]: Parameter `any` must have a type other than `Any`."];
   assert_default_type_errors
     {|
+      import typing
       def foo(any: typing.Any) -> int:
         return any.attribute
     |}
@@ -796,6 +849,7 @@ let test_check_attribute_initialization context =
 
   assert_type_errors
     {|
+        import typing
         class Foo:
           a: typing.Optional[int]
         Foo.a = 1
@@ -988,8 +1042,7 @@ let test_check_missing_attribute context =
     [
       "Missing attribute annotation [4]: Attribute `a` of class `Foo` has type `int` but no type \
        is specified.";
-      "Undefined name [18]: Global name `unknown` is not defined, or there is at least one control \
-       flow path that doesn't define `unknown`.";
+      "Unbound name [10]: Name `unknown` is used but not defined in the current scope.";
     ];
   assert_type_errors
     {|
@@ -1018,6 +1071,7 @@ let test_check_missing_attribute context =
     [];
   assert_type_errors
     {|
+      import typing
       MyType = typing.Any
       class Foo:
         def __init__(self, a: MyType) -> None:
@@ -1032,11 +1086,11 @@ let test_check_missing_attribute context =
     |}
     [
       "Missing attribute annotation [4]: Attribute `a` of class `Foo` has no type specified.";
-      "Undefined name [18]: Global name `unknown` is not defined, or there is at least one control \
-       flow path that doesn't define `unknown`.";
+      "Unbound name [10]: Name `unknown` is used but not defined in the current scope.";
     ];
   assert_type_errors
     {|
+        import typing
         class Foo:
           a: typing.Any
         Foo.a = 1
@@ -1053,6 +1107,7 @@ let test_check_missing_attribute context =
     |} [];
   assert_type_errors
     {|
+        import typing
         class Foo:
           def __init__(self, a: typing.Any) -> None:
             self.a = a
@@ -1060,6 +1115,7 @@ let test_check_missing_attribute context =
     ["Missing parameter annotation [2]: Parameter `a` must have a type other than `Any`."];
   assert_type_errors
     {|
+      import typing
       class Foo:
         def __init__(self) -> None:
           self.a: typing.Any
@@ -1101,6 +1157,7 @@ let test_check_missing_attribute context =
     ];
   assert_type_errors
     {|
+      import typing
       class Foo:
         x: typing.Any = 1
         y: typing.List[typing.Any] = [1]
@@ -1140,6 +1197,7 @@ let test_check_missing_attribute context =
     [];
   assert_default_type_errors
     {|
+      import typing
       class Foo:
         a: typing.Any
       Foo.a = 1
@@ -1179,6 +1237,7 @@ let test_attribute_type_variable_resolution context =
   (* Check attribute type variable resolution. *)
   assert_type_errors
     {|
+    import typing
     _VALUE = typing.TypeVar('_VALUE')
     class Wrapper(typing.Generic[_VALUE]):
       value: _VALUE
@@ -1192,6 +1251,7 @@ let test_attribute_type_variable_resolution context =
     ];
   assert_type_errors
     {|
+    import typing
     _VALUE = typing.TypeVar('_VALUE')
     class Wrapper(typing.Generic[_VALUE]):
       value: _VALUE
@@ -1208,6 +1268,7 @@ let test_attribute_type_variable_resolution context =
     ];
   assert_type_errors
     {|
+    import typing
     _T = typing.TypeVar('_T')
     class ReturnSelf(typing.Generic[_T]):
       def f(self) -> ReturnSelf[_T]:
@@ -1216,6 +1277,7 @@ let test_attribute_type_variable_resolution context =
     [];
   assert_type_errors
     {|
+    import typing
     _T = typing.TypeVar('_T')
     class ReturnClass(typing.Generic[_T]):
       @classmethod
@@ -1228,6 +1290,7 @@ let test_attribute_type_variable_resolution context =
     ];
   assert_type_errors
     {|
+    import typing
     _T = typing.TypeVar('_T')
     class Class:
       @property
@@ -1238,6 +1301,7 @@ let test_attribute_type_variable_resolution context =
     [];
   assert_type_errors
     {|
+    import typing
     _T = typing.TypeVar('_T')
     class Class(typing.Generic[_T]):
       @property
@@ -1248,6 +1312,7 @@ let test_attribute_type_variable_resolution context =
     [];
   assert_type_errors
     {|
+    import typing
     _T = typing.TypeVar('_T')
     class A:
       @property
@@ -1259,6 +1324,7 @@ let test_attribute_type_variable_resolution context =
     ["Revealed type [-1]: Revealed type for `self.property` is `B`."];
   assert_type_errors
     {|
+    import typing
     _T = typing.TypeVar('_T')
     _U = typing.TypeVar('_U')
     class A:
@@ -1271,6 +1337,7 @@ let test_attribute_type_variable_resolution context =
     ["Revealed type [-1]: Revealed type for `a.property` is `int`."];
   assert_type_errors
     {|
+    import typing
     _T = typing.TypeVar('_T')
     class A:
       @property
@@ -1282,6 +1349,8 @@ let test_attribute_type_variable_resolution context =
     ["Revealed type [-1]: Revealed type for `a.property` is `str`."];
   assert_type_errors
     {|
+    import typing
+    import pyre_extensions
     _T = typing.TypeVar('_T')
     _TParams = pyre_extensions.ParameterSpecification('_TParams')
     class A:
@@ -1294,6 +1363,8 @@ let test_attribute_type_variable_resolution context =
     ["Revealed type [-1]: Revealed type for `a.property` is `typing.Callable[[int], bool]`."];
   assert_type_errors
     {|
+    import typing
+    import pyre_extensions
     _T = typing.TypeVar('_T')
     _Ts = pyre_extensions.ListVariadic('_Ts')
     class A(typing.Generic[_Ts]):
@@ -1306,6 +1377,7 @@ let test_attribute_type_variable_resolution context =
     ["Revealed type [-1]: Revealed type for `a.property` is `typing.Callable[[bool, float], str]`."];
   assert_type_errors
     {|
+      import typing
       _T = typing.TypeVar('_T')
       _U = typing.TypeVar('_U')
       class A:
@@ -1322,6 +1394,7 @@ let test_attribute_type_variable_resolution context =
     [];
   assert_type_errors
     {|
+      import typing
       _T = typing.TypeVar('_T')
       _U = typing.TypeVar('_U')
       class A:
@@ -1336,6 +1409,7 @@ let test_attribute_type_variable_resolution context =
     ["Incompatible return type [7]: Expected `str` but got `int`."];
   assert_type_errors
     {|
+      import typing
       _T = typing.TypeVar('_T')
       _U = typing.TypeVar('_U')
       class A:
@@ -1353,6 +1427,7 @@ let test_attribute_type_variable_resolution context =
     ];
   assert_type_errors
     {|
+    import typing
     from abc import ABCMeta
     _T = typing.TypeVar('_T')
     class FooMeta(ABCMeta):
@@ -1364,6 +1439,7 @@ let test_attribute_type_variable_resolution context =
     ["Revealed type [-1]: Revealed type for `test.Foo.__members__` is `Foo`."];
   assert_type_errors
     {|
+    import typing
     T = typing.TypeVar('T')
     def f(t: typing.Type[T]) -> None:
       a = t()
@@ -1371,6 +1447,7 @@ let test_attribute_type_variable_resolution context =
     [];
   assert_type_errors
     {|
+    import typing
     T = typing.TypeVar('T', bound=int)
     def f(t: typing.Type[T]) -> None:
       a = t()
@@ -1378,6 +1455,7 @@ let test_attribute_type_variable_resolution context =
     [];
   assert_type_errors
     {|
+    import typing
     T = typing.TypeVar('T', int)
     def f(t: typing.Type[T]) -> None:
       a = t()
@@ -1478,7 +1556,10 @@ let test_check_getattr context =
       def foo() -> str:
         return any_attribute
     |}
-    [];
+    [
+      "Undefined import [21]: Could not find a name `any_attribute` defined in module \
+       `has_getattr_str`.";
+    ];
   assert_test_getattr
     {|
       import has_getattr_invalid_arity

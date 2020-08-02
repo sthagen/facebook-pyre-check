@@ -26,6 +26,7 @@ type missing_annotation = {
 
 type class_kind =
   | Class
+  | Enumeration
   | Protocol of Reference.t
   | Abstract of Reference.t
 [@@deriving compare, eq, sexp, show, hash]
@@ -76,6 +77,10 @@ and typed_dictionary_initialization_mismatch =
       expected_type: Type.t;
       actual_type: Type.t;
     }
+  | UndefinedField of {
+      field_name: Identifier.t;
+      class_name: Identifier.t;
+    }
 
 and incompatible_type = {
   name: Reference.t;
@@ -86,6 +91,7 @@ and invalid_argument =
   | Keyword of {
       expression: Expression.t option;
       annotation: Type.t;
+      require_string_keys: bool;
     }
   | ConcreteVariable of {
       expression: Expression.t option;
@@ -93,7 +99,7 @@ and invalid_argument =
     }
   | ListVariadicVariable of {
       variable: Type.OrderedTypes.t;
-      mismatch: AttributeResolution.mismatch_with_list_variadic_type_variable;
+      mismatch: SignatureSelectionTypes.mismatch_with_list_variadic_type_variable;
     }
 
 and precondition_mismatch =
@@ -165,6 +171,13 @@ and unawaited_awaitable = {
   expression: Expression.t;
 }
 
+and undefined_import =
+  | UndefinedModule of Reference.t
+  | UndefinedName of {
+      from: Reference.t;
+      name: Identifier.t;
+    }
+
 and incompatible_overload_kind =
   | ReturnType of {
       implementation_annotation: Type.t;
@@ -180,28 +193,53 @@ and incompatible_overload_kind =
       name: Reference.t;
       location: Location.t;
     }
+  | DifferingDecorators
+  | MisplacedOverloadDecorator
+
+and incompatible_parameter_kind =
+  | Operand of {
+      operator_name: Identifier.t;
+      left_operand: Type.t;
+      right_operand: Type.t;
+    }
+  | Argument of {
+      name: Identifier.t option;
+      position: int;
+      callee: Reference.t option;
+      mismatch: mismatch;
+    }
 [@@deriving compare, eq, sexp, show, hash]
 
-type kind =
+type invalid_decoration = {
+  decorator: Decorator.t;
+  reason: invalid_decoration_reason;
+}
+
+and invalid_decoration_reason =
+  | CouldNotResolve
+  | CouldNotResolveArgument of Expression.t
+  | NonCallableDecoratorFactory of Type.t
+  | NonCallableDecorator of Type.t
+  | DecoratorFactoryFailedToApply of kind option
+  | ApplicationFailed of kind option
+
+and kind =
   | AnalysisFailure of Type.t
+  | ParserFailure of string
   | IllegalAnnotationTarget of Expression.t
   | ImpossibleAssertion of {
       expression: Expression.t;
       annotation: Type.t;
       test: Expression.t;
     }
+  | IncompatibleAsyncGeneratorReturnType of Type.t
   | IncompatibleAttributeType of {
       parent: Type.t;
       incompatible_type: incompatible_type;
     }
   | IncompatibleAwaitableType of Type.t
   | IncompatibleConstructorAnnotation of Type.t
-  | IncompatibleParameterType of {
-      name: Identifier.t option;
-      position: int;
-      callee: Reference.t option;
-      mismatch: mismatch;
-    }
+  | IncompatibleParameterType of incompatible_parameter_kind
   | IncompatibleReturnType of {
       mismatch: mismatch;
       is_implicit: bool;
@@ -226,6 +264,7 @@ type kind =
     }
   | InvalidArgument of invalid_argument
   | InvalidClassInstantiation of invalid_class_instantiation
+  | InvalidDecoration of invalid_decoration
   | InvalidException of {
       expression: Expression.t;
       annotation: Type.t;
@@ -252,7 +291,7 @@ type kind =
   | InvalidAssignment of invalid_assignment_kind
   | MissingArgument of {
       callee: Reference.t option;
-      parameter: AttributeResolution.missing_argument;
+      parameter: SignatureSelectionTypes.missing_argument;
     }
   | MissingAttributeAnnotation of {
       parent: Type.t;
@@ -282,6 +321,7 @@ type kind =
   | RevealedType of {
       expression: Expression.t;
       annotation: Annotation.t;
+      qualify: bool;
     }
   | UnsafeCast of {
       expression: Expression.t;
@@ -298,12 +338,12 @@ type kind =
       typed_dictionary_name: Identifier.t;
       missing_key: string;
     }
+  | UnboundName of Identifier.t
   | UndefinedAttribute of {
       attribute: Identifier.t;
       origin: origin;
     }
-  | UndefinedImport of Reference.t
-  | UndefinedName of Reference.t
+  | UndefinedImport of undefined_import
   | UndefinedType of Type.t
   | UnexpectedKeyword of {
       name: Identifier.t;
@@ -350,6 +390,7 @@ let code = function
   | IncompatibleReturnType _ -> 7
   | IncompatibleAttributeType _ -> 8
   | IncompatibleVariableType _ -> 9
+  | UnboundName _ -> 10
   | UndefinedType _ -> 11
   | IncompatibleAwaitableType _ -> 12
   | UninitializedAttribute _ -> 13
@@ -359,7 +400,6 @@ let code = function
       | WeakenedPostcondition _ -> 15 )
   | UndefinedAttribute _ -> 16
   | IncompatibleConstructorAnnotation _ -> 17
-  | UndefinedName _ -> 18
   | TooManyArguments _ -> 19
   | MissingArgument _ -> 20
   | UndefinedImport _ -> 21
@@ -395,6 +435,9 @@ let code = function
   | MissingCaptureAnnotation _ -> 53
   | TypedDictionaryInvalidOperation _ -> 54
   | TypedDictionaryInitializationError _ -> 55
+  | InvalidDecoration _ -> 56
+  | IncompatibleAsyncGeneratorReturnType _ -> 57
+  | ParserFailure _ -> 404
   (* Additional errors. *)
   | UnawaitedAwaitable _ -> 1001
   | Deobfuscation _ -> 1002
@@ -403,10 +446,12 @@ let code = function
 
 let name = function
   | AnalysisFailure _ -> "Analysis failure"
+  | ParserFailure _ -> "Parsing failure"
   | DeadStore _ -> "Dead store"
   | Deobfuscation _ -> "Deobfuscation"
   | IllegalAnnotationTarget _ -> "Illegal annotation target"
   | ImpossibleAssertion _ -> "Impossible assertion"
+  | IncompatibleAsyncGeneratorReturnType _ -> "Incompatible async generator return type"
   | IncompatibleAttributeType _ -> "Incompatible attribute type"
   | IncompatibleAwaitableType _ -> "Incompatible awaitable type"
   | IncompatibleConstructorAnnotation _ -> "Incompatible constructor annotation"
@@ -419,6 +464,7 @@ let name = function
   | InvalidArgument _ -> "Invalid argument"
   | InvalidMethodSignature _ -> "Invalid method signature"
   | InvalidClassInstantiation _ -> "Invalid class instantiation"
+  | InvalidDecoration _ -> "Invalid decoration"
   | InvalidException _ -> "Invalid Exception"
   | InvalidType _ -> "Invalid type"
   | InvalidTypeParameters _ -> "Invalid type parameters"
@@ -448,9 +494,9 @@ let name = function
   | TypedDictionaryInvalidOperation _ -> "Invalid TypedDict operation"
   | TypedDictionaryKeyNotFound _ -> "TypedDict accessed with a missing key"
   | UnawaitedAwaitable _ -> "Unawaited awaitable"
+  | UnboundName _ -> "Unbound name"
   | UndefinedAttribute _ -> "Undefined attribute"
   | UndefinedImport _ -> "Undefined import"
-  | UndefinedName _ -> "Undefined name"
   | UndefinedType _ -> "Undefined or invalid type"
   | UnexpectedKeyword _ -> "Unexpected keyword"
   | UnsafeCast _ -> "Unsafe cast"
@@ -498,8 +544,16 @@ let weaken_literals kind =
       ({ override = StrengthenedPrecondition (Found mismatch); _ } as inconsistent) ->
       InconsistentOverride
         { inconsistent with override = StrengthenedPrecondition (Found (weaken_mismatch mismatch)) }
-  | IncompatibleParameterType ({ mismatch; _ } as incompatible) ->
-      IncompatibleParameterType { incompatible with mismatch = weaken_mismatch mismatch }
+  | IncompatibleParameterType (Operand { operator_name; left_operand; right_operand }) ->
+      IncompatibleParameterType
+        (Operand
+           {
+             operator_name;
+             left_operand = Type.weaken_literals left_operand;
+             right_operand = Type.weaken_literals right_operand;
+           })
+  | IncompatibleParameterType (Argument ({ mismatch; _ } as incompatible)) ->
+      IncompatibleParameterType (Argument { incompatible with mismatch = weaken_mismatch mismatch })
   | IncompatibleReturnType ({ mismatch; _ } as incompatible) ->
       IncompatibleReturnType { incompatible with mismatch = weaken_mismatch mismatch }
   | UninitializedAttribute ({ mismatch; _ } as uninitialized) ->
@@ -539,7 +593,7 @@ let weaken_literals kind =
   | _ -> kind
 
 
-let messages ~concise ~signature location kind =
+let rec messages ~concise ~signature location kind =
   let {
     Location.WithPath.start = { Location.line = start_line; _ };
     stop = { Location.line = stop_line; _ };
@@ -592,6 +646,7 @@ let messages ~concise ~signature location kind =
       [Format.asprintf "Terminating analysis - type `%a` not defined." pp_type annotation]
   | AnalysisFailure annotation ->
       [Format.asprintf "Terminating analysis because type `%a` is not defined." pp_type annotation]
+  | ParserFailure message -> [message]
   | DeadStore name -> [Format.asprintf "Value assigned to `%a` is never used." pp_identifier name]
   | Deobfuscation source -> [Format.asprintf "\n%a" Source.pp source]
   | IllegalAnnotationTarget _ when concise -> ["Target cannot be annotated."]
@@ -631,6 +686,13 @@ let messages ~concise ~signature location kind =
           pp_type
           annotation
           (show_sanitized_expression test);
+      ]
+  | IncompatibleAsyncGeneratorReturnType annotation ->
+      [
+        Format.asprintf
+          "Expected return annotation to be AsyncGenerator or a superclass but got `%a`."
+          pp_type
+          annotation;
       ]
   | IncompatibleAwaitableType actual ->
       [Format.asprintf "Expected an awaitable but got `%a`." pp_type actual]
@@ -675,9 +737,24 @@ let messages ~concise ~signature location kind =
               pp_reference
               name
               (Location.line location);
-          ] )
+          ]
+      | DifferingDecorators ->
+          ["This definition does not have the same decorators as the preceding overload(s)."]
+      | MisplacedOverloadDecorator ->
+          ["The @overload decorator must be the topmost decorator if present."] )
+  | IncompatibleParameterType (Operand { operator_name; left_operand; right_operand }) ->
+      [
+        Format.asprintf
+          "`%s` is not supported for operand types `%a` and `%a`."
+          operator_name
+          pp_type
+          left_operand
+          pp_type
+          right_operand;
+      ]
   | IncompatibleParameterType
-      { name; position; callee; mismatch = { actual; expected; due_to_invariance; _ } } ->
+      (Argument { name; position; callee; mismatch = { actual; expected; due_to_invariance; _ } })
+    ->
       let trace =
         if due_to_invariance then
           [Format.asprintf "This call might modify the type of the parameter."; invariance_message]
@@ -850,7 +927,12 @@ let messages ~concise ~signature location kind =
       ]
   | InvalidArgument argument when concise -> (
       match argument with
-      | Keyword _ -> ["Keyword argument must be a mapping with string keys."]
+      | Keyword { require_string_keys; _ } ->
+          [
+            Format.sprintf
+              "Keyword argument must be a mapping%s."
+              (if require_string_keys then " with string keys" else "");
+          ]
       | ConcreteVariable _ -> ["Variable argument must be an iterable."]
       | ListVariadicVariable { variable; mismatch = ConstraintFailure _ } ->
           [
@@ -875,13 +957,14 @@ let messages ~concise ~signature location kind =
           ] )
   | InvalidArgument argument -> (
       match argument with
-      | Keyword { expression; annotation } ->
+      | Keyword { expression; annotation; require_string_keys } ->
           [
             Format.asprintf
-              "Keyword argument%s has type `%a` but must be a mapping with string keys."
+              "Keyword argument%s has type `%a` but must be a mapping%s."
               (show_sanitized_optional_expression expression)
               pp_type
-              annotation;
+              annotation
+              (if require_string_keys then " with string keys" else "");
           ]
       | ConcreteVariable { expression; annotation } ->
           [
@@ -926,6 +1009,56 @@ let messages ~concise ~signature location kind =
               variable
               unconcatenatable;
           ] )
+  | InvalidDecoration { decorator = { name; _ }; reason = CouldNotResolve } ->
+      let name = Node.value name |> Reference.sanitized |> Reference.show in
+      [Format.asprintf "Pyre was not able to infer the type of the decorator `%s`." name]
+  | InvalidDecoration { decorator = { name; _ }; reason = CouldNotResolveArgument argument } ->
+      let name = Node.value name |> Reference.sanitized |> Reference.show in
+      [
+        Format.asprintf
+          "Pyre was not able to infer the type of argument `%s` to decorator factory `%s`."
+          (show_sanitized_expression argument)
+          name;
+        "This can usually be worked around by extracting your argument into a global variable and \
+         providing an explicit type annotation.";
+      ]
+  | InvalidDecoration { decorator = { name; _ }; reason = NonCallableDecoratorFactory result } ->
+      let name = Node.value name |> Reference.sanitized |> Reference.show in
+      [
+        Format.asprintf
+          "Decorator factory `%s` could not be called, because its type `%a` is not callable."
+          name
+          pp_type
+          result;
+      ]
+  | InvalidDecoration { decorator = { name; arguments }; reason = NonCallableDecorator result } ->
+      let name = Node.value name |> Reference.sanitized |> Reference.show in
+      let arguments = if Option.is_some arguments then "(...)" else "" in
+      [
+        Format.asprintf
+          "Decorator `%s%s` could not be called, because its type `%a` is not callable."
+          name
+          arguments
+          pp_type
+          result;
+      ]
+  | InvalidDecoration
+      { decorator = { name; _ }; reason = DecoratorFactoryFailedToApply inner_reason } -> (
+      let name = Node.value name |> Reference.sanitized |> Reference.show in
+      let recurse = messages ~concise ~signature location in
+      match inner_reason >>| recurse >>= List.hd with
+      | Some inner_message ->
+          [Format.asprintf "While applying decorator factory `%s`: %s" name inner_message]
+      | None -> [Format.asprintf "Decorator factory `%s` failed to apply." name] )
+  | InvalidDecoration { decorator = { name; arguments }; reason = ApplicationFailed inner_reason }
+    -> (
+      let name = Node.value name |> Reference.sanitized |> Reference.show in
+      let arguments = if Option.is_some arguments then "(...)" else "" in
+      let recurse = messages ~concise ~signature location in
+      match inner_reason >>| recurse >>= List.hd with
+      | Some inner_message ->
+          [Format.asprintf "While applying decorator `%s%s`: %s" name arguments inner_message]
+      | None -> [Format.asprintf "Decorator `%s%s` failed to apply." name arguments] )
   | InvalidException { expression; annotation } ->
       [
         Format.asprintf
@@ -981,7 +1114,12 @@ let messages ~concise ~signature location kind =
               (Type.expression variable);
           ] )
   | InvalidTypeParameters
-      { name; kind = AttributeResolution.IncorrectNumberOfParameters { expected; actual } } ->
+      {
+        name;
+        kind =
+          AttributeResolution.IncorrectNumberOfParameters
+            { expected; actual; can_accept_more_parameters };
+      } ->
       let additional =
         let replacement =
           match name with
@@ -1001,17 +1139,30 @@ let messages ~concise ~signature location kind =
           else
             Format.asprintf ", received %d" actual
         in
+        let parameter_count_message =
+          Format.asprintf "%s%d" (if can_accept_more_parameters then "at least " else "") expected
+        in
         [
           Format.asprintf
-            "Generic type `%s` expects %d type parameter%s%s%s."
+            "Generic type `%s` expects %s type parameter%s%s%s."
             name
-            expected
+            parameter_count_message
             (if expected = 1 then "" else "s")
             received
             additional;
         ]
       else
         [Format.asprintf "Non-generic type `%s` cannot take parameters." name]
+  | InvalidTypeParameters
+      { name = "IntExpression"; kind = AttributeResolution.ViolateConstraints { actual; _ } } ->
+      [
+        Format.asprintf
+          "Type parameter `%a` violates constraints on \
+           `pyre_extensions.Add`/`pyre_extensions.Multiply`. Add & Multiply only accept type \
+           variables with a bound that's a subtype of int."
+          pp_type
+          actual;
+      ]
   | InvalidTypeParameters
       { name; kind = AttributeResolution.ViolateConstraints { expected; actual } } ->
       [
@@ -1083,10 +1234,24 @@ let messages ~concise ~signature location kind =
         | Toplevel ->
             "The type variable `%s` can only be used to annotate generic classes or functions."
       in
+      let detail variable =
+        match origin with
+        | ClassToplevel ->
+            [
+              Format.sprintf
+                "To reference the type variable, you can modify the class to inherit from \
+                 `typing.Generic[%s]`."
+                variable;
+            ]
+        | Define
+        | Toplevel ->
+            []
+      in
       match annotation with
       | Type.Variable.Unary variable ->
-          [Format.asprintf format (Type.show (Type.Variable variable))]
+          Format.asprintf format (Type.show (Type.Variable variable)) :: detail variable.variable
       | Type.Variable.ParameterVariadic variable ->
+          (* We don't give hints for the more complicated cases. *)
           let name = Type.Variable.Variadic.Parameters.name variable in
           [Format.asprintf format name]
       | Type.Variable.ListVariadic variable ->
@@ -1243,9 +1408,9 @@ let messages ~concise ~signature location kind =
               class_name
               (if concise then "." else method_message);
           ] )
-  | MissingArgument { parameter = AttributeResolution.Named name; _ } when concise ->
+  | MissingArgument { parameter = Named name; _ } when concise ->
       [Format.asprintf "Argument `%a` expected." pp_identifier name]
-  | MissingArgument { parameter = AttributeResolution.PositionalOnly index; _ } when concise ->
+  | MissingArgument { parameter = PositionalOnly index; _ } when concise ->
       [Format.asprintf "Argument `%d` expected." index]
   | MissingArgument { callee; parameter } ->
       let callee =
@@ -1637,7 +1802,7 @@ let messages ~concise ~signature location kind =
   | RedundantCast _ when concise -> ["The cast is redundant."]
   | RedundantCast annotation ->
       [Format.asprintf "The value being cast is already of type `%a`." pp_type annotation]
-  | RevealedType { expression; annotation = { Annotation.annotation; mutability } } ->
+  | RevealedType { expression; annotation = { Annotation.annotation; mutability }; _ } ->
       let annotation, detail =
         match mutability with
         | Mutable -> Format.asprintf "%a" pp_type annotation, ""
@@ -1758,7 +1923,9 @@ let messages ~concise ~signature location kind =
               field_name
               pp_type
               actual_type;
-          ] )
+          ]
+      | UndefinedField { field_name; class_name } ->
+          [Format.asprintf "TypedDict `%s` has no field `%s`." class_name field_name] )
   | Unpack { expected_count; unpack_problem } -> (
       match unpack_problem with
       | UnacceptableType bad_type ->
@@ -1793,6 +1960,16 @@ let messages ~concise ~signature location kind =
           (show_sanitized_expression expression)
           start_line;
       ]
+  | UnboundName name when concise ->
+      [Format.asprintf "Name `%a` is used but not defined." Identifier.pp_sanitized name]
+  | UnboundName name ->
+      [
+        Format.asprintf
+          "Name `%a` is used but not defined in the current scope."
+          Identifier.pp_sanitized
+          name;
+        "Did you forget to import it or assign to it?";
+      ]
   | UndefinedAttribute { attribute; origin } ->
       let target =
         match origin with
@@ -1817,26 +1994,34 @@ let messages ~concise ~signature location kind =
         | Module name -> Format.asprintf "Module `%a`" pp_reference name
       in
       [Format.asprintf "%s has no attribute `%a`." target pp_identifier attribute]
-  | UndefinedName name when concise ->
-      [Format.asprintf "Global name `%a` is undefined." pp_reference name]
-  | UndefinedName name ->
+  | UndefinedImport (UndefinedModule reference) when concise ->
+      [Format.asprintf "Could not find module `%a`." Reference.pp_sanitized reference]
+  | UndefinedImport (UndefinedName { from; name }) when concise ->
       [
         Format.asprintf
-          "Global name `%a` is not defined, or there is at least one control flow path that \
-           doesn't define `%a`."
-          pp_reference
+          "Could not find name `%a` in `%a`."
+          pp_identifier
           name
-          pp_reference
-          name;
+          Reference.pp_sanitized
+          from;
       ]
-  | UndefinedImport reference when concise ->
-      [Format.asprintf "Could not find `%a`." pp_reference reference]
-  | UndefinedImport reference ->
+  | UndefinedImport (UndefinedModule reference) ->
       [
         Format.asprintf
           "Could not find a module corresponding to import `%a`."
-          pp_reference
+          Reference.pp_sanitized
           reference;
+        "For common reasons, see \
+         https://pyre-check.org/docs/error-types.html#pyre-errors-1821-undefined-name-undefined-import";
+      ]
+  | UndefinedImport (UndefinedName { from; name }) ->
+      [
+        Format.asprintf
+          "Could not find a name `%a` defined in module `%a`."
+          pp_identifier
+          name
+          Reference.pp_sanitized
+          from;
         "For common reasons, see \
          https://pyre-check.org/docs/error-types.html#pyre-errors-1821-undefined-name-undefined-import";
       ]
@@ -1857,7 +2042,14 @@ let messages ~concise ~signature location kind =
           Format.asprintf "Attribute `%a` is never initialized." pp_identifier name
         else
           match kind with
-          | Class ->
+          | Class
+          | Enumeration ->
+              let expected =
+                match kind with
+                | Class -> expected
+                | Enumeration -> Type.weaken_literals expected
+                | _ -> failwith "impossible"
+              in
               Format.asprintf
                 "Attribute `%a` is declared in class `%a` to have type `%a` but is never \
                  initialized."
@@ -1873,7 +2065,9 @@ let messages ~concise ~signature location kind =
                 match kind with
                 | Protocol protocol_name -> "protocol", protocol_name
                 | Abstract class_name -> "abstract class", class_name
-                | Class -> failwith "impossible"
+                | Class
+                | Enumeration ->
+                    failwith "impossible"
               in
               Format.asprintf
                 "Attribute `%a` inherited from %s `%a` in class `%a` to have type `%a` but is \
@@ -1984,7 +2178,12 @@ let inference_information
     List.map parameters ~f:to_json
   in
   let decorators =
-    let decorator_to_json decorator = `String (Expression.show (Expression.sanitized decorator)) in
+    let decorator_to_json decorator =
+      Ast.Statement.Decorator.to_expression decorator
+      |> Expression.sanitized
+      |> Expression.show
+      |> fun shown -> `String shown
+    in
     List.map decorators ~f:decorator_to_json
   in
   let print_parent parent =
@@ -2070,10 +2269,13 @@ module Set = Set.Make (struct
 end)
 
 let due_to_analysis_limitations { kind; _ } =
+  let is_due_to_analysis_limitations annotation =
+    Type.contains_unknown annotation || Type.is_unbound annotation || Type.is_type_alias annotation
+  in
   match kind with
   | ImpossibleAssertion { annotation = actual; _ }
   | IncompatibleAwaitableType actual
-  | IncompatibleParameterType { mismatch = { actual; _ }; _ }
+  | IncompatibleParameterType (Argument { mismatch = { actual; _ }; _ })
   | TypedDictionaryInvalidOperation { mismatch = { actual; _ }; _ }
   | TypedDictionaryInitializationError (FieldTypeMismatch { actual_type = actual; _ })
   | IncompatibleReturnType { mismatch = { actual; _ }; _ }
@@ -2093,19 +2295,21 @@ let due_to_analysis_limitations { kind; _ } =
   | RedundantCast actual
   | UninitializedAttribute { mismatch = { actual; _ }; _ }
   | Unpack { unpack_problem = UnacceptableType actual; _ } ->
-      Type.contains_unknown actual
-      || Type.is_unbound actual
-      || Type.is_type_alias actual
-      || Type.is_undeclared actual
+      is_due_to_analysis_limitations actual
+  | IncompatibleParameterType (Operand { left_operand; right_operand; _ }) ->
+      is_due_to_analysis_limitations left_operand || is_due_to_analysis_limitations right_operand
   | Top -> true
   | UndefinedAttribute { origin = Class annotation; _ } -> Type.contains_unknown annotation
   | AnalysisFailure _
+  | ParserFailure _
   | DeadStore _
   | Deobfuscation _
   | IllegalAnnotationTarget _
+  | IncompatibleAsyncGeneratorReturnType _
   | IncompatibleConstructorAnnotation _
   | InconsistentOverride { override = StrengthenedPrecondition (NotFound _); _ }
   | InvalidArgument (ListVariadicVariable _)
+  | InvalidDecoration _
   | InvalidMethodSignature _
   | InvalidTypeParameters _
   | InvalidTypeVariable _
@@ -2136,20 +2340,14 @@ let due_to_analysis_limitations { kind; _ } =
   | RevealedType _
   | UnsafeCast _
   | UnawaitedAwaitable _
+  | UnboundName _
   | UndefinedAttribute _
-  | UndefinedName _
   | UndefinedImport _
   | UndefinedType _
   | UnexpectedKeyword _
   | UnusedIgnore _
   | UnusedLocalMode _ ->
       false
-
-
-let due_to_builtin_import { kind; _ } =
-  match kind with
-  | UndefinedImport import -> String.equal (Reference.show import) "builtins"
-  | _ -> false
 
 
 let less_or_equal ~resolution left right =
@@ -2161,15 +2359,42 @@ let less_or_equal ~resolution left right =
   &&
   match left.kind, right.kind with
   | AnalysisFailure left, AnalysisFailure right -> Type.equal left right
+  | ParserFailure left_message, ParserFailure right_message ->
+      String.equal left_message right_message
   | DeadStore left, DeadStore right -> Identifier.equal left right
   | Deobfuscation left, Deobfuscation right -> Source.equal left right
   | IllegalAnnotationTarget left, IllegalAnnotationTarget right -> Expression.equal left right
   | ImpossibleAssertion left, ImpossibleAssertion right when Expression.equal left.test right.test
     ->
       GlobalResolution.less_or_equal resolution ~left:left.annotation ~right:right.annotation
+  | IncompatibleAsyncGeneratorReturnType left, IncompatibleAsyncGeneratorReturnType right ->
+      GlobalResolution.less_or_equal resolution ~left ~right
   | IncompatibleAwaitableType left, IncompatibleAwaitableType right ->
       GlobalResolution.less_or_equal resolution ~left ~right
-  | IncompatibleParameterType left, IncompatibleParameterType right
+  | ( IncompatibleParameterType
+        (Operand
+          {
+            operator_name = left_operator_name;
+            left_operand = left_operand_for_left;
+            right_operand = right_operand_for_left;
+          }),
+      IncompatibleParameterType
+        (Operand
+          {
+            operator_name = right_operator_name;
+            left_operand = left_operand_for_right;
+            right_operand = right_operand_for_right;
+          }) )
+    when Identifier.equal_sanitized left_operator_name right_operator_name ->
+      GlobalResolution.less_or_equal
+        resolution
+        ~left:left_operand_for_left
+        ~right:left_operand_for_right
+      && GlobalResolution.less_or_equal
+           resolution
+           ~left:right_operand_for_left
+           ~right:right_operand_for_right
+  | IncompatibleParameterType (Argument left), IncompatibleParameterType (Argument right)
     when Option.equal Identifier.equal_sanitized left.name right.name ->
       less_or_equal_mismatch left.mismatch right.mismatch
   | IncompatibleConstructorAnnotation left, IncompatibleConstructorAnnotation right ->
@@ -2268,6 +2493,7 @@ let less_or_equal ~resolution left right =
       Option.equal Reference.equal_sanitized left_callee right_callee && left_index = right_index
   | MissingCaptureAnnotation left_name, MissingCaptureAnnotation right_name ->
       Identifier.equal_sanitized left_name right_name
+  | InvalidDecoration left, InvalidDecoration right -> equal_invalid_decoration left right
   | InvalidException left, InvalidException right ->
       GlobalResolution.less_or_equal resolution ~left:left.annotation ~right:right.annotation
   | InvalidClassInstantiation left, InvalidClassInstantiation right -> (
@@ -2295,8 +2521,8 @@ let less_or_equal ~resolution left right =
       GlobalResolution.less_or_equal resolution ~left ~right
   | RevealedType left, RevealedType right ->
       let less_or_equal_annotation
-          { Annotation.annotation = left_annotation; mutability = left_mutability }
-          { Annotation.annotation = right_annotation; mutability = right_mutability }
+          { Annotation.annotation = left_annotation; mutability = left_mutability; _ }
+          { Annotation.annotation = right_annotation; mutability = right_mutability; _ }
         =
         Annotation.equal_mutability left_mutability right_mutability
         && GlobalResolution.less_or_equal resolution ~left:left_annotation ~right:right_annotation
@@ -2334,18 +2560,18 @@ let less_or_equal ~resolution left right =
     ->
       less_or_equal_mismatch left.mismatch right.mismatch
   | UnawaitedAwaitable left, UnawaitedAwaitable right -> equal_unawaited_awaitable left right
+  | UnboundName left_name, UnboundName right_name -> Identifier.equal_sanitized left_name right_name
   | UndefinedAttribute left, UndefinedAttribute right
     when Identifier.equal_sanitized left.attribute right.attribute -> (
       match left.origin, right.origin with
       | Class left, Class right -> GlobalResolution.less_or_equal resolution ~left ~right
       | Module left, Module right -> Reference.equal_sanitized left right
       | _ -> false )
-  | UndefinedName left, UndefinedName right when Reference.equal_sanitized left right -> true
   | UndefinedType left, UndefinedType right -> Type.equal left right
   | UnexpectedKeyword left, UnexpectedKeyword right ->
       Option.equal Reference.equal_sanitized left.callee right.callee
       && Identifier.equal left.name right.name
-  | UndefinedImport left, UndefinedImport right -> Reference.equal_sanitized left right
+  | UndefinedImport left, UndefinedImport right -> [%compare.equal: undefined_import] left right
   | UnusedIgnore left, UnusedIgnore right ->
       IntSet.is_subset (IntSet.of_list left) ~of_:(IntSet.of_list right)
   | ( UnusedLocalMode { unused_mode = left_unused_mode; actual_mode = left_actual_mode },
@@ -2363,10 +2589,12 @@ let less_or_equal ~resolution left right =
       | _ -> false )
   | _, Top -> true
   | AnalysisFailure _, _
+  | ParserFailure _, _
   | DeadStore _, _
   | Deobfuscation _, _
   | IllegalAnnotationTarget _, _
   | ImpossibleAssertion _, _
+  | IncompatibleAsyncGeneratorReturnType _, _
   | IncompatibleAttributeType _, _
   | IncompatibleAwaitableType _, _
   | IncompatibleConstructorAnnotation _, _
@@ -2377,6 +2605,7 @@ let less_or_equal ~resolution left right =
   | IncompatibleVariableType _, _
   | InconsistentOverride _, _
   | InvalidArgument _, _
+  | InvalidDecoration _, _
   | InvalidException _, _
   | InvalidMethodSignature _, _
   | InvalidType _, _
@@ -2409,9 +2638,9 @@ let less_or_equal ~resolution left right =
   | TypedDictionaryInitializationError _, _
   | TypedDictionaryKeyNotFound _, _
   | UnawaitedAwaitable _, _
+  | UnboundName _, _
   | UndefinedAttribute _, _
   | UndefinedImport _, _
-  | UndefinedName _, _
   | UndefinedType _, _
   | UnexpectedKeyword _, _
   | UninitializedAttribute _, _
@@ -2449,11 +2678,16 @@ let join ~resolution left right =
   let kind =
     match left.kind, right.kind with
     | AnalysisFailure left, AnalysisFailure right -> AnalysisFailure (Type.union [left; right])
+    | ParserFailure left_message, ParserFailure right_message
+      when String.equal left_message right_message ->
+        ParserFailure left_message
     | DeadStore left, DeadStore right when Identifier.equal left right -> DeadStore left
     | Deobfuscation left, Deobfuscation right when Source.equal left right -> Deobfuscation left
     | IllegalAnnotationTarget left, IllegalAnnotationTarget right when Expression.equal left right
       ->
         IllegalAnnotationTarget left
+    | IncompatibleAsyncGeneratorReturnType left, IncompatibleAsyncGeneratorReturnType right ->
+        IncompatibleAsyncGeneratorReturnType (GlobalResolution.join resolution left right)
     | IncompatibleAwaitableType left, IncompatibleAwaitableType right ->
         IncompatibleAwaitableType (GlobalResolution.join resolution left right)
     | ( IncompleteType
@@ -2521,11 +2755,13 @@ let join ~resolution left right =
           {
             annotation = { Annotation.annotation = left_annotation; mutability = left_mutability };
             expression = left_expression;
+            qualify = left_qualify;
           },
         RevealedType
           {
             annotation = { Annotation.annotation = right_annotation; mutability = right_mutability };
             expression = right_expression;
+            qualify = right_qualify;
           } )
       when Expression.equal left_expression right_expression
            && Annotation.equal_mutability left_mutability right_mutability ->
@@ -2538,13 +2774,38 @@ let join ~resolution left right =
                   GlobalResolution.join resolution left_annotation right_annotation;
                 mutability = left_mutability;
               };
+            qualify = left_qualify || right_qualify (* lol *);
           }
-    | IncompatibleParameterType left, IncompatibleParameterType right
+    | ( IncompatibleParameterType
+          (Operand
+            ( {
+                operator_name = left_operator_name;
+                left_operand = left_operand_for_left;
+                right_operand = right_operand_for_left;
+              } as left )),
+        IncompatibleParameterType
+          (Operand
+            {
+              operator_name = right_operator_name;
+              left_operand = left_operand_for_right;
+              right_operand = right_operand_for_right;
+            }) )
+      when Identifier.equal_sanitized left_operator_name right_operator_name ->
+        IncompatibleParameterType
+          (Operand
+             {
+               left with
+               left_operand =
+                 GlobalResolution.join resolution left_operand_for_left left_operand_for_right;
+               right_operand =
+                 GlobalResolution.join resolution right_operand_for_left right_operand_for_right;
+             })
+    | IncompatibleParameterType (Argument left), IncompatibleParameterType (Argument right)
       when Option.equal Identifier.equal_sanitized left.name right.name
            && left.position = right.position
            && Option.equal Reference.equal_sanitized left.callee right.callee ->
         let mismatch = join_mismatch left.mismatch right.mismatch in
-        IncompatibleParameterType { left with mismatch }
+        IncompatibleParameterType (Argument { left with mismatch })
     | IncompatibleConstructorAnnotation left, IncompatibleConstructorAnnotation right ->
         IncompatibleConstructorAnnotation (GlobalResolution.join resolution left right)
     | IncompatibleReturnType left, IncompatibleReturnType right ->
@@ -2607,6 +2868,8 @@ let join ~resolution left right =
     | InvalidAssignment left, InvalidAssignment right when equal_invalid_assignment_kind left right
       ->
         InvalidAssignment left
+    | InvalidDecoration left, InvalidDecoration right when equal_invalid_decoration left right ->
+        InvalidDecoration left
     | InvalidException left, InvalidException right
       when Expression.equal left.expression right.expression ->
         InvalidException
@@ -2644,6 +2907,9 @@ let join ~resolution left right =
         UninitializedAttribute { left with mismatch = join_mismatch left.mismatch right.mismatch }
     | UnawaitedAwaitable left, UnawaitedAwaitable right when equal_unawaited_awaitable left right ->
         UnawaitedAwaitable left
+    | UnboundName left_name, UnboundName right_name
+      when Identifier.equal_sanitized left_name right_name ->
+        left.kind
     | ( UndefinedAttribute { origin = Class left; attribute = left_attribute },
         UndefinedAttribute { origin = Class right; attribute = right_attribute } )
       when Identifier.equal_sanitized left_attribute right_attribute ->
@@ -2654,21 +2920,14 @@ let join ~resolution left right =
       when Identifier.equal_sanitized left_attribute right_attribute
            && Reference.equal_sanitized left right ->
         UndefinedAttribute { origin = Module left; attribute = left_attribute }
-    | UndefinedName left, UndefinedName right when Reference.equal_sanitized left right ->
-        UndefinedName left
     | UndefinedType left, UndefinedType right when Type.equal left right -> UndefinedType left
     | UnexpectedKeyword left, UnexpectedKeyword right
       when Option.equal Reference.equal_sanitized left.callee right.callee
            && Identifier.equal left.name right.name ->
         UnexpectedKeyword left
-    | UndefinedImport left, UndefinedImport right when Reference.equal_sanitized left right ->
+    | UndefinedImport left, UndefinedImport right when [%compare.equal: undefined_import] left right
+      ->
         UndefinedImport left
-    (* Join UndefinedImport/Name pairs into an undefined import, as the missing name is due to us
-       being unable to resolve the import. *)
-    | UndefinedImport left, UndefinedName right when Reference.equal_sanitized left right ->
-        UndefinedImport left
-    | UndefinedName left, UndefinedImport right when Reference.equal_sanitized left right ->
-        UndefinedImport right
     | UnusedIgnore left, UnusedIgnore right ->
         UnusedIgnore (IntSet.to_list (IntSet.union (IntSet.of_list left) (IntSet.of_list right)))
     | ( Unpack { expected_count = left_count; unpack_problem = UnacceptableType left },
@@ -2733,10 +2992,12 @@ let join ~resolution left right =
     | _, Top ->
         Top
     | AnalysisFailure _, _
+    | ParserFailure _, _
     | DeadStore _, _
     | Deobfuscation _, _
     | IllegalAnnotationTarget _, _
     | ImpossibleAssertion _, _
+    | IncompatibleAsyncGeneratorReturnType _, _
     | IncompatibleAttributeType _, _
     | IncompatibleAwaitableType _, _
     | IncompatibleConstructorAnnotation _, _
@@ -2747,6 +3008,7 @@ let join ~resolution left right =
     | IncompatibleVariableType _, _
     | InconsistentOverride _, _
     | InvalidArgument _, _
+    | InvalidDecoration _, _
     | InvalidException _, _
     | InvalidMethodSignature _, _
     | InvalidType _, _
@@ -2778,9 +3040,9 @@ let join ~resolution left right =
     | TypedDictionaryInvalidOperation _, _
     | TypedDictionaryInitializationError _, _
     | UnawaitedAwaitable _, _
+    | UnboundName _, _
     | UndefinedAttribute _, _
     | UndefinedImport _, _
-    | UndefinedName _, _
     | UndefinedType _, _
     | UnexpectedKeyword _, _
     | UninitializedAttribute _, _
@@ -2822,7 +3084,7 @@ let join_at_define ~resolution errors =
         | None -> error
         | Some existing_error ->
             let joined_error = join ~resolution existing_error error in
-            if joined_error.kind <> Top then
+            if not (equal_kind joined_error.kind Top) then
               joined_error
             else
               existing_error
@@ -2851,18 +3113,25 @@ let join_at_source ~resolution errors =
         Type.show parent ^ Reference.show_sanitized name
     | { kind = MissingGlobalAnnotation { name; _ }; _ } -> Reference.show_sanitized name
     | { kind = MissingOverloadImplementation name; _ } -> Reference.show_sanitized name
-    | { kind = UndefinedImport name; _ }
-    | { kind = UndefinedName name; _ } ->
+    | { kind = UndefinedImport (UndefinedModule name); _ } ->
         Format.asprintf "Unknown[%a]" Reference.pp_sanitized name
+    | { kind = UndefinedImport (UndefinedName { name; from }); _ } ->
+        Format.asprintf
+          "Unknown[%a]"
+          Reference.pp_sanitized
+          (Reference.create name |> Reference.combine from)
+    | { kind = UnboundName name; _ }
+    | { kind = UndefinedType (Type.Primitive name); _ } ->
+        Format.asprintf "Unbound[%s]" name
     | error -> show error
   in
   let add_error errors error =
     let key = key error in
     match Map.find errors key, error.kind with
-    | Some { kind = UndefinedImport _; _ }, UndefinedName _ ->
-        (* Swallow up UndefinedName errors when the Import error already exists. *)
+    | Some { kind = UnboundName _; _ }, UndefinedType _ ->
+        (* Swallow up UndefinedType errors when the UnboundName error already exists. *)
         errors
-    | Some { kind = UndefinedName _; _ }, UndefinedImport _ -> Map.set ~key ~data:error errors
+    | Some { kind = UndefinedType _; _ }, UnboundName _ -> Map.set ~key ~data:error errors
     | Some existing_error, _ ->
         let joined_error = join ~resolution existing_error error in
         if not (equal_kind joined_error.kind Top) then
@@ -2881,12 +3150,12 @@ let deduplicate errors =
 
 
 let filter ~resolution errors =
-  let should_filter ({ location; _ } as error) =
+  let should_filter error =
     let is_mock_error { kind; _ } =
       match kind with
       | IncompatibleAttributeType { incompatible_type = { mismatch = { actual; _ }; _ }; _ }
       | IncompatibleAwaitableType actual
-      | IncompatibleParameterType { mismatch = { actual; _ }; _ }
+      | IncompatibleParameterType (Argument { mismatch = { actual; _ }; _ })
       | IncompatibleReturnType { mismatch = { actual; _ }; _ }
       | IncompatibleVariableType { incompatible_type = { mismatch = { actual; _ }; _ }; _ }
       | TypedDictionaryInvalidOperation { mismatch = { actual; _ }; _ }
@@ -2916,28 +3185,6 @@ let filter ~resolution errors =
           String.is_prefix ~prefix:"unittest.mock" (Reference.show callee)
       | _ -> false
     in
-    let is_unimplemented_return_error error =
-      match error with
-      | { kind = IncompatibleReturnType { is_unimplemented; _ }; _ } -> is_unimplemented
-      | _ -> false
-    in
-    let is_builtin_import_error = function
-      | { kind = UndefinedImport builtins; _ }
-        when String.equal (Reference.show builtins) "builtins" ->
-          true
-      | _ -> false
-    in
-    let is_override_on_dunder_method { kind; _ } =
-      (* Ignore naming mismatches on parameters of dunder methods due to unofficial typeshed naming *)
-      match kind with
-      | InconsistentOverride { overridden_method; override; _ }
-        when String.is_prefix ~prefix:"__" overridden_method
-             && String.is_suffix ~suffix:"__" overridden_method -> (
-          match override with
-          | StrengthenedPrecondition (NotFound _) -> true
-          | _ -> false )
-      | _ -> false
-    in
     let is_unnecessary_missing_annotation_error { kind; _ } =
       (* Ignore missing annotations thrown at assigns but not thrown where global or attribute was
          originally defined. *)
@@ -2953,7 +3200,7 @@ let filter ~resolution errors =
       | InconsistentOverride
           { override = StrengthenedPrecondition (Found { expected; actual; _ }); _ }
       | InconsistentOverride { override = WeakenedPostcondition { expected; actual; _ }; _ }
-      | IncompatibleParameterType { mismatch = { expected; actual; _ }; _ }
+      | IncompatibleParameterType (Argument { mismatch = { expected; actual; _ }; _ })
       | IncompatibleReturnType { mismatch = { expected; actual; _ }; _ }
       | IncompatibleAttributeType
           { incompatible_type = { mismatch = { expected; actual; _ }; _ }; _ }
@@ -2983,7 +3230,7 @@ let filter ~resolution errors =
           } ->
           true
       | UndefinedAttribute { origin = Class (Callable { kind = Named name; _ }); _ } ->
-          Reference.last name = "patch"
+          String.equal (Reference.last name) "patch"
       | _ -> false
     in
     let is_stub_error { kind; location = { Location.WithModule.path; _ }; _ } =
@@ -3007,12 +3254,8 @@ let filter ~resolution errors =
           | _ -> false )
       | _ -> false
     in
-    Location.WithModule.equal Location.WithModule.synthetic location
-    || is_stub_error error
+    is_stub_error error
     || is_mock_error error
-    || is_unimplemented_return_error error
-    || is_builtin_import_error error
-    || is_override_on_dunder_method error
     || is_unnecessary_missing_annotation_error error
     || is_unknown_callable_error error
     || is_callable_attribute_error error
@@ -3027,7 +3270,6 @@ let suppress ~mode ~ignore_codes error =
       true
     else
       match kind with
-      | UndefinedImport _ -> due_to_builtin_import error
       | IncompleteType _ ->
           (* TODO(T42467236): Ungate this when ready to codemod upgrade *)
           true
@@ -3046,12 +3288,6 @@ let suppress ~mode ~ignore_codes error =
         (* TODO(T42467236): Ungate this when ready to codemod upgrade *)
         true
     | MissingCaptureAnnotation _ -> true
-    | MissingReturnAnnotation { annotation = Some annotation; _ }
-    | MissingAttributeAnnotation { missing_annotation = { annotation = Some annotation; _ }; _ }
-    | MissingParameterAnnotation { annotation = Some annotation; _ }
-    | MissingGlobalAnnotation { annotation = Some annotation; _ }
-      when Type.is_concrete annotation ->
-        false
     | MissingReturnAnnotation _
     | MissingParameterAnnotation _
     | MissingAttributeAnnotation _
@@ -3061,9 +3297,9 @@ let suppress ~mode ~ignore_codes error =
     | Unpack { unpack_problem = UnacceptableType Type.Top; _ } ->
         true
     | UndefinedImport _ -> false
-    | UndefinedName name when String.equal (Reference.show name) "reveal_type" -> true
     | RevealedType _ -> false
     | UnsafeCast _ -> false
+    | IncompatibleReturnType { is_unimplemented = true; _ } -> true
     | _ ->
         due_to_analysis_limitations error
         || Define.Signature.is_untyped signature
@@ -3079,7 +3315,6 @@ let suppress ~mode ~ignore_codes error =
     | MissingGlobalAnnotation { annotation = Some actual; _ } ->
         Type.is_untyped actual
         || Type.contains_unknown actual
-        || Type.is_undeclared actual
         || Type.Variable.convert_all_escaped_free_variables_to_anys actual
            |> Type.contains_prohibited_any
     | _ -> true
@@ -3113,7 +3348,9 @@ let dequalify
   let dequalify_annotation = Annotation.dequalify dequalify_map in
   let dequalify_class_kind (kind : class_kind) =
     match kind with
-    | Class -> kind
+    | Class
+    | Enumeration ->
+        kind
     | Protocol reference -> Protocol (dequalify_reference reference)
     | Abstract reference -> Abstract (dequalify_reference reference)
   in
@@ -3174,6 +3411,8 @@ let dequalify
     | Unmatchable { name; matching_overload; unmatched_location } ->
         Unmatchable { name = dequalify_reference name; matching_overload; unmatched_location }
     | Parameters { name; location } -> Parameters { name = dequalify_reference name; location }
+    | DifferingDecorators -> DifferingDecorators
+    | MisplacedOverloadDecorator -> MisplacedOverloadDecorator
   in
   let dequalify_invalid_type_parameters { AttributeResolution.name; kind } =
     let dequalify_generic_type_problems = function
@@ -3204,21 +3443,25 @@ let dequalify
     | IllegalAnnotationTarget left -> IllegalAnnotationTarget left
     | ImpossibleAssertion ({ annotation; _ } as assertion) ->
         ImpossibleAssertion { assertion with annotation = dequalify annotation }
+    | IncompatibleAsyncGeneratorReturnType actual ->
+        IncompatibleAsyncGeneratorReturnType (dequalify actual)
     | IncompatibleAwaitableType actual -> IncompatibleAwaitableType (dequalify actual)
     | IncompatibleConstructorAnnotation annotation ->
         IncompatibleConstructorAnnotation (dequalify annotation)
     | IncompatibleOverload kind -> IncompatibleOverload (dequalify_incompatible_overload_kind kind)
     | IncompleteType { target; annotation; attempted_action } ->
         IncompleteType { target; annotation = dequalify annotation; attempted_action }
-    | InvalidArgument (Keyword { expression; annotation }) ->
-        InvalidArgument (Keyword { expression; annotation = dequalify annotation })
+    | InvalidArgument (Keyword { expression; annotation; require_string_keys }) ->
+        InvalidArgument
+          (Keyword { expression; annotation = dequalify annotation; require_string_keys })
     | InvalidArgument (ConcreteVariable { expression; annotation }) ->
         InvalidArgument (ConcreteVariable { expression; annotation = dequalify annotation })
     | InvalidArgument (ListVariadicVariable { variable; mismatch }) ->
         let mismatch =
           match mismatch with
-          | AttributeResolution.NotDefiniteTuple { expression; annotation } ->
-              AttributeResolution.NotDefiniteTuple { expression; annotation = dequalify annotation }
+          | NotDefiniteTuple { expression; annotation } ->
+              SignatureSelectionTypes.NotDefiniteTuple
+                { expression; annotation = dequalify annotation }
           | _ ->
               (* TODO(T45656387): implement dequalify ordered_types *)
               mismatch
@@ -3291,15 +3534,25 @@ let dequalify
           }
     | RedefinedClass redefined_class -> RedefinedClass redefined_class
     | RedundantCast annotation -> RedundantCast (dequalify annotation)
-    | RevealedType { expression; annotation } ->
-        RevealedType { expression; annotation = dequalify_annotation annotation }
-    | IncompatibleParameterType ({ mismatch; callee; _ } as parameter) ->
+    | RevealedType { expression; annotation; qualify } ->
+        let annotation = if qualify then annotation else dequalify_annotation annotation in
+        RevealedType { expression; annotation; qualify }
+    | IncompatibleParameterType (Operand { operator_name; left_operand; right_operand }) ->
         IncompatibleParameterType
-          {
-            parameter with
-            mismatch = dequalify_mismatch mismatch;
-            callee = Option.map callee ~f:dequalify_reference;
-          }
+          (Operand
+             {
+               operator_name;
+               left_operand = dequalify left_operand;
+               right_operand = dequalify right_operand;
+             })
+    | IncompatibleParameterType (Argument ({ mismatch; callee; _ } as parameter)) ->
+        IncompatibleParameterType
+          (Argument
+             {
+               parameter with
+               mismatch = dequalify_mismatch mismatch;
+               callee = Option.map callee ~f:dequalify_reference;
+             })
     | IncompatibleReturnType ({ mismatch; _ } as return) ->
         IncompatibleReturnType { return with mismatch = dequalify_mismatch mismatch }
     | IncompatibleAttributeType { parent; incompatible_type = { mismatch; _ } as incompatible_type }
@@ -3346,6 +3599,7 @@ let dequalify
             overridden_method = dequalify_identifier overridden_method;
             override = WeakenedPostcondition (dequalify_mismatch mismatch);
           }
+    | InvalidDecoration expression -> InvalidDecoration expression
     | TypedDictionaryAccessWithNonLiteral expression ->
         TypedDictionaryAccessWithNonLiteral expression
     | TypedDictionaryKeyNotFound { typed_dictionary_name; missing_key } ->
@@ -3378,6 +3632,12 @@ let dequalify
                   actual_type = dequalify actual_type;
                   class_name = dequalify_identifier class_name;
                 }
+          | UndefinedField { field_name; class_name } ->
+              UndefinedField
+                {
+                  field_name = dequalify_identifier field_name;
+                  class_name = dequalify_identifier class_name;
+                }
         in
         TypedDictionaryInitializationError mismatch
     | UninitializedAttribute ({ mismatch; parent; kind; _ } as inconsistent_usage) ->
@@ -3391,6 +3651,7 @@ let dequalify
     | UnsafeCast kind -> UnsafeCast kind
     | UnawaitedAwaitable { references; expression } ->
         UnawaitedAwaitable { references = List.map references ~f:dequalify_reference; expression }
+    | UnboundName name -> UnboundName (dequalify_identifier name)
     | UndefinedAttribute { attribute; origin } ->
         let origin : origin =
           match origin with
@@ -3406,13 +3667,13 @@ let dequalify
           | Module module_name -> Module (dequalify_reference module_name)
         in
         UndefinedAttribute { attribute; origin }
-    | UndefinedName name -> UndefinedName name
     | UndefinedType annotation -> UndefinedType (dequalify annotation)
     | UndefinedImport reference -> UndefinedImport reference
     | UnexpectedKeyword { name; callee } ->
         UnexpectedKeyword { name; callee = Option.map callee ~f:dequalify_reference }
     | MissingArgument { callee; parameter } ->
         MissingArgument { callee = Option.map callee ~f:dequalify_reference; parameter }
+    | ParserFailure failure -> ParserFailure failure
     | UnusedIgnore codes -> UnusedIgnore codes
     | UnusedLocalMode mode -> UnusedLocalMode mode
     | Unpack unpack -> Unpack unpack
@@ -3450,12 +3711,3 @@ let create_mismatch ~resolution ~actual ~expected ~covariant =
     actual;
     due_to_invariance = GlobalResolution.is_invariance_mismatch resolution ~left ~right;
   }
-
-
-let language_server_hint = function
-  | MissingReturnAnnotation _
-  | MissingAttributeAnnotation _
-  | MissingParameterAnnotation _
-  | MissingGlobalAnnotation _ ->
-      true
-  | _ -> false

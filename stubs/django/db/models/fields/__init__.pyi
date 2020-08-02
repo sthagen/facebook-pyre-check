@@ -1,7 +1,8 @@
 # pyre-unsafe
 
 import datetime
-from typing import Callable, Mapping, Optional, Sequence, Tuple
+from decimal import Decimal
+from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, Union
 
 # This stub is a lie. These are all actually classes that inherit from a common
 # base Field class. But their usage is to be attached to Model classes like this:
@@ -45,21 +46,47 @@ def CharField(
     error_messages: Mapping[str, str] = ...,
 ) -> str: ...
 
+EmailField = CharField
 TextField = CharField
+URLField = CharField
 
+def DateField(
+    verbose_name: str = ...,
+    name: str = ...,
+    auto_now: bool = ...,
+    auto_now_add: bool = ...,
+    primary_key: bool = ...,
+    unique: bool = ...,
+    blank: bool = ...,
+    null: bool = ...,
+    db_index: bool = ...,
+    rel: object = ...,
+    default: Optional[Union[Callable[[], datetime.date], datetime.date]] = ...,
+    editable: bool = ...,
+    serialize: bool = ...,
+    unique_for_date: datetime.date = ...,
+    unique_for_month: int = ...,
+    unique_for_year: int = ...,
+    choices: Sequence[Tuple[datetime.datetime, str]] = ...,
+    help_text: str = ...,
+    db_column: str = ...,
+    db_tablespace: str = ...,
+    auto_created: bool = ...,
+    validators: Sequence[Callable[[datetime.datetime], None]] = ...,
+    error_messages: Mapping[str, str] = ...,
+) -> datetime.date: ...
 def DateTimeField(
     verbose_name: str = ...,
     name: str = ...,
     auto_now: bool = ...,
     auto_now_add: bool = ...,
     primary_key: bool = ...,
-    max_length: int = ...,
     unique: bool = ...,
     blank: bool = ...,
     null: bool = ...,
     db_index: bool = ...,
     rel: object = ...,
-    default: Optional[datetime.datetime] = ...,
+    default: Optional[Union[Callable[[], datetime.datetime], datetime.datetime]] = ...,
     editable: bool = ...,
     serialize: bool = ...,
     unique_for_date: datetime.date = ...,
@@ -73,13 +100,83 @@ def DateTimeField(
     validators: Sequence[Callable[[datetime.datetime], None]] = ...,
     error_messages: Mapping[str, str] = ...,
 ) -> datetime.datetime: ...
-def IntegerField(
+def TimeField(
     verbose_name: str = ...,
     name: str = ...,
     auto_now: bool = ...,
     auto_now_add: bool = ...,
     primary_key: bool = ...,
-    max_length: int = ...,
+    unique: bool = ...,
+    blank: bool = ...,
+    null: bool = ...,
+    db_index: bool = ...,
+    rel: object = ...,
+    default: Optional[Union[Callable[[], datetime.time], datetime.time]] = ...,
+    editable: bool = ...,
+    serialize: bool = ...,
+    unique_for_date: datetime.date = ...,
+    unique_for_month: int = ...,
+    unique_for_year: int = ...,
+    choices: Sequence[Tuple[datetime.datetime, str]] = ...,
+    help_text: str = ...,
+    db_column: str = ...,
+    db_tablespace: str = ...,
+    auto_created: bool = ...,
+    validators: Sequence[Callable[[datetime.datetime], None]] = ...,
+    error_messages: Mapping[str, str] = ...,
+) -> datetime.time: ...
+def DecimalField(
+    verbose_name: str = ...,
+    name: str = ...,
+    max_digits: Optional[int] = ...,
+    decimal_places: Optional[int] = ...,
+    primary_key: bool = ...,
+    unique: bool = ...,
+    blank: bool = ...,
+    null: bool = ...,
+    db_index: bool = ...,
+    rel: object = ...,
+    default: Optional[int] = ...,
+    editable: bool = ...,
+    serialize: bool = ...,
+    unique_for_date: datetime.date = ...,
+    unique_for_month: int = ...,
+    unique_for_year: int = ...,
+    choices: Sequence[Tuple[int, str]] = ...,
+    help_text: str = ...,
+    db_column: str = ...,
+    db_tablespace: str = ...,
+    auto_created: bool = ...,
+    validators: Sequence[Callable[[int], None]] = ...,
+    error_messages: Mapping[str, str] = ...,
+) -> Decimal: ...
+def FloatField(
+    verbose_name: str = ...,
+    name: str = ...,
+    primary_key: bool = ...,
+    unique: bool = ...,
+    blank: bool = ...,
+    null: bool = ...,
+    db_index: bool = ...,
+    rel: object = ...,
+    default: Optional[int] = ...,
+    editable: bool = ...,
+    serialize: bool = ...,
+    unique_for_date: datetime.date = ...,
+    unique_for_month: int = ...,
+    unique_for_year: int = ...,
+    choices: Sequence[Tuple[int, str]] = ...,
+    help_text: str = ...,
+    db_column: str = ...,
+    db_tablespace: str = ...,
+    auto_created: bool = ...,
+    validators: Sequence[Callable[[int], None]] = ...,
+    error_messages: Mapping[str, str] = ...,
+) -> float: ...
+def IntegerField(
+    verbose_name: str = ...,
+    name: str = ...,
+    primary_key: bool = ...,
     unique: bool = ...,
     blank: bool = ...,
     null: bool = ...,
@@ -105,14 +202,12 @@ PositiveSmallIntegerField = IntegerField
 BigIntegerField = IntegerField
 
 AutoField = IntegerField
+SmallAutoField = IntegerField
 
 def BooleanField(
     verbose_name: str = ...,
     name: str = ...,
-    auto_now: bool = ...,
-    auto_now_add: bool = ...,
     primary_key: bool = ...,
-    max_length: int = ...,
     unique: bool = ...,
     blank: bool = ...,
     null: bool = ...,
@@ -135,10 +230,7 @@ def BooleanField(
 def NullBooleanField(
     verbose_name: str = ...,
     name: str = ...,
-    auto_now: bool = ...,
-    auto_now_add: bool = ...,
     primary_key: bool = ...,
-    max_length: int = ...,
     unique: bool = ...,
     blank: bool = ...,
     null: bool = ...,
@@ -158,3 +250,7 @@ def NullBooleanField(
     validators: Sequence[Callable[[Optional[bool]], None]] = ...,
     error_messages: Mapping[str, str] = ...,
 ) -> Optional[bool]: ...
+
+# This is a workaround for the field types being functions and not
+# actual types.
+Field = Any

@@ -35,7 +35,7 @@ let run_infer ~scheduler ~configuration ~global_resolution qualifiers =
         let new_errors = Inference.run ~configuration ~global_resolution ~source in
         List.append new_errors errors, number_files + 1
     in
-    List.filter_map qualifiers ~f:(AstEnvironment.ReadOnly.get_source ast_environment)
+    List.filter_map qualifiers ~f:(AstEnvironment.ReadOnly.get_processed_source ast_environment)
     |> List.fold ~init:([], 0) ~f:analyze_source
   in
   let reduce (left_errors, left_number_files) (right_errors, right_number_files) =
@@ -47,7 +47,6 @@ let run_infer ~scheduler ~configuration ~global_resolution qualifiers =
     Scheduler.map_reduce
       scheduler
       ~policy:(Scheduler.Policy.legacy_fixed_chunk_size 75)
-      ~configuration
       ~initial:([], 0)
       ~map
       ~reduce
@@ -60,7 +59,7 @@ let run_infer ~scheduler ~configuration ~global_resolution qualifiers =
 
 let infer
     ~configuration:
-      ({ Configuration.Analysis.project_root; local_root; search_path; _ } as configuration)
+      ({ Configuration.Analysis.project_root; source_path; search_path; _ } as configuration)
     ~scheduler
     ()
   =
@@ -69,32 +68,29 @@ let infer
     if not (Path.is_directory directory) then
       raise (Invalid_argument (Format.asprintf "`%a` is not a directory" Path.pp directory))
   in
-  check_directory_exists local_root;
+  List.iter source_path ~f:check_directory_exists;
   check_directory_exists project_root;
   search_path |> List.map ~f:SearchPath.to_path |> List.iter ~f:check_directory_exists;
 
   let module_tracker = ModuleTracker.create configuration in
   let ast_environment = AstEnvironment.create module_tracker in
-  let ast_environment_update_result =
-    AstEnvironment.update ~scheduler ~configuration ast_environment ColdStart
-  in
-  let qualifiers = AstEnvironment.UpdateResult.reparsed ast_environment_update_result in
-  let global_environment =
-    let ast_environment = AstEnvironment.read_only ast_environment in
+  let global_environment, qualifiers =
     Log.info "Building type environment...";
 
     let timer = Timer.start () in
     let update_result =
+      let annotated_global_environment = AnnotatedGlobalEnvironment.create ast_environment in
       AnnotatedGlobalEnvironment.update_this_and_all_preceding_environments
-        ast_environment
+        annotated_global_environment
         ~scheduler
         ~configuration
-        ~ast_environment_update_result
-        (Ast.Reference.Set.of_list qualifiers)
+        ColdStart
     in
     let global_environment = AnnotatedGlobalEnvironment.UpdateResult.read_only update_result in
     Statistics.performance ~name:"full environment built" ~timer ();
-    global_environment
+    ( global_environment,
+      AnnotatedGlobalEnvironment.UpdateResult.ast_environment_update_result update_result
+      |> AstEnvironment.UpdateResult.invalidated_modules )
   in
   let errors =
     let qualifiers =

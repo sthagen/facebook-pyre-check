@@ -1249,7 +1249,7 @@ let test_qualify _ =
           return $parameter$decorated
         return $local_qualifier?mydecoratorwrapper$mydecorator
       $local_qualifier$x = 42
-      @(qualifier.mydecoratorwrapper($local_qualifier$x))
+      @qualifier.mydecoratorwrapper($local_qualifier$x)
       def qualifier.f():
         pass
     |};
@@ -1272,7 +1272,7 @@ let test_qualify _ =
         return $local_qualifier?mydecoratorwrapper$mydecorator
       class qualifier.A:
         qualifier.A.x = 42
-        @(qualifier.mydecoratorwrapper(qualifier.A.x))
+        @qualifier.mydecoratorwrapper(qualifier.A.x)
         def qualifier.A.f($parameter$self):
             pass
     |};
@@ -1297,7 +1297,7 @@ let test_qualify _ =
       $local_qualifier$x = 42
       class qualifier.A:
         qualifier.A.y = 42
-        @(qualifier.mydecoratorwrapper($local_qualifier$x + qualifier.A.y))
+        @qualifier.mydecoratorwrapper($local_qualifier$x + qualifier.A.y)
         def qualifier.A.f($parameter$self):
             pass
     |};
@@ -1721,7 +1721,9 @@ let test_expand_wildcard_imports context =
       (Source.statements (parse expected))
       (Source.statements
          (Option.value_exn
-            (AstEnvironment.ReadOnly.get_source (AstEnvironment.read_only ast_environment) !&"test")))
+            (AstEnvironment.ReadOnly.get_processed_source
+               (AstEnvironment.read_only ast_environment)
+               !&"test")))
   in
   assert_expanded
     ["a.py", "def foo(): pass"]
@@ -1737,7 +1739,7 @@ let test_expand_wildcard_imports context =
       from a import *
     |}
     {|
-      from a import foo
+      from a import foo as foo
     |};
   assert_expanded
     ["a.py", "def foo(): pass"; "b.py", "def bar(): pass"]
@@ -1746,8 +1748,8 @@ let test_expand_wildcard_imports context =
       from b import *
     |}
     {|
-      from a import foo
-      from b import bar
+      from a import foo as foo
+      from b import bar as bar
     |};
   assert_expanded
     [
@@ -1764,7 +1766,7 @@ let test_expand_wildcard_imports context =
       from a import *
     |}
     {|
-      from a import bar, foo, y
+      from a import bar as bar, foo as foo, y as y
     |};
   assert_expanded
     [
@@ -1781,8 +1783,42 @@ let test_expand_wildcard_imports context =
       from a import *
     |}
     {|
-      from a import bar
+      from a import bar as bar
+    |};
+
+  (* Empty files *)
+  assert_expanded ["a.py", ""] {|
+      from a import *
+    |} "";
+  assert_expanded
+    ["a.py", ""; "b.py", "x = 1"]
+    {|
+      from a import *
+      from b import *
     |}
+    {|
+      from b import x as x
+    |};
+  assert_expanded
+    ["a.py", ""; "b.py", "x = 1"]
+    {|
+      from a import *
+      from b import *
+    |}
+    {|
+      from b import x as x
+    |};
+  assert_expanded
+    ["a.py", ""; "b.py", "from a import *"; "c.py", "x = 1"]
+    {|
+      from a import *
+      from b import *
+      from c import *
+    |}
+    {|
+      from c import x as x
+    |};
+  ()
 
 
 let test_expand_implicit_returns _ =
@@ -1814,6 +1850,7 @@ let test_expand_implicit_returns _ =
                     nesting_define = None;
                   };
                 captures = [];
+                unbound_names = [];
                 body = expected_body;
               };
          ])
@@ -1991,6 +2028,7 @@ let test_defines _ =
           nesting_define = None;
         };
       captures = [];
+      unbound_names = [];
       body = [+Statement.Expression (+Expression.Float 1.0)];
     }
   in
@@ -2008,6 +2046,7 @@ let test_defines _ =
           nesting_define = None;
         };
       captures = [];
+      unbound_names = [];
       body;
     }
   in
@@ -2025,6 +2064,7 @@ let test_defines _ =
           nesting_define = None;
         };
       captures = [];
+      unbound_names = [];
       body;
     }
   in
@@ -2044,6 +2084,7 @@ let test_defines _ =
           nesting_define = None;
         };
       captures = [];
+      unbound_names = [];
       body = [+Statement.Expression (+Expression.Float 1.0)];
     }
   in
@@ -2061,6 +2102,7 @@ let test_defines _ =
           nesting_define = None;
         };
       captures = [];
+      unbound_names = [];
       body = [+Statement.Expression (+Expression.Float 1.0); +Statement.Define inner];
     }
   in
@@ -2074,7 +2116,9 @@ let test_defines _ =
   let define_foo = create_define "foo" in
   let define_bar = create_define "bar" in
   let body = [+Statement.Define define_foo; +Statement.Define define_bar] in
-  let parent = { Class.name = + !&"Foo"; bases = []; body; decorators = [] } in
+  let parent =
+    { Class.name = + !&"Foo"; bases = []; body; decorators = []; top_level_unbound_names = [] }
+  in
   assert_defines
     [+Statement.Class parent]
     [
@@ -2112,16 +2156,32 @@ let test_classes _ =
                    nesting_define = None;
                  };
                captures = [];
+               unbound_names = [];
                body = [+Statement.Pass];
              };
         ];
       decorators = [];
+      top_level_unbound_names = [];
     }
   in
   assert_classes [+Statement.Class class_define] [class_define];
-  let inner = { Class.name = + !&"bar"; bases = []; body = [+Statement.Pass]; decorators = [] } in
+  let inner =
+    {
+      Class.name = + !&"bar";
+      bases = [];
+      body = [+Statement.Pass];
+      decorators = [];
+      top_level_unbound_names = [];
+    }
+  in
   let class_define =
-    { Class.name = + !&"foo"; bases = []; body = [+Statement.Class inner]; decorators = [] }
+    {
+      Class.name = + !&"foo";
+      bases = [];
+      body = [+Statement.Class inner];
+      decorators = [];
+      top_level_unbound_names = [];
+    }
   in
   assert_classes [+Statement.Class class_define] [class_define; inner]
 
@@ -2421,7 +2481,9 @@ let test_sqlalchemy_declarative_base _ =
 
 let test_transform_ast _ =
   let assert_expand ?(handle = "qualifier.py") source expected =
-    let parse source = parse source ~handle |> Preprocessing.preprocess in
+    let parse source =
+      parse source ~handle |> Preprocessing.qualify |> Preprocessing.expand_implicit_returns
+    in
     assert_source_equal
       ~location_insensitive:true
       (parse expected)
@@ -2447,7 +2509,7 @@ let test_transform_ast _ =
         def __init__(self, a: typing.Any) -> None:
           self.a = a
         _fields: typing.Tuple[str] = ('a',)
-        a: typing.Any
+        a: typing.Final[typing.Any]
     |};
   assert_expand
     {|
@@ -2460,8 +2522,8 @@ let test_transform_ast _ =
          self.one = one
          self.two = two
         _fields: typing.Tuple[str, str] = ('one', 'two')
-        one: typing.Any
-        two: typing.Any
+        one: typing.Final[typing.Any]
+        two: typing.Final[typing.Any]
     |};
   assert_expand
     {|
@@ -2474,8 +2536,8 @@ let test_transform_ast _ =
          self.one = one
          self.two = two
         _fields: typing.Tuple[str, str] = ('one', 'two')
-        one: int
-        two: str
+        one: typing.Final[int]
+        two: typing.Final[str]
     |};
   assert_expand
     {|
@@ -2493,9 +2555,9 @@ let test_transform_ast _ =
           self.b = b
           self.c = c
         _fields: typing.Tuple[str, str, str] = ('a', 'b', 'c')
-        a: typing.Any
-        b: typing.Any
-        c: typing.Any
+        a: typing.Final[typing.Any]
+        b: typing.Final[typing.Any]
+        c: typing.Final[typing.Any]
     |};
   assert_expand
     {|
@@ -2509,8 +2571,8 @@ let test_transform_ast _ =
           self.one = one
           self.two = two
         _fields: typing.Tuple[str, str] = ('one', 'two')
-        one: typing.Any
-        two: typing.Any
+        one: typing.Final[typing.Any]
+        two: typing.Final[typing.Any]
         three: int = 1
     |};
   assert_expand
@@ -2528,9 +2590,9 @@ let test_transform_ast _ =
           self.b = b
           self.c = c
         _fields: typing.Tuple[str, str, str] = ('a', 'b', 'c')
-        a: int
-        b: str
-        c: int = 3
+        a: typing.Final[int]
+        b: typing.Final[str]
+        c: typing.Final[int]
     |};
   assert_expand
     {|
@@ -2560,11 +2622,11 @@ let test_transform_ast _ =
            self.ts = ts
            self.lazy = lazy
          _fields: typing.Tuple[str, str, str, str, str] = ('op', 'path', 'value', 'ts', 'lazy')
-         op: typing.Any
-         path: typing.Any
-         value: typing.Any
-         ts: typing.Any
-         lazy: typing.Any
+         op: typing.Final[typing.Any]
+         path: typing.Final[typing.Any]
+         value: typing.Final[typing.Any]
+         ts: typing.Final[typing.Any]
+         lazy: typing.Final[typing.Any]
          pass
     |};
   assert_expand
@@ -2580,8 +2642,8 @@ let test_transform_ast _ =
             self.a = a
             self.b = b
           _fields: typing.Tuple[str, str] = ('a', 'b')
-          a: typing.Any
-          b: typing.Any
+          a: typing.Final[typing.Any]
+          b: typing.Final[typing.Any]
     |};
   assert_expand
     {|
@@ -2615,8 +2677,8 @@ let test_transform_ast _ =
     {|
       class Foo(typing.NamedTuple):
         _fields: typing.Tuple[str, str] = ('one', 'two')
-        one: typing.Any
-        two: typing.Any
+        one: typing.Final[typing.Any]
+        two: typing.Final[typing.Any]
         def __new__(cls, one) -> typing.NamedTuple:
           return super(Foo, cls).__new__(cls, one, two=0)
     |};
@@ -2631,8 +2693,8 @@ let test_transform_ast _ =
           self.one = one
           self.two = two
         _fields: typing.Tuple[str, str] = ('one', 'two')
-        one: int
-        two: str
+        one: typing.Final[int]
+        two: typing.Final[str]
     |}
 
 
@@ -2664,6 +2726,7 @@ let test_populate_nesting_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Define
@@ -2680,6 +2743,7 @@ let test_populate_nesting_define _ =
                         nesting_define = Some !&"foo";
                       };
                     captures = [];
+                    unbound_names = [];
                     body =
                       [
                         +Statement.Expression (+Expression.Integer 1);
@@ -2714,6 +2778,7 @@ let test_populate_nesting_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Define
@@ -2730,6 +2795,7 @@ let test_populate_nesting_define _ =
                         nesting_define = Some !&"foo";
                       };
                     captures = [];
+                    unbound_names = [];
                     body = [+Statement.Pass];
                   };
                +Statement.Define
@@ -2746,6 +2812,7 @@ let test_populate_nesting_define _ =
                         nesting_define = Some !&"foo";
                       };
                     captures = [];
+                    unbound_names = [];
                     body = [+Statement.Pass];
                   };
              ];
@@ -2773,6 +2840,7 @@ let test_populate_nesting_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Define
@@ -2789,6 +2857,7 @@ let test_populate_nesting_define _ =
                         nesting_define = Some !&"foo";
                       };
                     captures = [];
+                    unbound_names = [];
                     body =
                       [
                         +Statement.Define
@@ -2805,6 +2874,7 @@ let test_populate_nesting_define _ =
                                  nesting_define = Some !&"bar";
                                };
                              captures = [];
+                             unbound_names = [];
                              body = [+Statement.Pass];
                            };
                       ];
@@ -2837,6 +2907,7 @@ let test_populate_nesting_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.If
@@ -2858,6 +2929,7 @@ let test_populate_nesting_define _ =
                                  nesting_define = Some !&"foo";
                                };
                              captures = [];
+                             unbound_names = [];
                              body = [+Statement.Pass];
                            };
                       ];
@@ -2877,6 +2949,7 @@ let test_populate_nesting_define _ =
                                  nesting_define = Some !&"foo";
                                };
                              captures = [];
+                             unbound_names = [];
                              body = [+Statement.Pass];
                            };
                       ];
@@ -2909,6 +2982,7 @@ let test_populate_nesting_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.While
@@ -2930,6 +3004,7 @@ let test_populate_nesting_define _ =
                                  nesting_define = Some !&"foo";
                                };
                              captures = [];
+                             unbound_names = [];
                              body = [+Statement.Pass];
                            };
                       ];
@@ -2949,6 +3024,7 @@ let test_populate_nesting_define _ =
                                  nesting_define = Some !&"foo";
                                };
                              captures = [];
+                             unbound_names = [];
                              body = [+Statement.Pass];
                            };
                       ];
@@ -2978,6 +3054,7 @@ let test_populate_nesting_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.With
@@ -3000,6 +3077,7 @@ let test_populate_nesting_define _ =
                                  nesting_define = Some !&"foo";
                                };
                              captures = [];
+                             unbound_names = [];
                              body = [+Statement.Pass];
                            };
                       ];
@@ -3035,6 +3113,7 @@ let test_populate_nesting_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Try
@@ -3055,6 +3134,7 @@ let test_populate_nesting_define _ =
                                  nesting_define = Some !&"foo";
                                };
                              captures = [];
+                             unbound_names = [];
                              body = [+Statement.Pass];
                            };
                       ];
@@ -3080,6 +3160,7 @@ let test_populate_nesting_define _ =
                                        nesting_define = Some !&"foo";
                                      };
                                    captures = [];
+                                   unbound_names = [];
                                    body = [+Statement.Pass];
                                  };
                             ];
@@ -3101,6 +3182,7 @@ let test_populate_nesting_define _ =
                                  nesting_define = Some !&"foo";
                                };
                              captures = [];
+                             unbound_names = [];
                              body = [+Statement.Pass];
                            };
                       ];
@@ -3137,6 +3219,7 @@ let test_populate_nesting_define _ =
                         nesting_define = None;
                       };
                     captures = [];
+                    unbound_names = [];
                     body =
                       [
                         +Statement.Define
@@ -3153,11 +3236,13 @@ let test_populate_nesting_define _ =
                                  nesting_define = Some !&"bar";
                                };
                              captures = [];
+                             unbound_names = [];
                              body = [+Statement.Pass];
                            };
                       ];
                   };
              ];
+           top_level_unbound_names = [];
          };
     ];
   assert_populated
@@ -3183,6 +3268,7 @@ let test_populate_nesting_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Class
@@ -3206,6 +3292,7 @@ let test_populate_nesting_define _ =
                                  nesting_define = None;
                                };
                              captures = [];
+                             unbound_names = [];
                              body =
                                [
                                  +Statement.Define
@@ -3222,11 +3309,13 @@ let test_populate_nesting_define _ =
                                           nesting_define = Some !&"bar";
                                         };
                                       captures = [];
+                                      unbound_names = [];
                                       body = [+Statement.Pass];
                                     };
                                ];
                            };
                       ];
+                    top_level_unbound_names = [];
                   };
              ];
          };
@@ -3528,6 +3617,23 @@ let test_populate_captures _ =
     {|
      def foo(x: int):
        y = 1
+       def bar(z: int = y):
+         x
+  |}
+    ~expected:[!&"bar", ["x", Annotation (Some (int_annotation (2, 11) (2, 14)))]];
+  assert_captures
+    {|
+     def foo(x: int):
+       y = 1
+       def bar():
+        def baz(z: int = y):
+            x
+  |}
+    ~expected:[!&"bar", ["y", Annotation None]];
+  assert_captures
+    {|
+     def foo(x: int):
+       y = 1
        def bar():
          yield x
          return y
@@ -3660,13 +3766,13 @@ let test_populate_captures _ =
        def bar():
          @decorator(x)
          def baz():
-           return 42
-         return y
+           return y
+         return 42
   |}
     ~expected:
       [
-        !&"bar", ["y", Annotation None];
-        !&"baz", ["x", Annotation (Some (int_annotation (2, 11) (2, 14)))];
+        !&"bar", ["x", Annotation (Some (int_annotation (2, 11) (2, 14)))];
+        !&"baz", ["y", Annotation None];
       ];
   (* Lambda bounds are excluded *)
   assert_captures
@@ -3921,36 +4027,40 @@ let test_populate_captures _ =
   assert_captures
     {|
      def foo(decorator) -> None:
-       @decorator # This decorator should refer to the argument of foo
-       def bar(decorator) -> None:
-         pass
+       def bar() -> None:
+         @decorator # This decorator should refer to the argument of foo
+         def baz(decorator) -> None:
+           pass
     |}
-    ~expected:[!&"bar", ["decorator", Annotation None]];
+    ~expected:[!&"bar", ["decorator", Annotation None]; !&"baz", []];
   assert_captures
     {|
      def decorator(func): ...
      def foo(decorator) -> None:
-       @decorator # This decorator should refer to the argument of foo
-       def bar(decorator) -> None:
-         pass
+       def bar() -> None:
+         @decorator # This decorator should refer to the argument of foo
+         def baz(decorator) -> None:
+           pass
     |}
-    ~expected:[!&"bar", ["decorator", Annotation None]];
+    ~expected:[!&"bar", ["decorator", Annotation None]; !&"baz", []];
   assert_captures
     {|
      def decorator(func): ...
      def foo() -> None:
-       @decorator # This decorator should refer to the global foo
-       def bar(decorator) -> None:
-         pass
+       def bar() -> None:
+         @decorator # This decorator should refer to the global foo
+         def baz(decorator) -> None:
+           pass
     |}
-    ~expected:[!&"bar", []];
+    ~expected:[!&"bar", []; !&"baz", []];
   assert_captures
     {|
      def foo() -> None:
        def decorator(func): ...
-       @decorator # This decorator should refer to the foo defined above
-       def bar(decorator) -> None:
-         pass
+       def bar() -> None:
+         @decorator # This decorator should refer to the foo defined above
+         def baz(decorator) -> None:
+           pass
     |}
     ~expected:
       [
@@ -3975,8 +4085,276 @@ let test_populate_captures _ =
                   nesting_define = None;
                 } );
           ] );
+        !&"baz", [];
       ];
 
+  ()
+
+
+let test_populate_unbound_names _ =
+  let assert_unbound_names ~expected source_text =
+    let source =
+      Test.parse ~handle:"test.py" source_text
+      |> Preprocessing.expand_format_string
+      |> Preprocessing.populate_unbound_names
+    in
+    let defines =
+      Preprocessing.defines
+        ~include_toplevels:true
+        ~include_nested:true
+        ~include_methods:true
+        source
+    in
+    let unbound_map =
+      let build_unbound_map
+          sofar
+          { Node.value = { Define.signature = { Define.Signature.name; _ }; unbound_names; _ }; _ }
+        =
+        Reference.Map.set sofar ~key:(Node.value name) ~data:unbound_names
+      in
+      List.fold defines ~init:Reference.Map.empty ~f:build_unbound_map
+    in
+    let assert_unbound_names name expected =
+      let expected =
+        List.map expected ~f:(fun (name, location) -> { Define.NameAccess.name; location })
+      in
+      let actual = Reference.Map.find unbound_map name |> Option.value ~default:[] in
+      assert_equal
+        ~cmp:[%compare.equal: Define.NameAccess.t list]
+        ~printer:(fun unbound_names ->
+          Sexp.to_string_hum [%message (unbound_names : Define.NameAccess.t list)])
+        expected
+        actual
+    in
+    List.iter expected ~f:(fun (name, unbound_names) -> assert_unbound_names name unbound_names)
+  in
+  let toplevel_name = !&"test.$toplevel" in
+
+  assert_unbound_names "derp" ~expected:[toplevel_name, ["derp", location (1, 0) (1, 4)]];
+  assert_unbound_names
+    {|
+       x = 42
+       y = x + z
+    |}
+    ~expected:[toplevel_name, ["z", location (3, 8) (3, 9)]];
+  assert_unbound_names
+    {|
+      def foo() -> None:
+        derp
+    |}
+    ~expected:[!&"foo", ["derp", location (3, 2) (3, 6)]];
+  assert_unbound_names
+    {|
+      def foo(derp: int) -> None:
+        derp
+    |}
+    ~expected:[!&"foo", []];
+  assert_unbound_names
+    {|
+      import derp
+      def foo() -> None:
+        derp
+    |}
+    ~expected:[!&"foo", []];
+  assert_unbound_names
+    {|
+      import chocobo.river
+      def foo() -> None:
+        chocobo
+    |}
+    ~expected:[!&"foo", []];
+  assert_unbound_names
+    {|
+      def foo(x: int) -> None:
+        bar(x)
+    |}
+    ~expected:[!&"foo", ["bar", location (3, 2) (3, 5)]];
+  assert_unbound_names
+    {|
+      def bar() -> None: ...
+      def foo(x: int) -> None:
+        bar(x)
+    |}
+    ~expected:[!&"foo", []];
+  assert_unbound_names
+    {|
+      from some_module import bar
+      def foo() -> None:
+        bar(x=1, y=z)
+    |}
+    ~expected:[!&"foo", ["z", location (4, 13) (4, 14)]];
+  assert_unbound_names
+    {|
+      def foo():
+        f = (lambda x: x)
+        g = (lambda *y: y)
+        h = (lambda **z: z)
+        return f or g or h
+    |}
+    ~expected:[!&"foo", []];
+  assert_unbound_names
+    {|
+      def foo():
+        f = (lambda x: x + y)
+        return f
+    |}
+    ~expected:[!&"foo", ["y", location (3, 21) (3, 22)]];
+  assert_unbound_names
+    {|
+      def foo():
+        return [(x, y, z) for x, *y in [[1], [2,3]]]
+    |}
+    ~expected:[!&"foo", ["z", location (3, 17) (3, 18)]];
+  assert_unbound_names
+    {|
+       class A:
+         def foo() -> None:
+           self.bar()
+    |}
+    ~expected:[!&"foo", ["self", location (4, 4) (4, 8)]];
+  assert_unbound_names
+    {|
+       class A:
+         def foo(self) -> None:
+           self.bar()
+    |}
+    ~expected:[!&"foo", []];
+  assert_unbound_names
+    {|
+       class A:
+         @staticmethod
+         def foo() -> None:
+           A.bar()
+    |}
+    ~expected:[!&"foo", []];
+  assert_unbound_names
+    {|
+      def foo() -> None:
+        def bar(x) -> int:
+          return x + baz
+        x = bar(qux)
+        y = bar(x)
+    |}
+    ~expected:
+      [!&"foo", ["qux", location (5, 10) (5, 13)]; !&"bar", ["baz", location (4, 15) (4, 18)]];
+  assert_unbound_names
+    {|
+      def foo(x: int):
+        reveal_type(x)
+      pyre_dump()
+    |}
+    ~expected:[!&"foo", []; toplevel_name, []];
+  assert_unbound_names
+    {|
+      def foo():
+        y = int("42")
+        return [x for x in range(y)]
+    |}
+    ~expected:[!&"foo", []];
+  assert_unbound_names
+    {|
+      def foo():
+        return [y for x in range(42) for y in x]
+    |}
+    ~expected:[!&"foo", []];
+  assert_unbound_names
+    {|
+      def bar() -> None: ...
+      def foo():
+        try:
+          bar()
+        except Derp:
+          pass
+        except ValueError:
+          pass
+    |}
+    ~expected:[!&"foo", ["Derp", location (6, 9) (6, 13)]];
+  assert_unbound_names
+    {|
+      def foo() -> Derp:
+        pass
+    |}
+    ~expected:[toplevel_name, ["Derp", location (2, 13) (2, 17)]];
+  assert_unbound_names
+    {|
+      def foo(d: Derp) -> None:
+        pass
+    |}
+    ~expected:[toplevel_name, ["Derp", location (2, 11) (2, 15)]];
+  assert_unbound_names
+    {|
+      def foo(d: int = derp()) -> None:
+        pass
+    |}
+    ~expected:[toplevel_name, ["derp", location (2, 17) (2, 21)]];
+  assert_unbound_names
+    {|
+      from some_module import derp
+      def foo() -> None:
+        x: Derp = derp()
+    |}
+    ~expected:[!&"foo", ["Derp", location (4, 5) (4, 9)]];
+  assert_unbound_names
+    {|
+      def foo() -> None:
+        @derp
+        def bar() -> None:
+          pass
+    |}
+    ~expected:[!&"foo", ["derp", location (3, 3) (3, 7)]];
+
+  let class_foo_toplevel_name = !&"Foo.$class_toplevel" in
+  assert_unbound_names
+    {|
+      class Foo(Derp):
+        def foo(self) -> None:
+          pass
+    |}
+    ~expected:[toplevel_name, ["Derp", location (2, 10) (2, 14)]];
+  assert_unbound_names
+    {|
+      class Foo:
+        class Baz(Bar):
+          pass
+    |}
+    ~expected:[class_foo_toplevel_name, ["Bar", location (3, 12) (3, 15)]];
+  assert_unbound_names
+    {|
+      class Foo:
+        class Bar:
+          pass
+        class Baz(Bar):
+          pass
+    |}
+    ~expected:[class_foo_toplevel_name, []];
+  assert_unbound_names
+    {|
+      class Foo:
+        @derp
+        def foo(self) -> None:
+          pass
+    |}
+    ~expected:[class_foo_toplevel_name, ["derp", location (3, 3) (3, 7)]];
+  assert_unbound_names
+    {|
+      class Foo:
+        @property
+        def foo(self) -> int:
+          return 42
+        @foo.setter
+        def foo(self, value: int) -> None:
+          pass
+    |}
+    ~expected:[class_foo_toplevel_name, []];
+
+  (* Test that the pass does not nuke Python2 sources. *)
+  assert_unbound_names
+    {|
+      #!/usr/bin/env python2
+      def foo() -> None:
+        derp
+    |}
+    ~expected:[!&"foo", ["derp", location (4, 2) (4, 6)]];
   ()
 
 
@@ -4000,5 +4378,6 @@ let () =
          "sqlalchemy_declarative_base" >:: test_sqlalchemy_declarative_base;
          "nesting_define" >:: test_populate_nesting_define;
          "captures" >:: test_populate_captures;
+         "unbound_names" >:: test_populate_unbound_names;
        ]
   |> Test.run

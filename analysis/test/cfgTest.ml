@@ -26,6 +26,7 @@ let test_to_dot _ =
             nesting_define = None;
           };
         captures = [];
+        unbound_names = [];
         body;
       }
     in
@@ -111,6 +112,7 @@ let assert_cfg body expected =
           nesting_define = None;
         };
       captures = [];
+      unbound_names = [];
       body;
     }
   in
@@ -123,7 +125,7 @@ let assert_cfg body expected =
     |> String.concat ~sep:"\n"
     |> String.pp formatter
   in
-  let cmp left right = Hashtbl.equal left right Node.location_insensitive_equal in
+  let cmp left right = Core.Hashtbl.equal Node.location_insensitive_equal left right in
   assert_equal
     ~cmp
     ~printer:(fun cfg -> Format.asprintf "%a" pp cfg)

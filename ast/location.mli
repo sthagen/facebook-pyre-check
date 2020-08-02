@@ -24,8 +24,6 @@ val create : start:Lexing.position -> stop:Lexing.position -> t
 
 val any : t
 
-val synthetic : t
-
 val start : t -> position
 
 val stop : t -> position
@@ -73,8 +71,6 @@ module WithModule : sig
 
   val any : t
 
-  val synthetic : t
-
   val line : t -> int
 
   val pp : Format.formatter -> t -> unit
@@ -89,3 +85,5 @@ end
 val with_path : path:string -> t -> WithPath.t
 
 val with_module : qualifier:Reference.t -> t -> WithModule.t
+
+val strip_module : WithModule.t -> t

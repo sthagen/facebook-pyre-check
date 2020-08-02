@@ -109,6 +109,7 @@ let test_lexer _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression !"a"];
          };
     ];
@@ -580,6 +581,10 @@ let test_compound _ =
     ]
 
 
+let decorator ?arguments name =
+  { Decorator.name = Node.create_with_default_location !&name; arguments }
+
+
 let test_define _ =
   assert_parsed_equal
     "def foo(a):\n  1"
@@ -598,6 +603,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Integer 1)];
          };
     ];
@@ -622,6 +628,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Integer 1)];
          };
     ];
@@ -647,6 +654,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Integer 1)];
          };
     ];
@@ -667,6 +675,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Integer 1)];
          };
     ];
@@ -687,6 +696,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Integer 1)];
          };
     ];
@@ -707,6 +717,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Ellipsis)];
          };
     ];
@@ -719,7 +730,7 @@ let test_define _ =
              {
                name = + !&"foo";
                parameters = [];
-               decorators = [!"foo"];
+               decorators = [decorator "foo"];
                return_annotation = None;
                async = true;
                generator = false;
@@ -727,6 +738,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Integer 1)];
          };
     ];
@@ -739,7 +751,7 @@ let test_define _ =
              {
                name = + !&"foo";
                parameters = [+{ Parameter.name = "a"; value = None; annotation = None }];
-               decorators = [!"decorator"];
+               decorators = [decorator "decorator"];
                return_annotation = None;
                async = false;
                generator = false;
@@ -747,6 +759,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Integer 1)];
          };
     ];
@@ -761,15 +774,13 @@ let test_define _ =
                parameters = [+{ Parameter.name = "a"; value = None; annotation = None }];
                decorators =
                  [
-                   +Expression.Call
-                      {
-                        callee = !"decorator";
-                        arguments =
-                          [
-                            { Call.Argument.name = Some ~+"a"; value = !"b" };
-                            { Call.Argument.name = Some ~+"c"; value = !"d" };
-                          ];
-                      };
+                   decorator
+                     "decorator"
+                     ~arguments:
+                       [
+                         { Call.Argument.name = Some ~+"a"; value = !"b" };
+                         { Call.Argument.name = Some ~+"c"; value = !"d" };
+                       ];
                  ];
                return_annotation = None;
                async = false;
@@ -778,6 +789,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Integer 1)];
          };
     ];
@@ -790,7 +802,7 @@ let test_define _ =
              {
                name = + !&"foo";
                parameters = [+{ Parameter.name = "a"; value = None; annotation = None }];
-               decorators = [!"foo"; !"bar"];
+               decorators = [decorator "foo"; decorator "bar"];
                return_annotation = None;
                async = false;
                generator = false;
@@ -798,6 +810,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Integer 1)];
          };
     ];
@@ -822,6 +835,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Integer 1)];
          };
     ];
@@ -846,6 +860,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Integer 1)];
          };
     ];
@@ -867,6 +882,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Integer 1)];
          };
     ];
@@ -887,6 +903,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Expression (+Expression.Integer 1);
@@ -911,6 +928,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Expression (+Expression.Integer 1);
@@ -936,6 +954,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Define
@@ -952,6 +971,7 @@ let test_define _ =
                         nesting_define = None;
                       };
                     captures = [];
+                    unbound_names = [];
                     body =
                       [
                         +Statement.Expression (+Expression.Integer 1);
@@ -979,6 +999,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Integer 1)];
          };
     ];
@@ -1006,6 +1027,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Integer 1)];
          };
     ];
@@ -1030,6 +1052,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Integer 1)];
          };
     ];
@@ -1076,6 +1099,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Integer 1)];
          };
     ];
@@ -1100,6 +1124,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Integer 1)];
          };
     ];
@@ -1120,6 +1145,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Expression (+Expression.Integer 1);
@@ -1149,6 +1175,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Return
@@ -1178,6 +1205,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Return
@@ -1207,6 +1235,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Return
@@ -1235,6 +1264,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Return
@@ -1262,6 +1292,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Return
@@ -1289,6 +1320,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Return
@@ -1324,6 +1356,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Return
@@ -1359,6 +1392,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Return
@@ -1399,6 +1433,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Return
@@ -1435,6 +1470,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Return
@@ -1469,6 +1505,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Return
@@ -1498,6 +1535,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Return
@@ -1541,6 +1579,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Return
@@ -1585,6 +1624,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Return
@@ -1630,6 +1670,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Return
@@ -1663,6 +1704,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Return
@@ -1692,6 +1734,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Return
@@ -1737,6 +1780,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Pass];
          };
     ];
@@ -1776,6 +1820,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Pass];
          };
     ];
@@ -1811,6 +1856,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Pass];
          };
     ];
@@ -1842,6 +1888,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Return
@@ -1872,6 +1919,7 @@ let test_define _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body =
              [
                +Statement.Yield
@@ -3356,13 +3404,25 @@ let test_class _ =
     "@bar\nclass foo():\n\tpass"
     [
       +Statement.Class
-         { Class.name = + !&"foo"; bases = []; body = [+Statement.Pass]; decorators = [!"bar"] };
+         {
+           Class.name = + !&"foo";
+           bases = [];
+           body = [+Statement.Pass];
+           decorators = [decorator "bar"];
+           top_level_unbound_names = [];
+         };
     ];
   assert_parsed_equal
     "class foo: pass"
     [
       +Statement.Class
-         { Class.name = + !&"foo"; bases = []; body = [+Statement.Pass]; decorators = [] };
+         {
+           Class.name = + !&"foo";
+           bases = [];
+           body = [+Statement.Pass];
+           decorators = [];
+           top_level_unbound_names = [];
+         };
     ];
   assert_parsed_equal
     "class foo():\n\tdef bar(): pass"
@@ -3387,10 +3447,12 @@ let test_class _ =
                         nesting_define = None;
                       };
                     captures = [];
+                    unbound_names = [];
                     body = [+Statement.Pass];
                   };
              ];
            decorators = [];
+           top_level_unbound_names = [];
          };
     ];
   assert_parsed_equal
@@ -3416,6 +3478,7 @@ let test_class _ =
                         nesting_define = None;
                       };
                     captures = [];
+                    unbound_names = [];
                     body =
                       [
                         +Statement.Define
@@ -3432,19 +3495,27 @@ let test_class _ =
                                  nesting_define = None;
                                };
                              captures = [];
+                             unbound_names = [];
                              body = [+Statement.Pass];
                            };
                       ];
                   };
              ];
            decorators = [];
+           top_level_unbound_names = [];
          };
     ];
   assert_parsed_equal
     "class foo.bar: pass"
     [
       +Statement.Class
-         { Class.name = + !&"foo.bar"; bases = []; body = [+Statement.Pass]; decorators = [] };
+         {
+           Class.name = + !&"foo.bar";
+           bases = [];
+           body = [+Statement.Pass];
+           decorators = [];
+           top_level_unbound_names = [];
+         };
     ];
   assert_parsed_equal
     "class foo(1, 2):\n\t1"
@@ -3459,6 +3530,7 @@ let test_class _ =
              ];
            body = [+Statement.Expression (+Expression.Integer 1)];
            decorators = [];
+           top_level_unbound_names = [];
          };
     ];
   assert_parsed_equal
@@ -3474,6 +3546,7 @@ let test_class _ =
              ];
            body = [+Statement.Expression (+Expression.Integer 1)];
            decorators = [];
+           top_level_unbound_names = [];
          };
     ];
   assert_parsed_equal
@@ -3494,6 +3567,7 @@ let test_class _ =
                   };
              ];
            decorators = [];
+           top_level_unbound_names = [];
          };
     ];
   assert_parsed_equal
@@ -3514,6 +3588,7 @@ let test_class _ =
                   };
              ];
            decorators = [];
+           top_level_unbound_names = [];
          };
     ];
   assert_parsed_equal
@@ -3534,6 +3609,7 @@ let test_class _ =
                   };
              ];
            decorators = [];
+           top_level_unbound_names = [];
          };
     ];
   assert_parsed_equal
@@ -3559,10 +3635,12 @@ let test_class _ =
                         nesting_define = None;
                       };
                     captures = [];
+                    unbound_names = [];
                     body = [+Statement.Pass];
                   };
              ];
            decorators = [];
+           top_level_unbound_names = [];
          };
     ];
   assert_parsed_equal
@@ -3588,6 +3666,7 @@ let test_class _ =
                         nesting_define = None;
                       };
                     captures = [];
+                    unbound_names = [];
                     body =
                       [
                         +Statement.Assign
@@ -3604,6 +3683,7 @@ let test_class _ =
                   };
              ];
            decorators = [];
+           top_level_unbound_names = [];
          };
     ];
 
@@ -3642,6 +3722,7 @@ let test_class _ =
                                  nesting_define = None;
                                };
                              captures = [];
+                             unbound_names = [];
                              body = [+Statement.Pass];
                            };
                       ];
@@ -3649,6 +3730,7 @@ let test_class _ =
                   };
              ];
            decorators = [];
+           top_level_unbound_names = [];
          };
     ]
 
@@ -4522,7 +4604,7 @@ let test_import _ =
     "import a as b"
     [
       +Statement.Import
-         { Import.from = None; imports = [{ Import.name = + !&"a"; alias = Some (+ !&"b") }] };
+         { Import.from = None; imports = [{ Import.name = + !&"a"; alias = Some (+"b") }] };
     ];
   assert_parsed_equal
     "import a as b, c, d as e"
@@ -4532,9 +4614,9 @@ let test_import _ =
            Import.from = None;
            imports =
              [
-               { Import.name = + !&"a"; alias = Some (+ !&"b") };
+               { Import.name = + !&"a"; alias = Some (+"b") };
                { Import.name = + !&"c"; alias = None };
-               { Import.name = + !&"d"; alias = Some (+ !&"e") };
+               { Import.name = + !&"d"; alias = Some (+"e") };
              ];
          };
     ];
@@ -4607,9 +4689,9 @@ let test_import _ =
            Import.from = Some (+ !&"f");
            imports =
              [
-               { Import.name = + !&"a"; alias = Some (+ !&"b") };
+               { Import.name = + !&"a"; alias = Some (+"b") };
                { Import.name = + !&"c"; alias = None };
-               { Import.name = + !&"d"; alias = Some (+ !&"e") };
+               { Import.name = + !&"d"; alias = Some (+"e") };
              ];
          };
     ];
@@ -4775,6 +4857,7 @@ let test_stubs _ =
                   };
              ];
            decorators = [];
+           top_level_unbound_names = [];
          };
     ];
   assert_parsed_equal
@@ -4794,6 +4877,7 @@ let test_stubs _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Ellipsis)];
          };
     ];
@@ -4814,6 +4898,7 @@ let test_stubs _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Ellipsis)];
          };
     ];
@@ -4834,6 +4919,7 @@ let test_stubs _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Ellipsis)];
          };
     ];
@@ -4853,7 +4939,7 @@ let test_stubs _ =
                       annotation = Some !"int";
                     };
                  ];
-               decorators = [!"overload"];
+               decorators = [decorator "overload"];
                return_annotation = None;
                async = false;
                generator = false;
@@ -4861,6 +4947,7 @@ let test_stubs _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Expression (+Expression.Ellipsis)];
          };
     ];
@@ -4873,6 +4960,7 @@ let test_stubs _ =
            bases = [];
            body = [+Statement.Expression (+Expression.Ellipsis)];
            decorators = [];
+           top_level_unbound_names = [];
          };
     ];
   assert_parsed_equal
@@ -4884,6 +4972,7 @@ let test_stubs _ =
            bases = [];
            body = [+Statement.Expression (+Expression.Ellipsis)];
            decorators = [];
+           top_level_unbound_names = [];
          };
     ];
   assert_parsed_equal
@@ -4895,6 +4984,7 @@ let test_stubs _ =
            bases = [];
            body = [+Statement.Expression (+Expression.Ellipsis)];
            decorators = [];
+           top_level_unbound_names = [];
          };
     ]
 
@@ -4929,6 +5019,7 @@ let test_ellipsis _ =
                nesting_define = None;
              };
            captures = [];
+           unbound_names = [];
            body = [+Statement.Pass];
          };
     ];
@@ -5213,7 +5304,108 @@ let test_setitem _ =
            value = +Expression.Ellipsis;
            parent = None;
          };
-    ]
+    ];
+  assert_parsed_equal
+    "i[j] += 3,"
+    [
+      +Statement.Expression
+         (+Expression.Call
+             {
+               callee =
+                 +Expression.Name
+                    (Name.Attribute { base = !"i"; attribute = "__setitem__"; special = true });
+               arguments =
+                 [
+                   { Call.Argument.name = None; value = !"j" };
+                   {
+                     Call.Argument.name = None;
+                     value =
+                       +Expression.Call
+                          {
+                            callee =
+                              +Expression.Name
+                                 (Name.Attribute
+                                    {
+                                      base =
+                                        +Expression.Call
+                                           {
+                                             callee =
+                                               +Expression.Name
+                                                  (Name.Attribute
+                                                     {
+                                                       base = !"i";
+                                                       attribute = "__getitem__";
+                                                       special = true;
+                                                     });
+                                             arguments =
+                                               [{ Call.Argument.name = None; value = !"j" }];
+                                           };
+                                      attribute = "__iadd__";
+                                      special = true;
+                                    });
+                            arguments =
+                              [
+                                {
+                                  Call.Argument.name = None;
+                                  value = +Expression.Tuple [+Expression.Integer 3];
+                                };
+                              ];
+                          };
+                   };
+                 ];
+             });
+    ];
+  assert_parsed_equal
+    "i[j] += yield 3"
+    [
+      +Statement.Expression
+         (+Expression.Call
+             {
+               callee =
+                 +Expression.Name
+                    (Name.Attribute { base = !"i"; attribute = "__setitem__"; special = true });
+               arguments =
+                 [
+                   { Call.Argument.name = None; value = !"j" };
+                   {
+                     Call.Argument.name = None;
+                     value =
+                       +Expression.Call
+                          {
+                            callee =
+                              +Expression.Name
+                                 (Name.Attribute
+                                    {
+                                      base =
+                                        +Expression.Call
+                                           {
+                                             callee =
+                                               +Expression.Name
+                                                  (Name.Attribute
+                                                     {
+                                                       base = !"i";
+                                                       attribute = "__getitem__";
+                                                       special = true;
+                                                     });
+                                             arguments =
+                                               [{ Call.Argument.name = None; value = !"j" }];
+                                           };
+                                      attribute = "__iadd__";
+                                      special = true;
+                                    });
+                            arguments =
+                              [
+                                {
+                                  Call.Argument.name = None;
+                                  value = +Expression.Yield (Some (+Expression.Integer 3));
+                                };
+                              ];
+                          };
+                   };
+                 ];
+             });
+    ];
+  ()
 
 
 let test_byte_order_mark _ =

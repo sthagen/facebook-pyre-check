@@ -40,7 +40,7 @@ let collect_typecheck_units { Source.statements; _ } =
   (* TODO (T57944324): Support checking classes that are nested inside function bodies *)
   let rec collect_from_statement ~ignore_class sofar { Node.value; location } =
     match value with
-    | Statement.Class { Class.name = { Node.value = name; _ }; body; _ } ->
+    | Statement.Class ({ Class.name = { Node.value = name; _ }; body; _ } as class_) ->
         if ignore_class then (
           Log.debug
             "Dropping the body of class %a as it is nested inside a function"
@@ -49,9 +49,7 @@ let collect_typecheck_units { Source.statements; _ } =
           sofar )
         else
           let sofar =
-            let define =
-              Define.create_class_toplevel ~parent:name ~statements:body |> Node.create ~location
-            in
+            let define = Class.toplevel_define class_ |> Node.create ~location in
             define :: sofar
           in
           List.fold body ~init:sofar ~f:(collect_from_statement ~ignore_class)
@@ -93,7 +91,7 @@ let collect_typecheck_units { Source.statements; _ } =
       let rec drop_nested_body_in_statement = function
         | Statement.Class definition -> Statement.Class { definition with body = [] }
         | Define { Define.signature; _ } ->
-            Statement.Define { Define.signature; captures = []; body = [] }
+            Statement.Define { Define.signature; captures = []; unbound_names = []; body = [] }
         | For ({ For.body; orelse; _ } as for_statement) ->
             Statement.For
               {

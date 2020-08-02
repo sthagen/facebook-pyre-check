@@ -22,15 +22,15 @@ let create_with_location value start end_ = Node.create value ~location:(locatio
 let test_global_registration context =
   let assert_registers ?(expected = true) source name =
     let project = ScratchProject.setup ["test.py", source] ~context in
-    let ast_environment, ast_environment_update_result = ScratchProject.parse_sources project in
-    let ast_environment = AstEnvironment.read_only ast_environment in
+    let ast_environment = ScratchProject.build_ast_environment project in
     let update_result =
+      UnannotatedGlobalEnvironment.create ast_environment
+      |> fun unannotated_global_environment ->
       UnannotatedGlobalEnvironment.update_this_and_all_preceding_environments
-        ast_environment
+        unannotated_global_environment
         ~scheduler:(mock_scheduler ())
-        ~configuration:(Configuration.Analysis.create ())
-        ~ast_environment_update_result
-        (Reference.Set.singleton (Reference.create "test"))
+        ~configuration:(ScratchProject.configuration_of project)
+        ColdStart
     in
     let read_only = UnannotatedGlobalEnvironment.UpdateResult.read_only update_result in
     assert_equal (UnannotatedGlobalEnvironment.ReadOnly.class_exists read_only name) expected
@@ -49,15 +49,14 @@ let test_global_registration context =
 let test_define_registration context =
   let assert_registers ~expected source =
     let project = ScratchProject.setup ["test.py", source] ~context in
-    let ast_environment, ast_environment_update_result = ScratchProject.parse_sources project in
-    let ast_environment = AstEnvironment.read_only ast_environment in
+    let ast_environment = ScratchProject.build_ast_environment project in
+    let unannotated_global_environment = UnannotatedGlobalEnvironment.create ast_environment in
     let update_result =
       UnannotatedGlobalEnvironment.update_this_and_all_preceding_environments
-        ast_environment
+        unannotated_global_environment
         ~scheduler:(mock_scheduler ())
-        ~configuration:(Configuration.Analysis.create ())
-        ~ast_environment_update_result
-        (Reference.Set.singleton (Reference.create "test"))
+        ~configuration:(ScratchProject.configuration_of project)
+        ColdStart
     in
     let read_only = UnannotatedGlobalEnvironment.UpdateResult.read_only update_result in
     let actual = UnannotatedGlobalEnvironment.ReadOnly.all_defines_in_module read_only !&"test" in
@@ -252,25 +251,21 @@ let test_define_registration context =
 let test_simple_global_registration context =
   let assert_registers source name expected =
     let project = ScratchProject.setup ["test.py", source] ~context in
-    let ast_environment, ast_environment_update_result = ScratchProject.parse_sources project in
-    let ast_environment = AstEnvironment.read_only ast_environment in
+    let ast_environment = ScratchProject.build_ast_environment project in
+    let unannotated_global_environment = UnannotatedGlobalEnvironment.create ast_environment in
     let update_result =
       UnannotatedGlobalEnvironment.update_this_and_all_preceding_environments
-        ast_environment
+        unannotated_global_environment
         ~scheduler:(mock_scheduler ())
-        ~configuration:(Configuration.Analysis.create ())
-        ~ast_environment_update_result
-        (Reference.Set.singleton (Reference.create "test"))
+        ~configuration:(ScratchProject.configuration_of project)
+        ColdStart
     in
     let read_only = UnannotatedGlobalEnvironment.UpdateResult.read_only update_result in
     let printer global =
-      global
-      >>| UnannotatedGlobalEnvironment.sexp_of_unannotated_global
-      >>| Sexp.to_string_hum
-      |> Option.value ~default:"None"
+      global >>| UnannotatedGlobal.sexp_of_t >>| Sexp.to_string_hum |> Option.value ~default:"None"
     in
     let location_insensitive_compare left right =
-      Option.compare UnannotatedGlobalEnvironment.compare_unannotated_global left right = 0
+      Option.compare UnannotatedGlobal.compare left right = 0
     in
     assert_equal
       ~cmp:location_insensitive_compare
@@ -282,6 +277,7 @@ let test_simple_global_registration context =
   in
   let target_location =
     { Location.start = { line = 2; column = 0 }; stop = { line = 2; column = 3 } }
+    |> Location.with_module ~qualifier:(Reference.create "test")
   in
   let value_location =
     { Location.start = { line = 2; column = 6 }; stop = { line = 2; column = 7 } }
@@ -316,12 +312,16 @@ let test_simple_global_registration context =
             explicit_annotation = None;
             value = create_with_location (Expression.Expression.Integer 8) (3, 8) (3, 9);
             target_location =
-              { Location.start = { line = 3; column = 2 }; stop = { line = 3; column = 5 } };
+              { Location.start = { line = 3; column = 2 }; stop = { line = 3; column = 5 } }
+              |> Location.with_module ~qualifier:(Reference.create "test");
           }));
   let parse_define define =
     match parse_single_statement define ~preprocess:true ~handle:"test.py" with
     | { Node.value = Statement.Statement.Define { signature; _ }; location } ->
-        Node.create signature ~location
+        {
+          UnannotatedGlobal.UnannotatedDefine.define = signature;
+          location = Location.with_module ~qualifier:(Reference.create "test") location;
+        }
     | _ -> failwith "not define"
   in
   assert_registers
@@ -369,16 +369,15 @@ let test_updates context =
         sources
         ~context
     in
-    let ast_environment, ast_environment_update_result = ScratchProject.parse_sources project in
+    let ast_environment = ScratchProject.build_ast_environment project in
+    let unannotated_global_environment = UnannotatedGlobalEnvironment.create ast_environment in
     let configuration = ScratchProject.configuration_of project in
     let update_result =
-      let ast_environment = AstEnvironment.read_only ast_environment in
       UnannotatedGlobalEnvironment.update_this_and_all_preceding_environments
-        ast_environment
+        unannotated_global_environment
         ~scheduler:(mock_scheduler ())
         ~configuration
-        ~ast_environment_update_result
-        (Reference.Set.singleton (Reference.create "test"))
+        ColdStart
     in
     let read_only = UnannotatedGlobalEnvironment.UpdateResult.read_only update_result in
     let execute_action = function
@@ -405,20 +404,18 @@ let test_updates context =
       | `Global (global_name, dependency, expectation) ->
           let printer optional =
             optional
-            >>| UnannotatedGlobalEnvironment.sexp_of_unannotated_global
+            >>| UnannotatedGlobal.sexp_of_t
             >>| Sexp.to_string_hum
             |> Option.value ~default:"none"
           in
-          let cmp left right =
-            Option.compare UnannotatedGlobalEnvironment.compare_unannotated_global left right = 0
-          in
+          let cmp left right = Option.compare UnannotatedGlobal.compare left right = 0 in
           let remove_target_location = function
-            | UnannotatedGlobalEnvironment.SimpleAssign assign ->
-                UnannotatedGlobalEnvironment.SimpleAssign
-                  { assign with target_location = Location.any }
-            | UnannotatedGlobalEnvironment.TupleAssign assign ->
-                UnannotatedGlobalEnvironment.TupleAssign
-                  { assign with target_location = Location.any }
+            | UnannotatedGlobal.SimpleAssign assign ->
+                UnannotatedGlobal.SimpleAssign
+                  { assign with target_location = Location.WithModule.any }
+            | UnannotatedGlobal.TupleAssign assign ->
+                UnannotatedGlobal.TupleAssign
+                  { assign with target_location = Location.WithModule.any }
             | global -> global
           in
           UnannotatedGlobalEnvironment.ReadOnly.get_unannotated_global
@@ -482,28 +479,29 @@ let test_updates context =
     let update_result =
       ModuleTracker.update ~configuration ~paths:[path] module_tracker
       |> (fun updates -> AstEnvironment.Update updates)
-      |> AstEnvironment.update ~configuration ~scheduler:(mock_scheduler ()) ast_environment
-      |> fun ast_environment_update_result ->
-      UnannotatedGlobalEnvironment.update_this_and_all_preceding_environments
-        (AstEnvironment.read_only ast_environment)
-        ~scheduler:(mock_scheduler ())
-        ~configuration
-        ~ast_environment_update_result
-        (Reference.Set.singleton (Reference.create "test"))
+      |> UnannotatedGlobalEnvironment.update_this_and_all_preceding_environments
+           unannotated_global_environment
+           ~scheduler:(mock_scheduler ())
+           ~configuration
     in
     let printer set =
-      let f x = SharedMemoryKeys.sexp_of_dependency x |> Sexp.to_string_hum in
-      SharedMemoryKeys.DependencyKey.KeySet.elements set |> List.to_string ~f
+      SharedMemoryKeys.DependencyKey.RegisteredSet.elements set
+      |> List.map ~f:SharedMemoryKeys.DependencyKey.get_key
+      |> List.to_string ~f:SharedMemoryKeys.show_dependency
     in
-    let expected_triggers = SharedMemoryKeys.DependencyKey.KeySet.of_list expected_triggers in
+    let expected_triggers =
+      SharedMemoryKeys.DependencyKey.RegisteredSet.of_list expected_triggers
+    in
     post_actions >>| List.iter ~f:execute_action |> Option.value ~default:();
     assert_equal
-      ~cmp:SharedMemoryKeys.DependencyKey.KeySet.equal
+      ~cmp:SharedMemoryKeys.DependencyKey.RegisteredSet.equal
       ~printer
       expected_triggers
       (UnannotatedGlobalEnvironment.UpdateResult.locally_triggered_dependencies update_result)
   in
-  let dependency = SharedMemoryKeys.TypeCheckDefine (Reference.create "dep") in
+  let dependency =
+    SharedMemoryKeys.DependencyKey.Registry.register (TypeCheckDefine (Reference.create "dep"))
+  in
   (* get_class_definition *)
   assert_updates
     ~original_source:{|
@@ -625,7 +623,9 @@ let test_updates context =
     ();
 
   (* get_unannotated_global *)
-  let dependency = SharedMemoryKeys.AliasRegister (Reference.create "dep") in
+  let dependency =
+    SharedMemoryKeys.DependencyKey.Registry.register (AliasRegister (Reference.create "dep"))
+  in
   assert_updates
     ~original_source:{|
       x: int = 7
@@ -639,12 +639,12 @@ let test_updates context =
           ( Reference.create "test.x",
             dependency,
             Some
-              (UnannotatedGlobalEnvironment.SimpleAssign
+              (UnannotatedGlobal.SimpleAssign
                  {
                    explicit_annotation =
                      Some { (parse_single_expression "int") with location = location (2, 3) (2, 6) };
                    value = { (parse_single_expression "7") with location = location (2, 9) (2, 10) };
-                   target_location = Location.any;
+                   target_location = Location.WithModule.any;
                  }) );
       ]
     ~expected_triggers:[dependency]
@@ -654,12 +654,12 @@ let test_updates context =
           ( Reference.create "test.x",
             dependency,
             Some
-              (UnannotatedGlobalEnvironment.SimpleAssign
+              (UnannotatedGlobal.SimpleAssign
                  {
                    explicit_annotation =
                      Some { (parse_single_expression "int") with location = location (2, 3) (2, 6) };
                    value = { (parse_single_expression "9") with location = location (2, 9) (2, 10) };
-                   target_location = Location.any;
+                   target_location = Location.WithModule.any;
                  }) );
       ]
     ();
@@ -675,7 +675,10 @@ let test_updates context =
         `Global
           ( Reference.create "test.alias",
             dependency,
-            Some (UnannotatedGlobalEnvironment.Imported (Reference.create "target.member")) );
+            Some
+              (UnannotatedGlobal.Imported
+                 (UnannotatedGlobal.ImportEntry.Module
+                    { target = !&"target.member"; implicit_alias = false })) );
       ]
     ~expected_triggers:[dependency]
     ~post_actions:[`Global (Reference.create "test.alias", dependency, None)]
@@ -692,11 +695,17 @@ let test_updates context =
         `Global
           ( Reference.create "test.member",
             dependency,
-            Some (UnannotatedGlobalEnvironment.Imported (Reference.create "target.member")) );
+            Some
+              (UnannotatedGlobal.Imported
+                 (UnannotatedGlobal.ImportEntry.Name
+                    { from = !&"target"; target = "member"; implicit_alias = true })) );
         `Global
           ( Reference.create "test.other_member",
             dependency,
-            Some (UnannotatedGlobalEnvironment.Imported (Reference.create "target.other_member")) );
+            Some
+              (UnannotatedGlobal.Imported
+                 (UnannotatedGlobal.ImportEntry.Name
+                    { from = !&"target"; target = "other_member"; implicit_alias = true })) );
       ]
       (* Location insensitive *)
     ~expected_triggers:[]
@@ -705,11 +714,17 @@ let test_updates context =
         `Global
           ( Reference.create "test.member",
             dependency,
-            Some (UnannotatedGlobalEnvironment.Imported (Reference.create "target.member")) );
+            Some
+              (UnannotatedGlobal.Imported
+                 (UnannotatedGlobal.ImportEntry.Name
+                    { from = !&"target"; target = "member"; implicit_alias = true })) );
         `Global
           ( Reference.create "test.other_member",
             dependency,
-            Some (UnannotatedGlobalEnvironment.Imported (Reference.create "target.other_member")) );
+            Some
+              (UnannotatedGlobal.Imported
+                 (UnannotatedGlobal.ImportEntry.Name
+                    { from = !&"target"; target = "other_member"; implicit_alias = true })) );
       ]
     ();
 
@@ -745,33 +760,33 @@ let test_updates context =
           ( Reference.create "test.X",
             dependency,
             Some
-              (UnannotatedGlobalEnvironment.TupleAssign
+              (UnannotatedGlobal.TupleAssign
                  {
                    value = tuple_expression;
                    index = 0;
-                   target_location = Location.any;
+                   target_location = Location.WithModule.any;
                    total_length = 3;
                  }) );
         `Global
           ( Reference.create "test.Y",
             dependency,
             Some
-              (UnannotatedGlobalEnvironment.TupleAssign
+              (UnannotatedGlobal.TupleAssign
                  {
                    value = tuple_expression;
                    index = 1;
-                   target_location = Location.any;
+                   target_location = Location.WithModule.any;
                    total_length = 3;
                  }) );
         `Global
           ( Reference.create "test.Z",
             dependency,
             Some
-              (UnannotatedGlobalEnvironment.TupleAssign
+              (UnannotatedGlobal.TupleAssign
                  {
                    value = tuple_expression;
                    index = 2;
-                   target_location = Location.any;
+                   target_location = Location.WithModule.any;
                    total_length = 3;
                  }) );
       ]
@@ -794,12 +809,12 @@ let test_updates context =
           ( Reference.create "test.X",
             dependency,
             Some
-              (UnannotatedGlobalEnvironment.SimpleAssign
+              (UnannotatedGlobal.SimpleAssign
                  {
                    explicit_annotation = None;
                    value =
                      { (parse_single_expression "int") with location = location (2, 4) (2, 7) };
-                   target_location = Location.any;
+                   target_location = Location.WithModule.any;
                  }) );
       ]
     ~expected_triggers:[]
@@ -825,20 +840,26 @@ let test_updates context =
           ( Reference.create "test.X",
             dependency,
             Some
-              (UnannotatedGlobalEnvironment.SimpleAssign
+              (UnannotatedGlobal.SimpleAssign
                  {
                    explicit_annotation = None;
                    value =
                      { (parse_single_expression "int") with location = location (3, 6) (3, 9) };
-                   target_location = Location.any;
+                   target_location = Location.WithModule.any;
                  }) );
       ]
     ~expected_triggers:[]
     ();
 
   (* Keep different dependencies straight *)
-  let alias_dependency = SharedMemoryKeys.AliasRegister (Reference.create "same_dep") in
-  let check_dependency = SharedMemoryKeys.TypeCheckDefine (Reference.create "same_dep") in
+  let alias_dependency =
+    SharedMemoryKeys.DependencyKey.Registry.register
+      (SharedMemoryKeys.AliasRegister (Reference.create "same_dep"))
+  in
+  let check_dependency =
+    SharedMemoryKeys.DependencyKey.Registry.register
+      (SharedMemoryKeys.TypeCheckDefine (Reference.create "same_dep"))
+  in
   assert_updates
     ~original_source:{|
       class Foo:
@@ -868,12 +889,12 @@ let test_updates context =
           ( Reference.create "test.x",
             dependency,
             Some
-              (UnannotatedGlobalEnvironment.SimpleAssign
+              (UnannotatedGlobal.SimpleAssign
                  {
                    explicit_annotation =
                      Some { (parse_single_expression "int") with location = location (2, 3) (2, 6) };
                    value = { (parse_single_expression "9") with location = location (2, 9) (2, 10) };
-                   target_location = Location.any;
+                   target_location = Location.WithModule.any;
                  }) );
       ]
     ();
@@ -910,21 +931,33 @@ let test_updates context =
     ~expected_triggers:[]
     ~post_actions:[`Get ("test.Foo", dependency, Some 1)]
     ();
-  let create_simple_signature ~start ~stop name return_annotation =
-    node
-      ~start
-      ~stop
-      {
-        Define.Signature.name;
-        parameters = [];
-        decorators = [];
-        return_annotation;
-        async = false;
-        generator = false;
-        parent = None;
-        nesting_define = None;
-      }
+  let create_simple_signature
+      ~start:(start_line, start_column)
+      ~stop:(stop_line, stop_column)
+      name
+      return_annotation
+    =
+    {
+      UnannotatedGlobal.UnannotatedDefine.define =
+        {
+          Define.Signature.name;
+          parameters = [];
+          decorators = [];
+          return_annotation;
+          async = false;
+          generator = false;
+          parent = None;
+          nesting_define = None;
+        };
+      location =
+        {
+          Location.WithModule.start = { Location.line = start_line; column = start_column };
+          stop = { Location.line = stop_line; column = stop_column };
+          path = Reference.create "test";
+        };
+    }
   in
+
   assert_updates
     ~original_source:{|
       def foo() -> None:
@@ -940,7 +973,7 @@ let test_updates context =
           ( Reference.create "test.foo",
             dependency,
             Some
-              (UnannotatedGlobalEnvironment.Define
+              (UnannotatedGlobal.Define
                  [
                    create_simple_signature
                      ~start:(2, 0)
@@ -960,7 +993,7 @@ let test_updates context =
           ( Reference.create "test.foo",
             dependency,
             Some
-              (UnannotatedGlobalEnvironment.Define
+              (UnannotatedGlobal.Define
                  [
                    create_simple_signature
                      ~start:(2, 0)
@@ -976,7 +1009,9 @@ let test_updates context =
     ();
 
   (* Get typecheck unit *)
-  let dependency = SharedMemoryKeys.TypeCheckDefine !&"test" in
+  let dependency =
+    SharedMemoryKeys.DependencyKey.Registry.register (SharedMemoryKeys.TypeCheckDefine !&"test")
+  in
   let create_simple_return ~start ~stop expression =
     node
       ~start
@@ -1000,6 +1035,7 @@ let test_updates context =
             nesting_define = None;
           };
         captures = [];
+        unbound_names = [];
         body;
       }
   in
@@ -1241,6 +1277,7 @@ let test_updates context =
                    nesting_define = None;
                  };
                captures = [];
+               unbound_names = [];
                body =
                  [
                    create_simple_return
@@ -1282,6 +1319,7 @@ let test_updates context =
                    nesting_define = None;
                  };
                captures = [];
+               unbound_names = [];
                body =
                  [
                    create_simple_return
@@ -1321,6 +1359,7 @@ let test_updates context =
               nesting_define = None;
             };
           captures = [];
+          unbound_names = [];
           body =
             [
               create_simple_return
@@ -1358,22 +1397,7 @@ let test_updates context =
                     };
                 ];
               decorators =
-                [
-                  node
-                    ~start:(3, 1)
-                    ~stop:(3, 9)
-                    (Expression.Name
-                       (Name.Attribute
-                          {
-                            Name.Attribute.base =
-                              node
-                                ~start:(3, 1)
-                                ~stop:(3, 9)
-                                (Expression.Name (Name.Identifier "typing"));
-                            attribute = "overload";
-                            special = false;
-                          }));
-                ];
+                [{ name = node ~start:(3, 1) ~stop:(3, 9) !&"typing.overload"; arguments = None }];
               return_annotation =
                 Some (node ~start:(4, 19) ~stop:(4, 22) (Expression.Name (Name.Identifier "int")));
               async = false;
@@ -1382,6 +1406,7 @@ let test_updates context =
               nesting_define = None;
             };
           captures = [];
+          unbound_names = [];
           body =
             [
               node
@@ -1416,22 +1441,7 @@ let test_updates context =
                     };
                 ];
               decorators =
-                [
-                  node
-                    ~start:(7, 1)
-                    ~stop:(7, 9)
-                    (Expression.Name
-                       (Name.Attribute
-                          {
-                            Name.Attribute.base =
-                              node
-                                ~start:(7, 1)
-                                ~stop:(7, 9)
-                                (Expression.Name (Name.Identifier "typing"));
-                            attribute = "overload";
-                            special = false;
-                          }));
-                ];
+                [{ name = node ~start:(7, 1) ~stop:(7, 9) !&"typing.overload"; arguments = None }];
               return_annotation =
                 Some (node ~start:(8, 19) ~stop:(8, 22) (Expression.Name (Name.Identifier "str")));
               async = false;
@@ -1440,6 +1450,7 @@ let test_updates context =
               nesting_define = None;
             };
           captures = [];
+          unbound_names = [];
           body =
             [
               node
@@ -1534,12 +1545,7 @@ let test_updates context =
                            { Parameter.name = "$parameter$self"; value = None; annotation = None };
                        ];
                      decorators =
-                       [
-                         node
-                           ~start:(3, 3)
-                           ~stop:(3, 11)
-                           (Expression.Name (Name.Identifier "property"));
-                       ];
+                       [{ name = node ~start:(3, 3) ~stop:(3, 11) !&"property"; arguments = None }];
                      return_annotation =
                        Some
                          (node
@@ -1552,6 +1558,7 @@ let test_updates context =
                      nesting_define = None;
                    };
                  captures = [];
+                 unbound_names = [];
                  body = [create_elipsis ~start:(4, 24) ~stop:(4, 27) ()];
                }
            in
@@ -1592,20 +1599,10 @@ let test_updates context =
                             ];
                           decorators =
                             [
-                              node
-                                ~start:(5, 3)
-                                ~stop:(5, 13)
-                                (Expression.Name
-                                   (Name.Attribute
-                                      {
-                                        base =
-                                          node
-                                            ~start:(5, 3)
-                                            ~stop:(5, 6)
-                                            (Expression.Name (Name.Identifier "foo"));
-                                        attribute = "setter";
-                                        special = false;
-                                      }));
+                              {
+                                name = node ~start:(5, 3) ~stop:(5, 13) !&"foo.setter";
+                                arguments = None;
+                              };
                             ];
                           return_annotation =
                             Some
@@ -1619,6 +1616,7 @@ let test_updates context =
                           nesting_define = None;
                         };
                       captures = [];
+                      unbound_names = [];
                       body = [create_elipsis ~start:(6, 37) ~stop:(6, 40) ()];
                     }
                 in
@@ -1740,12 +1738,388 @@ let test_updates context =
   ()
 
 
+let test_builtin_modules context =
+  let ast_environment =
+    let configuration, ast_environment =
+      let sources = ["builtins.py", "foo: int = 42"] in
+      let project =
+        ScratchProject.setup
+          ~context
+          ~include_typeshed_stubs:false
+          ~include_helper_builtins:false
+          sources
+      in
+      ScratchProject.configuration_of project, ScratchProject.build_ast_environment project
+    in
+    let update_result =
+      let unannotated_global_environment = UnannotatedGlobalEnvironment.create ast_environment in
+      UnannotatedGlobalEnvironment.update_this_and_all_preceding_environments
+        unannotated_global_environment
+        ~scheduler:(mock_scheduler ())
+        ~configuration
+        ColdStart
+    in
+    UnannotatedGlobalEnvironment.UpdateResult.read_only update_result
+  in
+  assert_bool
+    "empty qualifier module exists"
+    (UnannotatedGlobalEnvironment.ReadOnly.module_exists ast_environment Reference.empty);
+  assert_bool
+    "random qualifier doesn't exist"
+    (not (UnannotatedGlobalEnvironment.ReadOnly.module_exists ast_environment !&"derp"));
+  assert_bool
+    "`builtins` exists"
+    (UnannotatedGlobalEnvironment.ReadOnly.module_exists ast_environment !&"builtins");
+  assert_bool
+    "`future.builtins` exists"
+    (UnannotatedGlobalEnvironment.ReadOnly.module_exists ast_environment !&"future.builtins");
+
+  let assert_nonempty qualifier =
+    match UnannotatedGlobalEnvironment.ReadOnly.get_module_metadata ast_environment qualifier with
+    | None -> assert_failure "Module does not exist"
+    | Some metadata ->
+        assert_bool "empty stub not expected" (not (Module.empty_stub metadata));
+        assert_bool "implicit module not expected" (not (Module.is_implicit metadata));
+        assert_equal
+          ~ctxt:context
+          ~cmp:[%compare.equal: Module.Export.t option]
+          ~printer:(fun export -> Sexp.to_string_hum [%message (export : Module.Export.t option)])
+          (Some Module.Export.(Name GlobalVariable))
+          (Module.get_export metadata "foo")
+  in
+  assert_nonempty Reference.empty;
+  assert_nonempty !&"builtins";
+  assert_nonempty !&"future.builtins";
+  ()
+
+
+let test_resolve_exports context =
+  let open UnannotatedGlobalEnvironment in
+  let assert_resolved ?(include_typeshed = false) ~expected ?from ~reference sources =
+    Memory.reset_shared_memory ();
+    let configuration, ast_environment =
+      let project =
+        if include_typeshed then
+          ScratchProject.setup ~context sources
+        else
+          ScratchProject.setup
+            ~context
+            ~include_typeshed_stubs:false
+            ~include_helper_builtins:false
+            ~external_sources:["builtins.py", ""]
+            sources
+      in
+      ScratchProject.configuration_of project, ScratchProject.build_ast_environment project
+    in
+    let update_result =
+      let unannotated_global_environment = UnannotatedGlobalEnvironment.create ast_environment in
+      UnannotatedGlobalEnvironment.update_this_and_all_preceding_environments
+        unannotated_global_environment
+        ~scheduler:(mock_scheduler ())
+        ~configuration
+        ColdStart
+    in
+    let unannotated_global_environment = UpdateResult.read_only update_result in
+    let actual = ReadOnly.resolve_exports unannotated_global_environment ?from reference in
+    assert_equal
+      ~ctxt:context
+      ~cmp:[%compare.equal: ResolvedReference.t option]
+      ~printer:(fun result -> Sexp.to_string_hum [%message (result : ResolvedReference.t option)])
+      expected
+      actual
+  in
+  let resolved_module name = ResolvedReference.Module name in
+  let resolved_attribute ?(remaining = []) ?export from name =
+    let export =
+      match export with
+      | None -> ResolvedReference.FromModuleGetattr
+      | Some export -> ResolvedReference.Exported export
+    in
+    ResolvedReference.ModuleAttribute { from; name; export; remaining }
+  in
+  let resolved_placeholder_stub ?(remaining = []) stub_module =
+    ResolvedReference.PlaceholderStub { stub_module; remaining }
+  in
+
+  let open Module in
+  assert_resolved [] ~reference:!&"derp" ~expected:None;
+  assert_resolved ["derp.py", ""] ~reference:!&"derp" ~expected:(Some (resolved_module !&"derp"));
+  assert_resolved ["derp.py", ""] ~reference:!&"derp.foo" ~expected:None;
+  assert_resolved
+    ["derp.pyi", "# pyre-placeholder-stub"]
+    ~reference:!&"derp.foo"
+    ~expected:(Some (resolved_placeholder_stub !&"derp" ~remaining:["foo"]));
+  assert_resolved
+    ["derp/foo.pyi", "# pyre-placeholder-stub"]
+    ~reference:!&"derp.foo"
+    ~expected:(Some (resolved_placeholder_stub !&"derp.foo"));
+  assert_resolved
+    ["derp/foo.py", ""]
+    ~reference:!&"derp"
+    ~expected:(Some (resolved_module !&"derp"));
+  assert_resolved
+    ["derp/foo.py", ""]
+    ~reference:!&"derp.foo"
+    ~expected:(Some (resolved_module !&"derp.foo"));
+  assert_resolved ["derp/foo.py", ""] ~reference:!&"derp.foo.bar" ~expected:None;
+  assert_resolved
+    ["derp/__init__.py", ""; "derp/foo.py", ""]
+    ~reference:!&"derp.foo"
+    ~expected:(Some (resolved_module !&"derp.foo"));
+  assert_resolved
+    ["derp/__init__.py", "foo = 1"]
+    ~reference:!&"derp.foo"
+    ~expected:(Some (resolved_attribute !&"derp" "foo" ~export:Export.Name.GlobalVariable));
+  assert_resolved
+    ["derp.py", "foo = 1"]
+    ~reference:!&"derp.foo"
+    ~expected:(Some (resolved_attribute !&"derp" "foo" ~export:Export.Name.GlobalVariable));
+  assert_resolved
+    ["derp.py", "def foo(): pass"]
+    ~reference:!&"derp.foo"
+    ~expected:
+      (Some
+         (resolved_attribute !&"derp" "foo" ~export:(Export.Name.Define { is_getattr_any = false })));
+  assert_resolved
+    ["derp.py", "class foo: pass"]
+    ~reference:!&"derp.foo"
+    ~expected:(Some (resolved_attribute !&"derp" "foo" ~export:Export.Name.Class));
+  assert_resolved
+    ["derp.py", "class foo: pass"]
+    ~reference:!&"derp.foo.bar.baz"
+    ~expected:
+      (Some (resolved_attribute !&"derp" "foo" ~export:Export.Name.Class ~remaining:["bar"; "baz"]));
+
+  assert_resolved ["a.py", "import b"] ~reference:!&"a.b" ~expected:None;
+  assert_resolved
+    ["a.py", "import b"; "b.py", ""]
+    ~reference:!&"a.b"
+    ~expected:(Some (resolved_module !&"b"));
+  assert_resolved
+    ["a.py", "import b"; "b/c.py", ""]
+    ~reference:!&"a.b"
+    ~expected:(Some (resolved_module !&"b"));
+  assert_resolved
+    ["a.py", "import b"; "b/c.py", ""]
+    ~reference:!&"a.b.c"
+    ~expected:(Some (resolved_module !&"b.c"));
+  assert_resolved
+    ["a.py", "import b as c"; "b.py", ""]
+    ~reference:!&"a.c"
+    ~expected:(Some (resolved_module !&"b"));
+  assert_resolved ["a.py", "from b import c"] ~reference:!&"a.c" ~expected:None;
+  assert_resolved ["a.py", "from b import c"; "b.py", ""] ~reference:!&"a.c" ~expected:None;
+  assert_resolved
+    ["a.py", "from b import c"; "b.py", "import c"; "c.py", ""]
+    ~reference:!&"a.c"
+    ~expected:(Some (resolved_module !&"c"));
+  assert_resolved
+    ["a.py", "from b import c"; "b.py", "import c"; "c.py", ""]
+    ~reference:!&"a.c.d"
+    ~expected:None;
+  assert_resolved
+    ["a.py", "from b import c"; "b.py", "c = 42"]
+    ~reference:!&"a.c"
+    ~expected:(Some (resolved_attribute !&"b" "c" ~export:Export.Name.GlobalVariable));
+  assert_resolved
+    ["a.py", "from b import c as d"; "b.py", "c = 42"]
+    ~reference:!&"a.d"
+    ~expected:(Some (resolved_attribute !&"b" "c" ~export:Export.Name.GlobalVariable));
+  assert_resolved
+    ["a.py", "from b import c as d"; "b.py", "c = 42"]
+    ~reference:!&"a.d.e"
+    ~expected:
+      (Some (resolved_attribute !&"b" "c" ~export:Export.Name.GlobalVariable ~remaining:["e"]));
+
+  (* Transitive import tests *)
+  assert_resolved
+    ["a.py", "from b import c"; "b.py", "from d import c"; "d.py", "c = 42"]
+    ~reference:!&"a.c"
+    ~expected:(Some (resolved_attribute !&"d" "c" ~export:Export.Name.GlobalVariable));
+  assert_resolved
+    [
+      "a.py", "from b import c";
+      "b.py", "from d import c";
+      "d.py", "from e import f as c";
+      "e.py", "f = 42";
+    ]
+    ~reference:!&"a.c"
+    ~expected:(Some (resolved_attribute !&"e" "f" ~export:Export.Name.GlobalVariable));
+  assert_resolved
+    [
+      "a.py", "from b import foo";
+      "b.py", "from c import bar as foo";
+      "c.py", "from d import cow as bar";
+      "d.py", "cow = 1";
+    ]
+    ~reference:!&"a.foo"
+    ~expected:(Some (resolved_attribute !&"d" "cow" ~export:Export.Name.GlobalVariable));
+
+  (* Getattr-any tests *)
+  assert_resolved
+    ["a.py", "from typing import Any\nb = 42\ndef __getattr__(name) -> Any: ..."]
+    ~reference:!&"a.b"
+    ~expected:(Some (resolved_attribute !&"a" "b" ~export:Export.Name.GlobalVariable));
+  assert_resolved
+    ["a.py", "from typing import Any\nb = 42\ndef __getattr__(name) -> Any: ..."]
+    ~reference:!&"a.c"
+    ~expected:(Some (resolved_attribute !&"a" "c"));
+  assert_resolved
+    ["a.py", "from typing import Any\nb = 42\ndef __getattr__(name) -> Any: ..."]
+    ~reference:!&"a.c.d"
+    ~expected:(Some (resolved_attribute !&"a" "c" ~remaining:["d"]));
+  assert_resolved
+    [
+      "a.py", "from b import c";
+      "b.py", "from typing import Any\nc = 42\ndef __getattr__(name) -> Any: ...";
+    ]
+    ~reference:!&"a.c"
+    ~expected:(Some (resolved_attribute !&"b" "c" ~export:Export.Name.GlobalVariable));
+  assert_resolved
+    [
+      "a.py", "from b import d";
+      "b.py", "from typing import Any\nc = 42\ndef __getattr__(name) -> Any: ...";
+    ]
+    ~reference:!&"a.d"
+    ~expected:(Some (resolved_attribute !&"b" "d"));
+  assert_resolved
+    [
+      "a.py", "from b import d";
+      "b.py", "from typing import Any\nc = 42\ndef __getattr__(name) -> Any: ...";
+    ]
+    ~reference:!&"a.d.e"
+    ~expected:(Some (resolved_attribute !&"b" "d" ~remaining:["e"]));
+
+  (* Access into placeholder stub *)
+  assert_resolved
+    ["a.py", "from b import c"; "b.pyi", "# pyre-placeholder-stub"]
+    ~reference:!&"a.c.d"
+    ~expected:(Some (resolved_placeholder_stub !&"b" ~remaining:["c"; "d"]));
+  (* Cyclic imports *)
+  assert_resolved ["a.py", "from a import b"] ~reference:!&"a.b" ~expected:None;
+  assert_resolved
+    ["a.py", "from b import c"; "b.py", "from a import c"]
+    ~reference:!&"a.c"
+    ~expected:None;
+  assert_resolved
+    ["a.py", "from b import c"; "b.py", "from d import c"; "d.py", "from b import c"]
+    ~reference:!&"a.c"
+    ~expected:None;
+  (* Self-cycle is OK in certain circumstances. *)
+  assert_resolved ["a/__init__.py", "from a import b"] ~reference:!&"a.b" ~expected:None;
+  assert_resolved
+    ["a/__init__.py", "from a import b"; "a/b.py", ""]
+    ~reference:!&"a.b"
+    ~expected:(Some (resolved_module !&"a.b"));
+  assert_resolved
+    ["a/__init__.py", "from a import b as c"; "a/b.py", ""]
+    ~reference:!&"a.c"
+    ~expected:(Some (resolved_module !&"a.b"));
+  (* TODO: We might want to ban this in the future since it is technically not OK at runtime. *)
+  assert_resolved
+    ["a.py", "from a import b"; "a/b.py", ""]
+    ~reference:!&"a.b"
+    ~expected:(Some (resolved_module !&"a.b"));
+  (* This is technically OK at runtime but we don't want to support it. *)
+  assert_resolved ["a.py", "b = 1\nfrom a import b"] ~reference:!&"a.b" ~expected:None;
+  (* Runtime does not allow `from X import ...` when `X` is itself a module alias. *)
+  assert_resolved
+    ["a.py", "from b.c import d"; "b.py", "import c"; "c.py", "d = 42"]
+    ~reference:!&"a.d"
+    ~expected:None;
+  (* ... but we do pretend placeholder stubs exist. *)
+  assert_resolved
+    ["a.py", "from b.nonexistent import foo"; "b.pyi", "# pyre-placeholder-stub"]
+    ~reference:!&"a.foo"
+    ~expected:(Some (resolved_placeholder_stub !&"b" ~remaining:["nonexistent"; "foo"]));
+  (* Package takes precedence over module of the same name. *)
+  assert_resolved
+    [
+      "qualifier.py", "from qualifier.foo import foo";
+      "qualifier/__init__.py", "";
+      "qualifier/foo/__init__.py", "foo = 1";
+    ]
+    ~reference:!&"qualifier.foo.foo"
+    ~expected:(Some (resolved_attribute !&"qualifier.foo" "foo" ~export:Export.Name.GlobalVariable));
+
+  (* Illustrate why the `from` argument matters. *)
+  assert_resolved
+    [
+      "qualifier/__init__.py", "from qualifier.a import bar as a";
+      "qualifier/a.py", "foo = 1\nbar = 1";
+    ]
+    ~reference:!&"qualifier.a"
+    ~expected:(Some (resolved_attribute !&"qualifier.a" "bar" ~export:Export.Name.GlobalVariable));
+  assert_resolved
+    [
+      "qualifier/__init__.py", "from qualifier.a import bar as a";
+      "qualifier/a.py", "foo = 1\nbar = 1";
+    ]
+    ~reference:!&"qualifier.a.foo"
+    ~expected:
+      (Some
+         (resolved_attribute
+            !&"qualifier.a"
+            "bar"
+            ~export:Export.Name.GlobalVariable
+            ~remaining:["foo"]));
+  assert_resolved
+    [
+      "qualifier/__init__.py", "from qualifier.a import bar as a";
+      "qualifier/a.py", "foo = 1\nbar = 1";
+    ]
+    ~from:!&"qualifier.a"
+    ~reference:!&"foo"
+    ~expected:(Some (resolved_attribute !&"qualifier.a" "foo" ~export:Export.Name.GlobalVariable));
+
+  assert_resolved
+    ~include_typeshed:true
+    ~expected:(Some (resolved_attribute !&"" "None" ~export:GlobalVariable))
+    ~reference:!&"None"
+    [];
+
+  (* Special attribute tests. *)
+  assert_resolved
+    ["foo.py", ""]
+    ~reference:!&"foo.__doc__"
+    ~expected:(Some (resolved_attribute !&"foo" "__doc__" ~export:GlobalVariable));
+  assert_resolved
+    ["foo.py", ""]
+    ~reference:!&"foo.__file__"
+    ~expected:(Some (resolved_attribute !&"foo" "__file__" ~export:GlobalVariable));
+  assert_resolved
+    ["foo.py", ""]
+    ~reference:!&"foo.__name__"
+    ~expected:(Some (resolved_attribute !&"foo" "__name__" ~export:GlobalVariable));
+  assert_resolved
+    ["foo.py", ""]
+    ~reference:!&"foo.__package__"
+    ~expected:(Some (resolved_attribute !&"foo" "__package__" ~export:GlobalVariable));
+  assert_resolved
+    ["foo.py", ""]
+    ~reference:!&"foo.__dict__"
+    ~expected:(Some (resolved_attribute !&"foo" "__dict__" ~export:GlobalVariable));
+  (* Implicit modules also contain speical attributes. *)
+  assert_resolved
+    ["foo/bar.py", ""]
+    ~reference:!&"foo.__name__"
+    ~expected:(Some (resolved_attribute !&"foo" "__name__" ~export:GlobalVariable));
+  (* Explicitly defined special attributes take precedence over the default ones. *)
+  assert_resolved
+    ["foo.py", "from bar import __name__"; "bar.py", ""]
+    ~reference:!&"foo.__name__"
+    ~expected:(Some (resolved_attribute !&"bar" "__name__" ~export:GlobalVariable));
+  ()
+
+
 let () =
   "environment"
   >::: [
          "global_registration" >:: test_global_registration;
          "define_registration" >:: test_define_registration;
          "simple_globals" >:: test_simple_global_registration;
+         "builtins" >:: test_builtin_modules;
+         "resolve_exports" >:: test_resolve_exports;
          "updates" >:: test_updates;
        ]
   |> Test.run

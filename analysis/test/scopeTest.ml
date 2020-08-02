@@ -512,6 +512,17 @@ let test_define_local_bindings _ =
   assert_bindings
     {|
     def foo():
+      x, *y = 1, 2, 3
+      return x + sum(y)
+  |}
+    ~expected:
+      [
+        "x", Some (ExpectBinding.create (Binding.Kind.AssignTarget None) (location (3, 2) (3, 3)));
+        "y", Some (ExpectBinding.create (Binding.Kind.AssignTarget None) (location (3, 6) (3, 7)));
+      ];
+  assert_bindings
+    {|
+    def foo():
       def bar():
         pass
       pass
@@ -573,10 +584,32 @@ let test_define_local_bindings _ =
       ];
   assert_bindings
     {|
+    def foo():
+      for x, *y in [[1], [2,3], [4,5,6]]:
+        pass
+  |}
+    ~expected:
+      [
+        "x", Some (ExpectBinding.create Binding.Kind.ForTarget (location (3, 6) (3, 7)));
+        "y", Some (ExpectBinding.create Binding.Kind.ForTarget (location (3, 10) (3, 11)));
+      ];
+  assert_bindings
+    {|
     def foo(flag: bool):
       import bar
+      import _baz
   |}
-    ~expected:["bar", Some (ExpectBinding.create Binding.Kind.ImportName (location (3, 2) (3, 12)))];
+    ~expected:
+      [
+        "bar", Some (ExpectBinding.create Binding.Kind.ImportName (location (3, 9) (3, 12)));
+        "_baz", Some (ExpectBinding.create Binding.Kind.ImportName (location (4, 9) (4, 13)));
+      ];
+  assert_bindings
+    {|
+    def foo(flag: bool):
+      import bar.baz
+  |}
+    ~expected:["bar", Some (ExpectBinding.create Binding.Kind.ImportName (location (3, 9) (3, 16)))];
   assert_bindings
     {|
     def foo(flag: bool):
@@ -584,8 +617,31 @@ let test_define_local_bindings _ =
   |}
     ~expected:
       [
-        "b", Some (ExpectBinding.create Binding.Kind.ImportName (location (3, 2) (3, 17)));
+        "b", Some (ExpectBinding.create Binding.Kind.ImportName (location (3, 16) (3, 17)));
         "bar", None;
+      ];
+  assert_bindings
+    {|
+    def foo(flag: bool):
+      from bar import b
+      from bar import _c
+  |}
+    ~expected:
+      [
+        "b", Some (ExpectBinding.create Binding.Kind.ImportName (location (3, 18) (3, 19)));
+        "_c", Some (ExpectBinding.create Binding.Kind.ImportName (location (4, 18) (4, 20)));
+        "bar", None;
+      ];
+  assert_bindings
+    {|
+    def foo(flag: bool):
+      from bar import b as baz
+  |}
+    ~expected:
+      [
+        "b", None;
+        "bar", None;
+        "baz", Some (ExpectBinding.create Binding.Kind.ImportName (location (3, 23) (3, 26)));
       ];
   assert_bindings
     {|
@@ -594,9 +650,9 @@ let test_define_local_bindings _ =
   |}
     ~expected:
       [
-        "b", Some (ExpectBinding.create Binding.Kind.ImportName (location (3, 2) (3, 22)));
+        "b", Some (ExpectBinding.create Binding.Kind.ImportName (location (3, 16) (3, 17)));
         "bar", None;
-        "baz", Some (ExpectBinding.create Binding.Kind.ImportName (location (3, 2) (3, 22)));
+        "baz", Some (ExpectBinding.create Binding.Kind.ImportName (location (3, 19) (3, 22)));
       ];
   assert_bindings
     {|
@@ -648,8 +704,48 @@ let test_define_local_bindings _ =
         "x", Some (ExpectBinding.create Binding.Kind.WithTarget (location (3, 31) (3, 32)));
         "y", Some (ExpectBinding.create (Binding.Kind.AssignTarget None) (location (4, 4) (4, 5)));
       ];
+  assert_bindings
+    {|
+    def foo():
+      y = (x := 1)
+  |}
+    ~expected:
+      [
+        "y", Some (ExpectBinding.create (Binding.Kind.AssignTarget None) (location (3, 2) (3, 3)));
+        "x", Some (ExpectBinding.create Binding.Kind.WalrusTarget (location (3, 7) (3, 8)));
+      ];
+  assert_bindings
+    {|
+    def foo():
+      if (match := pattern.search(data)) is not None:
+        pass
+  |}
+    ~expected:
+      ["match", Some (ExpectBinding.create Binding.Kind.WalrusTarget (location (3, 6) (3, 11)))];
+  assert_bindings
+    {|
+    def foo():
+      while chunk := file.read(8192):
+        pass
+  |}
+    ~expected:
+      ["chunk", Some (ExpectBinding.create Binding.Kind.WalrusTarget (location (3, 8) (3, 13)))];
+  assert_bindings
+    {|
+    def foo():
+      return [y := expensive(), y ** 2, y ** 3]
+  |}
+    ~expected:
+      ["y", Some (ExpectBinding.create Binding.Kind.WalrusTarget (location (3, 10) (3, 11)))];
+  assert_bindings
+    {|
+    def foo():
+      yield [y for x in data if (y := f(x)) is not None]
+  |}
+    ~expected:
+      ["y", Some (ExpectBinding.create Binding.Kind.WalrusTarget (location (3, 29) (3, 30)))];
 
-  (* Bindings in nested scope should not leak into the nesting scope *)
+  (* Bindings in nested scope should not leak into the nesting scope (except for walrus operators) *)
   assert_bindings {|
     def foo():
       def bar():
@@ -668,6 +764,34 @@ let test_define_local_bindings _ =
     def foo():
       return [x for x in range(42)]
   |} ~expected:["x", None];
+  assert_bindings
+    {|
+    def foo():
+      if any((comment := line).startswith('#') for line in lines):
+        pass
+  |}
+    ~expected:
+      ["comment", Some (ExpectBinding.create Binding.Kind.WalrusTarget (location (3, 10) (3, 17)))];
+  assert_bindings
+    {|
+    def foo():
+      if all((nonblank := line).strip() == '' for line in lines):
+        pass
+  |}
+    ~expected:
+      ["nonblank", Some (ExpectBinding.create Binding.Kind.WalrusTarget (location (3, 10) (3, 18)))];
+  assert_bindings
+    {|
+    def foo():
+      partial_sums = [total := total + v for v in values]
+      return total
+  |}
+    ~expected:
+      [
+        "total", Some (ExpectBinding.create Binding.Kind.WalrusTarget (location (3, 18) (3, 23)));
+        ( "partial_sums",
+          Some (ExpectBinding.create (Binding.Kind.AssignTarget None) (location (3, 2) (3, 14))) );
+      ];
   ()
 
 
@@ -725,9 +849,23 @@ let test_expression_local_bindings _ =
                (location (1, 14) (1, 22))) );
       ];
   assert_bindings
+    "lambda: (x := 1)"
+    ~expected:["x", Some (ExpectBinding.create Binding.Kind.WalrusTarget (location (1, 9) (1, 10)))];
+  assert_bindings
+    "lambda line: (m := re.match(pattern, line)) and m.group(1)"
+    ~expected:
+      ["m", Some (ExpectBinding.create Binding.Kind.WalrusTarget (location (1, 14) (1, 15)))];
+  assert_bindings
     "(x for x in range(10))"
     ~expected:
       ["x", Some (ExpectBinding.create Binding.Kind.ComprehensionTarget (location (1, 7) (1, 8)))];
+  assert_bindings
+    "(x for x, *y in [[1], [2,3]])"
+    ~expected:
+      [
+        "x", Some (ExpectBinding.create Binding.Kind.ComprehensionTarget (location (1, 7) (1, 8)));
+        "y", Some (ExpectBinding.create Binding.Kind.ComprehensionTarget (location (1, 11) (1, 12)));
+      ];
   assert_bindings
     "[x for x in range(10)]"
     ~expected:
@@ -746,6 +884,14 @@ let test_expression_local_bindings _ =
       [
         "x", Some (ExpectBinding.create Binding.Kind.ComprehensionTarget (location (1, 7) (1, 8)));
         "y", Some (ExpectBinding.create Binding.Kind.ComprehensionTarget (location (1, 20) (1, 21)));
+      ];
+  assert_bindings
+    "[y for x in foo if (y := f(x)) is not None]"
+    ~expected:
+      [
+        "x", Some (ExpectBinding.create Binding.Kind.ComprehensionTarget (location (1, 7) (1, 8)));
+        (* Binding `y` belongs to the enclosing scope *)
+        "y", None;
       ];
   ()
 

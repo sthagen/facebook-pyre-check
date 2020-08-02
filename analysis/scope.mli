@@ -29,6 +29,7 @@ module Binding : sig
           annotation: Expression.t option;
           star: Star.t option;
         }
+      | WalrusTarget
       | WithTarget
     [@@deriving sexp, compare, hash]
   end
@@ -115,4 +116,9 @@ module ScopeStack : sig
   val extend : with_:Scope.t -> t -> t
 
   val lookup : t -> Identifier.t -> Access.t option
+end
+
+module Builtins : sig
+  val mem : Identifier.t -> bool
+  (** Returns whether the given name belongs to the builtin scope. *)
 end

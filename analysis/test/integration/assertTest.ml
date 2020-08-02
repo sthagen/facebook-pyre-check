@@ -10,6 +10,7 @@ let test_check_assert context =
   let assert_type_errors = assert_type_errors ~context in
   assert_type_errors
     {|
+      import typing
       def foo(optional: typing.Optional[str]) -> None:
         if optional or len(optional) > 0:
           pass
@@ -21,6 +22,7 @@ let test_check_assert context =
     ];
   assert_type_errors
     {|
+      import typing
       def foo(optional: typing.Optional[str]) -> None:
         if optional is None or len(optional) > 0:
           pass
@@ -28,6 +30,7 @@ let test_check_assert context =
     [];
   assert_type_errors
     {|
+      import typing
       def foo(optional: typing.Optional[str]) -> None:
         if optional and len(optional) > 0:
           pass
@@ -35,6 +38,7 @@ let test_check_assert context =
     [];
   assert_type_errors
     {|
+      from builtins import int_to_int
       def foo() -> int:
         if 1 > 2:
           x = 2
@@ -45,6 +49,7 @@ let test_check_assert context =
     [];
   assert_type_errors
     {|
+      from builtins import int_to_int
       def foo() -> int:
         if 1 > 2:
           x = 2
@@ -55,6 +60,7 @@ let test_check_assert context =
     [];
   assert_type_errors
     {|
+      from builtins import int_to_int
       def foo() -> int:
         if 1 > 2:
           x = 2
@@ -62,14 +68,10 @@ let test_check_assert context =
           assert not True
         return int_to_int(x)
     |}
-    [
-      "Incompatible parameter type [6]: Expected `int` for 1st positional only parameter "
-      ^ "to call `int_to_int` but got `typing.Union[int, typing.Undeclared]`.";
-      "Undefined name [18]: Global name `x` is not defined, or there is at least one control flow \
-       path that doesn't define `x`.";
-    ];
+    [];
   assert_type_errors
     {|
+      from builtins import int_to_int
       def foo() -> int:
         if True:
           return 0
@@ -79,6 +81,8 @@ let test_check_assert context =
     [];
   assert_type_errors
     {|
+      from builtins import expect_int
+      import typing
       def foo(x: typing.Optional[int]) -> None:
         if x is not None:
           expect_int(x)
@@ -89,6 +93,8 @@ let test_check_assert context =
     [];
   assert_type_errors
     {|
+      from builtins import expect_int
+      import typing
       def foo(x: typing.Optional[int]) -> None:
         if x is not None:
           expect_int(x)
@@ -99,6 +105,8 @@ let test_check_assert context =
     [];
   assert_type_errors
     {|
+      from builtins import expect_int
+      import typing
       def foo(x: typing.Optional[int]) -> None:
         if x is not None:
           expect_int(x)
@@ -112,6 +120,8 @@ let test_check_assert context =
     [];
   assert_type_errors
     {|
+      from builtins import expect_int
+      import typing
       def foo(x: typing.Optional[int]) -> None:
         if x is not None:
           expect_int(x)
@@ -125,6 +135,8 @@ let test_check_assert context =
     [];
   assert_type_errors
     {|
+      from builtins import expect_int
+      import typing
       def foo(x: typing.Optional[int]) -> None:
         if x is None:
           pass
@@ -137,6 +149,8 @@ let test_check_assert context =
     [];
   assert_type_errors
     {|
+      from builtins import expect_int
+      import typing
       def foo(x: typing.Optional[int]) -> None:
         if x is None:
           pass
@@ -153,6 +167,7 @@ let test_check_assert_functions context =
   assert_default_type_errors
     ~context
     {|
+      import typing
       class One:
           a: int = 1
 
@@ -173,6 +188,7 @@ let test_check_assert_functions context =
     ~context
     ~handle:"foo.py"
     {|
+      import typing
       class One:
           a: int = 1
 
@@ -192,6 +208,7 @@ let test_check_assert_functions context =
   assert_type_errors
     ~context
     {|
+      import typing
       class One:
           a: int = 1
 
@@ -204,8 +221,7 @@ let test_check_assert_functions context =
           return o.a
     |}
     [
-      "Undefined name [18]: Global name `pyretestassert` is not defined, or there is at least one \
-       control flow path that doesn't define `pyretestassert`.";
+      "Unbound name [10]: Name `pyretestassert` is used but not defined in the current scope.";
       "Incompatible return type [7]: Expected `int` but got `unknown`.";
       "Undefined attribute [16]: Optional type has no attribute `a`.";
     ]
@@ -215,6 +231,7 @@ let test_check_all context =
   let assert_type_errors = assert_type_errors ~context in
   assert_type_errors
     {|
+      import typing
       def foo(x: typing.List[typing.Optional[str]]) -> typing.Optional[str]:
         if all(x):
           return ','.join(x)
@@ -222,6 +239,7 @@ let test_check_all context =
     [];
   assert_type_errors
     {|
+      import typing
       def foo(x: typing.Iterable[typing.Optional[str]]) -> typing.Optional[str]:
         if all( x):
           return ','.join(x)
@@ -229,6 +247,7 @@ let test_check_all context =
     [];
   assert_type_errors
     {|
+      import typing
       def foo(x: typing.Iterable[typing.Optional[str]]) -> typing.Optional[str]:
         if not all(x):
           return ','.join(x)
@@ -239,6 +258,7 @@ let test_check_all context =
     ];
   assert_type_errors
     {|
+      import typing
       def foo(x: typing.Iterable[typing.Union[str, None]]) -> typing.Optional[str]:
         if all(x):
           return ','.join(x)
@@ -246,6 +266,7 @@ let test_check_all context =
     [];
   assert_type_errors
     {|
+      import typing
       def foo(x: typing.Iterable[typing.Union[str, int, None]]) -> \
           typing.Iterable[typing.Union[str, int]]:
         if all(x):
@@ -255,6 +276,8 @@ let test_check_all context =
     [];
   assert_type_errors
     {|
+      import typing
+      _T = typing.TypeVar('_T')
       def foo(x: typing.Dict[typing.Optional[int], _T]) -> typing.Dict[int, _T]:
         if all(x):
           return x
@@ -269,19 +292,15 @@ let test_check_all context =
 let test_check_impossible_assert context =
   let assert_type_errors = assert_type_errors ~context in
   let assert_default_type_errors = assert_default_type_errors ~context in
-  assert_type_errors
-    {|
+  assert_type_errors {|
       def foo() -> None:
         x = None
         assert x
-    |}
-    ["Impossible assertion [25]: `x` has type `None`, assertion `x` will always fail."];
-  assert_type_errors
-    {|
+    |} [];
+  assert_type_errors {|
       def foo(x: None) -> None:
         assert x
-    |}
-    ["Impossible assertion [25]: `x` has type `None`, assertion `x` will always fail."];
+    |} [];
   assert_default_type_errors
     {|
       from typing import Optional, Any
@@ -295,34 +314,25 @@ let test_check_impossible_assert context =
       def foo(x: Derp) -> None:
         assert x
     |}
-    ["Undefined or invalid type [11]: Annotation `Derp` is not defined as a type."];
-  assert_default_type_errors {|
+    ["Unbound name [10]: Name `Derp` is used but not defined in the current scope."];
+  assert_default_type_errors
+    {|
+      import typing
       def foo(x: typing.Any) -> None:
         assert x
-    |} [];
-
-  assert_type_errors
-    {|
-      class Derp: ...
-      def derp(x: Derp) -> None:
-        assert not isinstance(x, Derp)
     |}
-    [
-      "Impossible assertion [25]: `x` has type `Derp`, assertion `not isinstance(x, test.Derp)` \
-       will always fail.";
-    ];
+    [];
+
   assert_default_type_errors
     {|
       class Derp: ...
       def derp(x: Derp) -> None:
         assert not isinstance(x, Herp)
     |}
-    [
-      "Undefined name [18]: Global name `Herp` is not defined, or there is at least one control \
-       flow path that doesn't define `Herp`.";
-    ];
+    ["Unbound name [10]: Name `Herp` is used but not defined in the current scope."];
   assert_default_type_errors
     {|
+      import typing
       class Derp: ...
       def derp(x: Derp, y: typing.Type[typing.Any]) -> None:
         assert not isinstance(x, y)

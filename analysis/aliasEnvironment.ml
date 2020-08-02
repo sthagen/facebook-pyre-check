@@ -80,10 +80,9 @@ module UnresolvedAlias = struct
                   (EmptyStubEnvironment.ReadOnly.unannotated_global_environment
                      empty_stub_environment)
                   primitive
-                || AstEnvironment.ReadOnly.module_exists
-                     ( EmptyStubEnvironment.ReadOnly.unannotated_global_environment
-                         empty_stub_environment
-                     |> UnannotatedGlobalEnvironment.ReadOnly.ast_environment )
+                || UnannotatedGlobalEnvironment.ReadOnly.module_exists
+                     (EmptyStubEnvironment.ReadOnly.unannotated_global_environment
+                        empty_stub_environment)
                      ?dependency
                      (Reference.create primitive)
               then
@@ -109,7 +108,7 @@ type extracted =
 
 let extract_alias unannotated_global_environment name ~dependency =
   let extract_alias = function
-    | UnannotatedGlobalEnvironment.SimpleAssign { explicit_annotation; value; _ } -> (
+    | UnannotatedGlobal.SimpleAssign { explicit_annotation; value; _ } -> (
         let target_annotation =
           Type.create ~aliases:(fun _ -> None) (from_reference ~location:Location.any name)
         in
@@ -241,7 +240,7 @@ let extract_alias unannotated_global_environment name ~dependency =
                 else
                   None )
         | _ -> None )
-    | UnannotatedGlobalEnvironment.Imported original_name -> (
+    | UnannotatedGlobal.Imported import -> (
         if
           UnannotatedGlobalEnvironment.ReadOnly.class_exists
             unannotated_global_environment
@@ -249,6 +248,7 @@ let extract_alias unannotated_global_environment name ~dependency =
         then
           None
         else
+          let original_name = UnannotatedGlobal.ImportEntry.deprecated_original_name import in
           match Reference.as_list name, Reference.as_list original_name with
           | [single_identifier], [typing; identifier]
             when String.equal typing "typing" && String.equal single_identifier identifier ->
@@ -258,6 +258,7 @@ let extract_alias unannotated_global_environment name ~dependency =
               let value = from_reference ~location:Location.any original_name in
               Some (TypeAlias { target = name; value }) )
     | TupleAssign _
+    | Class
     | Define _ ->
         None
   in
@@ -268,10 +269,9 @@ let extract_alias unannotated_global_environment name ~dependency =
   >>= extract_alias
 
 
-let produce_alias empty_stub_environment global_name ~track_dependencies =
+let produce_alias empty_stub_environment global_name ~dependency =
   (* TODO(T53786399): Optimize this function. Theres a lot of perf potentially to be gained here,
      currently biasing towards simplicity *)
-  let dependency = Option.some_if track_dependencies (SharedMemoryKeys.AliasRegister global_name) in
   let rec get_aliased_type_for current ~visited =
     (* This means we're in a loop *)
     if Set.mem visited current then
@@ -310,7 +310,7 @@ module Aliases = Environment.EnvironmentTable.NoCache (struct
   module Key = SharedMemoryKeys.StringKey
   module Value = AliasValue
 
-  type trigger = Reference.t
+  type trigger = Reference.t [@@deriving sexp, compare]
 
   let convert_trigger = Reference.show
 
@@ -326,6 +326,8 @@ module Aliases = Environment.EnvironmentTable.NoCache (struct
     | SharedMemoryKeys.AliasRegister name -> Some name
     | _ -> None
 
+
+  let trigger_to_dependency name = SharedMemoryKeys.AliasRegister name
 
   let legacy_invalidated_keys upstream_update =
     UnannotatedGlobalEnvironment.UpdateResult.previous_unannotated_globals upstream_update

@@ -29,6 +29,7 @@ module Binding = struct
           annotation: Expression.t option;
           star: Star.t option;
         }
+      | WalrusTarget
       | WithTarget
     [@@deriving sexp, compare, hash]
   end
@@ -40,132 +41,256 @@ module Binding = struct
   }
   [@@deriving sexp, compare, hash]
 
-  let rec of_unannotated_target ~kind { Node.value = target; location } =
+  let rec of_unannotated_target ~kind sofar { Node.value = target; location } =
     let open Expression in
     match target with
-    | Expression.Name (Name.Identifier name) -> [{ name; kind; location }]
+    | Expression.Name (Name.Identifier name) -> { name; kind; location } :: sofar
+    | Expression.Starred (Starred.Once element | Starred.Twice element) ->
+        of_unannotated_target ~kind sofar element
     | Tuple elements
     | List elements ->
         (* Tuple or list cannot be annotated. *)
-        List.concat_map elements ~f:(of_unannotated_target ~kind)
-    | _ -> []
+        List.fold elements ~init:sofar ~f:(of_unannotated_target ~kind)
+    | _ -> sofar
 
 
-  let rec of_statement { Node.value = statement; location } =
-    (* TODO (T53600647): Support walrus operator. *)
+  let rec of_expression sofar { Node.value = expression; _ } =
+    let open Expression in
+    match expression with
+    | Expression.WalrusOperator { WalrusOperator.target; value } ->
+        let sofar = of_expression sofar value in
+        of_unannotated_target ~kind:Kind.WalrusTarget sofar target
+    (* Boilerplates to make sure all expressions are visited. *)
+    | Expression.Await expression
+    | Expression.Name (Name.Attribute { Name.Attribute.base = expression; _ })
+    | Expression.UnaryOperator { UnaryOperator.operand = expression; _ }
+    | Expression.Starred (Starred.Once expression | Starred.Twice expression)
+    | Expression.Yield (Some expression) ->
+        of_expression sofar expression
+    | Expression.BooleanOperator { BooleanOperator.left; right; _ }
+    | Expression.ComparisonOperator { ComparisonOperator.left; right; _ } ->
+        let sofar = of_expression sofar left in
+        of_expression sofar right
+    | Expression.Call { Call.callee; arguments } ->
+        let sofar =
+          List.fold arguments ~init:sofar ~f:(fun sofar { Call.Argument.value; _ } ->
+              of_expression sofar value)
+        in
+        of_expression sofar callee
+    | Expression.Dictionary { Dictionary.entries; keywords } ->
+        let sofar = List.fold entries ~init:sofar ~f:of_dictionary_entry in
+        List.fold keywords ~init:sofar ~f:of_expression
+    | Expression.DictionaryComprehension comprehension ->
+        of_comprehension sofar comprehension ~of_element:of_dictionary_entry
+    | Expression.Generator comprehension
+    | Expression.ListComprehension comprehension
+    | Expression.SetComprehension comprehension ->
+        of_comprehension sofar comprehension ~of_element:of_expression
+    | Expression.List elements
+    | Expression.Set elements
+    | Expression.String { StringLiteral.kind = StringLiteral.Format elements; _ }
+    | Expression.Tuple elements ->
+        List.fold elements ~init:sofar ~f:of_expression
+    | Expression.Ternary { Ternary.target; test; alternative } ->
+        let sofar = of_expression sofar target in
+        let sofar = of_expression sofar test in
+        of_expression sofar alternative
+    | Complex _
+    | Ellipsis
+    | False
+    | Float _
+    | Integer _
+    | Lambda _
+    | Name (Name.Identifier _)
+    | String _
+    | True
+    | Yield None ->
+        sofar
+
+
+  and of_dictionary_entry sofar { Expression.Dictionary.Entry.key; value } =
+    let sofar = of_expression sofar key in
+    of_expression sofar value
+
+
+  and of_comprehension :
+        'a. of_element:(t list -> 'a -> t list) -> t list -> 'a Expression.Comprehension.t -> t list
+    =
+   fun ~of_element sofar { Expression.Comprehension.element; generators } ->
+    let of_generator sofar { Expression.Comprehension.Generator.conditions; _ } =
+      (* PEP-572 forbids assignment expressions in the iterator. We don't have to recurse there. *)
+      List.fold conditions ~init:sofar ~f:of_expression
+    in
+    (* PEP-572 requires that assignment expressions in a comprehension bind the target in the
+       containing scope *)
+    let sofar = List.fold generators ~init:sofar ~f:of_generator in
+    of_element sofar element
+
+
+  let rec of_statement sofar { Node.value = statement; location } =
+    let of_optional_expression sofar = Option.value_map ~default:sofar ~f:(of_expression sofar) in
     let open Statement in
     match statement with
+    | Statement.Assert { test; message; _ } ->
+        let sofar = of_expression sofar test in
+        of_optional_expression sofar message
     | Statement.Assign
         {
           Assign.target =
             { Node.value = Expression.Expression.Name (Expression.Name.Identifier name); location };
           annotation = Some annotation;
+          value;
           _;
         } ->
-        [{ name; kind = Kind.AssignTarget (Some annotation); location }]
-    | Statement.Assign { Assign.target; _ } ->
-        of_unannotated_target ~kind:(Kind.AssignTarget None) target
-    | Statement.Class { Class.name = { Node.value = name; _ }; _ } ->
-        [{ kind = Kind.ClassName; name = Reference.show name; location }]
-    | Statement.Define { Define.signature = { name = { Node.value = name; _ }; _ } as signature; _ }
-      ->
-        [{ kind = Kind.DefineName signature; name = Reference.show name; location }]
-    | Statement.For { For.target; body; orelse; _ } ->
-        let target_names = of_unannotated_target ~kind:Kind.ForTarget target in
-        let body_names = of_statements body in
-        let orelse_names = of_statements orelse in
-        List.concat [target_names; body_names; orelse_names]
-    | Statement.If { If.body; orelse; _ } -> List.append (of_statements body) (of_statements orelse)
-    | Statement.Import { Import.imports; _ } ->
-        let binding_of_import { Import.alias; name = { Node.value = name; _ } } =
-          (* TODO: Track the location of import name. *)
+        let sofar = of_expression sofar value in
+        { name; kind = Kind.AssignTarget (Some annotation); location } :: sofar
+    | Statement.Assign { Assign.target; value; _ } ->
+        let sofar = of_expression sofar value in
+        of_unannotated_target ~kind:(Kind.AssignTarget None) sofar target
+    | Statement.Class { Class.name = { Node.value = name; _ }; bases; decorators; _ } ->
+        let sofar =
+          List.map decorators ~f:Decorator.to_expression |> List.fold ~init:sofar ~f:of_expression
+        in
+        let sofar =
+          List.fold bases ~init:sofar ~f:(fun sofar { Expression.Call.Argument.value; _ } ->
+              of_expression sofar value)
+        in
+        { kind = Kind.ClassName; name = Reference.show name; location } :: sofar
+    | Statement.Define
+        {
+          Define.signature =
+            { name = { Node.value = name; _ }; decorators; parameters; _ } as signature;
+          _;
+        } ->
+        let sofar =
+          List.map decorators ~f:Decorator.to_expression |> List.fold ~init:sofar ~f:of_expression
+        in
+        let sofar =
+          List.fold
+            parameters
+            ~init:sofar
+            ~f:(fun sofar { Node.value = { Expression.Parameter.value; _ }; _ } ->
+              of_optional_expression sofar value)
+        in
+        { kind = Kind.DefineName signature; name = Reference.show name; location } :: sofar
+    | Statement.Expression expression
+    | Statement.Yield expression
+    | Statement.YieldFrom expression ->
+        of_expression sofar expression
+    | Statement.For { For.target; iterator; body; orelse; _ } ->
+        let sofar = of_unannotated_target ~kind:Kind.ForTarget sofar target in
+        let sofar = of_expression sofar iterator in
+        let sofar = of_statements sofar body in
+        of_statements sofar orelse
+    | Statement.If { If.test; body; orelse } ->
+        let sofar = of_expression sofar test in
+        let sofar = of_statements sofar body in
+        of_statements sofar orelse
+    | Statement.Import { Import.imports; from } ->
+        let binding_of_import sofar { Import.alias; name = { Node.value = name; location } } =
           match alias with
-          | None ->
-              let name = Reference.show name in
-              if String.is_prefix name ~prefix:"_" then
-                None
-              else
-                Some { kind = Kind.ImportName; name; location }
-          | Some { Node.value = alias; _ } ->
-              Some { kind = Kind.ImportName; name = Reference.show alias; location }
+          | Some { Node.value = alias; location } ->
+              { kind = Kind.ImportName; name = alias; location } :: sofar
+          | None -> (
+              match from with
+              | Some _ ->
+                  (* `name` must be a simple name *)
+                  { kind = Kind.ImportName; name = Reference.show name; location } :: sofar
+              | None ->
+                  (* `import a.b` actually binds name a *)
+                  let name = Reference.as_list name |> List.hd_exn in
+                  { kind = Kind.ImportName; name; location } :: sofar )
         in
-        List.filter_map imports ~f:binding_of_import
+        List.fold imports ~init:sofar ~f:binding_of_import
+    | Statement.Raise { Raise.expression; from } ->
+        let sofar = of_optional_expression sofar expression in
+        of_optional_expression sofar from
+    | Statement.Return { Return.expression; _ } -> of_optional_expression sofar expression
     | Statement.Try { Try.body; handlers; orelse; finally } ->
-        let bindings_of_handler { Try.Handler.name; kind; body } =
-          let name_binding =
-            Option.map name ~f:(fun name ->
+        let bindings_of_handler sofar { Try.Handler.name; kind; body } =
+          let sofar =
+            match name with
+            | None -> sofar
+            | Some name ->
                 (* TODO: Track the location of handler name. *)
-                { kind = Kind.ExceptTarget kind; name; location })
+                { kind = Kind.ExceptTarget kind; name; location } :: sofar
           in
-          let bindings_in_body = of_statements body in
-          List.append (Option.to_list name_binding) bindings_in_body
+          of_statements sofar body
         in
-        let body_names = of_statements body in
-        let handler_names = List.concat_map handlers ~f:bindings_of_handler in
-        let orelse_names = of_statements orelse in
-        let finally_names = of_statements finally in
-        List.concat [body_names; handler_names; orelse_names; finally_names]
-    | Statement.While { While.body; orelse; _ } ->
-        List.append (of_statements body) (of_statements orelse)
+        let sofar = of_statements sofar body in
+        let sofar = List.fold handlers ~init:sofar ~f:bindings_of_handler in
+        let sofar = of_statements sofar orelse in
+        of_statements sofar finally
+    | Statement.While { While.test; body; orelse } ->
+        let sofar = of_expression sofar test in
+        let sofar = of_statements sofar body in
+        of_statements sofar orelse
     | Statement.With { With.items; body; _ } ->
-        let bindings_of_item (_, alias) =
-          Option.value_map alias ~f:(of_unannotated_target ~kind:Kind.WithTarget) ~default:[]
+        let bindings_of_item sofar (expression, alias) =
+          let sofar = of_expression sofar expression in
+          match alias with
+          | None -> sofar
+          | Some target -> of_unannotated_target ~kind:Kind.WithTarget sofar target
         in
-        let item_names = List.concat_map items ~f:bindings_of_item in
-        let body_names = of_statements body in
-        List.append item_names body_names
-    | Assert _
+        let sofar = List.fold items ~init:sofar ~f:bindings_of_item in
+        of_statements sofar body
     | Break
     | Continue
     | Delete _
-    | Expression _
     | Global _
     | Nonlocal _
-    | Pass
-    | Raise _
-    | Return _
-    | Yield _
-    | YieldFrom _ ->
-        []
+    | Pass ->
+        sofar
 
 
-  and of_statements statements = List.concat_map statements ~f:of_statement
+  and of_statements sofar statements = List.fold statements ~init:sofar ~f:of_statement
 
-  let of_parameter index { Node.value = { Expression.Parameter.name; annotation; _ }; location } =
-    let star, name =
-      let star, name = Identifier.split_star name in
-      let star =
-        match star with
-        | "**" -> Some Kind.Star.Twice
-        | "*" -> Some Kind.Star.Once
-        | _ -> None
+  let of_parameters sofar parameters =
+    let of_parameter
+        index
+        sofar
+        { Node.value = { Expression.Parameter.name; annotation; _ }; location }
+      =
+      let star, name =
+        let star, name = Identifier.split_star name in
+        let star =
+          match star with
+          | "**" -> Some Kind.Star.Twice
+          | "*" -> Some Kind.Star.Once
+          | _ -> None
+        in
+        star, name
       in
-      star, name
+      { kind = Kind.ParameterName { index; star; annotation }; name; location } :: sofar
     in
-    { kind = Kind.ParameterName { index; star; annotation }; name; location }
+    List.foldi parameters ~init:sofar ~f:of_parameter
 
 
-  let of_generator { Expression.Comprehension.Generator.target; _ } =
-    of_unannotated_target ~kind:Kind.ComprehensionTarget target
+  let of_generators sofar generators =
+    let of_generator sofar { Expression.Comprehension.Generator.target; _ } =
+      of_unannotated_target ~kind:Kind.ComprehensionTarget sofar target
+    in
+    List.fold generators ~init:sofar ~f:of_generator
 end
 
-let rec globals_of_statement { Node.value; _ } =
+let rec globals_of_statement sofar { Node.value; _ } =
   let open Statement in
   match value with
-  | Statement.Global globals -> globals
+  | Statement.Global globals -> List.rev_append globals sofar
   | For { For.body; orelse; _ }
   | If { If.body; orelse; _ }
   | While { While.body; orelse; _ } ->
-      globals_of_statements (List.append body orelse)
+      let sofar = globals_of_statements sofar body in
+      globals_of_statements sofar orelse
   | Try { Try.body; handlers; orelse; finally } ->
-      let statements =
-        let handler_statements =
-          List.concat_map handlers ~f:(fun { Try.Handler.body; _ } -> body)
-        in
-        List.concat [body; handler_statements; orelse; finally]
+      let sofar = globals_of_statements sofar body in
+      let sofar =
+        List.fold handlers ~init:sofar ~f:(fun sofar { Try.Handler.body; _ } ->
+            globals_of_statements sofar body)
       in
-      globals_of_statements statements
-  | With { With.body; _ } -> globals_of_statements body
+      let sofar = globals_of_statements sofar orelse in
+      globals_of_statements sofar finally
+  | With { With.body; _ } -> globals_of_statements sofar body
   | Assign _
   | Assert _
   | Break
@@ -181,28 +306,31 @@ let rec globals_of_statement { Node.value; _ } =
   | Return _
   | Yield _
   | YieldFrom _ ->
-      []
+      sofar
 
 
-and globals_of_statements statements = List.concat_map statements ~f:globals_of_statement
+and globals_of_statements sofar statements =
+  List.fold statements ~init:sofar ~f:globals_of_statement
 
-let rec nonlocals_of_statement { Node.value; _ } =
+
+let rec nonlocals_of_statement sofar { Node.value; _ } =
   let open Statement in
   match value with
-  | Statement.Nonlocal nonlocals -> nonlocals
+  | Statement.Nonlocal nonlocals -> List.rev_append nonlocals sofar
   | For { For.body; orelse; _ }
   | If { If.body; orelse; _ }
   | While { While.body; orelse; _ } ->
-      nonlocals_of_statements (List.append body orelse)
+      let sofar = nonlocals_of_statements sofar body in
+      nonlocals_of_statements sofar orelse
   | Try { Try.body; handlers; orelse; finally } ->
-      let statements =
-        let handler_statements =
-          List.concat_map handlers ~f:(fun { Try.Handler.body; _ } -> body)
-        in
-        List.concat [body; handler_statements; orelse; finally]
+      let sofar = nonlocals_of_statements sofar body in
+      let sofar =
+        List.fold handlers ~init:sofar ~f:(fun sofar { Try.Handler.body; _ } ->
+            nonlocals_of_statements sofar body)
       in
-      nonlocals_of_statements statements
-  | With { With.body; _ } -> nonlocals_of_statements body
+      let sofar = nonlocals_of_statements sofar orelse in
+      nonlocals_of_statements sofar finally
+  | With { With.body; _ } -> nonlocals_of_statements sofar body
   | Assign _
   | Assert _
   | Break
@@ -218,10 +346,12 @@ let rec nonlocals_of_statement { Node.value; _ } =
   | Return _
   | Yield _
   | YieldFrom _ ->
-      []
+      sofar
 
 
-and nonlocals_of_statements statements = List.concat_map statements ~f:nonlocals_of_statement
+and nonlocals_of_statements sofar statements =
+  List.fold statements ~init:sofar ~f:nonlocals_of_statement
+
 
 module Scope = struct
   module Kind = struct
@@ -247,11 +377,9 @@ module Scope = struct
         | true ->
             (* Global and nonlocal declarations take priority. *)
             sofar
-        | false -> (
-            (* First binding wins. *)
-            match Map.add sofar ~key:name ~data:binding with
-            | `Ok result -> result
-            | `Duplicate -> sofar ))
+        | false ->
+            (* First binding (i.e. last item in the list) wins. *)
+            Map.set sofar ~key:name ~data:binding)
 
 
   let of_define { Statement.Define.signature; body; _ } =
@@ -259,19 +387,21 @@ module Scope = struct
     if Define.Signature.is_toplevel signature then
       None
     else
-      let globals = globals_of_statements body |> Identifier.Set.of_list in
-      let nonlocals = nonlocals_of_statements body |> Identifier.Set.of_list in
-      let parameter_bindings =
-        let { Define.Signature.parameters; _ } = signature in
-        List.mapi parameters ~f:Binding.of_parameter
+      let globals = globals_of_statements [] body |> Identifier.Set.of_list in
+      let nonlocals = nonlocals_of_statements [] body |> Identifier.Set.of_list in
+      let bindings =
+        let parameter_bindings =
+          let { Define.Signature.parameters; _ } = signature in
+          Binding.of_parameters [] parameters
+        in
+        Binding.of_statements parameter_bindings body
       in
-      let body_bindings = Binding.of_statements body in
       Some
         {
           kind = Kind.Define signature;
           globals;
           nonlocals;
-          bindings = create_map ~globals ~nonlocals (List.append parameter_bindings body_bindings);
+          bindings = create_map ~globals ~nonlocals bindings;
         }
 
 
@@ -294,26 +424,38 @@ module Scope = struct
     let globals = Identifier.Set.empty in
     let nonlocals = Identifier.Set.empty in
     match value with
-    | Expression.Lambda { Lambda.parameters; _ } ->
+    | Expression.Lambda { Lambda.parameters; body } ->
+        let bindings =
+          let parameter_bindings = Binding.of_parameters [] parameters in
+          Binding.of_expression parameter_bindings body
+        in
         Some
           {
             kind = Kind.Lambda;
             globals;
             nonlocals;
-            bindings =
-              List.mapi parameters ~f:Binding.of_parameter |> create_map ~globals ~nonlocals;
+            bindings = create_map ~globals ~nonlocals bindings;
           }
     | DictionaryComprehension { Comprehension.generators; _ }
     | Generator { Comprehension.generators; _ }
     | ListComprehension { Comprehension.generators; _ }
     | SetComprehension { Comprehension.generators; _ } ->
+        (* PEP-572 counts these bindings (along with bindings in `element`) towards the containing
+           scope *)
+        let is_not_walrus_binding { Binding.kind; _ } =
+          match kind with
+          | Binding.Kind.WalrusTarget -> false
+          | _ -> true
+        in
         Some
           {
             kind = Kind.Comprehension;
             globals;
             nonlocals;
             bindings =
-              List.concat_map generators ~f:Binding.of_generator |> create_map ~globals ~nonlocals;
+              Binding.of_generators [] generators
+              |> List.filter ~f:is_not_walrus_binding
+              |> create_map ~globals ~nonlocals;
           }
     | _ -> None
 
@@ -341,7 +483,7 @@ module Scope = struct
       kind = Kind.Module;
       globals;
       nonlocals;
-      bindings = Binding.of_statements statements |> create_map ~globals ~nonlocals;
+      bindings = Binding.of_statements [] statements |> create_map ~globals ~nonlocals;
     }
 
 
@@ -442,4 +584,170 @@ module ScopeStack = struct
 
 
   let extend ~with_ { global; locals } = { global; locals = with_ :: locals }
+end
+
+module Builtins = struct
+  let mem = function
+    (* Builtins recognized by Pyre itself *)
+    | "BoundMethod"
+    | "pyre_dump"
+    | "reveal_type"
+    (* Builtins recognized by Python *)
+    | "__build_class__"
+    | "__builtins__"
+    | "__debug__"
+    | "__dict__"
+    | "__doc__"
+    | "__file__"
+    | "__import__"
+    | "__loader__"
+    | "__name__"
+    | "__package__"
+    | "__spec__"
+    | "ArithmeticError"
+    | "AssertionError"
+    | "AttributeError"
+    | "BaseException"
+    | "BlockingIOError"
+    | "BrokenPipeError"
+    | "BufferError"
+    | "BytesWarning"
+    | "ChildProcessError"
+    | "ConnectionAbortedError"
+    | "ConnectionError"
+    | "ConnectionRefusedError"
+    | "ConnectionResetError"
+    | "DeprecationWarning"
+    | "EOFError"
+    | "Ellipsis"
+    | "EnvironmentError"
+    | "Exception"
+    | "False"
+    | "FileExistsError"
+    | "FileNotFoundError"
+    | "FloatingPointError"
+    | "FutureWarning"
+    | "GeneratorExit"
+    | "IOError"
+    | "ImportError"
+    | "ImportWarning"
+    | "IndentationError"
+    | "IndexError"
+    | "InterruptedError"
+    | "IsADirectoryError"
+    | "KeyError"
+    | "KeyboardInterrupt"
+    | "LookupError"
+    | "MemoryError"
+    | "ModuleNotFoundError"
+    | "NameError"
+    | "None"
+    | "NotADirectoryError"
+    | "NotImplemented"
+    | "NotImplementedError"
+    | "OSError"
+    | "OverflowError"
+    | "PendingDeprecationWarning"
+    | "PermissionError"
+    | "ProcessLookupError"
+    | "RecursionError"
+    | "ReferenceError"
+    | "ResourceWarning"
+    | "RuntimeError"
+    | "RuntimeWarning"
+    | "StopAsyncIteration"
+    | "StopIteration"
+    | "SyntaxError"
+    | "SyntaxWarning"
+    | "SystemError"
+    | "SystemExit"
+    | "TabError"
+    | "TimeoutError"
+    | "True"
+    | "TypeError"
+    | "UnboundLocalError"
+    | "UnicodeDecodeError"
+    | "UnicodeEncodeError"
+    | "UnicodeError"
+    | "UnicodeTranslateError"
+    | "UnicodeWarning"
+    | "UserWarning"
+    | "ValueError"
+    | "Warning"
+    | "ZeroDivisionError"
+    | "abs"
+    | "all"
+    | "any"
+    | "ascii"
+    | "bin"
+    | "bool"
+    | "breakpoint"
+    | "bytearray"
+    | "bytes"
+    | "callable"
+    | "chr"
+    | "classmethod"
+    | "compile"
+    | "complex"
+    | "copyright"
+    | "credits"
+    | "delattr"
+    | "dict"
+    | "dir"
+    | "divmod"
+    | "enumerate"
+    | "eval"
+    | "exec"
+    | "exit"
+    | "filter"
+    | "float"
+    | "format"
+    | "frozenset"
+    | "getattr"
+    | "globals"
+    | "hasattr"
+    | "hash"
+    | "help"
+    | "hex"
+    | "id"
+    | "input"
+    | "int"
+    | "isinstance"
+    | "issubclass"
+    | "iter"
+    | "len"
+    | "license"
+    | "list"
+    | "locals"
+    | "map"
+    | "max"
+    | "memoryview"
+    | "min"
+    | "next"
+    | "object"
+    | "oct"
+    | "open"
+    | "ord"
+    | "pow"
+    | "print"
+    | "property"
+    | "quit"
+    | "range"
+    | "repr"
+    | "reversed"
+    | "round"
+    | "set"
+    | "setattr"
+    | "slice"
+    | "sorted"
+    | "staticmethod"
+    | "str"
+    | "sum"
+    | "super"
+    | "tuple"
+    | "type"
+    | "vars"
+    | "zip" ->
+        true
+    | _ -> false
 end

@@ -10,35 +10,44 @@ open Statement
 open Expression
 open SharedMemoryKeys
 
-type unannotated_global =
-  | SimpleAssign of {
-      explicit_annotation: Expression.t option;
-      value: Expression.t;
-      target_location: Location.t;
-    }
-  | TupleAssign of {
-      value: Expression.t;
-      target_location: Location.t;
-      index: int;
-      total_length: int;
-    }
-  | Imported of Reference.t
-  | Define of Define.Signature.t Node.t list
-[@@deriving compare, show, equal, sexp]
+module ResolvedReference = struct
+  type export =
+    | FromModuleGetattr
+    | Exported of Module.Export.Name.t
+  [@@deriving sexp, compare, hash]
+
+  type t =
+    | Module of Reference.t
+    | ModuleAttribute of {
+        from: Reference.t;
+        name: Identifier.t;
+        export: export;
+        remaining: Identifier.t list;
+      }
+    | PlaceholderStub of {
+        stub_module: Reference.t;
+        remaining: Identifier.t list;
+      }
+  [@@deriving sexp, compare, hash]
+end
 
 module ReadOnly = struct
   type t = {
     ast_environment: AstEnvironment.ReadOnly.t;
-    class_exists: ?dependency:dependency -> string -> bool;
+    class_exists: ?dependency:DependencyKey.registered -> string -> bool;
     all_classes: unit -> Type.Primitive.t list;
     all_indices: unit -> IndexTracker.t list;
     all_unannotated_globals: unit -> Reference.t list;
     all_defines: unit -> Reference.t list;
     all_defines_in_module: Reference.t -> Reference.t list;
-    get_class_definition: ?dependency:dependency -> string -> ClassSummary.t Node.t option;
-    get_unannotated_global: ?dependency:dependency -> Reference.t -> unannotated_global option;
-    get_define: ?dependency:dependency -> Reference.t -> FunctionDefinition.t option;
-    get_define_body: ?dependency:dependency -> Reference.t -> Define.t Node.t option;
+    get_class_definition:
+      ?dependency:DependencyKey.registered -> string -> ClassSummary.t Node.t option;
+    get_unannotated_global:
+      ?dependency:DependencyKey.registered -> Reference.t -> UnannotatedGlobal.t option;
+    get_define: ?dependency:DependencyKey.registered -> Reference.t -> FunctionDefinition.t option;
+    get_define_body: ?dependency:DependencyKey.registered -> Reference.t -> Define.t Node.t option;
+    get_module_metadata: ?dependency:DependencyKey.registered -> Reference.t -> Module.t option;
+    module_exists: ?dependency:SharedMemoryKeys.DependencyKey.registered -> Reference.t -> bool;
     hash_to_key_map: unit -> string String.Map.t;
     serialize_decoded: Memory.decodable -> (string * string * string option) option;
     decoded_equal: Memory.decodable -> Memory.decodable -> bool option;
@@ -90,6 +99,184 @@ module ReadOnly = struct
   let contains_untracked read_only ?dependency annotation =
     let is_tracked = class_exists read_only ?dependency in
     List.exists ~f:(fun annotation -> not (is_tracked annotation)) (Type.elements annotation)
+
+
+  let get_module_metadata { get_module_metadata; _ } = get_module_metadata
+
+  let module_exists { module_exists; _ } = module_exists
+
+  let legacy_resolve_exports read_only ?dependency reference =
+    (* Resolve exports. Fixpoint is necessary due to export/module name conflicts: P59503092 *)
+    let widening_threshold = 25 in
+    let rec resolve_exports_fixpoint ~reference ~visited ~count =
+      if Set.mem visited reference || count > widening_threshold then
+        reference
+      else
+        let rec resolve_exports ~lead ~tail =
+          match tail with
+          | head :: tail ->
+              let incremented_lead = lead @ [head] in
+              if
+                Option.is_some
+                  (get_module_metadata
+                     ?dependency
+                     read_only
+                     (Reference.create_from_list incremented_lead))
+              then
+                resolve_exports ~lead:incremented_lead ~tail
+              else
+                get_module_metadata ?dependency read_only (Reference.create_from_list lead)
+                >>| (fun definition ->
+                      match Module.legacy_aliased_export definition (Reference.create head) with
+                      | Some export -> Reference.combine export (Reference.create_from_list tail)
+                      | _ -> resolve_exports ~lead:(lead @ [head]) ~tail)
+                |> Option.value ~default:reference
+          | _ -> reference
+        in
+        match Reference.as_list reference with
+        | head :: tail ->
+            let exported_reference = resolve_exports ~lead:[head] ~tail in
+            if Reference.is_strict_prefix ~prefix:reference exported_reference then
+              reference
+            else
+              resolve_exports_fixpoint
+                ~reference:exported_reference
+                ~visited:(Set.add visited reference)
+                ~count:(count + 1)
+        | _ -> reference
+    in
+    resolve_exports_fixpoint ~reference ~visited:Reference.Set.empty ~count:0
+
+
+  module ResolveExportItem = struct
+    module T = struct
+      type t = {
+        current_module: Reference.t;
+        name: Identifier.t;
+      }
+      [@@deriving sexp, compare, hash]
+    end
+
+    include T
+    include Hashable.Make (T)
+  end
+
+  let resolve_exports read_only ?dependency ?(from = Reference.empty) reference =
+    let visited_set = ResolveExportItem.Hash_set.create () in
+    let rec resolve_module_alias ~current_module ~names_to_resolve () =
+      match get_module_metadata ?dependency read_only current_module with
+      | None ->
+          let rec resolve_placeholder_stub sofar = function
+            | [] -> None
+            | name :: prefixes -> (
+                let checked_module = List.rev prefixes |> Reference.create_from_list in
+                let sofar = name :: sofar in
+                match get_module_metadata ?dependency read_only checked_module with
+                | Some module_metadata when Module.empty_stub module_metadata ->
+                    Some
+                      (ResolvedReference.PlaceholderStub
+                         { stub_module = checked_module; remaining = sofar })
+                | _ -> resolve_placeholder_stub sofar prefixes )
+          in
+          (* Make sure none of the parent of `current_module` is placeholder stub *)
+          resolve_placeholder_stub names_to_resolve (Reference.as_list current_module |> List.rev)
+      | Some module_metadata -> (
+          match Module.empty_stub module_metadata with
+          | true ->
+              Some
+                (ResolvedReference.PlaceholderStub
+                   { stub_module = current_module; remaining = names_to_resolve })
+          | false -> (
+              match names_to_resolve with
+              | [] -> Some (ResolvedReference.Module current_module)
+              | next_name :: rest_names -> (
+                  let item = { ResolveExportItem.current_module; name = next_name } in
+                  match Hash_set.strict_add visited_set item with
+                  | Result.Error _ ->
+                      (* Module alias cycle detected. Abort resolution. *)
+                      None
+                  | Result.Ok _ -> (
+                      match Module.get_export module_metadata next_name with
+                      | None -> (
+                          match Module.get_export module_metadata "__getattr__" with
+                          | Some Module.Export.(Name (Define { is_getattr_any = true })) ->
+                              Some
+                                (ResolvedReference.ModuleAttribute
+                                   {
+                                     from = current_module;
+                                     name = next_name;
+                                     export = ResolvedReference.FromModuleGetattr;
+                                     remaining = rest_names;
+                                   })
+                          | _ ->
+                              (* We could be hitting an implicit module, or we could be hitting an
+                                 explicit module whose name is a prefix of another explicit module.
+                                 Keep moving through the current reference chain to make sure we
+                                 don't mis-handle those cases. *)
+                              resolve_module_alias
+                                ~current_module:
+                                  (Reference.create next_name |> Reference.combine current_module)
+                                ~names_to_resolve:rest_names
+                                () )
+                      | Some (Module.Export.NameAlias { from; name }) ->
+                          if Reference.equal current_module from then
+                            (* This could legitimately happen when an __init__ module trying to
+                               import its sibling modules *)
+                            resolve_module_alias
+                              ~current_module:(Reference.create name |> Reference.combine from)
+                              ~names_to_resolve:rest_names
+                              ()
+                          else
+                            (* We don't know if `name` refers to a module or not. Move forward on
+                               the alias chain. *)
+                            resolve_module_alias
+                              ~current_module:from
+                              ~names_to_resolve:(name :: rest_names)
+                              ()
+                      | Some (Module.Export.Module name) ->
+                          (* `name` is definitely a module. *)
+                          resolve_module_alias ~current_module:name ~names_to_resolve:rest_names ()
+                      | Some (Module.Export.Name export) ->
+                          (* We find a non-module. *)
+                          Some
+                            (ResolvedReference.ModuleAttribute
+                               {
+                                 from = current_module;
+                                 name = next_name;
+                                 export = ResolvedReference.Exported export;
+                                 remaining = rest_names;
+                               }) ) ) ) )
+    in
+    resolve_module_alias ~current_module:from ~names_to_resolve:(Reference.as_list reference) ()
+
+
+  let resolve_decorator_if_matches
+      read_only
+      ?dependency
+      ({ Ast.Statement.Decorator.name = { Node.value = name; location }; _ } as decorator)
+      ~target
+    =
+    let resolved_name =
+      match resolve_exports read_only ?dependency name with
+      | Some (ResolvedReference.ModuleAttribute { from; name; remaining; _ }) ->
+          Reference.create_from_list (name :: remaining) |> Reference.combine from
+      | _ -> name
+    in
+    if String.equal (Reference.show resolved_name) target then
+      Some { decorator with name = { Node.value = resolved_name; location } }
+    else
+      None
+
+
+  let get_decorator
+      read_only
+      ?dependency
+      { Node.value = { ClassSummary.decorators; _ }; _ }
+      ~decorator
+    =
+    List.filter_map
+      ~f:(resolve_decorator_if_matches read_only ?dependency ~target:decorator)
+      decorators
 end
 
 (* The key tracking is necessary because there is no empirical way to determine which classes exist
@@ -168,23 +355,27 @@ module WriteOnly : sig
     previous_classes_list:string list ->
     previous_unannotated_globals_list:Reference.t list ->
     previous_defines_list:Reference.t list ->
+    previous_modules_list:Reference.t list ->
     DependencyKey.Transaction.t
 
   val get_all_dependents
     :  class_additions:string list ->
     unannotated_global_additions:Reference.t list ->
     define_additions:Reference.t list ->
-    DependencyKey.KeySet.t
+    DependencyKey.RegisteredSet.t
 
   val direct_data_purge
     :  previous_classes_list:Type.Primitive.t list ->
     previous_unannotated_globals_list:Reference.t list ->
     previous_defines_list:Reference.t list ->
+    previous_modules_list:Reference.t list ->
     unit
 
-  val set_unannotated_global : target:Reference.t -> unannotated_global -> unit
+  val set_unannotated_global : target:Reference.t -> UnannotatedGlobal.t -> unit
 
   val set_define : name:Reference.t -> FunctionDefinition.t -> unit
+
+  val set_module_metadata : qualifier:Reference.t -> Module.t -> unit
 
   val read_only : ast_environment:AstEnvironment.ReadOnly.t -> ReadOnly.t
 end = struct
@@ -207,7 +398,7 @@ end = struct
       (ClassValue)
 
   module UnannotatedGlobalValue = struct
-    type t = unannotated_global
+    type t = UnannotatedGlobal.t
 
     let prefix = Prefix.make ()
 
@@ -215,7 +406,7 @@ end = struct
 
     let unmarshall value = Marshal.from_string value 0
 
-    let compare = compare_unannotated_global
+    let compare = UnannotatedGlobal.compare
   end
 
   module UnannotatedGlobals =
@@ -242,36 +433,59 @@ end = struct
       (DependencyKey)
       (FunctionDefinitionValue)
 
+  module ModuleMetadataValue = struct
+    type t = Module.t
+
+    let prefix = Prefix.make ()
+
+    let description = "Module"
+
+    let unmarshall value = Marshal.from_string value 0
+
+    let compare = Module.compare
+  end
+
+  module ModuleMetadata =
+    DependencyTrackedMemory.DependencyTrackedTableWithCache
+      (SharedMemoryKeys.ReferenceKey)
+      (SharedMemoryKeys.DependencyKey)
+      (ModuleMetadataValue)
+
   let set_unannotated_global ~target = UnannotatedGlobals.add target
 
   let set_class_definition ~name ~definition = ClassDefinitions.write_through name definition
 
   let set_define ~name definitions = FunctionDefinitions.write_through name definitions
 
+  let set_module_metadata ~qualifier = ModuleMetadata.add qualifier
+
   let add_to_transaction
       transaction
       ~previous_classes_list
       ~previous_unannotated_globals_list
       ~previous_defines_list
+      ~previous_modules_list
     =
     let class_keys = ClassDefinitions.KeySet.of_list previous_classes_list in
     let unannotated_globals_keys =
       UnannotatedGlobals.KeySet.of_list previous_unannotated_globals_list
     in
     let defines_keys = FunctionDefinitions.KeySet.of_list previous_defines_list in
+    let module_keys = ModuleMetadata.KeySet.of_list previous_modules_list in
     ClassDefinitions.add_to_transaction ~keys:class_keys transaction
     |> UnannotatedGlobals.add_to_transaction ~keys:unannotated_globals_keys
     |> FunctionDefinitions.add_to_transaction ~keys:defines_keys
+    |> ModuleMetadata.add_to_transaction ~keys:module_keys
 
 
   let get_all_dependents ~class_additions ~unannotated_global_additions ~define_additions =
     let function_and_class_dependents =
-      DependencyKey.KeySet.union
+      DependencyKey.RegisteredSet.union
         (ClassDefinitions.KeySet.of_list class_additions |> ClassDefinitions.get_all_dependents)
         ( FunctionDefinitions.KeySet.of_list define_additions
         |> FunctionDefinitions.get_all_dependents )
     in
-    DependencyKey.KeySet.union
+    DependencyKey.RegisteredSet.union
       function_and_class_dependents
       ( UnannotatedGlobals.KeySet.of_list unannotated_global_additions
       |> UnannotatedGlobals.get_all_dependents )
@@ -281,11 +495,13 @@ end = struct
       ~previous_classes_list
       ~previous_unannotated_globals_list
       ~previous_defines_list
+      ~previous_modules_list
     =
     ClassDefinitions.KeySet.of_list previous_classes_list |> ClassDefinitions.remove_batch;
     UnannotatedGlobals.KeySet.of_list previous_unannotated_globals_list
     |> UnannotatedGlobals.remove_batch;
-    FunctionDefinitions.KeySet.of_list previous_defines_list |> FunctionDefinitions.remove_batch
+    FunctionDefinitions.KeySet.of_list previous_defines_list |> FunctionDefinitions.remove_batch;
+    ModuleMetadata.KeySet.of_list previous_modules_list |> ModuleMetadata.remove_batch
 
 
   let read_only ~ast_environment =
@@ -315,19 +531,28 @@ end = struct
       |> extend_map
            ~new_map:(UnannotatedGlobals.compute_hashes_to_keys ~keys:(all_unannotated_globals ()))
       |> extend_map ~new_map:(FunctionDefinitions.compute_hashes_to_keys ~keys:(all_defines ()))
+      |> extend_map
+           ~new_map:
+             (ModuleMetadata.compute_hashes_to_keys
+                ~keys:(AstEnvironment.ReadOnly.all_explicit_modules ast_environment))
     in
     let serialize_decoded = function
       | ClassDefinitions.Decoded (key, value) ->
           let value = value >>| Node.value >>| ClassSummary.show in
           Some (ClassValue.description, key, value)
       | UnannotatedGlobals.Decoded (key, value) ->
-          let value = value >>| show_unannotated_global in
+          let value =
+            value >>| fun value -> Format.asprintf "%a" Sexp.pp (UnannotatedGlobal.sexp_of_t value)
+          in
           Some (UnannotatedGlobalValue.description, Reference.show key, value)
       | FunctionDefinitions.Decoded (key, value) ->
           let value =
             value >>| fun value -> Sexp.to_string_hum [%message (value : FunctionDefinition.t)]
           in
           Some (FunctionDefinitionValue.description, Reference.show key, value)
+      | ModuleMetadata.Decoded (key, value) ->
+          let value = value >>| Module.show in
+          Some (ModuleMetadataValue.description, Reference.show key, value)
       | _ -> None
     in
     let decoded_equal first second =
@@ -335,10 +560,12 @@ end = struct
       | ClassDefinitions.Decoded (_, first), ClassDefinitions.Decoded (_, second) ->
           Some (Option.equal (Node.equal ClassSummary.equal) first second)
       | UnannotatedGlobals.Decoded (_, first), UnannotatedGlobals.Decoded (_, second) ->
-          Some (Option.equal equal_unannotated_global first second)
+          Some (Option.equal [%compare.equal: UnannotatedGlobal.t] first second)
       | FunctionDefinitions.Decoded (_, first), FunctionDefinitions.Decoded (_, second) ->
           let node_equal left right = Int.equal 0 (FunctionDefinitionValue.compare left right) in
           Some (Option.equal node_equal first second)
+      | ModuleMetadata.Decoded (_, first), ModuleMetadata.Decoded (_, second) ->
+          Some (Option.equal Module.equal first second)
       | _ -> None
     in
     let get_define = FunctionDefinitions.get in
@@ -346,6 +573,33 @@ end = struct
       FunctionDefinitions.get ?dependency key >>= fun { FunctionDefinition.body; _ } -> body
     in
     let all_defines_in_module qualifier = KeyTracker.get_define_body_keys [qualifier] in
+    let get_module_metadata ?dependency qualifier =
+      let qualifier =
+        match Reference.as_list qualifier with
+        | ["future"; "builtins"]
+        | ["builtins"] ->
+            Reference.empty
+        | _ -> qualifier
+      in
+      match ModuleMetadata.get ?dependency qualifier with
+      | Some _ as result -> result
+      | None -> (
+          match AstEnvironment.ReadOnly.is_module_tracked ast_environment qualifier with
+          | true -> Some (Module.create_implicit ())
+          | false -> None )
+    in
+    let module_exists ?dependency qualifier =
+      let qualifier =
+        match Reference.as_list qualifier with
+        | ["future"; "builtins"]
+        | ["builtins"] ->
+            Reference.empty
+        | _ -> qualifier
+      in
+      match ModuleMetadata.mem ?dependency qualifier with
+      | true -> true
+      | false -> AstEnvironment.ReadOnly.is_module_tracked ast_environment qualifier
+    in
     {
       ast_environment;
       ReadOnly.get_class_definition = ClassDefinitions.get;
@@ -358,6 +612,8 @@ end = struct
       get_define_body;
       all_defines_in_module;
       all_unannotated_globals;
+      get_module_metadata;
+      module_exists;
       hash_to_key_map;
       serialize_decoded;
       decoded_equal;
@@ -380,6 +636,7 @@ let missing_builtin_classes, missing_typing_classes, missing_typing_extensions_c
       bases = List.map bases ~f:create_base @ List.map metaclasses ~f:create_metaclass;
       body;
       decorators = [];
+      top_level_unbound_names = [];
     }
     |> Node.create_with_default_location
   in
@@ -442,6 +699,7 @@ let missing_builtin_classes, missing_typing_classes, missing_typing_extensions_c
             nesting_define = None;
           };
         captures = [];
+        unbound_names = [];
         body = [];
       }
   in
@@ -485,11 +743,40 @@ let missing_builtin_classes, missing_typing_classes, missing_typing_extensions_c
     ]
     |> List.map ~f:Node.create_with_default_location
   in
+  let generic_meta_body =
+    [
+      Statement.Define
+        {
+          signature =
+            {
+              name =
+                Reference.create "typing.GenericMeta.__getitem__"
+                |> Node.create_with_default_location;
+              parameters =
+                [
+                  { Parameter.name = "cls"; value = None; annotation = None }
+                  |> Node.create_with_default_location;
+                  { Parameter.name = "arg"; value = None; annotation = None }
+                  |> Node.create_with_default_location;
+                ];
+              decorators = [];
+              return_annotation = None;
+              async = false;
+              generator = false;
+              parent = Some (Reference.create "typing.GenericMeta");
+              nesting_define = None;
+            };
+          captures = [];
+          unbound_names = [];
+          body = [];
+        }
+      |> Node.create_with_default_location;
+    ]
+  in
 
   let typing_classes =
     [
       make "typing.Optional" ~bases:single_unary_generic;
-      make "typing.Undeclared";
       make "typing.NoReturn";
       make "typing.Annotated" ~bases:catch_all_generic;
       make "typing.Protocol" ~bases:catch_all_generic;
@@ -501,6 +788,7 @@ let missing_builtin_classes, missing_typing_classes, missing_typing_extensions_c
       make ~metaclasses:[Primitive "typing.GenericMeta"] "typing.Generic";
       make "typing.ClassMethod" ~bases:single_unary_generic ~body:classmethod_body;
       make "typing.StaticMethod" ~bases:single_unary_generic ~body:staticmethod_body;
+      make "typing.GenericMeta" ~bases:[Primitive "type"] ~body:generic_meta_body;
     ]
   in
   let typing_extension_classes =
@@ -569,42 +857,11 @@ let register_class_definitions ({ Source.source_path = { SourcePath.qualifier; _
             Type.expression (Type.parametric "typing.Generic" [Single (Type.variable "typing._T")])
           in
           { definition with Class.bases = [{ name = None; value }] }
-      | "typing.GenericMeta" ->
-          let body =
-            [
-              Statement.Define
-                {
-                  signature =
-                    {
-                      name =
-                        Reference.create "typing.GenericMeta.__getitem__"
-                        |> Node.create_with_default_location;
-                      parameters =
-                        [
-                          { Parameter.name = "cls"; value = None; annotation = None }
-                          |> Node.create_with_default_location;
-                          { Parameter.name = "arg"; value = None; annotation = None }
-                          |> Node.create_with_default_location;
-                        ];
-                      decorators = [];
-                      return_annotation = None;
-                      async = false;
-                      generator = false;
-                      parent = Some (Reference.create "typing.GenericMeta");
-                      nesting_define = None;
-                    };
-                  captures = [];
-                  body = [];
-                }
-              |> Node.create_with_default_location;
-            ]
-          in
-          { definition with body }
       | _ -> definition
     in
     WriteOnly.set_class_definition
       ~name:primitive
-      ~definition:{ Node.location; value = ClassSummary.create definition };
+      ~definition:{ Node.location; value = ClassSummary.create ~qualifier definition };
     Set.add new_annotations primitive
   in
   List.fold classes ~init:Type.Primitive.Set.empty ~f:register
@@ -614,99 +871,32 @@ let register_class_definitions ({ Source.source_path = { SourcePath.qualifier; _
 
 let missing_builtin_globals =
   let assign name annotation =
-    ( Reference.create name,
-      SimpleAssign
-        {
-          explicit_annotation = Some (Type.expression annotation);
-          target_location = Location.any;
-          value = Node.create_with_default_location Expression.Ellipsis;
-        } )
+    {
+      UnannotatedGlobal.Collector.Result.name;
+      unannotated_global =
+        UnannotatedGlobal.SimpleAssign
+          {
+            explicit_annotation = Some (Type.expression annotation);
+            target_location = Location.WithModule.any;
+            value = Node.create_with_default_location Expression.Ellipsis;
+          };
+    }
   in
   [assign "None" Type.none; assign "..." Type.Any; assign "__debug__" Type.bool]
 
 
-let collect_unannotated_globals { Source.statements; source_path = { SourcePath.qualifier; _ }; _ } =
-  let rec visit_statement ~qualifier globals { Node.value; location } =
-    let qualified_name target =
-      let target = name_to_reference_exn target |> Reference.sanitize_qualified in
-      Option.some_if (Reference.length target = 1) (Reference.combine qualifier target)
-    in
-    match value with
-    | Statement.Assign
-        {
-          Assign.target = { Node.value = Name target; location = target_location };
-          annotation;
-          value;
-          _;
-        }
-      when is_simple_name target ->
-        qualified_name target
-        >>| (fun qualified ->
-              (qualified, SimpleAssign { explicit_annotation = annotation; value; target_location })
-              :: globals)
-        |> Option.value ~default:globals
-    | Statement.Assign { Assign.target = { Node.value = Tuple elements; _ }; value; _ } ->
-        let valid =
-          let total_length = List.length elements in
-          let is_simple_name index = function
-            | { Node.value = Expression.Name name; location = target_location }
-              when is_simple_name name ->
-                qualified_name name
-                >>| fun name -> name, TupleAssign { value; target_location; index; total_length }
-            | _ -> None
-          in
-          List.mapi elements ~f:is_simple_name
-        in
-        (Option.all valid |> Option.value ~default:[]) @ globals
-    | Import { Import.from = Some _; imports = [{ Import.name = { Node.value = name; _ }; _ }] }
-      when String.equal (Reference.show name) "*" ->
-        (* Don't register x.* as a global when a user writes `from x import *`. *)
-        globals
-    | Import { Import.from; imports } ->
-        let from =
-          match from >>| Node.value >>| Reference.show with
-          | None
-          | Some "future.builtins"
-          | Some "builtins" ->
-              Reference.empty
-          | Some from -> Reference.create from
-        in
-        let import_to_global { Import.name = { Node.value = name; _ }; alias } =
-          let qualified_name =
-            match alias with
-            | None -> Reference.combine qualifier name
-            | Some { Node.value = alias; _ } -> Reference.combine qualifier alias
-          in
-          let original_name = Reference.combine from name in
-          qualified_name, Imported original_name
-        in
-        List.rev_append (List.map ~f:import_to_global imports) globals
-    | Define { Define.signature = { Define.Signature.name; _ } as signature; _ } ->
-        (Node.value name, Define [Node.create signature ~location]) :: globals
-    | If { If.body; orelse; _ } ->
-        (* TODO(T28732125): Properly take an intersection here. *)
-        List.fold ~init:globals ~f:(visit_statement ~qualifier) (body @ orelse)
-    | Try { Try.body; handlers; orelse; finally } ->
-        let globals = List.fold ~init:globals ~f:(visit_statement ~qualifier) body in
-        let globals =
-          let handlers_statements =
-            List.concat_map handlers ~f:(fun { Try.Handler.body; _ } -> body)
-          in
-          List.fold ~init:globals ~f:(visit_statement ~qualifier) handlers_statements
-        in
-        let globals = List.fold ~init:globals ~f:(visit_statement ~qualifier) orelse in
-        List.fold ~init:globals ~f:(visit_statement ~qualifier) finally
-    | _ -> globals
-  in
-  let write (target, o) =
-    WriteOnly.set_unannotated_global ~target o;
+let collect_unannotated_globals ({ Source.source_path = { SourcePath.qualifier; _ }; _ } as source) =
+  let write { UnannotatedGlobal.Collector.Result.name; unannotated_global } =
+    let target = Reference.create name |> Reference.combine qualifier in
+    WriteOnly.set_unannotated_global ~target unannotated_global;
     target
   in
   let merge_defines unannotated_globals_alist =
     let not_defines, defines =
       List.partition_map unannotated_globals_alist ~f:(function
-          | name, Define defines -> `Snd (name, defines)
-          | x -> `Fst x)
+          | { UnannotatedGlobal.Collector.Result.name; unannotated_global = Define defines } ->
+              Either.Second (name, defines)
+          | x -> Either.First x)
     in
     let add_to_map sofar (name, defines) =
       let merge_with_existing to_merge = function
@@ -715,14 +905,23 @@ let collect_unannotated_globals { Source.statements; source_path = { SourcePath.
       in
       Map.change sofar name ~f:(merge_with_existing defines)
     in
-    List.fold defines ~f:add_to_map ~init:Reference.Map.empty
-    |> Reference.Map.map ~f:(fun x -> Define x)
-    |> Reference.Map.to_alist
-    |> List.append not_defines
+    List.fold defines ~f:add_to_map ~init:Identifier.Map.empty
+    |> Identifier.Map.to_alist
+    |> List.map ~f:(fun (name, defines) ->
+           {
+             UnannotatedGlobal.Collector.Result.name;
+             unannotated_global = Define (List.rev defines);
+           })
+    |> fun defines -> List.append defines not_defines
   in
-  let globals =
-    List.fold ~init:[] ~f:(visit_statement ~qualifier) statements |> merge_defines |> List.rev
+  let drop_classes unannotated_globals =
+    let is_not_class = function
+      | { UnannotatedGlobal.Collector.Result.unannotated_global = Class; _ } -> false
+      | _ -> true
+    in
+    List.filter unannotated_globals ~f:is_not_class
   in
+  let globals = UnannotatedGlobal.Collector.from_source source |> merge_defines |> drop_classes in
   let globals =
     match Reference.as_list qualifier with
     | [] -> globals @ missing_builtin_globals
@@ -751,7 +950,7 @@ module UpdateResult = struct
     previous_unannotated_globals: Reference.Set.t;
     previous_defines: Reference.Set.t;
     define_additions: Reference.Set.t;
-    triggered_dependencies: DependencyKey.KeySet.t;
+    triggered_dependencies: DependencyKey.RegisteredSet.t;
     upstream: AstEnvironment.UpdateResult.t;
     read_only: ReadOnly.t;
   }
@@ -778,20 +977,31 @@ module UpdateResult = struct
 
   let unannotated_global_environment_update_result = Fn.id
 
+  let ast_environment_update_result = upstream
+
   let read_only { read_only; _ } = read_only
 end
 
-let update_this_and_all_preceding_environments
-    ast_environment
-    ~scheduler
-    ~configuration
-    ~ast_environment_update_result:upstream
-    modified_qualifiers
+type t = { ast_environment: AstEnvironment.t }
+
+let create ast_environment = { ast_environment }
+
+let ast_environment { ast_environment } = ast_environment
+
+let read_only { ast_environment } =
+  let ast_environment = AstEnvironment.read_only ast_environment in
+  WriteOnly.read_only ~ast_environment
+
+
+let update_this_and_all_preceding_environments { ast_environment } ~scheduler ~configuration trigger
   =
+  let upstream = AstEnvironment.update ~configuration ~scheduler ast_environment trigger in
+  let ast_environment = AstEnvironment.read_only ast_environment in
   let map sources =
     let register qualifier =
-      AstEnvironment.ReadOnly.get_source ast_environment qualifier
+      AstEnvironment.ReadOnly.get_processed_source ~track_dependency:true ast_environment qualifier
       >>| (fun source ->
+            WriteOnly.set_module_metadata ~qualifier (Module.create source);
             register_class_definitions source;
             collect_unannotated_globals source;
             collect_defines source)
@@ -799,7 +1009,7 @@ let update_this_and_all_preceding_environments
     in
     List.iter sources ~f:register
   in
-  let modified_qualifiers = Set.to_list modified_qualifiers in
+  let modified_qualifiers = AstEnvironment.UpdateResult.invalidated_modules upstream in
   let update () =
     Scheduler.iter
       scheduler
@@ -809,7 +1019,6 @@ let update_this_and_all_preceding_environments
            ~minimum_chunk_size:100
            ~preferred_chunks_per_worker:5
            ())
-      ~configuration
       ~f:map
       ~inputs:modified_qualifiers
   in
@@ -837,6 +1046,7 @@ let update_this_and_all_preceding_environments
                    ~previous_classes_list
                    ~previous_unannotated_globals_list
                    ~previous_defines_list
+                   ~previous_modules_list:modified_qualifiers
               |> DependencyKey.Transaction.execute ~update
             in
             let current_classes =
@@ -860,11 +1070,11 @@ let update_this_and_all_preceding_environments
                 ~define_additions:(Set.to_list define_additions)
             in
             let triggered_dependencies =
-              DependencyKey.KeySet.union addition_triggers mutation_triggers
+              DependencyKey.RegisteredSet.union addition_triggers mutation_triggers
             in
             let tags () =
               let triggered_dependencies_size =
-                SharedMemoryKeys.DependencyKey.KeySet.cardinal triggered_dependencies
+                SharedMemoryKeys.DependencyKey.RegisteredSet.cardinal triggered_dependencies
                 |> Format.sprintf "%d"
               in
               [
@@ -892,9 +1102,10 @@ let update_this_and_all_preceding_environments
             WriteOnly.direct_data_purge
               ~previous_classes_list
               ~previous_unannotated_globals_list
-              ~previous_defines_list;
+              ~previous_defines_list
+              ~previous_modules_list:modified_qualifiers;
             update ();
-            DependencyKey.KeySet.empty)
+            DependencyKey.RegisteredSet.empty)
       in
       {
         previous_classes;

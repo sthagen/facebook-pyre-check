@@ -26,7 +26,6 @@ module Metadata : sig
     unused_local_modes: local_mode Node.t list;
     ignore_codes: int list;
     ignore_lines: Ignore.t list;
-    version: int;
     number_of_lines: int;
     raw_hash: int;
   }
@@ -40,7 +39,6 @@ module Metadata : sig
     ?unused_local_modes:local_mode Node.t list ->
     ?ignore_codes:int list ->
     ?ignore_lines:Ignore.t list ->
-    ?version:int ->
     ?raw_hash:int ->
     ?number_of_lines:int ->
     unit ->
@@ -52,6 +50,7 @@ end
 type t = {
   metadata: Metadata.t;
   source_path: SourcePath.t;
+  top_level_unbound_names: Statement.Define.NameAccess.t list;
   statements: Statement.t list;
 }
 [@@deriving compare, eq, hash, show, sexp]
@@ -81,7 +80,3 @@ val statements : t -> Statement.t list
 val top_level_define : t -> Statement.Define.t
 
 val top_level_define_node : t -> Statement.Define.t Node.t
-
-val wildcard_exports_of : t -> Reference.t list
-
-val expand_relative_import : from:Reference.t Node.t -> t -> Reference.t Node.t

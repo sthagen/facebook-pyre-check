@@ -17,6 +17,7 @@ type missing_annotation = {
 
 type class_kind =
   | Class
+  | Enumeration
   | Protocol of Reference.t
   | Abstract of Reference.t
 [@@deriving compare, eq, sexp, show, hash]
@@ -67,6 +68,10 @@ and typed_dictionary_initialization_mismatch =
       expected_type: Type.t;
       actual_type: Type.t;
     }
+  | UndefinedField of {
+      field_name: Identifier.t;
+      class_name: Identifier.t;
+    }
 
 and incompatible_type = {
   name: Reference.t;
@@ -77,6 +82,7 @@ and invalid_argument =
   | Keyword of {
       expression: Expression.t option;
       annotation: Type.t;
+      require_string_keys: bool;
     }
   | ConcreteVariable of {
       expression: Expression.t option;
@@ -84,7 +90,7 @@ and invalid_argument =
     }
   | ListVariadicVariable of {
       variable: Type.OrderedTypes.t;
-      mismatch: AttributeResolution.mismatch_with_list_variadic_type_variable;
+      mismatch: SignatureSelectionTypes.mismatch_with_list_variadic_type_variable;
     }
 
 and precondition_mismatch =
@@ -156,6 +162,13 @@ and unawaited_awaitable = {
   expression: Expression.t;
 }
 
+and undefined_import =
+  | UndefinedModule of Reference.t
+  | UndefinedName of {
+      from: Reference.t;
+      name: Identifier.t;
+    }
+
 and incompatible_overload_kind =
   | ReturnType of {
       implementation_annotation: Type.t;
@@ -171,28 +184,53 @@ and incompatible_overload_kind =
       name: Reference.t;
       location: Location.t;
     }
+  | DifferingDecorators
+  | MisplacedOverloadDecorator
+
+and incompatible_parameter_kind =
+  | Operand of {
+      operator_name: Identifier.t;
+      left_operand: Type.t;
+      right_operand: Type.t;
+    }
+  | Argument of {
+      name: Identifier.t option;
+      position: int;
+      callee: Reference.t option;
+      mismatch: mismatch;
+    }
 [@@deriving compare, eq, sexp, show, hash]
 
-type kind =
+type invalid_decoration_reason =
+  | CouldNotResolve
+  | CouldNotResolveArgument of Expression.t
+  | NonCallableDecoratorFactory of Type.t
+  | NonCallableDecorator of Type.t
+  | DecoratorFactoryFailedToApply of kind option
+  | ApplicationFailed of kind option
+
+and invalid_decoration = {
+  decorator: Statement.Decorator.t;
+  reason: invalid_decoration_reason;
+}
+
+and kind =
   | AnalysisFailure of Type.t
+  | ParserFailure of string
   | IllegalAnnotationTarget of Expression.t
   | ImpossibleAssertion of {
       expression: Expression.t;
       annotation: Type.t;
       test: Expression.t;
     }
+  | IncompatibleAsyncGeneratorReturnType of Type.t
   | IncompatibleAttributeType of {
       parent: Type.t;
       incompatible_type: incompatible_type;
     }
   | IncompatibleAwaitableType of Type.t
   | IncompatibleConstructorAnnotation of Type.t
-  | IncompatibleParameterType of {
-      name: Identifier.t option;
-      position: int;
-      callee: Reference.t option;
-      mismatch: mismatch;
-    }
+  | IncompatibleParameterType of incompatible_parameter_kind
   | IncompatibleReturnType of {
       mismatch: mismatch;
       is_implicit: bool;
@@ -217,6 +255,7 @@ type kind =
     }
   | InvalidArgument of invalid_argument
   | InvalidClassInstantiation of invalid_class_instantiation
+  | InvalidDecoration of invalid_decoration
   | InvalidException of {
       expression: Expression.t;
       annotation: Type.t;
@@ -243,7 +282,7 @@ type kind =
   | InvalidAssignment of invalid_assignment_kind
   | MissingArgument of {
       callee: Reference.t option;
-      parameter: AttributeResolution.missing_argument;
+      parameter: SignatureSelectionTypes.missing_argument;
     }
   | MissingAttributeAnnotation of {
       parent: Type.t;
@@ -273,6 +312,7 @@ type kind =
   | RevealedType of {
       expression: Expression.t;
       annotation: Annotation.t;
+      qualify: bool;
     }
   | UnsafeCast of {
       expression: Expression.t;
@@ -289,12 +329,12 @@ type kind =
       typed_dictionary_name: Identifier.t;
       missing_key: string;
     }
+  | UnboundName of Identifier.t
   | UndefinedAttribute of {
       attribute: Identifier.t;
       origin: origin;
     }
-  | UndefinedImport of Reference.t
-  | UndefinedName of Reference.t
+  | UndefinedImport of undefined_import
   | UndefinedType of Type.t
   | UnexpectedKeyword of {
       name: Identifier.t;
@@ -362,5 +402,3 @@ val create_mismatch
   expected:Type.t ->
   covariant:bool ->
   mismatch
-
-val language_server_hint : kind -> bool

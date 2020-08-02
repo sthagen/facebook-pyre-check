@@ -13,10 +13,17 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from .ast import verify_stable_ast
+from . import UserError, ast
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
+MAX_LINES_PER_FIXME: int = 4
+
+
+class PartialErrorSuppression(Exception):
+    def __init__(self, message: str, unsuppressed_paths: List[str]) -> None:
+        super().__init__(message)
+        self.unsuppressed_paths: List[str] = unsuppressed_paths
 
 
 def error_path(error: Dict[str, Any]) -> str:
@@ -24,10 +31,41 @@ def error_path(error: Dict[str, Any]) -> str:
 
 
 class Errors:
+    @classmethod
+    def empty(cls) -> "Errors":
+        return cls([])
+
+    @staticmethod
+    def from_json(
+        json_string: str,
+        only_fix_error_code: Optional[int] = None,
+        from_stdin: bool = False,
+    ) -> "Errors":
+        try:
+            errors = json.loads(json_string)
+            return Errors(_filter_errors(errors, only_fix_error_code))
+        except json.decoder.JSONDecodeError:
+            if from_stdin:
+                raise UserError(
+                    "Received invalid JSON as input. "
+                    "If piping from `pyre check` be sure to use `--output=json`."
+                )
+            else:
+                raise UserError(
+                    f"Encountered invalid output when checking for pyre errors: `{json_string}`."
+                )
+
+    @staticmethod
+    def from_stdin(only_fix_error_code: Optional[int] = None) -> "Errors":
+        input = sys.stdin.read()
+        return Errors.from_json(input, only_fix_error_code, from_stdin=True)
+
     def __init__(self, errors: List[Dict[str, Any]]) -> None:
         self.errors: List[Dict[str, Any]] = errors
         self.error_iterator: Iterator[
             Tuple[str, Iterator[Dict[str, Any]]]
+            # pyre-fixme[6]: Expected `(_T) -> _SupportsLessThan` for 2nd param but got
+            #  `(error: Dict[str, typing.Any]) -> str`.
         ] = itertools.groupby(sorted(errors, key=error_path), error_path)
         self.length: int = len(errors)
 
@@ -43,9 +81,42 @@ class Errors:
     def __eq__(self, other: "Errors") -> bool:
         return self.errors == other.errors
 
-    @classmethod
-    def empty(cls) -> "Errors":
-        return cls([])
+    def suppress(
+        self,
+        comment: Optional[str] = None,
+        max_line_length: Optional[int] = None,
+        truncate: bool = False,
+        unsafe: bool = False,
+    ) -> None:
+        unsuppressed_paths = []
+
+        for path_to_suppress, errors in self:
+            LOG.info("Processing `%s`", path_to_suppress)
+            try:
+                path = Path(path_to_suppress)
+                input = path.read_text()
+                output = _suppress_errors(
+                    input,
+                    _build_error_map(errors),
+                    comment,
+                    max_line_length
+                    if max_line_length and max_line_length > 0
+                    else None,
+                    truncate,
+                    unsafe,
+                )
+                path.write_text(output)
+            except SkippingGeneratedFileException:
+                LOG.warning(f"Skipping generated file at {path_to_suppress}")
+            except ast.UnstableAST:
+                unsuppressed_paths.append(path_to_suppress)
+
+        if unsuppressed_paths:
+            paths_string = ", ".join(unsuppressed_paths)
+            raise PartialErrorSuppression(
+                f"Could not fully suppress errors in: {paths_string}",
+                unsuppressed_paths,
+            )
 
 
 def _filter_errors(
@@ -54,31 +125,6 @@ def _filter_errors(
     if only_fix_error_code is not None:
         errors = [error for error in errors if error["code"] == only_fix_error_code]
     return errors
-
-
-def json_to_errors(
-    json_string: Optional[str], only_fix_error_code: Optional[int] = None
-) -> Errors:
-    if json_string:
-        try:
-            errors = json.loads(json_string)
-            return Errors(_filter_errors(errors, only_fix_error_code))
-        except json.decoder.JSONDecodeError:
-            LOG.error(
-                "Received invalid JSON as input. "
-                "If piping from `pyre check` be sure to use `--output=json`."
-            )
-    else:
-        LOG.error(
-            "Received no input. "
-            "If piping from `pyre check` be sure to use `--output=json`."
-        )
-    return Errors.empty()
-
-
-def errors_from_stdin(only_fix_error_code: Optional[int] = None) -> Errors:
-    input = sys.stdin.read()
-    return json_to_errors(input)
 
 
 def errors_from_targets(
@@ -96,7 +142,7 @@ def errors_from_targets(
     errors = Errors.empty()
     if buck_test.returncode == 0:
         # Successful run with no type errors
-        LOG.info("No errors in %s/TARGETS...", path)
+        LOG.info("No errors in %s...", path)
     elif buck_test.returncode == 32:
         buck_test_output = buck_test.stdout.decode().split("\n")
         pyre_error_pattern = re.compile(r"\W*(.*\.pyi?):(\d*):(\d*) (.* \[(\d*)\]: .*)")
@@ -197,30 +243,22 @@ def _split_across_lines(
     return result
 
 
-@verify_stable_ast
-def _fix_file(
-    filename: str,
+class SkippingGeneratedFileException(Exception):
+    pass
+
+
+def _suppress_errors(
+    input: str,
     errors: Dict[int, List[Dict[str, str]]],
     custom_comment: Optional[str] = None,
     max_line_length: Optional[int] = None,
     truncate: bool = False,
-) -> None:
-    _fix_file_unsafe(filename, errors, custom_comment, max_line_length, truncate)
+    unsafe: bool = False,
+) -> str:
+    if "@" "generated" in input:
+        raise SkippingGeneratedFileException()
 
-
-def _fix_file_unsafe(
-    filename: str,
-    errors: Dict[int, List[Dict[str, str]]],
-    custom_comment: Optional[str] = None,
-    max_line_length: Optional[int] = None,
-    truncate: bool = False,
-) -> None:
-    path = Path(filename)
-    text = path.read_text()
-    if "@" "generated" in text:
-        LOG.warning("Attempting to upgrade generated file %s, skipping.", filename)
-        return
-    lines = text.split("\n")  # type: List[str]
+    lines = input.split("\n")  # type: List[str]
 
     # Replace lines in file.
     new_lines = []
@@ -238,18 +276,21 @@ def _fix_file_unsafe(
         if number not in errors:
             new_lines.append(line)
             continue
-        if errors[number][0]["code"] == "0":
+
+        if any(error["code"] == "0" for error in errors[number]):
             # Handle unused ignores.
-            removing_pyre_comments = True
             replacement = re.sub(r"# pyre-(ignore|fixme).*$", "", line).rstrip()
             if replacement == "":
+                removing_pyre_comments = True
                 _remove_comment_preamble(new_lines)
+                continue
             else:
-                new_lines.append(replacement)
-            continue
+                line = replacement
 
         comments = []
         for error in errors[number]:
+            if error["code"] == "0":
+                continue
             indent = len(line) - len(line.lstrip(" "))
             description = custom_comment if custom_comment else error["description"]
             comment = "{}# pyre-fixme[{}]: {}".format(
@@ -259,12 +300,14 @@ def _fix_file_unsafe(
             if not max_line_length or len(comment) <= max_line_length:
                 comments.append(comment)
             else:
-                if truncate:
-                    comments.append(comment[: (max_line_length - 3)] + "...")
+                truncated_comment = comment[: (max_line_length - 3)] + "..."
+                split_comment_lines = _split_across_lines(
+                    comment, indent, max_line_length
+                )
+                if truncate or len(split_comment_lines) > MAX_LINES_PER_FIXME:
+                    comments.append(truncated_comment)
                 else:
-                    comments.extend(
-                        _split_across_lines(comment, indent, max_line_length)
-                    )
+                    comments.extend(split_comment_lines)
 
         LOG.info(
             "Adding comment%s on line %d: %s",
@@ -274,8 +317,10 @@ def _fix_file_unsafe(
         )
         new_lines.extend(comments)
         new_lines.append(line)
-    new_text = "\n".join(new_lines)
-    path.write_text(new_text)
+    output = "\n".join(new_lines)
+    if not unsafe:
+        ast.check_stable(input, output)
+    return output
 
 
 def _build_error_map(
@@ -293,30 +338,3 @@ def _build_error_map(
                 {"code": match.group(1), "description": match.group(2)}
             )
     return error_map
-
-
-def fix(
-    errors: Errors,
-    comment: str = "",
-    max_line_length: int = 0,
-    truncate: bool = False,
-    unsafe: bool = False,
-) -> None:
-    for path, errors in errors:
-        LOG.info("Processing `%s`", path)
-        if unsafe:
-            _fix_file_unsafe(
-                path,
-                _build_error_map(errors),
-                comment,
-                max_line_length if max_line_length > 0 else None,
-                truncate,
-            )
-        else:
-            _fix_file(
-                path,
-                _build_error_map(errors),
-                comment,
-                max_line_length if max_line_length > 0 else None,
-                truncate,
-            )

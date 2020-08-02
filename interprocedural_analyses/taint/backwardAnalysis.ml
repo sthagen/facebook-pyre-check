@@ -439,8 +439,8 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
       | _ -> analyze_expression ~resolution ~taint ~state ~expression
 
 
-    and analyze_call ~resolution location ~taint ~state callee arguments =
-      let analyze_regular_call ~taint state callee arguments =
+    and analyze_call ~resolution location ~taint ~state ~callee ~arguments =
+      let analyze_regular_call ~taint state ~callee ~arguments =
         let ({ Call.callee; arguments } as call_expression) =
           Interprocedural.CallResolution.redirect_special_calls
             ~resolution
@@ -454,11 +454,10 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
                 let taint =
                   BackwardState.read state.taint ~root:(Root.Variable identifier) ~path:[]
                 in
-
                 Log.dump
                   "%a: Revealed backward taint for `%s`: %s"
-                  Location.pp
-                  location
+                  Location.WithModule.pp
+                  (Location.with_module location ~qualifier:FunctionContext.qualifier)
                   (Identifier.sanitized identifier)
                   (BackwardState.Tree.show taint);
                 state
@@ -496,7 +495,10 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
         | None, Name (Name.Attribute { base = receiver; attribute; _ }) ->
             let taint =
               (* Specially handle super.__init__ calls in constructors for tito *)
-              if FunctionContext.is_constructor () && attribute = "__init__" && is_super receiver
+              if
+                FunctionContext.is_constructor ()
+                && String.equal attribute "__init__"
+                && is_super receiver
               then
                 BackwardState.Tree.create_leaf Domains.local_return_taint
                 |> BackwardState.Tree.join taint
@@ -517,19 +519,44 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
               state
               taint
               indirect_targets
-        | None, Name (Name.Identifier _name) ->
-            let constructor_targets =
-              Interprocedural.CallResolution.get_constructor_targets ~resolution ~receiver:callee
-            in
-            analyze_constructor_call
-              ~resolution
-              ~call_expression
-              ~location
-              ~callee
-              ~arguments
-              ~state
-              ~taint
-              ~constructor_targets
+        | None, Name (Name.Identifier _name) -> (
+            match Interprocedural.CallResolution.resolve_target ~resolution callee with
+            | (_, implicit) :: _ as targets ->
+                let arguments =
+                  match implicit with
+                  | None -> arguments
+                  | Some _ ->
+                      {
+                        Call.Argument.name = None;
+                        value =
+                          Node.create_with_default_location
+                            (Expression.Name (Name.Identifier "None"));
+                      }
+                      :: arguments
+                in
+                apply_call_targets
+                  ~resolution
+                  ~call_expression:(Expression.Call call_expression)
+                  location
+                  arguments
+                  state
+                  taint
+                  targets
+            | [] ->
+                let constructor_targets =
+                  Interprocedural.CallResolution.get_constructor_targets
+                    ~resolution
+                    ~receiver:callee
+                in
+                analyze_constructor_call
+                  ~resolution
+                  ~call_expression
+                  ~location
+                  ~callee
+                  ~arguments
+                  ~state
+                  ~taint
+                  ~constructor_targets )
         | _ ->
             (* No targets, treat call as obscure *)
             let obscure_taint =
@@ -544,6 +571,74 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
             in
             analyze_expression ~resolution ~taint:obscure_taint ~state ~expression:callee
       in
+      let analyze_lambda_call ~lambda_argument ~non_lambda_arguments =
+        let lambda_index, { Call.Argument.value = lambda_callee; name = lambda_name } =
+          lambda_argument
+        in
+        (* If we have a lambda `fn` getting passed into `hof`, we use the following strategy:
+         * hof(q, fn, x, y) gets translated into (analyzed backwards)
+         * $all = {q, x, y}
+         * $result = fn( *all, **all)
+         * hof(q, $result, x, y)
+         *)
+        (* Simulate hof(q, $result, x, y). *)
+        let result = "$result" in
+        let higher_order_function_arguments =
+          let lambda_argument_with_index =
+            ( lambda_index,
+              {
+                Call.Argument.value =
+                  Node.create_with_default_location (Expression.Name (Name.Identifier result));
+                name = lambda_name;
+              } )
+          in
+          let compare_by_index (left_index, _) (right_index, _) =
+            Int.compare left_index right_index
+          in
+          lambda_argument_with_index :: non_lambda_arguments
+          |> List.sort ~compare:compare_by_index
+          |> List.map ~f:snd
+        in
+        let state =
+          analyze_regular_call ~taint state ~callee ~arguments:higher_order_function_arguments
+        in
+        let result_taint =
+          BackwardState.Tree.join
+            taint
+            (get_taint (Some (AccessPath.create (Root.Variable result) [])) state)
+        in
+
+        (* Simulate $result = fn( all, all). *)
+        let all_argument = Node.create ~location (Expression.Name (Name.Identifier "$all")) in
+        let arguments_with_all_value =
+          List.map non_lambda_arguments ~f:snd
+          |> List.map ~f:(fun argument -> { argument with Call.Argument.value = all_argument })
+        in
+        let state =
+          analyze_regular_call
+            ~taint:result_taint
+            state
+            ~callee:lambda_callee
+            ~arguments:arguments_with_all_value
+        in
+        (* Simulate `$all = {q, x, y}`. *)
+        let all_taint =
+          BackwardState.Tree.join
+            taint
+            (get_taint (Some (AccessPath.create (Root.Variable "$all") [])) state)
+          |> BackwardState.Tree.transform
+               BackwardTaint.simple_feature
+               Abstract.Domain.(Add Features.lambda)
+        in
+        let all_assignee =
+          Node.create
+            ~location
+            (Expression.Set
+               (List.map non_lambda_arguments ~f:(fun (_, argument) -> argument.Call.Argument.value)))
+        in
+        analyze_expression ~resolution ~taint:all_taint ~state ~expression:all_assignee
+      in
+
       match { Call.callee; arguments } with
       | {
        callee =
@@ -551,7 +646,7 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
        arguments = [{ Call.Argument.value = index; _ }; { Call.Argument.value; _ }] as arguments;
       } ->
           (* Ensure we simulate the body of __setitem__ in case the function contains taint. *)
-          let state = analyze_regular_call ~taint state callee arguments in
+          let state = analyze_regular_call ~taint state ~callee ~arguments in
           (* Handle base[index] = value. *)
           analyze_assignment
             ~resolution
@@ -672,7 +767,30 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
                   Expression.Tuple
                     (List.map arguments ~f:(fun argument -> argument.Call.Argument.value));
               }
-      | _ -> analyze_regular_call ~taint state callee arguments
+      | _ -> (
+          let lambda_arguments, reversed_non_lambda_arguments =
+            let is_callable argument =
+              match Resolution.resolve_expression resolution argument.Call.Argument.value with
+              | _, Type.Callable _
+              | _, Type.Parametric { name = "BoundMethod"; _ } ->
+                  true
+              | _ -> false
+            in
+            let classify_argument index (lambdas, non_lambdas) argument =
+              if is_callable argument then
+                (index, argument) :: lambdas, non_lambdas
+              else
+                lambdas, (index, argument) :: non_lambdas
+            in
+
+            List.foldi arguments ~f:classify_argument ~init:([], [])
+          in
+          match lambda_arguments with
+          | [lambda_argument] ->
+              analyze_lambda_call
+                ~lambda_argument
+                ~non_lambda_arguments:(List.rev reversed_non_lambda_arguments)
+          | _ -> analyze_regular_call ~taint state ~callee ~arguments )
 
 
     and analyze_expression
@@ -694,7 +812,7 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
               analyze_expression ~resolution ~taint ~state ~expression:right
               |> fun state -> analyze_expression ~resolution ~taint ~state ~expression:left )
       | Call { callee; arguments } ->
-          analyze_call ~resolution location ~taint ~state callee arguments
+          analyze_call ~resolution location ~taint ~state ~callee ~arguments
       | Complex _ -> state
       | Dictionary { Dictionary.entries; keywords } ->
           let state =
@@ -910,28 +1028,36 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
       | Statement.Assign { value = { Node.value = Expression.Ellipsis; _ }; _ } -> state
       | Statement.Assign { target = { Node.location; value = target_value } as target; value; _ }
         -> (
-          match target_value with
-          | Expression.Name (Name.Attribute { base; attribute; _ }) -> (
-              let property_targets =
-                Interprocedural.CallResolution.resolve_property_targets
-                  ~resolution
-                  ~base
-                  ~attribute
-                  ~setter:true
-              in
-              match property_targets with
-              | Some targets ->
-                  let arguments = [{ Call.Argument.value; name = None }] in
-                  apply_call_targets
+          let target_is_sanitized =
+            match target_value with
+            | Name (Name.Attribute _) -> Model.global_is_sanitized ~resolution ~expression:target
+            | _ -> false
+          in
+          if target_is_sanitized then
+            analyze_expression ~resolution ~taint:BackwardState.Tree.bottom ~state ~expression:value
+          else
+            match target_value with
+            | Expression.Name (Name.Attribute { base; attribute; _ }) -> (
+                let property_targets =
+                  Interprocedural.CallResolution.resolve_property_targets
                     ~resolution
-                    ~call_expression:(Expression.Call { Call.callee = target; arguments })
-                    location
-                    arguments
-                    state
-                    BackwardState.Tree.bottom
-                    targets
-              | None -> analyze_assignment ~resolution ~target ~value state )
-          | _ -> analyze_assignment ~resolution ~target ~value state )
+                    ~base
+                    ~attribute
+                    ~setter:true
+                in
+                match property_targets with
+                | Some targets ->
+                    let arguments = [{ Call.Argument.value; name = None }] in
+                    apply_call_targets
+                      ~resolution
+                      ~call_expression:(Expression.Call { Call.callee = target; arguments })
+                      location
+                      arguments
+                      state
+                      BackwardState.Tree.bottom
+                      targets
+                | None -> analyze_assignment ~resolution ~target ~value state )
+            | _ -> analyze_assignment ~resolution ~target ~value state )
       | Assert _
       | Break
       | Class _

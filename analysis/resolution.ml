@@ -5,6 +5,7 @@
 
 open Core
 open Ast
+open Pyre
 
 type t = {
   global_resolution: GlobalResolution.t;
@@ -162,7 +163,7 @@ let get_local
       RefinementUnit.base result
   | _ when global_fallback ->
       let global = GlobalResolution.global global_resolution in
-      Reference.delocalize reference |> global
+      Reference.delocalize reference |> global >>| fun { annotation; _ } -> annotation
   | _ -> None
 
 
@@ -177,7 +178,9 @@ let get_local_with_attributes
       RefinementUnit.annotation result ~reference:attribute_path
   | _ when global_fallback ->
       let global = GlobalResolution.global global_resolution in
-      Reference.(combine object_reference attribute_path |> delocalize) |> global
+      Reference.(combine object_reference attribute_path |> delocalize)
+      |> global
+      >>| fun { annotation; _ } -> annotation
   | _ -> None
 
 
@@ -304,10 +307,8 @@ let fallback_attribute ~resolution ~name class_name =
                   ~callable
                   ~self_argument:(Some self_argument)
               with
-              | AttributeResolution.Found { selected_return_annotation } ->
-                  selected_return_annotation
-              | AttributeResolution.NotFound _ ->
-                  Type.Callable.Overload.return_annotation implementation
+              | Found { selected_return_annotation } -> selected_return_annotation
+              | NotFound _ -> Type.Callable.Overload.return_annotation implementation
             in
             Some
               (AnnotatedAttribute.create
@@ -315,14 +316,16 @@ let fallback_attribute ~resolution ~name class_name =
                  ~original_annotation:return_annotation
                  ~uninstantiated_annotation:(Some return_annotation)
                  ~abstract:false
-                 ~async:false
+                 ~async_property:false
                  ~class_variable:false
                  ~defined:true
                  ~initialized:NotInitialized
                  ~name
                  ~parent:(Reference.show class_name_reference)
                  ~visibility:ReadWrite
-                 ~property:false)
+                 ~property:false
+                 ~undecorated_signature:None
+                 ~problem:None)
         | _ -> None )
     | _ -> None
   in

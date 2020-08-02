@@ -21,6 +21,29 @@ type initialized =
   | NotInitialized
 [@@deriving eq, show, compare, sexp]
 
+type invalid_decorator_reason =
+  | CouldNotResolve
+  | CouldNotResolveArgument of { argument_index: int }
+  | NonCallableDecoratorFactory of Type.t
+  | NonCallableDecorator of Type.t
+  | FactorySignatureSelectionFailed of {
+      reason: SignatureSelectionTypes.reason option;
+      callable: Type.Callable.t;
+    }
+  | ApplicationFailed of {
+      callable: Type.Callable.t;
+      reason: SignatureSelectionTypes.reason option;
+    }
+[@@deriving eq, show, compare, sexp]
+
+type problem =
+  | DifferingDecorators of { offender: Type.t Type.Callable.overload }
+  | InvalidDecorator of {
+      index: int;
+      reason: invalid_decorator_reason;
+    }
+[@@deriving eq, show, compare, sexp]
+
 type 'a t [@@deriving eq, show, compare, sexp]
 
 type instantiated_annotation
@@ -31,7 +54,7 @@ val create
   :  abstract:bool ->
   annotation:Type.t ->
   original_annotation:Type.t ->
-  async:bool ->
+  async_property:bool ->
   class_variable:bool ->
   defined:bool ->
   initialized:initialized ->
@@ -40,12 +63,14 @@ val create
   visibility:visibility ->
   property:bool ->
   uninstantiated_annotation:Type.t option ->
+  undecorated_signature:Type.Callable.t option ->
+  problem:problem option ->
   instantiated
 
 val create_uninstantiated
   :  abstract:bool ->
   uninstantiated_annotation:'a ->
-  async:bool ->
+  async_property:bool ->
   class_variable:bool ->
   defined:bool ->
   initialized:initialized ->
@@ -53,6 +78,8 @@ val create_uninstantiated
   parent:Type.Primitive.t ->
   visibility:visibility ->
   property:bool ->
+  undecorated_signature:Type.Callable.t option ->
+  problem:problem option ->
   'a t
 
 val annotation : instantiated -> Annotation.t
@@ -61,11 +88,13 @@ val uninstantiated_annotation : 'a t -> 'a
 
 val with_uninstantiated_annotation : uninstantiated_annotation:'a -> 'a t -> 'a t
 
+val with_undecorated_signature : 'a t -> undecorated_signature:Type.Callable.t option -> 'a t
+
 val name : 'a t -> Identifier.t
 
 val abstract : 'a t -> bool
 
-val async : 'a t -> bool
+val async_property : 'a t -> bool
 
 val parent : 'a t -> Type.Primitive.t
 
@@ -84,6 +113,10 @@ val visibility : 'a t -> visibility
 val is_final : 'a t -> bool
 
 val with_initialized : 'a t -> initialized:initialized -> 'a t
+
+val undecorated_signature : 'a t -> Type.Callable.t option
+
+val problem : 'a t -> problem option
 
 val instantiate
   :  'a t ->

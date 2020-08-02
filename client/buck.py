@@ -98,8 +98,7 @@ class FastBuckBuilder(BuckBuilder):
             # Java's logging conflicts with Python's logging, we capture the
             # logs and re-log them with python's logger.
             log_processor = threading.Thread(
-                target=self._read_stderr,
-                args=(buck_builder_process.stderr, logging.DEBUG),
+                target=self._read_stderr, args=(buck_builder_process.stderr,)
             )
             log_processor.daemon = True
             log_processor.start()
@@ -121,7 +120,7 @@ class FastBuckBuilder(BuckBuilder):
                 )
 
     def _read_stderr(
-        self, stream: Iterable[str], default_logging_section: int = logging.ERROR
+        self, stream: Iterable[str], default_logging_section: int = logging.INFO
     ) -> None:
         for line in stream:
             line = line.rstrip()
@@ -235,7 +234,6 @@ def _normalize(targets: List[str]) -> List[Tuple[str, str]]:
         raise BuckException(
             "Seems like `{}` is hanging.\n   "
             "Try running `buck clean` before trying again.".format(
-                # pyre-fixme: command not always defined
                 " ".join(command[:-1])
             )
         )

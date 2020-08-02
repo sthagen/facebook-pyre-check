@@ -15,15 +15,14 @@ let test_simple_registration context =
     let project =
       ScratchProject.setup [source_name ^ ".py", source] ~include_typeshed_stubs:false ~context
     in
-    let ast_environment, ast_environment_update_result = ScratchProject.parse_sources project in
-    let ast_environment = AstEnvironment.read_only ast_environment in
+    let ast_environment = ScratchProject.build_ast_environment project in
+    let class_metadata_environment = ClassMetadataEnvironment.create ast_environment in
     let update_result =
       ClassMetadataEnvironment.update_this_and_all_preceding_environments
-        ast_environment
+        class_metadata_environment
         ~scheduler:(mock_scheduler ())
-        ~configuration:(Configuration.Analysis.create ())
-        ~ast_environment_update_result
-        (Reference.Set.singleton (Reference.create source_name))
+        ~configuration:(ScratchProject.configuration_of project)
+        ColdStart
     in
     let read_only = ClassMetadataEnvironment.UpdateResult.read_only update_result in
     let printer v =
@@ -137,20 +136,18 @@ let test_updates context =
         original_sources
         ~context
     in
-    let ast_environment, ast_environment_update_result = ScratchProject.parse_sources project in
+    let ast_environment = ScratchProject.build_ast_environment project in
+    let class_metadata_environment = ClassMetadataEnvironment.create ast_environment in
     let configuration = ScratchProject.configuration_of project in
-    let update ~ast_environment_update_result () =
+    let update trigger =
       let scheduler = Test.mock_scheduler () in
-      let qualifiers = AstEnvironment.UpdateResult.reparsed ast_environment_update_result in
-      let ast_environment = AstEnvironment.read_only ast_environment in
       ClassMetadataEnvironment.update_this_and_all_preceding_environments
-        ast_environment
+        class_metadata_environment
         ~scheduler
         ~configuration
-        ~ast_environment_update_result
-        (Reference.Set.of_list qualifiers)
+        trigger
     in
-    let update_result = update ~ast_environment_update_result () in
+    let update_result = update ColdStart in
     let read_only = ClassMetadataEnvironment.UpdateResult.read_only update_result in
     let execute_action (class_name, dependency, expectation) =
       let printer v =
@@ -177,7 +174,7 @@ let test_updates context =
     in
     List.iter original_sources ~f:(fun (path, _) -> delete_file project path);
     List.iter new_sources ~f:(fun (relative, content) -> add_file project ~relative content);
-    let ast_environment_update_result =
+    let update_result =
       let { ScratchProject.module_tracker; _ } = project in
       let { Configuration.Analysis.local_root; _ } = configuration in
       let paths =
@@ -186,21 +183,25 @@ let test_updates context =
       in
       ModuleTracker.update ~configuration ~paths module_tracker
       |> (fun updates -> AstEnvironment.Update updates)
-      |> AstEnvironment.update ~configuration ~scheduler:(mock_scheduler ()) ast_environment
+      |> update
     in
-    let update_result = update ~ast_environment_update_result () in
     let printer set =
-      SharedMemoryKeys.DependencyKey.KeySet.elements set
+      SharedMemoryKeys.DependencyKey.RegisteredSet.elements set
+      |> List.map ~f:SharedMemoryKeys.DependencyKey.get_key
       |> List.to_string ~f:SharedMemoryKeys.show_dependency
     in
-    let expected_triggers = SharedMemoryKeys.DependencyKey.KeySet.of_list expected_triggers in
+    let expected_triggers =
+      SharedMemoryKeys.DependencyKey.RegisteredSet.of_list expected_triggers
+    in
     assert_equal
       ~printer
       expected_triggers
       (ClassMetadataEnvironment.UpdateResult.locally_triggered_dependencies update_result);
     post_actions >>| List.iter ~f:execute_action |> Option.value ~default:()
   in
-  let dependency = SharedMemoryKeys.TypeCheckDefine (Reference.create "dep") in
+  let dependency =
+    SharedMemoryKeys.DependencyKey.Registry.register (TypeCheckDefine (Reference.create "dep"))
+  in
   assert_updates
     ~original_sources:["test.py", {|
       class C:

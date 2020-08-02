@@ -13,18 +13,16 @@ open Test
 let test_simple_registration context =
   let assert_registers sources name ~expected_edges ~expected_extends_placeholder_stub =
     let project = ScratchProject.setup sources ~include_typeshed_stubs:false ~context in
-    let ast_environment, ast_environment_update_result = ScratchProject.parse_sources project in
+    let ast_environment = ScratchProject.build_ast_environment project in
     let configuration = ScratchProject.configuration_of project in
+    let class_hierarchy_environment = ClassHierarchyEnvironment.create ast_environment in
     let update_result =
       let scheduler = Test.mock_scheduler () in
-      let qualifiers = AstEnvironment.UpdateResult.reparsed ast_environment_update_result in
-      let ast_environment = AstEnvironment.read_only ast_environment in
       ClassHierarchyEnvironment.update_this_and_all_preceding_environments
-        ast_environment
+        class_hierarchy_environment
         ~scheduler
         ~configuration
-        ~ast_environment_update_result
-        (Reference.Set.of_list qualifiers)
+        ColdStart
     in
     let read_only = ClassHierarchyEnvironment.UpdateResult.read_only update_result in
     let expected_edges =
@@ -127,25 +125,9 @@ let test_simple_registration context =
 let test_inferred_generic_base context =
   let assert_registers source name expected =
     let project = ScratchProject.setup ["test.py", source] ~context ~incremental_style:Shallow in
-    let ast_environment, ast_environment_update_result = ScratchProject.parse_sources project in
-    let sources =
-      let ast_environment = Analysis.AstEnvironment.read_only ast_environment in
-      AstEnvironment.UpdateResult.reparsed ast_environment_update_result
-      |> List.filter_map ~f:(AstEnvironment.ReadOnly.get_source ast_environment)
-    in
-    let qualifiers =
-      List.map sources ~f:(fun { Ast.Source.source_path = { SourcePath.qualifier; _ }; _ } ->
-          qualifier)
-    in
+    let ast_environment = ScratchProject.build_ast_environment project in
     let configuration = ScratchProject.configuration_of project in
-    let update_result =
-      Test.update_environments
-        ~ast_environment:(AstEnvironment.read_only ast_environment)
-        ~configuration
-        ~ast_environment_update_result
-        ~qualifiers:(Reference.Set.of_list qualifiers)
-        ()
-    in
+    let _, update_result = Test.update_environments ~ast_environment ~configuration ColdStart in
     let read_only =
       AnnotatedGlobalEnvironment.UpdateResult.read_only update_result
       |> AnnotatedGlobalEnvironment.ReadOnly.class_metadata_environment
@@ -249,19 +231,18 @@ let test_updates context =
         sources
         ~context
     in
-    let ast_environment, ast_environment_update_result = ScratchProject.parse_sources project in
+    let ast_environment = ScratchProject.build_ast_environment project in
+    let class_hierarchy_environment = ClassHierarchyEnvironment.create ast_environment in
     let configuration = ScratchProject.configuration_of project in
-    let update ~ast_environment_update_result () =
+    let update trigger =
       let scheduler = Test.mock_scheduler () in
-      let ast_environment = AstEnvironment.read_only ast_environment in
       ClassHierarchyEnvironment.update_this_and_all_preceding_environments
-        ast_environment
+        class_hierarchy_environment
         ~scheduler
         ~configuration
-        ~ast_environment_update_result
-        (Reference.Set.singleton (Reference.create "test"))
+        trigger
     in
-    let update_result = update ~ast_environment_update_result () in
+    let update_result = update ColdStart in
     let read_only = ClassHierarchyEnvironment.UpdateResult.read_only update_result in
     let execute_action = function
       | `Edges (class_name, dependency, expectation) ->
@@ -305,7 +286,7 @@ let test_updates context =
     if Option.is_some original_source then
       delete_file project "test.py";
     Option.iter new_source ~f:(add_file project "test.py");
-    let ast_environment_update_result =
+    let update_result =
       let { ScratchProject.module_tracker; _ } = project in
       let { Configuration.Analysis.local_root; _ } = configuration in
       let paths =
@@ -313,22 +294,25 @@ let test_updates context =
             Path.create_relative ~root:local_root ~relative)
       in
       ModuleTracker.update ~configuration ~paths module_tracker
-      |> (fun updates -> AstEnvironment.Update updates)
-      |> AstEnvironment.update ~configuration ~scheduler:(mock_scheduler ()) ast_environment
+      |> fun updates -> AstEnvironment.Update updates |> update
     in
-    let update_result = update ~ast_environment_update_result () in
     let printer set =
-      SharedMemoryKeys.DependencyKey.KeySet.elements set
+      SharedMemoryKeys.DependencyKey.RegisteredSet.elements set
+      |> List.map ~f:SharedMemoryKeys.DependencyKey.get_key
       |> List.to_string ~f:SharedMemoryKeys.show_dependency
     in
-    let expected_triggers = SharedMemoryKeys.DependencyKey.KeySet.of_list expected_triggers in
+    let expected_triggers =
+      SharedMemoryKeys.DependencyKey.RegisteredSet.of_list expected_triggers
+    in
     assert_equal
       ~printer
       expected_triggers
       (ClassHierarchyEnvironment.UpdateResult.locally_triggered_dependencies update_result);
     post_actions >>| List.iter ~f:execute_action |> Option.value ~default:()
   in
-  let dependency = SharedMemoryKeys.TypeCheckDefine (Reference.create "dep") in
+  let dependency =
+    SharedMemoryKeys.DependencyKey.Registry.register (TypeCheckDefine (Reference.create "dep"))
+  in
   assert_updates
     ~original_source:{|
       class C:

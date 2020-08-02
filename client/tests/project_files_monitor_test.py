@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 from .. import json_rpc, project_files_monitor
 from ..analysis_directory import AnalysisDirectory, UpdatedPaths
 from ..json_rpc import Request, read_request
+from ..process import Process
 from ..project_files_monitor import MonitorException, ProjectFilesMonitor
 from ..socket_connection import SocketConnection, SocketException
 from ..tests.mocks import mock_configuration
@@ -23,6 +24,9 @@ from ..tests.mocks import mock_configuration
 class MonitorTest(unittest.TestCase):
     @patch.object(SocketConnection, "connect")
     @patch.object(json_rpc, "perform_handshake")
+    # pyre-fixme[56]: Argument `tools.pyre.client.project_files_monitor` to
+    #  decorator factory `unittest.mock.patch.object` could not be resolved in a global
+    #  scope.
     @patch.object(project_files_monitor, "find_root")
     def test_subscriptions(
         self, find_root, perform_handshake, _socket_connection
@@ -41,11 +45,10 @@ class MonitorTest(unittest.TestCase):
         self.assertEqual(subscription.name, "pyre_file_change_subscription")
         self.assertEqual(subscription.subscription["fields"], ["name"])
         self.assertEqual(
-            subscription.subscription["expression"][0:3],
-            ["allof", ["type", "f"], ["not", "empty"]],
+            subscription.subscription["expression"][0:2], ["allof", ["type", "f"]]
         )
         self.assertCountEqual(
-            subscription.subscription["expression"][3],
+            subscription.subscription["expression"][2],
             [
                 "anyof",
                 ["suffix", "py"],
@@ -64,11 +67,10 @@ class MonitorTest(unittest.TestCase):
         self.assertEqual(subscription.name, "pyre_file_change_subscription")
         self.assertEqual(subscription.subscription["fields"], ["name"])
         self.assertEqual(
-            subscription.subscription["expression"][0:3],
-            ["allof", ["type", "f"], ["not", "empty"]],
+            subscription.subscription["expression"][0:2], ["allof", ["type", "f"]]
         )
         self.assertCountEqual(
-            subscription.subscription["expression"][3],
+            subscription.subscription["expression"][2],
             [
                 "anyof",
                 ["suffix", "py"],
@@ -167,6 +169,8 @@ class MonitorTest(unittest.TestCase):
         self.assertEqual(errors, [])
 
     @patch.object(SocketConnection, "connect")
+    # pyre-fixme[56]: Argument `tools.pyre.client.json_rpc` to decorator factory
+    #  `unittest.mock.patch.object` could not be resolved in a global scope.
     @patch.object(json_rpc, "perform_handshake")
     @patch.object(ProjectFilesMonitor, "_watchman_client")
     @patch.object(ProjectFilesMonitor, "_find_watchman_path")
@@ -195,6 +199,8 @@ class MonitorTest(unittest.TestCase):
                 os.path.exists(os.path.join(monitor_folder, "file_monitor.pid"))
             )
 
+    # pyre-fixme[56]: Argument `os.path` to decorator factory
+    #  `unittest.mock.patch.object` could not be resolved in a global scope.
     @patch.object(os.path, "realpath")
     def test_socket_connection(self, realpath) -> None:
         server_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -230,7 +236,7 @@ class MonitorTest(unittest.TestCase):
 
     @patch.object(ProjectFilesMonitor, "daemonize")
     @patch.object(ProjectFilesMonitor, "__init__", return_value=False)
-    @patch.object(ProjectFilesMonitor, "is_alive", return_value=True)
+    @patch.object(Process, "is_alive", return_value=True)
     def test_restart_if_dead_when_alive(
         self, is_alive: MagicMock, constructor: MagicMock, daemonize: MagicMock
     ) -> None:
@@ -243,7 +249,7 @@ class MonitorTest(unittest.TestCase):
 
     @patch.object(ProjectFilesMonitor, "daemonize")
     @patch.object(ProjectFilesMonitor, "__init__", return_value=None)
-    @patch.object(ProjectFilesMonitor, "is_alive", return_value=False)
+    @patch.object(Process, "is_alive", return_value=False)
     def test_restart_if_dead_when_dead(
         self, is_alive: MagicMock, constructor: MagicMock, daemonize: MagicMock
     ) -> None:

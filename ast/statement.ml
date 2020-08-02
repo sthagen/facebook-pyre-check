@@ -34,7 +34,7 @@ end
 module Import = struct
   type import = {
     name: Reference.t Node.t;
-    alias: Reference.t Node.t option;
+    alias: Identifier.t Node.t option;
   }
   [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
@@ -48,7 +48,7 @@ module Import = struct
     let location_insensitive_compare_import left right =
       match
         Option.compare
-          (Node.location_insensitive_compare [%compare: Reference.t])
+          (Node.location_insensitive_compare [%compare: Identifier.t])
           left.alias
           right.alias
       with
@@ -91,6 +91,30 @@ module Return = struct
     match Bool.compare left.is_implicit right.is_implicit with
     | x when not (Int.equal x 0) -> x
     | _ -> Option.compare Expression.location_insensitive_compare left.expression right.expression
+end
+
+module Decorator = struct
+  type t = {
+    name: Reference.t Node.t;
+    arguments: Expression.Call.Argument.t list option;
+  }
+  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+
+  let location_insensitive_compare left right =
+    match Reference.compare left.name.value right.name.value with
+    | x when not (Int.equal x 0) -> x
+    | _ ->
+        (Option.compare (List.compare Expression.Call.Argument.location_insensitive_compare))
+          left.arguments
+          right.arguments
+
+
+  let to_expression { name = { Node.value = name; location }; arguments } =
+    let name = Expression.from_reference ~location name in
+    match arguments with
+    | Some arguments ->
+        Node.create ~location (Expression.Expression.Call { callee = name; arguments })
+    | None -> name
 end
 
 module rec Assert : sig
@@ -453,11 +477,14 @@ and Class : sig
     name: Reference.t Node.t;
     bases: Expression.Call.Argument.t list;
     body: Statement.t list;
-    decorators: Expression.t list;
+    decorators: Decorator.t list;
+    top_level_unbound_names: Define.NameAccess.t list;
   }
   [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
+
+  val toplevel_define : t -> Define.t
 
   val constructors : ?in_test:bool -> t -> Define.t list
 
@@ -494,7 +521,8 @@ end = struct
     name: Reference.t Node.t;
     bases: Expression.Call.Argument.t list;
     body: Statement.t list;
-    decorators: Expression.t list;
+    decorators: Decorator.t list;
+    top_level_unbound_names: Define.NameAccess.t list;
   }
   [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
@@ -511,11 +539,26 @@ end = struct
         | _ -> (
             match List.compare Statement.location_insensitive_compare left.body right.body with
             | x when not (Int.equal x 0) -> x
-            | _ ->
-                List.compare
-                  Expression.location_insensitive_compare
-                  left.decorators
-                  right.decorators ) )
+            | _ -> (
+                match
+                  List.compare
+                    Decorator.location_insensitive_compare
+                    left.decorators
+                    right.decorators
+                with
+                | x when not (Int.equal x 0) -> x
+                | _ ->
+                    List.compare
+                      Define.NameAccess.compare
+                      left.top_level_unbound_names
+                      right.top_level_unbound_names ) ) )
+
+
+  let toplevel_define { name = { Node.value; _ }; top_level_unbound_names; body; _ } =
+    Define.create_class_toplevel
+      ~unbound_names:top_level_unbound_names
+      ~parent:value
+      ~statements:body
 
 
   let constructors ?(in_test = false) { body; _ } =
@@ -557,26 +600,8 @@ end = struct
     let open Expression in
     let is_frozen_dataclass decorator =
       match decorator with
-      | {
-       Node.value =
-         Expression.Call
-           {
-             callee =
-               {
-                 Node.value =
-                   Name
-                     (Name.Attribute
-                       {
-                         base = { value = Name (Name.Identifier "dataclasses"); _ };
-                         attribute = "dataclass";
-                         _;
-                       });
-                 _;
-               };
-             arguments;
-           };
-       _;
-      } ->
+      | { Decorator.name = { Node.value = name; _ }; arguments = Some arguments }
+        when Reference.equal name (Reference.create "dataclasses.dataclass") ->
           let has_frozen_argument Call.Argument.{ name; value } =
             match name, value with
             | Some { Node.value; _ }, { Node.value = Expression.True; _ } ->
@@ -1102,8 +1127,8 @@ end = struct
         constructor_attributes
     in
     (* Merge with decreasing priority. *)
-    implicitly_assigned_attributes
-    |> Identifier.SerializableMap.merge merge_attribute_maps additional_attributes
+    additional_attributes
+    |> Identifier.SerializableMap.merge merge_attribute_maps implicitly_assigned_attributes
 
 
   let attributes
@@ -1126,7 +1151,7 @@ and Define : sig
     type t = {
       name: Reference.t Node.t;
       parameters: Expression.Parameter.t list;
-      decorators: Expression.t list;
+      decorators: Decorator.t list;
       return_annotation: Expression.t option;
       async: bool;
       generator: bool;
@@ -1196,18 +1221,35 @@ and Define : sig
     [@@deriving compare, eq, sexp, show, hash, to_yojson]
   end
 
+  module NameAccess : sig
+    type t = {
+      name: Identifier.t;
+      location: Location.t;
+    }
+    [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  end
+
   type t = {
     signature: Signature.t;
     captures: Capture.t list;
+    unbound_names: NameAccess.t list;
     body: Statement.t list;
   }
   [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 
-  val create_toplevel : qualifier:Reference.t option -> statements:Statement.t list -> t
+  val create_toplevel
+    :  unbound_names:NameAccess.t list ->
+    qualifier:Reference.t option ->
+    statements:Statement.t list ->
+    t
 
-  val create_class_toplevel : parent:Reference.t -> statements:Statement.t list -> t
+  val create_class_toplevel
+    :  unbound_names:NameAccess.t list ->
+    parent:Reference.t ->
+    statements:Statement.t list ->
+    t
 
   val name : t -> Reference.t Node.t
 
@@ -1267,7 +1309,7 @@ end = struct
     type t = {
       name: Reference.t Node.t;
       parameters: Expression.Parameter.t list;
-      decorators: Expression.t list;
+      decorators: Decorator.t list;
       return_annotation: Expression.t option;
       async: bool;
       generator: bool;
@@ -1290,10 +1332,7 @@ end = struct
           | x when not (Int.equal x 0) -> x
           | _ -> (
               match
-                List.compare
-                  Expression.location_insensitive_compare
-                  left.decorators
-                  right.decorators
+                List.compare Decorator.location_insensitive_compare left.decorators right.decorators
               with
               | x when not (Int.equal x 0) -> x
               | _ -> (
@@ -1357,6 +1396,7 @@ end = struct
     let is_method { parent; _ } = Option.is_some parent
 
     let has_decorator ?(match_prefix = false) { decorators; _ } decorator =
+      let decorators = List.map decorators ~f:Decorator.to_expression in
       Expression.exists_in_list ~match_prefix ~expression_list:decorators decorator
 
 
@@ -1485,9 +1525,20 @@ end = struct
       | _ -> Kind.location_insensitive_compare left.kind right.kind
   end
 
+  module NameAccess = struct
+    type t = {
+      name: Identifier.t;
+      location: Location.t;
+    }
+    [@@deriving compare, eq, sexp, show, hash, to_yojson]
+
+    let location_insensitive_compare left right = [%compare: Identifier.t] left.name right.name
+  end
+
   type t = {
     signature: Signature.t;
     captures: Capture.t list;
+    unbound_names: NameAccess.t list;
     body: Statement.t list;
   }
   [@@deriving compare, eq, sexp, show, hash, to_yojson]
@@ -1498,15 +1549,33 @@ end = struct
     | _ -> (
         match List.compare Capture.location_insensitive_compare left.captures right.captures with
         | x when not (Int.equal x 0) -> x
-        | _ -> List.compare Statement.location_insensitive_compare left.body right.body )
+        | _ -> (
+            match
+              List.compare
+                NameAccess.location_insensitive_compare
+                left.unbound_names
+                right.unbound_names
+            with
+            | x when not (Int.equal x 0) -> x
+            | _ -> List.compare Statement.location_insensitive_compare left.body right.body ) )
 
 
-  let create_toplevel ~qualifier ~statements =
-    { signature = Signature.create_toplevel ~qualifier; captures = []; body = statements }
+  let create_toplevel ~unbound_names ~qualifier ~statements =
+    {
+      signature = Signature.create_toplevel ~qualifier;
+      captures = [];
+      unbound_names;
+      body = statements;
+    }
 
 
-  let create_class_toplevel ~parent ~statements =
-    { signature = Signature.create_class_toplevel ~parent; captures = []; body = statements }
+  let create_class_toplevel ~unbound_names ~parent ~statements =
+    {
+      signature = Signature.create_class_toplevel ~parent;
+      captures = [];
+      unbound_names;
+      body = statements;
+    }
 
 
   let name { signature = { Signature.name; _ }; _ } = name
@@ -1642,27 +1711,8 @@ end = struct
           match target with
           | { Node.value = Name _; _ } ->
               let annotation =
-                let is_reassignment target value =
-                  let target = Identifier.sanitized target in
-                  let value = Identifier.sanitized value in
-                  String.equal target value || String.equal target ("_" ^ value)
-                in
-                match toplevel, annotation, target, value with
-                | ( true,
-                    None,
-                    {
-                      Node.value =
-                        Name
-                          (Name.Attribute
-                            {
-                              base = { Node.value = Name (Name.Identifier _); _ };
-                              attribute = target;
-                              _;
-                            });
-                      _;
-                    },
-                    { Node.value = Name (Name.Identifier value); _ } )
-                  when is_reassignment target value ->
+                match toplevel, annotation, value with
+                | true, None, { Node.value = Name (Name.Identifier value); _ } ->
                     Identifier.SerializableMap.find_opt value parameter_annotations
                 | _ -> annotation
               in
@@ -2330,6 +2380,7 @@ module PrettyPrinter = struct
   let pp_decorators formatter = function
     | [] -> ()
     | decorators ->
+        let decorators = List.map decorators ~f:Decorator.to_expression in
         Format.fprintf formatter "@[<v>@@(%a)@;@]" Expression.pp_expression_list decorators
 
 
@@ -2406,6 +2457,7 @@ module PrettyPrinter = struct
         Define.signature = { name; parameters; decorators; return_annotation; async; parent; _ };
         body;
         captures = _;
+        unbound_names = _;
       }
     =
     let return_annotation =
@@ -2485,13 +2537,10 @@ module PrettyPrinter = struct
             orelse
     | Import { Import.from; imports } -> (
         let pp_import formatter { Import.name; alias } =
-          Format.fprintf
-            formatter
-            "%a%a"
-            Reference.pp
-            (Node.value name)
-            pp_reference_option
-            (alias >>| Node.value)
+          match alias with
+          | None -> Format.fprintf formatter "%a" Reference.pp (Node.value name)
+          | Some { Node.value = alias; _ } ->
+              Format.fprintf formatter "%a as %a" Reference.pp (Node.value name) Identifier.pp alias
         in
         let pp_imports formatter import_list = pp_list formatter pp_import ", " import_list in
         match from with

@@ -22,10 +22,33 @@ type initialized =
   | NotInitialized
 [@@deriving eq, show, compare, sexp]
 
+type invalid_decorator_reason =
+  | CouldNotResolve
+  | CouldNotResolveArgument of { argument_index: int }
+  | NonCallableDecoratorFactory of Type.t
+  | NonCallableDecorator of Type.t
+  | FactorySignatureSelectionFailed of {
+      reason: SignatureSelectionTypes.reason option;
+      callable: Type.Callable.t;
+    }
+  | ApplicationFailed of {
+      callable: Type.Callable.t;
+      reason: SignatureSelectionTypes.reason option;
+    }
+[@@deriving eq, show, compare, sexp]
+
+type problem =
+  | DifferingDecorators of { offender: Type.t Type.Callable.overload }
+  | InvalidDecorator of {
+      index: int;
+      reason: invalid_decorator_reason;
+    }
+[@@deriving eq, show, compare, sexp]
+
 type 'a t = {
   payload: 'a;
   abstract: bool;
-  async: bool;
+  async_property: bool;
   class_variable: bool;
   defined: bool;
   initialized: initialized;
@@ -33,6 +56,8 @@ type 'a t = {
   parent: Type.Primitive.t;
   visibility: visibility;
   property: bool;
+  undecorated_signature: Type.Callable.t option;
+  problem: problem option;
 }
 [@@deriving eq, show, compare, sexp]
 
@@ -49,7 +74,7 @@ let create
     ~abstract
     ~annotation
     ~original_annotation
-    ~async
+    ~async_property
     ~class_variable
     ~defined
     ~initialized
@@ -58,11 +83,13 @@ let create
     ~visibility
     ~property
     ~uninstantiated_annotation
+    ~undecorated_signature
+    ~problem
   =
   {
     payload = { annotation; original_annotation; uninstantiated_annotation };
     abstract;
-    async;
+    async_property;
     class_variable;
     defined;
     initialized;
@@ -70,13 +97,15 @@ let create
     parent;
     visibility;
     property;
+    undecorated_signature;
+    problem;
   }
 
 
 let create_uninstantiated
     ~abstract
     ~uninstantiated_annotation
-    ~async
+    ~async_property
     ~class_variable
     ~defined
     ~initialized
@@ -84,11 +113,13 @@ let create_uninstantiated
     ~parent
     ~visibility
     ~property
+    ~undecorated_signature
+    ~problem
   =
   {
     payload = uninstantiated_annotation;
     abstract;
-    async;
+    async_property;
     class_variable;
     defined;
     initialized;
@@ -96,13 +127,20 @@ let create_uninstantiated
     parent;
     visibility;
     property;
+    undecorated_signature;
+    problem;
   }
 
 
-let annotation { payload = { annotation; original_annotation; _ }; async; defined; visibility; _ } =
+let annotation
+    { payload = { annotation; original_annotation; _ }; async_property; defined; visibility; _ }
+  =
   let annotation, original =
-    if async then
-      Type.awaitable annotation, Type.awaitable original_annotation
+    if async_property then
+      let coroutine annotation =
+        Type.coroutine [Single Type.Any; Single Type.Any; Single annotation]
+      in
+      coroutine annotation, coroutine original_annotation
     else
       annotation, original_annotation
   in
@@ -128,6 +166,10 @@ let with_uninstantiated_annotation ~uninstantiated_annotation attribute =
   { attribute with payload = uninstantiated_annotation }
 
 
+let with_undecorated_signature attribute ~undecorated_signature =
+  { attribute with undecorated_signature }
+
+
 let name { name; _ } = name
 
 let parent { parent; _ } = parent
@@ -140,7 +182,7 @@ let class_variable { class_variable; _ } = class_variable
 
 let abstract { abstract; _ } = abstract
 
-let async { async; _ } = async
+let async_property { async_property; _ } = async_property
 
 let static { payload = { uninstantiated_annotation; _ }; _ } =
   match uninstantiated_annotation with
@@ -151,6 +193,10 @@ let static { payload = { uninstantiated_annotation; _ }; _ } =
 let property { property; _ } = property
 
 let visibility { visibility; _ } = visibility
+
+let undecorated_signature { undecorated_signature; _ } = undecorated_signature
+
+let problem { problem; _ } = problem
 
 let is_final { visibility; _ } =
   match visibility with

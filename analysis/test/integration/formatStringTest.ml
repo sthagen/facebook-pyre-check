@@ -17,20 +17,14 @@ let test_format_string context =
       def foo() -> None:
         f'foo{1 + "x"}'
     |}
-    [
-      "Incompatible parameter type [6]: "
-      ^ "Expected `int` for 1st positional only parameter to call `int.__add__` but got `str`.";
-    ];
+    ["Incompatible parameter type [6]: `+` is not supported for operand types `int` and `str`."];
   assert_type_errors
     {|
       global_number: int = 1
       def foo() -> None:
         f'foo{global_number + "x"}'
     |}
-    [
-      "Incompatible parameter type [6]: "
-      ^ "Expected `int` for 1st positional only parameter to call `int.__add__` but got `str`.";
-    ];
+    ["Incompatible parameter type [6]: `+` is not supported for operand types `int` and `str`."];
   assert_type_errors
     {|
       global_number: int = 1
@@ -46,10 +40,7 @@ let test_format_string context =
       def foo() -> None:
         f'{boo() + "x"}'
     |}
-    [
-      "Incompatible parameter type [6]: "
-      ^ "Expected `int` for 1st positional only parameter to call `int.__add__` but got `str`.";
-    ];
+    ["Incompatible parameter type [6]: `+` is not supported for operand types `int` and `str`."];
   assert_type_errors {|
       def foo() -> None:
         f'{{x}}'
@@ -59,10 +50,7 @@ let test_format_string context =
       def foo() -> None:
         f'{{{x}}}'
     |}
-    [
-      "Undefined name [18]: Global name `x` is not defined, or there is at least one control flow \
-       path that doesn't define `x`.";
-    ]
+    ["Unbound name [10]: Name `x` is used but not defined in the current scope."]
 
 
 let () = "format_string" >::: ["format_string" >:: test_format_string] |> Test.run

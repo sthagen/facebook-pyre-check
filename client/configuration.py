@@ -5,6 +5,7 @@
 
 # pyre-unsafe
 
+import glob
 import hashlib
 import json
 import logging
@@ -15,11 +16,17 @@ import site
 import subprocess
 import sys
 from logging import Logger
+from pathlib import Path
 from typing import Dict, List, Optional, Union
 
 from .exceptions import EnvironmentException
-from .filesystem import assert_readable_directory, expand_relative_path
-from .find_directories import BINARY_NAME, CONFIGURATION_FILE, find_typeshed
+from .filesystem import assert_readable_directory, expand_relative_path, find_root
+from .find_directories import (
+    BINARY_NAME,
+    CONFIGURATION_FILE,
+    LOCAL_CONFIGURATION_FILE,
+    find_typeshed,
+)
 
 
 LOG: Logger = logging.getLogger(__name__)
@@ -35,13 +42,19 @@ class SearchPathElement:
         self.subdirectory = subdirectory
 
     @staticmethod
-    def expand(path: Union[Dict[str, str], str]) -> "SearchPathElement":
+    def expand(
+        path: Union[Dict[str, str], str], base: Optional[str] = None
+    ) -> "SearchPathElement":
         if isinstance(path, str):
+            if base:
+                path = expand_relative_path(base, path)
             return SearchPathElement(path)
         else:
             if "root" in path and "subdirectory" in path:
                 root = path["root"]
                 subdirectory = path["subdirectory"]
+                if base:
+                    root = expand_relative_path(base, root)
                 return SearchPathElement(root, subdirectory)
             elif "site-package" in path:
                 site_root = site.getsitepackages()
@@ -138,7 +151,6 @@ class _ConfigurationFile:
             "unstable_client",
             "saved_state",
             "taint_models_path",
-            "oncall",
         }
 
 
@@ -147,7 +159,8 @@ class Configuration:
 
     def __init__(
         self,
-        local_configuration: Optional[str] = None,
+        project_root: str,
+        local_root: Optional[str] = None,
         search_path: Optional[List[str]] = None,
         binary: Optional[str] = None,
         typeshed: Optional[str] = None,
@@ -163,7 +176,8 @@ class Configuration:
         self.formatter = formatter
         self.ignore_all_errors = []
         self.number_of_workers: int = 0
-        self.local_configuration: Optional[str] = None
+        self.project_root: str = project_root
+        self._local_root: Optional[str] = local_root
         self.taint_models_path: List[str] = []
         self.file_hash: Optional[str] = None
         self.extensions: List[str] = []
@@ -199,12 +213,8 @@ class Configuration:
         if excludes:
             self.excludes.extend(excludes)
 
-        if local_configuration:
-            # Handle local configuration explicitly configured on the
-            # commandline.
-            self._check_read_local_configuration(
-                local_configuration, fail_on_error=True
-            )
+        if local_root:
+            self._check_read_local_configuration(local_root)
         if log_directory:
             self.ignore_all_errors.append(log_directory)
 
@@ -212,8 +222,10 @@ class Configuration:
 
         self.other_critical_files: List[str] = []
 
+        project_configuration = os.path.join(project_root, CONFIGURATION_FILE)
+
         # Order matters. The values will only be updated if a field is None.
-        self._read(CONFIGURATION_FILE)
+        self._read(project_configuration)
         self._override_version_hash()
         self._resolve_versioned_paths()
         self._apply_defaults()
@@ -278,6 +290,15 @@ class Configuration:
                     "the root of the `typeshed` directory.".format(self.typeshed)
                 )
 
+            expanded_ignore_paths = []
+            for path in self.ignore_all_errors:
+                expanded = glob.glob(path)
+                if not expanded:
+                    expanded_ignore_paths.append(path)
+                else:
+                    expanded_ignore_paths += expanded
+            self.ignore_all_errors = expanded_ignore_paths
+
             non_existent_ignore_paths = [
                 path for path in self.ignore_all_errors if not os.path.exists(path)
             ]
@@ -308,30 +329,10 @@ class Configuration:
                     if path not in non_existent_infer_paths
                 ]
 
-            typeshed_subdirectories = os.listdir(self.typeshed)
-            if "stdlib" not in typeshed_subdirectories:
-                LOG.warning(
-                    "Typeshed at `%s` contains subdirectories:\n%s",
-                    self.typeshed,
-                    typeshed_subdirectories,
-                )
-                raise InvalidConfiguration(
-                    "`typeshed` location must contain a `stdlib` directory."
-                )
-
-            for typeshed_subdirectory_name in typeshed_subdirectories:
+            for typeshed_subdirectory_name in ["stdlib", "third_party"]:
                 typeshed_subdirectory = os.path.join(
                     self.typeshed, typeshed_subdirectory_name
                 )
-                if (
-                    not os.path.isdir(typeshed_subdirectory)
-                    or typeshed_subdirectory_name == "tests"
-                    or typeshed_subdirectory_name[0] == "."
-                    or typeshed_subdirectory_name == "__pycache__"
-                ):
-                    # Ignore some well-known directories we do not care about.
-                    continue
-
                 assert_readable_directory(typeshed_subdirectory)
                 for typeshed_version_directory_name in os.listdir(
                     typeshed_subdirectory
@@ -349,7 +350,10 @@ class Configuration:
 
             # Validate elements of the search path.
             for element in self._search_path:
-                assert_readable_directory(element.path())
+                assert_readable_directory(
+                    element.path(),
+                    error_message_prefix="Invalid search_path in configuration: ",
+                )
 
             if not is_list_of_strings(self.other_critical_files):
                 raise InvalidConfiguration(
@@ -391,13 +395,8 @@ class Configuration:
         return [element.command_line_argument() for element in self._search_path]
 
     @property
-    def local_configuration_root(self) -> Optional[str]:
-        local_configuration = self.local_configuration
-        if local_configuration:
-            if os.path.isdir(local_configuration):
-                return local_configuration
-            else:
-                return os.path.dirname(local_configuration)
+    def local_root(self) -> Optional[str]:
+        return self._local_root
 
     @property
     def log_directory(self) -> str:
@@ -415,37 +414,77 @@ class Configuration:
         else:
             return None
 
-    def _check_read_local_configuration(self, path: str, fail_on_error: bool) -> None:
-        if fail_on_error and not os.path.exists(path):
+    def _check_nested_configurations(self, local_root: str) -> None:
+        # TODO(T67874463): Handle sanity checks against project configurations
+        parent_local_root = find_root(
+            os.path.dirname(local_root.rstrip("/")), LOCAL_CONFIGURATION_FILE
+        )
+        if not parent_local_root:
+            return
+
+        parent_error = None
+        excluded_from_parent = False
+        local_root: Path = Path(local_root).resolve()
+        try:
+            parent_local_configuration = Configuration(
+                project_root=self.project_root,
+                local_root=parent_local_root,
+                search_path=[search_path.root for search_path in self._search_path],
+                binary=self._binary,
+                typeshed=self._typeshed,
+                buck_builder_binary=self._buck_builder_binary,
+                excludes=self.excludes,
+                logger=self.logger,
+                formatter=self.formatter,
+                log_directory=self._log_directory,
+            )
+            paths_to_ignore = list(local_root.parents) + [local_root]
+            for ignore_element in parent_local_configuration.ignore_all_errors:
+                if Path(ignore_element).resolve() in paths_to_ignore:
+                    excluded_from_parent = True
+        except EnvironmentException as error:
+            parent_error = error
+
+        if not excluded_from_parent:
+            relative_path = str(local_root.relative_to(parent_local_root))
+            error_message = (
+                "Local configuration is nested under another local configuration at "
+                f"`{parent_local_root}`.\nPlease add `{relative_path}` to the "
+                "`ignore_all_errors` field of the parent, or combine the sources "
+                "into a single configuration, or split the parent configuration to "
+                "avoid inconsistent errors."
+            )
+            raise EnvironmentException(error_message)
+        elif parent_error:
+            raise EnvironmentException(parent_error)
+
+    def _check_read_local_configuration(self, path: str) -> None:
+        if not os.path.exists(path):
             raise EnvironmentException(
                 "Local configuration path `{}` does not exist.".format(path)
             )
 
-        if os.path.isdir(path):
-            local_configuration = os.path.join(path, CONFIGURATION_FILE + ".local")
+        local_configuration = os.path.join(path, LOCAL_CONFIGURATION_FILE)
+        if not os.path.exists(local_configuration):
+            raise EnvironmentException(
+                "Local configuration directory `{}` does not contain "
+                "a `{}` file.".format(path, LOCAL_CONFIGURATION_FILE)
+            )
 
-            if not os.path.exists(local_configuration):
-                if fail_on_error:
-                    raise EnvironmentException(
-                        "Local configuration directory `{}` does not contain "
-                        "a `{}` file.".format(path, CONFIGURATION_FILE + ".local")
-                    )
-                else:
-                    LOG.debug(
-                        "Configuration will be read from the project root: "
-                        "`{}`".format(os.getcwd())
-                    )
-            else:
-                self.local_configuration = local_configuration
-        else:
-            local_configuration = path
-            self.local_configuration = local_configuration
+        self._check_nested_configurations(path)
         self._read(local_configuration)
+        if not self.source_directories and not self.targets:
+            raise EnvironmentException(
+                "Local configuration `{}` does not specify any sources to type check.".format(
+                    local_configuration
+                )
+            )
 
     def _read(self, path: str) -> None:
         try:
             with open(path) as file:
                 LOG.debug("Reading configuration `%s`...", path)
+                configuration_directory = os.path.dirname(os.path.realpath(path))
                 configuration = _ConfigurationFile(file)
 
                 source_directories = configuration.consume(
@@ -455,17 +494,10 @@ class Configuration:
                     print_on_success=True,
                     raise_on_override=True,
                 )
-                configuration_directory = os.path.dirname(path)
-                if configuration_directory:
-                    self.source_directories = [
-                        os.path.join(configuration_directory, directory)
-                        for directory in source_directories
-                    ]
-                else:
-                    self.source_directories = [
-                        os.path.expanduser(directory)
-                        for directory in source_directories
-                    ]
+                self.source_directories = [
+                    expand_relative_path(configuration_directory, directory)
+                    for directory in source_directories
+                ]
 
                 self.targets = configuration.consume(
                     "targets",
@@ -478,22 +510,22 @@ class Configuration:
                 if configuration.consume("disabled", default=False):
                     self.disabled = True
 
-                self.logger = configuration.consume("logger", current=self.logger)
+                logger = configuration.consume("logger", current=self.logger)
+                if logger:
+                    self.logger = expand_relative_path(configuration_directory, logger)
 
                 self.formatter = configuration.consume(
                     "formatter", current=self.formatter
                 )
 
                 self.strict = configuration.consume("strict", default=self.strict)
+
                 ignore_all_errors = configuration.consume(
                     "ignore_all_errors", default=[]
                 )
-                # Deprecated.
-                ignore_all_errors += configuration.consume("do_not_check", default=[])
-                configuration_path = os.path.dirname(os.path.realpath(path))
                 self.ignore_all_errors.extend(
                     [
-                        expand_relative_path(root=configuration_path, path=path)
+                        expand_relative_path(root=configuration_directory, path=path)
                         for path in ignore_all_errors
                     ]
                 )
@@ -501,7 +533,7 @@ class Configuration:
                 ignore_infer = configuration.consume("ignore_infer", default=[])
                 self.ignore_infer.extend(
                     [
-                        expand_relative_path(root=configuration_path, path=path)
+                        expand_relative_path(root=configuration_directory, path=path)
                         for path in ignore_infer
                     ]
                 )
@@ -515,7 +547,7 @@ class Configuration:
                 binary = configuration.consume("binary", current=self._binary)
                 assert binary is None or isinstance(binary, str)
                 if binary is not None:
-                    binary = expand_relative_path(configuration_path, binary)
+                    binary = expand_relative_path(configuration_directory, binary)
                 self._binary = binary
 
                 buck_builder_binary = configuration.consume(
@@ -523,7 +555,7 @@ class Configuration:
                 )
                 if buck_builder_binary is not None:
                     self._buck_builder_binary = expand_relative_path(
-                        root=configuration_path, path=buck_builder_binary
+                        root=configuration_directory, path=buck_builder_binary
                     )
 
                 additional_search_path = configuration.consume(
@@ -533,12 +565,18 @@ class Configuration:
                 if isinstance(additional_search_path, list):
                     self._search_path.extend(
                         [
-                            SearchPathElement.expand(path)
+                            SearchPathElement.expand(path, base=configuration_directory)
                             for path in additional_search_path
                         ]
                     )
                 else:
-                    self._search_path.append(SearchPathElement(additional_search_path))
+                    self._search_path.append(
+                        SearchPathElement(
+                            expand_relative_path(
+                                configuration_directory, additional_search_path
+                            )
+                        )
+                    )
 
                 version_hash = configuration.consume(
                     "version", current=self._version_hash
@@ -549,7 +587,7 @@ class Configuration:
                 typeshed = configuration.consume("typeshed", current=self._typeshed)
                 assert typeshed is None or isinstance(typeshed, str)
                 if typeshed is not None:
-                    typeshed = expand_relative_path(configuration_path, typeshed)
+                    typeshed = expand_relative_path(configuration_directory, typeshed)
                 self._typeshed = typeshed
 
                 taint_models_path = configuration.consume("taint_models_path")
@@ -558,24 +596,31 @@ class Configuration:
                     or isinstance(taint_models_path, str)
                     or isinstance(taint_models_path, list)
                 )
-                configuration_directory = os.path.dirname(os.path.realpath(path))
                 if isinstance(taint_models_path, str):
+
                     self.taint_models_path.append(
-                        os.path.join(configuration_directory, taint_models_path)
+                        expand_relative_path(configuration_directory, taint_models_path)
                     )
                 elif isinstance(taint_models_path, list):
                     self.taint_models_path.extend(
                         [
-                            os.path.join(configuration_directory, path)
+                            expand_relative_path(configuration_directory, path)
                             for path in taint_models_path
                         ]
                     )
 
                 excludes = configuration.consume("exclude", default=[])
                 if isinstance(excludes, list):
-                    self.excludes.extend(excludes)
+                    self.excludes.extend(
+                        [
+                            expand_relative_path(configuration_directory, path)
+                            for path in excludes
+                        ]
+                    )
                 else:
-                    self.excludes.append(excludes)
+                    self.excludes.append(
+                        expand_relative_path(configuration_directory, excludes)
+                    )
 
                 extensions = configuration.consume("extensions", default=[])
                 self.extensions.extend(extensions)
@@ -590,9 +635,15 @@ class Configuration:
 
                 self.autocomplete = configuration.consume("autocomplete", default=False)
 
-                self.other_critical_files = configuration.consume(
-                    "critical_files", default=[]
-                )
+                critical_files = configuration.consume("critical_files", default=[])
+                self.other_critical_files = [
+                    expand_relative_path(root=configuration_directory, path=path)
+                    for path in critical_files
+                ]
+
+                # Warn on deprecated fields.
+                for deprecated_field in configuration._deprecated.keys():
+                    configuration.consume(deprecated_field)
 
                 # This block should be at the bottom to be effective.
                 unused_keys = configuration.unused_keys()

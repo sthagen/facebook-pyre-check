@@ -17,44 +17,45 @@ module type ReadOnly = sig
   val unannotated_global_environment : t -> UnannotatedGlobalEnvironment.ReadOnly.t
 end
 
-module type PreviousUpdateResult = sig
-  type t
+module UpdateResult : sig
+  module type S = sig
+    type t
 
-  type read_only
+    type read_only
 
-  val locally_triggered_dependencies : t -> SharedMemoryKeys.DependencyKey.KeySet.t
+    val locally_triggered_dependencies : t -> SharedMemoryKeys.DependencyKey.RegisteredSet.t
 
-  val all_triggered_dependencies : t -> SharedMemoryKeys.DependencyKey.KeySet.t list
+    val all_triggered_dependencies : t -> SharedMemoryKeys.DependencyKey.RegisteredSet.t list
 
-  val read_only : t -> read_only
+    val read_only : t -> read_only
 
-  val unannotated_global_environment_update_result
-    :  t ->
-    UnannotatedGlobalEnvironment.UpdateResult.t
+    val unannotated_global_environment_update_result
+      :  t ->
+      UnannotatedGlobalEnvironment.UpdateResult.t
+
+    val ast_environment_update_result : t -> AstEnvironment.UpdateResult.t
+  end
 end
 
 module type PreviousEnvironment = sig
   module ReadOnly : ReadOnly
 
-  module UpdateResult : PreviousUpdateResult with type read_only := ReadOnly.t
+  module UpdateResult : UpdateResult.S with type read_only := ReadOnly.t
+
+  type t
+
+  val create : AstEnvironment.t -> t
+
+  val ast_environment : t -> AstEnvironment.t
+
+  val read_only : t -> ReadOnly.t
 
   val update_this_and_all_preceding_environments
-    :  AstEnvironment.ReadOnly.t ->
+    :  t ->
     scheduler:Scheduler.t ->
     configuration:Configuration.Analysis.t ->
-    ast_environment_update_result:AstEnvironment.UpdateResult.t ->
-    Ast.Reference.Set.t ->
+    AstEnvironment.trigger ->
     UpdateResult.t
-end
-
-module UpdateResult : sig
-  module type S = sig
-    include PreviousUpdateResult
-
-    type upstream
-
-    val upstream : t -> upstream
-  end
 end
 
 module type S = sig
@@ -62,17 +63,21 @@ module type S = sig
 
   module PreviousEnvironment : PreviousEnvironment
 
-  module UpdateResult :
-    UpdateResult.S
-      with type upstream = PreviousEnvironment.UpdateResult.t
-       and type read_only = ReadOnly.t
+  module UpdateResult : UpdateResult.S with type read_only = ReadOnly.t
+
+  type t
+
+  val create : AstEnvironment.t -> t
+
+  val ast_environment : t -> AstEnvironment.t
+
+  val read_only : t -> ReadOnly.t
 
   val update_this_and_all_preceding_environments
-    :  AstEnvironment.ReadOnly.t ->
+    :  t ->
     scheduler:Scheduler.t ->
     configuration:Configuration.Analysis.t ->
-    ast_environment_update_result:AstEnvironment.UpdateResult.t ->
-    Ast.Reference.Set.t ->
+    AstEnvironment.trigger ->
     UpdateResult.t
 end
 
@@ -93,7 +98,7 @@ module EnvironmentTable : sig
     (* This is the data type of the key that we are being told to compute. This sometimes
        unfortunately has to differ from the actual key of the table, but the difference should be
        one with a one-to-one conversion, done by convert_trigger *)
-    type trigger
+    type trigger [@@deriving sexp, compare]
 
     val convert_trigger : trigger -> Key.t
 
@@ -107,6 +112,8 @@ module EnvironmentTable : sig
        selecting the relevant variant from SharedMemoryKeys.dependency *)
     val filter_upstream_dependency : SharedMemoryKeys.dependency -> trigger option
 
+    val trigger_to_dependency : trigger -> SharedMemoryKeys.dependency
+
     (* For compatibility with the old dependency mode, we also need a different kind of key
        discovery that just returns all of the keys that possibly could have been affected by the
        update *)
@@ -116,7 +123,7 @@ module EnvironmentTable : sig
     val produce_value
       :  PreviousEnvironment.ReadOnly.t ->
       trigger ->
-      track_dependencies:bool ->
+      dependency:SharedMemoryKeys.DependencyKey.registered option ->
       Value.t
 
     val all_keys : UnannotatedGlobalEnvironment.ReadOnly.t -> Key.t list
@@ -134,7 +141,7 @@ module EnvironmentTable : sig
     module ReadOnly : sig
       type t
 
-      val get : t -> ?dependency:SharedMemoryKeys.dependency -> In.Key.t -> In.Value.t
+      val get : t -> ?dependency:SharedMemoryKeys.DependencyKey.registered -> In.Key.t -> In.Value.t
 
       val upstream_environment : t -> In.PreviousEnvironment.ReadOnly.t
 
@@ -147,17 +154,21 @@ module EnvironmentTable : sig
       val unannotated_global_environment : t -> UnannotatedGlobalEnvironment.ReadOnly.t
     end
 
-    module UpdateResult :
-      UpdateResult.S
-        with type upstream = In.PreviousEnvironment.UpdateResult.t
-         and type read_only = ReadOnly.t
+    module UpdateResult : UpdateResult.S with type read_only = ReadOnly.t
+
+    type t
+
+    val create : AstEnvironment.t -> t
+
+    val ast_environment : t -> AstEnvironment.t
+
+    val read_only : t -> ReadOnly.t
 
     val update_this_and_all_preceding_environments
-      :  AstEnvironment.ReadOnly.t ->
+      :  t ->
       scheduler:Scheduler.t ->
       configuration:Configuration.Analysis.t ->
-      ast_environment_update_result:AstEnvironment.UpdateResult.t ->
-      Ast.Reference.Set.t ->
+      AstEnvironment.trigger ->
       UpdateResult.t
   end
 

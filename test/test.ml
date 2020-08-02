@@ -13,7 +13,7 @@ open Statement
 
 let initialize () =
   Memory.initialize_for_tests ();
-  Log.initialize_for_tests ();
+  Log.GlobalState.initialize_for_tests ();
   Statistics.disable ()
 
 
@@ -421,6 +421,8 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
 
         def __test_sink(arg: Any) -> None: ...
         def __test_source() -> Any: ...
+        class TestCallableTarget: ...
+        def to_callable_target(f: typing.Callable[..., Any]) -> TestCallableTarget: ...
         def __tito( *x: Any, **kw: Any) -> Any: ...
         __global_sink: Any
         def copy(obj: object) -> object: ...
@@ -562,6 +564,11 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
           def __neg__(self) -> float: ...
           def __abs__(self) -> float: ...
           def __round__(self) -> int: ...
+          def __lt__(self, x: float) -> bool: ...
+          def __le__(self, x: float) -> bool: ...
+          def __gt__(self, x: float) -> bool: ...
+          def __ge__(self, x: float) -> bool: ...
+
 
         class int:
           @overload
@@ -721,8 +728,6 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         ) -> bool: ...
         def sum(iterable: Iterable[_T]) -> Union[_T, int]: ...
 
-        def sys.exit(code: int) -> NoReturn: ...
-
         def eval(arg: str) -> None: ...
 
         @overload
@@ -853,10 +858,56 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
                 def __setattr__(cls, key, value): ...
           |}
       );
+      ( "sqlalchemy/__init__.pyi",
+        {|
+            from typing import Generic, Optional, Text as typing_Text, Type, TypeVar, final, overload
+            from typing_extensions import Literal
+            _T_co = TypeVar('_T_co', covariant=True)
+            _T = TypeVar('_T')
+            class TypeEngine(Generic[_T_co]): ...
+            class Integer(TypeEngine[int]): ...
+            class String(TypeEngine[str]): ...
+
+            @final
+            class Column(Generic[_T]):
+              @overload
+              def __new__(
+                cls, type_: TypeEngine[_T],
+              ) -> Column[Optional[_T]]: ...
+              @overload
+              def __new__(
+                cls, type_: TypeEngine[_T],
+                primary_key: Literal[True] = ...
+              ) -> Column[_T]: ...
+              @overload
+              def __new__(
+                cls, type_: TypeEngine[_T],
+                primary_key: Literal[False] = ...
+              ) -> Column[Optional[_T]]: ...
+              def __new__(
+                cls, type_: TypeEngine[_T],
+                primary_key: bool = ...
+              ) -> Union[Column[_T], Column[Optional[_T]]]: ...
+
+              @overload
+              def __get__(self, instance: None, owner: Any) -> Column[_T]: ...
+              @overload
+              def __get__(self, instance: object, owner: Any) -> _T: ...
+          |}
+      );
+      ( "sqlalchemy/sql/schema.pyi",
+        {|
+            class Table: ...
+            class MetaData: ...
+        |} );
     ]
   in
   [
-    "sys.py", "";
+    ( "sys.py",
+      {|
+        from typing import NoReturn
+        def exit(code: int) -> NoReturn: ...
+    |} );
     ( "hashlib.pyi",
       {|
         _DataType = typing.Union[int, str]
@@ -867,7 +918,7 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
     );
     ( "typing.pyi",
       {|
-        from abc import ABCMeta
+        from abc import ABCMeta, abstractmethod
         import collections
         class _SpecialForm:
           def __getitem__(self, typeargs: Any) -> Any: ...
@@ -883,16 +934,24 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         Union = TypeAlias(object)
         Any = object()
         overload = object()
-        final = object()
+        if sys.version_info >= (3, 8):
+          Final: _SpecialForm = ...
+          _F = TypeVar('_F', bound=Callable[..., Any])
+          def final(f: _F) -> _F: ...
+          Literal: _SpecialForm = ...
+          # TypedDict is a (non-subscriptable) special form.
+          TypedDict: object
 
         Callable: _SpecialForm = ...
         Protocol: _SpecialForm = ...
         Type: _SpecialForm = ...
         Tuple: _SpecialForm = ...
         Generic: _SpecialForm = ...
-        Final: _SpecialForm = ...
+        ClassVar: _SpecialForm = ...
+        NoReturn: _SpecialForm = ...
 
-        class GenericMeta(type): ...
+        if sys.version_info < (3, 7):
+            class GenericMeta(type): ...
 
         @runtime
         class Sized(Protocol, metaclass=ABCMeta):
@@ -1030,6 +1089,7 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
       {|
         from typing import Type, TypeVar
         _T = TypeVar('_T')
+        _FuncT = TypeVar('FuncT')
         class ABCMeta(type):
           def register(cls: ABCMeta, subclass: Type[_T]) -> Type[_T]: ...
         def abstractmethod(callable: _FuncT) -> _FuncT: ...
@@ -1052,9 +1112,19 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         |}
     );
     "builtins.pyi", builtins;
-    ( "django/http.pyi",
+    ( "django/http/__init__.pyi",
       {|
+        from django.http.request import HttpRequest as HttpRequest
+
+        class HttpResponse: ...
         class Request:
+          GET: typing.Dict[str, typing.Any] = ...
+          POST: typing.Dict[str, typing.Any] = ...
+        |}
+    );
+    ( "django/http/request.pyi",
+      {|
+        class HttpRequest:
           GET: typing.Dict[str, typing.Any] = ...
           POST: typing.Dict[str, typing.Any] = ...
         |}
@@ -1062,8 +1132,10 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
     "django/__init__.pyi", "import django.http";
     ( "dataclasses.pyi",
       {|
-        _T = typing.TypeVar('_T')
-        class InitVar(typing.Generic[_T]): ...
+        from typing import TypeVar, Generic, Type
+        _T = TypeVar('_T')
+        class InitVar(Generic[_T]): ...
+        def dataclass(_cls: Type[_T]) -> Type[_T]: ...
         |}
     );
     ( "functools.pyi",
@@ -1116,7 +1188,7 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
     "multiprocessing/__init__.pyi", "from multiprocessing.context import Process as Process";
     ( "enum.pyi",
       {|
-        from abc import ABCMeta
+        from abc import ABCMeta as ABCMeta
         from typing import Type, Mapping
         _T = typing.TypeVar('_T')
         class EnumMeta(ABCMeta):
@@ -1142,6 +1214,7 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         |};
     ( "typing_extensions.pyi",
       {|
+        from typing import Final as Final
         class _SpecialForm:
             def __getitem__(self, typeargs: Any) -> Any: ...
         Literal: _SpecialForm = ...
@@ -1251,7 +1324,7 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
       {|
         from unittest import case
         from unittest import mock
-        from unittest.case import TestCase
+        from unittest.case import TestCase as TestCase
         curdir: str
         pardir: str
         sep: str
@@ -1273,26 +1346,31 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
     ( "unittest/case.pyi",
       {|
         class TestCase:
-            def assertIsNotNone(self, x: Any) -> Bool:
+            def assertIsNotNone(self, x: Any, msg: Any = ...) -> Bool:
               ...
-            def assertTrue(self, x: Any) -> Bool:
+            def assertTrue(self, x: Any, msg: Any = ...) -> Bool:
               ...
-            def assertFalse(self, x: Any) -> Bool:
+            def assertFalse(self, x: Any, msg: Any = ...) -> Bool:
               ...
         |}
     );
     ( "pyre_extensions/__init__.pyi",
       {|
         from typing import List, Optional, Type, TypeVar
+        from typing import Generic as Generic
         import type_variable_operators
 
         _T = TypeVar("_T")
+        _A = TypeVar("_A", bound=int)
+        _B = TypeVar("_B", bound=int)
 
         def none_throws(optional: Optional[_T]) -> _T: ...
         def safe_cast(new_type: Type[_T], value: Any) -> _T: ...
         def ParameterSpecification(__name: str) -> List[Type]: ...
         def ListVariadic(__name: str) -> Type: ...
         def classproperty(f: Any) -> Any: ...
+        class Add(Generic[_A, _B], int): pass
+        class Multiply(Generic[_A, _B], int): pass
         |}
     );
     ( "pyre_extensions/type_variable_operators.pyi",
@@ -1300,7 +1378,9 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         from typing import List, Optional, Type, TypeVar, _SpecialForm
         Map: _SpecialForm
         PositionalArgumentsOf: _SpecialForm
+        KeywordArgumentsOf: _SpecialForm
         ArgumentsOf: _SpecialForm
+        Concatenate: _SpecialForm
         |}
     );
     ( "numbers.pyi",
@@ -1451,6 +1531,973 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
             def denominator(self) -> int: ...
         |}
     );
+    ( "attr/__init__.pyi",
+      {|
+        from typing import Optional, TypeVar, Any, Dict
+        _C = TypeVar("_C", bound=type)
+        def s(
+            maybe_cls: None = ...,
+            these: Optional[Dict[str, Any]] = ...,
+            repr_ns: Optional[str] = ...,
+            repr: bool = ...,
+            cmp: Optional[bool] = ...,
+            hash: Optional[bool] = ...,
+            init: bool = ...,
+            slots: bool = ...,
+            frozen: bool = ...,
+            weakref_slot: bool = ...,
+            str: bool = ...,
+            auto_attribs: bool = ...,
+            kw_only: bool = ...,
+            cache_hash: bool = ...,
+            auto_exc: bool = ...,
+            eq: Optional[bool] = ...,
+            order: Optional[bool] = ...,
+        ) -> Callable[[_C], _C]: ...
+      |}
+    );
+    ( "click/__init__.pyi",
+      {|
+        # -*- coding: utf-8 -*-
+        """
+            click
+            ~~~~~
+
+            Click is a simple Python module that wraps the stdlib's optparse to make
+            writing command line scripts fun.  Unlike other modules, it's based around
+            a simple API that does not come with too much magic and is composable.
+
+            In case optparse ever gets removed from the stdlib, it will be shipped by
+            this module.
+
+            :copyright: (c) 2014 by Armin Ronacher.
+            :license: BSD, see LICENSE for more details.
+        """
+
+        # Core classes
+        from .core import (
+            Context as Context,
+            BaseCommand as BaseCommand,
+            Command as Command,
+            MultiCommand as MultiCommand,
+            Group as Group,
+            CommandCollection as CommandCollection,
+            Parameter as Parameter,
+            Option as Option,
+            Argument as Argument,
+        )
+
+        # Globals
+        from .globals import get_current_context as get_current_context
+
+        # Decorators
+        from .decorators import (
+            pass_context as pass_context,
+            pass_obj as pass_obj,
+            make_pass_decorator as make_pass_decorator,
+            command as command,
+            group as group,
+            argument as argument,
+            option as option,
+            confirmation_option as confirmation_option,
+            password_option as password_option,
+            version_option as version_option,
+            help_option as help_option,
+        )
+
+        # Types
+        from .types import (
+            ParamType as ParamType,
+            File as File,
+            FloatRange as FloatRange,
+            DateTime as DateTime,
+            Path as Path,
+            Choice as Choice,
+            IntRange as IntRange,
+            Tuple as Tuple,
+            STRING as STRING,
+            INT as INT,
+            FLOAT as FLOAT,
+            BOOL as BOOL,
+            UUID as UUID,
+            UNPROCESSED as UNPROCESSED,
+        )
+
+        # Utilities
+        from .utils import (
+            echo as echo,
+            get_binary_stream as get_binary_stream,
+            get_text_stream as get_text_stream,
+            open_file as open_file,
+            format_filename as format_filename,
+            get_app_dir as get_app_dir,
+            get_os_args as get_os_args,
+        )
+
+        # Terminal functions
+        from .termui import (
+            prompt as prompt,
+            confirm as confirm,
+            get_terminal_size as get_terminal_size,
+            echo_via_pager as echo_via_pager,
+            progressbar as progressbar,
+            clear as clear,
+            style as style,
+            unstyle as unstyle,
+            secho as secho,
+            edit as edit,
+            launch as launch,
+            getchar as getchar,
+            pause as pause,
+        )
+
+        # Exceptions
+        from .exceptions import (
+            ClickException as ClickException,
+            UsageError as UsageError,
+            BadParameter as BadParameter,
+            FileError as FileError,
+            Abort as Abort,
+            NoSuchOption as NoSuchOption,
+            BadOptionUsage as BadOptionUsage,
+            BadArgumentUsage as BadArgumentUsage,
+            MissingParameter as MissingParameter,
+        )
+
+        # Formatting
+        from .formatting import HelpFormatter as HelpFormatter, wrap_text as wrap_text
+
+        # Parsing
+        from .parser import OptionParser as OptionParser
+
+        # Controls if click should emit the warning about the use of unicode
+        # literals.
+        disable_unicode_literals_warning: bool
+
+
+        __version__: str
+      |}
+    );
+    ( "click/core.pyi",
+      {|
+        from typing import (
+            Any,
+            Callable,
+            ContextManager,
+            Dict,
+            Generator,
+            Iterable,
+            List,
+            Mapping,
+            NoReturn,
+            Optional,
+            Sequence,
+            Set,
+            Tuple,
+            TypeVar,
+            Union,
+        )
+
+        from click.formatting import HelpFormatter
+        from click.parser import OptionParser
+
+        _CC = TypeVar("_CC", bound=Callable[[], Any])
+
+        def invoke_param_callback(
+            callback: Callable[[Context, Parameter, Optional[str]], Any],
+            ctx: Context,
+            param: Parameter,
+            value: Optional[str]
+        ) -> Any:
+            ...
+
+
+        def augment_usage_errors(
+            ctx: Context, param: Optional[Parameter] = ...
+        ) -> ContextManager[None]:
+            ...
+
+
+        def iter_params_for_processing(
+            invocation_order: Sequence[Parameter],
+            declaration_order: Iterable[Parameter],
+        ) -> Iterable[Parameter]:
+            ...
+
+
+        class Context:
+            parent: Optional[Context]
+            command: Command
+            info_name: Optional[str]
+            params: Dict[Any, Any]
+            args: List[str]
+            protected_args: List[str]
+            obj: Any
+            default_map: Mapping[str, Any]
+            invoked_subcommand: Optional[str]
+            terminal_width: Optional[int]
+            max_content_width: Optional[int]
+            allow_extra_args: bool
+            allow_interspersed_args: bool
+            ignore_unknown_options: bool
+            help_option_names: List[str]
+            token_normalize_func: Optional[Callable[[str], str]]
+            resilient_parsing: bool
+            auto_envvar_prefix: Optional[str]
+            color: Optional[bool]
+            _meta: Dict[str, Any]
+            _close_callbacks: List[Any]
+            _depth: int
+
+            def __init__(
+                self,
+                command: Command,
+                parent: Optional[Context] = ...,
+                info_name: Optional[str] = ...,
+                obj: Optional[Any] = ...,
+                auto_envvar_prefix: Optional[str] = ...,
+                default_map: Optional[Mapping[str, Any]] = ...,
+                terminal_width: Optional[int] = ...,
+                max_content_width: Optional[int] = ...,
+                resilient_parsing: bool = ...,
+                allow_extra_args: Optional[bool] = ...,
+                allow_interspersed_args: Optional[bool] = ...,
+                ignore_unknown_options: Optional[bool] = ...,
+                help_option_names: Optional[List[str]] = ...,
+                token_normalize_func: Optional[Callable[[str], str]] = ...,
+                color: Optional[bool] = ...
+            ) -> None:
+                ...
+
+            @property
+            def meta(self) -> Dict[str, Any]:
+                ...
+
+            @property
+            def command_path(self) -> str:
+                ...
+
+            def scope(self, cleanup: bool = ...) -> ContextManager[Context]:
+                ...
+
+            def make_formatter(self) -> HelpFormatter:
+                ...
+
+            def call_on_close(self, f: _CC) -> _CC: ...
+
+            def close(self) -> None:
+                ...
+
+            def find_root(self) -> Context:
+                ...
+
+            def find_object(self, object_type: type) -> Any:
+                ...
+
+            def ensure_object(self, object_type: type) -> Any:
+                ...
+
+            def lookup_default(self, name: str) -> Any:
+                ...
+
+            def fail(self, message: str) -> NoReturn:
+                ...
+
+            def abort(self) -> NoReturn:
+                ...
+
+            def exit(self, code: Union[int, str] = ...) -> NoReturn:
+                ...
+
+            def get_usage(self) -> str:
+                ...
+
+            def get_help(self) -> str:
+                ...
+
+            def invoke(self, callback: Union[Command, Callable[..., Any]], *args, **kwargs) -> Any: ...
+            def forward(self, callback: Union[Command, Callable[..., Any]], *args, **kwargs) -> Any: ...
+
+        class BaseCommand:
+            allow_extra_args: bool
+            allow_interspersed_args: bool
+            ignore_unknown_options: bool
+            name: str
+            context_settings: Dict[Any, Any]
+            def __init__(self, name: str, context_settings: Optional[Dict[Any, Any]] = ...) -> None: ...
+
+            def get_usage(self, ctx: Context) -> str:
+                ...
+
+            def get_help(self, ctx: Context) -> str:
+                ...
+
+            def make_context(
+                self, info_name: str, args: List[str], parent: Optional[Context] = ..., **extra
+            ) -> Context:
+                ...
+
+            def parse_args(self, ctx: Context, args: List[str]) -> List[str]:
+                ...
+
+            def invoke(self, ctx: Context) -> Any:
+                ...
+
+            def main(
+                self,
+                args: Optional[List[str]] = ...,
+                prog_name: Optional[str] = ...,
+                complete_var: Optional[str] = ...,
+                standalone_mode: bool = ...,
+                **extra
+            ) -> Any:
+                ...
+
+            def __call__(self, *args, **kwargs) -> Any:
+                ...
+
+
+        class Command(BaseCommand):
+            callback: Optional[Callable[..., Any]]
+            params: List[Parameter]
+            help: Optional[str]
+            epilog: Optional[str]
+            short_help: Optional[str]
+            options_metavar: str
+            add_help_option: bool
+            hidden: bool
+            deprecated: bool
+
+            def __init__(
+                self,
+                name: str,
+                context_settings: Optional[Dict[Any, Any]] = ...,
+                callback: Optional[Callable[..., Any]] = ...,
+                params: Optional[List[Parameter]] = ...,
+                help: Optional[str] = ...,
+                epilog: Optional[str] = ...,
+                short_help: Optional[str] = ...,
+                options_metavar: str = ...,
+                add_help_option: bool = ...,
+                hidden: bool = ...,
+                deprecated: bool = ...,
+            ) -> None:
+                ...
+
+            def get_params(self, ctx: Context) -> List[Parameter]:
+                ...
+
+            def format_usage(
+                self,
+                ctx: Context,
+                formatter: HelpFormatter
+            ) -> None:
+                ...
+
+            def collect_usage_pieces(self, ctx: Context) -> List[str]:
+                ...
+
+            def get_help_option_names(self, ctx: Context) -> Set[str]:
+                ...
+
+            def get_help_option(self, ctx: Context) -> Optional[Option]:
+                ...
+
+            def make_parser(self, ctx: Context) -> OptionParser:
+                ...
+
+            def get_short_help_str(self, limit: int = ...) -> str:
+                ...
+
+            def format_help(self, ctx: Context, formatter: HelpFormatter) -> None:
+                ...
+
+            def format_help_text(self, ctx: Context, formatter: HelpFormatter) -> None:
+                ...
+
+            def format_options(self, ctx: Context, formatter: HelpFormatter) -> None:
+                ...
+
+            def format_epilog(self, ctx: Context, formatter: HelpFormatter) -> None:
+                ...
+
+
+        _T = TypeVar('_T')
+        _F = TypeVar('_F', bound=Callable[..., Any])
+
+
+        class MultiCommand(Command):
+            no_args_is_help: bool
+            invoke_without_command: bool
+            subcommand_metavar: str
+            chain: bool
+            result_callback: Callable[..., Any]
+
+            def __init__(
+                self,
+                name: Optional[str] = ...,
+                invoke_without_command: bool = ...,
+                no_args_is_help: Optional[bool] = ...,
+                subcommand_metavar: Optional[str] = ...,
+                chain: bool = ...,
+                result_callback: Optional[Callable[..., Any]] = ...,
+                **attrs
+            ) -> None:
+                ...
+
+            def resultcallback(
+                self, replace: bool = ...
+            ) -> Callable[[_F], _F]:
+                ...
+
+            def format_commands(self, ctx: Context, formatter: HelpFormatter) -> None:
+                ...
+
+            def resolve_command(
+                self, ctx: Context, args: List[str]
+            ) -> Tuple[str, Command, List[str]]:
+                ...
+
+            def get_command(self, ctx: Context, cmd_name: str) -> Optional[Command]:
+                ...
+
+            def list_commands(self, ctx: Context) -> Iterable[str]:
+                ...
+
+
+        class Group(MultiCommand):
+            commands: Dict[str, Command]
+
+            def __init__(
+                self, name: Optional[str] = ..., commands: Optional[Dict[str, Command]] = ..., **attrs
+            ) -> None:
+                ...
+
+            def add_command(self, cmd: Command, name: Optional[str] = ...):
+                ...
+
+            def command(self, *args, **kwargs) -> Callable[[Callable[..., Any]], Command]: ...
+            def group(self, *args, **kwargs) -> Callable[[Callable[..., Any]], Group]: ...
+
+
+        class CommandCollection(MultiCommand):
+            sources: List[MultiCommand]
+
+            def __init__(
+                self, name: Optional[str] = ..., sources: Optional[List[MultiCommand]] = ..., **attrs
+            ) -> None:
+                ...
+
+            def add_source(self, multi_cmd: MultiCommand) -> None:
+                ...
+
+
+        class _ParamType:
+            name: str
+            is_composite: bool
+            envvar_list_splitter: Optional[str]
+
+            def __call__(
+                self,
+                value: Optional[str],
+                param: Optional[Parameter] = ...,
+                ctx: Optional[Context] = ...,
+            ) -> Any:
+                ...
+
+            def get_metavar(self, param: Parameter) -> str:
+                ...
+
+            def get_missing_message(self, param: Parameter) -> str:
+                ...
+
+            def convert(
+                self,
+                value: str,
+                param: Optional[Parameter],
+                ctx: Optional[Context],
+            ) -> Any:
+                ...
+
+            def split_envvar_value(self, rv: str) -> List[str]:
+                ...
+
+            def fail(self, message: str, param: Optional[Parameter] = ..., ctx: Optional[Context] = ...) -> NoReturn:
+                ...
+
+
+        # This type is here to resolve https://github.com/python/mypy/issues/5275
+        _ConvertibleType = Union[type, _ParamType, Tuple[Union[type, _ParamType], ...],
+                                 Callable[[str], Any], Callable[[Optional[str]], Any]]
+
+
+        class Parameter:
+            param_type_name: str
+            name: str
+            opts: List[str]
+            secondary_opts: List[str]
+            type: _ParamType
+            required: bool
+            callback: Optional[Callable[[Context, Parameter, str], Any]]
+            nargs: int
+            multiple: bool
+            expose_value: bool
+            default: Any
+            is_eager: bool
+            metavar: Optional[str]
+            envvar: Union[str, List[str], None]
+
+            def __init__(
+                self,
+                param_decls: Optional[List[str]] = ...,
+                type: Optional[_ConvertibleType] = ...,
+                required: bool = ...,
+                default: Optional[Any] = ...,
+                callback: Optional[Callable[[Context, Parameter, str], Any]] = ...,
+                nargs: Optional[int] = ...,
+                metavar: Optional[str] = ...,
+                expose_value: bool = ...,
+                is_eager: bool = ...,
+                envvar: Optional[Union[str, List[str]]] = ...
+            ) -> None:
+                ...
+
+            @property
+            def human_readable_name(self) -> str:
+                ...
+
+            def make_metavar(self) -> str:
+                ...
+
+            def get_default(self, ctx: Context) -> Any:
+                ...
+
+            def add_to_parser(self, parser: OptionParser, ctx: Context) -> None:
+                ...
+
+            def consume_value(self, ctx: Context, opts: Dict[str, Any]) -> Any:
+                ...
+
+            def type_cast_value(self, ctx: Context, value: Any) -> Any:
+                ...
+
+            def process_value(self, ctx: Context, value: Any) -> Any:
+                ...
+
+            def value_is_missing(self, value: Any) -> bool:
+                ...
+
+            def full_process_value(self, ctx: Context, value: Any) -> Any:
+                ...
+
+            def resolve_envvar_value(self, ctx: Context) -> str:
+                ...
+
+            def value_from_envvar(self, ctx: Context) -> Union[str, List[str]]:
+                ...
+
+            def handle_parse_result(
+                self, ctx: Context, opts: Dict[str, Any], args: List[str]
+            ) -> Tuple[Any, List[str]]:
+                ...
+
+            def get_help_record(self, ctx: Context) -> Tuple[str, str]:
+                ...
+
+            def get_usage_pieces(self, ctx: Context) -> List[str]:
+                ...
+
+            def get_error_hint(self, ctx: Context) -> str:
+                ...
+
+
+        class Option(Parameter):
+            prompt: str  # sic
+            confirmation_prompt: bool
+            hide_input: bool
+            is_flag: bool
+            flag_value: Any
+            is_bool_flag: bool
+            count: bool
+            multiple: bool
+            allow_from_autoenv: bool
+            help: Optional[str]
+            hidden: bool
+            show_default: bool
+            show_choices: bool
+            show_envvar: bool
+
+            def __init__(
+                self,
+                param_decls: Optional[List[str]] = ...,
+                show_default: bool = ...,
+                prompt: Union[bool, str] = ...,
+                confirmation_prompt: bool = ...,
+                hide_input: bool = ...,
+                is_flag: Optional[bool] = ...,
+                flag_value: Optional[Any] = ...,
+                multiple: bool = ...,
+                count: bool = ...,
+                allow_from_autoenv: bool = ...,
+                type: Optional[_ConvertibleType] = ...,
+                help: Optional[str] = ...,
+                hidden: bool = ...,
+                show_choices: bool = ...,
+                show_envvar: bool = ...,
+                **attrs
+            ) -> None:
+                ...
+
+            def prompt_for_value(self, ctx: Context) -> Any:
+                ...
+
+
+        class Argument(Parameter):
+            def __init__(
+                self,
+                param_decls: Optional[List[str]] = ...,
+                required: Optional[bool] = ...,
+                **attrs
+            ) -> None:
+                ...
+      |}
+    );
+    ( "click/decorators.pyi",
+      {|
+        from distutils.version import Version
+        from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar, Union, Text, overload
+
+        from click.core import Command, Group, Argument, Option, Parameter, Context, _ConvertibleType
+
+        _T = TypeVar('_T')
+        _F = TypeVar('_F', bound=Callable[..., Any])
+
+        # Until https://github.com/python/mypy/issues/3924 is fixed you can't do the following:
+        # _Decorator = Callable[[_F], _F]
+
+        _Callback = Callable[
+            [Context, Union[Option, Parameter], Any],
+            Any
+        ]
+
+        def pass_context(_T) -> _T:
+            ...
+
+
+        def pass_obj(_T) -> _T:
+            ...
+
+
+        def make_pass_decorator(
+            object_type: type, ensure: bool = ...
+        ) -> Callable[[_T], _T]:
+            ...
+
+
+        # NOTE: Decorators below have **attrs converted to concrete constructor
+        # arguments from core.pyi to help with type checking.
+
+        def command(
+            name: Optional[str] = ...,
+            cls: Optional[Type[Command]] = ...,
+            # Command
+            context_settings: Optional[Dict[Any, Any]] = ...,
+            help: Optional[str] = ...,
+            epilog: Optional[str] = ...,
+            short_help: Optional[str] = ...,
+            options_metavar: str = ...,
+            add_help_option: bool = ...,
+            hidden: bool = ...,
+            deprecated: bool = ...,
+        ) -> Callable[[Callable[..., Any]], Command]: ...
+
+        # This inherits attrs from Group, MultiCommand and Command.
+
+        def group(
+            name: Optional[str] = ...,
+            cls: Type[Command] = ...,
+            # Group
+            commands: Optional[Dict[str, Command]] = ...,
+            # MultiCommand
+            invoke_without_command: bool = ...,
+            no_args_is_help: Optional[bool] = ...,
+            subcommand_metavar: Optional[str] = ...,
+            chain: bool = ...,
+            result_callback: Optional[Callable[..., Any]] = ...,
+            # Command
+            help: Optional[str] = ...,
+            epilog: Optional[str] = ...,
+            short_help: Optional[str] = ...,
+            options_metavar: str = ...,
+            add_help_option: bool = ...,
+            hidden: bool = ...,
+            deprecated: bool = ...,
+            # User-defined
+            **kwargs: Any,
+        ) -> Callable[[Callable[..., Any]], Group]: ...
+
+        def argument(
+            *param_decls: str,
+            cls: Type[Argument] = ...,
+            # Argument
+            required: Optional[bool] = ...,
+            # Parameter
+            type: Optional[_ConvertibleType] = ...,
+            default: Optional[Any] = ...,
+            callback: Optional[_Callback] = ...,
+            nargs: Optional[int] = ...,
+            metavar: Optional[str] = ...,
+            expose_value: bool = ...,
+            is_eager: bool = ...,
+            envvar: Optional[Union[str, List[str]]] = ...,
+            autocompletion: Optional[Callable[[Any, List[str], str], List[Union[str, Tuple[str, str]]]]] = ...,
+        ) -> Callable[[_F], _F]:
+            ...
+
+
+        @overload
+        def option(
+            *param_decls: str,
+            cls: Type[Option] = ...,
+            # Option
+            show_default: bool = ...,
+            prompt: Union[bool, Text] = ...,
+            confirmation_prompt: bool = ...,
+            hide_input: bool = ...,
+            is_flag: Optional[bool] = ...,
+            flag_value: Optional[Any] = ...,
+            multiple: bool = ...,
+            count: bool = ...,
+            allow_from_autoenv: bool = ...,
+            type: Optional[_ConvertibleType] = ...,
+            help: Optional[str] = ...,
+            show_choices: bool = ...,
+            # Parameter
+            default: Optional[Any] = ...,
+            required: bool = ...,
+            callback: Optional[_Callback] = ...,
+            nargs: Optional[int] = ...,
+            metavar: Optional[str] = ...,
+            expose_value: bool = ...,
+            is_eager: bool = ...,
+            envvar: Optional[Union[str, List[str]]] = ...,
+            # User-defined
+            **kwargs: Any,
+        ) -> Callable[[_F], _F]:
+            ...
+
+
+        @overload
+        def option(
+            *param_decls: str,
+            cls: Type[Option] = ...,
+            # Option
+            show_default: bool = ...,
+            prompt: Union[bool, Text] = ...,
+            confirmation_prompt: bool = ...,
+            hide_input: bool = ...,
+            is_flag: Optional[bool] = ...,
+            flag_value: Optional[Any] = ...,
+            multiple: bool = ...,
+            count: bool = ...,
+            allow_from_autoenv: bool = ...,
+            type: _T = ...,
+            help: Optional[str] = ...,
+            show_choices: bool = ...,
+            # Parameter
+            default: Optional[Any] = ...,
+            required: bool = ...,
+            callback: Optional[Callable[[Context, Union[Option, Parameter], Union[bool, int, str]], _T]] = ...,
+            nargs: Optional[int] = ...,
+            metavar: Optional[str] = ...,
+            expose_value: bool = ...,
+            is_eager: bool = ...,
+            envvar: Optional[Union[str, List[str]]] = ...,
+            # User-defined
+            **kwargs: Any,
+        ) -> Callable[[_F], _F]:
+            ...
+
+
+        @overload
+        def option(
+            *param_decls: str,
+            cls: Type[Option] = ...,
+            # Option
+            show_default: bool = ...,
+            prompt: Union[bool, Text] = ...,
+            confirmation_prompt: bool = ...,
+            hide_input: bool = ...,
+            is_flag: Optional[bool] = ...,
+            flag_value: Optional[Any] = ...,
+            multiple: bool = ...,
+            count: bool = ...,
+            allow_from_autoenv: bool = ...,
+            type: Type[str] = ...,
+            help: Optional[str] = ...,
+            show_choices: bool = ...,
+            # Parameter
+            default: Optional[Any] = ...,
+            required: bool = ...,
+            callback: Callable[[Context, Union[Option, Parameter], str], Any] = ...,
+            nargs: Optional[int] = ...,
+            metavar: Optional[str] = ...,
+            expose_value: bool = ...,
+            is_eager: bool = ...,
+            envvar: Optional[Union[str, List[str]]] = ...,
+            # User-defined
+            **kwargs: Any,
+        ) -> Callable[[_F], _F]:
+            ...
+
+
+        @overload
+        def option(
+            *param_decls: str,
+            cls: Type[Option] = ...,
+            # Option
+            show_default: bool = ...,
+            prompt: Union[bool, Text] = ...,
+            confirmation_prompt: bool = ...,
+            hide_input: bool = ...,
+            is_flag: Optional[bool] = ...,
+            flag_value: Optional[Any] = ...,
+            multiple: bool = ...,
+            count: bool = ...,
+            allow_from_autoenv: bool = ...,
+            type: Type[int] = ...,
+            help: Optional[str] = ...,
+            show_choices: bool = ...,
+            # Parameter
+            default: Optional[Any] = ...,
+            required: bool = ...,
+            callback: Callable[[Context, Union[Option, Parameter], int], Any] = ...,
+            nargs: Optional[int] = ...,
+            metavar: Optional[str] = ...,
+            expose_value: bool = ...,
+            is_eager: bool = ...,
+            envvar: Optional[Union[str, List[str]]] = ...,
+            # User-defined
+            **kwargs: Any,
+        ) -> Callable[[_F], _F]:
+            ...
+
+
+        def confirmation_option(
+            *param_decls: str,
+            cls: Type[Option] = ...,
+            # Option
+            show_default: bool = ...,
+            prompt: Union[bool, Text] = ...,
+            confirmation_prompt: bool = ...,
+            hide_input: bool = ...,
+            is_flag: bool = ...,
+            flag_value: Optional[Any] = ...,
+            multiple: bool = ...,
+            count: bool = ...,
+            allow_from_autoenv: bool = ...,
+            type: Optional[_ConvertibleType] = ...,
+            help: str = ...,
+            show_choices: bool = ...,
+            # Parameter
+            default: Optional[Any] = ...,
+            callback: Optional[_Callback] = ...,
+            nargs: Optional[int] = ...,
+            metavar: Optional[str] = ...,
+            expose_value: bool = ...,
+            is_eager: bool = ...,
+            envvar: Optional[Union[str, List[str]]] = ...
+        ) -> Callable[[_F], _F]:
+            ...
+
+
+        def password_option(
+            *param_decls: str,
+            cls: Type[Option] = ...,
+            # Option
+            show_default: bool = ...,
+            prompt: Union[bool, Text] = ...,
+            confirmation_prompt: bool = ...,
+            hide_input: bool = ...,
+            is_flag: Optional[bool] = ...,
+            flag_value: Optional[Any] = ...,
+            multiple: bool = ...,
+            count: bool = ...,
+            allow_from_autoenv: bool = ...,
+            type: Optional[_ConvertibleType] = ...,
+            help: Optional[str] = ...,
+            show_choices: bool = ...,
+            # Parameter
+            default: Optional[Any] = ...,
+            callback: Optional[_Callback] = ...,
+            nargs: Optional[int] = ...,
+            metavar: Optional[str] = ...,
+            expose_value: bool = ...,
+            is_eager: bool = ...,
+            envvar: Optional[Union[str, List[str]]] = ...
+        ) -> Callable[[_F], _F]:
+            ...
+
+
+        def version_option(
+            version: Optional[Union[str, Version]] = ...,
+            *param_decls: str,
+            cls: Type[Option] = ...,
+            # Option
+            prog_name: Optional[str] = ...,
+            message: Optional[str] = ...,
+            show_default: bool = ...,
+            prompt: Union[bool, Text] = ...,
+            confirmation_prompt: bool = ...,
+            hide_input: bool = ...,
+            is_flag: bool = ...,
+            flag_value: Optional[Any] = ...,
+            multiple: bool = ...,
+            count: bool = ...,
+            allow_from_autoenv: bool = ...,
+            type: Optional[_ConvertibleType] = ...,
+            help: str = ...,
+            show_choices: bool = ...,
+            # Parameter
+            default: Optional[Any] = ...,
+            callback: Optional[_Callback] = ...,
+            nargs: Optional[int] = ...,
+            metavar: Optional[str] = ...,
+            expose_value: bool = ...,
+            is_eager: bool = ...,
+            envvar: Optional[Union[str, List[str]]] = ...
+        ) -> Callable[[_F], _F]:
+            ...
+
+
+        def help_option(
+            *param_decls: str,
+            cls: Type[Option] = ...,
+            # Option
+            show_default: bool = ...,
+            prompt: Union[bool, Text] = ...,
+            confirmation_prompt: bool = ...,
+            hide_input: bool = ...,
+            is_flag: bool = ...,
+            flag_value: Optional[Any] = ...,
+            multiple: bool = ...,
+            count: bool = ...,
+            allow_from_autoenv: bool = ...,
+            type: Optional[_ConvertibleType] = ...,
+            help: str = ...,
+            show_choices: bool = ...,
+            # Parameter
+            default: Optional[Any] = ...,
+            callback: Optional[_Callback] = ...,
+            nargs: Optional[int] = ...,
+            metavar: Optional[str] = ...,
+            expose_value: bool = ...,
+            is_eager: bool = ...,
+            envvar: Optional[Union[str, List[str]]] = ...
+        ) -> Callable[[_F], _F]:
+            ...
+      |}
+    );
     "placeholder_stub.pyi", {|
         # pyre-placeholder-stub
         |};
@@ -1471,7 +2518,9 @@ let mock_signature =
   }
 
 
-let mock_define = { Define.signature = mock_signature; captures = []; body = [] }
+let mock_define =
+  { Define.signature = mock_signature; captures = []; unbound_names = []; body = [] }
+
 
 let create_type_alias_table type_aliases =
   let aliases primitive = type_aliases primitive >>| fun alias -> Type.TypeAlias alias in
@@ -1487,16 +2536,15 @@ let update_environments
     ?(scheduler = mock_scheduler ())
     ~configuration
     ~ast_environment
-    ~ast_environment_update_result
-    ~qualifiers
-    ()
+    ast_environment_trigger
   =
-  AnnotatedGlobalEnvironment.update_this_and_all_preceding_environments
-    ast_environment
-    ~scheduler
-    ~configuration
-    ~ast_environment_update_result
-    qualifiers
+  let environment = AnnotatedGlobalEnvironment.create ast_environment in
+  ( environment,
+    AnnotatedGlobalEnvironment.update_this_and_all_preceding_environments
+      environment
+      ~scheduler
+      ~configuration
+      ast_environment_trigger )
 
 
 module ScratchProject = struct
@@ -1509,7 +2557,6 @@ module ScratchProject = struct
   module BuiltTypeEnvironment = struct
     type t = {
       sources: Source.t list;
-      ast_environment: AstEnvironment.t;
       type_environment: TypeEnvironment.t;
     }
   end
@@ -1517,8 +2564,7 @@ module ScratchProject = struct
   module BuiltGlobalEnvironment = struct
     type t = {
       sources: Source.t list;
-      ast_environment: AstEnvironment.t;
-      global_environment: AnnotatedGlobalEnvironment.ReadOnly.t;
+      global_environment: AnnotatedGlobalEnvironment.t;
     }
   end
 
@@ -1540,6 +2586,7 @@ module ScratchProject = struct
       ?(incremental_style = Configuration.Analysis.FineGrained)
       ~context
       ?(external_sources = [])
+      ?(show_error_traces = false)
       ?(include_typeshed_stubs = true)
       ?(include_helper_builtins = true)
       sources
@@ -1549,16 +2596,22 @@ module ScratchProject = struct
       let file = File.create ~content (Path.create_relative ~root ~relative) in
       File.write file
     in
+    (* We assume that there's only one checked source directory that acts as the local root as well. *)
     let local_root = bracket_tmpdir context |> Path.create_absolute in
+    (* We assume that there's only one external source directory that acts as the local root as
+       well. *)
     let external_root = bracket_tmpdir context |> Path.create_absolute in
     let configuration =
       Configuration.Analysis.create
         ~local_root
+        ~source_path:[local_root]
         ~search_path:[SearchPath.Root external_root]
         ~filter_directories:[local_root]
         ~ignore_all_errors:[external_root]
         ~incremental_style
         ~features:{ Configuration.Features.default with go_to_definition = true }
+        ~show_error_traces
+        ~parallel:false
         ()
     in
     let external_sources =
@@ -1576,7 +2629,7 @@ module ScratchProject = struct
   (* Incremental checks already call ModuleTracker.update, so we don't need to update the state
      here. *)
   let add_source
-      { configuration = { Configuration.Analysis.local_root; search_path; _ }; _ }
+      { configuration = { Configuration.Analysis.source_path; search_path; _ }; _ }
       ~is_external
       (relative, content)
     =
@@ -1589,7 +2642,9 @@ module ScratchProject = struct
               failwith
                 "Scratch projects should have the external root at the start of their search path."
         else
-          local_root
+          match source_path with
+          | root :: _ -> root
+          | _ -> failwith "Scratch projects should have only one source path."
       in
       Path.create_relative ~root ~relative
     in
@@ -1601,14 +2656,12 @@ module ScratchProject = struct
 
   let source_paths_of { module_tracker; _ } = ModuleTracker.source_paths module_tracker
 
-  let local_root_of { configuration = { Configuration.Analysis.local_root; _ }; _ } = local_root
-
   let qualifiers_of { module_tracker; _ } =
     ModuleTracker.source_paths module_tracker
     |> List.map ~f:(fun { SourcePath.qualifier; _ } -> qualifier)
 
 
-  let parse_sources { context; configuration; module_tracker } =
+  let build_ast_environment { context; configuration; module_tracker } =
     let ast_environment = AstEnvironment.create module_tracker in
     let () =
       (* Clean shared memory up before the test *)
@@ -1620,6 +2673,11 @@ module ScratchProject = struct
       (* Clean shared memory up after the test *)
       OUnit2.bracket set_up_shared_memory tear_down_shared_memory context
     in
+    ast_environment
+
+
+  let parse_sources ({ configuration; module_tracker; _ } as project) =
+    let ast_environment = build_ast_environment project in
     let ast_environment_update_result =
       Analysis.ModuleTracker.source_paths module_tracker
       |> List.map ~f:(fun source_path -> ModuleTracker.IncrementalUpdate.NewExplicit source_path)
@@ -1629,48 +2687,27 @@ module ScratchProject = struct
            ~scheduler:(mock_scheduler ())
            ast_environment
     in
-    (* Normally we shouldn't have any parse errors in tests *)
-    let errors =
-      AstEnvironment.UpdateResult.system_errors ast_environment_update_result
-      @ AstEnvironment.UpdateResult.syntax_errors ast_environment_update_result
-    in
-    ( if not (List.is_empty errors) then
-        let relative_paths =
-          List.map errors ~f:(fun { SourcePath.relative; _ } -> relative) |> String.concat ~sep:", "
-        in
-        raise (Parser.Error (Format.sprintf "Could not parse files at `%s`" relative_paths)) );
     ast_environment, ast_environment_update_result
 
 
   let build_global_environment ({ configuration; _ } as project) =
-    let ast_environment, ast_environment_update_result = parse_sources project in
+    let ast_environment = build_ast_environment project in
+    let global_environment, update_result =
+      update_environments ~ast_environment ~configuration ColdStart
+    in
     let sources =
-      let ast_environment = Analysis.AstEnvironment.read_only ast_environment in
-      AstEnvironment.UpdateResult.reparsed ast_environment_update_result
-      |> List.filter_map ~f:(AstEnvironment.ReadOnly.get_source ast_environment)
+      AnnotatedGlobalEnvironment.UpdateResult.ast_environment_update_result update_result
+      |> AstEnvironment.UpdateResult.invalidated_modules
+      |> List.filter_map
+           ~f:
+             (AstEnvironment.ReadOnly.get_processed_source
+                (AstEnvironment.read_only ast_environment))
     in
-    let global_environment =
-      let qualifiers =
-        List.map sources ~f:(fun { Ast.Source.source_path = { SourcePath.qualifier; _ }; _ } ->
-            qualifier)
-      in
-      let update_result =
-        update_environments
-          ~ast_environment:(AstEnvironment.read_only ast_environment)
-          ~configuration
-          ~ast_environment_update_result
-          ~qualifiers:(Reference.Set.of_list qualifiers)
-          ()
-      in
-      AnnotatedGlobalEnvironment.UpdateResult.read_only update_result
-    in
-    { BuiltGlobalEnvironment.sources; ast_environment; global_environment }
+    { BuiltGlobalEnvironment.sources; global_environment }
 
 
   let build_type_environment ?call_graph_builder project =
-    let { BuiltGlobalEnvironment.sources; ast_environment; global_environment } =
-      build_global_environment project
-    in
+    let { BuiltGlobalEnvironment.sources; global_environment } = build_global_environment project in
     let type_environment = TypeEnvironment.create global_environment in
     let configuration = configuration_of project in
     List.map sources ~f:(fun { Source.source_path = { SourcePath.qualifier; _ }; _ } -> qualifier)
@@ -1679,7 +2716,7 @@ module ScratchProject = struct
          ~configuration
          ~environment:type_environment
          ?call_graph_builder;
-    { BuiltTypeEnvironment.sources; ast_environment; type_environment }
+    { BuiltTypeEnvironment.sources; type_environment }
 
 
   let build_type_environment_and_postprocess ?call_graph_builder project =
@@ -1696,17 +2733,16 @@ module ScratchProject = struct
     built_type_environment, errors
 
 
-  let build_resolution project =
+  let build_global_resolution project =
     let { BuiltGlobalEnvironment.global_environment; _ } = build_global_environment project in
-    let global_resolution = GlobalResolution.create global_environment in
+    AnnotatedGlobalEnvironment.read_only global_environment |> GlobalResolution.create
+
+
+  let build_resolution project =
+    let global_resolution = build_global_resolution project in
     TypeCheck.resolution
       global_resolution (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
       (module TypeCheck.DummyContext)
-
-
-  let build_global_resolution project =
-    let { BuiltGlobalEnvironment.global_environment; _ } = build_global_environment project in
-    GlobalResolution.create global_environment
 end
 
 type test_update_environment_with_t = {
@@ -1723,6 +2759,7 @@ let assert_errors
     ?(concise = false)
     ?(handle = "test.py")
     ?(update_environment_with = [])
+    ?(include_line_numbers = false)
     ~context
     ~check
     source
@@ -1745,13 +2782,13 @@ let assert_errors
           in
           ScratchProject.setup ~context ~external_sources [handle, source]
         in
-        let { ScratchProject.BuiltGlobalEnvironment.sources; ast_environment; global_environment } =
+        let { ScratchProject.BuiltGlobalEnvironment.sources; global_environment } =
           ScratchProject.build_global_environment project
         in
         let configuration = ScratchProject.configuration_of project in
         ( configuration,
           sources,
-          AstEnvironment.read_only ast_environment,
+          AnnotatedGlobalEnvironment.ast_environment global_environment |> AstEnvironment.read_only,
           TypeEnvironment.create global_environment )
       in
       let configuration = { configuration with debug; strict; infer } in
@@ -1763,6 +2800,7 @@ let assert_errors
       |> List.map
            ~f:
              (AnalysisError.instantiate
+                ~show_error_traces
                 ~lookup:
                   (AstEnvironment.ReadOnly.get_real_path_relative ~configuration ast_environment))
     in
@@ -1771,20 +2809,26 @@ let assert_errors
           let location = AnalysisError.Instantiated.location error in
           Option.some_if (Location.WithPath.equal location Location.WithPath.any) location)
     in
+    let show_description ~concise error =
+      if concise then
+        AnalysisError.Instantiated.concise_description error
+      else
+        AnalysisError.Instantiated.description error
+    in
     let found_any = not (List.is_empty errors_with_any_location) in
     ( if found_any then
-        let errors =
-          List.map
-            ~f:(fun error ->
-              AnalysisError.Instantiated.description error ~show_error_traces ~concise)
-            errors
-          |> String.concat ~sep:"\n"
-        in
+        let errors = List.map ~f:(show_description ~concise) errors |> String.concat ~sep:"\n" in
         Format.sprintf "\nLocation.any cannot be attached to errors: %s\n" errors |> ignore );
     assert_false found_any;
-    List.map
-      ~f:(fun error -> AnalysisError.Instantiated.description error ~show_error_traces ~concise)
-      errors
+    let to_string error =
+      let description = show_description ~concise error in
+      if include_line_numbers then
+        let line = AnalysisError.Instantiated.location error |> Location.WithPath.line in
+        Format.sprintf "%d: %s" line description
+      else
+        description
+    in
+    List.map ~f:to_string errors
   in
   Memory.reset_shared_memory ();
   assert_equal ~cmp:(List.equal String.equal) ~printer:(String.concat ~sep:"\n") errors descriptions
@@ -1797,7 +2841,9 @@ let assert_equivalent_attributes ~context source expected =
     let { ScratchProject.BuiltGlobalEnvironment.global_environment; _ } =
       ScratchProject.setup ~context [handle, source] |> ScratchProject.build_global_environment
     in
-    let global_resolution = GlobalResolution.create global_environment in
+    let global_resolution =
+      AnnotatedGlobalEnvironment.read_only global_environment |> GlobalResolution.create
+    in
     let compare_by_name left right =
       String.compare (Annotated.Attribute.name left) (Annotated.Attribute.name right)
     in

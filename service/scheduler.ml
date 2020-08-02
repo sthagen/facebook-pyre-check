@@ -7,6 +7,8 @@ open Hack_parallel.Std
 module Daemon = Daemon
 open Core
 
+let is_master () = Int.equal 0 (Worker.current_worker_id ())
+
 type t =
   | SequentialScheduler
   | ParallelScheduler of Worker.t list
@@ -75,7 +77,13 @@ module Policy = struct
           1
 end
 
-let entry = Worker.register_entry_point ~restore:(fun _ -> ())
+let entry =
+  Worker.register_entry_point ~restore:(fun (log_state, profiling_state, statistics_state) ->
+      Log.GlobalState.restore log_state;
+      Profiling.GlobalState.restore profiling_state;
+      Statistics.GlobalState.restore statistics_state;
+      ())
+
 
 let create
     ~configuration:({ Configuration.Analysis.parallel; number_of_workers; _ } as configuration)
@@ -85,7 +93,11 @@ let create
   if parallel then
     let workers =
       Hack_parallel.Std.Worker.make
-        ~saved_state:()
+        ~saved_state:
+          ( (* These states need to be restored in the worker process. *)
+            Log.GlobalState.get (),
+            Profiling.GlobalState.get (),
+            Statistics.GlobalState.get () )
         ~entry
         ~nbr_procs:number_of_workers
         ~heap_handle
@@ -98,12 +110,19 @@ let create
 
 let create_sequential () = SequentialScheduler
 
-let run_process
-    ~configuration:({ Configuration.Analysis.verbose; sections; _ } as configuration)
-    process
-  =
-  Log.initialize ~verbose ~sections;
-  Configuration.Analysis.set_global configuration;
+let destroy = function
+  | SequentialScheduler -> ()
+  | ParallelScheduler workers -> List.iter workers ~f:Worker.kill
+
+
+let with_scheduler ~configuration ~f =
+  let scheduler = create ~configuration () in
+  match scheduler with
+  | SequentialScheduler -> f SequentialScheduler
+  | ParallelScheduler _ -> Exn.protectx ~f scheduler ~finally:(fun _ -> destroy scheduler)
+
+
+let run_process process =
   try
     let result = process () in
     Statistics.flush ();
@@ -112,7 +131,7 @@ let run_process
   | error -> raise error
 
 
-let map_reduce scheduler ~policy ~configuration ~initial ~map ~reduce ~inputs () =
+let map_reduce scheduler ~policy ~initial ~map ~reduce ~inputs () =
   let sequential_map_reduce () = map initial inputs |> fun mapped -> reduce mapped initial in
   match scheduler with
   | ParallelScheduler workers ->
@@ -123,9 +142,7 @@ let map_reduce scheduler ~policy ~configuration ~initial ~map ~reduce ~inputs ()
       if number_of_chunks = 1 then
         sequential_map_reduce ()
       else
-        let map accumulator inputs =
-          (fun () -> map accumulator inputs) |> run_process ~configuration
-        in
+        let map accumulator inputs = (fun () -> map accumulator inputs) |> run_process in
         MultiWorker.call
           (Some workers)
           ~job:map
@@ -135,11 +152,10 @@ let map_reduce scheduler ~policy ~configuration ~initial ~map ~reduce ~inputs ()
   | SequentialScheduler -> sequential_map_reduce ()
 
 
-let iter scheduler ~policy ~configuration ~f ~inputs =
+let iter scheduler ~policy ~f ~inputs =
   map_reduce
     scheduler
     ~policy
-    ~configuration
     ~initial:()
     ~map:(fun _ inputs -> f inputs)
     ~reduce:(fun _ _ -> ())
@@ -152,22 +168,16 @@ let is_parallel = function
   | ParallelScheduler _ -> true
 
 
-let destroy = function
-  | SequentialScheduler -> ()
-  | ParallelScheduler _ -> Worker.killall ()
-
-
 let once_per_worker scheduler ~configuration:_ ~f =
   match scheduler with
   | SequentialScheduler -> ()
   | ParallelScheduler workers ->
-      let number_of_workers = List.length workers in
-      MultiWorker.call
-        (Some workers)
-        ~job:(fun _ _ -> f ())
-        ~merge:(fun _ _ -> ())
-        ~neutral:()
-        ~next:
-          (Bucket.make
-             ~num_workers:number_of_workers
-             (List.init number_of_workers ~f:(fun _ -> ())))
+      let handles = List.map workers ~f:(fun worker -> Worker.call worker f ()) in
+      let rec collect_all = function
+        | [] -> ()
+        | handles ->
+            let { Worker.readys; waiters } = Worker.select handles in
+            List.iter readys ~f:Worker.get_result;
+            collect_all waiters
+      in
+      collect_all handles

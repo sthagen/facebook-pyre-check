@@ -10,7 +10,8 @@ from logging import Logger
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from .errors import Errors, json_to_errors
+from . import UserError
+from .errors import Errors
 from .filesystem import get_filesystem
 
 
@@ -18,7 +19,12 @@ LOG: Logger = logging.getLogger(__name__)
 
 
 class Configuration:
-    def __init__(self, path: Path, json_contents: Dict[str, Any]) -> None:
+    def __init__(
+        self, path: Path, json_contents: Optional[Dict[str, Any]] = None
+    ) -> None:
+        if json_contents is None:
+            with open(path, "r") as configuration_file:
+                json_contents = json.load(configuration_file)
         self._path: Path = path
         if path.name == ".pyre_configuration.local":
             self.is_local: bool = True
@@ -34,6 +40,7 @@ class Configuration:
             "source_directories"
         )
         self.version: Optional[str] = json_contents.get("version")
+        self.differential: bool = json_contents.get("differential", False)
 
     def get_contents(self) -> Dict[str, Any]:
         contents: Dict[str, Any] = self.original_contents
@@ -68,8 +75,11 @@ class Configuration:
         return None
 
     @staticmethod
-    def find_project_configuration(directory: Optional[Path] = None) -> Optional[Path]:
-        return Configuration.find_parent_file(".pyre_configuration", directory)
+    def find_project_configuration(directory: Optional[Path] = None) -> Path:
+        path = Configuration.find_parent_file(".pyre_configuration", directory)
+        if path is None:
+            raise UserError("No root with a `.pyre_configuration` found.")
+        return path
 
     @staticmethod
     def find_local_configuration(directory: Optional[Path] = None) -> Optional[Path]:
@@ -90,12 +100,7 @@ class Configuration:
         configuration_paths = Configuration.gather_local_configuration_paths(".")
         if not configuration_paths:
             LOG.info("No projects with local configurations found.")
-            project_configuration = Configuration.find_project_configuration()
-            if project_configuration:
-                configuration_paths = [project_configuration]
-            else:
-                LOG.error("No project configuration found.")
-                return []
+            return []
         configurations = []
         for configuration_path in configuration_paths:
             with open(configuration_path) as configuration_file:
@@ -110,7 +115,7 @@ class Configuration:
                         configuration_path,
                     )
         LOG.info(
-            "Found %d configuration%s",
+            "Found %d local configuration%s.",
             len(configurations),
             "s" if len(configurations) != 1 else "",
         )
@@ -133,6 +138,9 @@ class Configuration:
             return
         self.version = None
 
+    def set_version(self, version: str) -> None:
+        self.version = version
+
     def add_strict(self) -> None:
         if self.strict:
             LOG.info("Configuration is already strict.")
@@ -149,6 +157,8 @@ class Configuration:
     def deduplicate_targets(self) -> None:
         all_targets = self.targets
         if all_targets:
+            # pyre-fixme[6]: Expected `Iterable[Variable[_LT (bound to
+            #  _SupportsLessThan)]]` for 1st param but got `Set[str]`.
             all_targets = sorted(set(all_targets))
             deduplicated_targets = []
             expanded_targets = set()
@@ -203,7 +213,7 @@ class Configuration:
                     stderr=subprocess.PIPE,
                 )
             json_string = process.stdout.decode().strip()
-            errors = json_to_errors(json_string, only_fix_error_code)
+            errors = Errors.from_json(json_string, only_fix_error_code)
             LOG.info("Found %d error%s.", len(errors), "s" if len(errors) != 1 else "")
             return errors
         except subprocess.CalledProcessError as error:

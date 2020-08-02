@@ -34,6 +34,8 @@ let test_parse _ =
   assert_mode "  # pyre-ignore-all-errors" None;
   assert_mode "\t# pyre-ignore-all-errors" None;
   assert_mode " # pyre-strict" (Some (create_mode 1 1 14 Source.Strict));
+  assert_mode " ## pyre-strict" (Some (create_mode 1 1 15 Source.Strict));
+  assert_mode " #? pyre-strict" None;
   assert_mode " # pyre-stric" None;
   assert_mode "  # pyre-strict" None;
   assert_mode "\t# pyre-strict" None;
@@ -60,6 +62,7 @@ let test_parse _ =
     assert_equal ignore_codes expected_codes
   in
   assert_ignore_codes " # pyre-ignore-all-errors[42, 7,   15] " [42; 7; 15];
+  assert_ignore_codes " # pyre-ignore-all-errors[42, 7,   15]: Comment" [42; 7; 15];
 
   (* Prevent typos from being treated as error suppressors. *)
   assert_ignore_codes " # pyre-ignore-all-errors[42, 7,   15" [];
@@ -183,18 +186,18 @@ let test_mode _ =
     let actual_mode = Source.mode ~configuration ~local_mode in
     assert_equal actual_mode expected_mode
   in
-  let configuration = Configuration.Analysis.create () in
+  let configuration = Configuration.Analysis.create ~source_path:[] () in
   assert_mode ~configuration None Source.Unsafe;
   assert_mode ~configuration (Some (Node.create_with_default_location Source.Strict)) Source.Strict;
   assert_mode ~configuration (Some (Node.create_with_default_location Source.Debug)) Source.Debug;
 
-  let configuration = Configuration.Analysis.create ~strict:true () in
+  let configuration = Configuration.Analysis.create ~strict:true ~source_path:[] () in
   assert_mode ~configuration None Source.Strict;
   assert_mode ~configuration (Some (Node.create_with_default_location Source.Unsafe)) Source.Unsafe;
   assert_mode ~configuration (Some (Node.create_with_default_location Source.Strict)) Source.Strict;
   assert_mode ~configuration (Some (Node.create_with_default_location Source.Debug)) Source.Debug;
 
-  let configuration = Configuration.Analysis.create ~debug:true () in
+  let configuration = Configuration.Analysis.create ~debug:true ~source_path:[] () in
   assert_mode ~configuration None Source.Debug;
   assert_mode ~configuration (Some (Node.create_with_default_location Source.Strict)) Source.Debug;
   assert_mode ~configuration (Some (Node.create_with_default_location Source.Unsafe)) Source.Debug
@@ -218,12 +221,12 @@ let test_expand_relative_import _ =
       | { Node.value = Import { Import.from = Some from; _ }; _ } -> from
       | _ -> failwith "Could not parse import"
     in
-    let source = Source.create ~relative [] in
+    let source_path = Source.create ~relative [] |> fun { Source.source_path; _ } -> source_path in
     assert_equal
       ~cmp:Reference.equal
       ~printer:Reference.show
       (Reference.create expected)
-      (Node.value (Source.expand_relative_import source ~from))
+      (Node.value (SourcePath.expand_relative_import source_path ~from))
   in
   assert_export ~relative:"module/qualifier.py" ~from:"." ~expected:"module";
   assert_export

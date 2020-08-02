@@ -9,7 +9,6 @@ open IntegrationTest
 let test_check_return context =
   let assert_type_errors = assert_type_errors ~context in
   let assert_default_type_errors = assert_default_type_errors ~context in
-  let assert_strict_type_errors = assert_strict_type_errors ~context in
   assert_type_errors "def foo() -> None: pass" [];
   assert_type_errors "def foo() -> None: return" [];
   assert_type_errors "def foo() -> float: return 1.0" [];
@@ -106,7 +105,9 @@ let test_check_return context =
     "class A: pass\ndef foo() -> A: return 1"
     ["Incompatible return type [7]: Expected `A` but got `int`."];
   assert_type_errors "def bar() -> str: return ''\ndef foo() -> str: return bar()" [];
-  assert_type_errors "def foo() -> str: return not_annotated()" [];
+  assert_type_errors
+    "from builtins import not_annotated\ndef foo() -> str: return not_annotated()"
+    [];
   assert_type_errors
     {|
       def x()->int:
@@ -129,6 +130,7 @@ let test_check_return context =
     ["Incompatible return type [7]: Expected `typing.Set[int]` but got `typing.Set[str]`."];
   assert_type_errors
     {|
+      from builtins import condition
       def foo() -> str:
         if condition():
           return 1
@@ -217,17 +219,6 @@ let test_check_return context =
           return x
     |}
     [];
-  assert_strict_type_errors
-    {|
-       def derp(flag: bool) -> int:
-         if flag:
-           x = 42
-         return x
-    |}
-    [
-      "Undefined name [18]: Global name `x` is not defined, or there is at least one control flow \
-       path that doesn't define `x`.";
-    ];
   ()
 
 
@@ -241,8 +232,7 @@ let test_check_return_control_flow context =
           return 1
     |}
     [
-      "Undefined name [18]: Global name `unknown_condition` is not defined, or there is at least \
-       one control flow path that doesn't define `unknown_condition`.";
+      "Unbound name [10]: Name `unknown_condition` is used but not defined in the current scope.";
       "Incompatible return type [7]: Expected `int` but got implicit return value of `None`.";
     ];
   assert_type_errors
@@ -254,8 +244,7 @@ let test_check_return_control_flow context =
           x = 1
     |}
     [
-      "Undefined name [18]: Global name `unknown_condition` is not defined, or there is at least \
-       one control flow path that doesn't define `unknown_condition`.";
+      "Unbound name [10]: Name `unknown_condition` is used but not defined in the current scope.";
       "Incompatible return type [7]: Expected `int` but got implicit return value of `None`.";
     ];
   assert_type_errors
@@ -349,8 +338,8 @@ let test_check_return_control_flow context =
   assert_type_errors
     "def foo() -> str: return None"
     ["Incompatible return type [7]: Expected `str` but got `None`."];
-  assert_type_errors "def foo() -> typing.Optional[str]: return None" [];
-  assert_type_errors "def foo() -> typing.Optional[int]: return 1" [];
+  assert_type_errors "import typing\ndef foo() -> typing.Optional[str]: return None" [];
+  assert_type_errors "import typing\ndef foo() -> typing.Optional[int]: return 1" [];
   assert_type_errors
     {|
       import typing
@@ -465,6 +454,7 @@ let test_check_return_control_flow context =
     ];
   assert_type_errors
     {|
+      from builtins import not_annotated
       class other(): pass
       def foo() -> other:
         result = 0
@@ -553,6 +543,7 @@ let test_check_noreturn context =
     [];
   assert_type_errors
     {|
+      import sys
       import typing
       def no_return(input: typing.Optional[int]) -> int:
         if input is None:
@@ -569,6 +560,8 @@ let test_check_noreturn context =
     [];
   assert_type_errors
     {|
+      import sys
+      from builtins import condition
       def may_not_return() -> str:
         if condition():
           sys.exit(0)
@@ -578,6 +571,8 @@ let test_check_noreturn context =
     [];
   assert_type_errors
     {|
+      import sys
+      from builtins import condition
       def no_return() -> int:
         if condition():
           return 1
@@ -585,6 +580,59 @@ let test_check_noreturn context =
           sys.exit(0)
     |}
     []
+
+
+let test_check_return_unimplemented context =
+  let assert_strict_type_errors = assert_strict_type_errors ~context in
+  let assert_default_type_errors = assert_default_type_errors ~context in
+  assert_strict_type_errors
+    {|
+      def f() -> int:
+        pass
+    |}
+    ["Incompatible return type [7]: Expected `int` but got implicit return value of `None`."];
+  assert_strict_type_errors
+    {|
+      def f():
+        pass
+    |}
+    ["Missing return annotation [3]: Returning `None` but no return type is specified."];
+  assert_strict_type_errors
+    {|
+      class Foo():
+        def run(self) -> int:
+          pass
+    |}
+    ["Incompatible return type [7]: Expected `int` but got implicit return value of `None`."];
+  assert_strict_type_errors
+    {|
+      from abc import ABC, ABCMeta, abstractmethod
+
+      class MyABC(ABC):
+        @abstractmethod
+        def run(self) -> int:
+              pass
+
+      class MyABC2(meta=ABCMeta):
+        @abstractmethod
+        def run(self) -> int:
+            pass
+    |}
+    [];
+  assert_strict_type_errors {|
+      def f() -> None:
+        pass
+    |} [];
+  assert_default_type_errors {|
+      def f() -> int:
+        pass
+    |} [];
+  assert_default_type_errors
+    {|
+      def foo() -> int:
+        return ''
+    |}
+    ["Incompatible return type [7]: Expected `int` but got `str`."]
 
 
 let () =
@@ -595,5 +643,6 @@ let () =
          "check_collections" >:: test_check_collections;
          "check_meta_annotations" >:: test_check_meta_annotations;
          "check_noreturn" >:: test_check_noreturn;
+         "check_return_unimplemented" >:: test_check_return_unimplemented;
        ]
   |> Test.run

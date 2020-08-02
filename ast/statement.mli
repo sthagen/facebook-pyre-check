@@ -20,7 +20,7 @@ end
 module Import : sig
   type import = {
     name: Reference.t Node.t;
-    alias: Reference.t Node.t option;
+    alias: Identifier.t Node.t option;
   }
   [@@deriving compare, eq, sexp, show, hash]
 
@@ -51,6 +51,18 @@ module Return : sig
   [@@deriving compare, eq, sexp, show, hash]
 
   val location_insensitive_compare : t -> t -> int
+end
+
+module Decorator : sig
+  type t = {
+    name: Reference.t Node.t;
+    arguments: Expression.Call.Argument.t list option;
+  }
+  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+
+  val location_insensitive_compare : t -> t -> int
+
+  val to_expression : t -> Expression.t
 end
 
 module rec Assert : sig
@@ -158,11 +170,14 @@ and Class : sig
     name: Reference.t Node.t;
     bases: Expression.Call.Argument.t list;
     body: Statement.t list;
-    decorators: Expression.t list;
+    decorators: Decorator.t list;
+    top_level_unbound_names: Define.NameAccess.t list;
   }
   [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
+
+  val toplevel_define : t -> Define.t
 
   val constructors : ?in_test:bool -> t -> Define.t list
 
@@ -201,7 +216,7 @@ and Define : sig
     type t = {
       name: Reference.t Node.t;
       parameters: Expression.Parameter.t list;
-      decorators: Expression.t list;
+      decorators: Decorator.t list;
       return_annotation: Expression.t option;
       async: bool;
       generator: bool;
@@ -272,18 +287,29 @@ and Define : sig
     [@@deriving compare, eq, sexp, show, hash, to_yojson]
   end
 
+  module NameAccess : sig
+    type t = {
+      name: Identifier.t;
+      location: Location.t;
+    }
+    [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  end
+
   type t = {
     signature: Signature.t;
     captures: Capture.t list;
+    unbound_names: NameAccess.t list;
     body: Statement.t list;
   }
   [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 
-  val create_toplevel : qualifier:Reference.t option -> statements:Statement.t list -> t
-
-  val create_class_toplevel : parent:Reference.t -> statements:Statement.t list -> t
+  val create_toplevel
+    :  unbound_names:NameAccess.t list ->
+    qualifier:Reference.t option ->
+    statements:Statement.t list ->
+    t
 
   val name : t -> Reference.t Node.t
 

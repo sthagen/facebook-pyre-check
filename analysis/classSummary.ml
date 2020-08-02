@@ -9,16 +9,24 @@ open Statement
 
 type t = {
   name: Reference.t;
+  qualifier: Reference.t;
   bases: Expression.Call.Argument.t list;
-  decorators: Expression.t list;
+  decorators: Decorator.t list;
   attribute_components: Class.AttributeComponents.t;
 }
 [@@deriving compare, eq, sexp, show, hash]
 
 let create
+    ~qualifier
     ({ Ast.Statement.Class.name = { Node.value = name; _ }; bases; decorators; _ } as definition)
   =
-  { name; bases; decorators; attribute_components = Class.AttributeComponents.create definition }
+  {
+    name;
+    qualifier;
+    bases;
+    decorators;
+    attribute_components = Class.AttributeComponents.create definition;
+  }
 
 
 let is_protocol { bases; _ } =
@@ -65,10 +73,13 @@ let is_protocol { bases; _ } =
 
 
 let has_decorator { decorators; _ } decorator =
+  let decorators = List.map decorators ~f:Decorator.to_expression in
   Expression.exists_in_list ~expression_list:decorators decorator
 
 
-let is_final definition = has_decorator definition "typing.final"
+let is_final definition =
+  has_decorator definition "typing.final" || has_decorator definition "typing_extensions.final"
+
 
 let is_abstract { bases; _ } =
   let abstract_metaclass { Expression.Call.Argument.value; _ } =

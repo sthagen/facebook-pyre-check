@@ -37,7 +37,9 @@ let find_module_reference ~cursor_position:{ Location.line; column } source =
   >>= fun line ->
   let reference_end_position = dot_column - 1 in
   String.rfindi line ~pos:reference_end_position ~f:(fun _ character ->
-      character <> '.' && character <> '_' && not (Char.is_alphanum character))
+      (not (Char.equal character '.'))
+      && (not (Char.equal character '_'))
+      && not (Char.is_alphanum character))
   >>| ( + ) 1 (* Module start is one character after position of the non-identifier character. *)
   >>| fun module_start_column ->
   line
@@ -45,18 +47,6 @@ let find_module_reference ~cursor_position:{ Location.line; column } source =
   |> Substring.sub ~pos:module_start_column ~len:(dot_column - module_start_column)
   |> Substring.to_string
   |> Reference.create
-
-
-let get_exported_imports ~ast_environment module_reference =
-  let open Statement in
-  AstEnvironment.ReadOnly.get_source ast_environment module_reference
-  >>| Source.statements
-  >>| List.concat_map ~f:(function
-          | { Node.value = Statement.Import { imports; _ }; _ } ->
-              List.map imports ~f:(fun import -> Node.value import.name)
-          | _ -> [])
-  >>| Reference.Set.of_list
-  |> Option.value ~default:Reference.Set.empty
 
 
 let get_completion_item ~range ~item_name ~item_type ~global_resolution =
@@ -124,30 +114,37 @@ let get_module_members_list ~resolution ~cursor_position:{ Location.line; column
   let position = Position.from_pyre_position ~line ~column in
   let text_edit_range = { Range.start = position; end_ = position } in
   let global_resolution = Resolution.global_resolution resolution in
-  let ast_environment = GlobalResolution.ast_environment global_resolution in
-  let exported_imports = get_exported_imports ~ast_environment module_reference in
-  let get_member_name_and_type member_reference =
-    (* We remove members which are exported by importing some other modules. They should not show up
-       in autocompletion. *)
-    if Reference.Set.mem exported_imports member_reference then
-      None
-    else
-      let fully_qualified_member_reference = Reference.combine module_reference member_reference in
-      get_completion_item
-        ~range:text_edit_range
-        ~item_name:(Reference.last member_reference)
-        ~item_type:(Resolution.resolve_reference resolution fully_qualified_member_reference)
-        ~global_resolution
+  let get_member_name_and_type (member_name, member_export) =
+    let fully_qualified_member_reference =
+      Reference.create member_name |> Reference.combine module_reference
+    in
+    let item_type =
+      match member_export with
+      | Module.Export.(Name Class) ->
+          Type.meta (Type.Primitive (Reference.show fully_qualified_member_reference))
+      | Module.Export.(Name (Define _ | GlobalVariable)) -> (
+          match GlobalResolution.global global_resolution fully_qualified_member_reference with
+          | Some { AttributeResolution.Global.annotation; _ } -> Annotation.annotation annotation
+          | _ -> Type.Any )
+      | Module.Export.(Module _ | NameAlias _) ->
+          (* Don't bother with these. *)
+          Type.Any
+    in
+    get_completion_item ~range:text_edit_range ~item_name:member_name ~item_type ~global_resolution
   in
-  AstEnvironment.ReadOnly.get_wildcard_exports ast_environment module_reference
-  >>= fun wildcard_exports -> Some (List.filter_map wildcard_exports ~f:get_member_name_and_type)
+  GlobalResolution.get_module_metadata global_resolution module_reference
+  >>= fun module_metadata ->
+  Some (List.filter_map (Module.get_all_exports module_metadata) ~f:get_member_name_and_type)
 
 
 let get_completion_items ~state ~configuration ~path ~cursor_position =
-  let { State.open_documents; module_tracker; environment; _ } = state in
-  match Analysis.ModuleTracker.lookup_path ~configuration module_tracker path with
-  | None -> []
-  | Some { SourcePath.qualifier; _ } -> (
+  let { State.open_documents; environment; _ } = state in
+  let module_tracker = Analysis.TypeEnvironment.module_tracker environment in
+  match ModuleTracker.lookup_path ~configuration module_tracker path with
+  | ModuleTracker.PathLookup.NotFound
+  | ModuleTracker.PathLookup.ShadowedBy _ ->
+      []
+  | ModuleTracker.PathLookup.Found { SourcePath.qualifier; _ } -> (
       match Reference.Table.find open_documents qualifier with
       | None -> []
       | Some content ->
@@ -171,7 +168,7 @@ let get_completion_items ~state ~configuration ~path ~cursor_position =
 
             let run () =
               (* Update server state with the newly added dummy file *)
-              let state, _ =
+              let _ =
                 IncrementalCheck.recheck_with_state
                   ~state
                   ~configuration:
@@ -202,7 +199,9 @@ let get_completion_items ~state ~configuration ~path ~cursor_position =
           let get_items file state =
             (* This is the position of the item before DOT *)
             let item_position = { cursor_position with column = cursor_position.column - 2 } in
-            let global_resolution = TypeEnvironment.global_resolution environment in
+            let global_resolution =
+              TypeEnvironment.read_only environment |> TypeEnvironment.ReadOnly.global_resolution
+            in
             let resolution =
               TypeCheck.resolution
                 global_resolution

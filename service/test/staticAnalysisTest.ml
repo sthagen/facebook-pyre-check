@@ -16,9 +16,12 @@ let test_callables context =
       Option.value_exn
         ( Analysis.GlobalResolution.ast_environment resolution
         |> fun environment ->
-        Analysis.AstEnvironment.ReadOnly.get_source environment (Ast.Reference.create "test") )
+        Analysis.AstEnvironment.ReadOnly.get_processed_source
+          environment
+          (Ast.Reference.create "test") )
     in
-    Service.StaticAnalysis.callables ~resolution ~source
+    Service.StaticAnalysis.regular_and_filtered_callables ~resolution ~source
+    |> fst
     |> List.map ~f:fst
     |> assert_equal
          ~printer:(List.to_string ~f:Interprocedural.Callable.show_real_target)

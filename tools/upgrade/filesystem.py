@@ -3,15 +3,16 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import ast as builtin_ast
 import logging
 import re
 import subprocess
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, NamedTuple
 
 from ...client.filesystem import get_filesystem
-from .ast import verify_stable_ast
+from . import ast
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -29,6 +30,50 @@ class LocalMode(Enum):
         return "# " + self.value
 
 
+class Target(NamedTuple):
+    name: str
+    strict: bool
+    pyre: bool
+
+
+class TargetCollector(builtin_ast.NodeVisitor):
+    def __init__(self, pyre_only: bool) -> None:
+        self._pyre_only: bool = pyre_only
+        self._targets: List[Target] = []
+        self._contains_strict: bool = False
+
+    def visit_Call(self, node: builtin_ast.Call) -> None:
+        target_fields = node.keywords
+        check_types = False
+        uses_pyre = True
+        is_strict = False
+        name = None
+        for field in target_fields:
+            value = field.value
+            if field.arg == "name":
+                if isinstance(value, builtin_ast.Str):
+                    name = value.s
+            elif field.arg == "check_types":
+                if isinstance(value, builtin_ast.NameConstant):
+                    check_types = check_types or value.value
+            elif field.arg == "check_types_options":
+                if isinstance(value, builtin_ast.Str):
+                    uses_pyre = uses_pyre and "mypy" not in value.s.lower()
+                    is_strict = is_strict or (uses_pyre and "strict" in value.s.lower())
+            elif field.arg == "typing_options":
+                if isinstance(value, builtin_ast.Str):
+                    is_strict = is_strict or "strict" in value.s.lower()
+        if name and check_types and (not self._pyre_only or uses_pyre):
+            self._targets.append(Target(name, is_strict, uses_pyre))
+        self._contains_strict = self._contains_strict or is_strict
+
+    def result(self) -> List[Target]:
+        return self._targets
+
+    def contains_strict(self) -> bool:
+        return self._contains_strict
+
+
 def path_exists(filename: str) -> Path:
     path = Path(filename)
     if not path.exists():
@@ -36,44 +81,21 @@ def path_exists(filename: str) -> Path:
     return path
 
 
-def find_targets(search_root: Path) -> Dict[str, List[str]]:
+def find_targets(search_root: Path, pyre_only: bool = False) -> Dict[str, List[Target]]:
     LOG.info("Finding typecheck targets in %s", search_root)
-    # TODO(T56778370): Clean up code by parsing the TARGETS file rather than using grep.
-    typing_field = "check_types ?="
-    targets_regex = r"(?s)name = ((?!\n\s*name).)*{}((?!\n\s*name).)*".format(
-        typing_field
-    )
-    find_targets_command = [
-        "grep",
-        "-RPzo",
-        "--include=*TARGETS",
-        targets_regex,
-        search_root,
-    ]
-    find_targets = subprocess.run(
-        find_targets_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-    )
-    if find_targets.returncode == 1:
-        LOG.info("Did not find any targets.")
-        return {}
-    if find_targets.returncode != 0:
-        LOG.error("Failed to search for targets: %s", find_targets.stderr.decode())
-        return {}
-    output = find_targets.stdout.decode()
-    targets = re.split(typing_field, output)
-    target_pattern = re.compile(r".*?([^\s]*)\/TARGETS:.*name = \"([^\"]*)\".*")
+    target_files = find_files(search_root, "TARGETS")
     target_names = {}
     total_targets = 0
-    for target in targets:
-        matched = target_pattern.match(target.replace("\n", " ").strip())
-        if matched:
-            total_targets += 1
-            path = matched.group(1).strip()
-            target_name = matched.group(2)
-            if path in target_names:
-                target_names[path].append(target_name)
-            else:
-                target_names[path] = [target_name]
+    for target_file in target_files:
+        target_finder = TargetCollector(pyre_only)
+        with open(target_file, "r") as source:
+            tree = builtin_ast.parse(source.read())
+            target_finder.visit(tree)
+            targets = target_finder.result()
+            if len(targets) > 0:
+                target_names[target_file] = targets
+                total_targets += len(targets)
+
     LOG.info(
         "Found {} typecheck targets in {} TARGETS files to analyze".format(
             total_targets, len(target_names)
@@ -82,7 +104,6 @@ def find_targets(search_root: Path) -> Dict[str, List[str]]:
     return target_names
 
 
-@verify_stable_ast
 def add_local_mode(filename: str, mode: LocalMode) -> None:
     LOG.info("Processing `%s`", filename)
     path = Path(filename)
@@ -119,6 +140,7 @@ def add_local_mode(filename: str, mode: LocalMode) -> None:
             new_lines.append(mode.get_comment())
         new_lines.append(line)
     new_text = "\n".join(new_lines)
+    ast.check_stable(text, new_text)
     path.write_text(new_text)
 
 
@@ -132,7 +154,7 @@ def remove_non_pyre_ignores(subdirectory: Path) -> None:
         remove_type_ignore_command = [
             "sed",
             "-i",
-            r"s/# \?type: \?ignore$//g",
+            r"s/\s*# \?type: \?ignore$//g",
         ] + python_files
         subprocess.check_output(remove_type_ignore_command)
 
@@ -149,3 +171,7 @@ def find_files(directory: Path, name: str) -> List[str]:
         return []
     files = output.split("\n")
     return [file.strip() for file in files]
+
+
+def find_directories(directory: Path) -> List[Path]:
+    return [path for path in directory.iterdir() if path.is_dir()]

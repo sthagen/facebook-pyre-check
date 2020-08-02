@@ -12,67 +12,39 @@ open Pyre
 type errors = Analysis.AnalysisError.t list [@@deriving show]
 
 let recheck
-    ~module_tracker
-    ~ast_environment
-    ~errors
-    ~scheduler
-    ~connections
-    ~lookups
     ~configuration:({ incremental_style; _ } as configuration)
+    ~scheduler
+    ~environment
+    ~errors
     paths
   =
   let timer = Timer.start () in
+  let ast_environment = TypeEnvironment.ast_environment environment in
+  let module_tracker = AstEnvironment.module_tracker ast_environment in
   let module_updates = ModuleTracker.update module_tracker ~configuration ~paths in
   Scheduler.once_per_worker scheduler ~configuration ~f:SharedMem.invalidate_caches;
   SharedMem.invalidate_caches ();
   SharedMem.collect `aggressive;
-  Log.info "Parsing %d updated modules..." (List.length module_updates);
-  StatusUpdate.write
-    ~message:"Reparsing updated modules..."
-    ~short_message:(Some "[Reparsing]")
-    ~connections
-    ~message_type:WarningMessage;
   Log.log
     ~section:`Server
     "Incremental Module Update %a"
     Sexp.pp
     [%message (module_updates : ModuleTracker.IncrementalUpdate.t list)];
-  let ast_environment_update_result =
-    AstEnvironment.update ~configuration ~scheduler ast_environment (Update module_updates)
-  in
-  let reparsed_sources = AstEnvironment.UpdateResult.reparsed ast_environment_update_result in
-  Log.log
-    ~section:`Server
-    "Incremental Parser Update %s"
-    (List.to_string ~f:Reference.show reparsed_sources);
   (* Repopulate the environment. *)
-  let invalidated_environment_qualifiers =
-    match incremental_style with
-    | FineGrained
-    | Shallow ->
-        Reference.Set.of_list reparsed_sources
-  in
-  Log.info
-    "Repopulating the environment for %d modules."
-    (Set.length invalidated_environment_qualifiers);
-  StatusUpdate.write
-    ~message:"Repopulating the environment"
-    ~short_message:(Some "[Repopulating]")
-    ~connections
-    ~message_type:WarningMessage;
-  let ast_environment = AstEnvironment.read_only ast_environment in
+  Log.info "Repopulating the environment...";
 
   let annotated_global_environment_update_result =
+    let annotated_global_environment = AnnotatedGlobalEnvironment.create ast_environment in
     AnnotatedGlobalEnvironment.update_this_and_all_preceding_environments
-      ast_environment
+      annotated_global_environment
       ~configuration
       ~scheduler
-      ~ast_environment_update_result
-      invalidated_environment_qualifiers
+      (Update module_updates)
   in
-  let environment =
-    TypeEnvironment.create
-      (AnnotatedGlobalEnvironment.UpdateResult.read_only annotated_global_environment_update_result)
+  let invalidated_modules =
+    AnnotatedGlobalEnvironment.UpdateResult.ast_environment_update_result
+      annotated_global_environment_update_result
+    |> AstEnvironment.UpdateResult.invalidated_modules
   in
   let recheck_modules, new_errors, total_rechecked_functions =
     match incremental_style with
@@ -83,39 +55,54 @@ let recheck
         in
         let function_triggers =
           let filter_union sofar keyset =
-            SharedMemoryKeys.DependencyKey.KeySet.elements keyset
-            |> List.filter_map ~f:(function
-                   | SharedMemoryKeys.TypeCheckDefine name -> Some name
-                   | _ -> None)
-            |> List.fold ~init:sofar ~f:Reference.Set.add
+            let filter registered sofar =
+              match SharedMemoryKeys.DependencyKey.get_key registered with
+              | SharedMemoryKeys.TypeCheckDefine name -> (
+                  match Reference.Map.add sofar ~key:name ~data:registered with
+                  | `Duplicate -> sofar
+                  | `Ok updated -> updated )
+              | _ -> sofar
+            in
+            SharedMemoryKeys.DependencyKey.RegisteredSet.fold filter keyset sofar
           in
           AnnotatedGlobalEnvironment.UpdateResult.all_triggered_dependencies
             annotated_global_environment_update_result
-          |> List.fold ~init:Reference.Set.empty ~f:filter_union
+          |> List.fold ~init:Reference.Map.empty ~f:filter_union
         in
         let recheck_functions =
-          Set.union
-            function_triggers
-            (UnannotatedGlobalEnvironment.UpdateResult.define_additions
-               unannotated_global_environment_update_result)
-          |> Set.to_list
+          let register_and_add sofar trigger =
+            let register = function
+              | Some existing -> existing
+              | None ->
+                  SharedMemoryKeys.DependencyKey.Registry.register
+                    (SharedMemoryKeys.TypeCheckDefine trigger)
+            in
+            Reference.Map.update sofar trigger ~f:register
+          in
+          UnannotatedGlobalEnvironment.UpdateResult.define_additions
+            unannotated_global_environment_update_result
+          |> Set.fold ~init:function_triggers ~f:register_and_add
         in
+        let recheck_functions_list = Map.to_alist recheck_functions in
+        let recheck_function_names = List.map recheck_functions_list ~f:fst in
         Log.log
           ~section:`Server
           "Rechecked functions %s"
-          (List.to_string ~f:Reference.show recheck_functions);
+          (List.to_string ~f:Reference.show recheck_function_names);
 
         (* Rerun type checking for triggered functions. *)
-        TypeEnvironment.invalidate environment recheck_functions;
-        TypeCheck.run_on_defines ~scheduler ~configuration ~environment recheck_functions;
+        TypeEnvironment.invalidate environment recheck_function_names;
+        recheck_functions_list
+        |> List.map ~f:(fun (define, registered) -> define, Some registered)
+        |> TypeCheck.run_on_defines ~scheduler ~configuration ~environment;
 
         (* Rerun postprocessing for triggered modules. *)
         let recheck_modules =
           (* For each rechecked function, its containing module needs to be included in
              postprocessing *)
           List.fold
-            ~init:invalidated_environment_qualifiers
-            (Set.to_list function_triggers)
+            ~init:(Reference.Set.of_list invalidated_modules)
+            (Reference.Map.keys function_triggers)
             ~f:(fun sofar define_name ->
               let unannotated_global_environment =
                 UnannotatedGlobalEnvironment.UpdateResult.read_only
@@ -143,13 +130,12 @@ let recheck
             recheck_modules
         in
 
-        recheck_modules, errors, List.length recheck_functions
+        recheck_modules, errors, Map.length recheck_functions
     | _ ->
-        let invalidated_environment_qualifiers = Set.to_list invalidated_environment_qualifiers in
         Log.log
           ~section:`Server
           "(Old) Incremental Environment Builder Update %s"
-          (List.to_string ~f:Reference.show invalidated_environment_qualifiers);
+          (List.to_string ~f:Reference.show invalidated_modules);
 
         let total_rechecked_functions =
           let unannotated_global_environment_update_result =
@@ -167,7 +153,7 @@ let recheck
                 unannotated_global_environment_update_result
             in
             List.concat_map
-              invalidated_environment_qualifiers
+              invalidated_modules
               ~f:
                 (UnannotatedGlobalEnvironment.ReadOnly.all_defines_in_module
                    unannotated_global_environment)
@@ -182,14 +168,14 @@ let recheck
             ~scheduler
             ~configuration
             ~environment
-            invalidated_environment_qualifiers;
+            invalidated_modules;
           Analysis.Postprocessing.run
             ~scheduler
             ~configuration
             ~environment:(Analysis.TypeEnvironment.read_only environment)
-            invalidated_environment_qualifiers
+            invalidated_modules
         in
-        invalidated_environment_qualifiers, errors, total_rechecked_functions
+        invalidated_modules, errors, total_rechecked_functions
   in
   Statistics.event
     ~section:`Memory
@@ -197,8 +183,6 @@ let recheck
     ~integers:["size", Memory.heap_size ()]
     ();
 
-  (* Clean up all lookup data related to updated files. *)
-  List.iter recheck_modules ~f:(LookupCache.evict ~lookups);
   (* Kill all previous errors for new files we just checked *)
   List.iter ~f:(Hashtbl.remove errors) recheck_modules;
 
@@ -215,36 +199,25 @@ let recheck
       [
         "number of changed files", List.length paths;
         "number of module tracker updates", List.length module_updates;
-        "number of parser updates", List.length reparsed_sources;
-        "number of environment builder updates", Set.length invalidated_environment_qualifiers;
+        "number of parser updates", List.length invalidated_modules;
         "number of rechecked modules", List.length recheck_modules;
         "number of re-checked functions", total_rechecked_functions;
       ]
     ();
-  StatusUpdate.write
-    ~message:"Done recheck."
-    ~short_message:(Some "Done recheck.")
-    ~connections
-    ~message_type:InfoMessage;
-  environment, new_errors
+  recheck_modules, new_errors
 
 
 let recheck_with_state
-    ~state:
-      ( { State.module_tracker; ast_environment; errors; scheduler; connections; lookups; _ } as
-      state )
+    ~state:{ State.environment; errors; scheduler; connections; lookups; _ }
     ~configuration
     paths
   =
-  let _, new_errors =
-    recheck
-      ~module_tracker
-      ~ast_environment
-      ~errors
-      ~scheduler
-      ~connections
-      ~lookups
-      ~configuration
-      paths
-  in
-  state, new_errors
+  StatusUpdate.write
+    ~message:"Incremental recheck in progress..."
+    ~connections
+    ~message_type:WarningMessage;
+  let recheck_modules, new_errors = recheck ~configuration ~scheduler ~environment ~errors paths in
+  (* Clean up all lookup data related to updated files. *)
+  List.iter recheck_modules ~f:(LookupCache.evict ~lookups);
+  StatusUpdate.write ~message:"Done recheck." ~connections ~message_type:InfoMessage;
+  new_errors
