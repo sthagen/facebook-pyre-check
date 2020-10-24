@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -27,13 +27,9 @@ class FixmeTargets(ErrorSuppressingCommand):
         *,
         repository: Repository,
         subdirectory: Optional[str],
-        no_commit: bool,
-        submit: bool,
     ) -> None:
         super().__init__(command_arguments, repository)
         self._subdirectory: Final[Optional[str]] = subdirectory
-        self._no_commit: bool = no_commit
-        self._submit: bool = submit
 
     @staticmethod
     def from_arguments(
@@ -44,20 +40,14 @@ class FixmeTargets(ErrorSuppressingCommand):
             command_arguments,
             repository=repository,
             subdirectory=arguments.subdirectory,
-            no_commit=arguments.no_commit,
-            submit=arguments.submit,
         )
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
         super(FixmeTargets, cls).add_arguments(parser)
         parser.set_defaults(command=cls.from_arguments)
-        parser.add_argument("--submit", action="store_true", help=argparse.SUPPRESS)
         parser.add_argument(
             "--subdirectory", help="Only upgrade TARGETS files within this directory."
-        )
-        parser.add_argument(
-            "--no-commit", action="store_true", help="Keep changes in working state."
         )
 
     def run(self) -> None:
@@ -73,9 +63,8 @@ class FixmeTargets(ErrorSuppressingCommand):
         for path, targets in all_targets.items():
             self._run_fixme_targets_file(project_directory, path, targets)
 
-        self._repository.submit_changes(
+        self._repository.commit_changes(
             commit=(not self._no_commit),
-            submit=self._submit,
             title=f"Upgrade pyre version for {search_root} (TARGETS)",
         )
 
@@ -95,7 +84,7 @@ class FixmeTargets(ErrorSuppressingCommand):
         if not errors:
             return
 
-        self._suppress_errors(errors)
+        self._apply_suppressions(errors)
 
         if not self._lint:
             return
@@ -106,4 +95,4 @@ class FixmeTargets(ErrorSuppressingCommand):
                 LOG.info("Errors unchanged after linting.")
                 return
             LOG.info("Found %d type errors after linting.", len(errors))
-            self._suppress_errors(errors)
+            self._apply_suppressions(errors)

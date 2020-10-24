@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -175,8 +175,7 @@ class AnalysisOutput(object):
                     yield f
 
     def file_names(self) -> Iterable[str]:
-        """Generates all file names that are used to generate file_handles.
-        """
+        """Generates all file names that are used to generate file_handles."""
         filename_spec = self.filename_spec
         filename_glob = self.filename_glob
         if self.is_sharded():
@@ -193,7 +192,8 @@ class AnalysisOutput(object):
 
     def is_sharded(self) -> bool:
         if self.filename_spec:
-            # pyre-fixme[16]: `Optional` has no attribute `__getitem__`.
+            # pyre-fixme[58]: `in` is not supported for right operand type
+            #  `Optional[str]`.
             return "@" in self.filename_spec
         else:
             return False

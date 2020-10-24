@@ -1,20 +1,18 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import argparse
-import os
 import sys
 from typing import IO, List, Optional
 
 from typing_extensions import Final
 
-from .. import recently_used_configurations
+from .. import command_arguments, recently_used_configurations
 from ..analysis_directory import AnalysisDirectory
 from ..configuration import Configuration
 from ..version import __version__
-from .command import Command, CommandArguments
+from .command import Command
 from .servers import Servers
 
 
@@ -26,52 +24,18 @@ class Rage(Command):
 
     def __init__(
         self,
-        command_arguments: CommandArguments,
+        command_arguments: command_arguments.CommandArguments,
         *,
         original_directory: str,
-        configuration: Optional[Configuration] = None,
+        configuration: Configuration,
         analysis_directory: Optional[AnalysisDirectory] = None,
         output_path: Optional[str],
     ) -> None:
         super(Rage, self).__init__(
             command_arguments, original_directory, configuration, analysis_directory
         )
-        self._log_directory_for_binary: str = self.log_directory
+        self._log_directory_for_binary: str = self._configuration.log_directory
         self._output_path: Final[Optional[str]] = output_path
-
-    @staticmethod
-    def from_arguments(
-        arguments: argparse.Namespace,
-        original_directory: str,
-        configuration: Optional[Configuration] = None,
-        analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> "Rage":
-        return Rage(
-            CommandArguments.from_arguments(arguments),
-            original_directory=original_directory,
-            configuration=configuration,
-            analysis_directory=analysis_directory,
-            output_path=arguments.output_path,
-        )
-
-    @classmethod
-    def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
-        rage = parser.add_parser(
-            cls.NAME,
-            epilog="""
-            Collects troubleshooting diagnostics for Pyre, and writes this
-            information to the terminal or to a file.
-            """,
-        )
-        rage.set_defaults(command=cls.from_arguments)
-        rage.add_argument(
-            "--output-file",
-            default=None,
-            metavar="PATH",
-            dest="output_path",
-            help="The path to the output file (defaults to stdout)",
-            type=os.path.abspath,
-        )
 
     def _flags(self) -> List[str]:
         return ["-log-directory", self._log_directory_for_binary]
@@ -93,7 +57,7 @@ class Rage(Command):
             subcommand="list",
         )
         recent_local_roots = recently_used_configurations.Cache(
-            self._dot_pyre_directory
+            self._configuration.dot_pyre_directory
         ).get_all_items()
         if servers.is_root_server_running() or recent_local_roots == []:
             self._call_client(
@@ -118,7 +82,7 @@ class Rage(Command):
                     flush=True,
                 )
                 self._log_directory_for_binary = str(
-                    self._dot_pyre_directory / local_root
+                    self._configuration.dot_pyre_directory / local_root
                 )
                 self._call_client(
                     command=self.NAME, capture_output=False, stdout=output_file
@@ -128,7 +92,12 @@ class Rage(Command):
     def _rage(self, output_file: IO[str]) -> None:
         # Do not use logging. Logging goes to stderr.
         print("Client version:", __version__, file=output_file, flush=True)
-        print("Binary path:", self._configuration.binary, file=output_file, flush=True)
+        print(
+            "Binary path:",
+            self._configuration.get_binary_respecting_override(),
+            file=output_file,
+            flush=True,
+        )
         print(
             "Configured binary version:",
             self._configuration.get_binary_version()
@@ -136,7 +105,7 @@ class Rage(Command):
             file=output_file,
             flush=True,
         )
-        if self.local_root is not None:
+        if self._configuration.local_root is not None:
             self._call_client(
                 command=self.NAME, capture_output=False, stdout=output_file
             ).check()

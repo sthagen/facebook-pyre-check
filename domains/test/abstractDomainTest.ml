@@ -1,7 +1,9 @@
-(** Copyright (c) 2016-present, Facebook, Inc.
-
-    This source code is licensed under the MIT license found in the LICENSE file in the root
-    directory of this source tree. *)
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core_kernel
 open OUnit2
@@ -1716,7 +1718,7 @@ module PathDomain = struct
       for i = 0 to size - 1 do
         if not (Char.equal a.[i] b.[i]) then raise (Length i)
       done;
-      a
+      String.prefix a size
     with
     | Length n -> String.prefix a n
 
@@ -1752,6 +1754,20 @@ module PathDomain = struct
             right
           else
             Path p
+
+
+    let meet left right =
+      match left, right with
+      | Bottom, _ -> left
+      | _, Bottom -> right
+      | Path p1, Path p2 ->
+          let p = common_prefix p1 p2 in
+          if String.equal p p1 then
+            right
+          else if String.equal p p2 then
+            left
+          else
+            Bottom
 
 
     let bottom = Bottom
@@ -1821,11 +1837,21 @@ module PathDomain = struct
       let result = Element.show product in
       assert_equal expected result ~printer:Fn.id
     in
+    let test_meet a b ~expected =
+      let meet = Element.meet a b in
+      assert_equal expected meet ~printer:Element.show
+    in
     let a = build "abcdefg" in
     let b = build "abxyz" in
     let c = join a b in
     assert_equal (build "ab") c ~printer:show ~cmp:equal;
-    test ~initial:"abc" ~expected:"abc"
+    test ~initial:"abc" ~expected:"abc";
+    test_meet a bottom ~expected:bottom;
+    test_meet bottom a ~expected:bottom;
+    test_meet a c ~expected:a;
+    test_meet c a ~expected:a;
+    test_meet b c ~expected:b;
+    test_meet c b ~expected:b
 end
 
 module TestSimpleDomain = TestAbstractDomain (PathDomain)
@@ -2329,6 +2355,64 @@ end
 
 module TestOverUnderStringSet = TestAbstractDomain (OverUnderStringSet)
 
+module FlatString = struct
+  include AbstractFlatDomain.Make (String)
+
+  let unrelated = [make "a"; make "b"; make "c"; make "d"]
+
+  let values = unrelated
+
+  let test_fold _ =
+    let test value expected =
+      let actual = fold Element ~init:[] ~f:List.cons value |> List.sort ~compare:String.compare in
+      assert_equal expected actual ~printer:string_list_printer
+    in
+    test (make "a") ["a"];
+    test bottom [];
+    test top []
+
+
+  let test_transform _ =
+    let test ~initial ~by ~f ~expected =
+      let element = make initial in
+      let actual =
+        transform by (Map f) element
+        |> fold Element ~init:[] ~f:List.cons
+        |> List.sort ~compare:String.compare
+      in
+      assert_equal expected actual ~printer:string_list_printer
+    in
+    test ~initial:"a" ~by:Element ~f:(fun x -> "t." ^ x) ~expected:["t.a"]
+
+
+  let test_partition _ =
+    let test ~initial ~f ~expected =
+      let element = make initial in
+      let actual =
+        partition Element ~f element
+        |> MapPoly.fold ~init:[] ~f:(fun ~key ~data result ->
+               let elements =
+                 fold Element ~init:[] ~f:List.cons data |> List.sort ~compare:String.compare
+               in
+               (key, elements) :: result)
+        |> List.sort ~compare:Pervasives.compare
+      in
+      assert_equal expected actual ~printer:int_string_list_list_printer
+    in
+    test ~initial:"abc" ~f:(fun x -> Some (String.length x)) ~expected:[3, ["abc"]]
+
+
+  let test_create _ = assert_equal (make "a") (create [Part (Element, "a")]) ~printer:show
+
+  let test_additional _ =
+    let () =
+      assert_equal "Flat(strings)" (introspect Structure |> String.concat ~sep:"\n") ~printer:Fn.id
+    in
+    ()
+end
+
+module TestFlatString = TestAbstractDomain (FlatString)
+
 let () =
   "abstractDomainTest"
   >::: [
@@ -2345,5 +2429,6 @@ let () =
          "simple" >::: TestSimpleDomain.suite ();
          "tree" >::: TestTreeDomain.suite ();
          "string_biset" >::: TestOverUnderStringSet.suite ();
+         "flat_string" >::: TestFlatString.suite ();
        ]
   |> run_test_tt_main

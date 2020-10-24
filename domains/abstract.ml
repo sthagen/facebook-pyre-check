@@ -1,11 +1,14 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 module Domain = AbstractDomainCore
 module BucketedElementSetDomain = AbstractBucketedElementSetDomain
 module ElementSetDomain = AbstractElementSetDomain
+module FlatDomain = AbstractFlatDomain
 module InvertedSetDomain = AbstractInvertedSetDomain
 module OverUnderSetDomain = AbstractOverUnderSetDomain
 module MapDomain = AbstractMapDomain

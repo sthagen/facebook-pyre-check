@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open OUnit2
@@ -1196,7 +1198,7 @@ let test_forward_statement context =
     "assert isinstance(x, (int, str))"
     ["x", Type.union [Type.integer; Type.string]];
   assert_forward ["x", Type.integer] "assert isinstance(x, (int, str))" ["x", Type.integer];
-  assert_forward ~bottom:false ["x", Type.integer] "assert isinstance(x, str)" ["x", Type.string];
+  assert_forward ~bottom:true ["x", Type.integer] "assert isinstance(x, str)" ["x", Type.integer];
   assert_forward ~bottom:false ["x", Type.Bottom] "assert isinstance(x, str)" ["x", Type.string];
   assert_forward ~bottom:false ["x", Type.float] "assert isinstance(x, int)" ["x", Type.integer];
   assert_forward ~bottom:false ["x", Type.integer] "assert isinstance(x, 1)" ["x", Type.integer];

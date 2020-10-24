@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Pyre
@@ -12,6 +14,7 @@ module GlobalState = struct
     mutable last_flush_timestamp: float;
     mutable log_identifier: string;
     mutable project_name: string;
+    mutable project_root: string;
     mutable start_time: float;
   }
 
@@ -30,14 +33,16 @@ module GlobalState = struct
       last_flush_timestamp = current_time;
       log_identifier = "";
       project_name = "";
+      project_root = "";
       start_time = current_time;
     }
 
 
-  let initialize ?logger ?log_identifier ?project_name () =
+  let initialize ?logger ?log_identifier ?project_name ?project_root () =
     Option.iter logger ~f:(fun logger -> global_state.logger <- Some logger);
     Option.iter log_identifier ~f:(fun identifier -> global_state.log_identifier <- identifier);
     Option.iter project_name ~f:(fun name -> global_state.project_name <- name);
+    Option.iter project_root ~f:(fun root -> global_state.project_root <- root);
     ()
 
 
@@ -48,7 +53,8 @@ module GlobalState = struct
     global_state.last_flush_timestamp <- old_state.last_flush_timestamp;
     global_state.log_identifier <- old_state.log_identifier;
     global_state.project_name <- old_state.project_name;
-    global_state.start_time <- old_state.start_time
+    global_state.start_time <- old_state.start_time;
+    global_state.project_root <- old_state.project_root
 end
 
 module Cache : sig
@@ -95,8 +101,9 @@ let sample ?(integers = []) ?(normals = []) ?(metadata = true) () =
         "binary", Sys.argv.(0);
         "root", GlobalState.global_state.project_name;
         "username", GlobalState.username;
-        "hostname", GlobalState.hostname;
+        "host", GlobalState.hostname;
         "identifier", GlobalState.global_state.log_identifier;
+        "project_root", GlobalState.global_state.project_root;
       ]
       @ server_configuration_metadata
       @ normals

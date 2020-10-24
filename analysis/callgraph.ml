@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Ast
@@ -112,6 +114,7 @@ module type Builder = sig
     arguments:Call.Argument.t list ->
     dynamic:bool ->
     qualifier:Reference.t ->
+    callee_type:Type.t ->
     callee:Expression.t ->
     unit
 
@@ -139,7 +142,16 @@ module DefaultBuilder : Builder = struct
 
   let initialize () = Hashtbl.clear table
 
-  let add_callee ~global_resolution ~target ~callables ~arguments:_ ~dynamic ~qualifier ~callee =
+  let add_callee
+      ~global_resolution
+      ~target
+      ~callables
+      ~arguments:_
+      ~dynamic
+      ~qualifier
+      ~callee_type:_
+      ~callee
+    =
     (* Store callees. *)
     let callees =
       let method_callee ?(is_optional_class_attribute = false) annotation callable_kind =
@@ -166,6 +178,16 @@ module DefaultBuilder : Builder = struct
         | _ -> []
       in
       let callable_kinds = callables >>| List.map ~f:(fun { Type.Callable.kind; _ } -> kind) in
+      let extract_callables ~annotation instantiated_attribute =
+        instantiated_attribute
+        |> AnnotatedAttribute.annotation
+        |> Annotation.annotation
+        |> Type.callable_name
+        >>| (fun name -> method_callee ~is_optional_class_attribute:true annotation (Named name))
+        |> function
+        | None -> []
+        | Some list -> list
+      in
       match target, callable_kinds with
       | Some (Type.Union elements), Some callables when List.length elements = List.length callables
         ->
@@ -173,19 +195,13 @@ module DefaultBuilder : Builder = struct
       | Some annotation, Some callables -> List.concat_map callables ~f:(method_callee annotation)
       | Some (Type.Union ([Type.NoneType; annotation] | [annotation; Type.NoneType])), _ -> (
           match Node.value callee with
-          | Expression.Name (Name.Attribute { attribute; _ }) -> (
+          | Expression.Name (Name.Attribute { attribute; _ }) ->
               GlobalResolution.attribute_from_annotation
                 global_resolution
                 ~parent:annotation
                 ~name:attribute
-              >>| AnnotatedAttribute.annotation
-              >>| Annotation.annotation
-              >>= Type.callable_name
-              >>| (fun name ->
-                    method_callee ~is_optional_class_attribute:true annotation (Named name))
-              |> function
-              | None -> []
-              | Some list -> list )
+              >>| extract_callables ~annotation
+              |> Option.value ~default:[]
           | _ -> [] )
       | None, Some defines ->
           List.map defines ~f:(function
@@ -289,6 +305,7 @@ module NullBuilder : Builder = struct
       ~arguments:_
       ~dynamic:_
       ~qualifier:_
+      ~callee_type:_
       ~callee:_
     =
     ()

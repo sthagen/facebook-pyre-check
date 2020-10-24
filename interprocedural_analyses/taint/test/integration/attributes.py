@@ -1,5 +1,10 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
 from builtins import __test_sink, __test_source
-from typing import Optional
+from typing import Optional, Union
 
 
 class Token:
@@ -49,3 +54,29 @@ def test_getattr_backwards(t):
 
 def test_getattr_backwards_default(t):
     __test_sink(getattr(None, "", t.token))
+
+
+class UseViaDict:
+    def __init__(self, a, b):
+        self.a = a
+        self.b = b
+
+
+def test_attribute_via_dunder_dict():
+    obj = UseViaDict(a=__test_source(), b=None)
+    # First two should be flows, and the third shouldn't.
+    __test_sink(obj.__dict__)
+    __test_sink(obj.__dict__["a"])
+    __test_sink(obj.__dict__["b"])
+
+
+class Untainted:
+    token: str = ""
+
+
+def test_attribute_union(t: Union[Token, Untainted]):
+    __test_sink(t.token)
+    if isinstance(t, Token):
+        __test_sink(t.token)
+    elif isinstance(t, Untainted):
+        __test_sink(t.token)

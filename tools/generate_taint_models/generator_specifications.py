@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -59,11 +59,7 @@ class WhitelistSpecification(NamedTuple):
         parameter_name = self.parameter_name
         return hash(
             (
-                # pyre-fixme[6]: Expected `Iterable[Variable[_LT (bound to
-                #  _SupportsLessThan)]]` for 1st param but got `Set[str]`.
                 parameter_type and tuple(sorted(parameter_type)),
-                # pyre-fixme[6]: Expected `Iterable[Variable[_LT (bound to
-                #  _SupportsLessThan)]]` for 1st param but got `Set[str]`.
                 parameter_name and tuple(sorted(parameter_name)),
             )
         )

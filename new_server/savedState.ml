@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Lwt.Infix
@@ -34,7 +36,7 @@ module Setting = struct
     watchman_connection: Watchman.Raw.Connection.t;
     project_name: string;
     project_metadata: string option;
-    critical_files: ServerConfiguration.CriticalFiles.t;
+    critical_files: ServerConfiguration.CriticalFile.t list;
     target: Path.t;
   }
 end
@@ -61,7 +63,7 @@ let query_exn
           List.map relative_paths ~f:(fun relative ->
               Path.create_relative ~root:watchman_root ~relative)
         in
-        match ServerConfiguration.CriticalFiles.find critical_files changed_files with
+        match ServerConfiguration.CriticalFile.find critical_files ~within:changed_files with
         | Some critical_file ->
             let message =
               Format.asprintf "Watchman detects changes in critical file `%a`" Path.pp critical_file

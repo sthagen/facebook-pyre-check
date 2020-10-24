@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open OUnit2
 open IntegrationTest
@@ -367,7 +369,25 @@ let test_check_builtin_globals context =
     {|
       reveal_type(__debug__)
     |}
-    ["Revealed type [-1]: Revealed type for `__debug__` is `bool`."]
+    ["Revealed type [-1]: Revealed type for `__debug__` is `bool`."];
+  assert_type_errors
+    ~update_environment_with:
+      [
+        { handle = "__init__.pyi"; source = {|
+              def bar() -> None: pass
+            |} };
+      ]
+    {|
+      # Builtin name
+      locals()
+
+      # Non-builtin name
+      foo()
+
+      # Defined in global with empty qualifier
+      bar()
+    |}
+    ["Unbound name [10]: Name `foo` is used but not defined in the current scope."]
 
 
 let () =

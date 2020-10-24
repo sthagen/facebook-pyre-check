@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open OUnit2
 open IntegrationTest
@@ -241,8 +243,15 @@ let test_check_tuple context =
       C(1,2)
     |}
     [
+      "Missing attribute annotation [4]: Attribute `a` of class `C` must have a type other than \
+       `Any`.";
+      "Missing attribute annotation [4]: Attribute `b` of class `C` must have a type other than \
+       `Any`.";
+      "Uninitialized attribute [13]: Attribute `a` is declared in class `C` to have type \
+       `typing.Any` but is never initialized.";
+      "Uninitialized attribute [13]: Attribute `b` is declared in class `C` to have type \
+       `typing.Any` but is never initialized.";
       "Unbound name [10]: Name `T` is used but not defined in the current scope.";
-      "Unbound name [10]: Name `$unparsed_annotation` is used but not defined in the current scope.";
       "Too many arguments [19]: Call `C.__new__` expects 1 positional argument, 2 were provided.";
     ];
   assert_type_errors
@@ -457,6 +466,50 @@ let test_tuple_literal_access context =
       "Incompatible return type [7]: Expected `typing.Tuple[int, int]` but got "
       ^ "`typing.Tuple[typing.Union[int, str], ...]`.";
     ];
+  assert_type_errors
+    {|
+      def func(a: int, b: str, c: bool) -> None:
+        pass
+      x = (42, "bla", False)
+      func( *x)
+    |}
+    [];
+  assert_type_errors
+    {|
+      def func(a: int, b: str, c: bool) -> None:
+        pass
+      c = ("bla", False)
+      func(1, *c)
+    |}
+    [];
+  assert_type_errors
+    {|
+      def func(a: int, b: str, c: bool) -> None:
+        pass
+      c = ("bla", )
+      func(1, *c)
+    |}
+    ["Missing argument [20]: Call `func` expects argument `c`."];
+  assert_type_errors
+    {|
+      def func(a: int, b: bool, c: str) -> None:
+        pass
+      c = ("bla", False)
+      func(1, *c)
+    |}
+    [
+      "Incompatible parameter type [6]: Expected `bool` for 2nd positional only parameter to call \
+       `func` but got `str`.";
+    ];
+  assert_type_errors
+    {|
+      def func(a: int, b: bool, c: str, d:int, e:str) -> None:
+        pass
+      c = (False, "ble")
+      d = (1, "abc")
+      func(1, *c, *d)
+    |}
+    [];
   ()
 
 

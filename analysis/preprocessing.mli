@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Ast
 
@@ -25,6 +27,8 @@ val expand_type_checking_imports : Source.t -> Source.t
 (* Add implicit returns when a function doesn't have one. *)
 val expand_implicit_returns : Source.t -> Source.t
 
+val replace_lazy_import : ?is_lazy_import:(Expression.t -> bool) -> Source.t -> Source.t
+
 val replace_mypy_extensions_stub : Source.t -> Source.t
 
 val expand_typed_dictionary_declarations : Source.t -> Source.t
@@ -40,6 +44,8 @@ val populate_nesting_defines : Source.t -> Source.t
 val populate_captures : Source.t -> Source.t
 
 val populate_unbound_names : Source.t -> Source.t
+
+val replace_union_shorthand : Source.t -> Source.t
 
 (* List of function definitions in a source. include_toplevels copies all definitions into a
    toplevel definition. *)

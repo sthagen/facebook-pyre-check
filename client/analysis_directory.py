@@ -1,20 +1,22 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import enum
 import functools
 import logging
 import os
 import shutil
 import subprocess
+import tempfile
 import textwrap
 from itertools import chain
 from pathlib import Path
 from time import time
 from typing import ContextManager, Dict, List, NamedTuple, Optional, Set, Tuple
 
-from . import buck, json_rpc, log
+from . import buck, json_rpc, log, statistics
 from .buck import BuckBuilder, find_buck_root
 from .configuration import Configuration
 from .exceptions import EnvironmentException
@@ -59,9 +61,17 @@ BUCK_BUILDER_CACHE_PREFIX = ".buck_builder_cache"
 
 READER_WRITER_LOCK = "analysis_directory_reader_writer.lock"
 
+TEMPORARY_DIRECTORY_PREFIX = "pyre_tmp_"
+
 
 class NotWithinLocalConfigurationException(Exception):
     pass
+
+
+class BuckEvent(enum.Enum):
+    BUILD = "build"
+    REBUILD = "rebuild"
+    PROCESS_NEW_PATHS = "process_new_paths"
 
 
 def _resolve_filter_paths(
@@ -124,16 +134,16 @@ class AnalysisDirectory:
 
     def process_updated_files(self, paths: List[str]) -> UpdatedPaths:
         """
-            Process a list of paths which were added/removed/updated, making any
-            necessary changes to the directory:
-                - For an AnalysisDirectory, nothing needs to be changed, since
-                  the mapping from source file to analysis file is 1:1.
-                - For a SharedAnalysisDirectory, the symbolic links (as well as
-                  the reverse-mapping we track) need to be updated to account for
-                  new and deleted files.
+        Process a list of paths which were added/removed/updated, making any
+        necessary changes to the directory:
+            - For an AnalysisDirectory, nothing needs to be changed, since
+              the mapping from source file to analysis file is 1:1.
+            - For a SharedAnalysisDirectory, the symbolic links (as well as
+              the reverse-mapping we track) need to be updated to account for
+              new and deleted files.
 
-            Return a list of files (corresponding to the given paths) that Pyre
-            should be tracking.
+        Return a list of files (corresponding to the given paths) that Pyre
+        should be tracking.
         """
         deleted_paths = [path for path in paths if not os.path.isfile(path)]
         tracked_paths = [
@@ -144,7 +154,7 @@ class AnalysisDirectory:
         tracked_paths.extend(deleted_paths)
         return UpdatedPaths(updated_paths=tracked_paths, deleted_paths=deleted_paths)
 
-    def cleanup(self) -> None:
+    def cleanup(self, delete_long_lasting_files: bool) -> None:
         pass
 
     @staticmethod
@@ -187,9 +197,10 @@ class SharedAnalysisDirectory(AnalysisDirectory):
         isolate: bool = False,
         buck_builder: Optional[BuckBuilder] = None,
         configuration: Optional[Configuration] = None,
+        temporary_directories: Optional[List[str]] = None,
     ) -> None:
         self._source_directories: Set[str] = set(source_directories)
-        self._targets: Set[str] = set(targets)
+        self._targets: List[str] = targets
         self._original_directory = original_directory
         self._project_root = project_root
         self._filter_paths: Set[str] = filter_paths or set()
@@ -200,6 +211,7 @@ class SharedAnalysisDirectory(AnalysisDirectory):
         )
         self._isolate = isolate
         self._buck_builder: BuckBuilder = buck_builder or buck.SimpleBuckBuilder()
+        self._temporary_directories: List[str] = temporary_directories or []
 
         # Mapping from source files in the project root to symbolic links in the
         # analysis directory.
@@ -210,7 +222,7 @@ class SharedAnalysisDirectory(AnalysisDirectory):
 
     def get_scratch_directory(self) -> str:
         try:
-            return (
+            return os.path.realpath(
                 subprocess.check_output(["mkscratch", "path", "--subdir", "pyre"])
                 .decode("utf-8")
                 .strip()
@@ -244,10 +256,40 @@ class SharedAnalysisDirectory(AnalysisDirectory):
                 for filter_root in current_project_directories
             }
 
+    def _log_build_event(
+        self,
+        event_type: BuckEvent,
+        runtime: float,
+        number_of_user_changed_files: int,
+        number_of_updated_files: int,
+        number_of_unsupported_files: int = 0,
+    ) -> None:
+        configuration = self._configuration
+        if not configuration or not configuration.logger:
+            return
+
+        statistics.log_with_configuration(
+            configuration=configuration,
+            category=statistics.LoggerCategory.BUCK_EVENTS,
+            integers={
+                "runtime": int(runtime * 1000),
+                "number_of_user_changed_files": number_of_user_changed_files,
+                "number_of_updated_files": number_of_updated_files,
+                "number_of_unsupported_files": number_of_unsupported_files,
+            },
+            normals={
+                "event_type": event_type.value,
+                "local_root": self._local_configuration_root,
+                "buck_builder_type": str(self._buck_builder),
+            },
+        )
+
     # Exposed for testing.
-    def _resolve_source_directories(self) -> None:
+    def _resolve_source_directories(self) -> Optional[buck.BuckBuildOutput]:
+        buck_build_output = None
         if self._targets:
-            new_source_directories = self._buck_builder.build(self._targets)
+            buck_build_output = self._buck_builder.build(self._targets)
+            new_source_directories = buck_build_output.output_directories
             original_directory = self._original_directory
             if original_directory is not None:
                 new_source_directories = translate_paths(
@@ -267,13 +309,14 @@ class SharedAnalysisDirectory(AnalysisDirectory):
             See `pyre --help` for more details.
             """
             raise NotWithinLocalConfigurationException(textwrap.dedent(message).strip())
+        return buck_build_output
 
     def prepare(self) -> None:
         start = time()
         root = self.get_root()
         LOG.info("Constructing shared directory `%s`", root)
 
-        self._resolve_source_directories()
+        buck_build_output = self._resolve_source_directories()
 
         try:
             os.makedirs(root)
@@ -284,16 +327,22 @@ class SharedAnalysisDirectory(AnalysisDirectory):
         with acquire_lock_if_needed(lock, blocking=True, needed=not self._isolate):
             self._clear()
             self._merge()
-            LOG.log(
-                log.PERFORMANCE, "Merged analysis directories in %fs", time() - start
-            )
         self._symbolic_links.update(self.compute_symbolic_links())
 
-    def rebuild(self) -> None:
-        start = time()
+        runtime = time() - start
+        LOG.log(log.PERFORMANCE, "Merged analysis directories in %fs", runtime)
+        self._log_build_event(
+            BuckEvent.BUILD,
+            runtime,
+            number_of_user_changed_files=0,
+            number_of_updated_files=len(self._symbolic_links),
+            number_of_unsupported_files=len(buck_build_output.unsupported_files)
+            if buck_build_output is not None
+            else 0,
+        )
 
+    def rebuild(self) -> None:
         root = self.get_root()
-        LOG.info("Updating shared directory `%s`", root)
 
         self._resolve_source_directories()
 
@@ -310,7 +359,6 @@ class SharedAnalysisDirectory(AnalysisDirectory):
             for scratch_path in self._symbolic_links.values():
                 if not os.path.exists(scratch_path):
                     os.remove(scratch_path)
-            LOG.log(log.PERFORMANCE, "Updated shared directory in %fs", time() - start)
         self._symbolic_links = self.compute_symbolic_links()
 
     def compute_symbolic_links(self) -> Dict[str, str]:
@@ -365,7 +413,10 @@ class SharedAnalysisDirectory(AnalysisDirectory):
         )
         try:
             with SocketConnection(configuration.log_directory) as socket_connection:
-                socket_connection.perform_handshake(configuration.version_hash)
+                socket_connection.perform_handshake(
+                    configuration.get_version_hash_respecting_override()
+                    or "unversioned"
+                )
                 socket_connection.send(show_status_message)
         except (
             SocketException,
@@ -424,20 +475,25 @@ class SharedAnalysisDirectory(AnalysisDirectory):
             return None
 
     def _process_rebuilt_files(
-        self, tracked_paths: List[str], deleted_paths: List[str]
+        self, tracked_paths: List[str], new_paths: List[str], deleted_paths: List[str]
     ) -> Tuple[List[str], List[str]]:
         self._notify_about_rebuild(is_start_message=True)
 
         old_symbolic_links = self._symbolic_links
         old_paths = set(self._symbolic_links.keys())
+        number_of_user_changed_files = (
+            len(tracked_paths) + len(new_paths) + len(deleted_paths)
+        )
 
         # We need to inform the server of any files updated in place by the
         # rebuild, such as .pyi files from thrift.
         rebuild_start_time = time()
+        LOG.info("Updating shared directory `%s`", self.get_root())
 
         self.rebuild()
-        new_paths = set(self._symbolic_links.keys())
+        new_paths: Set[str] = set(self._symbolic_links.keys())
 
+        buck.clear_buck_query_cache()
         self._notify_about_rebuild(is_start_message=False)
 
         newly_created_paths = new_paths - old_paths
@@ -458,11 +514,25 @@ class SharedAnalysisDirectory(AnalysisDirectory):
         deleted_scratch_paths = [
             old_symbolic_links.get(path, path) for path in old_paths - new_paths
         ]
+
+        runtime = time() - rebuild_start_time
+        LOG.log(log.PERFORMANCE, "Updated shared directory in %fs", runtime)
+        number_of_updated_files = (
+            len(updated_paths) + len(newly_created_paths) + len(deleted_scratch_paths)
+        )
+        self._log_build_event(
+            BuckEvent.REBUILD,
+            runtime,
+            number_of_user_changed_files,
+            number_of_updated_files,
+        )
+
         return tracked_paths, deleted_scratch_paths
 
     def _process_new_paths(
         self, new_paths: List[str], tracked_paths: List[str], deleted_paths: List[str]
     ) -> List[str]:
+        start_time = time()
         absolute_link_map = self._fetch_cached_absolute_link_map(
             new_paths, deleted_paths
         )
@@ -487,6 +557,14 @@ class SharedAnalysisDirectory(AnalysisDirectory):
                 self._symbolic_links[path] = absolute_link
             except OSError:
                 LOG.warning("Failed to add link at %s.", absolute_link)
+
+        runtime = time() - start_time
+        self._log_build_event(
+            BuckEvent.PROCESS_NEW_PATHS,
+            runtime,
+            number_of_user_changed_files=len(new_paths),
+            number_of_updated_files=len(absolute_link_map),
+        )
         return tracked_paths
 
     def _process_deleted_paths(
@@ -544,7 +622,7 @@ class SharedAnalysisDirectory(AnalysisDirectory):
             tracked_paths, new_paths, deleted_paths
         ):
             tracked_paths, deleted_scratch_paths = self._process_rebuilt_files(
-                tracked_paths, deleted_paths
+                tracked_paths, new_paths, deleted_paths
             )
         elif new_paths or deleted_paths:
             if new_paths:
@@ -575,25 +653,33 @@ class SharedAnalysisDirectory(AnalysisDirectory):
         with self.acquire_writer_lock():
             return self._process_updated_files(paths)
 
-    def _directories_to_clean_up(self) -> List[str]:
-        if not self._isolate:
+    def _directories_to_clean_up(self, delete_long_lasting_files: bool) -> List[str]:
+        if not delete_long_lasting_files:
             return []
 
-        if not isinstance(self._buck_builder, buck.FastBuckBuilder):
+        if isinstance(self._buck_builder, buck.SimpleBuckBuilder):
             return [self.get_root()]
+
+        if isinstance(self._buck_builder, buck.SourceDatabaseBuckBuilder):
+            return [self.get_root(), *self._temporary_directories]
 
         project_name = _get_project_name(self._isolate, self._local_configuration_root)
         buck_builder_cache_path = os.path.join(
             self.get_scratch_directory(), f"{BUCK_BUILDER_CACHE_PREFIX}_{project_name}"
         )
-        return [self.get_root(), buck_builder_cache_path]
+        return [self.get_root(), buck_builder_cache_path, *self._temporary_directories]
 
-    def cleanup(self) -> None:
-        try:
-            for directory in self._directories_to_clean_up():
+    def cleanup(self, delete_long_lasting_files: bool) -> None:
+        delete_long_lasting_files = delete_long_lasting_files or self._isolate
+        directories_to_clean_up = self._directories_to_clean_up(
+            delete_long_lasting_files
+        )
+        LOG.debug(f"Cleaning up in the analysis directory: {directories_to_clean_up}.")
+        for directory in directories_to_clean_up:
+            try:
                 shutil.rmtree(directory)
-        except Exception as exception:
-            LOG.debug(f"Could not clean up analysis directory: {exception}")
+            except Exception as exception:
+                LOG.debug(f"Could not clean up analysis directory: {exception}")
 
     def _clear(self) -> None:
         root = self.get_root()
@@ -662,6 +748,53 @@ def _get_project_name(
     return None
 
 
+def _get_buck_builder(
+    project_root: str,
+    configuration: Configuration,
+    buck_mode: Optional[str],
+    relative_local_root: Optional[str],
+    isolate: bool,
+) -> Tuple[BuckBuilder, List[str]]:
+    if not configuration.use_buck_builder:
+        return (buck.SimpleBuckBuilder(), [])
+
+    buck_root = find_buck_root(project_root)
+    if not buck_root:
+        raise EnvironmentException(
+            f"No Buck configuration at `{project_root}` or any of its ancestors."
+        )
+
+    output_directory = tempfile.mkdtemp(prefix=TEMPORARY_DIRECTORY_PREFIX)
+
+    if configuration.use_buck_source_database:
+        return (
+            buck.SourceDatabaseBuckBuilder(
+                buck_root=buck_root,
+                buck_mode=buck_mode,
+                output_directory=output_directory,
+                isolation_prefix=(
+                    configuration.get_isolation_prefix_respecting_override()
+                ),
+            ),
+            [output_directory],
+        )
+
+    project_name = _get_project_name(
+        isolate_per_process=isolate, relative_local_root=relative_local_root
+    )
+    return (
+        buck.FastBuckBuilder(
+            buck_root=buck_root,
+            buck_builder_binary=configuration.buck_builder_binary,
+            buck_mode=buck_mode,
+            project_name=project_name,
+            output_directory=output_directory,
+            isolation_prefix=configuration.get_isolation_prefix_respecting_override(),
+        ),
+        [output_directory],
+    )
+
+
 def resolve_analysis_directory(
     source_directories: List[str],
     targets: List[str],
@@ -669,8 +802,6 @@ def resolve_analysis_directory(
     original_directory: str,
     project_root: str,
     filter_directory: Optional[str],
-    use_buck_builder: Optional[bool],
-    debug: bool,
     buck_mode: Optional[str],
     isolate: bool = False,
     relative_local_root: Optional[str] = None,
@@ -685,8 +816,8 @@ def resolve_analysis_directory(
 
     # Only read from the configuration if no explicit targets are passed in.
     if not source_directories and not targets:
-        source_directories = configuration.source_directories
-        targets = configuration.targets
+        source_directories = list(configuration.source_directories)
+        targets = list(configuration.targets)
     else:
         source_directories = source_directories or []
         targets = targets or []
@@ -708,37 +839,19 @@ def resolve_analysis_directory(
             local_configuration_root, project_root
         )
 
-    use_buck_builder: bool = (
-        use_buck_builder
-        if use_buck_builder is not None
-        else configuration.use_buck_builder
-    )
-
     if len(source_directories) == 1 and len(targets) == 0:
         analysis_directory = AnalysisDirectory(
             source_directories.pop(),
             filter_paths=filter_paths,
-            search_path=configuration.search_path,
+            search_path=[
+                search_path.path()
+                for search_path in configuration.get_existent_search_paths()
+            ],
         )
     else:
-        if use_buck_builder:
-            buck_root = find_buck_root(project_root)
-            if not buck_root:
-                raise EnvironmentException(
-                    f"No Buck configuration at `{project_root}` or any of its ancestors."
-                )
-            project_name = _get_project_name(
-                isolate_per_process=isolate, relative_local_root=relative_local_root
-            )
-            buck_builder = buck.FastBuckBuilder(
-                buck_root=buck_root,
-                buck_builder_binary=configuration.buck_builder_binary,
-                debug_mode=debug,
-                buck_mode=buck_mode,
-                project_name=project_name,
-            )
-        else:
-            buck_builder = buck.SimpleBuckBuilder()
+        buck_builder, temporary_directories = _get_buck_builder(
+            project_root, configuration, buck_mode, relative_local_root, isolate
+        )
 
         analysis_directory = SharedAnalysisDirectory(
             source_directories=source_directories,
@@ -748,9 +861,13 @@ def resolve_analysis_directory(
             project_root=project_root,
             filter_paths=filter_paths,
             local_configuration_root=local_configuration_root,
-            extensions=configuration.extensions,
-            search_path=configuration.search_path,
+            extensions=configuration.get_valid_extensions(),
+            search_path=[
+                search_path.path()
+                for search_path in configuration.get_existent_search_paths()
+            ],
             isolate=isolate,
             configuration=configuration,
+            temporary_directories=temporary_directories,
         )
     return analysis_directory

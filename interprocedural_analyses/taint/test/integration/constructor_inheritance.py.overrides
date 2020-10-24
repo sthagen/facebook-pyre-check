@@ -1,3 +1,4 @@
 @generated
 Overrides
-object::__init__ (override) -> [constructor_inheritance.MyBaseClass::__init__ (override)]
+constructor_inheritance.MyBaseClass::__init__ (override) -> [constructor_inheritance.MyBaseClass::__init__ (method)]
+object::__init__ (override) -> [constructor_inheritance.MyBaseClass::__init__ (override) object::__init__ (method)]

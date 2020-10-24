@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 package com.facebook.buck_project_builder.targets;
 
 import com.facebook.buck_project_builder.CommandLine;
@@ -63,20 +70,6 @@ public final class GeneratedBuildRuleRunner {
         throw new IOException(output);
       }
       throw new IOException(exception.getMessage());
-    }
-  }
-
-  public static @Nullable String getBuiltTargetExecutable(String builderTarget, String buckRoot)
-      throws IOException {
-    try (InputStream inputStream =
-        CommandLine.getCommandLineOutput(
-            new File(buckRoot), "buck", "build", "@mode/opt", "--show-json-output", builderTarget)) {
-      JsonElement builtOutputElement =
-          new JsonParser()
-              .parse(new InputStreamReader(inputStream))
-              .getAsJsonObject()
-              .get(builderTarget);
-      return builtOutputElement == null ? null : builtOutputElement.getAsString();
     }
   }
 }

@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -27,9 +27,9 @@ class FixmeTargetsTest(unittest.TestCase):
     )
     @patch.object(FixmeTargets, "_run_fixme_targets_file")
     @patch(f"{fixme_targets.__name__}.find_targets")
-    @patch(f"{fixme_targets.__name__}.Repository.submit_changes")
+    @patch(f"{fixme_targets.__name__}.Repository.commit_changes")
     def test_fixme_targets(
-        self, submit_changes, find_targets, fix_file, find_configuration, subprocess
+        self, commit_changes, find_targets, fix_file, find_configuration, subprocess
     ) -> None:
         arguments = MagicMock()
         arguments.subdirectory = None
@@ -37,36 +37,32 @@ class FixmeTargetsTest(unittest.TestCase):
         find_targets.return_value = {}
         FixmeTargets.from_arguments(arguments, repository).run()
         fix_file.assert_not_called()
-        submit_changes.assert_not_called()
+        commit_changes.assert_not_called()
 
         find_targets.return_value = {"a/b/TARGETS": ["derp", "herp", "merp"]}
         FixmeTargets.from_arguments(arguments, repository).run()
         fix_file.assert_called_once_with(
             Path("."), "a/b/TARGETS", ["derp", "herp", "merp"]
         )
-        submit_changes.assert_called_once_with(
-            commit=True,
-            submit=arguments.submit,
-            title="Upgrade pyre version for . (TARGETS)",
+        commit_changes.assert_called_once_with(
+            commit=True, title="Upgrade pyre version for . (TARGETS)"
         )
 
         # Test subdirectory
         fix_file.reset_mock()
-        submit_changes.reset_mock()
+        commit_changes.reset_mock()
         arguments.subdirectory = "derp"
         FixmeTargets.from_arguments(arguments, repository).run()
         fix_file.assert_called_once_with(
             Path("."), "a/b/TARGETS", ["derp", "herp", "merp"]
         )
-        submit_changes.assert_called_once_with(
-            commit=True,
-            submit=arguments.submit,
-            title="Upgrade pyre version for derp (TARGETS)",
+        commit_changes.assert_called_once_with(
+            commit=True, title="Upgrade pyre version for derp (TARGETS)"
         )
 
     @patch("subprocess.run")
-    @patch.object(ErrorSuppressingCommand, "_suppress_errors")
-    def test_run_fixme_targets_file(self, suppress_errors, subprocess) -> None:
+    @patch.object(ErrorSuppressingCommand, "_apply_suppressions")
+    def test_run_fixme_targets_file(self, apply_suppressions, subprocess) -> None:
         arguments = MagicMock()
         arguments.subdirectory = None
         arguments.no_commit = False
@@ -96,7 +92,7 @@ class FixmeTargetsTest(unittest.TestCase):
             stdout=-1,
             stderr=-1,
         )
-        suppress_errors.assert_not_called()
+        apply_suppressions.assert_not_called()
 
         buck_return.returncode = 0
         subprocess.return_value = buck_return
@@ -108,7 +104,7 @@ class FixmeTargetsTest(unittest.TestCase):
                 Target("herp", strict=False, pyre=True),
             ],
         )
-        suppress_errors.assert_not_called()
+        apply_suppressions.assert_not_called()
 
         buck_return.returncode = 32
         buck_return.stdout = b"""
@@ -185,11 +181,11 @@ class FixmeTargetsTest(unittest.TestCase):
                 Target("herp", strict=False, pyre=True),
             ],
         )
-        suppress_errors.assert_called_once_with(expected_errors)
+        apply_suppressions.assert_called_once_with(expected_errors)
 
         # Test fallback to type check targets with modified names
         subprocess.reset_mock()
-        suppress_errors.reset_mock()
+        apply_suppressions.reset_mock()
         failed_buck_return = MagicMock()
         failed_buck_return.returncode = 5
         failed_buck_return.stdout = b""
@@ -230,10 +226,10 @@ class FixmeTargetsTest(unittest.TestCase):
                 ),
             ]
         )
-        suppress_errors.assert_called_once_with(expected_errors)
+        apply_suppressions.assert_called_once_with(expected_errors)
 
         subprocess.reset_mock()
-        suppress_errors.reset_mock()
+        apply_suppressions.reset_mock()
         failed_buck_return = MagicMock()
         failed_buck_return.returncode = 5
         failed_buck_return.stdout = b""
@@ -284,4 +280,4 @@ class FixmeTargetsTest(unittest.TestCase):
                 ),
             ]
         )
-        suppress_errors.assert_called_once_with(expected_errors)
+        apply_suppressions.assert_called_once_with(expected_errors)

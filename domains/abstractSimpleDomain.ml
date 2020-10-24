@@ -1,7 +1,9 @@
-(** Copyright (c) 2016-present, Facebook, Inc.
-
-    This source code is licensed under the MIT license found in the LICENSE file in the root
-    directory of this source tree. *)
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open AbstractDomainCore
 
@@ -13,6 +15,8 @@ module type ELEMENT = sig
   val bottom : t
 
   val join : t -> t -> t
+
+  val meet : t -> t -> t
 
   val less_or_equal : left:t -> right:t -> bool
 
@@ -34,6 +38,8 @@ module Make (Element : ELEMENT) = struct
     let bottom = bottom
 
     let join = join
+
+    let less_or_equal = less_or_equal
   end
 
   module C = Common (CommonArg)

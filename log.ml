@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 
@@ -20,7 +22,6 @@ type section =
   | `Info
   | `Interprocedural
   | `Memory
-  | `Parser
   | `Performance
   | `Progress
   | `Protocols
@@ -44,7 +45,6 @@ let section_to_string = function
   | `Info -> "Info"
   | `Interprocedural -> "Interprocedural"
   | `Memory -> "Memory"
-  | `Parser -> "Parser"
   | `Performance -> "Performance"
   | `Progress -> "Progress"
   | `Protocols -> "Protocols"
@@ -132,6 +132,8 @@ let print format = Printf.printf format
 let log_unix_error ?(section = `Error) (error_kind, name, parameters) =
   log ~section "Unix error %s: %s(%s)" (Unix.error_message error_kind) name parameters
 
+
+let log_exception exception_to_log = error "Uncaught exception: %s" (Exn.to_string exception_to_log)
 
 module Color = struct
   let cyan string = Format.asprintf "\027[36m%s\027[0m" string

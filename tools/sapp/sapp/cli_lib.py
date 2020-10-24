@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -15,24 +15,24 @@ from click import Parameter, Path, argument, option
 from traitlets.config import Config
 
 from .analysis_output import AnalysisOutput
-from .application import start_app
 from .context import Context, pass_context
-from .create_database import CreateDatabase
-from .database_saver import DatabaseSaver
 from .db import DB
 from .extensions import prompt_extension
 from .filesystem import find_root
-from .interactive import Interactive
-from .model_generator import ModelGenerator
 from .models import PrimaryKeyGenerator
 from .pipeline import Pipeline
-from .trim_trace_graph import TrimTraceGraph
+from .pipeline.create_database import CreateDatabase
+from .pipeline.database_saver import DatabaseSaver
+from .pipeline.model_generator import ModelGenerator
+from .pipeline.trim_trace_graph import TrimTraceGraph
+from .ui.interactive import Interactive
+from .ui.server import start_server
 
 
 MARKER_DIRECTORIES = [".pyre", ".hg", ".git", ".svn"]
 
+# pyre-fixme[5]: Global expression must be annotated.
 logger = logging.getLogger("sapp")
-logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s")
 
 
 def require_option(current_ctx: click.Context, param_name: str) -> None:
@@ -57,6 +57,8 @@ def require_option(current_ctx: click.Context, param_name: str) -> None:
     raise click.MissingParameter(ctx=current_ctx, param=param_definition)
 
 
+# pyre-fixme[3]: Return type must be annotated.
+# pyre-fixme[2]: Parameter must be annotated.
 def common_options(func):
     @click.group(context_settings={"help_option_names": ["--help", "-h"]})
     @click_log.simple_verbosity_option(logger)
@@ -74,21 +76,23 @@ def common_options(func):
         type=Path(dir_okay=False),
     )
     @wraps(func)
+    # pyre-fixme[53]: Captured variable `func` is not annotated.
+    # pyre-fixme[3]: Return type must be annotated.
+    # pyre-fixme[2]: Parameter must be annotated.
+    # pyre-fixme[2]: Parameter must be annotated.
     def wrapper(*args, **kwargs):
         return func(*args, **kwargs)
 
     return wrapper
 
 
+# pyre-fixme[3]: Return type must be annotated.
 def default_database(ctx: click.Context, _param: Parameter, value: Optional[str]):
-    """Try to guess a reasonable database name by looking at the repository path"""
+    """By default, use a database at the current dir"""
     if value:
         return value
 
-    if ctx.params["repository"]:
-        return os.path.join(ctx.params["repository"], DB.DEFAULT_DB_FILE)
-
-    raise click.BadParameter("Could not guess a database location")
+    return os.path.join(os.path.curdir, DB.DEFAULT_DB_FILE)
 
 
 @click.command(
@@ -97,6 +101,8 @@ def default_database(ctx: click.Context, _param: Parameter, value: Optional[str]
 )
 @pass_context
 @click.argument("ipython_args", nargs=-1, type=click.UNPROCESSED)
+# pyre-fixme[3]: Return type must be annotated.
+# pyre-fixme[2]: Parameter must be annotated.
 def explore(ctx: Context, ipython_args):
     scope_vars = Interactive(
         database=ctx.database,
@@ -150,17 +156,28 @@ def explore(ctx: Context, ipython_args):
     help="store pre/post conditions unrelated to an issue",
 )
 @argument("input_file", type=Path(exists=True))
+# pyre-fixme[3]: Return type must be annotated.
 def analyze(
     ctx: Context,
+    # pyre-fixme[2]: Parameter must be annotated.
     run_kind,
+    # pyre-fixme[2]: Parameter must be annotated.
     branch,
+    # pyre-fixme[2]: Parameter must be annotated.
     commit_hash,
+    # pyre-fixme[2]: Parameter must be annotated.
     job_id,
+    # pyre-fixme[2]: Parameter must be annotated.
     differential_id,
+    # pyre-fixme[2]: Parameter must be annotated.
     previous_issue_handles,
+    # pyre-fixme[2]: Parameter must be annotated.
     previous_input,
+    # pyre-fixme[2]: Parameter must be annotated.
     linemap,
+    # pyre-fixme[2]: Parameter must be annotated.
     store_unused_models,
+    # pyre-fixme[2]: Parameter must be annotated.
     input_file,
 ):
     # Store all options in the right places
@@ -206,9 +223,22 @@ def analyze(
     help="backend flask server for exploration of issues",
     context_settings={"ignore_unknown_options": True},
 )
+@option("--debug/--no-debug", default=False, help="Start Flask server in debug mode")
+@option(
+    "--static-resources", default=None, help="Directory to serve static resources from"
+)
+# pyre-fixme[56]: Pyre was not able to infer the type of argument `os.getcwd()` to
+#  decorator factory `click.option`.
+@option(
+    "--source-directory", default=os.getcwd(), help="Directory to look for source code"
+)
 @pass_context
-def server(ctx: Context):
-    start_app(ctx.database)
+# pyre-fixme[3]: Return type must be annotated.
+def server(
+    ctx: Context, debug: bool, static_resources: Optional[str], source_directory: str
+):
+    start_server(ctx.database, debug, static_resources, source_directory)
 
 
+# pyre-fixme[5]: Global expression must be annotated.
 commands = [analyze, explore, server]

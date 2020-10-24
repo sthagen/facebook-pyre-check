@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Ast
@@ -405,11 +407,9 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         let left =
           match Type.Variable.Variadic.Parameters.Components.component component with
           | KeywordArguments ->
-              Type.Parametric
-                {
-                  name = Type.mapping_primitive;
-                  parameters = [Single Type.string; Single Type.object_primitive];
-                }
+              Type.parametric
+                Type.mapping_primitive
+                [Single Type.string; Single Type.object_primitive]
           | PositionalArguments -> Type.Tuple (Unbounded Type.object_primitive)
         in
         solve_less_or_equal order ~constraints ~left ~right

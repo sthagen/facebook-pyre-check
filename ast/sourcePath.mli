@@ -1,7 +1,9 @@
-(** Copyright (c) 2019-present, Facebook, Inc.
-
-    This source code is licensed under the MIT license found in the LICENSE file in the root
-    directory of this source tree. *)
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Pyre
 
@@ -29,5 +31,7 @@ val full_path : configuration:Configuration.Analysis.t -> t -> Path.t
 val same_module_compare : configuration:Configuration.Analysis.t -> t -> t -> int
 
 val is_stub : t -> bool
+
+val is_internal_path : configuration:Configuration.Analysis.t -> Path.t -> bool
 
 val expand_relative_import : from:Reference.t Node.t -> t -> Reference.t Node.t

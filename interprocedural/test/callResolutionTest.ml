@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open OUnit2
 open Core
@@ -129,27 +131,95 @@ let test_get_property_callable context =
     ~expected:(Some "x.C::foo$setter (method)")
 
 
-let test_resolve_ignoring_optional context =
-  let assert_resolved_without_optional ~source ~expression ~expected =
+let test_resolve_target context =
+  let assert_resolved ~source ~expression ~expected =
     let resolution =
-      ScratchProject.setup ~context ["x.py", source] |> ScratchProject.build_resolution
+      ScratchProject.setup ~context ["test.py", source] |> ScratchProject.build_resolution
     in
-    CallResolution.resolve_ignoring_optional ~resolution (Test.parse_single_expression expression)
-    |> assert_equal ~printer:Type.show expected
+    CallResolution.resolve_target ~resolution (Test.parse_single_expression expression)
+    |> assert_equal
+         ~cmp:(List.equal CallResolution.equal_target)
+         ~printer:(List.to_string ~f:CallResolution.show_target)
+         expected
   in
-  assert_resolved_without_optional
-    ~source:{|
-    class Data:
-      def __init__(self, x: int) -> None: ...
-  |}
-    ~expression:"x.Data()"
-    ~expected:(Type.Primitive "x.Data")
+  assert_resolved
+    ~source:
+      {|
+      from functools import lru_cache
+      @lru_cache()
+      def f() -> int:
+        return 0
+    |}
+    ~expression:"test.f"
+    ~expected:[`Function "test.f", None];
+
+  assert_resolved
+    ~source:
+      {|
+      from functools import lru_cache
+      class C:
+        @lru_cache()
+        def m(self, x: int) -> int:
+          return x
+      c: C = C()
+    |}
+    ~expression:"test.c.m"
+    ~expected:
+      [
+        `Method { Callable.class_name = "test.C"; method_name = "m" }, Some (Type.Primitive "test.C");
+      ];
+  assert_resolved
+    ~source:
+      {|
+      from functools import lru_cache
+      class C:
+        @lru_cache()
+        def m(self, x: int) -> int:
+          return x
+      c: C = C()
+    |}
+    ~expression:"test.C.m"
+    ~expected:
+      [
+        ( `Method { Callable.class_name = "test.C"; method_name = "m" },
+          Some (Type.meta (Type.Primitive "test.C")) );
+      ];
+  assert_resolved
+    ~source:
+      {|
+      from functools import lru_cache
+      class C:
+        @classmethod
+        @lru_cache()
+        def m(cls, x: int) -> int:
+          return x
+    |}
+    ~expression:"test.C.m"
+    ~expected:
+      [
+        ( `Method { Callable.class_name = "test.C"; method_name = "m" },
+          Some (Type.meta (Type.Primitive "test.C")) );
+      ];
+  assert_resolved
+    ~source:
+      {|
+        class C:
+          def __call__(self, arg):
+            return arg
+        c: C = C()
+      |}
+    ~expression:"test.c"
+    ~expected:
+      [
+        ( `Method { Callable.class_name = "test.C"; method_name = "__call__" },
+          Some (Type.Primitive "test.C") );
+      ]
 
 
 let () =
   "callResolution"
   >::: [
          "get_property_callable" >:: test_get_property_callable;
-         "resolve_ignoring_optional" >:: test_resolve_ignoring_optional;
+         "resolve_target" >:: test_resolve_target;
        ]
   |> Test.run

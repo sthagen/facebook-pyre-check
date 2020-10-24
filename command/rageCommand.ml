@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Pyre
@@ -58,24 +60,29 @@ let get_pyre_locks () =
 
 
 let run_rage log_directory local_root () =
-  Out_channel.printf
-    "Actual binary version: %s\nBinary build info: %s\n"
-    (Version.version ())
-    (Version.build_info ());
-  let configuration =
-    let local_root = Path.create_absolute local_root in
-    Configuration.Analysis.create ?log_directory ~local_root ~source_path:[local_root] ()
-  in
-  let logs =
-    get_mercurial_base ()
-    :: get_mercurial_status ()
-    :: get_mercurial_diff ()
-    :: get_mercurial_reflog ()
-    :: get_watchman_watched_directories ()
-    :: get_pyre_locks ()
-    @ Service.Rage.get_logs configuration
-  in
-  List.iter ~f:display_log logs
+  try
+    Out_channel.printf
+      "Actual binary version: %s\nBinary build info: %s\n"
+      (Version.version ())
+      (Version.build_info ());
+    let configuration =
+      let local_root = Path.create_absolute local_root in
+      Configuration.Analysis.create ?log_directory ~local_root ~source_path:[local_root] ()
+    in
+    let logs =
+      get_mercurial_base ()
+      :: get_mercurial_status ()
+      :: get_mercurial_diff ()
+      :: get_mercurial_reflog ()
+      :: get_watchman_watched_directories ()
+      :: get_pyre_locks ()
+      @ Service.Rage.get_logs configuration
+    in
+    List.iter ~f:display_log logs
+  with
+  | error ->
+      Log.log_exception error;
+      raise error
 
 
 let command =

@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Pyre
@@ -34,7 +36,16 @@ module Server = struct
     Path.create_relative ~root ~relative:"server.state"
 end
 
+module Client = struct
+  let log_path configuration = Configuration.Analysis.log_directory configuration ^| "pyre.stderr"
+end
+
 module Watchman = struct
-  let log_path configuration =
+  let file_monitor_log_path configuration =
     Configuration.Analysis.log_directory configuration ^| "file_monitor/file_monitor.log"
+
+
+  let configuration_monitor_log_path configuration =
+    Configuration.Analysis.log_directory configuration
+    ^| "configuration_monitor/configuration_monitor.log"
 end

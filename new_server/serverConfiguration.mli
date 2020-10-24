@@ -1,15 +1,26 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Pyre
 
-module CriticalFiles : sig
-  type t = string list [@@deriving sexp, compare, hash, yojson]
+module CriticalFile : sig
+  type t =
+    | BaseName of string
+    | FullPath of Path.t
+  [@@deriving sexp, compare, hash, yojson]
 
-  val find : t -> Path.t list -> Path.t option
+  val base_name_of : t -> string
+
+  val matches : path:Path.t -> t -> bool
+
+  val matches_any : path:Path.t -> t list -> bool
+
+  val find : within:Path.t list -> t list -> Path.t option
 end
 
 module SavedStateAction : sig
@@ -44,7 +55,7 @@ type t = {
   strict: bool;
   show_error_traces: bool;
   store_type_check_resolution: bool;
-  critical_files: CriticalFiles.t;
+  critical_files: CriticalFile.t list;
   saved_state_action: SavedStateAction.t option;
   (* Parallelism controls *)
   parallel: bool;

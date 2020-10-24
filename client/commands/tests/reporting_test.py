@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -10,27 +10,28 @@ import json
 import os
 import subprocess
 import unittest
+from pathlib import Path
 from typing import Any, Dict
 from unittest.mock import MagicMock, mock_open, patch
 
-from ... import commands
+from ... import commands, find_directories
 from ...analysis_directory import AnalysisDirectory, SharedAnalysisDirectory
-from ..command import ClientException, __name__ as client_name
+from ..command import ClientException
 from .command_test import mock_arguments, mock_configuration
 
 
 class ReportingTest(unittest.TestCase):
     @patch.object(os.path, "realpath", side_effect=lambda path: path)
     @patch.object(os.path, "isdir", side_effect=lambda path: True)
+    # pyre-fixme[56]: Pyre was not able to infer the type of argument `os.path` to
+    #  decorator factory `unittest.mock.patch.object`.
     @patch.object(os.path, "exists", side_effect=lambda path: True)
-    @patch("{}.find_project_root".format(client_name), return_value="/")
-    # pyre-fixme[56]: Argument
-    #  `"{}.find_local_root".format(tools.pyre.client.commands.command.__name__)` to
-    #  decorator factory `unittest.mock.patch` could not be resolved in a global scope.
-    @patch("{}.find_local_root".format(client_name), return_value=None)
-    @patch("os.chdir")
+    @patch(
+        f"{find_directories.__name__}.find_global_and_local_root",
+        return_value=find_directories.FoundRoot(Path("/root")),
+    )
     def test_get_errors(
-        self, chdir, find_local_root, find_project_root, exists, isdir, realpath
+        self, find_global_and_local_root, exists, isdir, realpath
     ) -> None:
         original_directory = "/test"
         arguments = mock_arguments()
@@ -52,80 +53,76 @@ class ReportingTest(unittest.TestCase):
         }
 
         handler = commands.Reporting(
-            arguments, original_directory, configuration, AnalysisDirectory("/test/f/g")
+            arguments, original_directory, configuration, AnalysisDirectory("/root/f/g")
         )
         with patch.object(json, "loads", return_value=copy.deepcopy(json_errors)):
             errors = handler._get_errors(result)
             self.assertEqual(len(errors), 1)
             [error] = errors
             self.assertFalse(error.ignore_error)
-            self.assertFalse(error.external_to_global_root)
 
         arguments = mock_arguments(targets=["//f/g:target"])
         configuration.targets = []
         handler = commands.Reporting(
-            arguments, original_directory, configuration, AnalysisDirectory("/test/f/g")
+            arguments, original_directory, configuration, AnalysisDirectory("/root/f/g")
         )
         with patch.object(json, "loads", return_value=copy.deepcopy(json_errors)):
             errors = handler._get_errors(result)
             self.assertEqual(len(errors), 1)
             [error] = errors
             self.assertFalse(error.ignore_error)
-            self.assertFalse(error.external_to_global_root)
 
         original_directory = "/f/g/target"
         arguments = mock_arguments(targets=["//f/g:target"])
         configuration.targets = []
         handler = commands.Reporting(
-            arguments, original_directory, configuration, AnalysisDirectory("/test/h/i")
+            arguments, original_directory, configuration, AnalysisDirectory("/root/h/i")
         )
         with patch.object(json, "loads", return_value=copy.deepcopy(json_errors)):
             errors = handler._get_errors(result)
             self.assertEqual(len(errors), 1)
             [error] = errors
             self.assertFalse(error.ignore_error)
-            self.assertFalse(error.external_to_global_root)
 
         # Called from root with local configuration command line argument
-        original_directory = "/project"  # called from
-        find_project_root.return_value = "/project"  # project root
-        find_local_root.return_value = "/project/test"  # local configuration
+        original_directory = "/root"  # called from
+        find_global_and_local_root.return_value = find_directories.FoundRoot(
+            Path("/root"), Path("/root/test")
+        )  # project root
         handler = commands.Reporting(
-            arguments, original_directory, configuration, AnalysisDirectory("/project")
+            arguments, original_directory, configuration, AnalysisDirectory("/root")
         )
         with patch.object(json, "loads", return_value=copy.deepcopy(json_errors)):
             errors = handler._get_errors(result)
             self.assertEqual(len(errors), 1)
             [error] = errors
             self.assertFalse(error.ignore_error)
-            self.assertFalse(error.external_to_global_root)
 
         # Test overlapping analysis directory and error path
-        original_directory = "/project"  # called from
-        find_project_root.return_value = "/project"  # project root
-        find_local_root.return_value = "/project/test"  # local configuration
+        original_directory = "/root"  # called from
+        find_global_and_local_root.return_value = find_directories.FoundRoot(
+            Path("/root"), Path("/root/test")
+        )  # project root
         handler = commands.Reporting(
             arguments,
             original_directory,
             configuration,
-            AnalysisDirectory("/project/test"),
+            AnalysisDirectory("/root/test"),
         )
         json_errors = copy.deepcopy(json_errors)
-        json_errors["errors"][0]["path"] = "/project/test/path.py"
+        json_errors["errors"][0]["path"] = "/root/test/path.py"
         with patch.object(json, "loads", return_value=copy.deepcopy(json_errors)):
             errors = handler._get_errors(result)
             self.assertEqual(len(errors), 1)
             [error] = errors
             self.assertFalse(error.ignore_error)
-            self.assertFalse(error.external_to_global_root)
-            self.assertEqual(error.path, "test/path.py")
+            self.assertEqual(error.error.path, "test/path.py")
 
         return
 
         # Test wildcard in do not check
         original_directory = "/"  # called from
-        find_project_root.return_value = "/"  # project root
-        find_local_root.return_value = None
+        find_global_and_local_root.return_value = find_directories.FoundRoot(Path("/"))
         configuration.ignore_all_errors = ["*/b"]
         handler = commands.Reporting(
             arguments, original_directory, configuration, AnalysisDirectory("/a")
@@ -136,7 +133,6 @@ class ReportingTest(unittest.TestCase):
             self.assertEqual(len(errors), 1)
             [error] = errors
             self.assertTrue(error.ignore_error)
-            self.assertFalse(error.external_to_global_root)
 
     # pyre-fixme[56]: Argument `json` to decorator factory
     #  `unittest.mock.patch.object` could not be resolved in a global scope.
@@ -178,17 +174,15 @@ class ReportingTest(unittest.TestCase):
             commands.Reporting._load_errors_from_json("<some json string>")
 
     @patch.object(subprocess, "run")
-    @patch("os.chdir")
-    @patch("{}.find_project_root".format(client_name), return_value="/")
-    # pyre-fixme[56]: Argument
-    #  `"{}.find_local_root".format(tools.pyre.client.commands.command.__name__)` to
-    #  decorator factory `unittest.mock.patch` could not be resolved in a global scope.
-    @patch("{}.find_local_root".format(client_name), return_value=None)
-    def test_get_directories_to_analyze(
-        self, find_local_root, find_project_root, chdir, run
-    ) -> None:
+    # pyre-fixme[56]: Pyre was not able to infer the type of argument
+    #  `"{}.find_global_and_local_root".format(tools.pyre.client.commands.command.__name__)`
+    #  to decorator factory `unittest.mock.patch`.
+    @patch("{}.find_global_and_local_root".format(find_directories.__name__))
+    def test_get_directories_to_analyze(self, find_global_and_local_root, run) -> None:
         original_directory = "/"
-        find_project_root.return_value = "base"
+        find_global_and_local_root.return_value = find_directories.FoundRoot(
+            Path("base")
+        )
         arguments = mock_arguments(source_directories=["base"])
         configuration = mock_configuration()
         handler = commands.Reporting(

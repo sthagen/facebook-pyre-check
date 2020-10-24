@@ -1,17 +1,18 @@
-# Copyright (c) 2019-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
 import os
 import signal
-import sys
 import unittest
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Generator, Optional
 from unittest.mock import MagicMock, patch
 
 from .. import watchman
+from ..configuration import Configuration
 from ..process import Process
 from ..watchman import Subscriber
 
@@ -28,7 +29,7 @@ class SubscriberTest(unittest.TestCase):
     @patch.object(Process, "register_unique_process")
     @patch.object(watchman, "remove_if_exists")
     @patch.object(watchman, "acquire_lock")
-    @patch.object(sys, "exit")
+    @patch.object(os, "_exit")
     @patch.object(os, "close")
     @patch.object(os, "fork", return_value=0)
     # pyre-fixme[56]: Argument `os` to decorator factory
@@ -45,9 +46,22 @@ class SubscriberTest(unittest.TestCase):
         register_unique_process: MagicMock,
     ) -> None:
         acquire_lock.side_effect = send_sigint_to_self
-        # pyre-fixme[41]: `_name` cannot be reassigned. It is a read-only property.
-        Subscriber._name = "foo_subscriber"
-        subscriber = Subscriber(".pyre/test")
+
+        class FooSubscriber(Subscriber):
+            NAME = "foo_subscriber"
+
+            def __init__(self, configuration: Configuration) -> None:
+                super().__init__(base_path=".pyre/test", configuration=configuration)
+
+            @staticmethod
+            def is_alive(configuration: Configuration) -> bool:
+                return True
+
+            @property
+            def _name(self) -> str:
+                return self.NAME
+
+        subscriber = FooSubscriber(configuration=Configuration("foo", Path("bar")))
         subscriber.daemonize()
 
         self.assertEqual(fork.call_count, 2)

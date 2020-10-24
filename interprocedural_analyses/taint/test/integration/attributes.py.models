@@ -1,5 +1,244 @@
 @generated
 {
+  "kind": "issue",
+  "data": {
+    "callable": "attributes.test_attribute_via_dunder_dict",
+    "callable_line": 65,
+    "code": 5002,
+    "line": 69,
+    "start": 16,
+    "end": 33,
+    "filename": "attributes.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "root": {
+              "filename": "attributes.py",
+              "line": 66,
+              "start": 23,
+              "end": 38
+            },
+            "tito": [ { "line": 66, "start": 23, "end": 38 } ],
+            "leaves": [
+              {
+                "kind": "Test",
+                "name": "__test_source",
+                "on_all_flows": true
+              }
+            ],
+            "features": [
+              { "has": "first-index" },
+              { "first-index": "a" },
+              { "always-via": "tito" },
+              { "always-via": "special_source" }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "root": {
+              "filename": "attributes.py",
+              "line": 69,
+              "start": 16,
+              "end": 33
+            },
+            "leaves": [
+              { "kind": "Test", "name": "__test_sink", "on_all_flows": true }
+            ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      }
+    ],
+    "features": [
+      { "has": "first-index" },
+      { "first-index": "a" },
+      { "always-via": "tito" },
+      { "always-via": "special_source" },
+      { "always-via": "special_sink" }
+    ]
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "attributes.test_attribute_via_dunder_dict",
+    "callable_line": 65,
+    "code": 5002,
+    "line": 68,
+    "start": 16,
+    "end": 28,
+    "filename": "attributes.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "root": {
+              "filename": "attributes.py",
+              "line": 66,
+              "start": 23,
+              "end": 38
+            },
+            "tito": [ { "line": 66, "start": 23, "end": 38 } ],
+            "leaves": [
+              {
+                "kind": "Test",
+                "name": "__test_source",
+                "on_all_flows": true
+              }
+            ],
+            "features": [
+              { "always-via": "tito" },
+              { "always-via": "special_source" }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "root": {
+              "filename": "attributes.py",
+              "line": 68,
+              "start": 16,
+              "end": 28
+            },
+            "leaves": [
+              { "kind": "Test", "name": "__test_sink", "on_all_flows": true }
+            ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      }
+    ],
+    "features": [
+      { "always-via": "tito" },
+      { "always-via": "special_source" },
+      { "always-via": "special_sink" }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "Ovr{attributes.UseViaDict::__init__}",
+    "sources": [],
+    "sinks": [],
+    "tito": [
+      {
+        "port": "formal(b)",
+        "taint": [
+          {
+            "decl": null,
+            "leaves": [ { "kind": "LocalReturn", "name": "[b]" } ]
+          }
+        ]
+      },
+      {
+        "port": "formal(a)",
+        "taint": [
+          {
+            "decl": null,
+            "leaves": [ { "kind": "LocalReturn", "name": "[a]" } ]
+          }
+        ]
+      },
+      {
+        "port": "formal(self)",
+        "taint": [
+          {
+            "decl": null,
+            "leaves": [ { "kind": "LocalReturn", "name": "" } ]
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "Ovr{object::__init__}",
+    "sources": [],
+    "sinks": [],
+    "tito": [
+      {
+        "port": "formal(b)",
+        "taint": [
+          {
+            "decl": null,
+            "leaves": [ { "kind": "LocalReturn", "name": "[b]" } ]
+          }
+        ]
+      },
+      {
+        "port": "formal(a)",
+        "taint": [
+          {
+            "decl": null,
+            "leaves": [ { "kind": "LocalReturn", "name": "[a]" } ]
+          }
+        ]
+      },
+      {
+        "port": "formal(self)",
+        "taint": [
+          {
+            "decl": null,
+            "leaves": [ { "kind": "LocalReturn", "name": "" } ]
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "attributes.UseViaDict.__init__",
+    "sources": [],
+    "sinks": [],
+    "tito": [
+      {
+        "port": "formal(b)",
+        "taint": [
+          {
+            "decl": null,
+            "leaves": [ { "kind": "LocalReturn", "name": "[b]" } ]
+          }
+        ]
+      },
+      {
+        "port": "formal(a)",
+        "taint": [
+          {
+            "decl": null,
+            "leaves": [ { "kind": "LocalReturn", "name": "[a]" } ]
+          }
+        ]
+      },
+      {
+        "port": "formal(self)",
+        "taint": [
+          {
+            "decl": null,
+            "leaves": [ { "kind": "LocalReturn", "name": "" } ]
+          }
+        ]
+      }
+    ]
+  }
+}
+{
   "kind": "model",
   "data": {
     "callable": "attributes.test_attribute",
@@ -10,7 +249,7 @@
           {
             "root": {
               "filename": "attributes.py",
-              "line": 35,
+              "line": 40,
               "start": 11,
               "end": 18
             },
@@ -42,6 +281,163 @@
 {
   "kind": "model",
   "data": {
+    "callable": "attributes.test_attribute_union",
+    "sources": [],
+    "sinks": [
+      {
+        "port": "formal(t)[token]",
+        "taint": [
+          {
+            "root": {
+              "filename": "attributes.py",
+              "line": 78,
+              "start": 16,
+              "end": 23
+            },
+            "leaves": [
+              { "kind": "Test", "name": "__test_sink", "on_all_flows": true }
+            ],
+            "features": [ { "always-via": "special_sink" } ]
+          },
+          {
+            "root": {
+              "filename": "attributes.py",
+              "line": 80,
+              "start": 20,
+              "end": 27
+            },
+            "leaves": [
+              { "kind": "Test", "name": "__test_sink", "on_all_flows": true }
+            ],
+            "features": [ { "always-via": "special_sink" } ]
+          },
+          {
+            "root": {
+              "filename": "attributes.py",
+              "line": 82,
+              "start": 20,
+              "end": 27
+            },
+            "leaves": [
+              { "kind": "Test", "name": "__test_sink", "on_all_flows": true }
+            ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      }
+    ],
+    "tito": []
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "attributes.test_attribute_union",
+    "callable_line": 77,
+    "code": 5002,
+    "line": 78,
+    "start": 16,
+    "end": 23,
+    "filename": "attributes.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "root": {
+              "filename": "attributes.py",
+              "line": 78,
+              "start": 16,
+              "end": 23
+            },
+            "leaves": [
+              {
+                "kind": "Test",
+                "name": "Obj{attributes.Token.token}",
+                "on_all_flows": true
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "root": {
+              "filename": "attributes.py",
+              "line": 78,
+              "start": 16,
+              "end": 23
+            },
+            "leaves": [
+              { "kind": "Test", "name": "__test_sink", "on_all_flows": true }
+            ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      }
+    ],
+    "features": [ { "always-via": "special_sink" } ]
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "attributes.test_attribute_union",
+    "callable_line": 77,
+    "code": 5002,
+    "line": 80,
+    "start": 20,
+    "end": 27,
+    "filename": "attributes.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "root": {
+              "filename": "attributes.py",
+              "line": 80,
+              "start": 20,
+              "end": 27
+            },
+            "leaves": [
+              {
+                "kind": "Test",
+                "name": "Obj{attributes.Token.token}",
+                "on_all_flows": true
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "root": {
+              "filename": "attributes.py",
+              "line": 80,
+              "start": 20,
+              "end": 27
+            },
+            "leaves": [
+              { "kind": "Test", "name": "__test_sink", "on_all_flows": true }
+            ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      }
+    ],
+    "features": [ { "always-via": "special_sink" } ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
     "callable": "attributes.test_getattr_backwards",
     "sources": [],
     "sinks": [
@@ -51,7 +447,7 @@
           {
             "root": {
               "filename": "attributes.py",
-              "line": 47,
+              "line": 52,
               "start": 16,
               "end": 41
             },
@@ -78,7 +474,7 @@
           {
             "root": {
               "filename": "attributes.py",
-              "line": 51,
+              "line": 56,
               "start": 16,
               "end": 42
             },
@@ -104,7 +500,7 @@
           {
             "root": {
               "filename": "attributes.py",
-              "line": 43,
+              "line": 48,
               "start": 35,
               "end": 50
             },
@@ -145,7 +541,7 @@
           {
             "root": {
               "filename": "attributes.py",
-              "line": 39,
+              "line": 44,
               "start": 11,
               "end": 18
             },
@@ -185,7 +581,7 @@
           {
             "root": {
               "filename": "attributes.py",
-              "line": 30,
+              "line": 35,
               "start": 15,
               "end": 33
             },
@@ -225,7 +621,7 @@
           {
             "root": {
               "filename": "attributes.py",
-              "line": 23,
+              "line": 28,
               "start": 19,
               "end": 37
             },

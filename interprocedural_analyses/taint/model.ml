@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Ast
@@ -20,6 +22,10 @@ type t = {
   model: TaintResult.call_model;
 }
 [@@deriving show]
+
+let remove_sinks model =
+  { model with backward = { model.backward with sink_taint = BackwardState.empty } }
+
 
 let add_obscure_sink ~resolution ~call_target model =
   match Callable.get_real_target call_target with
@@ -43,12 +49,53 @@ let add_obscure_sink ~resolution ~call_target model =
             BackwardState.assign ~root ~path:[] sink sink_taint
           in
           let sink_taint =
-            List.fold_left ~init:BackwardState.empty ~f:add_parameter_sink parameters
+            List.fold_left ~init:model.backward.sink_taint ~f:add_parameter_sink parameters
           in
           { model with backward = { model.backward with sink_taint } } )
 
 
-let get_callsite_model ~call_target ~arguments =
+let register_unknown_callee_model callable =
+  (* Add a model with sinks on *args and **kwargs. *)
+  let sink_leaf =
+    BackwardState.Tree.create_leaf (BackwardTaint.singleton (Sinks.NamedSink "UnknownCallee"))
+  in
+  let sink_taint =
+    BackwardState.assign
+      ~root:(AccessPath.Root.StarParameter { position = 0 })
+      ~path:[]
+      sink_leaf
+      BackwardState.empty
+    |> BackwardState.assign
+         ~root:(AccessPath.Root.StarStarParameter { excluded = [] })
+         ~path:[]
+         sink_leaf
+  in
+  (* Add taint-in-taint-out for all parameters. *)
+  let local_return = BackwardState.Tree.create_leaf (BackwardTaint.singleton Sinks.LocalReturn) in
+  let taint_in_taint_out =
+    BackwardState.assign
+      ~root:(AccessPath.Root.StarParameter { position = 0 })
+      ~path:[]
+      local_return
+      BackwardState.empty
+    |> BackwardState.assign
+         ~root:(AccessPath.Root.StarStarParameter { excluded = [] })
+         ~path:[]
+         local_return
+  in
+  Interprocedural.Fixpoint.add_predefined
+    Interprocedural.Fixpoint.Epoch.predefined
+    callable
+    (Interprocedural.Result.make_model
+       TaintResult.kind
+       {
+         TaintResult.forward = TaintResult.Forward.empty;
+         backward = { sink_taint; taint_in_taint_out };
+         mode = SkipAnalysis;
+       })
+
+
+let get_callsite_model ~resolution ~call_target ~arguments =
   let call_target = (call_target :> Callable.t) in
   match Interprocedural.Fixpoint.get_model call_target with
   | None -> { is_obscure = true; call_target; model = TaintResult.empty_model }
@@ -60,9 +107,16 @@ let get_callsite_model ~call_target ~arguments =
           let transform feature =
             let open Features in
             match feature.Abstract.OverUnderSetDomain.element with
-            | Simple.ViaValueOf { position } ->
+            | Simple.ViaValueOf { position; tag } ->
                 List.nth arguments position
-                >>= fun argument -> Simple.via_value_of_breadcrumb ~argument >>| SimpleSet.inject
+                >>= fun argument ->
+                Simple.via_value_of_breadcrumb ?tag ~argument |> SimpleSet.inject |> Option.return
+            | Simple.ViaTypeOf { position; tag } ->
+                List.nth arguments position
+                >>= fun argument ->
+                Simple.via_type_of_breadcrumb ?tag ~resolution ~argument
+                |> SimpleSet.inject
+                |> Option.return
             | _ -> Some feature
           in
           List.filter_map features ~f:transform
@@ -143,7 +197,7 @@ let get_global_model ~resolution ~expression =
   | Some target ->
       let model =
         Callable.create_object target
-        |> fun call_target -> get_callsite_model ~call_target ~arguments:[]
+        |> fun call_target -> get_callsite_model ~resolution ~call_target ~arguments:[]
       in
       Some (target, model)
   | None -> None
@@ -180,7 +234,7 @@ let get_global_tito_model ~resolution ~expression =
 let global_is_sanitized ~resolution ~expression =
   let is_sanitized (_, { model = { TaintResult.mode; _ }; _ }) =
     match mode with
-    | TaintResult.Sanitize -> true
+    | TaintResult.Sanitize [TaintResult.SanitizeAll] -> true
     | _ -> false
   in
   get_global_model ~resolution ~expression >>| is_sanitized |> Option.value ~default:false

@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -9,9 +9,18 @@ from typing import List, Optional
 
 
 class Repository:
-    MIGRATION_SUMMARY: str = "Migrating buck integration to use configurations"
+    MIGRATION_SUMMARY: str = (
+        "Migrating buck integration to use configurations.\n "
+        "For more information about this migration, please see: "
+        "https://fb.workplace.com/groups/295311271085134/permalink/552700215346237/"
+    )
 
-    def commit_message(self, title: str, summary_override: Optional[str] = None) -> str:
+    def commit_message(
+        self,
+        title: str,
+        summary_override: Optional[str] = None,
+        reviewers: Optional[List[str]] = None,
+    ) -> str:
         return ""
 
     def add_paths(self, paths: List[Path]) -> None:
@@ -20,12 +29,12 @@ class Repository:
     def remove_paths(self, paths: List[Path]) -> None:
         pass
 
-    def submit_changes(
+    def commit_changes(
         self,
         commit: bool,
-        submit: bool,
         title: Optional[str] = None,
         summary: Optional[str] = None,
+        reviewers: Optional[List[str]] = None,
         ignore_failures: bool = False,
         set_dependencies: bool = True,
     ) -> None:
@@ -35,6 +44,7 @@ class Repository:
         pass
 
     def format(self) -> bool:
+        # pyre-fixme[7]: Expected `bool` but got implicit return value of `None`.
         pass
 
     def force_format(self, paths: List[str]) -> None:

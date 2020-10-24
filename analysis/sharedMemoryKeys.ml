@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Ast
@@ -223,6 +225,17 @@ module In = struct
         reduce payload sofar
       in
       Scheduler.map_reduce scheduler ~policy ~initial ~map ~reduce ~inputs ()
+
+
+    let collected_iter scheduler ~policy ~f ~inputs =
+      collected_map_reduce
+        scheduler
+        ~policy
+        ~initial:()
+        ~map:(fun _ inputs -> f inputs)
+        ~reduce:(fun _ _ -> ())
+        ~inputs
+        ()
   end
 end
 

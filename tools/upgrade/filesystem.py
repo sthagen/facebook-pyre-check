@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -9,7 +9,7 @@ import re
 import subprocess
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, NamedTuple
+from typing import Dict, List, NamedTuple, Optional
 
 from ...client.filesystem import get_filesystem
 from . import ast
@@ -159,14 +159,32 @@ def remove_non_pyre_ignores(subdirectory: Path) -> None:
         subprocess.check_output(remove_type_ignore_command)
 
 
-def find_files(directory: Path, name: str) -> List[str]:
-    output = (
-        subprocess.check_output(
-            ["find", str(directory), "-name", name], stderr=subprocess.DEVNULL
-        )
-        .decode("utf-8")
-        .strip()
+def find_files(
+    directory: Path, name: str, grep_pattern: Optional[str] = None
+) -> List[str]:
+    grep_arguments = (
+        ["-exec", "grep", "--files-with-matches", grep_pattern, "{}", "+"]
+        if grep_pattern is not None
+        else []
     )
+
+    try:
+        output = (
+            subprocess.check_output(
+                ["find", str(directory), "-name", name, *grep_arguments]
+            )
+            .decode("utf-8")
+            .strip()
+        )
+    except subprocess.CalledProcessError as error:
+        LOG.warning(
+            "Failed to find files with name `%s` in directory `%s`:\n%s",
+            name,
+            directory,
+            error.stderr,
+        )
+        return []
+
     if output == "":
         return []
     files = output.split("\n")

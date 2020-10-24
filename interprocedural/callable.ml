@@ -1,7 +1,9 @@
-(* Copyright (c) 2018-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Ast
@@ -67,7 +69,13 @@ let compare left right =
 (* pp forces type to be equal to t, but we want [<t] *)
 let pretty_print formatter callable =
   let callable = (callable :> t) in
-  pp formatter callable
+  match callable with
+  | `Function name -> String.pp formatter name
+  | `Method { class_name; method_name } ->
+      String.pp formatter (Format.sprintf "%s::%s" class_name method_name)
+  | `OverrideTarget { class_name; method_name } ->
+      String.pp formatter (Format.sprintf "Override{%s::%s}" class_name method_name)
+  | `Object name -> String.pp formatter (Format.sprintf "Object{%s}" name)
 
 
 type target_with_result = real_target
@@ -156,6 +164,7 @@ module OverrideKey = struct
 end
 
 module Set = Caml.Set.Make (Key)
+module RealSet = Caml.Set.Make (RealKey)
 module OverrideSet = Caml.Set.Make (OverrideKey)
 
 let get_module_and_definition ~resolution callable =

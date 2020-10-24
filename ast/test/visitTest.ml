@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open OUnit2
@@ -231,6 +233,12 @@ let test_node_visitor _ =
       | Visit.Substring _ ->
           increment state "substring";
           state
+      | Visit.Generator _ ->
+          increment state "generator";
+          state
+
+
+    let visit_statement_children _ _ = true
   end
   in
   let module Visit = Visit.MakeNodeVisitor (Visitor) in

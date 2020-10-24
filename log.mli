@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 module GlobalState : sig
   type t
@@ -31,7 +33,6 @@ type section =
   | `Info
   | `Interprocedural
   | `Memory
-  | `Parser
   | `Performance
   | `Progress
   | `Protocols
@@ -58,6 +59,8 @@ val warning : ('a, Format.formatter, unit, unit, unit, unit) Core.format6 -> 'a
 val print : ('a, Stdio.Out_channel.t, Base.unit) Base.format -> 'a
 
 val log_unix_error : ?section:section -> Unix.error * string * string -> unit
+
+val log_exception : exn -> unit
 
 module Color : sig
   val cyan : string -> string

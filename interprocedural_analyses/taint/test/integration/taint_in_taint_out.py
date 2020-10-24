@@ -1,3 +1,8 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
 from builtins import __test_sink, __test_source
 from typing import List, Tuple
 
@@ -137,3 +142,21 @@ def tito_with_feature(arg):
 
 def test_always_via_feature():
     __test_sink(tito_with_feature(__test_source()))
+
+
+# Test TITO through explicit super.
+
+
+class GetQuery:
+    def __init__(self, arg):
+        self.arg = arg
+
+
+class GetUser(GetQuery):
+    def __init__(self, arg):
+        GetQuery.__init__(self, arg)
+
+
+def test_explicit_call_to_superclass():
+    user = GetUser(__test_source())
+    __test_sink(user.arg)

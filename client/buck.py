@@ -1,4 +1,7 @@
-# Copyright 2004-present Facebook.  All rights reserved.
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
 import functools
 import glob
@@ -7,14 +10,16 @@ import logging
 import os
 import subprocess
 import sys
-import tempfile
 import threading
-from collections import namedtuple
 from json.decoder import JSONDecodeError
 from logging import Logger
+from pathlib import Path
 from typing import Dict, Iterable, List, NamedTuple, Optional, Set, Tuple
 
-from .filesystem import find_root
+from typing_extensions import Final
+
+from . import source_database_buck_builder
+from .find_directories import find_parent_directory_containing_file
 
 
 LOG: Logger = logging.getLogger(__name__)
@@ -25,39 +30,102 @@ class BuckOut(NamedTuple):
     targets_not_found: Set[str]
 
 
+class BuckBuildOutput(NamedTuple):
+    output_directories: List[str]
+    unsupported_files: List[str]
+
+
 class BuckException(Exception):
     pass
 
 
 class BuckBuilder:
-    def build(self, targets: Iterable[str]) -> Iterable[str]:
-        """
-            Build the given targets, and return a list of output directories
-            containing the target output.
-        """
+    def build(self, targets: Iterable[str]) -> BuckBuildOutput:
         raise NotImplementedError
+
+    def __str__(self) -> str:
+        return type(self).__name__
+
+
+class SourceDatabaseBuckBuilder(BuckBuilder):
+    def __init__(
+        self,
+        buck_root: str,
+        output_directory: str,
+        isolation_prefix: Optional[str],
+        buck_mode: Optional[str] = None,
+    ) -> None:
+        self._buck_root = buck_root
+        self._output_directory = output_directory
+        self._isolation_prefix = isolation_prefix
+        self._buck_mode = buck_mode
+
+    def build(self, targets: Iterable[str]) -> BuckBuildOutput:
+        try:
+            source_database_buck_builder.build(
+                list(targets),
+                Path(self._output_directory),
+                Path(self._buck_root),
+                self._buck_mode,
+                self._isolation_prefix,
+            )
+            return BuckBuildOutput(
+                output_directories=[self._output_directory], unsupported_files=[]
+            )
+        except subprocess.CalledProcessError as exception:
+            stderr = exception.stderr
+            reason = stderr.decode().strip() if stderr else exception
+            raise BuckException(
+                f"Failed to build targets because of buck error: {reason}"
+            )
+        except Exception as exception:
+            raise BuckException(
+                f"Failed to build targets because of exception: {exception}"
+            )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, SourceDatabaseBuckBuilder):
+            return False
+        return (
+            self._buck_root == other._buck_root
+            and self._output_directory == other._output_directory
+            and self._buck_mode == other._buck_mode
+            and self._isolation_prefix == other._isolation_prefix
+        )
 
 
 class FastBuckBuilder(BuckBuilder):
     def __init__(
         self,
         buck_root: str,
-        output_directory: Optional[str] = None,
+        output_directory: str,
+        isolation_prefix: Optional[str],
         buck_builder_binary: Optional[str] = None,
-        debug_mode: bool = False,
         buck_mode: Optional[str] = None,
         project_name: Optional[str] = None,
     ) -> None:
         self._buck_root = buck_root
-        self._output_directory: str = output_directory or tempfile.mkdtemp(
-            prefix="pyre_tmp_"
-        )
+        self._output_directory = output_directory
         self._buck_builder_binary = buck_builder_binary
-        self._debug_mode = debug_mode
         self._buck_mode = buck_mode
         self._project_name = project_name
+        self._isolation_prefix: Final[Optional[str]] = isolation_prefix
         self.conflicting_files: List[str] = []
         self.unsupported_files: List[str] = []
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, FastBuckBuilder):
+            return False
+        return (
+            self._buck_root == other._buck_root
+            and self._output_directory == other._output_directory
+            and self._buck_builder_binary == other._buck_builder_binary
+            and self._buck_mode == other._buck_mode
+            and self._project_name == other._project_name
+            and self.conflicting_files == other.conflicting_files
+            and self.unsupported_files == other.unsupported_files
+            and self._isolation_prefix == other._isolation_prefix
+        )
 
     def _get_builder_executable(self) -> str:
         builder_binary = self._buck_builder_binary
@@ -68,18 +136,26 @@ class FastBuckBuilder(BuckBuilder):
             )
         return builder_binary
 
-    def build(self, targets: Iterable[str]) -> List[str]:
-        command = [
-            self._get_builder_executable(),
-            "-J-Djava.net.preferIPv6Addresses=true",
-            "-J-Djava.net.preferIPv6Stack=true",
-            "--buck_root",
-            self._buck_root,
-            "--output_directory",
-            self._output_directory,
-        ] + list(targets)
-        if self._debug_mode:
-            command.append("--debug")
+    def build(self, targets: Iterable[str]) -> BuckBuildOutput:
+        isolation_prefix_arguments = (
+            ["--isolation_prefix", self._isolation_prefix]
+            if self._isolation_prefix is not None
+            else []
+        )
+        command = (
+            [
+                self._get_builder_executable(),
+                "-J-Djava.net.preferIPv6Addresses=true",
+                "-J-Djava.net.preferIPv6Stack=true",
+                "--buck_root",
+                self._buck_root,
+                "--output_directory",
+                self._output_directory,
+            ]
+            + isolation_prefix_arguments
+            + list(targets)
+        )
+        command.append("--debug")
         buck_mode = self._buck_mode
         if buck_mode:
             command.extend(["--mode", buck_mode])
@@ -107,13 +183,15 @@ class FastBuckBuilder(BuckBuilder):
             log_processor.join()
             if return_code == 0:
                 LOG.info("Finished building targets.")
-                if self._debug_mode:
-                    # pyre-fixme[6]: Expected `_Reader` for 1st param but got
-                    #  `Optional[typing.IO[typing.Any]]`.
-                    debug_output = json.load(buck_builder_process.stdout)
-                    self.conflicting_files += debug_output["conflictingFiles"]
-                    self.unsupported_files += debug_output["unsupportedFiles"]
-                return [self._output_directory]
+                # pyre-fixme[6]: Expected `_Reader` for 1st param but got
+                #  `Optional[typing.IO[typing.Any]]`.
+                debug_output = json.load(buck_builder_process.stdout)
+                self.conflicting_files += debug_output["conflictingFiles"]
+                self.unsupported_files += debug_output["unsupportedFiles"]
+                return BuckBuildOutput(
+                    output_directories=[self._output_directory],
+                    unsupported_files=self.unsupported_files,
+                )
             else:
                 raise BuckException(
                     f"Failed to build targets with:\n`{' '.join(command)}`"
@@ -138,12 +216,20 @@ class FastBuckBuilder(BuckBuilder):
 
 
 class SimpleBuckBuilder(BuckBuilder):
-    def build(self, targets: Iterable[str]) -> Iterable[str]:
+    def build(self, targets: Iterable[str]) -> BuckBuildOutput:
         """
-            Shell out to buck to build the targets, then yield the paths to the
-            link trees.
+        Shell out to buck to build the targets, then yield the paths to the
+        link trees.
         """
-        return generate_source_directories(targets)
+        return BuckBuildOutput(
+            output_directories=list(generate_source_directories(targets)),
+            unsupported_files=[],
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, SimpleBuckBuilder):
+            return True
+        return False
 
 
 def presumed_target_root(target: str) -> str:
@@ -288,7 +374,34 @@ def _map_normalized_targets_to_original(
 
 @functools.lru_cache()
 def find_buck_root(path: str) -> Optional[str]:
-    return find_root(path, ".buckconfig")
+    return str(find_parent_directory_containing_file(Path(path), ".buckconfig"))
+
+
+@functools.lru_cache()
+def _buck_query(project_paths: Tuple[str], targets: Tuple[str]) -> str:
+    """We accept Tuples because `lru_cache` expects hashable arguments."""
+    target_string = " ".join(targets)
+    command = [
+        "buck",
+        "query",
+        "--json",
+        "--output-attribute",
+        ".*",
+        # This will get only those owner targets that are beneath our targets or
+        # the dependencies of our targets.
+        f"owner(%s) ^ deps(set({target_string}))",
+        *project_paths,
+    ]
+    LOG.info(f"Running command: {command}")
+    return (
+        subprocess.check_output(command, timeout=30, stderr=subprocess.DEVNULL)
+        .decode()
+        .strip()
+    )
+
+
+def clear_buck_query_cache() -> None:
+    _buck_query.cache_clear()
 
 
 def query_buck_relative_paths(
@@ -303,25 +416,11 @@ def query_buck_relative_paths(
             "Buck root couldn't be found. Returning empty analysis directory mapping."
         )
         return {}
-    target_string = " ".join(targets)
-    command = [
-        "buck",
-        "query",
-        "--json",
-        "--output-attribute",
-        ".*",
-        # This will get only those owner targets that are beneath our targets or
-        # the dependencies of our targets.
-        f"owner(%s) ^ deps(set({target_string}))",
-        *project_paths,
-    ]
-    LOG.info(f"Running command: {command}")
+
+    project_paths = tuple(project_paths)
+    targets = tuple(targets)
     try:
-        owner_output = json.loads(
-            subprocess.check_output(command, timeout=30, stderr=subprocess.DEVNULL)
-            .decode()
-            .strip()
-        )
+        owner_output = json.loads(_buck_query(project_paths, targets))
     except (
         subprocess.TimeoutExpired,
         subprocess.CalledProcessError,

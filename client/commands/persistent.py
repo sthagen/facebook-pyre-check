@@ -1,20 +1,30 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import argparse
 import json
+import logging
 import re
 import select
 import sys
 import time
 from typing import List, Optional
 
+from .. import (
+    analysis_directory,
+    buck,
+    command_arguments,
+    configuration as configuration_module,
+)
 from ..analysis_directory import AnalysisDirectory
 from ..configuration import Configuration
-from .command import Command, CommandArguments, IncrementalStyle
+from ..exceptions import EnvironmentException
+from .command import Command, ExitCode, IncrementalStyle
 from .start import Start
+
+
+LOG: logging.Logger = logging.getLogger(__name__)
 
 
 class Persistent(Command):
@@ -22,10 +32,10 @@ class Persistent(Command):
 
     def __init__(
         self,
-        command_arguments: CommandArguments,
+        command_arguments: command_arguments.CommandArguments,
         original_directory: str,
         *,
-        configuration: Optional[Configuration] = None,
+        configuration: Configuration,
         analysis_directory: Optional[AnalysisDirectory] = None,
         no_watchman: bool,
     ) -> None:
@@ -34,64 +44,41 @@ class Persistent(Command):
         )
         self._no_watchman: bool = no_watchman
 
-    @staticmethod
-    def from_arguments(
-        arguments: argparse.Namespace,
-        original_directory: str,
-        configuration: Optional[Configuration] = None,
-        analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> "Persistent":
-        return Persistent(
-            CommandArguments.from_arguments(arguments),
-            original_directory,
-            configuration=configuration,
-            analysis_directory=analysis_directory,
-            no_watchman=arguments.no_watchman,
-        )
-
-    @classmethod
-    def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
-        persistent = parser.add_parser(
-            cls.NAME,
-            epilog="""
-            Entry point for IDE integration to Pyre. Communicates with a
-            Pyre server using the Language Server Protocol, accepts input from stdin and
-            writing diagnostics and responses from the Pyre server to stdout.
-            """,
-        )
-        persistent.set_defaults(command=cls.from_arguments, noninteractive=True)
-        persistent.add_argument(
-            "--no-watchman",
-            action="store_true",
-            help="Do not spawn a watchman client in the background.",
-        )
-
     def _run(self) -> None:
-        Start(
-            self._command_arguments,
-            self._original_directory,
-            terminal=False,
-            store_type_check_resolution=False,
-            use_watchman=not self._no_watchman,
-            incremental_style=IncrementalStyle.FINE_GRAINED,
-            configuration=self._configuration,
-            analysis_directory=self._analysis_directory,
-        ).run()
+        try:
+            Start(
+                self._command_arguments,
+                self._original_directory,
+                terminal=False,
+                store_type_check_resolution=False,
+                use_watchman=not self._no_watchman,
+                incremental_style=IncrementalStyle.FINE_GRAINED,
+                configuration=self._configuration,
+                analysis_directory=self._analysis_directory,
+            ).run()
 
-        self._call_client(command=self.NAME, capture_output=False).check()
+            self._call_client(command=self.NAME, capture_output=False).check()
+        except (
+            analysis_directory.NotWithinLocalConfigurationException,
+            buck.BuckException,
+            configuration_module.InvalidConfiguration,
+            EnvironmentException,
+        ) as error:
+            LOG.warning(f"Running null server due to client exception: {error}")
+            Persistent.run_null_server(timeout=3600 * 12)
+            self._exit_code = ExitCode.SUCCESS
 
     def _flags(self) -> List[str]:
         flags = [
             "-log-identifier",
             '"{}"'.format(self._analysis_directory.get_root()),
             "-expected-binary-version",
-            self._configuration.version_hash,
+            self._configuration.get_version_hash_respecting_override() or "unversioned",
         ]
         if self._configuration.autocomplete:
             flags.append("-autocomplete")
 
-        if self._log_directory:
-            flags.extend(["-log-directory", self._log_directory])
+        flags.extend(["-log-directory", self._configuration.log_directory])
         flags += self._feature_flags()
         return flags
 

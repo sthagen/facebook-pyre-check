@@ -1,3 +1,8 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
 import enum
 from builtins import __test_sink, __test_source
 
@@ -73,3 +78,11 @@ def attach_to_sink(parameter, feature):
 
 def test_attach_to_sink(parameter):
     attach_to_sink(parameter, "attached to sink")
+
+
+def return_including_name(parameter):
+    return 0
+
+
+def test_return_including_name():
+    return return_including_name("parameter_value")

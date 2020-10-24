@@ -3,9 +3,9 @@
   "kind": "issue",
   "data": {
     "callable": "applies_to_index.issue_only_with_a_key",
-    "callable_line": 43,
+    "callable_line": 48,
     "code": 5002,
-    "line": 45,
+    "line": 50,
     "start": 16,
     "end": 22,
     "filename": "applies_to_index.py",
@@ -17,7 +17,7 @@
           {
             "root": {
               "filename": "applies_to_index.py",
-              "line": 44,
+              "line": 49,
               "start": 8,
               "end": 31
             },
@@ -28,10 +28,7 @@
                 "on_all_flows": true
               }
             ],
-            "features": [
-              { "always-has": "first-index" },
-              { "always-first-index": "a" }
-            ]
+            "features": [ { "has": "first-index" }, { "first-index": "a" } ]
           }
         ]
       },
@@ -41,7 +38,7 @@
           {
             "root": {
               "filename": "applies_to_index.py",
-              "line": 45,
+              "line": 50,
               "start": 16,
               "end": 22
             },
@@ -54,9 +51,9 @@
       }
     ],
     "features": [
-      { "always-via": "special_sink" },
-      { "always-has": "first-index" },
-      { "always-first-index": "a" }
+      { "has": "first-index" },
+      { "first-index": "a" },
+      { "always-via": "special_sink" }
     ]
   }
 }
@@ -64,9 +61,9 @@
   "kind": "issue",
   "data": {
     "callable": "applies_to_index.issue_only_with_first",
-    "callable_line": 16,
+    "callable_line": 21,
     "code": 5002,
-    "line": 18,
+    "line": 23,
     "start": 16,
     "end": 21,
     "filename": "applies_to_index.py",
@@ -78,7 +75,7 @@
           {
             "root": {
               "filename": "applies_to_index.py",
-              "line": 17,
+              "line": 22,
               "start": 22,
               "end": 45
             },
@@ -98,7 +95,7 @@
           {
             "root": {
               "filename": "applies_to_index.py",
-              "line": 18,
+              "line": 23,
               "start": 16,
               "end": 21
             },
@@ -117,9 +114,9 @@
   "kind": "issue",
   "data": {
     "callable": "applies_to_index.issue_only_with_second",
-    "callable_line": 22,
+    "callable_line": 27,
     "code": 5002,
-    "line": 25,
+    "line": 30,
     "start": 16,
     "end": 21,
     "filename": "applies_to_index.py",
@@ -131,7 +128,7 @@
           {
             "root": {
               "filename": "applies_to_index.py",
-              "line": 23,
+              "line": 28,
               "start": 22,
               "end": 46
             },
@@ -151,7 +148,7 @@
           {
             "root": {
               "filename": "applies_to_index.py",
-              "line": 25,
+              "line": 30,
               "start": 16,
               "end": 21
             },
@@ -170,9 +167,9 @@
   "kind": "issue",
   "data": {
     "callable": "applies_to_index.issue_with_member",
-    "callable_line": 53,
+    "callable_line": 58,
     "code": 5002,
-    "line": 55,
+    "line": 60,
     "start": 16,
     "end": 19,
     "filename": "applies_to_index.py",
@@ -184,7 +181,7 @@
           {
             "root": {
               "filename": "applies_to_index.py",
-              "line": 54,
+              "line": 59,
               "start": 8,
               "end": 34
             },
@@ -195,10 +192,7 @@
                 "on_all_flows": true
               }
             ],
-            "features": [
-              { "always-has": "first-field" },
-              { "always-first-field": "a" }
-            ]
+            "features": [ { "has": "first-field" }, { "first-field": "a" } ]
           }
         ]
       },
@@ -208,7 +202,7 @@
           {
             "root": {
               "filename": "applies_to_index.py",
-              "line": 55,
+              "line": 60,
               "start": 16,
               "end": 19
             },
@@ -221,9 +215,9 @@
       }
     ],
     "features": [
-      { "always-via": "special_sink" },
-      { "always-has": "first-field" },
-      { "always-first-field": "a" }
+      { "has": "first-field" },
+      { "first-field": "a" },
+      { "always-via": "special_sink" }
     ]
   }
 }
@@ -238,7 +232,7 @@
           {
             "root": {
               "filename": "applies_to_index.py",
-              "line": 36,
+              "line": 41,
               "start": 11,
               "end": 35
             },
@@ -261,9 +255,9 @@
   "kind": "issue",
   "data": {
     "callable": "applies_to_index.issue_only_with_nested_first",
-    "callable_line": 28,
+    "callable_line": 33,
     "code": 5002,
-    "line": 32,
+    "line": 37,
     "start": 16,
     "end": 21,
     "filename": "applies_to_index.py",
@@ -275,7 +269,7 @@
           {
             "root": {
               "filename": "applies_to_index.py",
-              "line": 29,
+              "line": 34,
               "start": 20,
               "end": 44
             },
@@ -295,7 +289,7 @@
           {
             "root": {
               "filename": "applies_to_index.py",
-              "line": 32,
+              "line": 37,
               "start": 16,
               "end": 21
             },

@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open OUnit2
 open IntegrationTest
@@ -191,6 +193,37 @@ let test_check_return context =
         return x
     |}
     ["Incompatible return type [7]: Expected `C` but got `typing.Optional[C]`."];
+  assert_type_errors
+    {|
+      class A:
+        pass
+      x = A()
+      def foo() -> type(x):
+        return x
+    |}
+    ["Invalid type [31]: Expression `type($local_test$x)` is not a valid type."];
+  assert_type_errors
+    {|
+      from typing import Type
+      class A:
+        pass
+      x = A()
+      def foo() -> Type(x):
+        return x
+    |}
+    ["Invalid type [31]: Expression `typing.Type($local_test$x)` is not a valid type."];
+  assert_type_errors
+    {|
+      from typing import Tuple, Type
+      class A:
+        pass
+      x = A()
+      def foo() -> Tuple[Type(x)]:
+        return (x,)
+    |}
+    [
+      "Invalid type [31]: Expression `typing.Tuple[typing.Type($local_test$x)]` is not a valid type.";
+    ];
   assert_default_type_errors
     {|
       import typing

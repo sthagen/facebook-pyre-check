@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Hack_parallel.Std
 module Daemon = Daemon
@@ -55,6 +57,9 @@ val with_scheduler : configuration:Configuration.Analysis.t -> f:(t -> 'a) -> 'a
 
 val run_process : (unit -> 'result) -> 'result
 
+(* NOTE: If incremental check matters, and if within `map` new dependency keys are going to be
+   created, you might want to use `SharedMemoryKeys.DependencyKey.Registry.collected_map_reduce`
+   instead. Otherwise, dependencies added in the workers will just get dropped. *)
 val map_reduce
   :  t ->
   policy:Policy.t ->
@@ -65,6 +70,8 @@ val map_reduce
   unit ->
   'state
 
+(* NOTE: If incremental check matters, and if within `f` new dependency keys are going to be
+   created, you might want to use `SharedMemoryKeys.DependencyKey.Registry.collected_iter` instead. *)
 val iter : t -> policy:Policy.t -> f:('input list -> unit) -> inputs:'input list -> unit
 
 val is_parallel : t -> bool

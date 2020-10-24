@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Ast
@@ -196,17 +198,19 @@ and incompatible_overload_kind =
   | DifferingDecorators
   | MisplacedOverloadDecorator
 
-and incompatible_parameter_kind =
-  | Operand of {
+and polymorphism_base_class =
+  | GenericBase
+  | ProtocolBase
+
+and unsupported_operand_kind =
+  | Binary of {
       operator_name: Identifier.t;
       left_operand: Type.t;
       right_operand: Type.t;
     }
-  | Argument of {
-      name: Identifier.t option;
-      position: int;
-      callee: Reference.t option;
-      mismatch: mismatch;
+  | Unary of {
+      operator_name: Identifier.t;
+      operand: Type.t;
     }
 [@@deriving compare, eq, sexp, show, hash]
 
@@ -239,7 +243,12 @@ and kind =
     }
   | IncompatibleAwaitableType of Type.t
   | IncompatibleConstructorAnnotation of Type.t
-  | IncompatibleParameterType of incompatible_parameter_kind
+  | IncompatibleParameterType of {
+      name: Identifier.t option;
+      position: int;
+      callee: Reference.t option;
+      mismatch: mismatch;
+    }
   | IncompatibleReturnType of {
       mismatch: mismatch;
       is_implicit: bool;
@@ -359,6 +368,7 @@ and kind =
       expected_count: int;
       unpack_problem: unpack_problem;
     }
+  | UnsupportedOperand of unsupported_operand_kind
   | UnusedIgnore of int list
   | UnusedLocalMode of {
       unused_mode: Source.local_mode Node.t;
@@ -371,6 +381,10 @@ and kind =
       mismatch: mismatch;
     }
   | TypedDictionaryInitializationError of typed_dictionary_initialization_mismatch
+  | DuplicateTypeVariables of {
+      variable: Type.Variable.t;
+      base: polymorphism_base_class;
+    }
   (* Additional errors. *)
   (* TODO(T38384376): split this into a separate module. *)
   | DeadStore of Identifier.t
@@ -437,6 +451,8 @@ let code = function
   | TypedDictionaryInitializationError _ -> 55
   | InvalidDecoration _ -> 56
   | IncompatibleAsyncGeneratorReturnType _ -> 57
+  | UnsupportedOperand _ -> 58
+  | DuplicateTypeVariables _ -> 59
   | ParserFailure _ -> 404
   (* Additional errors. *)
   | UnawaitedAwaitable _ -> 1001
@@ -446,6 +462,7 @@ let code = function
 
 let name = function
   | AnalysisFailure _ -> "Analysis failure"
+  | DuplicateTypeVariables _ -> "Duplicate type variables"
   | ParserFailure _ -> "Parsing failure"
   | DeadStore _ -> "Dead store"
   | Deobfuscation _ -> "Deobfuscation"
@@ -499,9 +516,10 @@ let name = function
   | UndefinedImport _ -> "Undefined import"
   | UndefinedType _ -> "Undefined or invalid type"
   | UnexpectedKeyword _ -> "Unexpected keyword"
-  | UnsafeCast _ -> "Unsafe cast"
   | UninitializedAttribute _ -> "Uninitialized attribute"
   | Unpack _ -> "Unable to unpack"
+  | UnsafeCast _ -> "Unsafe cast"
+  | UnsupportedOperand _ -> "Unsupported operand"
   | UnusedIgnore _ -> "Unused ignore"
   | UnusedLocalMode _ -> "Unused local mode"
 
@@ -544,16 +562,8 @@ let weaken_literals kind =
       ({ override = StrengthenedPrecondition (Found mismatch); _ } as inconsistent) ->
       InconsistentOverride
         { inconsistent with override = StrengthenedPrecondition (Found (weaken_mismatch mismatch)) }
-  | IncompatibleParameterType (Operand { operator_name; left_operand; right_operand }) ->
-      IncompatibleParameterType
-        (Operand
-           {
-             operator_name;
-             left_operand = Type.weaken_literals left_operand;
-             right_operand = Type.weaken_literals right_operand;
-           })
-  | IncompatibleParameterType (Argument ({ mismatch; _ } as incompatible)) ->
-      IncompatibleParameterType (Argument { incompatible with mismatch = weaken_mismatch mismatch })
+  | IncompatibleParameterType ({ mismatch; _ } as incompatible) ->
+      IncompatibleParameterType { incompatible with mismatch = weaken_mismatch mismatch }
   | IncompatibleReturnType ({ mismatch; _ } as incompatible) ->
       IncompatibleReturnType { incompatible with mismatch = weaken_mismatch mismatch }
   | UninitializedAttribute ({ mismatch; _ } as uninitialized) ->
@@ -570,6 +580,16 @@ let weaken_literals kind =
   | ProhibitedAny { is_type_alias; missing_annotation } ->
       ProhibitedAny
         { is_type_alias; missing_annotation = weaken_missing_annotation missing_annotation }
+  | UnsupportedOperand (Binary { operator_name; left_operand; right_operand }) ->
+      UnsupportedOperand
+        (Binary
+           {
+             operator_name;
+             left_operand = Type.weaken_literals left_operand;
+             right_operand = Type.weaken_literals right_operand;
+           })
+  | UnsupportedOperand (Unary { operator_name; operand }) ->
+      UnsupportedOperand (Unary { operator_name; operand = Type.weaken_literals operand })
   | Unpack { expected_count; unpack_problem = UnacceptableType annotation } ->
       Unpack { expected_count; unpack_problem = UnacceptableType (Type.weaken_literals annotation) }
   | IncompatibleAwaitableType annotation ->
@@ -742,19 +762,8 @@ let rec messages ~concise ~signature location kind =
           ["This definition does not have the same decorators as the preceding overload(s)."]
       | MisplacedOverloadDecorator ->
           ["The @overload decorator must be the topmost decorator if present."] )
-  | IncompatibleParameterType (Operand { operator_name; left_operand; right_operand }) ->
-      [
-        Format.asprintf
-          "`%s` is not supported for operand types `%a` and `%a`."
-          operator_name
-          pp_type
-          left_operand
-          pp_type
-          right_operand;
-      ]
   | IncompatibleParameterType
-      (Argument { name; position; callee; mismatch = { actual; expected; due_to_invariance; _ } })
-    ->
+      { name; position; callee; mismatch = { actual; expected; due_to_invariance; _ } } ->
       let trace =
         if due_to_invariance then
           [Format.asprintf "This call might modify the type of the parameter."; invariance_message]
@@ -1158,8 +1167,8 @@ let rec messages ~concise ~signature location kind =
       [
         Format.asprintf
           "Type parameter `%a` violates constraints on \
-           `pyre_extensions.Add`/`pyre_extensions.Multiply`. Add & Multiply only accept type \
-           variables with a bound that's a subtype of int."
+           `pyre_extensions.Add`/`pyre_extensions.Multiply`/`pyre_extensions.Divide`. Add & \
+           Multiply & Divide only accept type variables with a bound that's a subtype of int."
           pp_type
           actual;
       ]
@@ -1822,6 +1831,24 @@ let rec messages ~concise ~signature location kind =
           annotation
           detail;
       ]
+  | UnsupportedOperand (Binary { operator_name; left_operand; right_operand }) ->
+      [
+        Format.asprintf
+          "`%s` is not supported for operand types `%a` and `%a`."
+          operator_name
+          pp_type
+          left_operand
+          pp_type
+          right_operand;
+      ]
+  | UnsupportedOperand (Unary { operator_name; operand }) ->
+      [
+        Format.asprintf
+          "`%s` is not supported for right operand type `%a`."
+          operator_name
+          pp_type
+          operand;
+      ]
   | UnsafeCast { expression; annotation } when concise ->
       [
         Format.asprintf
@@ -1960,6 +1987,21 @@ let rec messages ~concise ~signature location kind =
           (show_sanitized_expression expression)
           start_line;
       ]
+  | DuplicateTypeVariables { variable; base } -> (
+      let format : ('b, Format.formatter, unit, string) format4 =
+        match base with
+        | GenericBase -> "Duplicate type variable `%s` in Generic[...]."
+        | ProtocolBase -> "Duplicate type variable `%s` in Protocol[...]."
+      in
+      match variable with
+      | Type.Variable.Unary { Type.Record.Variable.RecordUnary.variable = name; _ } ->
+          [Format.asprintf format name]
+      | Type.Variable.ParameterVariadic var ->
+          let name = Type.Variable.Variadic.Parameters.name var in
+          [Format.asprintf format name]
+      | Type.Variable.ListVariadic var ->
+          let name = Type.Variable.Variadic.List.name var in
+          [Format.asprintf format name] )
   | UnboundName name when concise ->
       [Format.asprintf "Name `%a` is used but not defined." Identifier.pp_sanitized name]
   | UnboundName name ->
@@ -2275,7 +2317,7 @@ let due_to_analysis_limitations { kind; _ } =
   match kind with
   | ImpossibleAssertion { annotation = actual; _ }
   | IncompatibleAwaitableType actual
-  | IncompatibleParameterType (Argument { mismatch = { actual; _ }; _ })
+  | IncompatibleParameterType { mismatch = { actual; _ }; _ }
   | TypedDictionaryInvalidOperation { mismatch = { actual; _ }; _ }
   | TypedDictionaryInitializationError (FieldTypeMismatch { actual_type = actual; _ })
   | IncompatibleReturnType { mismatch = { actual; _ }; _ }
@@ -2296,14 +2338,16 @@ let due_to_analysis_limitations { kind; _ } =
   | UninitializedAttribute { mismatch = { actual; _ }; _ }
   | Unpack { unpack_problem = UnacceptableType actual; _ } ->
       is_due_to_analysis_limitations actual
-  | IncompatibleParameterType (Operand { left_operand; right_operand; _ }) ->
+  | UnsupportedOperand (Binary { left_operand; right_operand; _ }) ->
       is_due_to_analysis_limitations left_operand || is_due_to_analysis_limitations right_operand
+  | UnsupportedOperand (Unary { operand; _ }) -> is_due_to_analysis_limitations operand
   | Top -> true
   | UndefinedAttribute { origin = Class annotation; _ } -> Type.contains_unknown annotation
   | AnalysisFailure _
   | ParserFailure _
   | DeadStore _
   | Deobfuscation _
+  | DuplicateTypeVariables _
   | IllegalAnnotationTarget _
   | IncompatibleAsyncGeneratorReturnType _
   | IncompatibleConstructorAnnotation _
@@ -2371,30 +2415,7 @@ let less_or_equal ~resolution left right =
       GlobalResolution.less_or_equal resolution ~left ~right
   | IncompatibleAwaitableType left, IncompatibleAwaitableType right ->
       GlobalResolution.less_or_equal resolution ~left ~right
-  | ( IncompatibleParameterType
-        (Operand
-          {
-            operator_name = left_operator_name;
-            left_operand = left_operand_for_left;
-            right_operand = right_operand_for_left;
-          }),
-      IncompatibleParameterType
-        (Operand
-          {
-            operator_name = right_operator_name;
-            left_operand = left_operand_for_right;
-            right_operand = right_operand_for_right;
-          }) )
-    when Identifier.equal_sanitized left_operator_name right_operator_name ->
-      GlobalResolution.less_or_equal
-        resolution
-        ~left:left_operand_for_left
-        ~right:left_operand_for_right
-      && GlobalResolution.less_or_equal
-           resolution
-           ~left:right_operand_for_left
-           ~right:right_operand_for_right
-  | IncompatibleParameterType (Argument left), IncompatibleParameterType (Argument right)
+  | IncompatibleParameterType left, IncompatibleParameterType right
     when Option.equal Identifier.equal_sanitized left.name right.name ->
       less_or_equal_mismatch left.mismatch right.mismatch
   | IncompatibleConstructorAnnotation left, IncompatibleConstructorAnnotation right ->
@@ -2561,6 +2582,13 @@ let less_or_equal ~resolution left right =
       less_or_equal_mismatch left.mismatch right.mismatch
   | UnawaitedAwaitable left, UnawaitedAwaitable right -> equal_unawaited_awaitable left right
   | UnboundName left_name, UnboundName right_name -> Identifier.equal_sanitized left_name right_name
+  | ( DuplicateTypeVariables { variable = left; base = left_base },
+      DuplicateTypeVariables { variable = right; base = right_base } ) -> (
+      match left_base, right_base with
+      | GenericBase, GenericBase
+      | ProtocolBase, ProtocolBase ->
+          Type.Variable.equal left right
+      | _ -> false )
   | UndefinedAttribute left, UndefinedAttribute right
     when Identifier.equal_sanitized left.attribute right.attribute -> (
       match left.origin, right.origin with
@@ -2572,6 +2600,33 @@ let less_or_equal ~resolution left right =
       Option.equal Reference.equal_sanitized left.callee right.callee
       && Identifier.equal left.name right.name
   | UndefinedImport left, UndefinedImport right -> [%compare.equal: undefined_import] left right
+  | ( UnsupportedOperand
+        (Binary
+          {
+            operator_name = left_operator_name;
+            left_operand = left_operand_for_left;
+            right_operand = right_operand_for_left;
+          }),
+      UnsupportedOperand
+        (Binary
+          {
+            operator_name = right_operator_name;
+            left_operand = left_operand_for_right;
+            right_operand = right_operand_for_right;
+          }) )
+    when Identifier.equal_sanitized left_operator_name right_operator_name ->
+      GlobalResolution.less_or_equal
+        resolution
+        ~left:left_operand_for_left
+        ~right:left_operand_for_right
+      && GlobalResolution.less_or_equal
+           resolution
+           ~left:right_operand_for_left
+           ~right:right_operand_for_right
+  | ( UnsupportedOperand (Unary { operator_name = left_operator_name; operand = left_operand }),
+      UnsupportedOperand (Unary { operator_name = right_operator_name; operand = right_operand }) )
+    when Identifier.equal_sanitized left_operator_name right_operator_name ->
+      GlobalResolution.less_or_equal resolution ~left:left_operand ~right:right_operand
   | UnusedIgnore left, UnusedIgnore right ->
       IntSet.is_subset (IntSet.of_list left) ~of_:(IntSet.of_list right)
   | ( UnusedLocalMode { unused_mode = left_unused_mode; actual_mode = left_actual_mode },
@@ -2639,12 +2694,14 @@ let less_or_equal ~resolution left right =
   | TypedDictionaryKeyNotFound _, _
   | UnawaitedAwaitable _, _
   | UnboundName _, _
+  | DuplicateTypeVariables _, _
   | UndefinedAttribute _, _
   | UndefinedImport _, _
   | UndefinedType _, _
   | UnexpectedKeyword _, _
   | UninitializedAttribute _, _
   | Unpack _, _
+  | UnsupportedOperand _, _
   | UnusedIgnore _, _
   | UnusedLocalMode _, _ ->
       false
@@ -2776,36 +2833,12 @@ let join ~resolution left right =
               };
             qualify = left_qualify || right_qualify (* lol *);
           }
-    | ( IncompatibleParameterType
-          (Operand
-            ( {
-                operator_name = left_operator_name;
-                left_operand = left_operand_for_left;
-                right_operand = right_operand_for_left;
-              } as left )),
-        IncompatibleParameterType
-          (Operand
-            {
-              operator_name = right_operator_name;
-              left_operand = left_operand_for_right;
-              right_operand = right_operand_for_right;
-            }) )
-      when Identifier.equal_sanitized left_operator_name right_operator_name ->
-        IncompatibleParameterType
-          (Operand
-             {
-               left with
-               left_operand =
-                 GlobalResolution.join resolution left_operand_for_left left_operand_for_right;
-               right_operand =
-                 GlobalResolution.join resolution right_operand_for_left right_operand_for_right;
-             })
-    | IncompatibleParameterType (Argument left), IncompatibleParameterType (Argument right)
+    | IncompatibleParameterType left, IncompatibleParameterType right
       when Option.equal Identifier.equal_sanitized left.name right.name
            && left.position = right.position
            && Option.equal Reference.equal_sanitized left.callee right.callee ->
         let mismatch = join_mismatch left.mismatch right.mismatch in
-        IncompatibleParameterType (Argument { left with mismatch })
+        IncompatibleParameterType { left with mismatch }
     | IncompatibleConstructorAnnotation left, IncompatibleConstructorAnnotation right ->
         IncompatibleConstructorAnnotation (GlobalResolution.join resolution left right)
     | IncompatibleReturnType left, IncompatibleReturnType right ->
@@ -2910,6 +2943,14 @@ let join ~resolution left right =
     | UnboundName left_name, UnboundName right_name
       when Identifier.equal_sanitized left_name right_name ->
         left.kind
+    | ( DuplicateTypeVariables { variable = left; base = GenericBase },
+        DuplicateTypeVariables { variable = right; base = GenericBase } )
+      when Type.Variable.equal left right ->
+        DuplicateTypeVariables { variable = left; base = GenericBase }
+    | ( DuplicateTypeVariables { variable = left; base = ProtocolBase },
+        DuplicateTypeVariables { variable = right; base = ProtocolBase } )
+      when Type.Variable.equal left right ->
+        DuplicateTypeVariables { variable = left; base = ProtocolBase }
     | ( UndefinedAttribute { origin = Class left; attribute = left_attribute },
         UndefinedAttribute { origin = Class right; attribute = right_attribute } )
       when Identifier.equal_sanitized left_attribute right_attribute ->
@@ -2928,6 +2969,37 @@ let join ~resolution left right =
     | UndefinedImport left, UndefinedImport right when [%compare.equal: undefined_import] left right
       ->
         UndefinedImport left
+    | ( UnsupportedOperand
+          (Binary
+            ( {
+                operator_name = left_operator_name;
+                left_operand = left_operand_for_left;
+                right_operand = right_operand_for_left;
+              } as left )),
+        UnsupportedOperand
+          (Binary
+            {
+              operator_name = right_operator_name;
+              left_operand = left_operand_for_right;
+              right_operand = right_operand_for_right;
+            }) )
+      when Identifier.equal_sanitized left_operator_name right_operator_name ->
+        UnsupportedOperand
+          (Binary
+             {
+               left with
+               left_operand =
+                 GlobalResolution.join resolution left_operand_for_left left_operand_for_right;
+               right_operand =
+                 GlobalResolution.join resolution right_operand_for_left right_operand_for_right;
+             })
+    | ( UnsupportedOperand
+          (Unary ({ operator_name = left_operator_name; operand = left_operand } as left)),
+        UnsupportedOperand (Unary { operator_name = right_operator_name; operand = right_operand })
+      )
+      when Identifier.equal_sanitized left_operator_name right_operator_name ->
+        UnsupportedOperand
+          (Unary { left with operand = GlobalResolution.join resolution left_operand right_operand })
     | UnusedIgnore left, UnusedIgnore right ->
         UnusedIgnore (IntSet.to_list (IntSet.union (IntSet.of_list left) (IntSet.of_list right)))
     | ( Unpack { expected_count = left_count; unpack_problem = UnacceptableType left },
@@ -3041,12 +3113,14 @@ let join ~resolution left right =
     | TypedDictionaryInitializationError _, _
     | UnawaitedAwaitable _, _
     | UnboundName _, _
+    | DuplicateTypeVariables _, _
     | UndefinedAttribute _, _
     | UndefinedImport _, _
     | UndefinedType _, _
     | UnexpectedKeyword _, _
     | UninitializedAttribute _, _
     | Unpack _, _
+    | UnsupportedOperand _, _
     | UnusedIgnore _, _
     | UnusedLocalMode _, _ ->
         let { location; _ } = left in
@@ -3155,7 +3229,7 @@ let filter ~resolution errors =
       match kind with
       | IncompatibleAttributeType { incompatible_type = { mismatch = { actual; _ }; _ }; _ }
       | IncompatibleAwaitableType actual
-      | IncompatibleParameterType (Argument { mismatch = { actual; _ }; _ })
+      | IncompatibleParameterType { mismatch = { actual; _ }; _ }
       | IncompatibleReturnType { mismatch = { actual; _ }; _ }
       | IncompatibleVariableType { incompatible_type = { mismatch = { actual; _ }; _ }; _ }
       | TypedDictionaryInvalidOperation { mismatch = { actual; _ }; _ }
@@ -3200,7 +3274,7 @@ let filter ~resolution errors =
       | InconsistentOverride
           { override = StrengthenedPrecondition (Found { expected; actual; _ }); _ }
       | InconsistentOverride { override = WeakenedPostcondition { expected; actual; _ }; _ }
-      | IncompatibleParameterType (Argument { mismatch = { expected; actual; _ }; _ })
+      | IncompatibleParameterType { mismatch = { expected; actual; _ }; _ }
       | IncompatibleReturnType { mismatch = { expected; actual; _ }; _ }
       | IncompatibleAttributeType
           { incompatible_type = { mismatch = { expected; actual; _ }; _ }; _ }
@@ -3537,22 +3611,13 @@ let dequalify
     | RevealedType { expression; annotation; qualify } ->
         let annotation = if qualify then annotation else dequalify_annotation annotation in
         RevealedType { expression; annotation; qualify }
-    | IncompatibleParameterType (Operand { operator_name; left_operand; right_operand }) ->
+    | IncompatibleParameterType ({ mismatch; callee; _ } as parameter) ->
         IncompatibleParameterType
-          (Operand
-             {
-               operator_name;
-               left_operand = dequalify left_operand;
-               right_operand = dequalify right_operand;
-             })
-    | IncompatibleParameterType (Argument ({ mismatch; callee; _ } as parameter)) ->
-        IncompatibleParameterType
-          (Argument
-             {
-               parameter with
-               mismatch = dequalify_mismatch mismatch;
-               callee = Option.map callee ~f:dequalify_reference;
-             })
+          {
+            parameter with
+            mismatch = dequalify_mismatch mismatch;
+            callee = Option.map callee ~f:dequalify_reference;
+          }
     | IncompatibleReturnType ({ mismatch; _ } as return) ->
         IncompatibleReturnType { return with mismatch = dequalify_mismatch mismatch }
     | IncompatibleAttributeType { parent; incompatible_type = { mismatch; _ } as incompatible_type }
@@ -3651,6 +3716,8 @@ let dequalify
     | UnsafeCast kind -> UnsafeCast kind
     | UnawaitedAwaitable { references; expression } ->
         UnawaitedAwaitable { references = List.map references ~f:dequalify_reference; expression }
+    | DuplicateTypeVariables { variable; base } ->
+        DuplicateTypeVariables { variable = Type.Variable.dequalify dequalify_map variable; base }
     | UnboundName name -> UnboundName (dequalify_identifier name)
     | UndefinedAttribute { attribute; origin } ->
         let origin : origin =
@@ -3671,6 +3738,16 @@ let dequalify
     | UndefinedImport reference -> UndefinedImport reference
     | UnexpectedKeyword { name; callee } ->
         UnexpectedKeyword { name; callee = Option.map callee ~f:dequalify_reference }
+    | UnsupportedOperand (Binary { operator_name; left_operand; right_operand }) ->
+        UnsupportedOperand
+          (Binary
+             {
+               operator_name;
+               left_operand = dequalify left_operand;
+               right_operand = dequalify right_operand;
+             })
+    | UnsupportedOperand (Unary { operator_name; operand }) ->
+        UnsupportedOperand (Unary { operator_name; operand = dequalify operand })
     | MissingArgument { callee; parameter } ->
         MissingArgument { callee = Option.map callee ~f:dequalify_reference; parameter }
     | ParserFailure failure -> ParserFailure failure

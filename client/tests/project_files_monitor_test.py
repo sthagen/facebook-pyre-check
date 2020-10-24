@@ -1,4 +1,4 @@
-# Copyright (c) 2019-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -13,9 +13,8 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from .. import json_rpc, project_files_monitor
-from ..analysis_directory import AnalysisDirectory, UpdatedPaths
+from ..analysis_directory import UpdatedPaths
 from ..json_rpc import Request, read_request
-from ..process import Process
 from ..project_files_monitor import MonitorException, ProjectFilesMonitor
 from ..socket_connection import SocketConnection, SocketException
 from ..tests.mocks import mock_configuration
@@ -27,11 +26,14 @@ class MonitorTest(unittest.TestCase):
     # pyre-fixme[56]: Argument `tools.pyre.client.project_files_monitor` to
     #  decorator factory `unittest.mock.patch.object` could not be resolved in a global
     #  scope.
-    @patch.object(project_files_monitor, "find_root")
+    @patch.object(project_files_monitor, "find_parent_directory_containing_file")
     def test_subscriptions(
-        self, find_root, perform_handshake, _socket_connection
+        self,
+        find_parent_directory_containing_file,
+        perform_handshake,
+        _socket_connection,
     ) -> None:
-        find_root.return_value = "/ROOT"
+        find_parent_directory_containing_file.return_value = "/ROOT"
         configuration = mock_configuration()
         analysis_directory = MagicMock()
         analysis_directory.get_root.return_value = "/ROOT"
@@ -59,7 +61,7 @@ class MonitorTest(unittest.TestCase):
         )
 
         # additional extensions
-        configuration.extensions = ["thrift", "whl"]
+        configuration.get_valid_extensions = lambda: [".thrift", ".whl"]
         monitor = ProjectFilesMonitor(configuration, ".", analysis_directory)
         self.assertEqual(len(monitor._subscriptions), 1)
         subscription = monitor._subscriptions[0]
@@ -82,7 +84,7 @@ class MonitorTest(unittest.TestCase):
         )
 
         # no watchman root -> terminate
-        find_root.return_value = None
+        find_parent_directory_containing_file.return_value = None
         self.assertRaises(
             MonitorException,
             ProjectFilesMonitor,
@@ -144,14 +146,15 @@ class MonitorTest(unittest.TestCase):
             server_thread = threading.Thread(target=server)
             server_thread.start()
 
-            configuration = mock_configuration()
+            configuration = mock_configuration(version_hash="123")
             configuration.log_directory = root + "/.pyre"
             configuration.extensions = []
-            configuration.version_hash = "123"
             analysis_directory = MagicMock()
-            analysis_directory.process_updated_files.side_effect = lambda files: UpdatedPaths(
-                updated_paths=[file.replace("ROOT", "ANALYSIS") for file in files],
-                deleted_paths=[],
+            analysis_directory.process_updated_files.side_effect = (
+                lambda files: UpdatedPaths(
+                    updated_paths=[file.replace("ROOT", "ANALYSIS") for file in files],
+                    deleted_paths=[],
+                )
             )
 
             # only create the monitor once the socket is open
@@ -233,30 +236,3 @@ class MonitorTest(unittest.TestCase):
             with socket_created_lock:
                 SocketConnection(socket_link).connect()
             server_thread.join()
-
-    @patch.object(ProjectFilesMonitor, "daemonize")
-    @patch.object(ProjectFilesMonitor, "__init__", return_value=False)
-    @patch.object(Process, "is_alive", return_value=True)
-    def test_restart_if_dead_when_alive(
-        self, is_alive: MagicMock, constructor: MagicMock, daemonize: MagicMock
-    ) -> None:
-        ProjectFilesMonitor.restart_if_dead(
-            mock_configuration(version_hash="hash"),
-            "/original/directory",
-            AnalysisDirectory("/root"),
-        )
-        constructor.assert_not_called()
-
-    @patch.object(ProjectFilesMonitor, "daemonize")
-    @patch.object(ProjectFilesMonitor, "__init__", return_value=None)
-    @patch.object(Process, "is_alive", return_value=False)
-    def test_restart_if_dead_when_dead(
-        self, is_alive: MagicMock, constructor: MagicMock, daemonize: MagicMock
-    ) -> None:
-        ProjectFilesMonitor.restart_if_dead(
-            mock_configuration(version_hash="hash"),
-            "/original/directory",
-            AnalysisDirectory("/root"),
-        )
-        constructor.assert_called_once()
-        daemonize.assert_called_once()

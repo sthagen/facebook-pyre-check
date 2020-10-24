@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 module Assign : sig
   type t = {
@@ -203,6 +205,8 @@ and Class : sig
     :  ?in_test:bool ->
     AttributeComponents.t ->
     Attribute.t Identifier.SerializableMap.t
+
+  val constructor_attributes : AttributeComponents.t -> Attribute.t Identifier.SerializableMap.t
 
   val attributes
     :  ?include_generated_attributes:bool ->
@@ -476,3 +480,5 @@ type statement = Statement.statement [@@deriving compare, eq, sexp, show, hash, 
 type t = Statement.t [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
 val location_insensitive_compare : t -> t -> int
+
+val is_generator : t list -> bool

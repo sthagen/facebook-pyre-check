@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open OUnit2
 open IntegrationTest
@@ -401,7 +403,7 @@ let test_decorators context =
       "Missing return annotation [3]: Return type must be specified as type other than `Any`.";
       "Invalid decoration [56]: Pyre was not able to infer the type of argument \
        `1.__add__(\"foo\")` to decorator factory `test.my_decorator`.";
-      "Incompatible parameter type [6]: `+` is not supported for operand types `int` and `str`.";
+      "Unsupported operand [58]: `+` is not supported for operand types `int` and `str`.";
     ];
 
   assert_type_errors

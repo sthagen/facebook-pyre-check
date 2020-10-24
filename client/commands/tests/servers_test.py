@@ -1,17 +1,17 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import dataclasses
 import json
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
-from ... import commands, log
+from ... import command_arguments, commands, configuration as configuration_module, log
 from ...analysis_directory import AnalysisDirectory
 from .. import servers
-from ..command import JSON, TEXT
 from ..servers import ServerDetails, Servers
 from .command_test import mock_arguments, mock_configuration
 
@@ -37,7 +37,7 @@ class ServersCommandTest(unittest.TestCase):
                     server_pid_path=Path("/root/.pyre/foo/server/server.pid"),
                 ),
             ],
-            output_format=TEXT,
+            output_format=command_arguments.TEXT,
         )
         log_stdout.assert_has_calls(
             [
@@ -67,7 +67,7 @@ class ServersCommandTest(unittest.TestCase):
                     server_pid_path=Path("/root/.pyre/foo/server/server.pid"),
                 ),
             ],
-            output_format=JSON,
+            output_format=command_arguments.JSON,
         )
         log_stdout.assert_called_once_with(
             json.dumps(
@@ -79,12 +79,18 @@ class ServersCommandTest(unittest.TestCase):
             )
         )
 
+    @patch.object(
+        configuration_module, "create_configuration", return_value=mock_configuration()
+    )
     @patch.object(Path, "mkdir")
     # pyre-fixme[56]: Argument `tools.pyre.client.commands.servers` to decorator
     #  factory `unittest.mock.patch.object` could not be resolved in a global scope.
     @patch.object(servers, "Stop")
     def test_stop_servers(
-        self, stop_class: MagicMock, make_directory: MagicMock
+        self,
+        stop_class: MagicMock,
+        make_directory: MagicMock,
+        create_configuration: MagicMock,
     ) -> None:
         servers = Servers(
             command_arguments=mock_arguments(
@@ -118,20 +124,27 @@ class ServersCommandTest(unittest.TestCase):
                 ),
             ]
         )
-        self.assertEqual(servers._project_root, "/root")
-        stop_class.assert_has_calls(
+        self.assertEqual(servers._configuration.project_root, "/root")
+        stop_class.assert_called()
+        create_configuration.assert_has_calls(
             [
                 call(
-                    command_arguments=servers._command_arguments,
-                    original_directory="/root",
+                    dataclasses.replace(
+                        servers._command_arguments, local_configuration="."
+                    ),
+                    Path("/root"),
                 ),
                 call(
-                    command_arguments=servers._command_arguments,
-                    original_directory="/root/bar/baz",
+                    dataclasses.replace(
+                        servers._command_arguments, local_configuration="bar/baz"
+                    ),
+                    Path("/root"),
                 ),
                 call(
-                    command_arguments=servers._command_arguments,
-                    original_directory="/root/foo",
+                    dataclasses.replace(
+                        servers._command_arguments, local_configuration="foo"
+                    ),
+                    Path("/root"),
                 ),
             ],
             any_order=True,

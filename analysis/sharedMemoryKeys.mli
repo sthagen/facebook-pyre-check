@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Ast
 
@@ -87,6 +89,13 @@ module DependencyKey : sig
       inputs:'input list ->
       unit ->
       'state
+
+    val collected_iter
+      :  Scheduler.t ->
+      policy:Scheduler.Policy.t ->
+      f:('input list -> unit) ->
+      inputs:'input list ->
+      unit
   end
 end
 

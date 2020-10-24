@@ -1,10 +1,37 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 module Path = Pyre.Path
+
+module ServerEvent = struct
+  type t =
+    | SocketCreated of Path.t
+    | ServerInitialized
+    | Exception of string
+  [@@deriving sexp, compare, hash, to_yojson]
+
+  let serialize event = to_yojson event |> Yojson.Safe.to_string
+
+  let write ~output_channel event =
+    let open Lwt.Infix in
+    serialize event |> Lwt_io.fprintl output_channel >>= fun () -> Lwt_io.flush output_channel
+end
+
+module ExitStatus = struct
+  type t =
+    | Ok
+    | Error
+  [@@deriving sexp, compare, hash]
+
+  let exit_code = function
+    | Ok -> 0
+    | Error -> 1
+end
 
 (* Socket paths in most Unixes are limited to a length of +-100 characters, whereas `log_path` might
    exceed that limit. We have to work around this by shortening the original log path into
@@ -227,7 +254,8 @@ let get_watchman_subscriber
       let subscriber_setting =
         let filter =
           let base_names =
-            String.Set.of_list critical_files
+            List.map critical_files ~f:ServerConfiguration.CriticalFile.base_name_of
+            |> String.Set.of_list
             |> fun set ->
             Set.add set ".pyre_configuration"
             |> fun set -> Set.add set ".pyre_configuration.local" |> Set.to_list
@@ -268,11 +296,7 @@ let with_server ?watchman ~f ({ ServerConfiguration.log_path; _ } as server_conf
     (Lwt_unix.ADDR_UNIX (Path.absolute socket_path))
     (handle_connection ~server_state)
   >>= fun server ->
-  let server_waiter () =
-    (* Force the server state initialization to run immediately so the computation does not need to
-       happen inside request handlers. *)
-    Lazy.force server_state >>= f
-  in
+  let server_waiter () = f (socket_path, server_state) in
   let server_destructor () =
     Log.info "Server is going down. Cleaning up...";
     Lwt_io.shutdown_server server
@@ -287,6 +311,9 @@ let with_server ?watchman ~f ({ ServerConfiguration.log_path; _ } as server_conf
       | Some subscriber ->
           let watchman_waiter =
             Watchman.Subscriber.listen ~f:(on_watchman_update ~server_state) subscriber
+            >>= fun () ->
+            (* Lost watchman connection is considered an error. *)
+            return ExitStatus.Error
           in
           (* Make sure when the watchman subscriber crashes, the server would go down as well. *)
           Lwt.choose [server_waiter (); watchman_waiter])
@@ -306,17 +333,46 @@ let wait_on_signals fatal_signals =
   return_unit
 
 
-let start_server ?watchman ~on_started ~on_exception server_configuration =
+let start_server
+    ?watchman
+    ?(on_server_socket_ready = fun _ -> Lwt.return_unit)
+    ~on_started
+    ~on_exception
+    server_configuration
+  =
   let open Lwt in
-  catch (fun () -> with_server ?watchman server_configuration ~f:on_started) on_exception
+  let f (socket_path, uninitialized_server_state) =
+    on_server_socket_ready socket_path
+    >>= fun _ -> Lazy.force uninitialized_server_state >>= on_started
+  in
+  catch (fun () -> with_server ?watchman server_configuration ~f) on_exception
 
 
-let start_server_and_wait server_configuration =
+let start_server_and_wait ?event_channel server_configuration =
   let open Lwt in
+  let write_event event =
+    match event_channel with
+    | None -> return_unit
+    | Some output_channel ->
+        catch
+          (fun () -> ServerEvent.write ~output_channel event)
+          (function
+            | Lwt_io.Channel_closed _
+            | Caml.Unix.Unix_error (Caml.Unix.EPIPE, _, _) ->
+                return_unit
+            | exn -> Lwt.fail exn)
+  in
   start_server
     server_configuration
-    ~on_started:(fun _ -> wait_on_signals [Signal.int])
+    ~on_server_socket_ready:(fun socket_path ->
+      (* An empty message signals that server socket has been created. *)
+      write_event (ServerEvent.SocketCreated socket_path))
+    ~on_started:(fun _ ->
+      write_event ServerEvent.ServerInitialized
+      >>= fun () -> wait_on_signals [Signal.int] >>= fun () -> return ExitStatus.Ok)
     ~on_exception:(fun exn ->
       Log.error "Exception thrown from Pyre server.";
-      Log.error "%s" (Exn.to_string exn);
-      return_unit)
+      let message = Exn.to_string exn in
+      Log.error "%s" message;
+      (* A non-empty message signals that an error has occurred. *)
+      write_event (ServerEvent.Exception message) >>= fun () -> return ExitStatus.Error)

@@ -3,9 +3,9 @@
   "kind": "issue",
   "data": {
     "callable": "multiple_sources.combine_tainted_user_and_dangerous_vc",
-    "callable_line": 21,
+    "callable_line": 27,
     "code": 4321,
-    "line": 24,
+    "line": 30,
     "start": 22,
     "end": 24,
     "filename": "multiple_sources.py",
@@ -17,7 +17,7 @@
           {
             "root": {
               "filename": "multiple_sources.py",
-              "line": 23,
+              "line": 29,
               "start": 9,
               "end": 29
             },
@@ -37,7 +37,7 @@
           {
             "root": {
               "filename": "multiple_sources.py",
-              "line": 24,
+              "line": 30,
               "start": 22,
               "end": 24
             },
@@ -54,10 +54,114 @@
 {
   "kind": "issue",
   "data": {
+    "callable": "multiple_sources.issue_with_test_a_and_b",
+    "callable_line": 84,
+    "code": 4322,
+    "line": 86,
+    "start": 43,
+    "end": 63,
+    "filename": "multiple_sources.py",
+    "message": "TestA or TestB and permissive context combine",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "root": {
+              "filename": "multiple_sources.py",
+              "line": 86,
+              "start": 43,
+              "end": 63
+            },
+            "leaves": [
+              {
+                "kind": "PermissiveContext",
+                "name": "multiple_sources.permissive_context",
+                "on_all_flows": true
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "root": {
+              "filename": "multiple_sources.py",
+              "line": 86,
+              "start": 43,
+              "end": 63
+            },
+            "leaves": [
+              { "kind": "TriggeredPartialSink[ExpectsEitherTest[b]]" }
+            ]
+          }
+        ]
+      }
+    ],
+    "features": []
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "multiple_sources.issue_with_test_a_and_b",
+    "callable_line": 84,
+    "code": 4322,
+    "line": 85,
+    "start": 43,
+    "end": 63,
+    "filename": "multiple_sources.py",
+    "message": "TestA or TestB and permissive context combine",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "root": {
+              "filename": "multiple_sources.py",
+              "line": 85,
+              "start": 43,
+              "end": 63
+            },
+            "leaves": [
+              {
+                "kind": "PermissiveContext",
+                "name": "multiple_sources.permissive_context",
+                "on_all_flows": true
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "root": {
+              "filename": "multiple_sources.py",
+              "line": 85,
+              "start": 43,
+              "end": 63
+            },
+            "leaves": [
+              { "kind": "TriggeredPartialSink[ExpectsEitherTest[b]]" }
+            ]
+          }
+        ]
+      }
+    ],
+    "features": []
+  }
+}
+{
+  "kind": "issue",
+  "data": {
     "callable": "multiple_sources.issue_with_triggered_context",
-    "callable_line": 42,
+    "callable_line": 48,
     "code": 4321,
-    "line": 44,
+    "line": 50,
     "start": 34,
     "end": 36,
     "filename": "multiple_sources.py",
@@ -69,7 +173,7 @@
           {
             "root": {
               "filename": "multiple_sources.py",
-              "line": 43,
+              "line": 49,
               "start": 9,
               "end": 29
             },
@@ -90,7 +194,7 @@
             "call": {
               "position": {
                 "filename": "multiple_sources.py",
-                "line": 44,
+                "line": 50,
                 "start": 34,
                 "end": 36
               },
@@ -118,9 +222,9 @@
   "kind": "issue",
   "data": {
     "callable": "multiple_sources.issue_with_triggered_input",
-    "callable_line": 37,
+    "callable_line": 43,
     "code": 4321,
-    "line": 39,
+    "line": 45,
     "start": 32,
     "end": 34,
     "filename": "multiple_sources.py",
@@ -132,7 +236,7 @@
           {
             "root": {
               "filename": "multiple_sources.py",
-              "line": 38,
+              "line": 44,
               "start": 9,
               "end": 32
             },
@@ -153,7 +257,7 @@
             "call": {
               "position": {
                 "filename": "multiple_sources.py",
-                "line": 39,
+                "line": 45,
                 "start": 32,
                 "end": 34
               },
@@ -170,12 +274,48 @@
                 "on_all_flows": true
               }
             ],
-            "features": [ { "always-via": "tito" } ]
+            "features": [
+              { "has": "first-index" },
+              { "first-index": "<unknown>" },
+              { "always-via": "tito" }
+            ]
           }
         ]
       }
     ],
-    "features": [ { "always-via": "tito" } ]
+    "features": [
+      { "has": "first-index" },
+      { "first-index": "<unknown>" },
+      { "always-via": "tito" }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "Ovr{multiple_sources.Node::__init__}",
+    "sources": [],
+    "sinks": [],
+    "tito": [
+      {
+        "port": "formal(id)",
+        "taint": [
+          {
+            "decl": null,
+            "leaves": [ { "kind": "LocalReturn", "name": "[id]" } ]
+          }
+        ]
+      },
+      {
+        "port": "formal(self)",
+        "taint": [
+          {
+            "decl": null,
+            "leaves": [ { "kind": "LocalReturn", "name": "" } ]
+          }
+        ]
+      }
+    ]
   }
 }
 {
@@ -246,7 +386,7 @@
         "taint": [
           {
             "decl": null,
-            "tito": [ { "line": 10, "start": 19, "end": 21 } ],
+            "tito": [ { "line": 16, "start": 19, "end": 21 } ],
             "leaves": [ { "kind": "LocalReturn", "name": "[id]" } ],
             "features": [ { "always-via": "tito" } ]
           }
@@ -257,7 +397,7 @@
         "taint": [
           {
             "decl": null,
-            "tito": [ { "line": 10, "start": 15, "end": 18 } ],
+            "tito": [ { "line": 16, "start": 15, "end": 18 } ],
             "leaves": [ { "kind": "LocalReturn", "name": "" } ],
             "features": [ { "always-via": "tito" } ]
           }
@@ -297,6 +437,62 @@
 {
   "kind": "model",
   "data": {
+    "callable": "multiple_sources.a_source",
+    "sources": [
+      {
+        "port": "result",
+        "taint": [ { "decl": null, "leaves": [ { "kind": "TestA" } ] } ]
+      }
+    ],
+    "sinks": [],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "multiple_sources.b_source",
+    "sources": [
+      {
+        "port": "result",
+        "taint": [ { "decl": null, "leaves": [ { "kind": "TestB" } ] } ]
+      }
+    ],
+    "sinks": [],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "multiple_sources.combines_tests_and_context",
+    "sources": [],
+    "sinks": [
+      {
+        "port": "formal(vc)",
+        "taint": [
+          {
+            "decl": null,
+            "leaves": [ { "kind": "PartialSink[ExpectsEitherTest[b]]" } ]
+          }
+        ]
+      },
+      {
+        "port": "formal(test)",
+        "taint": [
+          {
+            "decl": null,
+            "leaves": [ { "kind": "PartialSink[ExpectsEitherTest[a]]" } ]
+          }
+        ]
+      }
+    ],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
     "callable": "multiple_sources.demonstrate_triggered_context",
     "sources": [],
     "sinks": [
@@ -306,7 +502,7 @@
           {
             "root": {
               "filename": "multiple_sources.py",
-              "line": 29,
+              "line": 35,
               "start": 22,
               "end": 24
             },
@@ -336,11 +532,11 @@
           {
             "root": {
               "filename": "multiple_sources.py",
-              "line": 34,
+              "line": 40,
               "start": 4,
               "end": 16
             },
-            "tito": [ { "line": 34, "start": 13, "end": 15 } ],
+            "tito": [ { "line": 40, "start": 13, "end": 15 } ],
             "leaves": [
               {
                 "kind": "TriggeredPartialSink[UserControlledAndVC[id]]",
@@ -348,7 +544,11 @@
                 "on_all_flows": true
               }
             ],
-            "features": [ { "always-via": "tito" } ]
+            "features": [
+              { "has": "first-index" },
+              { "first-index": "<unknown>" },
+              { "always-via": "tito" }
+            ]
           }
         ]
       }

@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -6,26 +6,29 @@
 # pyre-unsafe
 
 import errno
-import fcntl
-import os
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, Mock, mock_open, patch
 
-from ... import commands, configuration_monitor, filesystem, project_files_monitor
+from ... import (
+    commands,
+    configuration_monitor,
+    filesystem,
+    find_directories,
+    project_files_monitor,
+)
 from ...analysis_directory import AnalysisDirectory
-from ..command import ExitCode, __name__ as client_name
+from ..command import ExitCode
 from ..start import Start
 from .command_test import mock_arguments, mock_configuration
 
 
-_typeshed_search_path: str = "{}.typeshed_search_path".format(commands.start.__name__)
-
-
 class StartTest(unittest.TestCase):
-    @patch("{}.find_project_root".format(client_name), return_value=".")
-    @patch("{}.find_local_root".format(client_name), return_value=None)
+    @patch(
+        f"{find_directories.__name__}.find_global_and_local_root",
+        return_value=find_directories.FoundRoot(Path(".")),
+    )
     @patch("fcntl.lockf")
-    @patch(_typeshed_search_path, Mock(return_value=["path3"]))
     # pyre-fixme[56]: Argument `set()` to decorator factory
     #  `unittest.mock.patch.object` could not be resolved in a global scope.
     @patch.object(commands.Reporting, "_get_directories_to_analyze", return_value=set())
@@ -35,15 +38,12 @@ class StartTest(unittest.TestCase):
         _daemonize,
         get_directories_to_analyze,
         lock_file,
-        find_local_root,
-        find_project_root,
+        find_global_and_local_root,
     ) -> None:
         original_directory = "/original/directory"
         arguments = mock_arguments()
 
-        configuration = mock_configuration()
-        configuration.version_hash = "hash"
-        configuration.number_of_workers = 5
+        configuration = mock_configuration(version_hash="hash")
 
         # Check start without watchman.
         analysis_directory = AnalysisDirectory(".")
@@ -83,37 +83,8 @@ class StartTest(unittest.TestCase):
                 analysis_directory=analysis_directory,
             ).run()
             call_client.assert_called_once_with(command=Start.NAME)
-            Monitor.assert_called_once_with(configuration, ".", analysis_directory)
+            Monitor.assert_called_once_with(configuration, "/root", analysis_directory)
             Monitor.return_value.daemonize.assert_called_once_with()
-
-        # This magic is necessary to test, because the inner call to ping a server is
-        # always non-blocking.
-        def pass_when_blocking(file_descriptor, command):
-            if not pass_when_blocking.failed and (command & fcntl.LOCK_NB):
-                pass_when_blocking.failed = True
-                raise OSError(errno.EAGAIN, "Only accepting blocking calls.")
-
-        pass_when_blocking.failed = False
-
-        lock_file.side_effect = pass_when_blocking
-        # EAGAINs get caught.
-        with patch("builtins.open", mock_open()), patch.object(
-            commands.Command, "_call_client"
-        ) as call_client, patch.object(
-            project_files_monitor, "ProjectFilesMonitor"
-        ) as Monitor:
-            Start(
-                arguments,
-                original_directory,
-                terminal=False,
-                store_type_check_resolution=False,
-                use_watchman=False,
-                incremental_style=commands.IncrementalStyle.FINE_GRAINED,
-                configuration=configuration,
-                analysis_directory=analysis_directory,
-            ).run()
-            call_client.assert_called_once_with(command=Start.NAME)
-            Monitor.assert_not_called()
 
         lock_file.side_effect = None
 
@@ -201,28 +172,27 @@ class StartTest(unittest.TestCase):
             command.run()
             self.assertEqual(command._exit_code, ExitCode.SUCCESS)
 
-    @patch("{}.find_project_root".format(client_name), return_value=".")
-    @patch("{}.find_local_root".format(client_name), return_value=None)
-    @patch(_typeshed_search_path, Mock(return_value=["path3"]))
+    @patch(
+        f"{find_directories.__name__}.find_global_and_local_root",
+        return_value=find_directories.FoundRoot(Path(".")),
+    )
     # pyre-fixme[56]: Argument `set()` to decorator factory
     #  `unittest.mock.patch.object` could not be resolved in a global scope.
     @patch.object(commands.Reporting, "_get_directories_to_analyze", return_value=set())
     def test_start_flags(
-        self, get_directories_to_analyze, find_local_root, find_project_root
+        self, get_directories_to_analyze, find_global_and_local_root
     ) -> None:
         flags = [
             "-logging-sections",
-            "environment,parser,-progress",
+            "environment,-progress",
             "-project-root",
-            ".",
+            "/root",
             "-log-directory",
             ".pyre",
             "-workers",
             "5",
             "-expected-binary-version",
             "hash",
-            "-search-path",
-            "path1,path2,path3",
             "-new-incremental-check",
         ]
 
@@ -394,9 +364,8 @@ class StartTest(unittest.TestCase):
         self.assertEqual(set(command._flags()), {*flags})
 
         arguments = mock_arguments(saved_state_project="pyre/saved_state")
-        configuration = mock_configuration()
-        configuration.local_root = os.path.join(os.getcwd(), "first/second")
-        configuration.version_hash = "hash"
+        configuration = mock_configuration(version_hash="hash")
+        configuration.relative_local_root = "first/second"
         command = Start(
             arguments,
             original_directory,
@@ -432,24 +401,6 @@ class StartTest(unittest.TestCase):
         )
         self.assertEqual(
             set(command._flags()), {*flags, "-store-type-check-resolution"}
-        )
-
-        # Test ignore all errors.
-        arguments = mock_arguments()
-        configuration = mock_configuration(version_hash="hash")
-        configuration.ignore_all_errors = ["/absolute/a", "/root/b"]
-        command = Start(
-            arguments,
-            original_directory,
-            terminal=False,
-            store_type_check_resolution=False,
-            use_watchman=True,
-            incremental_style=commands.IncrementalStyle.FINE_GRAINED,
-            configuration=configuration,
-            analysis_directory=AnalysisDirectory("."),
-        )
-        self.assertEqual(
-            set(command._flags()), {*flags, "-ignore-all-errors", "/absolute/a;/root/b"}
         )
 
         # Test autocomplete.
@@ -500,6 +451,52 @@ class StartTest(unittest.TestCase):
         self.assertEqual(
             set(command._flags()),
             {*flags, "-memory-profiling-output", ".pyre/profiling.log"},
+        )
+
+    @patch(
+        f"{find_directories.__name__}.find_global_and_local_root",
+        return_value=find_directories.FoundRoot(Path(".")),
+    )
+    # pyre-fixme[56]: Argument `set()` to decorator factory
+    #  `unittest.mock.patch.object` could not be resolved in a global scope.
+    @patch.object(commands.Reporting, "_get_directories_to_analyze", return_value=set())
+    def test_start_flags__ignore_all_errors(
+        self,
+        get_directories_to_analyze: MagicMock,
+        find_global_and_local_root: MagicMock,
+    ) -> None:
+        original_directory = "/original/directory"
+        arguments = mock_arguments()
+        configuration = mock_configuration(version_hash="hash")
+        configuration.get_existent_ignore_all_errors_paths.return_value = [
+            "/absolute/a",
+            "/root/b",
+        ]
+        flags = [
+            "-logging-sections",
+            "environment,-progress",
+            "-project-root",
+            "/root",
+            "-log-directory",
+            ".pyre",
+            "-workers",
+            "5",
+            "-expected-binary-version",
+            "hash",
+            "-new-incremental-check",
+        ]
+        command = Start(
+            arguments,
+            original_directory,
+            terminal=False,
+            store_type_check_resolution=False,
+            use_watchman=True,
+            incremental_style=commands.IncrementalStyle.FINE_GRAINED,
+            configuration=configuration,
+            analysis_directory=AnalysisDirectory("."),
+        )
+        self.assertEqual(
+            set(command._flags()), {*flags, "-ignore-all-errors", "/absolute/a;/root/b"}
         )
 
     @patch.object(configuration_monitor.ConfigurationMonitor, "daemonize")

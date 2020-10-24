@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open OUnit2
@@ -265,47 +267,41 @@ let test_due_to_analysis_limitations _ =
   (* Parameter. *)
   assert_due_to_analysis_limitations
     (Error.IncompatibleParameterType
-       (Argument
-          {
-            name = Some "";
-            position = 1;
-            callee = Some !&"callee";
-            mismatch = { Error.actual = Type.Top; expected = Type.Top; due_to_invariance = false };
-          }));
+       {
+         name = Some "";
+         position = 1;
+         callee = Some !&"callee";
+         mismatch = { Error.actual = Type.Top; expected = Type.Top; due_to_invariance = false };
+       });
   assert_due_to_analysis_limitations
     (Error.IncompatibleParameterType
-       (Argument
-          {
-            name = Some "";
-            position = 1;
-            callee = Some !&"callee";
-            mismatch =
-              { Error.actual = Type.Top; expected = Type.string; due_to_invariance = false };
-          }));
+       {
+         name = Some "";
+         position = 1;
+         callee = Some !&"callee";
+         mismatch = { Error.actual = Type.Top; expected = Type.string; due_to_invariance = false };
+       });
   assert_not_due_to_analysis_limitations
     (Error.IncompatibleParameterType
-       (Argument
-          {
-            name = Some "";
-            position = 1;
-            callee = Some !&"callee";
-            mismatch =
-              { Error.actual = Type.string; expected = Type.Top; due_to_invariance = false };
-          }));
+       {
+         name = Some "";
+         position = 1;
+         callee = Some !&"callee";
+         mismatch = { Error.actual = Type.string; expected = Type.Top; due_to_invariance = false };
+       });
   assert_due_to_analysis_limitations
     (Error.IncompatibleParameterType
-       (Argument
-          {
-            name = Some "";
-            position = 1;
-            callee = Some !&"callee";
-            mismatch =
-              {
-                Error.actual = Type.Primitive "typing.TypeAlias";
-                expected = Type.Top;
-                due_to_invariance = false;
-              };
-          }));
+       {
+         name = Some "";
+         position = 1;
+         callee = Some !&"callee";
+         mismatch =
+           {
+             Error.actual = Type.Primitive "typing.TypeAlias";
+             expected = Type.Top;
+             due_to_invariance = false;
+           };
+       });
 
   (* Return. *)
   assert_due_to_analysis_limitations
@@ -379,34 +375,31 @@ let test_join context =
   assert_join
     (error
        (Error.IncompatibleParameterType
-          (Argument
-             {
-               name = Some "";
-               position = 1;
-               callee = Some !&"callee";
-               mismatch =
-                 { Error.actual = Type.integer; expected = Type.string; due_to_invariance = false };
-             })))
+          {
+            name = Some "";
+            position = 1;
+            callee = Some !&"callee";
+            mismatch =
+              { Error.actual = Type.integer; expected = Type.string; due_to_invariance = false };
+          }))
     (error
        (Error.IncompatibleParameterType
-          (Argument
-             {
-               name = Some "";
-               position = 1;
-               callee = Some !&"callee";
-               mismatch =
-                 { Error.actual = Type.float; expected = Type.string; due_to_invariance = false };
-             })))
+          {
+            name = Some "";
+            position = 1;
+            callee = Some !&"callee";
+            mismatch =
+              { Error.actual = Type.float; expected = Type.string; due_to_invariance = false };
+          }))
     (error
        (Error.IncompatibleParameterType
-          (Argument
-             {
-               name = Some "";
-               position = 1;
-               callee = Some !&"callee";
-               mismatch =
-                 { Error.actual = Type.float; expected = Type.string; due_to_invariance = false };
-             })));
+          {
+            name = Some "";
+            position = 1;
+            callee = Some !&"callee";
+            mismatch =
+              { Error.actual = Type.float; expected = Type.string; due_to_invariance = false };
+          }));
   let create_mock_location path =
     {
       Location.WithPath.path;
@@ -746,12 +739,9 @@ let test_filter context =
          attribute = "something";
          origin =
            Class
-             (Type.Parametric
-                {
-                  name = "BoundMethod";
-                  parameters =
-                    [Single (Type.Callable.create ~annotation:Type.integer ()); Single Type.integer];
-                });
+             (Type.parametric
+                "BoundMethod"
+                [Single (Type.Callable.create ~annotation:Type.integer ()); Single Type.integer]);
        });
   assert_filtered
     (UndefinedAttribute
@@ -759,12 +749,9 @@ let test_filter context =
          attribute = "assert_not_called";
          origin =
            Class
-             (Type.Parametric
-                {
-                  name = "BoundMethod";
-                  parameters =
-                    [Single (Type.Callable.create ~annotation:Type.integer ()); Single Type.integer];
-                });
+             (Type.parametric
+                "BoundMethod"
+                [Single (Type.Callable.create ~annotation:Type.integer ()); Single Type.integer]);
        });
 
   ()
@@ -929,12 +916,9 @@ let test_description _ =
          attribute = "at";
          origin =
            Class
-             (Type.Parametric
-                {
-                  name = "BoundMethod";
-                  parameters =
-                    [Single (Type.Callable.create ~annotation:Type.integer ()); Single Type.integer];
-                });
+             (Type.parametric
+                "BoundMethod"
+                [Single (Type.Callable.create ~annotation:Type.integer ()); Single Type.integer]);
        })
     "Undefined attribute [16]: Anonymous callable has no attribute `at`.";
   assert_messages
@@ -943,19 +927,16 @@ let test_description _ =
          attribute = "at";
          origin =
            Class
-             (Type.Parametric
-                {
-                  name = "BoundMethod";
-                  parameters =
-                    [
-                      Single
-                        (Type.Callable.create
-                           ~name:(Reference.create "named")
-                           ~annotation:Type.integer
-                           ());
-                      Single Type.integer;
-                    ];
-                });
+             (Type.parametric
+                "BoundMethod"
+                [
+                  Single
+                    (Type.Callable.create
+                       ~name:(Reference.create "named")
+                       ~annotation:Type.integer
+                       ());
+                  Single Type.integer;
+                ]);
        })
     "Undefined attribute [16]: Callable `named` has no attribute `at`.";
   ()

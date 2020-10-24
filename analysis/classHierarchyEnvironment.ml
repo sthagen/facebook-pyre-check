@@ -1,6 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Ast
@@ -50,11 +53,8 @@ let get_parents alias_environment name ~dependency =
         let supertype, parameters = parse_annotation ~allow_untracked:true value |> Type.split in
         match supertype with
         | Type.Top ->
-            Statistics.event
-              ~name:"superclass of top"
-              ~section:`Environment
-              ~normals:["unresolved name", Expression.show value]
-              ();
+            Log.log ~section:`Environment "Unresolved superclass name: %a" Expression.pp value;
+            ();
             None
         | Type.Primitive primitive
           when not

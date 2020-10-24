@@ -1,8 +1,16 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
 # pyre-unsafe
 
 from typing import Any, Optional
 
-from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
+from django.contrib.auth.base_user import (
+    AbstractBaseUser as AbstractBaseUser,
+    BaseUserManager as BaseUserManager,
+)
 from django.db import models
 
 class UserManager(BaseUserManager):

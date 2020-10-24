@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Pyre
 open Ast
@@ -18,7 +20,8 @@ type t = {
 exception InvalidModel of string
 
 val get_callsite_model
-  :  call_target:[< Callable.t ] ->
+  :  resolution:Resolution.t ->
+  call_target:[< Callable.t ] ->
   arguments:Expression.Call.Argument.t list ->
   t
 
@@ -41,8 +44,14 @@ val infer_class_models
   :  environment:TypeEnvironment.ReadOnly.t ->
   TaintResult.call_model Callable.Map.t
 
+val remove_sinks : TaintResult.call_model -> TaintResult.call_model
+
 val add_obscure_sink
   :  resolution:Resolution.t ->
   call_target:[< Callable.t ] ->
   TaintResult.call_model ->
   TaintResult.call_model
+
+(* Register a model with sinks on all parameters for a symbolic callable that
+ * represents an unknown callee, in order to find missing flows. *)
+val register_unknown_callee_model : [< Callable.t ] -> unit

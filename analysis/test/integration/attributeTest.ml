@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Test
 open OUnit2
@@ -1027,7 +1029,24 @@ let test_check_attribute_initialization context =
         class Baz(Foo, Bar):
           pass
     |}
-    []
+    [];
+
+  assert_type_errors
+    {|
+        import abc
+
+        class Foo(abc.ABC):
+            LIMIT: int = NotImplemented
+
+            def is_ok(self, var: int) -> bool:
+                return var < self.LIMIT
+
+        class Bar(Foo):
+            LIMIT = 2 
+    |}
+    [];
+
+  ()
 
 
 let test_check_missing_attribute context =
@@ -1597,6 +1616,38 @@ let test_check_metaclass_attributes context =
     ["Incompatible return type [7]: Expected `str` but got `int`."]
 
 
+let test_check_annotated context =
+  assert_type_errors
+    ~context
+    {|
+      from typing import Annotated
+      class A:
+        x: int = 0
+      def f(a: Annotated[A, int]) -> int:
+        return a.x
+    |}
+    [];
+  assert_type_errors
+    ~context
+    {|
+      from typing import Annotated
+      class A:
+        def x(self) -> int: ...
+      def f(a: Annotated[A, int]) -> int:
+        return a.x()
+    |}
+    [];
+  assert_type_errors
+    ~context
+    {|
+      from typing import Annotated
+      def f(a: Annotated[str, int]) -> int:
+        return a.foo()
+    |}
+    ["Undefined attribute [16]: `str` has no attribute `foo`."];
+  ()
+
+
 let () =
   "attribute"
   >::: [
@@ -1608,5 +1659,6 @@ let () =
          "check_attribute_type_variable_resolution" >:: test_attribute_type_variable_resolution;
          "check_getattr" >:: test_check_getattr;
          "check_metaclass_attributes" >:: test_check_metaclass_attributes;
+         "check_annotated" >:: test_check_annotated;
        ]
   |> Test.run

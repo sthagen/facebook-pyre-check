@@ -1,9 +1,8 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import argparse
 import json
 import logging
 import os
@@ -11,70 +10,60 @@ import shutil
 import subprocess
 import sys
 from logging import Logger
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 from .. import log
-from ..exceptions import EnvironmentException
 from ..find_directories import (
     BINARY_NAME,
     CONFIGURATION_FILE,
-    find_project_root,
+    find_global_root,
     find_taint_models_directory,
     find_typeshed,
 )
-from .command import CommandArguments, CommandParser
+from .command import CommandParser
 
 
 LOG: Logger = logging.getLogger(__name__)
 
 
+class InitializationException(Exception):
+    pass
+
+
 class Initialize(CommandParser):
     NAME = "initialize"
 
-    def __init__(
-        self,
-        command_arguments: CommandArguments,
-        original_directory: str,
-        *,
-        local: bool = False
-    ) -> None:
-        super(Initialize, self).__init__(command_arguments, original_directory)
-        self._local = local
-
-    @staticmethod
-    def from_arguments(
-        arguments: argparse.Namespace, original_directory: str
-    ) -> "Initialize":
-        return Initialize(
-            CommandArguments.from_arguments(arguments),
-            original_directory,
-            local=arguments.local,
-        )
-
-    @classmethod
-    def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
-        initialize = parser.add_parser(cls.NAME, aliases=["init"])
-        initialize.set_defaults(command=cls.from_arguments)
-        initialize.add_argument(
-            "--local",
-            action="store_true",
-            help="[DEPRECATED] Initializes a local configuration \
-            in a project subdirectory.",
-        )
+    def __init__(self) -> None:
+        super().__init__()
 
     def _get_configuration(self) -> Dict[str, Any]:
         configuration: Dict[str, Any] = {}
 
         watchman_configuration_path = os.path.abspath(".watchmanconfig")
-        if shutil.which("watchman") is not None and log.get_yes_no_input(
-            "Also initialize a watchman configuration?"
+        watchman_path = shutil.which("watchman")
+        if watchman_path is not None and log.get_yes_no_input(
+            "Also initialize watchman in the current directory?"
         ):
             try:
-                with open(watchman_configuration_path, "w+") as configuration_file:
-                    configuration_file.write("{}\n")
-                subprocess.check_call(["watchman", "watch-project", "."])
-            except (IsADirectoryError, subprocess.CalledProcessError):
-                LOG.warning("Unable to initialize watchman for the current directory.")
+                if not os.path.isfile(watchman_configuration_path):
+                    with open(watchman_configuration_path, "w+") as configuration_file:
+                        configuration_file.write("{}\n")
+                    LOG.warning(
+                        f"Created basic `.watchmanconfig` at {watchman_configuration_path}"
+                    )
+                subprocess.run(
+                    [watchman_path, "watch-project", "."],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    universal_newlines=True,
+                )
+                LOG.warning("Current directory is being watched by `watchman`.")
+            except IsADirectoryError:
+                LOG.warning(f"Unable to write to {watchman_configuration_path}.")
+            except subprocess.CalledProcessError:
+                LOG.warning("Failed to run `watchman watch-project .`.")
 
         binary_path = shutil.which(BINARY_NAME)
         if binary_path is None:
@@ -88,27 +77,27 @@ class Initialize(CommandParser):
                 )
             )
             if not os.path.isfile(binary_path):
-                raise EnvironmentException(
+                raise InitializationException(
                     "Unable to locate binary at `{}`.".format(binary_path)
                 )
         else:
             LOG.info("Binary found at `{}`".format(binary_path))
         configuration["binary"] = binary_path
 
-        typeshed = find_typeshed()
+        typeshed: Optional[Path] = find_typeshed()
         if typeshed is None:
-            typeshed = os.path.abspath(
+            typeshed = Path(
                 log.get_input("Unable to locate typeshed, please enter its root: ")
-            )
-            if not os.path.isdir(typeshed):
-                raise EnvironmentException(
+            ).resolve()
+            if not typeshed.is_dir():
+                raise InitializationException(
                     "No typeshed directory found at `{}`.".format(typeshed)
                 )
-        configuration["typeshed"] = typeshed
+        configuration["typeshed"] = str(typeshed)
 
         taint_models_path = find_taint_models_directory()
         if taint_models_path is not None:
-            configuration["taint_models_path"] = taint_models_path
+            configuration["taint_models_path"] = str(taint_models_path)
 
         analysis_directory = log.get_optional_input(
             "Which directory should pyre be initialized in?", "."
@@ -136,41 +125,45 @@ class Initialize(CommandParser):
         return configuration
 
     def _is_local(self) -> bool:
-        project_root = find_project_root(self._original_directory)
-        return project_root != self._original_directory
+        return find_global_root(Path(".")) is not None
 
     def _run(self) -> None:
-        self._local = self._is_local()
-        configuration_path = os.path.join(self._original_directory, CONFIGURATION_FILE)
-        if os.path.isfile(configuration_path):
-            if self._local:
-                error = (
-                    "Local configurations must be created in subdirectories of `{}`"
-                    "as it already contains a `.pyre_configuration`.".format(
-                        self._original_directory
+        try:
+            is_local = self._is_local()
+            current_directory = os.getcwd()
+            configuration_path = os.path.join(current_directory, CONFIGURATION_FILE)
+            if os.path.isfile(configuration_path):
+                if is_local:
+                    error = (
+                        "Local configurations must be created in subdirectories of `{}`"
+                        "as it already contains a `.pyre_configuration`.".format(
+                            current_directory
+                        )
+                    )
+                else:
+                    error = "A pyre configuration already exists at `{}`.".format(
+                        configuration_path
+                    )
+                raise InitializationException(error)
+            if os.path.isfile(configuration_path + ".local"):
+                raise InitializationException(
+                    "A local pyre configuration already exists at `{}`.".format(
+                        configuration_path + ".local"
                     )
                 )
+            if is_local:
+                configuration_path = configuration_path + ".local"
+                configuration = self._get_local_configuration()
             else:
-                error = "A pyre configuration already exists at `{}`.".format(
-                    configuration_path
-                )
-            raise EnvironmentException(error)
-        if os.path.isfile(configuration_path + ".local"):
-            raise EnvironmentException(
-                "A local pyre configuration already exists at `{}`.".format(
-                    configuration_path + ".local"
-                )
-            )
-        if self._local:
-            configuration_path = configuration_path + ".local"
-            configuration = self._get_local_configuration()
-        else:
-            configuration = self._get_configuration()
+                configuration = self._get_configuration()
 
-        with open(configuration_path, "w+") as configuration_file:
-            json.dump(configuration, configuration_file, sort_keys=True, indent=2)
-            configuration_file.write("\n")
-        LOG.info(
-            "Successfully initialized pyre! "
-            + "You can view the configuration at `{}`.".format(configuration_path)
-        )
+            with open(configuration_path, "w+") as configuration_file:
+                json.dump(configuration, configuration_file, sort_keys=True, indent=2)
+                configuration_file.write("\n")
+            LOG.log(
+                log.SUCCESS,
+                "Successfully initialized pyre! "
+                + "You can view the configuration at `{}`.".format(configuration_path),
+            )
+        except InitializationException as error:
+            LOG.error(f"{error}")

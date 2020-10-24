@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open OUnit2
 open Ast
@@ -66,7 +68,9 @@ let test_approximate_complex_access_paths _ =
       ~cmp:compare
       ~printer:ForwardState.Tree.show
       expected
-      (ForwardState.Tree.approximate_complex_access_paths ~cutoff_at tree)
+      (ForwardState.Tree.approximate_complex_access_paths
+         ~maximum_complex_access_path_length:cutoff_at
+         tree)
   in
   let create ~features =
     ForwardState.Tree.create_leaf (ForwardTaint.singleton (Sources.NamedSource "Demo"))

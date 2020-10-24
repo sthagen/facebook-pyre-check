@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Ast
@@ -252,7 +254,7 @@ module OrderImplementation = struct
                     >>= Option.all
                     >>| List.map ~f:replace_free_unary_variables_with_top
                     >>| List.map ~f:(fun single -> Type.Parameter.Single single)
-                    >>| fun parameters -> Type.Parametric { name = target; parameters }
+                    >>| fun parameters -> Type.parametric target parameters
                 | _ -> None
               in
               target >>= handle_target |> Option.value ~default:union

@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Ast
@@ -302,7 +304,11 @@ let produce_alias empty_stub_environment global_name ~dependency =
         ~dependency
       >>= handle_extracted
   in
-  get_aliased_type_for global_name ~visited:Reference.Set.empty
+  if Reference.equal global_name (Reference.create "typing.NoReturn") then
+    (* TODO(T76821797): We should fix upstream `typeshed` instead of doing special-case like this. *)
+    None
+  else
+    get_aliased_type_for global_name ~visited:Reference.Set.empty
 
 
 module Aliases = Environment.EnvironmentTable.NoCache (struct

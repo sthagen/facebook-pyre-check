@@ -3,9 +3,9 @@
   "kind": "issue",
   "data": {
     "callable": "constructor_inheritance.test",
-    "callable_line": 14,
+    "callable_line": 19,
     "code": 5002,
-    "line": 16,
+    "line": 21,
     "start": 29,
     "end": 44,
     "filename": "constructor_inheritance.py",
@@ -17,7 +17,7 @@
           {
             "root": {
               "filename": "constructor_inheritance.py",
-              "line": 16,
+              "line": 21,
               "start": 29,
               "end": 44
             },
@@ -39,7 +39,7 @@
             "call": {
               "position": {
                 "filename": "constructor_inheritance.py",
-                "line": 16,
+                "line": 21,
                 "start": 29,
                 "end": 44
               },
@@ -60,6 +60,43 @@
     "features": [
       { "always-via": "special_source" },
       { "always-via": "special_sink" }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "Ovr{constructor_inheritance.MyBaseClass::__init__}",
+    "sources": [],
+    "sinks": [
+      {
+        "port": "formal(argument)",
+        "taint": [
+          {
+            "root": {
+              "filename": "builtins.pyi",
+              "line": -1,
+              "start": -1,
+              "end": -1
+            },
+            "leaves": [
+              { "kind": "Test", "name": "__test_sink", "on_all_flows": true }
+            ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      }
+    ],
+    "tito": [
+      {
+        "port": "formal(self)",
+        "taint": [
+          {
+            "decl": null,
+            "leaves": [ { "kind": "LocalReturn", "name": "" } ]
+          }
+        ]
+      }
     ]
   }
 }
@@ -112,7 +149,7 @@
           {
             "root": {
               "filename": "constructor_inheritance.py",
-              "line": 7,
+              "line": 12,
               "start": 20,
               "end": 28
             },

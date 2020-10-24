@@ -1,7 +1,9 @@
-(** Copyright (c) 2016-present, Facebook, Inc.
-
-    This source code is licensed under the MIT license found in the LICENSE file in the root
-    directory of this source tree. *)
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open AbstractDomainCore
 
@@ -49,6 +51,13 @@ module Make (Element : ELEMENT) = struct
       Set.union left right
 
 
+  let meet left right =
+    if left == right then
+      left
+    else
+      Set.inter left right
+
+
   let widen ~iteration:_ ~prev ~next = join prev next
 
   let less_or_equal ~left ~right =
@@ -84,6 +93,8 @@ module Make (Element : ELEMENT) = struct
     let bottom = bottom
 
     let join = join
+
+    let less_or_equal = less_or_equal
   end
 
   module C = Common (CommonArg)

@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Ast
@@ -26,7 +28,7 @@ let instantiate_error
 
 
 let find_critical_file ~server_configuration:{ ServerConfiguration.critical_files; _ } paths =
-  ServerConfiguration.CriticalFiles.find critical_files paths
+  ServerConfiguration.CriticalFile.find critical_files ~within:paths
 
 
 let process_request

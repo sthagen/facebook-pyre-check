@@ -1,20 +1,19 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import argparse
 import logging
 import os
 import time
 from logging import Logger
 from typing import List, Optional
 
-from .. import configuration_monitor, watchman
+from .. import command_arguments, configuration_monitor, filesystem, watchman
 from ..analysis_directory import AnalysisDirectory
 from ..configuration import Configuration
 from ..project_files_monitor import ProjectFilesMonitor
-from .command import ClientException, Command, CommandArguments, State
+from .command import ClientException, Command, State
 
 
 LOG: Logger = logging.getLogger(__name__)
@@ -25,10 +24,10 @@ class Stop(Command):
 
     def __init__(
         self,
-        command_arguments: CommandArguments,
+        command_arguments: command_arguments.CommandArguments,
         original_directory: str,
         *,
-        configuration: Optional[Configuration] = None,
+        configuration: Configuration,
         analysis_directory: Optional[AnalysisDirectory] = None,
         from_restart: bool = False,
     ) -> None:
@@ -37,42 +36,21 @@ class Stop(Command):
         )
         self._from_restart = from_restart
 
-    @staticmethod
-    def from_arguments(
-        arguments: argparse.Namespace,
-        original_directory: str,
-        configuration: Optional[Configuration] = None,
-        analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> "Stop":
-        return Stop(
-            CommandArguments.from_arguments(arguments),
-            original_directory,
-            configuration=configuration,
-            analysis_directory=analysis_directory,
-        )
-
-    @classmethod
-    def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
-        stop = parser.add_parser(cls.NAME, epilog="Signals the Pyre server to stop.")
-        stop.set_defaults(command=cls.from_arguments)
-
     def _flags(self) -> List[str]:
-        log_directory = self._log_directory
         flags = []
-        if log_directory:
-            flags.extend(["-log-directory", log_directory])
+        flags.extend(["-log-directory", self._configuration.log_directory])
         return flags
 
     def _pid_file(self) -> Optional[int]:
         try:
             with open(
-                os.path.join(self._log_directory, "server", "server.pid")
+                os.path.join(self._configuration.log_directory, "server", "server.pid")
             ) as pid_file:
                 return int(pid_file.read())
         except (OSError, ValueError):
             return None
 
-    def _run(self) -> None:
+    def _stop(self) -> None:
         if self._state() == State.DEAD:
             if self._from_restart:
                 LOG.info("No server running.")
@@ -116,3 +94,16 @@ class Stop(Command):
             configuration_monitor.ConfigurationMonitor.base_path(self._configuration),
             configuration_monitor.ConfigurationMonitor.NAME,
         )
+
+    def _run(self) -> None:
+        LOG.info("Waiting for the client lock...")
+        client_lock = os.path.join(self._configuration.log_directory, "client.lock")
+
+        # Acquire the client lock to prevent a potential race with a background
+        # `pyre start`.
+        # Otherwise, `pyre stop` would stop some of the processes but not
+        # others. For example, that may stop the configuration monitor but
+        # leave the server alive, which would lead to errors saying "File
+        # watching service is down".
+        with filesystem.acquire_lock(client_lock, blocking=True):
+            self._stop()

@@ -1,3 +1,8 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
 from builtins import __test_sink, __test_source
 from typing import Any, Dict, Generic, Iterable, Mapping, Optional, TypeVar, cast
 
@@ -213,3 +218,13 @@ def test_service_with_dict():
 def test_service_with_mapping():
     service = Service()
     __test_sink(service.async_get_mapping(__test_source()))
+
+
+def tito_with_index(d: Dict[str, str]) -> str:
+    result = d["a"]
+    return result
+
+
+def test_index_from_tito():
+    d = {"a": __test_source(), "b": __test_source()}
+    __test_sink(tito_with_index(d))

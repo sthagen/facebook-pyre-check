@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 package com.facebook.buck_project_builder.targets;
 
 import com.facebook.buck_project_builder.SimpleLogger;
@@ -17,7 +24,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.StreamSupport;
 
-public final class ThriftLibraryTarget {
+public final class ThriftLibraryTarget implements Comparable<ThriftLibraryTarget> {
 
   private static final Pattern BASE_MODULE_PATH_PATTERN =
       Pattern.compile("(?<=/gen-py(.?)/).*(?=/(t?)types\\.py(.?) ];)");
@@ -128,5 +135,18 @@ public final class ThriftLibraryTarget {
   @Override
   public int hashCode() {
     return Objects.hash(command, baseModulePath, sources);
+  }
+
+  @Override
+  public int compareTo(ThriftLibraryTarget target) {
+      int commandComparison = command.compareTo(target.getCommand());
+      if (commandComparison != 0) {
+        return commandComparison;
+      }
+      int baseModulePathComparison = baseModulePath.compareTo(target.getBaseModulePath());
+      if (baseModulePathComparison != 0) {
+        return baseModulePathComparison;
+      }
+      return String.join(",", sources).compareTo(String.join(", ", target.getSources()));
   }
 }

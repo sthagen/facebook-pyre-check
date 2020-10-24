@@ -1,7 +1,9 @@
-(** Copyright (c) 2016-present, Facebook, Inc.
-
-    This source code is licensed under the MIT license found in the LICENSE file in the root
-    directory of this source tree. *)
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 (* Constructors of this type are used to select parts of composed abstract domains. E.g., a Set
    domain will add an Element: element constructor for the element type of the set, thereby allowing
@@ -40,6 +42,8 @@ module type S = sig
   val is_bottom : t -> bool
 
   val join : t -> t -> t
+
+  val meet : t -> t -> t
 
   val less_or_equal : left:t -> right:t -> bool
 
@@ -87,6 +91,8 @@ module Common (D : sig
   val bottom : t
 
   val join : t -> t -> t
+
+  val less_or_equal : left:t -> right:t -> bool
 end) =
 struct
   type _ part += Self : D.t part
@@ -96,7 +102,7 @@ struct
 
 
   let unhandled_part (type a) (part : a part) what =
-    let part_name = Obj.extension_constructor part |> Obj.extension_name in
+    let part_name = part_name part in
     Format.sprintf "Unknown part %s in %s" part_name what |> failwith
 
 
@@ -104,7 +110,7 @@ struct
     match op with
     | GetParts _ -> Format.sprintf "Unhandled GetParts introspect" |> failwith
     | Name part ->
-        let part_name = Obj.extension_constructor part |> Obj.extension_name in
+        let part_name = part_name part in
         Format.sprintf "Unhandled Name(%s) introspect" part_name |> failwith
     | Structure -> Format.sprintf "Unhandled Structure introspect" |> failwith
 
@@ -157,4 +163,7 @@ struct
 
 
   let introspect (type a) (op : a introspect) : a = unhandled_introspect op
+
+  (* default meet, returns the smaller argument if determinable, otherwise the first argument *)
+  let meet a b = if D.less_or_equal ~left:b ~right:a then b else a
 end

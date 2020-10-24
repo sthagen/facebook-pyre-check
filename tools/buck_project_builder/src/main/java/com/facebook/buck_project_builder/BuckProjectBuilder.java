@@ -1,4 +1,9 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+/*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
 
 package com.facebook.buck_project_builder;
 
@@ -52,7 +57,7 @@ public final class BuckProjectBuilder {
                         platformSelector,
                         commandRewriter,
                         mode)
-                    .getBuilder(start, targets)
+                    .getBuilder(start, targets, command.getIsolationPrefix())
                     .buildTargets(buckRoot, projectName);
             if (command.isDebug()) {
               System.out.println(new Gson().toJson(debugOutput));

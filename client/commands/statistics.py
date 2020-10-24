@@ -1,20 +1,18 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
 
-import argparse
 import json
-import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Type
+from typing import Any, Dict, List, Optional, Set, Type, Union
 
 import libcst as cst
 from libcst._exceptions import ParserSyntaxError
 from libcst.metadata import MetadataWrapper
 
-from .. import log, statistics
+from .. import command_arguments, log, statistics
 from ..analysis_directory import AnalysisDirectory
 from ..configuration import Configuration
 from ..statistics_collectors import (
@@ -24,7 +22,7 @@ from ..statistics_collectors import (
     StatisticsCollector,
     StrictCountCollector,
 )
-from .command import Command, CommandArguments
+from .command import Command
 
 
 def _get_paths(target_directory: Path) -> List[Path]:
@@ -61,7 +59,7 @@ def _parse_paths(paths: List[Path]) -> List[Path]:
 
 
 def _path_wise_counts(
-    paths: Dict[str, cst.Module],
+    paths: Dict[str, Union[cst.Module, cst.MetadataWrapper]],
     collector_class: Type[StatisticsCollector],
     strict: bool = False,
 ) -> Dict[str, StatisticsCollector]:
@@ -91,27 +89,15 @@ def _find_paths(local_configuration: Optional[str], paths: Set[str]) -> List[Pat
     return [pyre_configuration_directory]
 
 
-def file_exists(path: str) -> str:
-    if not os.path.exists(path):
-        raise argparse.ArgumentTypeError("ERROR: " + str(path) + " does not exist")
-    return path
-
-
-def is_strict(configuration: Path) -> bool:
-    path = Path(configuration, ".pyre_configuration.local")
-    json_configuration = json.loads(path.read_text())
-    return json_configuration.get("strict", False)
-
-
 class Statistics(Command):
     NAME = "statistics"
 
     def __init__(
         self,
-        command_arguments: CommandArguments,
+        command_arguments: command_arguments.CommandArguments,
         original_directory: str,
         *,
-        configuration: Optional[Configuration] = None,
+        configuration: Configuration,
         analysis_directory: Optional[AnalysisDirectory] = None,
         filter_paths: List[str],
         log_results: bool,
@@ -120,47 +106,32 @@ class Statistics(Command):
             command_arguments, original_directory, configuration, analysis_directory
         )
         self._filter_paths: Set[str] = set(filter_paths)
-        self._strict: bool = self._configuration.strict
         self._log_results: bool = log_results
 
-    @staticmethod
-    def from_arguments(
-        arguments: argparse.Namespace,
-        original_directory: str,
-        configuration: Optional[Configuration] = None,
-        analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> "Statistics":
-        return Statistics(
-            CommandArguments.from_arguments(arguments),
-            original_directory,
-            configuration=configuration,
-            analysis_directory=analysis_directory,
-            filter_paths=arguments.filter_paths,
-            log_results=arguments.log_results,
-        )
-
-    @classmethod
-    def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
-        statistics = parser.add_parser(
-            cls.NAME, epilog="Collect various syntactic metrics on type coverage."
-        )
-        statistics.set_defaults(command=cls.from_arguments)
-        # TODO[T60916205]: Rename this argument, it doesn't make sense anymore
-        statistics.add_argument(
-            "filter_paths", nargs="*", type=file_exists, help=argparse.SUPPRESS
-        )
-        statistics.add_argument(
-            "--log-results",
-            type=bool,
-            default=False,
-            help="Log the statistics results to external tables.",
-        )
-
     def _collect_statistics(self, modules: Dict[str, cst.Module]) -> Dict[str, Any]:
-        annotations = _path_wise_counts(modules, AnnotationCountCollector)
+        modules_with_metadata = {
+            path: MetadataWrapper(module) for path, module in modules.items()
+        }
+        # pyre-fixme[6]: Expected `Dict[str, Union[cst._nodes.module.Module,
+        #  cst.metadata.wrapper.MetadataWrapper]]` for 1st param but got `Dict[str,
+        #  cst.metadata.wrapper.MetadataWrapper]`.
+        annotations = _path_wise_counts(modules_with_metadata, AnnotationCountCollector)
+        # pyre-fixme[6]: Expected `Dict[str, Union[cst._nodes.module.Module,
+        #  cst.metadata.wrapper.MetadataWrapper]]` for 1st param but got `Dict[str,
+        #  cst._nodes.module.Module]`.
         fixmes = _path_wise_counts(modules, FixmeCountCollector)
+        # pyre-fixme[6]: Expected `Dict[str, Union[cst._nodes.module.Module,
+        #  cst.metadata.wrapper.MetadataWrapper]]` for 1st param but got `Dict[str,
+        #  cst._nodes.module.Module]`.
         ignores = _path_wise_counts(modules, IgnoreCountCollector)
-        strict_files = _path_wise_counts(modules, StrictCountCollector, self._strict)
+        strict_files = _path_wise_counts(
+            # pyre-fixme[6]: Expected `Dict[str, Union[cst._nodes.module.Module,
+            #  cst.metadata.wrapper.MetadataWrapper]]` for 1st param but got `Dict[str,
+            #  cst._nodes.module.Module]`.
+            modules,
+            StrictCountCollector,
+            self._configuration.strict,
+        )
         return {
             "annotations": {
                 path: counts.build_json() for path, counts in annotations.items()
@@ -186,9 +157,9 @@ class Statistics(Command):
 
     def _log_to_scuba(self, data: Dict[str, Any]) -> None:
         if self._configuration and self._configuration.logger:
-            root = str(_pyre_configuration_directory(self.local_root))
+            root = str(_pyre_configuration_directory(self._configuration.local_root))
             for path, counts in data["annotations"].items():
-                statistics.log(
+                statistics.log_with_configuration(
                     statistics.LoggerCategory.ANNOTATION_COUNTS,
                     configuration=self._configuration,
                     integers=counts,
@@ -199,7 +170,7 @@ class Statistics(Command):
             for path, counts in data["ignores"].items():
                 self._log_fixmes("ignore", counts, root, path)
             for path, counts in data["strict"].items():
-                statistics.log(
+                statistics.log_with_configuration(
                     statistics.LoggerCategory.STRICT_ADOPTION,
                     configuration=self._configuration,
                     integers=counts,
@@ -210,7 +181,7 @@ class Statistics(Command):
         self, fixme_type: str, data: Dict[str, int], root: str, path: str
     ) -> None:
         for error_code, count in data.items():
-            statistics.log(
+            statistics.log_with_configuration(
                 statistics.LoggerCategory.FIXME_COUNTS,
                 configuration=self._configuration,
                 integers={"count": count},
@@ -223,4 +194,4 @@ class Statistics(Command):
             )
 
     def _find_paths(self) -> List[Path]:
-        return _find_paths(self.local_root, self._filter_paths)
+        return _find_paths(self._configuration.local_root, self._filter_paths)

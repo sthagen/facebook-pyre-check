@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -6,13 +6,16 @@
 # pyre-unsafe
 
 import json
+import sys
 import textwrap
 import unittest
 from pathlib import Path
 from typing import Dict, Union
 from unittest.mock import MagicMock, Mock, patch
 
-from ... import commands
+import libcst as cst
+
+from ... import commands, find_directories
 from ...analysis_directory import AnalysisDirectory
 from ...commands import infer
 from ...commands.infer import (
@@ -20,18 +23,16 @@ from ...commands.infer import (
     FunctionStub,
     Infer,
     StubFile,
+    _existing_annotations_as_errors,
     _relativize_access,
     dequalify,
+    generate_stub_files,
 )
-from ...error import Error
-from ..command import CommandArguments, __name__ as client_name
+from ...error import LegacyError
 from .command_test import (
-    mock_arguments as general_mock_arguments,
+    mock_arguments,
     mock_configuration as general_mock_configuration,
 )
-
-
-_typeshed_search_path: str = "{}.typeshed_search_path".format(commands.infer.__name__)
 
 
 def build_json(inference) -> Dict[str, Union[int, str]]:
@@ -78,17 +79,91 @@ class HelperTest(unittest.TestCase):
             ["function"],
         )
 
+    def test_existing_annotations_to_stubs(self):
+        def assert_stub_equal(file_content, expected) -> None:
+            module = cst.parse_module(textwrap.dedent(file_content))
+            expected_stub = textwrap.dedent(expected.rstrip()) + "\n"
+            errors = _existing_annotations_as_errors(
+                {Path("example/module.py"): module}, "example"
+            )
+            stub_files = generate_stub_files(full_only=False, errors=errors)
+            self.assertTrue(stub_files)
+            self.assertEqual(stub_files[0].to_string(), expected_stub)
+
+        # test function stubs
+        assert_stub_equal(
+            """
+            def foo() -> int:
+                return 1 + 1
+            """,
+            "def foo() -> int: ...",
+        )
+
+        # functions in classes
+        assert_stub_equal(
+            """
+            class Foo:
+                def bar(x: int) -> Union[int, str]:
+                    return ""
+            """,
+            """
+            class Foo:
+                def bar(x: int) -> Union[int, str]: ...
+            """,
+        )
+
+        # attributes in classes
+        assert_stub_equal(
+            """
+            class Foo:
+                def bar(x: int) -> Union[int, str]:
+                    return ""
+            """,
+            """
+            class Foo:
+                def bar(x: int) -> Union[int, str]: ...
+            """,
+        )
+
+        # with decorators
+        assert_stub_equal(
+            """
+            @click
+            def foo() -> int:
+                return 1 + 1
+            """,
+            "@@click\n\ndef foo() -> int: ...",
+        )
+
+        # attributes
+        assert_stub_equal(
+            """
+            x: int = 10
+            """,
+            "x: int = ...",
+        )
+        assert_stub_equal(
+            """
+            class Foo:
+                x: int = 10
+            """,
+            """
+            class Foo:
+                x: int = ...
+            """,
+        )
+
 
 class PyreTest(unittest.TestCase):
     def assert_imports(self, error_json, expected_imports) -> None:
-        error = Error(error_json)
+        error = LegacyError.create(error_json)
         stub = None
         if FunctionStub.is_instance(error.inference):
             stub = FunctionStub(error.inference)
         elif FieldStub.is_instance(error.inference):
             stub = FieldStub(error.inference)
         assert stub is not None
-        self.assertEqual(sorted(list(stub.get_typing_imports())), expected_imports)
+        self.assertEqual(sorted(stub.get_typing_imports()), expected_imports)
 
     def test_get_typing_imports(self) -> None:
         self.assert_imports(
@@ -126,7 +201,7 @@ class PyreTest(unittest.TestCase):
         )
 
     def assert_stub(self, error_jsons, expected, full_only: bool = False) -> None:
-        errors = [Error(error_json) for error_json in error_jsons]
+        errors = [LegacyError.create(error_json) for error_json in error_jsons]
         self.assertEqual(
             StubFile(errors, full_only=full_only).to_string().strip(),
             textwrap.dedent(expected.rstrip()),
@@ -586,31 +661,27 @@ class PyreTest(unittest.TestCase):
         )
 
 
-def mock_arguments() -> CommandArguments:
-    return general_mock_arguments(hide_parse_errors=True)
-
-
 def mock_configuration() -> MagicMock:
     configuration = general_mock_configuration()
-    configuration.typeshed = "stub"
     configuration.search_path = ["path1", "path2"]
-    configuration.get_typeshed = MagicMock()
+    configuration.get_typeshed = lambda: "stub"
     configuration.logger = None
     configuration.strict = False
-    configuration.ignore_infer = []
+    configuration.get_existent_ignore_infer_paths = lambda: []
     return configuration
 
 
 class InferTest(unittest.TestCase):
-    @patch("{}.find_project_root".format(client_name), return_value=".")
-    @patch("{}.find_local_root".format(client_name), return_value=None)
+    @patch(
+        f"{find_directories.__name__}.find_global_and_local_root",
+        return_value=find_directories.FoundRoot(Path(".")),
+    )
     @patch.object(json, "loads", return_value={"errors": []})
-    @patch(_typeshed_search_path, Mock(return_value=["path3"]))
     # pyre-fixme[56]: Argument `set()` to decorator factory
     #  `unittest.mock.patch.object` could not be resolved in a global scope.
     @patch.object(commands.Reporting, "_get_directories_to_analyze", return_value=set())
     def test_infer(
-        self, directories_to_analyze, json_loads, find_local_root, find_project_root
+        self, directories_to_analyze, json_loads, find_global_and_local_root
     ) -> None:
         original_directory = "/original/directory"
         arguments = mock_arguments()
@@ -630,6 +701,7 @@ class InferTest(unittest.TestCase):
                 errors_from_stdin=False,
                 annotate_from_existing_stubs=False,
                 debug_infer=False,
+                full_stub_paths=None,
             )
             self.assertEqual(
                 command._flags(),
@@ -638,11 +710,9 @@ class InferTest(unittest.TestCase):
                     "-logging-sections",
                     "-progress",
                     "-project-root",
-                    ".",
+                    "/root",
                     "-log-directory",
                     ".pyre",
-                    "-search-path",
-                    "path1,path2,path3",
                 ],
             )
             command.run()
@@ -662,6 +732,7 @@ class InferTest(unittest.TestCase):
                 errors_from_stdin=False,
                 annotate_from_existing_stubs=False,
                 debug_infer=False,
+                full_stub_paths=None,
             )
             self.assertEqual(
                 command._flags(),
@@ -670,79 +741,77 @@ class InferTest(unittest.TestCase):
                     "-logging-sections",
                     "-progress",
                     "-project-root",
-                    ".",
+                    "/root",
                     "-log-directory",
                     ".pyre",
-                    "-search-path",
-                    "path1,path2,path3",
                 ],
             )
             command.run()
             call_client.assert_called_once_with(command=commands.Infer.NAME)
 
         with patch.object(commands.Command, "_call_client") as call_client:
-            command = Infer(
-                arguments,
-                original_directory,
-                configuration=configuration,
-                analysis_directory=AnalysisDirectory("."),
-                print_errors=True,
-                full_only=True,
-                recursive=False,
-                in_place=None,
-                errors_from_stdin=True,
-                annotate_from_existing_stubs=False,
-                debug_infer=False,
-            )
-            self.assertEqual(
-                command._flags(),
-                [
-                    "-show-error-traces",
-                    "-logging-sections",
-                    "-progress",
-                    "-project-root",
-                    ".",
-                    "-log-directory",
-                    ".pyre",
-                    "-search-path",
-                    "path1,path2,path3",
-                ],
-            )
-            command.run()
-            call_client.assert_not_called()
-        configuration.ignore_infer = ["path1.py", "path2.py"]
+            with patch.object(sys.stdin, "read", return_value=""):
+                command = Infer(
+                    arguments,
+                    original_directory,
+                    configuration=configuration,
+                    analysis_directory=AnalysisDirectory("."),
+                    print_errors=True,
+                    full_only=True,
+                    recursive=False,
+                    in_place=None,
+                    errors_from_stdin=True,
+                    annotate_from_existing_stubs=False,
+                    debug_infer=False,
+                    full_stub_paths=None,
+                )
+                self.assertEqual(
+                    command._flags(),
+                    [
+                        "-show-error-traces",
+                        "-logging-sections",
+                        "-progress",
+                        "-project-root",
+                        "/root",
+                        "-log-directory",
+                        ".pyre",
+                    ],
+                )
+                command.run()
+                call_client.assert_not_called()
+        configuration.get_existent_ignore_infer_paths = lambda: ["path1.py", "path2.py"]
         with patch.object(commands.Command, "_call_client") as call_client:
-            command = Infer(
-                arguments,
-                original_directory,
-                configuration=configuration,
-                analysis_directory=AnalysisDirectory("."),
-                print_errors=True,
-                full_only=True,
-                recursive=False,
-                in_place=None,
-                errors_from_stdin=True,
-                annotate_from_existing_stubs=False,
-                debug_infer=False,
-            )
-            self.assertEqual(
-                command._flags(),
-                [
-                    "-show-error-traces",
-                    "-logging-sections",
-                    "-progress",
-                    "-project-root",
-                    ".",
-                    "-log-directory",
-                    ".pyre",
-                    "-search-path",
-                    "path1,path2,path3",
-                    "-ignore-infer",
-                    "path1.py;path2.py",
-                ],
-            )
-            command.run()
-            call_client.assert_not_called()
+            with patch.object(sys.stdin, "read", return_value=""):
+                command = Infer(
+                    arguments,
+                    original_directory,
+                    configuration=configuration,
+                    analysis_directory=AnalysisDirectory("."),
+                    print_errors=True,
+                    full_only=True,
+                    recursive=False,
+                    in_place=None,
+                    errors_from_stdin=True,
+                    annotate_from_existing_stubs=False,
+                    debug_infer=False,
+                    full_stub_paths=None,
+                )
+                self.assertEqual(
+                    command._flags(),
+                    [
+                        "-show-error-traces",
+                        "-logging-sections",
+                        "-progress",
+                        "-project-root",
+                        "/root",
+                        "-log-directory",
+                        ".pyre",
+                        "-ignore-infer",
+                        "path1.py;path2.py",
+                    ],
+                )
+                command.run()
+                call_client.assert_not_called()
 
     @patch.object(Path, "rglob")
     # pyre-fixme[56]: Argument `tools.pyre.client.commands.infer` to decorator

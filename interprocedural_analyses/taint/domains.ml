@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Ast
@@ -193,6 +195,8 @@ module TraceLength = Abstract.SimpleDomain.Make (struct
 
   let join = min
 
+  let meet = max
+
   let less_or_equal ~left ~right = left >= right
 
   let bottom = max_int
@@ -206,15 +210,19 @@ module FlowDetails = struct
       | SimpleFeature : Features.SimpleSet.t slot
       | ComplexFeature : Features.ComplexSet.t slot
       | TraceLength : TraceLength.t slot
+      | FirstIndex : Features.FirstIndexSet.t slot
+      | FirstField : Features.FirstFieldSet.t slot
 
     (* Must be consistent with above variants *)
-    let slots = 3
+    let slots = 5
 
     let slot_name (type a) (slot : a slot) =
       match slot with
       | SimpleFeature -> "SimpleFeature"
       | ComplexFeature -> "ComplexFeature"
       | TraceLength -> "TraceLength"
+      | FirstIndex -> "FirstIndex"
+      | FirstField -> "FirstField"
 
 
     let slot_domain (type a) (slot : a slot) =
@@ -222,6 +230,8 @@ module FlowDetails = struct
       | SimpleFeature -> (module Features.SimpleSet : Abstract.Domain.S with type t = a)
       | ComplexFeature -> (module Features.ComplexSet : Abstract.Domain.S with type t = a)
       | TraceLength -> (module TraceLength : Abstract.Domain.S with type t = a)
+      | FirstIndex -> (module Features.FirstIndexSet : Abstract.Domain.S with type t = a)
+      | FirstField -> (module Features.FirstFieldSet : Abstract.Domain.S with type t = a)
 
 
     let strict _ = false
@@ -266,6 +276,10 @@ module type TAINT_DOMAIN = sig
   val complex_feature : Features.Complex.t Abstract.Domain.part
 
   val complex_feature_set : Features.Complex.t list Abstract.Domain.part
+
+  val first_indices : Features.FirstIndexSet.t Abstract.Domain.part
+
+  val first_fields : Features.FirstFieldSet.t Abstract.Domain.part
 
   (* Add trace info at call-site *)
   val apply_call
@@ -349,6 +363,10 @@ end = struct
 
   let complex_feature_set = FlowDetails.complex_feature_set
 
+  let first_fields = Features.FirstFieldSet.Self
+
+  let first_indices = Features.FirstIndexSet.Self
+
   let leaves map =
     Map.fold leaf ~init:[] ~f:List.cons map |> List.dedup_and_sort ~compare:Leaf.compare
 
@@ -377,8 +395,10 @@ end = struct
           | TitoPosition location ->
               let tito_location_json = location_to_json location in
               breadcrumbs, tito_location_json :: tito, leaves
-          | ViaValueOf _ ->
-              (* The taint analysis creates breadcrumbs for ViaValueOf features dynamically.*)
+          | ViaValueOf _
+          | ViaTypeOf _ ->
+              (* The taint analysis creates breadcrumbs for ViaValueOf and ViaTypeOf features
+                 dynamically.*)
               breadcrumbs, tito, leaves
           | CrossRepositoryTaintInformation _ ->
               (* TODO(T67571285): Also emit this as a leaf annotation. *)
@@ -396,7 +416,17 @@ end = struct
         let breadcrumbs, tito_positions, leaves =
           FlowDetails.(fold simple_feature_element ~f:gather_json ~init:([], [], []) features)
         in
-        ( breadcrumbs,
+        let first_index_breadcrumbs =
+          FlowDetails.get FlowDetails.Slots.FirstIndex features
+          |> Features.FirstIndexSet.elements
+          |> Features.FirstIndex.to_json
+        in
+        let first_field_breadcrumbs =
+          FlowDetails.get FlowDetails.Slots.FirstField features
+          |> Features.FirstFieldSet.elements
+          |> Features.FirstField.to_json
+        in
+        ( List.concat [first_index_breadcrumbs; first_field_breadcrumbs; breadcrumbs],
           tito_positions,
           FlowDetails.(fold complex_feature ~f:gather_return_access_path ~init:leaves features) )
       in
@@ -548,12 +578,9 @@ module MakeTaintTree (Taint : TAINT_DOMAIN) () = struct
     compute_essential_features ~essential_complex_features tree
 
 
-  let approximate_complex_access_paths
-      ?(cutoff_at = Configuration.analysis_model_constraints.maximum_complex_access_path_length)
-      tree
-    =
+  let approximate_complex_access_paths ~maximum_complex_access_path_length tree =
     let cut_off features =
-      if List.length features > cutoff_at then
+      if List.length features > maximum_complex_access_path_length then
         [Features.Complex.ReturnAccessPath []]
       else
         features
@@ -574,9 +601,11 @@ module MakeTaintTree (Taint : TAINT_DOMAIN) () = struct
       let open Features in
       match feature.Abstract.OverUnderSetDomain.element with
       | Simple.Breadcrumb _ -> feature :: features
-      (* The ViaValueOf models will be converted to breadcrumbs at the call site via
+      (* The ViaValueOf/ViaTypeOf models will be converted to breadcrumbs at the call site via
          `get_callsite_model`. *)
-      | Simple.ViaValueOf _ -> feature :: features
+      | Simple.ViaValueOf _
+      | Simple.ViaTypeOf _ ->
+          feature :: features
       | _ -> features
     in
     fold FlowDetails.simple_feature_element ~f:gather_features ~init:[] taint_tree

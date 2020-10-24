@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 package com.facebook.buck_project_builder;
 
 import com.facebook.buck_project_builder.SimpleLogger;
@@ -17,28 +24,34 @@ public class BuilderCommandTest {
   public void goodArgumentsDoParse() throws BuilderException {
     // All optional arguments do appear. Multiple build targets.
     assertParsedTo(
-        new BuilderCommand(false, "ROOT", "OUT", ImmutableList.of("foo", "bar"), null, null),
+        new BuilderCommand(false, "ROOT", "OUT", ImmutableList.of("foo", "bar"), null, null, null),
         "--buck_root ROOT --output_directory OUT foo bar");
 
     // Empty targets are allowed.
     assertParsedTo(
-        new BuilderCommand(false, "ROOT", "OUT", ImmutableList.of(), null, null),
+        new BuilderCommand(false, "ROOT", "OUT", ImmutableList.of(), null, null, null),
         "--buck_root ROOT --output_directory OUT");
 
     // Debug argument parsing.
     assertParsedTo(
-        new BuilderCommand(true, "ROOT", "OUT", ImmutableList.of(), null, null),
+        new BuilderCommand(true, "ROOT", "OUT", ImmutableList.of(), null, null, null),
         "--debug --buck_root ROOT --output_directory OUT");
 
     // Buck mode
     assertParsedTo(
-        new BuilderCommand(true, "ROOT", "OUT", ImmutableList.of(), "@mode/dev", null),
+        new BuilderCommand(true, "ROOT", "OUT", ImmutableList.of(), "@mode/dev", null, null),
         "--debug --buck_root ROOT --output_directory OUT --mode @mode/dev");
 
     // Project name.
     assertParsedTo(
-        new BuilderCommand(true, "ROOT", "OUT", ImmutableList.of(), "@mode/dev", "foo-project"),
+        new BuilderCommand(
+            true, "ROOT", "OUT", ImmutableList.of(), "@mode/dev", "foo-project", null),
         "--debug --buck_root ROOT --output_directory OUT --mode @mode/dev --project_name foo-project");
+
+    // Isolation prefix.
+    assertParsedTo(
+        new BuilderCommand(true, "ROOT", "OUT", ImmutableList.of(), null, null, ".foo"),
+        "--debug --buck_root ROOT --output_directory OUT --isolation_prefix .foo");
   }
 
   @Test(expected = BuilderException.class)

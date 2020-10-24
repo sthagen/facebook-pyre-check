@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open OUnit2
@@ -129,46 +131,40 @@ let test_backward context =
   assert_backward
     [
       ( "cb",
-        Type.Parametric
-          {
-            name = "BoundMethod";
-            parameters =
-              [
-                Single
-                  (Type.Callable.create
-                     ~parameters:
-                       (Defined
-                          [
-                            Named { name = "self"; annotation = Type.string; default = false };
-                            Named { name = "arg"; annotation = Type.integer; default = false };
-                          ])
-                     ~annotation:Type.none
-                     ());
-                Single Type.string;
-              ];
-          } );
+        Type.parametric
+          "BoundMethod"
+          [
+            Single
+              (Type.Callable.create
+                 ~parameters:
+                   (Defined
+                      [
+                        Named { name = "self"; annotation = Type.string; default = false };
+                        Named { name = "arg"; annotation = Type.integer; default = false };
+                      ])
+                 ~annotation:Type.none
+                 ());
+            Single Type.string;
+          ] );
     ]
     "cb(x)"
     [
       ( "cb",
-        Type.Parametric
-          {
-            name = "BoundMethod";
-            parameters =
-              [
-                Single
-                  (Type.Callable.create
-                     ~parameters:
-                       (Defined
-                          [
-                            Named { name = "self"; annotation = Type.string; default = false };
-                            Named { name = "arg"; annotation = Type.integer; default = false };
-                          ])
-                     ~annotation:Type.none
-                     ());
-                Single Type.string;
-              ];
-          } );
+        Type.parametric
+          "BoundMethod"
+          [
+            Single
+              (Type.Callable.create
+                 ~parameters:
+                   (Defined
+                      [
+                        Named { name = "self"; annotation = Type.string; default = false };
+                        Named { name = "arg"; annotation = Type.integer; default = false };
+                      ])
+                 ~annotation:Type.none
+                 ());
+            Single Type.string;
+          ] );
       "x", Type.integer;
     ];
 

@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -34,6 +34,7 @@ class CommandArguments:
     unsafe: bool
     force_format_unsuppressed: bool
     lint: bool
+    no_commit: bool
 
     @staticmethod
     def from_arguments(arguments: argparse.Namespace) -> "CommandArguments":
@@ -46,6 +47,7 @@ class CommandArguments:
                 arguments, "force_format_unsuppressed", False
             ),
             lint=arguments.lint,
+            no_commit=arguments.no_commit,
         )
 
 
@@ -75,6 +77,7 @@ class ErrorSuppressingCommand(Command):
             command_arguments.force_format_unsuppressed
         )
         self._lint: bool = command_arguments.lint
+        self._no_commit: bool = command_arguments.no_commit
 
     @staticmethod
     def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -106,8 +109,9 @@ class ErrorSuppressingCommand(Command):
             help="Run lint to ensure added fixmes comply with black formatting. \
             Doubles the runtime of pyre-ugprade.",
         )
+        parser.add_argument("--no-commit", action="store_true", help=argparse.SUPPRESS)
 
-    def _suppress_errors(self, errors: Errors) -> None:
+    def _apply_suppressions(self, errors: Errors) -> None:
         try:
             errors.suppress(
                 self._comment, self._max_line_length, self._truncate, self._unsafe
@@ -120,81 +124,34 @@ class ErrorSuppressingCommand(Command):
                 self._comment, self._max_line_length, self._truncate, self._unsafe
             )
 
-
-class ProjectErrorSuppressingCommand(ErrorSuppressingCommand):
-    def __init__(
+    def _suppress_errors(
         self,
-        command_arguments: CommandArguments,
-        *,
-        repository: Repository,
-        only_fix_error_code: Optional[int],
-        upgrade_version: bool,
-        error_source: str,
-        no_commit: bool,
-        submit: bool,
-    ) -> None:
-        super().__init__(command_arguments, repository)
-        self._only_fix_error_code: Optional[int] = only_fix_error_code
-        self._upgrade_version: bool = upgrade_version
-        self._error_source: str = error_source
-        self._no_commit: bool = no_commit
-        self._submit: bool = submit
-
-    @classmethod
-    def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
-        super(ProjectErrorSuppressingCommand, cls).add_arguments(parser)
-        parser.add_argument(
-            "--only-fix-error-code",
-            type=int,
-            help="Only add fixmes for errors with this specific error code.",
-            default=None,
-        )
-        parser.add_argument(
-            "--upgrade-version",
-            action="store_true",
-            help="Upgrade and clean project if a version override set.",
-        )
-        parser.add_argument(
-            "--error-source",
-            choices=list(ErrorSource),
-            default=ErrorSource.GENERATE,
-            type=ErrorSource,
-        )
-        parser.add_argument("--no-commit", action="store_true", help=argparse.SUPPRESS)
-        parser.add_argument("--submit", action="store_true", help=argparse.SUPPRESS)
-
-    def _suppress_errors_in_project(
-        self, configuration: Configuration, root: Path
+        configuration: Configuration,
+        error_source: ErrorSource = ErrorSource.GENERATE,
+        upgrade_version: bool = False,
+        only_fix_error_code: Optional[int] = None,
     ) -> None:
         LOG.info("Processing %s", configuration.get_directory())
         if not configuration.is_local:
             return
-        if self._upgrade_version:
+        if upgrade_version:
             if configuration.version:
                 configuration.remove_version()
                 configuration.write()
             else:
                 return
         errors = (
-            Errors.from_stdin(self._only_fix_error_code)
-            if self._error_source == "stdin" and not self._upgrade_version
-            else configuration.get_errors()
+            Errors.from_stdin(only_fix_error_code)
+            if error_source == ErrorSource.STDIN and not upgrade_version
+            else configuration.get_errors(only_fix_error_code)
         )
         if len(errors) > 0:
-            self._suppress_errors(errors)
+            self._apply_suppressions(errors)
 
             # Lint and re-run pyre once to resolve most formatting issues
             if self._lint:
                 if self._repository.format():
-                    errors = configuration.get_errors(should_clean=False)
-                    self._suppress_errors(errors)
-
-        project_root = root.resolve()
-        local_root = configuration.get_directory().resolve()
-        title = "{} for {}".format(
-            "Update pyre version" if self._upgrade_version else "Suppress pyre errors",
-            str(local_root.relative_to(project_root)),
-        )
-        self._repository.submit_changes(
-            commit=(not self._no_commit), submit=self._submit, title=title
-        )
+                    errors = configuration.get_errors(
+                        only_fix_error_code, should_clean=False
+                    )
+                    self._apply_suppressions(errors)

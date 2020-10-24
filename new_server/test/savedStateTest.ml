@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open OUnit2
@@ -12,8 +14,10 @@ module Path = Pyre.Path
 let test_query context =
   let watchman_root = Path.create_absolute ~follow_symbolic_links:false "/fake/root" in
   let target = Path.create_absolute ~follow_symbolic_links:false "/fake/target" in
-  let critical_files = [".pyre_configuration"] in
-  let watchman_filter = { Watchman.Filter.base_names = critical_files; suffixes = [".py"] } in
+  let critical_files = [ServerConfiguration.CriticalFile.BaseName ".pyre_configuration"] in
+  let watchman_filter =
+    { Watchman.Filter.base_names = [".pyre_configuration"]; suffixes = [".py"] }
+  in
   let assert_request ~expected ~project_name ~project_metadata () =
     let request_mailbox = Lwt_mvar.create_empty () in
     let mock_raw =

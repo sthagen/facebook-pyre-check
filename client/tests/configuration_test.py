@@ -1,882 +1,1230 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-unsafe
-
-import os
-import site
-import sys
+import dataclasses
+import hashlib
+import json
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
-from typing import Any, NamedTuple, Optional, cast
-from unittest.mock import MagicMock, PropertyMock, call, mock_open, patch
 
-from .. import configuration
-from ..configuration import Configuration, InvalidConfiguration, SearchPathElement
-from ..exceptions import EnvironmentException
-from ..find_directories import CONFIGURATION_FILE, LOCAL_CONFIGURATION_FILE
+import testslide
+
+from .. import command_arguments, find_directories
+from ..configuration import (
+    Configuration,
+    InvalidConfiguration,
+    PartialConfiguration,
+    SimpleSearchPathElement,
+    SitePackageSearchPathElement,
+    SubdirectorySearchPathElement,
+    check_nested_local_configuration,
+    create_configuration,
+    create_search_paths,
+    merge_partial_configurations,
+)
+from ..find_directories import BINARY_NAME
+from .setup import (
+    ensure_directories_exists,
+    switch_environment,
+    switch_working_directory,
+    write_configuration_file,
+)
 
 
-class MockCompletedProcess(NamedTuple):
-    returncode: int
-    stdout: str
+class PartialConfigurationTest(unittest.TestCase):
+    def test_create_from_command_arguments(self) -> None:
+        configuration = PartialConfiguration.from_command_arguments(
+            command_arguments.CommandArguments(
+                local_configuration=None,
+                logger="logger",
+                formatter="formatter",
+                targets=[],
+                use_buck_builder=False,
+                use_buck_source_database=True,
+                source_directories=[],
+                search_path=["x", "y"],
+                binary="binary",
+                buck_builder_binary="buck_builder_binary",
+                exclude=["excludes"],
+                typeshed="typeshed",
+                dot_pyre_directory=Path(".pyre"),
+            )
+        )
+        self.assertEqual(configuration.binary, "binary")
+        self.assertEqual(configuration.buck_builder_binary, "buck_builder_binary")
+        self.assertEqual(configuration.dot_pyre_directory, Path(".pyre"))
+        self.assertListEqual(list(configuration.excludes), ["excludes"])
+        self.assertEqual(configuration.formatter, "formatter")
+        self.assertEqual(configuration.logger, "logger")
+        self.assertListEqual(
+            list(configuration.search_path),
+            [SimpleSearchPathElement("x"), SimpleSearchPathElement("y")],
+        )
+        self.assertIsNone(configuration.source_directories)
+        self.assertEqual(configuration.strict, None)
+        self.assertIsNone(configuration.targets)
+        self.assertEqual(configuration.typeshed, "typeshed")
+        self.assertEqual(configuration.use_buck_builder, False)
+        self.assertEqual(configuration.use_buck_source_database, True)
 
+    def test_create_from_string_success(self) -> None:
+        self.assertEqual(
+            PartialConfiguration.from_string(
+                json.dumps({"autocomplete": True})
+            ).autocomplete,
+            True,
+        )
+        self.assertEqual(
+            PartialConfiguration.from_string(json.dumps({"binary": "foo"})).binary,
+            "foo",
+        )
+        self.assertEqual(
+            PartialConfiguration.from_string(
+                json.dumps({"buck_builder_binary": "foo"})
+            ).buck_builder_binary,
+            "foo",
+        )
+        self.assertEqual(
+            PartialConfiguration.from_string(json.dumps({"disabled": True})).disabled,
+            True,
+        )
+        self.assertListEqual(
+            list(
+                PartialConfiguration.from_string(
+                    json.dumps({"do_not_ignore_errors_in": ["foo", "bar"]})
+                ).do_not_ignore_all_errors_in
+            ),
+            ["foo", "bar"],
+        )
+        self.assertEqual(
+            PartialConfiguration.from_string(
+                json.dumps({"dot_pyre_directory": "foo"})
+            ).dot_pyre_directory,
+            Path("foo"),
+        )
+        self.assertListEqual(
+            list(
+                PartialConfiguration.from_string(
+                    json.dumps({"exclude": "foo"})
+                ).excludes
+            ),
+            ["foo"],
+        )
+        self.assertListEqual(
+            list(
+                PartialConfiguration.from_string(
+                    json.dumps({"exclude": ["foo", "bar"]})
+                ).excludes
+            ),
+            ["foo", "bar"],
+        )
+        self.assertListEqual(
+            list(
+                PartialConfiguration.from_string(
+                    json.dumps({"extensions": [".foo", ".bar"]})
+                ).extensions
+            ),
+            [".foo", ".bar"],
+        )
+        self.assertEqual(
+            PartialConfiguration.from_string(
+                json.dumps({"formatter": "foo"})
+            ).formatter,
+            "foo",
+        )
+        self.assertListEqual(
+            list(
+                PartialConfiguration.from_string(
+                    json.dumps({"ignore_all_errors": ["foo", "bar"]})
+                ).ignore_all_errors
+            ),
+            ["foo", "bar"],
+        )
+        self.assertEqual(
+            PartialConfiguration.from_string(json.dumps({"logger": "foo"})).logger,
+            "foo",
+        )
+        self.assertEqual(
+            PartialConfiguration.from_string(
+                json.dumps({"workers": 42})
+            ).number_of_workers,
+            42,
+        )
+        self.assertListEqual(
+            list(
+                PartialConfiguration.from_string(
+                    json.dumps({"critical_files": ["foo", "bar"]})
+                ).other_critical_files
+            ),
+            ["foo", "bar"],
+        )
+        self.assertListEqual(
+            list(
+                PartialConfiguration.from_string(
+                    json.dumps({"search_path": "foo"})
+                ).search_path
+            ),
+            [SimpleSearchPathElement("foo")],
+        )
+        self.assertListEqual(
+            list(
+                PartialConfiguration.from_string(
+                    json.dumps(
+                        {"search_path": ["foo", {"root": "bar", "subdirectory": "baz"}]}
+                    )
+                ).search_path
+            ),
+            [
+                SimpleSearchPathElement("foo"),
+                SubdirectorySearchPathElement("bar", "baz"),
+            ],
+        )
+        self.assertEqual(
+            PartialConfiguration.from_string(json.dumps({"strict": True})).strict, True
+        )
+        self.assertListEqual(
+            list(
+                PartialConfiguration.from_string(
+                    json.dumps({"taint_models_path": "foo"})
+                ).taint_models_path
+            ),
+            ["foo"],
+        )
+        self.assertListEqual(
+            list(
+                PartialConfiguration.from_string(
+                    json.dumps({"taint_models_path": ["foo", "bar"]})
+                ).taint_models_path
+            ),
+            ["foo", "bar"],
+        )
+        self.assertEqual(
+            PartialConfiguration.from_string(json.dumps({"typeshed": "foo"})).typeshed,
+            "foo",
+        )
+        self.assertEqual(
+            PartialConfiguration.from_string(
+                json.dumps({"use_buck_builder": True})
+            ).use_buck_builder,
+            True,
+        )
+        self.assertEqual(
+            PartialConfiguration.from_string(
+                json.dumps({"use_buck_source_database": True})
+            ).use_buck_source_database,
+            True,
+        )
+        self.assertEqual(
+            PartialConfiguration.from_string(
+                json.dumps({"version": "abc"})
+            ).version_hash,
+            "abc",
+        )
 
-class ConfigurationTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        # The Pyre environment variables change the outcome of tests.
-        if "PYRE_CLIENT" in os.environ:
-            del os.environ["PYRE_CLIENT"]
-        if "PYRE_BINARY" in os.environ:
-            del os.environ["PYRE_BINARY"]
-        if "PYRE_TYPESHED" in os.environ:
-            del os.environ["PYRE_TYPESHED"]
+        self.assertIsNone(PartialConfiguration.from_string("{}").source_directories)
+        source_directories = PartialConfiguration.from_string(
+            json.dumps({"source_directories": ["foo", "bar"]})
+        ).source_directories
+        self.assertIsNotNone(source_directories)
+        self.assertListEqual(list(source_directories), ["foo", "bar"])
 
-    @patch("os.path.abspath", side_effect=lambda path: path)
-    @patch("os.path.isdir", return_value=True)
-    @patch("os.path.exists")
-    @patch(
-        "os.path.expanduser", side_effect=lambda path: path.replace("~", "/home/user")
-    )
-    @patch("os.access", return_value=True)
-    @patch("builtins.open")
-    @patch("hashlib.sha1")
-    @patch("json.loads")
-    # pyre-fixme[56]: Argument `os` to decorator factory
-    #  `unittest.mock.patch.object` could not be resolved in a global scope.
-    @patch.object(os, "getenv", return_value=None)
-    @patch.object(Configuration, "_validate")
-    def test_init(
-        self,
-        configuration_validate,
-        os_environ,
-        json_load,
-        sha1,
-        builtins_open,
-        access,
-        _expanduser,
-        exists,
-        isdir,
-        _abspath,
-    ) -> None:
-        sha1_mock = MagicMock()
-        sha1_mock.hexdigest = lambda: "HASH"
-        sha1.return_value = sha1_mock
-        exists.return_value = True
-        json_load.side_effect = [
-            {
-                "source_directories": ["a"],
-                "logger": "/usr/logger",
-                "ignore_all_errors": ["buck-out/dev/gen"],
-            },
-            {},
-        ]
-        configuration = Configuration("")
-        self.assertEqual(configuration.source_directories, ["a"])
-        self.assertEqual(configuration.targets, [])
-        self.assertEqual(configuration.logger, "/usr/logger")
-        self.assertEqual(configuration.ignore_all_errors, ["buck-out/dev/gen"])
-        self.assertEqual(configuration.file_hash, None)
+        self.assertIsNone(PartialConfiguration.from_string("{}").targets)
+        targets = PartialConfiguration.from_string(
+            json.dumps({"targets": ["//foo", "//bar"]})
+        ).targets
+        self.assertIsNotNone(targets)
+        self.assertListEqual(list(targets), ["//foo", "//bar"])
 
-        # Local configurations
-        json_load.side_effect = [
-            {"source_directories": ["a"]},
-            {"source_directories": ["a"]},
-            {},
-        ]
-        with self.assertRaises(EnvironmentException):
-            configuration = Configuration("", "local/path")
-            self.assertEqual(configuration.source_directories, ["local/path/a"])
+        self.assertEqual(
+            PartialConfiguration.from_string(json.dumps({"version": "abc"})).file_hash,
+            None,
+        )
+        file_content = json.dumps({"version": "abc", "saved_state": "xyz"})
+        self.assertEqual(
+            PartialConfiguration.from_string(file_content).file_hash,
+            hashlib.sha1(file_content.encode("utf-8")).hexdigest(),
+        )
 
-        json_load.side_effect = [{"source_directories": ["a"]}, {"version": "abc"}, {}]
-        configuration = Configuration("local/path", log_directory=".pyre/local/path")
-        self.assertEqual(configuration.source_directories, ["local/path/a"])
-        self.assertEqual(configuration.ignore_all_errors, [".pyre/local/path"])
-
-        # Configuration fields
-        json_load.side_effect = [{"targets": ["//a/b/c"], "disabled": 1}, {}]
-        configuration = Configuration("")
-        self.assertEqual(configuration.targets, ["//a/b/c"])
-        self.assertEqual(configuration.source_directories, [])
-        self.assertEqual(configuration.version_hash, "unversioned")
-        self.assertEqual(configuration.logger, None)
-        self.assertEqual(configuration.file_hash, None)
-        self.assertTrue(configuration.disabled)
-
-        json_load.side_effect = [{"typeshed": "TYPESHED/"}, {}]
-        configuration = Configuration("")
-        self.assertEqual(configuration.typeshed, "TYPESHED/")
-        self.assertEqual(configuration.file_hash, None)
-
-        with patch.object(os.path, "isdir", return_value=False):
-            json_load.side_effect = [{"search_path": [{"site-package": "abc"}]}]
+    def test_create_from_string_failure(self) -> None:
+        def assert_raises(content: str) -> None:
             with self.assertRaises(InvalidConfiguration):
-                configuration = Configuration("")
+                PartialConfiguration.from_string(content)
 
-        with patch.object(
-            site, "getsitepackages", return_value=["/mock/site0", "/mock/site1"]
-        ):
-            with patch.object(
-                os.path,
-                "isdir",
-                side_effect=lambda path: path.startswith("/mock/site0"),
-            ):
-                json_load.side_effect = [{"search_path": [{"site-package": "abc"}]}]
-                configuration = Configuration("")
-                self.assertIn("/mock/site0$abc", configuration.search_path)
-            with patch.object(
-                os.path,
-                "isdir",
-                side_effect=lambda path: path.startswith("/mock/site1"),
-            ):
-                json_load.side_effect = [{"search_path": [{"site-package": "abc"}]}]
-                configuration = Configuration("")
-                self.assertIn("/mock/site1$abc", configuration.search_path)
+        assert_raises("")
+        assert_raises("{")
+        assert_raises(json.dumps({"autocomplete": 42}))
+        assert_raises(json.dumps({"binary": True}))
+        assert_raises(json.dumps({"buck_builder_binary": ["."]}))
+        assert_raises(json.dumps({"disabled": "False"}))
+        assert_raises(json.dumps({"do_not_ignore_errors_in": "abc"}))
+        assert_raises(json.dumps({"dot_pyre_directory": {}}))
+        assert_raises(json.dumps({"exclude": 42}))
+        assert_raises(json.dumps({"extensions": {"derp": 42}}))
+        assert_raises(json.dumps({"formatter": 4.2}))
+        assert_raises(json.dumps({"ignore_all_errors": [1, 2, 3]}))
+        assert_raises(json.dumps({"ignore_infer": [False, "bc"]}))
+        assert_raises(json.dumps({"logger": []}))
+        assert_raises(json.dumps({"workers": "abc"}))
+        assert_raises(json.dumps({"critical_files": "abc"}))
+        assert_raises(json.dumps({"source_directories": "abc"}))
+        assert_raises(json.dumps({"strict": 42}))
+        assert_raises(json.dumps({"taint_models_path": True}))
+        assert_raises(json.dumps({"taint_models_path": ["foo", 42]}))
+        assert_raises(json.dumps({"targets": "abc"}))
+        assert_raises(json.dumps({"typeshed": ["abc"]}))
+        assert_raises(json.dumps({"use_buck_builder": "derp"}))
+        assert_raises(json.dumps({"use_buck_source_database": 4.2}))
+        assert_raises(json.dumps({"version": 123}))
 
-        json_load.side_effect = [
-            {
-                "search_path": ["additional/"],
-                "version": "VERSION",
-                "typeshed": "TYPE/%V/SHED/",
-                "workers": 20,
-            },
-            {},
-        ]
-        configuration = Configuration("")
-        self.assertEqual(configuration.typeshed, "TYPE/VERSION/SHED/")
-        self.assertEqual(configuration.search_path, [SearchPathElement("additional/")])
-        self.assertEqual(configuration.number_of_workers, 20)
-        self.assertEqual(configuration.taint_models_path, [])
-        self.assertEqual(configuration.file_hash, None)
-        self.assertEqual(configuration.strict, False)
+    def test_merge(self) -> None:
+        # Unsafe features like `getattr` has to be used in this test to reduce boilerplates.
 
-        json_load.side_effect = [
-            {
-                "search_path": ["additional/"],
-                "version": "VERSION",
-                "typeshed": "TYPE/%V/SHED/",
-                "workers": 20,
-                "strict": True,
-            },
-            {},
-        ]
-        configuration = Configuration("")
-        self.assertEqual(configuration.typeshed, "TYPE/VERSION/SHED/")
-        self.assertEqual(configuration.search_path, [SearchPathElement("additional/")])
-        self.assertEqual(configuration.number_of_workers, 20)
-        self.assertEqual(configuration.taint_models_path, [])
-        self.assertEqual(configuration.file_hash, None)
-        self.assertEqual(configuration.strict, True)
+        def create_configuration(name: str, value: object) -> PartialConfiguration:
+            return dataclasses.replace(PartialConfiguration(), **{name: value})
 
-        json_load.side_effect = [
-            {
-                "search_path": [
-                    "additional/",
-                    {"root": "root/", "subdirectory": "subdirectory"},
-                ],
-                "version": "VERSION",
-                "typeshed": "TYPE/%V/SHED/",
-                "workers": 20,
-            },
-            {},
-        ]
-        configuration = Configuration("")
-        self.assertEqual(configuration.typeshed, "TYPE/VERSION/SHED/")
+        # Overwriting behaves correctly when:
+        # - If both base config and overriding config are absent, result is None.
+        # - If one of the config is presented, result is the that config.
+        # - If both base config and overriding config are present, result is the
+        #   overriding config.
+        def assert_overwritten(attribute_name: str) -> None:
+            # The actual value doesn't really matter. We only care about equalities.
+            # This is obviously not type-safe but it does save a significant amount
+            # of keystrokes.
+            base_value = object()
+            override_value = object()
+            self.assertIsNone(
+                getattr(
+                    merge_partial_configurations(
+                        base=create_configuration(attribute_name, None),
+                        override=create_configuration(attribute_name, None),
+                    ),
+                    attribute_name,
+                )
+            )
+            self.assertEqual(
+                getattr(
+                    merge_partial_configurations(
+                        base=create_configuration(attribute_name, base_value),
+                        override=create_configuration(attribute_name, None),
+                    ),
+                    attribute_name,
+                ),
+                base_value,
+            )
+            self.assertEqual(
+                getattr(
+                    merge_partial_configurations(
+                        base=create_configuration(attribute_name, None),
+                        override=create_configuration(attribute_name, override_value),
+                    ),
+                    attribute_name,
+                ),
+                override_value,
+            )
+            self.assertEqual(
+                getattr(
+                    merge_partial_configurations(
+                        base=create_configuration(attribute_name, base_value),
+                        override=create_configuration(attribute_name, override_value),
+                    ),
+                    attribute_name,
+                ),
+                override_value,
+            )
+
+        def assert_prepended(attribute_name: str) -> None:
+            # The actual value doesn't really matter. We only care about equalities.
+            # This is obviously not type-safe but it does save a significant amount
+            # of keystrokes.
+            base_value = object()
+            override_value = object()
+            self.assertListEqual(
+                getattr(
+                    merge_partial_configurations(
+                        base=create_configuration(attribute_name, [base_value]),
+                        override=create_configuration(attribute_name, [override_value]),
+                    ),
+                    attribute_name,
+                ),
+                [override_value, base_value],
+            )
+
+        def assert_raise_when_overridden(attribute_name: str) -> None:
+            # The actual value doesn't really matter. We only care about equalities.
+            # This is obviously not type-safe but it does save a significant amount
+            # of keystrokes.
+            base_value = object()
+            override_value = object()
+            with self.assertRaises(InvalidConfiguration):
+                merge_partial_configurations(
+                    base=create_configuration(attribute_name, base_value),
+                    override=create_configuration(attribute_name, override_value),
+                )
+
+        assert_overwritten("autocomplete")
+        assert_overwritten("buck_builder_binary")
+        assert_overwritten("disabled")
+        assert_prepended("do_not_ignore_all_errors_in")
+        assert_overwritten("dot_pyre_directory")
+        assert_prepended("excludes")
+        assert_prepended("extensions")
+        assert_overwritten("file_hash")
+        assert_overwritten("formatter")
+        assert_prepended("ignore_all_errors")
+        assert_prepended("ignore_infer")
+        assert_overwritten("logger")
+        assert_overwritten("number_of_workers")
+        assert_prepended("other_critical_files")
+        assert_prepended("search_path")
+        assert_raise_when_overridden("source_directories")
+        assert_overwritten("strict")
+        assert_prepended("taint_models_path")
+        assert_raise_when_overridden("targets")
+        assert_overwritten("typeshed")
+        assert_overwritten("use_buck_builder")
+        assert_overwritten("use_buck_source_database")
+        assert_overwritten("version_hash")
+
+    def test_expand_relative_paths(self) -> None:
         self.assertEqual(
-            configuration.search_path, ["additional/", "root/$subdirectory"]
+            PartialConfiguration(binary="foo").expand_relative_paths("bar").binary,
+            "bar/foo",
         )
-        self.assertEqual(configuration.number_of_workers, 20)
-        self.assertEqual(configuration.file_hash, None)
-        self.assertEqual(configuration.taint_models_path, [])
-
-        json_load.side_effect = [
-            {
-                "search_path": [{"woot": "root/", "subdirectory": "subdirectory"}],
-                "version": "VERSION",
-                "typeshed": "TYPE/%V/SHED/",
-                "workers": 20,
-            },
-            {},
-        ]
-        with self.assertRaises(InvalidConfiguration):
-            Configuration("")
-
-        json_load.side_effect = [
-            {
-                "search_path": "simple_string/",
-                "version": "VERSION",
-                "typeshed": "TYPE/%V/SHED/",
-                "taint_models_path": ".pyre/taint_models",
-            },
-            {},
-        ]
-        configuration = Configuration("")
-        self.assertEqual(configuration.typeshed, "TYPE/VERSION/SHED/")
-        self.assertEqual(configuration.search_path, ["simple_string/"])
-        self.assertEqual(configuration.taint_models_path, [".pyre/taint_models"])
-
-        json_load.side_effect = [
-            {
-                "search_path": "simple_string/",
-                "version": "VERSION",
-                "typeshed": "TYPE/%V/SHED/",
-                "taint_models_path": [".pyre/taint_models_1", ".pyre/taint_models_2"],
-            },
-            {},
-        ]
-        configuration = Configuration("")
-        self.assertEqual(configuration.typeshed, "TYPE/VERSION/SHED/")
-        self.assertEqual(configuration.search_path, ["simple_string/"])
         self.assertEqual(
-            configuration.taint_models_path,
-            [".pyre/taint_models_1", ".pyre/taint_models_2"],
+            PartialConfiguration(binary="~/foo").expand_relative_paths("bar").binary,
+            str(Path.home() / "foo"),
         )
-
-        def directory_side_effect(path: str) -> str:
-            if path.endswith(CONFIGURATION_FILE):
-                return "/root"
-            elif path.endswith(LOCAL_CONFIGURATION_FILE):
-                return "/root/local"
-            else:
-                return path
-
-        with patch("os.path.dirname", side_effect=directory_side_effect):
-            json_load.side_effect = [
-                {"binary": "some/dir/pyre.bin", "typeshed": "some/typeshed"},
-                {},
-            ]
-            configuration = Configuration("")
-            self.assertEqual(configuration.binary, "/root/some/dir/pyre.bin")
-            self.assertEqual(configuration.typeshed, "/root/some/typeshed")
-            self.assertIsNone(configuration.buck_builder_binary)
-
-            json_load.side_effect = [
-                {"binary": "~/some/dir/pyre.bin", "typeshed": "~/some/typeshed"},
-                {},
-            ]
-            configuration = Configuration("")
-            self.assertEqual(configuration.binary, "/home/user/some/dir/pyre.bin")
-            self.assertEqual(configuration.typeshed, "/home/user/some/typeshed")
-
-            json_load.side_effect = [
-                {
-                    "binary": "some/%V/pyre.bin",
-                    "typeshed": "some/%V/typeshed",
-                    "version": "VERSION",
-                },
-                {},
-            ]
-            configuration = Configuration("")
-            self.assertEqual(configuration.binary, "/root/some/VERSION/pyre.bin")
-            self.assertEqual(configuration.typeshed, "/root/some/VERSION/typeshed")
-
-            json_load.side_effect = [
-                {
-                    "binary": "~/some/%V/pyre.bin",
-                    "typeshed": "~/some/%V/typeshed",
-                    "version": "VERSION",
-                },
-                {},
-            ]
-            configuration = Configuration("")
-            self.assertEqual(configuration.binary, "/home/user/some/VERSION/pyre.bin")
-            self.assertEqual(configuration.typeshed, "/home/user/some/VERSION/typeshed")
-
-            json_load.side_effect = [
-                {"buck_builder_binary": "/some/dir/buck_builder"},
-                {},
-            ]
-            configuration = Configuration("")
-            self.assertEqual(
-                configuration.buck_builder_binary, "/some/dir/buck_builder"
-            )
-
-            json_load.side_effect = [
-                {"buck_builder_binary": "some/dir/buck_builder"},
-                {},
-            ]
-            configuration = Configuration("")
-            self.assertEqual(
-                configuration.buck_builder_binary, "/root/some/dir/buck_builder"
-            )
-
-            json_load.side_effect = [
-                {"ignore_all_errors": ["abc/def", "/abc/def", "~/abc/def"]},
-                {},
-            ]
-            configuration = Configuration("")
-            self.assertEqual(
-                configuration.ignore_all_errors,
-                ["/root/abc/def", "/abc/def", "/home/user/abc/def"],
-            )
-
-            json_load.side_effect = [
-                {
-                    "taint_models_path": ".pyre/taint_models",
-                    "search_path": "simple_string/",
-                    "version": "VERSION",
-                    "typeshed": "/TYPE/%V/SHED/",
-                },
-                {},
-            ]
-            configuration = Configuration("")
-            self.assertEqual(configuration.typeshed, "/TYPE/VERSION/SHED/")
-            self.assertEqual(configuration.search_path, ["/root/simple_string/"])
-            self.assertEqual(
-                configuration.taint_models_path, ["/root/.pyre/taint_models"]
-            )
-            json_load.side_effect = [
-                {
-                    "taint_models_path": ".pyre/taint_models",
-                    "source_directories": ["."],
-                },
-                {
-                    "search_path": "simple_string/",
-                    "version": "VERSION",
-                    "typeshed": "/TYPE/%V/SHED/",
-                },
-            ]
-            configuration = Configuration(
-                project_root="/root", local_root="/root/local"
-            )
-            self.assertEqual(configuration.typeshed, "/TYPE/VERSION/SHED/")
-            self.assertEqual(configuration.search_path, ["/root/simple_string/"])
-            self.assertEqual(
-                configuration.taint_models_path, ["/root/local/.pyre/taint_models"]
-            )
-            json_load.side_effect = [
-                {
-                    "taint_models_path": ".pyre/taint_models",
-                    "source_directories": ["."],
-                },
-                {
-                    "search_path": "simple_string/",
-                    "version": "VERSION",
-                    "taint_models_path": "global/taint_models",
-                    "typeshed": "/TYPE/%V/SHED/",
-                },
-            ]
-            configuration = Configuration(
-                project_root="/root", local_root="/root/local"
-            )
-            self.assertEqual(configuration.typeshed, "/TYPE/VERSION/SHED/")
-            self.assertEqual(configuration.search_path, ["/root/simple_string/"])
-            self.assertEqual(
-                configuration.taint_models_path,
-                ["/root/local/.pyre/taint_models", "/root/global/taint_models"],
-            )
-
-        json_load.side_effect = [
-            {
-                "search_path": "simple_string/",
-                "version": "VERSION",
-                "typeshed": "/TYPE/%V/SHED/",
-                "saved_state": "some_name",
-            },
-            {},
-        ]
-        configuration = Configuration("")
-        self.assertEqual(configuration.typeshed, "/TYPE/VERSION/SHED/")
-        self.assertEqual(configuration.search_path, ["simple_string/"])
-        self.assertEqual(configuration.file_hash, "HASH")
-
-        json_load.side_effect = [
-            {
-                "search_path": [
-                    "~/simple",
-                    {"root": "~/simple", "subdirectory": "subdir"},
-                ],
-                "typeshed": "~/typeshed",
-                "source_directories": ["a", "~/b"],
-                "binary": "~/bin",
-            },
-            {},
-        ]
-        configuration = Configuration("")
         self.assertEqual(
-            configuration.search_path, ["/home/user/simple", "/home/user/simple$subdir"]
+            PartialConfiguration(buck_builder_binary="foo")
+            .expand_relative_paths("bar")
+            .buck_builder_binary,
+            "bar/foo",
         )
-        self.assertEqual(configuration.typeshed, "/home/user/typeshed")
-        self.assertEqual(configuration.source_directories, ["a", "/home/user/b"])
-        self.assertEqual(configuration.binary, "/home/user/bin")
-
-        # Test manual loading of the binary
-        json_load.side_effect = [{}, {}]
-        configuration = Configuration(project_root="", binary="some/file/path/")
-        self.assertEqual(configuration.binary, "some/file/path/")
-
-        # Test manual loading of typeshed directory.
-        json_load.side_effect = [{}, {}]
-        configuration = Configuration(project_root="", typeshed="some/directory/path/")
-        self.assertEqual(configuration.typeshed, "some/directory/path/")
-
-        json_load.side_effect = [{"binary": "/binary"}, {}]
-        configuration = Configuration("")
-        self.assertEqual(configuration.binary, "/binary")
-
-        json_load.side_effect = [{"version": "VERSION", "binary": "/%V/binary"}, {}]
-        configuration = Configuration("")
-        self.assertEqual(configuration.binary, "/VERSION/binary")
-
-        # Test version override
-        with patch.object(os, "getenv", return_value="VERSION_HASH"):
-            json_load.side_effect = [{}, {}]
-            configuration = Configuration("")
-            self.assertEqual(configuration.version_hash, "VERSION_HASH")
-
-        with patch.object(os, "getenv", return_value="VERSION_HASH"):
-            json_load.side_effect = [
-                {"version": "NOT_THIS_VERSION", "typeshed": "/TYPE/%V/SHED/"},
-                {},
-            ]
-            configuration = Configuration("")
-            self.assertEqual(configuration.typeshed, "/TYPE/VERSION_HASH/SHED/")
-
-        # Test buck builder fields
-        json_load.side_effect = [{"use_buck_builder": True}, {}]
-        configuration = Configuration("")
-        self.assertTrue(configuration.use_buck_builder)
-        json_load.side_effect = [{"use_buck_builder": False}, {}]
-        configuration = Configuration("")
-        self.assertFalse(configuration.use_buck_builder)
-        json_load.side_effect = [{}, {}]
-        configuration = Configuration("")
-        self.assertFalse(configuration.use_buck_builder)
-
-        # Test multiple definitions of the ignore_all_errors files.
-        json_load.side_effect = [
-            {"ignore_all_errors": ["buck-out/dev/gen"]},
-            {"ignore_all_errors": ["buck-out/dev/gen2"]},
-        ]
-        configuration = Configuration("")
-        self.assertEqual(configuration.ignore_all_errors, ["buck-out/dev/gen"])
-        # Normalize number of workers if zero.
-        json_load.side_effect = [{"typeshed": "/TYPESHED/", "workers": 0}, {}]
-        configuration = Configuration("")
-        self.assertEqual(configuration.typeshed, "/TYPESHED/")
-
-        # Test excludes
-        json_load.side_effect = [{"exclude": "regexp"}, {}]
-        configuration = Configuration("")
-        self.assertEqual(configuration.excludes, ["regexp"])
-
-        json_load.side_effect = [{"exclude": ["regexp1", "regexp2"]}, {}]
-        configuration = Configuration("")
-        self.assertEqual(configuration.excludes, ["regexp1", "regexp2"])
-
-        json_load.side_effect = [{"exclude": ["regexp1", "regexp2"]}, {}]
-        configuration = Configuration(project_root="", excludes=["regexp3", "regexp4"])
         self.assertEqual(
-            configuration.excludes, ["regexp3", "regexp4", "regexp1", "regexp2"]
+            PartialConfiguration(do_not_ignore_all_errors_in=["foo", "bar"])
+            .expand_relative_paths("baz")
+            .do_not_ignore_all_errors_in,
+            ["baz/foo", "baz/bar"],
+        )
+        self.assertEqual(
+            PartialConfiguration(formatter="foo")
+            .expand_relative_paths("bar")
+            .formatter,
+            "bar/foo",
+        )
+        self.assertEqual(
+            PartialConfiguration(ignore_all_errors=["foo", "bar"])
+            .expand_relative_paths("baz")
+            .ignore_all_errors,
+            ["baz/foo", "baz/bar"],
+        )
+        self.assertEqual(
+            PartialConfiguration(ignore_infer=["foo", "bar"])
+            .expand_relative_paths("baz")
+            .ignore_infer,
+            ["baz/foo", "baz/bar"],
+        )
+        self.assertEqual(
+            PartialConfiguration(logger="foo").expand_relative_paths("bar").logger,
+            "bar/foo",
+        )
+        self.assertEqual(
+            PartialConfiguration(other_critical_files=["foo", "bar"])
+            .expand_relative_paths("baz")
+            .other_critical_files,
+            ["baz/foo", "baz/bar"],
+        )
+        self.assertEqual(
+            PartialConfiguration(
+                search_path=[
+                    SimpleSearchPathElement("foo"),
+                    SubdirectorySearchPathElement("bar", "baz"),
+                    SitePackageSearchPathElement("site", "package"),
+                ]
+            )
+            .expand_relative_paths("root")
+            .search_path,
+            [
+                SimpleSearchPathElement("root/foo"),
+                SubdirectorySearchPathElement("root/bar", "baz"),
+                SitePackageSearchPathElement("site", "package"),
+            ],
+        )
+        self.assertEqual(
+            PartialConfiguration(source_directories=["foo", "bar"])
+            .expand_relative_paths("baz")
+            .source_directories,
+            ["baz/foo", "baz/bar"],
+        )
+        self.assertEqual(
+            PartialConfiguration(taint_models_path=["foo", "bar"])
+            .expand_relative_paths("baz")
+            .taint_models_path,
+            ["baz/foo", "baz/bar"],
+        )
+        self.assertEqual(
+            PartialConfiguration(typeshed="foo").expand_relative_paths("bar").typeshed,
+            "bar/foo",
         )
 
-        # Test extensions
-        json_load.side_effect = [{"extensions": [".a", ".b"]}, {}]
-        configuration = Configuration("")
-        self.assertEqual(configuration.extensions, [".a", ".b"])
 
-        json_load.side_effect = [{}, {}]
-        configuration = Configuration("")
+class ConfigurationTest(testslide.TestCase):
+    def test_from_partial_configuration(self) -> None:
+        configuration = Configuration.from_partial_configuration(
+            project_root=Path("root"),
+            relative_local_root="local",
+            partial_configuration=PartialConfiguration(
+                autocomplete=None,
+                binary="binary",
+                buck_builder_binary="buck_builder_binary",
+                disabled=None,
+                do_not_ignore_all_errors_in=["foo"],
+                dot_pyre_directory=None,
+                excludes=["exclude"],
+                extensions=[".ext"],
+                file_hash="abc",
+                formatter="formatter",
+                ignore_all_errors=["bar"],
+                ignore_infer=["baz"],
+                logger="logger",
+                number_of_workers=3,
+                other_critical_files=["critical"],
+                search_path=[SimpleSearchPathElement("search_path")],
+                source_directories=None,
+                strict=None,
+                taint_models_path=["taint"],
+                targets=None,
+                typeshed="typeshed",
+                use_buck_builder=None,
+                use_buck_source_database=None,
+                version_hash="abc",
+            ),
+        )
+        self.assertEqual(configuration.project_root, "root")
+        self.assertEqual(configuration.relative_local_root, "local")
         self.assertEqual(configuration.autocomplete, False)
-        json_load.side_effect = [{"autocomplete": True}, {}]
-        configuration = Configuration("")
-        self.assertEqual(configuration.autocomplete, True)
-
-        json_load.side_effect = [{}, {}]
-        configuration = Configuration("")
-        self.assertEqual(configuration.other_critical_files, [])
-        json_load.side_effect = [{"critical_files": ["critical", "files"]}, {}]
-        configuration = Configuration("")
-        self.assertEqual(configuration.other_critical_files, ["critical", "files"])
-
-    @patch("os.path.isfile")
-    @patch("os.path.isdir")
-    @patch("os.path.exists")
-    @patch("os.access")
-    # Need to patch this method because this test messes around with
-    # isfile/isdir via the patches above. When test optimizations are
-    # applied, _apply_defaults goes crazy; hence mock it so it doesn't
-    # run - it's not important for this test anyway.
-    @patch.object(Configuration, "_apply_defaults")
-    @patch.object(Configuration, "_validate")
-    @patch.object(Configuration, "_read")
-    @patch(f"{configuration.__name__}.expand_relative_path")
-    @patch(f"{configuration.__name__}.find_root")
-    @patch(f"{configuration.__name__}.Path.resolve")
-    @patch("json.loads")
-    def test_configurations(
-        self,
-        json_loads,
-        path_resolve,
-        find_root,
-        expand_relative_path,
-        configuration_read,
-        configuration_validate,
-        configuration_defaults,
-        os_access,
-        os_path_exists,
-        os_path_isdir,
-        os_path_isfile,
-    ) -> None:
-        # Do not expand test paths against real filesystem
-        expand_relative_path.side_effect = lambda root, path: path
-
-        # Assume no nested configurations.
-        find_root.return_value = None
-
-        # Assume all paths are valid.
-        os_access.return_value = True
-        os_path_exists.return_value = True
-
-        # Test configuration directories.
-        os_path_isdir.return_value = True
-        os_path_isfile.return_value = False
-
-        with patch.object(
-            Configuration, "source_directories", new_callable=PropertyMock, create=True
-        ) as attribute_mock:
-            attribute_mock.return_value = ["."]
-            configuration = Configuration("")
-            configuration_read.assert_has_calls([call(CONFIGURATION_FILE)])
-            self.assertEqual(configuration.local_root, None)
-
-            configuration_read.reset_mock()
-            configuration = Configuration(project_root="/", local_root="original")
-            configuration_read.assert_has_calls(
-                [
-                    call("original/" + LOCAL_CONFIGURATION_FILE),
-                    call("/" + CONFIGURATION_FILE),
-                ]
-            )
-            self.assertEqual(configuration.local_root, "original")
-
-            configuration_read.reset_mock()
-            configuration = Configuration(project_root="/", local_root="local")
-            configuration_read.assert_has_calls(
-                [
-                    call("local/" + LOCAL_CONFIGURATION_FILE),
-                    call("/" + CONFIGURATION_FILE),
-                ]
-            )
-            self.assertEqual(configuration.local_root, "local")
-
-            configuration_read.reset_mock()
-            configuration = Configuration(project_root="/", local_root="local")
-            configuration_read.assert_has_calls(
-                [
-                    call("local/" + LOCAL_CONFIGURATION_FILE),
-                    call("/" + CONFIGURATION_FILE),
-                ]
-            )
-            self.assertEqual(configuration.local_root, "local")
-
-            # Test configuration files.
-            os_path_isdir.return_value = False
-            os_path_isfile.return_value = True
-            configuration_read.reset_mock()
-            configuration = Configuration(project_root="/", local_root="local")
-            configuration_read.assert_has_calls(
-                [
-                    call("local/.pyre_configuration.local"),
-                    call("/" + CONFIGURATION_FILE),
-                ]
-            )
-            self.assertEqual(configuration.local_root, "local")
-
-    @patch("builtins.open", mock_open())  # pyre-fixme[56]
-    @patch("os.path.isfile")
-    @patch("os.path.isdir")
-    @patch("os.path.exists")
-    @patch("os.access")
-    @patch.object(Configuration, "_apply_defaults")
-    @patch.object(Configuration, "_validate")
-    @patch(f"{configuration.__name__}.expand_relative_path")
-    @patch(f"{configuration.__name__}.find_root")
-    @patch(f"{configuration.__name__}.Path.resolve")
-    @patch("json.loads")
-    def test_nested_configurations(
-        self,
-        json_loads,
-        path_resolve,
-        find_root,
-        expand_relative_path,
-        configuration_validate,
-        configuration_defaults,
-        os_access,
-        os_path_exists,
-        os_path_isdir,
-        os_path_isfile,
-    ) -> None:
-        # Do not expand test paths against real filesystem
-        expand_relative_path.side_effect = lambda root, path: path
-
-        # Assume all paths are valid.
-        os_access.return_value = True
-        os_path_exists.return_value = True
-
-        # Properly ignored nested local configurations.
-        find_root.side_effect = ["root", None]
-        path_resolve.side_effect = [Path("root/local"), Path("root/local")]
-        os_path_isdir.return_value = True
-        os_path_isfile.return_value = False
-        json_loads.side_effect = [
-            {
-                "source_directories": ["a"],
-                "binary": "abc",
-                "logger": "/usr/logger",
-                "version": "VERSION",
-                "typeshed": "TYPE/%V/SHED/",
-                "strict": False,
-                "extensions": [".a", ".b", ""],
-                "ignore_all_errors": ["root/local"],
-            },
-            {},
-            {
-                "source_directories": ["a"],
-                "binary": "abc",
-                "logger": "/usr/logger",
-                "version": "VERSION",
-                "typeshed": "TYPE/%V/SHED/",
-                "strict": False,
-                "extensions": [".a", ".b", ""],
-            },
-            {},
-        ]
-        try:
-            Configuration(project_root="root", local_root="root/local")
-        except BaseException:
-            self.fail("Configuration should not raise.")
-
-        # Improperly ignored nested local configurations.
-        find_root.side_effect = ["root", None]
-        path_resolve.side_effect = [Path("root/local"), Path("not_local")]
-        json_loads.side_effect = [
-            {
-                "source_directories": ["a"],
-                "binary": "abc",
-                "logger": "/usr/logger",
-                "version": "VERSION",
-                "typeshed": "TYPE/%V/SHED/",
-                "strict": False,
-                "ignore_all_errors": ["not_local"],
-                "extensions": [".a", ".b", ""],
-            },
-            {},
-            {
-                "source_directories": ["a"],
-                "binary": "abc",
-                "logger": "/usr/logger",
-                "version": "VERSION",
-                "typeshed": "TYPE/%V/SHED/",
-                "strict": False,
-                "extensions": [".a", ".b", ""],
-            },
-            {},
-        ]
-        with self.assertRaises(EnvironmentException):
-            Configuration(project_root="root", local_root="root/local")
-
-        # Project and local configurations both specifying sources.
-        path_resolve.reset_mock()
-        find_root.side_effect = [None, None]
-        json_loads.side_effect = [
-            {
-                "source_directories": ["local_sources"],
-                "strict": False,
-                "extensions": [".a", ".b", ""],
-            },
-            {
-                "source_directories": ["project_sources"],
-                "binary": "abc",
-                "logger": "/usr/logger",
-                "version": "VERSION",
-                "typeshed": "TYPE/%V/SHED/",
-                "strict": False,
-                "extensions": [".a", ".b", ""],
-            },
-        ]
-        with self.assertRaises(EnvironmentException):
-            Configuration(project_root="root", local_root="root/local")
-
-    @patch("os.path.isfile")
-    @patch("os.path.isdir")
-    @patch("os.path.exists")
-    @patch.object(Configuration, "_validate")
-    def test_nonexisting_local_configuration(
-        self, configuration_validate, os_path_exists, os_path_isdir, os_path_isfile
-    ) -> None:
-        # Test that a non-existing local configuration directory was provided.
-        os_path_exists.return_value = False
-        os_path_isdir.return_value = True
-        os_path_isfile.return_value = False
-        with self.assertRaises(EnvironmentException):
-            Configuration(project_root="/", local_root="local")
-
-        # Test that a non-existing local configuration file was provided.
-        os_path_exists.return_value = False
-        os_path_isdir.return_value = False
-        os_path_isfile.return_value = True
-        with self.assertRaises(EnvironmentException):
-            Configuration(project_root="/", local_root="local/.some_configuration")
-
-        with self.assertRaises(EnvironmentException):
-            Configuration(project_root="/", local_root="local/.some_configuration")
-
-        # Test an existing local directory, without a configuration file.
-        os_path_exists.side_effect = lambda path: not path.endswith(".local")
-        os_path_isdir.return_value = lambda path: not path.endswith(".local")
-        os_path_isfile.return_value = lambda path: path.endswith(".local")
-        with self.assertRaises(EnvironmentException):
-            Configuration(project_root="/", local_root="localdir")
-
-        with self.assertRaises(EnvironmentException):
-            Configuration(project_root="/", local_root="localdir")
-
-    @patch("os.path.isdir")
-    @patch.object(Configuration, "_validate")
-    def test_empty_configuration(self, configuration_validate, os_path_isdir) -> None:
-        os_path_isdir.return_value = False
-        # If typeshed is importable, find_typeshed() will behave
-        # differently because its 'import typeshed' will
-        # succeed. Hence, poison the module cache as described here:
-        # https://docs.python.org/3.6/reference/import.html#the-module-cache
-        sys.modules["typeshed"] = cast(Any, None)
-
-        with patch.object(Configuration, "_read"):
-            # __init__.py is in the parent directory.
-            directory = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-            bundled_typeshed_calls = []
-            environment_typeshed_calls = []
-            while True:
-                bundled_typeshed_calls.append(
-                    call(os.path.join(directory, "pyre_check/typeshed/"))
-                )
-                environment_typeshed_calls.append(
-                    call(os.path.join(directory, "typeshed/"))
-                )
-                parent_directory = os.path.dirname(directory)
-                if parent_directory == directory:
-                    break
-                directory = parent_directory
-            calls = bundled_typeshed_calls + environment_typeshed_calls
-
-            configuration = Configuration("")
-            os_path_isdir.assert_has_calls(calls)
-            self.assertEqual(configuration.source_directories, [])
-            self.assertEqual(configuration.targets, [])
-            self.assertEqual(configuration.version_hash, "unversioned")
-            self.assertEqual(configuration.logger, None)
-            self.assertFalse(configuration.disabled)
-            self.assertEqual(configuration._typeshed, None)
-            self.assertEqual(configuration.excludes, [])
-            self.assertEqual(configuration.extensions, [])
-
-    @patch("os.path.abspath", side_effect=lambda path: path)
-    @patch("os.path.isdir", return_value=True)
-    @patch("os.path.exists")
-    @patch("os.access", return_value=True)
-    @patch("os.listdir", side_effect=[["3"], ["3"]])
-    @patch("builtins.open")
-    @patch("json.loads")
-    @patch("hashlib.sha1")
-    # pyre-fixme[56]: Argument `os` to decorator factory
-    #  `unittest.mock.patch.object` could not be resolved in a global scope.
-    @patch.object(os, "getenv", return_value=None)
-    def test_validate_configuration(
-        self,
-        os_environ,
-        sha1,
-        json_loads,
-        builtins_open,
-        listdir,
-        access,
-        exists,
-        isdir,
-        _abspath,
-    ) -> None:
-        exists.return_value = True
-        try:
-            json_loads.side_effect = [
-                {
-                    "source_directories": ["a"],
-                    "binary": "abc",
-                    "logger": "/usr/logger",
-                    "version": "VERSION",
-                    "typeshed": "TYPE/%V/SHED/",
-                    "strict": False,
-                    "ignore_all_errors": ["buck-out/dev/gen"],
-                    "extensions": [".a", ".b", ""],
-                },
-                {},
-            ]
-            Configuration("")
-        except BaseException:
-            self.fail("Configuration should not raise.")
-
-        with self.assertRaises(EnvironmentException):
-            json_loads.side_effect = [
-                {
-                    "source_directories": ["a"],
-                    "binary": "abc",
-                    "logger": "/usr/logger",
-                    "version": "VERSION",
-                    "typeshed": "TYPE/%V/SHED/",
-                    "ignore_all_errors": ["buck-out/dev/gen"],
-                    "extensions": [".a", "b"],
-                },
-                {},
-            ]
-            Configuration("")
-
-    @patch.object(Configuration, "_read")
-    @patch.object(Configuration, "_override_version_hash")
-    @patch.object(Configuration, "_resolve_versioned_paths")
-    @patch.object(Configuration, "_validate")
-    def test_find_binary(
-        self, _validate, _resolve_versioned_paths, _override_version_hash, _read
-    ) -> None:
-        # The PYRE_BINARY environment variable may change the result of this test,
-        # as the configuration lets it override the actual search.
-        if "PYRE_BINARY" in os.environ:
-            del os.environ["PYRE_BINARY"]
-
-        def accept_tmp(argument: str) -> Optional[str]:
-            if argument == "/tmp/pyre/bin/pyre.bin":
-                return argument
-            return None
-
-        with patch.object(sys, "argv", ["/tmp/pyre/bin/pyre"]), patch(
-            "shutil.which", side_effect=accept_tmp
-        ):
-            configuration = Configuration("")
-            self.assertEqual(configuration._binary, "/tmp/pyre/bin/pyre.bin")
-        with patch.object(sys, "argv", ["/tmp/unknown/bin/pyre"]), patch(
-            "shutil.which", side_effect=accept_tmp
-        ):
-            configuration = Configuration("")
-            self.assertEqual(configuration._binary, None)
-
-    @patch.object(Configuration, "_validate")
-    def test_get_binary_version(self, _validate) -> None:
-        configuration = Configuration("")
-        configuration._binary = "<binary>"
-
-        def assert_version(
-            returncode: int, stdout: str, expected: Optional[str]
-        ) -> None:
-            with patch(
-                "subprocess.run",
-                return_value=MockCompletedProcess(returncode, stdout=stdout),
-            ):
-                self.assertEqual(expected, configuration.get_binary_version())
-
-        assert_version(
-            returncode=0, stdout="facefacefaceb00", expected="facefacefaceb00"
+        self.assertEqual(configuration.binary, "binary")
+        self.assertEqual(configuration.buck_builder_binary, "buck_builder_binary")
+        self.assertEqual(configuration.disabled, False)
+        self.assertListEqual(list(configuration.do_not_ignore_all_errors_in), ["foo"])
+        self.assertEqual(configuration.dot_pyre_directory, Path("root/.pyre"))
+        self.assertListEqual(list(configuration.excludes), ["exclude"])
+        self.assertEqual(configuration.extensions, [".ext"])
+        self.assertEqual(configuration.file_hash, "abc")
+        self.assertEqual(configuration.formatter, "formatter")
+        self.assertListEqual(list(configuration.ignore_all_errors), ["bar"])
+        self.assertListEqual(list(configuration.ignore_infer), ["baz"])
+        self.assertEqual(configuration.logger, "logger")
+        self.assertEqual(configuration.number_of_workers, 3)
+        self.assertListEqual(list(configuration.other_critical_files), ["critical"])
+        self.assertListEqual(
+            list(configuration.search_path), [SimpleSearchPathElement("search_path")]
         )
-        assert_version(
-            returncode=0, stdout=" facefacefaceb00\n", expected="facefacefaceb00"
+        self.assertEqual(configuration.source_directories, [])
+        self.assertEqual(configuration.strict, False)
+        self.assertEqual(configuration.taint_models_path, ["taint"])
+        self.assertEqual(configuration.targets, [])
+        self.assertEqual(configuration.typeshed, "typeshed")
+        self.assertEqual(configuration.use_buck_builder, False)
+        self.assertEqual(configuration.use_buck_source_database, False)
+        self.assertEqual(configuration.version_hash, "abc")
+
+    def test_derived_attributes(self) -> None:
+        self.assertIsNone(
+            Configuration(
+                project_root="foo", dot_pyre_directory=Path(".pyre")
+            ).local_root
         )
-        assert_version(returncode=1, stdout="facefacefaceb00", expected=None)
+        self.assertEqual(
+            Configuration(
+                project_root="foo",
+                dot_pyre_directory=Path(".pyre"),
+                relative_local_root="bar",
+            ).local_root,
+            "foo/bar",
+        )
+        self.assertEqual(
+            Configuration(
+                project_root="foo",
+                dot_pyre_directory=Path(".pyre"),
+                relative_local_root="bar/baz",
+            ).local_root,
+            "foo/bar/baz",
+        )
+
+        self.assertEqual(
+            Configuration(
+                project_root="foo", dot_pyre_directory=Path(".pyre")
+            ).log_directory,
+            ".pyre",
+        )
+        self.assertEqual(
+            Configuration(
+                project_root="foo",
+                dot_pyre_directory=Path(".pyre"),
+                relative_local_root="bar",
+            ).log_directory,
+            ".pyre/bar",
+        )
+        self.assertEqual(
+            Configuration(
+                project_root="foo",
+                dot_pyre_directory=Path(".pyre"),
+                relative_local_root="bar/baz",
+            ).log_directory,
+            ".pyre/bar/baz",
+        )
+
+    def test_existent_search_path(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            ensure_directories_exists(root_path, ["a", "b/c", "d/e/f"])
+
+            self.assertListEqual(
+                Configuration(
+                    project_root="irrelevant",
+                    dot_pyre_directory=Path(".pyre"),
+                    search_path=[
+                        SimpleSearchPathElement(str(root_path / "a")),
+                        SimpleSearchPathElement(str(root_path / "x")),
+                        SubdirectorySearchPathElement(
+                            root=str(root_path / "b"), subdirectory="c"
+                        ),
+                        SubdirectorySearchPathElement(
+                            root=str(root_path / "y"), subdirectory="z"
+                        ),
+                        SitePackageSearchPathElement(
+                            site_root=str(root_path / "d/e"), package_name="f"
+                        ),
+                        SitePackageSearchPathElement(
+                            site_root=str(root_path / "u/v"), package_name="w"
+                        ),
+                    ],
+                ).get_existent_search_paths(),
+                [
+                    SimpleSearchPathElement(str(root_path / "a")),
+                    SubdirectorySearchPathElement(
+                        root=str(root_path / "b"), subdirectory="c"
+                    ),
+                    SitePackageSearchPathElement(
+                        site_root=str(root_path / "d/e"), package_name="f"
+                    ),
+                ],
+            )
+
+    def test_existent_search_path_with_typeshed(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            ensure_directories_exists(root_path, ["a"])
+            ensure_directories_exists(
+                root_path, ["typeshed/stdlib/3", "typeshed/third_party/3"]
+            )
+
+            self.assertListEqual(
+                Configuration(
+                    project_root="irrelevant",
+                    dot_pyre_directory=Path(".pyre"),
+                    search_path=[
+                        SimpleSearchPathElement(str(root_path / "a")),
+                    ],
+                    typeshed=str(root_path / "typeshed"),
+                ).get_existent_search_paths(),
+                [
+                    SimpleSearchPathElement(str(root_path / "a")),
+                    SimpleSearchPathElement(str(root_path / "typeshed/stdlib/3")),
+                    SimpleSearchPathElement(str(root_path / "typeshed/third_party/3")),
+                ],
+            )
+
+    def test_existent_ignore_infer(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            ensure_directories_exists(root_path, ["a", "b/c"])
+
+            self.assertListEqual(
+                Configuration(
+                    project_root=str(root_path),
+                    dot_pyre_directory=Path(".pyre"),
+                    ignore_infer=[
+                        str(root_path / "a"),
+                        str(root_path / "x"),
+                        str(root_path / "b/c"),
+                        str(root_path / "y/z"),
+                    ],
+                ).get_existent_ignore_infer_paths(),
+                [str(root_path / "a"), str(root_path / "b/c")],
+            )
+
+    def test_existent_do_not_ignore_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            ensure_directories_exists(root_path, ["a", "b/c"])
+
+            self.assertListEqual(
+                Configuration(
+                    project_root=str(root_path),
+                    dot_pyre_directory=Path(".pyre"),
+                    do_not_ignore_all_errors_in=[
+                        str(root_path / "a"),
+                        str(root_path / "x"),
+                        "//b/c",
+                        "//y/z",
+                    ],
+                ).get_existent_do_not_ignore_errors_in_paths(),
+                [str(root_path / "a"), str(root_path / "b/c")],
+            )
+
+    def test_existent_ignore_all_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            ensure_directories_exists(root_path, ["a", "b/c", "b/d"])
+
+            self.assertListEqual(
+                Configuration(
+                    project_root=str(root_path),
+                    dot_pyre_directory=Path(".pyre"),
+                    ignore_all_errors=[
+                        str(root_path / "a"),
+                        str(root_path / "x"),
+                        "//b/c",
+                        "//y/z",
+                        f"{root_path}/b/*",
+                    ],
+                ).get_existent_ignore_all_errors_paths(),
+                [
+                    str(root_path / "a"),
+                    str(root_path / "b/c"),
+                    str(root_path / "b/c"),
+                    str(root_path / "b/d"),
+                ],
+            )
+
+    def test_get_binary_version_unset(self) -> None:
+        self.assertIsNone(
+            Configuration(
+                project_root="irrelevant", dot_pyre_directory=Path(".pyre"), binary=None
+            ).get_binary_version()
+        )
+
+    def test_get_binary_version_ok(self) -> None:
+        binary_path = "foo"
+        version = "facefacefaceb00"
+
+        self.mock_callable(subprocess, "run").to_return_value(
+            subprocess.CompletedProcess(
+                args=[binary_path, "-version"], returncode=0, stdout=f"{version}\n"
+            )
+        ).and_assert_called_once()
+
+        self.assertEqual(
+            Configuration(
+                project_root="irrelevant",
+                dot_pyre_directory=Path(".pyre"),
+                binary=binary_path,
+            ).get_binary_version(),
+            version,
+        )
+
+    def test_get_binary_version_fail(self) -> None:
+        binary_path = "foo"
+
+        self.mock_callable(subprocess, "run").to_return_value(
+            subprocess.CompletedProcess(
+                args=[binary_path, "-version"], returncode=1, stdout="derp"
+            )
+        ).and_assert_called_once()
+
+        self.assertIsNone(
+            Configuration(
+                project_root="irrelevant",
+                dot_pyre_directory=Path(".pyre"),
+                binary=binary_path,
+            ).get_binary_version()
+        )
+
+    def test_get_number_of_workers(self) -> None:
+        self.assertEquals(
+            Configuration(
+                project_root="irrelevant",
+                dot_pyre_directory=Path(".pyre"),
+                number_of_workers=42,
+            ).get_number_of_workers(),
+            42,
+        )
+        # Whatever the default number is, it should be positive
+        self.assertGreater(
+            Configuration(
+                project_root="irrelevant",
+                dot_pyre_directory=Path(".pyre"),
+                number_of_workers=None,
+            ).get_number_of_workers(),
+            0,
+        )
+
+    def test_get_binary_from_configuration(self) -> None:
+        with switch_environment({}):
+            self.assertEqual(
+                Configuration(
+                    project_root="irrelevant",
+                    dot_pyre_directory=Path(".pyre"),
+                    binary="foo",
+                ).get_binary_respecting_override(),
+                "foo",
+            )
+
+    def test_get_binary_auto_determined(self) -> None:
+        self.mock_callable(shutil, "which").for_call(BINARY_NAME).to_return_value(
+            "foo"
+        ).and_assert_called_once()
+
+        with switch_environment({}):
+            self.assertEqual(
+                Configuration(
+                    project_root="irrelevant",
+                    dot_pyre_directory=Path(".pyre"),
+                    binary=None,
+                ).get_binary_respecting_override(),
+                "foo",
+            )
+
+    def test_get_binary_cannot_auto_determine(self) -> None:
+        self.mock_callable(shutil, "which").to_return_value(None).and_assert_called()
+
+        with switch_environment({}):
+            self.assertEqual(
+                Configuration(
+                    project_root="irrelevant",
+                    dot_pyre_directory=Path(".pyre"),
+                    binary=None,
+                ).get_binary_respecting_override(),
+                None,
+            )
+
+    def test_get_typeshed_from_configuration(self) -> None:
+        with switch_environment({}):
+            self.assertEqual(
+                Configuration(
+                    project_root="irrelevant",
+                    dot_pyre_directory=Path(".pyre"),
+                    typeshed="foo",
+                ).get_typeshed_respecting_override(),
+                "foo",
+            )
+
+    def test_get_typeshed_auto_determined(self) -> None:
+        self.mock_callable(
+            find_directories, "find_typeshed"
+        ).for_call().to_return_value(Path("foo")).and_assert_called_once()
+
+        with switch_environment({}):
+            self.assertEqual(
+                Configuration(
+                    project_root="irrelevant",
+                    dot_pyre_directory=Path(".pyre"),
+                    typeshed=None,
+                ).get_typeshed_respecting_override(),
+                "foo",
+            )
+
+    def test_get_typeshed_cannot_auto_determine(self) -> None:
+        self.mock_callable(
+            find_directories, "find_typeshed"
+        ).for_call().to_return_value(None).and_assert_called_once()
+
+        with switch_environment({}):
+            self.assertEqual(
+                Configuration(
+                    project_root="irrelevant",
+                    dot_pyre_directory=Path(".pyre"),
+                    typeshed=None,
+                ).get_typeshed_respecting_override(),
+                None,
+            )
+
+    def test_get_version_hash_from_configuration(self) -> None:
+        with switch_environment({}):
+            self.assertEqual(
+                Configuration(
+                    project_root="irrelevant",
+                    dot_pyre_directory=Path(".pyre"),
+                    version_hash="abc",
+                ).get_version_hash_respecting_override(),
+                "abc",
+            )
+
+    def test_get_version_hash_environment_override(self) -> None:
+        with switch_environment({"PYRE_VERSION_HASH": "abc"}):
+            self.assertEqual(
+                Configuration(
+                    project_root="irrelevant",
+                    dot_pyre_directory=Path(".pyre"),
+                    version_hash=None,
+                ).get_version_hash_respecting_override(),
+                "abc",
+            )
+            self.assertEqual(
+                Configuration(
+                    project_root="irrelevant",
+                    dot_pyre_directory=Path(".pyre"),
+                    version_hash="def",
+                ).get_version_hash_respecting_override(),
+                "abc",
+            )
+
+    def test_get_valid_extensions(self) -> None:
+        self.assertListEqual(
+            Configuration(
+                project_root="irrelevant",
+                dot_pyre_directory=Path(".pyre"),
+                extensions=[],
+            ).get_valid_extensions(),
+            [],
+        )
+        self.assertListEqual(
+            Configuration(
+                project_root="irrelevant",
+                dot_pyre_directory=Path(".pyre"),
+                extensions=[".foo", ".bar"],
+            ).get_valid_extensions(),
+            [".foo", ".bar"],
+        )
+        self.assertListEqual(
+            Configuration(
+                project_root="irrelevant",
+                dot_pyre_directory=Path(".pyre"),
+                extensions=["foo", ".bar", "baz"],
+            ).get_valid_extensions(),
+            [".bar"],
+        )
+
+    def test_create_from_command_arguments_only(self) -> None:
+        # We assume there does not exist a `.pyre_configuration` file that
+        # covers this temporary directory.
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            with switch_working_directory(root_path):
+                configuration = create_configuration(
+                    command_arguments.CommandArguments(
+                        source_directories=["."], dot_pyre_directory=None
+                    ),
+                    base_directory=Path(root),
+                )
+                self.assertEqual(configuration.project_root, str(root_path))
+                self.assertEqual(configuration.relative_local_root, None)
+                self.assertEqual(configuration.dot_pyre_directory, root_path / ".pyre")
+
+    def test_create_from_global_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            write_configuration_file(root_path, {"strict": False})
+
+            with switch_working_directory(root_path):
+                configuration = create_configuration(
+                    command_arguments.CommandArguments(
+                        strict=True,  # override configuration file
+                        source_directories=["."],
+                        dot_pyre_directory=Path(".pyre"),
+                    ),
+                    base_directory=Path(root),
+                )
+                self.assertEqual(configuration.project_root, str(root_path))
+                self.assertEqual(configuration.relative_local_root, None)
+                self.assertEqual(configuration.dot_pyre_directory, Path(".pyre"))
+                self.assertEqual(configuration.strict, True)
+
+    def test_create_from_local_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            ensure_directories_exists(root_path, ["foo", "bar", "baz"])
+            write_configuration_file(
+                root_path, {"strict": False, "search_path": ["foo"]}
+            )
+            write_configuration_file(
+                root_path,
+                {"strict": True, "search_path": ["//bar", "baz"]},
+                relative="local",
+            )
+
+            with switch_working_directory(root_path):
+                configuration = create_configuration(
+                    command_arguments.CommandArguments(
+                        local_configuration="local",
+                        source_directories=["."],
+                        dot_pyre_directory=Path(".pyre"),
+                    ),
+                    base_directory=Path(root),
+                )
+                self.assertEqual(configuration.project_root, str(root_path))
+                self.assertEqual(configuration.relative_local_root, "local")
+                self.assertEqual(configuration.dot_pyre_directory, Path(".pyre"))
+                self.assertEqual(configuration.strict, True)
+                self.assertListEqual(
+                    list(configuration.search_path),
+                    [
+                        SimpleSearchPathElement(str(root_path / "bar")),
+                        SimpleSearchPathElement(str(root_path / "local/baz")),
+                        SimpleSearchPathElement(str(root_path / "foo")),
+                    ],
+                )
+
+    def test_check_nested_local_configuration_no_nesting(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            write_configuration_file(root_path, {})
+            write_configuration_file(root_path, {}, relative="local")
+
+            try:
+                check_nested_local_configuration(
+                    Configuration(
+                        project_root=root,
+                        dot_pyre_directory=Path(".pyre"),
+                        relative_local_root="local",
+                    )
+                )
+            except InvalidConfiguration:
+                self.fail("Nested local configuration check fails unexpectedly!")
+
+    def test_check_nested_local_configuration_not_excluded(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            write_configuration_file(root_path, {})
+            write_configuration_file(root_path, {}, relative="nest")
+            write_configuration_file(root_path, {}, relative="nest/local")
+
+            with self.assertRaises(InvalidConfiguration):
+                check_nested_local_configuration(
+                    Configuration(
+                        project_root=root,
+                        dot_pyre_directory=Path(".pyre"),
+                        relative_local_root="nest/local",
+                    )
+                )
+
+    def test_check_nested_local_configuration_excluded(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            write_configuration_file(root_path, {})
+            write_configuration_file(
+                root_path,
+                {"ignore_all_errors": [str(root_path / "nest/local")]},
+                relative="nest",
+            )
+            write_configuration_file(root_path, {}, relative="nest/local")
+
+            try:
+                check_nested_local_configuration(
+                    Configuration(
+                        project_root=root,
+                        dot_pyre_directory=Path(".pyre"),
+                        relative_local_root="nest/local",
+                    )
+                )
+            except InvalidConfiguration:
+                self.fail("Nested local configuration check fails unexpectedly!")
+
+    def test_check_nested_local_configuration_excluded_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            write_configuration_file(root_path, {})
+            write_configuration_file(
+                root_path,
+                {"ignore_all_errors": [str(root_path / "nest")]},
+                relative="nest",
+            )
+            write_configuration_file(root_path, {}, relative="nest/local")
+
+            try:
+                check_nested_local_configuration(
+                    Configuration(
+                        project_root=root,
+                        dot_pyre_directory=Path(".pyre"),
+                        relative_local_root="nest/local",
+                    )
+                )
+            except InvalidConfiguration:
+                self.fail("Nested local configuration check fails unexpectedly!")
+
+    def test_check_nested_local_configuration_not_all_nesting_excluded(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            write_configuration_file(root_path, {})
+            write_configuration_file(root_path, {}, relative="nest0")
+            write_configuration_file(
+                root_path,
+                {"ignore_all_errors": [str(root_path / "nest0/nest1/local")]},
+                relative="nest0/nest1",
+            )
+            write_configuration_file(root_path, {}, relative="nest0/nest1/local")
+
+            with self.assertRaises(InvalidConfiguration):
+                check_nested_local_configuration(
+                    Configuration(
+                        project_root=root,
+                        dot_pyre_directory=Path(".pyre"),
+                        relative_local_root="nest0/nest1/local",
+                    )
+                )
+
+    def test_check_nested_local_configuration_all_nesting_excluded(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            write_configuration_file(root_path, {})
+            write_configuration_file(
+                root_path,
+                {"ignore_all_errors": [str(root_path / "nest0/nest1/local")]},
+                relative="nest0",
+            )
+            write_configuration_file(
+                root_path,
+                {"ignore_all_errors": [str(root_path / "nest0/nest1/local")]},
+                relative="nest0/nest1",
+            )
+            write_configuration_file(root_path, {}, relative="nest0/nest1/local")
+
+            try:
+                check_nested_local_configuration(
+                    Configuration(
+                        project_root=root,
+                        dot_pyre_directory=Path(".pyre"),
+                        relative_local_root="nest0/nest1/local",
+                    )
+                )
+            except InvalidConfiguration:
+                self.fail("Nested local configuration check fails unexpectedly!")
+
+    def test_check_nested_local_configuration_expand_global_root(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            write_configuration_file(root_path, {})
+            write_configuration_file(
+                root_path,
+                {"ignore_all_errors": ["//nest0/nest1/local"]},
+                relative="nest0",
+            )
+            write_configuration_file(
+                root_path,
+                {"ignore_all_errors": [str(root_path / "nest0/**")]},
+                relative="nest0/nest1",
+            )
+            write_configuration_file(root_path, {}, relative="nest0/nest1/local")
+
+            try:
+                check_nested_local_configuration(
+                    Configuration(
+                        project_root=root,
+                        dot_pyre_directory=Path(".pyre"),
+                        relative_local_root="nest0/nest1/local",
+                    )
+                )
+            except InvalidConfiguration:
+                self.fail("Nested local configuration check fails unexpectedly!")
+
+    def test_check_nested_local_configuration_expand_relative_root(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            write_configuration_file(root_path, {})
+            write_configuration_file(
+                root_path, {"ignore_all_errors": ["nest1/local"]}, relative="nest0"
+            )
+            write_configuration_file(
+                root_path, {"ignore_all_errors": ["*"]}, relative="nest0/nest1"
+            )
+            write_configuration_file(root_path, {}, relative="nest0/nest1/local")
+
+            try:
+                check_nested_local_configuration(
+                    Configuration(
+                        project_root=root,
+                        dot_pyre_directory=Path(".pyre"),
+                        relative_local_root="nest0/nest1/local",
+                    )
+                )
+            except InvalidConfiguration:
+                self.fail("Nested local configuration check fails unexpectedly!")
+
+
+class SearchPathElementTest(unittest.TestCase):
+    def test_create(self) -> None:
+        self.assertListEqual(
+            create_search_paths("foo", site_roots=[]), [SimpleSearchPathElement("foo")]
+        )
+        self.assertListEqual(
+            create_search_paths({"root": "foo", "subdirectory": "bar"}, site_roots=[]),
+            [SubdirectorySearchPathElement("foo", "bar")],
+        )
+        self.assertListEqual(
+            create_search_paths({"site-package": "foo"}, site_roots=[]), []
+        )
+        self.assertListEqual(
+            create_search_paths({"site-package": "foo"}, site_roots=["site0"]),
+            [SitePackageSearchPathElement("site0", "foo")],
+        )
+        self.assertListEqual(
+            create_search_paths({"site-package": "foo"}, site_roots=["site1"]),
+            [SitePackageSearchPathElement("site1", "foo")],
+        )
+
+        with self.assertRaises(InvalidConfiguration):
+            create_search_paths({}, site_roots=[])
+        with self.assertRaises(InvalidConfiguration):
+            create_search_paths({"foo": "bar"}, site_roots=[])
+        with self.assertRaises(InvalidConfiguration):
+            create_search_paths({"root": "foo"}, site_roots=[])
+
+    def test_path(self) -> None:
+        self.assertEqual(SimpleSearchPathElement("foo").path(), "foo")
+        self.assertEqual(SubdirectorySearchPathElement("foo", "bar").path(), "foo/bar")
+        self.assertEqual(SitePackageSearchPathElement("foo", "bar").path(), "foo/bar")
+
+    def test_command_line_argument(self) -> None:
+        self.assertEqual(SimpleSearchPathElement("foo").command_line_argument(), "foo")
+        self.assertEqual(
+            SubdirectorySearchPathElement("foo", "bar").command_line_argument(),
+            "foo$bar",
+        )
+        self.assertEqual(
+            SitePackageSearchPathElement("foo", "bar").command_line_argument(),
+            "foo$bar",
+        )
+
+    def test_expand_global_root(self) -> None:
+        self.assertEqual(
+            SimpleSearchPathElement("//simple/path").expand_global_root("root"),
+            SimpleSearchPathElement("root/simple/path"),
+        )
+        self.assertEqual(
+            SubdirectorySearchPathElement("//path", "sub").expand_global_root("root"),
+            SubdirectorySearchPathElement("root/path", "sub"),
+        )
+        self.assertEqual(
+            SitePackageSearchPathElement("//site_root", "package").expand_global_root(
+                "root"
+            ),
+            SitePackageSearchPathElement("//site_root", "package"),
+        )
+
+    def test_expand_relative_root(self) -> None:
+        self.assertEqual(
+            SimpleSearchPathElement("simple/path").expand_relative_root(
+                "root/local_project"
+            ),
+            SimpleSearchPathElement("root/local_project/simple/path"),
+        )
+        self.assertEqual(
+            SubdirectorySearchPathElement("path", "sub").expand_relative_root(
+                "root/local_project"
+            ),
+            SubdirectorySearchPathElement("root/local_project/path", "sub"),
+        )
+        self.assertEqual(
+            SitePackageSearchPathElement("site_root", "package").expand_relative_root(
+                "root/local_project"
+            ),
+            SitePackageSearchPathElement("site_root", "package"),
+        )

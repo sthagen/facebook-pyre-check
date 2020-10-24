@@ -1,20 +1,24 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
+from __future__ import annotations
+
 import enum
 import logging
-from collections import namedtuple
+from datetime import datetime
+from decimal import Decimal
 from itertools import islice
-from typing import Any, Dict, List, Optional, Set, Tuple, Type
+from typing import Any, Dict, Optional, Set, Type
 
 from graphene_sqlalchemy.converter import (
     convert_column_to_int_or_id,
     convert_column_to_string,
     convert_sqlalchemy_type,
 )
-from munch import Munch
 from sqlalchemy import (
     Boolean,
     Column,
@@ -23,18 +27,12 @@ from sqlalchemy import (
     Float,
     Index,
     Integer,
-    MetaData,
     String,
-    Table,
-    and_,
-    exc,
     func,
-    inspect,
-    or_,
     types,
 )
 from sqlalchemy.dialects import mysql, sqlite
-from sqlalchemy.dialects.mysql import BIGINT, INTEGER
+from sqlalchemy.dialects.mysql import BIGINT
 from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy.ext.associationproxy import association_proxy
 from sqlalchemy.ext.declarative import declarative_base
@@ -53,10 +51,9 @@ from .db_support import (
 )
 from .decorators import classproperty
 from .errors import AIException
-from .iterutil import split_every
 
 
-log = logging.getLogger("sapp")
+log: logging.Logger = logging.getLogger("sapp")
 
 
 Base = declarative_base()
@@ -82,7 +79,7 @@ class SourceLocation(object):
     begin_column and we have a single point.
     """
 
-    def __init__(self, line_no, begin_column, end_column=None):
+    def __init__(self, line_no, begin_column, end_column=None) -> None:
         self.line_no = line_no
         self.begin_column = begin_column
         self.end_column = end_column or self.begin_column
@@ -98,13 +95,13 @@ class SourceLocation(object):
         return SourceLocation.to_string(self)
 
     @staticmethod
-    def from_string(location_string):
+    def from_string(location_string) -> SourceLocation:
         location_points = location_string.split("|")
         assert len(location_points) == 3, "Invalid location string %s" % location_string
         return SourceLocation(*location_points)
 
     @staticmethod
-    def to_string(location):
+    def to_string(location) -> str:
         return "|".join(
             map(str, [location.line_no, location.begin_column, location.end_column])
         )
@@ -135,7 +132,7 @@ class SourceLocationType(types.TypeDecorator):
 
     impl = types.String
 
-    def __init__(self):
+    def __init__(self) -> None:
         super(SourceLocationType, self).__init__(length=255)
 
     def process_bind_param(self, value, dialect):
@@ -146,7 +143,7 @@ class SourceLocationType(types.TypeDecorator):
             return None
         return SourceLocation.to_string(value)
 
-    def process_result_value(self, value, dialect):
+    def process_result_value(self, value, dialect) -> Optional[SourceLocation]:
         """
         SQLAlchemy uses this to convert a string into a SourceLocation object.
         We separate the fields by a |
@@ -166,13 +163,13 @@ class SourceLocationsType(types.TypeDecorator):
 
     impl = types.String
 
-    def __init__(self):
+    def __init__(self) -> None:
         super(SourceLocationsType, self).__init__(length=4096)
 
-    def process_bind_param(self, value, dialect):
+    def process_bind_param(self, value, dialect) -> Optional[str]:
         if value is None:
             return None
-        return ",".join([SourceLocation.to_string(l) for l in value])
+        return ",".join([SourceLocation.to_string(location) for location in value])
 
     def process_result_value(self, value, dialect):
         if value is None or value == "":
@@ -188,18 +185,18 @@ class SourceLocationsType(types.TypeDecorator):
 class IssueDBID(DBID):
     __slots__ = ["replace_assocs"]
 
-    def __init__(self, id=None):
+    def __init__(self, id=None) -> None:
         super().__init__(id)
         self.replace_assocs = False
 
 
 class IssueDBIDType(DBIDType):
-    def process_result_value(self, value, dialect):
+    def process_result_value(self, value, dialect) -> IssueDBID:
         return IssueDBID(value)
 
 
 class IssueBIGDBIDType(BIGDBIDType):
-    def process_result_value(self, value, dialect):
+    def process_result_value(self, value, dialect) -> IssueDBID:
         return IssueDBID(value)
 
 
@@ -254,36 +251,40 @@ class SharedTextKind(enum.Enum):
     sink_detail = enum.auto()
 
     @classproperty
-    def FEATURE(cls):
+    def FEATURE(cls):  # noqa
         return cls.feature
 
     @classproperty
-    def MESSAGE(cls):
+    def MESSAGE(cls):  # noqa
         return cls.message
 
     @classproperty
-    def SOURCE(cls):
+    def SOURCE(cls):  # noqa
         return cls.source
 
     @classproperty
-    def SINK(cls):
+    def SINK(cls):  # noqa
         return cls.sink
 
     @classproperty
-    def CALLABLE(cls):
+    def CALLABLE(cls):  # noqa
         return cls.callable
 
     @classproperty
-    def FILENAME(cls):
+    def FILENAME(cls):  # noqa
         return cls.filename
 
     @classproperty
-    def SOURCE_DETAIL(cls):
+    def SOURCE_DETAIL(cls):  # noqa
         return cls.source_detail
 
     @classproperty
-    def SINK_DETAIL(cls):
+    def SINK_DETAIL(cls):  # noqa
         return cls.sink_detail
+
+    @classmethod
+    def from_string(cls, string: str) -> Optional[SharedTextKind]:
+        return cls.__members__.get(string)
 
 
 class SharedText(Base, PrepareMixin, RecordMixin):  # noqa
@@ -392,12 +393,20 @@ class TraceKind(enum.Enum):
     postcondition = enum.auto()
 
     @classproperty
-    def PRECONDITION(cls):
+    def PRECONDITION(cls):  # noqa
         return cls.precondition
 
     @classproperty
-    def POSTCONDITION(cls):
+    def POSTCONDITION(cls):  # noqa
         return cls.postcondition
+
+    @classmethod
+    def create_from_string(cls, value: str) -> TraceKind:  # noqa
+        if value == "precondition":
+            return cls.precondition
+        if value == "postcondition":
+            return cls.postcondition
+        raise ValueError(f"`{value}` is not a valid `TraceKind`")
 
 
 class IssueInstance(Base, PrepareMixin, MutableRecordMixin):  # noqa
@@ -430,7 +439,7 @@ class IssueInstance(Base, PrepareMixin, MutableRecordMixin):  # noqa
         uselist=False,
     )
 
-    is_new_issue = Column(
+    is_new_issue: Column[Optional[bool]] = Column(
         Boolean,
         index=True,
         default=False,
@@ -485,27 +494,27 @@ class IssueInstance(Base, PrepareMixin, MutableRecordMixin):  # noqa
         ),
     )
 
-    min_trace_length_to_sources = Column(
+    min_trace_length_to_sources: Column[Optional[int]] = Column(
         Integer, nullable=True, doc="The minimum trace length to sources"
     )
 
-    min_trace_length_to_sinks = Column(
+    min_trace_length_to_sinks: Column[Optional[int]] = Column(
         Integer, nullable=True, doc="The minimum trace length to sinks"
     )
 
-    rank = Column(
+    rank: Column[Optional[int]] = Column(
         Integer,
         server_default="0",
         doc="The higher the rank, the higher the priority for this issue",
     )
 
-    callable_count = Column(
+    callable_count: Column[Optional[int]] = Column(
         Integer,
         server_default="0",
         doc="Number of issues in this callable for this run",
     )
 
-    min_trace_length_to_entrypoints = Column(
+    min_trace_length_to_entrypoints: Column[Optional[int]] = Column(
         Integer, nullable=True, doc="The minimum trace length to entrypoints"
     )
 
@@ -550,23 +559,23 @@ class IssueStatus(enum.Enum):
     do_not_care = enum.auto()
 
     @classproperty
-    def UNCATEGORIZED(cls):
+    def UNCATEGORIZED(cls):  # noqa
         return cls.uncategorized
 
     @classproperty
-    def BAD_PRACTICE(cls):
+    def BAD_PRACTICE(cls):  # noqa
         return cls.bad_practice
 
     @classproperty
-    def FALSE_POSITIVE(cls):
+    def FALSE_POSITIVE(cls):  # noqa
         return cls.false_positive
 
     @classproperty
-    def VALID_BUG(cls):
+    def VALID_BUG(cls):  # noqa
         return cls.valid_bug
 
     @classproperty
-    def DO_NOT_CARE(cls):
+    def DO_NOT_CARE(cls):  # noqa
         return cls.do_not_care
 
 
@@ -582,7 +591,7 @@ class Issue(Base, PrepareMixin, MutableRecordMixin):  # noqa
     # pyre-fixme[8]: Attribute has type `IssueDBID`; used as `Column[typing.Any]`.
     id: IssueDBID = Column(IssueBIGDBIDType, primary_key=True, nullable=False)
 
-    handle = Column(
+    handle: Column[str] = Column(
         String(length=HANDLE_LENGTH),
         nullable=False,
         unique=True,
@@ -590,7 +599,7 @@ class Issue(Base, PrepareMixin, MutableRecordMixin):  # noqa
         + "different code revisions",
     )
 
-    code = Column(
+    code: Column[int] = Column(
         Integer, doc="Code identifiying the issue type", nullable=False, index=True
     )
 
@@ -598,14 +607,14 @@ class Issue(Base, PrepareMixin, MutableRecordMixin):  # noqa
         "IssueInstance", primaryjoin="Issue.id == foreign(IssueInstance.issue_id)"
     )
 
-    first_seen = Column(
+    first_seen: Column[datetime] = Column(
         DateTime,
         doc="time of the first run that found this issue",
         nullable=False,
         index=True,
     )
 
-    status = Column(
+    status: Column[str] = Column(
         Enum(IssueStatus),
         doc="Shows the issue status from the latest run",
         server_default="uncategorized",
@@ -613,21 +622,23 @@ class Issue(Base, PrepareMixin, MutableRecordMixin):  # noqa
         index=True,
     )
 
-    task_number = Column(
+    task_number: Column[Optional[int]] = Column(
         Integer, doc="Task number (not fbid) that is tracking this issue"
     )
 
-    triage_history_fbid = Column(
+    triage_history_fbid: Column[Optional[int]] = Column(
         BIGINT(unsigned=True),
         nullable=True,
         doc="FBID for EntZoncolanIssueTriageHistory",
     )
 
-    feedback_fbid = Column(
+    feedback_fbid: Column[Optional[int]] = Column(
         BIGINT(unsigned=True), nullable=True, doc="FBID for EntZoncolanFeedback"
     )
 
-    json = Column(types.TEXT, doc="Raw JSON of original issue", nullable=True)
+    json: Column[Optional[str]] = Column(
+        types.TEXT, doc="Raw JSON of original issue", nullable=True
+    )
 
     @classmethod
     def _take(cls, n, iterable):
@@ -650,19 +661,19 @@ class RunStatus(enum.Enum):
     failed = enum.auto()
 
     @classproperty
-    def FINISHED(cls):
+    def FINISHED(cls):  # noqa
         return cls.finished
 
     @classproperty
-    def INCOMPLETE(cls):
+    def INCOMPLETE(cls):  # noqa
         return cls.incomplete
 
     @classproperty
-    def SKIPPED(cls):
+    def SKIPPED(cls):  # noqa
         return cls.skipped
 
     @classproperty
-    def FAILED(cls):
+    def FAILED(cls):  # noqa
         return cls.failed
 
 
@@ -679,31 +690,35 @@ class Run(Base):  # noqa
 
     id = Column(BIGDBIDType, primary_key=True)
 
-    job_id = Column(String(length=255), index=True)
+    job_id: Column[Optional[str]] = Column(String(length=255), index=True)
 
-    date = Column(DateTime, doc="The date/time the analysis was run", nullable=False)
+    date: Column[datetime] = Column(
+        DateTime, doc="The date/time the analysis was run", nullable=False
+    )
 
-    commit_hash = Column(
+    commit_hash: Column[Optional[str]] = Column(
         String(length=255),
         doc="The commit hash of the codebase",
         nullable=True,
         index=True,
     )
 
-    revision_id = Column(
+    revision_id: Column[Optional[int]] = Column(
         Integer, doc="Differential revision (DXXXXXX)", nullable=True, index=True
     )
 
-    differential_id = Column(
+    differential_id: Column[Optional[int]] = Column(
         Integer,
         doc="Differential diff (instance of revision)",
         nullable=True,
         index=True,
     )
 
-    hh_version = Column(String(length=255), doc="The output of hh_server --version")
+    hh_version: Column[Optional[str]] = Column(
+        String(length=255), doc="The output of hh_server --version"
+    )
 
-    branch = Column(
+    branch: Column[Optional[str]] = Column(
         String(length=255),
         doc="Branch the commit is based on",
         nullable=True,
@@ -716,15 +731,15 @@ class Run(Base):  # noqa
         backref="run",
     )
 
-    status = Column(
+    status: Column[str] = Column(
         Enum(RunStatus), server_default="finished", nullable=False, index=True
     )
 
-    status_description = Column(
+    status_description: Column[Optional[str]] = Column(
         String(length=255), doc="The reason why a run didn't finish", nullable=True
     )
 
-    kind = Column(
+    kind: Column[Optional[str]] = Column(
         String(length=255),
         doc=(
             "Specify different kinds of runs, e.g. MASTER vs. TEST., GKFORXXX, etc. "
@@ -734,13 +749,13 @@ class Run(Base):  # noqa
         index=True,
     )
 
-    repository = Column(
+    repository: Column[Optional[str]] = Column(
         String(length=255),
         doc=("The repository that static analysis was run on."),
         nullable=True,
     )
 
-    db_version = Column(
+    db_version: Column[int] = Column(
         Integer,
         doc="Tracks under which DB version this was written (for migrations)",
         nullable=False,
@@ -748,7 +763,7 @@ class Run(Base):  # noqa
         server_default="0",
     )
 
-    def get_summary(self, **kwargs):
+    def get_summary(self, **kwargs) -> RunSummary:
         session = Session.object_session(self)
 
         return RunSummary(
@@ -806,18 +821,18 @@ class MetaRun(Base):  # noqa
 
     # This is the moral equivalent of job_id, but named in a more intuitive manner.
     # Allows determining the latest meta run for each custom run separately.
-    custom_run_name = Column(String(length=255), nullable=True)
+    custom_run_name: Column[Optional[str]] = Column(String(length=255), nullable=True)
 
-    date = Column(
+    date: Column[datetime] = Column(
         DateTime, doc="The date/time the meta-run was generated", nullable=False
     )
 
     # We want to be able to filter meta-runs by completion. Towards that end, we plan on
     # using the information of number of total runs vs. the number of runs written in
     # the database.
-    expected_run_count = Column(Integer, nullable=True)
+    expected_run_count: Column[Optional[int]] = Column(Integer, nullable=True)
 
-    kind = Column(
+    kind: Column[Optional[str]] = Column(
         String(length=255),
         doc=(
             "Specify different kinds of runs, e.g. MASTER vs. TEST., GKFORXXX, etc. "
@@ -827,7 +842,7 @@ class MetaRun(Base):  # noqa
         index=True,
     )
 
-    db_version = Column(
+    db_version: Column[int] = Column(
         Integer,
         doc="Tracks under which DB version this was written (for migrations)",
         nullable=False,
@@ -844,10 +859,10 @@ class RunSummary:
         job_id,
         num_new_issues,
         num_total_issues,
-        num_missing_preconditions=-1,
-        num_missing_postconditions=-1,
+        num_missing_preconditions: int = -1,
+        num_missing_postconditions: int = -1,
         alarm_counts=None,
-    ):
+    ) -> None:
         self.commit_hash = commit_hash
         self.differential_id = differential_id
         self.id = id
@@ -902,7 +917,7 @@ class TraceFrameLeafAssoc(Base, PrepareMixin, RecordMixin):  # noqa
     # The minimum trace length unfortunately can be off and actually lead to
     # loops. This is a known problem and any code generating traces should
     # additionally have cycle detection.
-    trace_length = Column(
+    trace_length: Column[Optional[int]] = Column(
         Integer, doc="minimum trace length to the given leaf", nullable=True
     )
 
@@ -929,7 +944,9 @@ class IssueInstanceFixInfo(Base, PrepareMixin, RecordMixin):  # noqa
     # pyre-fixme[8]: Attribute has type `DBID`; used as `Column[typing.Any]`.
     id: DBID = Column(BIGDBIDType, nullable=False, primary_key=True)
 
-    fix_info = Column(String(length=INNODB_MAX_INDEX_LENGTH), nullable=False)
+    fix_info: Column[str] = Column(
+        String(length=INNODB_MAX_INDEX_LENGTH), nullable=False
+    )
 
     issue_instance = relationship(
         "IssueInstance",
@@ -952,7 +969,7 @@ class TraceFrame(Base, PrepareMixin, RecordMixin):  # noqa
     # pyre-fixme[8]: Attribute has type `DBID`; used as `Column[typing.Any]`.
     id: DBID = Column(BIGDBIDType, nullable=False, primary_key=True)
 
-    kind = Column(Enum(TraceKind), nullable=False, index=False)
+    kind: Column[str] = Column(Enum(TraceKind), nullable=False, index=False)
 
     caller_id = Column(BIGDBIDType, nullable=False, server_default="0", default=0)
 
@@ -996,11 +1013,11 @@ class TraceFrame(Base, PrepareMixin, RecordMixin):  # noqa
 
     run_id = Column("run_id", BIGDBIDType, nullable=False, index=False)
 
-    type_interval_lower = Column(
+    type_interval_lower: Column[Optional[int]] = Column(
         Integer, nullable=True, doc="Class interval lower-bound (inclusive)"
     )
 
-    type_interval_upper = Column(
+    type_interval_upper: Column[Optional[int]] = Column(
         Integer, nullable=True, doc="Class interval upper-bound (inclusive)"
     )
 
@@ -1015,7 +1032,7 @@ class TraceFrame(Base, PrepareMixin, RecordMixin):  # noqa
         ),
     )
 
-    preserves_type_context = Column(
+    preserves_type_context: Column[bool] = Column(
         Boolean,
         default=False,
         server_default="0",
@@ -1071,7 +1088,7 @@ class TraceFrameAnnotation(Base, PrepareMixin, RecordMixin):  # noqa
         SourceLocationType, nullable=False, doc="The location for the message"
     )
 
-    kind = Column(String(length=255), nullable=True, index=True)
+    kind: Column[Optional[str]] = Column(String(length=255), nullable=True, index=True)
 
     # pyre-fixme[8]: Attribute has type `str`; used as `Column[str]`.
     message: str = Column(
@@ -1168,9 +1185,9 @@ class TraceFrameAnnotationTraceFrameAssoc(Base, PrepareMixin, RecordMixin):  # n
 class WarningMessage(Base):  # noqa
     __tablename__ = "warning_messages"
 
-    code = Column(Integer, autoincrement=False, primary_key=True)
+    code: Column[int] = Column(Integer, autoincrement=False, primary_key=True)
 
-    message = Column(String(length=4096), nullable=False)
+    message: Column[str] = Column(String(length=4096), nullable=False)
 
 
 class WarningCodeCategory(enum.Enum):
@@ -1182,11 +1199,11 @@ class WarningCodeCategory(enum.Enum):
     code_smell = enum.auto()
 
     @classproperty
-    def BUG(cls):
+    def BUG(cls):  # noqa
         return cls.bug
 
     @classproperty
-    def CODE_SMELL(cls):
+    def CODE_SMELL(cls):  # noqa
         return cls.code_smell
 
 
@@ -1195,7 +1212,7 @@ class WarningCodeProperties(Base):  # noqa
 
     __tablename__ = "warning_code_properties"
 
-    code = Column(
+    code: Column[int] = Column(
         Integer,
         autoincrement=False,
         nullable=False,
@@ -1203,7 +1220,7 @@ class WarningCodeProperties(Base):  # noqa
         doc="Code identifiying the issue type",
     )
 
-    category = Column(
+    category: Column[Optional[str]] = Column(
         Enum(WarningCodeCategory),
         nullable=True,
         index=False,
@@ -1214,25 +1231,25 @@ class WarningCodeProperties(Base):  # noqa
         ),
     )
 
-    new_issue_rate = Column(
+    new_issue_rate: Column[Optional[Decimal]] = Column(
         Float,
         nullable=True,
         index=False,
         doc="Average number of new issues per day (computed column)",
     )
 
-    bug_count = Column(
+    bug_count: Column[Optional[int]] = Column(
         Integer,
         nullable=True,
         index=False,
         doc="Number of issues in this category (computed column)",
     )
 
-    avg_trace_len = Column(
+    avg_trace_len: Column[Optional[Decimal]] = Column(
         Float, nullable=True, index=False, doc="Deprecated. See avg_fwd/bwd_trace_len"
     )
 
-    avg_fwd_trace_len = Column(
+    avg_fwd_trace_len: Column[Optional[Decimal]] = Column(
         Float,
         nullable=True,
         index=False,
@@ -1243,7 +1260,7 @@ class WarningCodeProperties(Base):  # noqa
         ),
     )
 
-    avg_bwd_trace_len = Column(
+    avg_bwd_trace_len: Column[Optional[Decimal]] = Column(
         Float,
         nullable=True,
         index=False,
@@ -1254,7 +1271,7 @@ class WarningCodeProperties(Base):  # noqa
         ),
     )
 
-    snr = Column(
+    snr: Column[Optional[Decimal]] = Column(
         Float,
         nullable=True,
         index=False,
@@ -1264,7 +1281,7 @@ class WarningCodeProperties(Base):  # noqa
         ),
     )
 
-    is_snr_significant = Column(
+    is_snr_significant: Column[Optional[bool]] = Column(
         Boolean,
         nullable=True,
         index=False,
@@ -1274,14 +1291,14 @@ class WarningCodeProperties(Base):  # noqa
         ),
     )
 
-    discoverable = Column(
+    discoverable: Column[Optional[bool]] = Column(
         Boolean,
         nullable=True,
         index=False,
         doc="True if an attacker can discover the issue",
     )
 
-    health_score = Column(
+    health_score: Column[Optional[Decimal]] = Column(
         Float,
         nullable=True,
         index=False,
@@ -1291,7 +1308,7 @@ class WarningCodeProperties(Base):  # noqa
         ),
     )
 
-    notes = Column(
+    notes: Column[Optional[str]] = Column(
         String(length=4096),
         nullable=True,
         index=False,
@@ -1318,9 +1335,9 @@ class PrimaryKeyGenerator(PrimaryKeyGeneratorBase):
     }
 
 
-def create(db: DB):
+def create(db: DB) -> None:
     try:
-        Base.metadata.create_all(db.engine)  # pyre-ignore [16]
+        Base.metadata.create_all(db.engine)
     except NoSuchTableError:
         pass
 

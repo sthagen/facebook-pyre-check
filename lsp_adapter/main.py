@@ -1,4 +1,4 @@
-# Copyright (c) 2019-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -16,7 +16,8 @@ from asyncio.events import AbstractEventLoop
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from ..client.find_directories import find_local_root
+from ..client.commands.persistent import Persistent
+from ..client.find_directories import find_global_and_local_root
 from ..client.json_rpc import JSON, JSONRPC, Request, Response
 from ..client.resources import get_configuration_value, log_directory
 from ..client.socket_connection import SocketConnection
@@ -26,21 +27,32 @@ class AdapterException(Exception):
     pass
 
 
-def _should_run_null_server(null_server_flag: bool) -> bool:
-    # TODO[T58989824]: We also need to check if the project can be run here.
-    # Needs updating to mimic the current implementation (i.e. catch the buck errors)
-    return null_server_flag
+def _find_local_root(base: Path) -> Optional[Path]:
+    found_root = find_global_and_local_root(base)
+    return None if found_root is None else found_root.local_root
 
 
 def _get_log_file(current_directory: str) -> str:
-    local_root = find_local_root(original_directory=current_directory)
-    return str(log_directory(current_directory, local_root, "server") / "adapter.log")
+    local_root = _find_local_root(Path(current_directory))
+    return str(
+        log_directory(
+            current_directory,
+            str(local_root) if local_root is not None else None,
+            "server",
+        )
+        / "adapter.log"
+    )
 
 
 def _socket_exists(current_directory: str) -> bool:
-    local_root = find_local_root(original_directory=current_directory)
+    local_root = _find_local_root(Path(current_directory))
     return Path.exists(
-        log_directory(current_directory, local_root, "server") / "adapter.sock"
+        log_directory(
+            current_directory,
+            str(local_root) if local_root is not None else None,
+            "server",
+        )
+        / "adapter.sock"
     )
 
 
@@ -50,11 +62,6 @@ def _start_server(current_directory: str) -> None:
 
 def _get_version(root: str) -> str:
     return get_configuration_value(root, "version")
-
-
-def _null_initialize_response(request_id: Optional[Union[str, int]]) -> None:
-    response = Response(id=request_id, result={"capabilities": {}})
-    response.write(sys.stdout.buffer)
 
 
 def _parse_json_rpc(data: bytes) -> List[JSON]:
@@ -94,14 +101,21 @@ class Notifications:
     def show_server_crashed(cls) -> None:
         cls.show_message(method="window/showStatus", message="Pyre server crashed.")
 
-
-class NullServerAdapterProtocol(asyncio.Protocol):
-    def data_received(self, data: bytes) -> None:
-        json_body = _parse_json_rpc(data)
-        _null_initialize_response(json_body[0]["id"])
+    @classmethod
+    def show_pyre_initialize_error(cls, project_root: str) -> None:
+        cls.show_message(
+            method="window/showMessageRequest",
+            message=f"Unable to start Pyre server. Pyre errors will \
+            not be shown for files in `{project_root}`",
+        )
 
 
 class AdapterProtocol(asyncio.Protocol):
+    """
+    Listens to requests from VSCode, and writes them to the
+    Pyre server via the open socket connection.
+    """
+
     def __init__(self, socket: SocketConnection, root: str) -> None:
         self.socket = socket
         self.root = root
@@ -125,6 +139,11 @@ class AdapterProtocol(asyncio.Protocol):
 
 
 class SocketProtocol(asyncio.Protocol):
+    """
+    Listens for messages from the Pyre Server and writes
+    them to stdout (or to VSCode)
+    """
+
     def data_received(self, data: bytes) -> None:
         sys.stdout.buffer.write(data)
         sys.stdout.buffer.flush()
@@ -134,16 +153,11 @@ class SocketProtocol(asyncio.Protocol):
         Notifications.prompt_restart()
 
 
-def run_null_server(loop: AbstractEventLoop) -> None:
-    stdin_pipe_reader = loop.connect_read_pipe(NullServerAdapterProtocol, sys.stdin)
-    loop.run_until_complete(stdin_pipe_reader)
-    loop.run_forever()
-
-
 def add_socket_connection(loop: AbstractEventLoop, root: str) -> SocketConnection:
-    local_root = find_local_root(original_directory=root)
+    local_root = _find_local_root(Path(root))
     socket_connection = SocketConnection(
-        str(log_directory(root, local_root)), "adapter.sock"
+        str(log_directory(root, str(local_root) if local_root is not None else None)),
+        "adapter.sock",
     )
     socket_connection.connect()
     socket_connection.perform_handshake(_get_version(root))
@@ -184,14 +198,18 @@ def run_server(loop: AbstractEventLoop, root: str) -> None:
     loop.run_forever()
 
 
-def main(arguments: argparse.Namespace) -> None:
-    root = arguments.root
-    loop: AbstractEventLoop = asyncio.get_event_loop()
+def start_and_run_server(loop: AbstractEventLoop, root: str) -> None:
     try:
-        if _should_run_null_server(arguments.null_server):
-            return run_null_server(loop)
         _start_server(root)
         run_server(loop, root)
+    except Exception:
+        Persistent.run_null_server()
+
+
+def main(root: str, null_server: bool) -> None:
+    try:
+        loop: AbstractEventLoop = asyncio.get_event_loop()
+        start_and_run_server(loop, root)
     finally:
         loop.close()
 
@@ -201,4 +219,4 @@ if __name__ == "__main__":
     parser.add_argument("--null-server", default=False, action="store_true")
     parser.add_argument("--root", type=str, required=True)
     arguments: argparse.Namespace = parser.parse_args()
-    main(arguments)
+    main(arguments.root, arguments.null_server)

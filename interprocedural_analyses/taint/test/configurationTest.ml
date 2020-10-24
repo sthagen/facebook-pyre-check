@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open OUnit2
@@ -34,15 +36,22 @@ let test_simple _ =
            code: 2001,
            message_format: "whatever"
         }
-      ]
+      ],
+      options: {
+        maximum_overrides_to_analyze: 50
+      }
     }
   |}
   in
   assert_equal configuration.sources ["A"; "B"];
-  assert_equal configuration.sinks ["D"; "C"];
+  assert_equal configuration.sinks ["C"; "D"];
   assert_equal configuration.features ["E"; "F"];
   assert_equal (List.length configuration.rules) 1;
-  assert_equal (List.hd_exn configuration.rules).code 2001
+  assert_equal (List.hd_exn configuration.rules).code 2001;
+  assert_equal
+    ~cmp:(Option.equal Int.equal)
+    configuration.analysis_model_constraints.maximum_overrides_to_analyze
+    (Some 50)
 
 
 let test_invalid_source _ =
@@ -99,15 +108,15 @@ let test_invalid_sink _ =
 
 
 let test_combined_source_rules _ =
-  let configuration =
-    parse
-      {|
+  let assert_fails configuration ~expected =
+    assert_raises expected (fun () -> parse configuration |> ignore)
+  in
+  assert_fails
+    ~expected:(Yojson.Safe.Util.Type_error ("Expected string, got null", `Null))
+    {|
     { sources: [
         { name: "A" },
         { name: "B" }
-      ],
-      sinks: [
-        { name: "C", multi_sink_labels: ["a", "b"] }
       ],
       combined_source_rules: [
         {
@@ -119,10 +128,28 @@ let test_combined_source_rules _ =
         }
       ]
     }
+  |};
+  let configuration =
+    parse
+      {|
+    { sources: [
+        { name: "A" },
+        { name: "B" }
+      ],
+      combined_source_rules: [
+        {
+           name: "test combined rule",
+           sources: {"a": "A", "b": "B"},
+           partial_sink: "C",
+           code: 2001,
+           message_format: "some form"
+        }
+      ]
+    }
   |}
   in
   assert_equal configuration.sources ["A"; "B"];
-  assert_equal configuration.sinks ["C"];
+  assert_equal configuration.sinks [];
   assert_equal
     ~printer:(List.to_string ~f:Taint.TaintConfiguration.Rule.show)
     ~cmp:(List.equal Taint.TaintConfiguration.Rule.equal)
@@ -143,89 +170,80 @@ let test_combined_source_rules _ =
         name = "test combined rule";
       };
     ];
-  assert_equal (List.hd_exn configuration.rules).code 2001
-
-
-let test_combined_source_parse_errors _ =
-  let assert_fails configuration ~expected =
-    assert_raises expected (fun () -> parse configuration |> ignore)
-  in
-  assert_fails
-    {|
-    {
-      sources: [
-        {  name: "A" }
+  assert_equal (List.hd_exn configuration.rules).code 2001;
+  assert_equal (String.Map.Tree.to_alist configuration.partial_sink_labels) ["C", ["a"; "b"]];
+  let configuration =
+    parse
+      {|
+    { sources: [
+        { name: "A" },
+        { name: "B" },
+        { name: "C" }
       ],
-      sinks: [
+      sinks: [],
+      combined_source_rules: [
         {
-          name: "B",
-          multi_sink_labels: ["a", "b"]
-        }
-      ],
-      rules: [
-        {
-           name: "test rule",
-           sources: ["A"],
-           sinks: ["B"],
+           name: "test combined rule",
+           sources: {"a": "A", "b": ["B", "C"]},
+           partial_sink: "CombinedSink",
            code: 2001,
-           message_format: "whatever"
+           message_format: "some form"
         }
       ]
     }
   |}
-    ~expected:(Failure "Multi sink `B` can't be used for a regular rule.");
+  in
+  assert_equal configuration.sources ["A"; "B"; "C"];
+  assert_equal configuration.sinks [];
+  assert_equal
+    (String.Map.Tree.to_alist configuration.partial_sink_labels)
+    ["CombinedSink", ["a"; "b"]];
+  assert_equal
+    ~printer:(List.to_string ~f:Taint.TaintConfiguration.Rule.show)
+    ~cmp:(List.equal Taint.TaintConfiguration.Rule.equal)
+    configuration.rules
+    [
+      {
+        Taint.TaintConfiguration.Rule.sources = [Sources.NamedSource "A"];
+        sinks = [Sinks.TriggeredPartialSink { kind = "CombinedSink"; label = "a" }];
+        code = 2001;
+        message_format = "some form";
+        name = "test combined rule";
+      };
+      {
+        Taint.TaintConfiguration.Rule.sources = [Sources.NamedSource "B"; Sources.NamedSource "C"];
+        sinks = [Sinks.TriggeredPartialSink { kind = "CombinedSink"; label = "b" }];
+        code = 2001;
+        message_format = "some form";
+        name = "test combined rule";
+      };
+    ];
+  assert_equal (List.hd_exn configuration.rules).code 2001;
   assert_fails
+    ~expected:(Failure "Partial sinks must be unique - an entry for `C` already exists.")
     {|
-    {
-      sources: [
+    { sources: [
         { name: "A" },
         { name: "B" }
-      ],
-      sinks: [
-        {
-          name: "C"
-        }
       ],
       combined_source_rules: [
         {
            name: "test combined rule",
            sources: {"a": "A", "b": "B"},
-           sinks: ["C"],
+           partial_sink: "C",
            code: 2001,
            message_format: "some form"
-        }
-      ]
-    }
-  |}
-    ~expected:(Failure "Error when parsing configuration: `C` is not a multi sink.");
-  assert_fails
-    {|
-    {
-      sources: [
-        { name: "A" },
-        { name: "B" }
-      ],
-      sinks: [
-        {
-          name: "C",
-          multi_sink_labels: ["a", "b"]
-        }
-      ],
-      combined_source_rules: [
+        },
         {
            name: "test combined rule",
-           sources: {"a": "A", "invalid": "B"},
-           sinks: ["C"],
-           code: 2001,
-           message_format: "some form"
+           sources: {"a": "A", "b": "B"},
+           partial_sink: "C",
+           code: 2002,
+           message_format: "other form"
         }
       ]
     }
   |}
-    ~expected:
-      (Failure
-         "Error when parsing configuration: `invalid` is an invalid label For multi sink `C` \
-          (choices: `a, b`)")
 
 
 let test_empty _ =
@@ -247,12 +265,12 @@ let test_partial_sink_converter _ =
     {|
     {
       sources: [{ name: "A" }, { name: "B" }],
-      sinks: [{ name: "C", multi_sink_labels: ["ca", "cb"] }],
+      sinks: [],
       combined_source_rules: [
         {
            name: "c rule",
            sources: {"ca": "A", "cb": "B"},
-           sinks: ["C"],
+           partial_sink: "C",
            code: 2001,
            message_format: "some form"
         }
@@ -266,12 +284,12 @@ let test_partial_sink_converter _ =
     {|
     {
       sources: [{ name: "A" }, { name: "B" }],
-      sinks: [{ name: "C", multi_sink_labels: ["ca", "cb"] }],
+      sinks: [],
       combined_source_rules: [
         {
            name: "c rule",
            sources: {"ca": "A", "cb": "B"},
-           sinks: ["C"],
+           partial_sink: "C",
            code: 2001,
            message_format: "some form"
         }
@@ -285,12 +303,12 @@ let test_partial_sink_converter _ =
     {|
     {
       sources: [{ name: "A" }, { name: "B" }],
-      sinks: [{ name: "C", multi_sink_labels: ["ca", "cb"] }],
+      sinks: [],
       combined_source_rules: [
         {
            name: "c rule",
            sources: {"ca": "A", "cb": "B"},
-           sinks: ["C"],
+           partial_sink: "C",
            code: 2001,
            message_format: "some form"
         }
@@ -304,12 +322,12 @@ let test_partial_sink_converter _ =
     {|
     {
       sources: [{ name: "A" }, { name: "B" }],
-      sinks: [{ name: "C", multi_sink_labels: ["ca", "cb"] }],
+      sinks: [],
       combined_source_rules: [
         {
            name: "c rule",
            sources: {"ca": "A", "cb": "B"},
-           sinks: ["C"],
+           partial_sink: "C",
            code: 2001,
            message_format: "some form"
         }
@@ -339,7 +357,10 @@ let test_multiple_configurations _ =
               { name: "E" },
               { name: "F" }
             ],
-            rules: []
+            rules: [],
+            options: {
+              maximum_overrides_to_analyze: 42
+            }
            }
            |};
         Yojson.Safe.from_string
@@ -362,17 +383,24 @@ let test_multiple_configurations _ =
       ]
   in
   assert_equal configuration.sources ["A"; "B"];
-  assert_equal configuration.sinks ["D"; "C"];
+  assert_equal configuration.sinks ["C"; "D"];
   assert_equal configuration.features ["E"; "F"];
   assert_equal (List.length configuration.rules) 1;
-  assert_equal (List.hd_exn configuration.rules).code 2001
+  assert_equal (List.hd_exn configuration.rules).code 2001;
+  assert_equal
+    ~cmp:(Option.equal Int.equal)
+    configuration.analysis_model_constraints.maximum_overrides_to_analyze
+    (Some 42)
 
 
 let test_validate _ =
-  let assert_validation_error ~error configuration =
+  let assert_validation_error_with_multiple_configurations ~error configurations =
     assert_raises (Failure error) (fun () ->
-        Taint.TaintConfiguration.parse [Yojson.Safe.from_string configuration]
+        Taint.TaintConfiguration.parse (List.map configurations ~f:Yojson.Safe.from_string)
         |> Taint.TaintConfiguration.validate)
+  in
+  let assert_validation_error ~error configuration =
+    assert_validation_error_with_multiple_configurations ~error [configuration]
   in
   assert_validation_error
     ~error:"Duplicate entry for source: `UserControlled`"
@@ -522,20 +550,149 @@ let test_validate _ =
         }
       ]
     }
+    |};
+  assert_validation_error_with_multiple_configurations
+    ~error:"Multiple values were passed in for overrides to analyze."
+    [
+      {|
+      {
+        sources: [],
+        sinks: [],
+        features: [],
+        rules: [],
+        options: {
+          maximum_overrides_to_analyze: 50
+        }
+      }
+      |};
+      {|
+      {
+        sources: [],
+        sinks: [],
+        features: [],
+        rules: [],
+        options: {
+          maximum_overrides_to_analyze: 60
+        }
+      }
+      |};
+    ];
+  assert_validation_error
+    ~error:"Unsupported taint source `MisspelledStringDigit`"
+    {|
+          {
+            sources: [{ name: "StringDigit" }],
+            sinks: [],
+            features: [],
+            rules: [],
+            implicit_sources: {
+              literal_strings: [
+                {
+                  "regexp": "^\\d+$",
+                  "kind": "MisspelledStringDigit"
+                }
+              ]
+            }
+          }
+    |};
+  assert_validation_error
+    ~error:"Unsupported taint sink `Misspelled`"
+    {|
+          {
+            sources: [],
+            sinks: [{ name: "Test" }],
+            features: [],
+            rules: [],
+            implicit_sinks: {
+              literal_strings: [
+                {
+                  "regexp": "^\\d+$",
+                  "kind": "Misspelled"
+                }
+              ]
+            }
+          }
     |}
+
+
+let test_implicit_sources _ =
+  let configuration =
+    TaintConfiguration.parse
+      [
+        Yojson.Safe.from_string
+          {|
+          { sources: [{ name: "StringDigit" }],
+            sinks: [],
+            features: [],
+            rules: [],
+            implicit_sources: {
+              literal_strings: [
+                {
+                  "regexp": "^\\d+$",
+                  "kind": "StringDigit"
+                }
+              ]
+            }
+           }
+           |};
+      ]
+  in
+  assert_equal configuration.sources ["StringDigit"];
+  match configuration.implicit_sources with
+  | { TaintConfiguration.literal_strings = [{ pattern; source_kind }] } ->
+      assert_equal ~cmp:Sources.equal source_kind (Sources.NamedSource "StringDigit");
+      assert_equal
+        ~cmp:(fun left right -> Re2.compare left right = 0)
+        pattern
+        (Re2.create_exn "^\\d+$")
+  | _ -> Test.assert_unreached ()
+
+
+let test_implicit_sinks _ =
+  let configuration =
+    TaintConfiguration.parse
+      [
+        Yojson.Safe.from_string
+          {|
+          { sources: [],
+            sinks: [{ name: "HTMLContainer" }],
+            features: [],
+            rules: [],
+            implicit_sinks: {
+              literal_strings: [
+                {
+                  "regexp": "<.*>",
+                  "kind": "HTMLContainer"
+                }
+              ]
+            }
+           }
+           |};
+      ]
+  in
+  assert_equal configuration.sinks ["HTMLContainer"];
+  match configuration.implicit_sinks with
+  | { TaintConfiguration.literal_string_sinks = [{ pattern; sink_kind }]; _ } ->
+      assert_equal ~cmp:Sinks.equal sink_kind (Sinks.NamedSink "HTMLContainer");
+      assert_equal
+        ~cmp:(fun left right -> Re2.compare left right = 0)
+        pattern
+        (Re2.create_exn "<.*>")
+  | _ -> Test.assert_unreached ()
 
 
 let () =
   "configuration"
   >::: [
          "combined_source_rules" >:: test_combined_source_rules;
-         "combined_source_parse_errors" >:: test_combined_source_parse_errors;
          "empty" >:: test_empty;
+         "implicit_sources" >:: test_implicit_sources;
+         "implicit_sinks" >:: test_implicit_sinks;
          "invalid_sink" >:: test_invalid_sink;
          "invalid_source" >:: test_invalid_source;
-         "simple" >:: test_simple;
-         "partial_sink_converter" >:: test_partial_sink_converter;
          "multiple_configurations" >:: test_multiple_configurations;
+         "partial_sink_converter" >:: test_partial_sink_converter;
+         "simple" >:: test_simple;
          "validate" >:: test_validate;
        ]
   |> Test.run

@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -11,13 +11,28 @@ from typing import Dict, List, Optional
 from typing_extensions import Final
 
 from ..configuration import Configuration
-from ..errors import Errors
 from ..filesystem import find_files
 from ..repository import Repository
 from .command import CommandArguments, ErrorSuppressingCommand
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
+
+
+def consolidate_nested(
+    repository: Repository, topmost: Path, nested: List[Path]
+) -> None:
+    total_targets = []
+    for nested_configuration in nested:
+        configuration = Configuration(nested_configuration)
+        targets = configuration.targets
+        if targets:
+            total_targets.extend(targets)
+            repository.remove_paths([nested_configuration])
+    configuration = Configuration(topmost)
+    configuration.add_targets(total_targets)
+    configuration.deduplicate_targets()
+    configuration.write()
 
 
 class ConsolidateNestedConfigurations(ErrorSuppressingCommand):
@@ -27,13 +42,9 @@ class ConsolidateNestedConfigurations(ErrorSuppressingCommand):
         *,
         repository: Repository,
         subdirectory: Optional[str],
-        no_commit: bool,
-        submit: bool,
     ) -> None:
         super().__init__(command_arguments, repository)
         self._subdirectory: Final[Optional[str]] = subdirectory
-        self._no_commit: bool = no_commit
-        self._submit: bool = submit
 
     @staticmethod
     def from_arguments(
@@ -44,8 +55,6 @@ class ConsolidateNestedConfigurations(ErrorSuppressingCommand):
             command_arguments,
             repository=repository,
             subdirectory=arguments.subdirectory,
-            no_commit=arguments.no_commit,
-            submit=arguments.submit,
         )
 
     @classmethod
@@ -53,13 +62,10 @@ class ConsolidateNestedConfigurations(ErrorSuppressingCommand):
         super(ConsolidateNestedConfigurations, cls).add_arguments(parser)
         parser.set_defaults(command=cls.from_arguments)
         parser.add_argument("--subdirectory")
-        parser.add_argument(
-            "--no-commit", action="store_true", help="Keep changes in working state."
-        )
-        parser.add_argument("--submit", action="store_true", help=argparse.SUPPRESS)
 
+    @staticmethod
     def gather_nested_configuration_mapping(
-        self, configurations: List[str]
+        configurations: List[str],
     ) -> Dict[str, List[str]]:
         nested_configurations = {}
         for configuration in configurations:
@@ -69,9 +75,9 @@ class ConsolidateNestedConfigurations(ErrorSuppressingCommand):
             inserted = False
             for topmost_configuration in nested_configurations.keys():
                 existing = topmost_configuration.replace(
-                    "/.pyre_configuration.local", ""
+                    ".pyre_configuration.local", ""
                 )
-                current = configuration.replace("/.pyre_configuration.local", "")
+                current = configuration.replace(".pyre_configuration.local", "")
                 if current.startswith(existing):
                     nested_configurations[topmost_configuration].append(configuration)
                     inserted = True
@@ -87,31 +93,11 @@ class ConsolidateNestedConfigurations(ErrorSuppressingCommand):
                 nested_configurations[configuration] = []
         return nested_configurations
 
-    def consolidate(self, topmost: Path, nested: List[Path]) -> None:
-        total_targets = []
-        for nested_configuration in nested:
-            configuration = Configuration(nested_configuration)
-            targets = configuration.targets
-            if targets:
-                total_targets.extend(targets)
-        configuration = Configuration(topmost)
-        configuration.add_targets(total_targets)
-        configuration.deduplicate_targets()
-        configuration.write()
-        self._repository.remove_paths(nested)
-
-        # Suppress errors
-        all_errors = configuration.get_errors()
-        for _, errors in all_errors:
-            self._suppress_errors(Errors(list(errors)))
-
     def run(self) -> None:
         subdirectory = self._subdirectory
         subdirectory = Path(subdirectory) if subdirectory else Path.cwd()
 
         # Find configurations
-        # pyre-fixme[6]: Expected `Iterable[Variable[_LT (bound to
-        #  _SupportsLessThan)]]` for 1st param but got `List[str]`.
         configurations = sorted(find_files(subdirectory, ".pyre_configuration.local"))
         if not configurations:
             LOG.warning(
@@ -132,13 +118,16 @@ class ConsolidateNestedConfigurations(ErrorSuppressingCommand):
         for topmost, nested in nested_configurations.items():
             if len(nested) == 0:
                 continue
-            self.consolidate(
-                Path(topmost), [Path(configuration) for configuration in nested]
+            consolidate_nested(
+                self._repository,
+                Path(topmost),
+                [Path(configuration) for configuration in nested],
             )
+            configuration = Configuration(Path(topmost))
+            self._suppress_errors(configuration)
 
-        self._repository.submit_changes(
+        self._repository.commit_changes(
             commit=(not self._no_commit),
-            submit=self._submit,
             title=f"Consolidate configurations in {subdirectory}",
             summary="Consolidating nested configurations.",
             set_dependencies=False,

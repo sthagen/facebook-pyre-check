@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Domains
@@ -113,11 +115,18 @@ module Backward = struct
     BackwardState.to_external_json ~filename_lookup taint_in_taint_out
 end
 
+type sanitize_kind =
+  | SanitizeSources
+  | SanitizeSinks
+  | SanitizeTITO
+  | SanitizeAll
+[@@deriving show, compare, eq]
+
 type mode =
   | SkipAnalysis (* Don't analyze at all *)
-  | Sanitize (* Analyze, but throw away inferred model *)
+  | Sanitize of sanitize_kind list (* Analyze, but throw away inferred model *)
   | Normal
-[@@deriving show]
+[@@deriving show, eq]
 
 type call_model = {
   forward: Forward.model;
@@ -164,8 +173,10 @@ module ResultArgument = struct
     match left, right with
     | SkipAnalysis, _ -> SkipAnalysis
     | _, SkipAnalysis -> SkipAnalysis
-    | Sanitize, _ -> Sanitize
-    | _, Sanitize -> Sanitize
+    | Sanitize left, Sanitize right ->
+        Sanitize (List.dedup_and_sort ~compare:compare_sanitize_kind (left @ right))
+    | Sanitize _, _ -> left
+    | _, Sanitize _ -> right
     | Normal, Normal -> Normal
 
 

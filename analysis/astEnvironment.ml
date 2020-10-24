@@ -1,7 +1,9 @@
-(* Copyright (c) 2019-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Ast
 open Core
@@ -13,6 +15,7 @@ type t = { module_tracker: ModuleTracker.t }
 module ParserError = struct
   type t = {
     source_path: SourcePath.t;
+    is_suppressed: bool;
     message: string;
   }
   [@@deriving sexp, compare, hash]
@@ -103,7 +106,10 @@ end
 
 type parse_result =
   | Success of Source.t
-  | Error of string
+  | Error of {
+      message: string;
+      is_suppressed: bool;
+    }
 
 let parse_source ~configuration ({ SourcePath.relative; qualifier; _ } as source_path) =
   let parse_lines lines =
@@ -114,13 +120,21 @@ let parse_source ~configuration ({ SourcePath.relative; qualifier; _ } as source
     with
     | Parser.Error error
     | Failure error ->
-        Error error
+        let is_suppressed =
+          let { Source.Metadata.local_mode; ignore_codes; _ } = metadata in
+          match Source.mode ~configuration ~local_mode with
+          | Source.Declare -> true
+          | _ ->
+              (* NOTE: The number needs to be updated when the error code changes. *)
+              List.exists ignore_codes ~f:(Int.equal 404)
+        in
+        Error { message = error; is_suppressed }
   in
   let path = SourcePath.full_path ~configuration source_path in
   try File.lines_exn (File.create path) |> parse_lines with
   | Sys_error error ->
       let message = Format.asprintf "Cannot open file `%a` due to: %s" Path.pp path error in
-      Error message
+      Error { message; is_suppressed = false }
 
 
 let parse_raw_sources ~configuration ~scheduler ~ast_environment source_paths =
@@ -130,10 +144,10 @@ let parse_raw_sources ~configuration ~scheduler ~ast_environment source_paths =
         let source = Preprocessing.preprocess_phase0 source in
         Raw.add_parsed_source ast_environment source;
         qualifier :: result
-    | Error message ->
+    | Error { message; is_suppressed } ->
         let { SourcePath.qualifier; _ } = source_path in
         let message = String.split_lines message |> List.hd |> Option.value ~default:"" in
-        Raw.add_unparsed_source ast_environment { ParserError.source_path; message };
+        Raw.add_unparsed_source ast_environment { ParserError.source_path; message; is_suppressed };
         qualifier :: result
   in
   Scheduler.map_reduce

@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Newserver
 
@@ -34,5 +36,10 @@ module ScratchProject : sig
     (string * string) list ->
     t
 
-  val test_server_with : f:(Client.t -> unit Lwt.t) -> t -> unit Lwt.t
+  val test_server_with
+    :  ?expected_exit_status:Start.ExitStatus.t ->
+    ?on_server_socket_ready:(Pyre.Path.t -> unit Lwt.t) ->
+    f:(Client.t -> unit Lwt.t) ->
+    t ->
+    unit Lwt.t
 end

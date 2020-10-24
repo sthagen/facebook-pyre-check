@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Ast
@@ -9,40 +11,7 @@ open Analysis
 open Expression
 open Pyre
 
-let defining_attribute ~resolution parent_type attribute =
-  let global_resolution = Resolution.global_resolution resolution in
-  Type.split parent_type
-  |> fst
-  |> Type.primitive_name
-  >>= fun class_name ->
-  GlobalResolution.attribute_from_class_name
-    ~transitive:true
-    ~resolution:global_resolution
-    ~name:attribute
-    ~instantiated:parent_type
-    class_name
-  >>= fun instantiated_attribute ->
-  if Annotated.Attribute.defined instantiated_attribute then
-    Some instantiated_attribute
-  else
-    Resolution.fallback_attribute ~resolution ~name:attribute class_name
-
-
 let strip_optional annotation = Type.optional_value annotation |> Option.value ~default:annotation
-
-let rec resolve_ignoring_optional ~resolution expression =
-  let annotation =
-    match Node.value expression with
-    | Expression.Name (Name.Attribute { base; attribute; _ }) -> (
-        let base_type = resolve_ignoring_optional ~resolution base |> strip_optional in
-        match defining_attribute ~resolution base_type attribute with
-        | Some _ -> Resolution.resolve_attribute_access resolution ~base_type ~attribute
-        | None -> Resolution.resolve_expression_to_type resolution expression
-        (* Lookup the base_type for the attribute you were interested in *) )
-    | _ -> Resolution.resolve_expression_to_type resolution expression
-  in
-  strip_optional annotation
-
 
 let strip_optional_and_meta t =
   t |> (fun t -> if Type.is_meta t then Type.single_parameter t else t) |> strip_optional
@@ -52,7 +21,7 @@ let get_property_defining_parent ~resolution ~base ~attribute =
   let annotation =
     Resolution.resolve_expression_to_type resolution base |> strip_optional_and_meta
   in
-  match defining_attribute ~resolution annotation attribute with
+  match CallGraph.defining_attribute ~resolution annotation attribute with
   | Some property when Annotated.Attribute.property property ->
       Annotated.Attribute.parent property |> Reference.create |> Option.some
   | _ -> None
@@ -76,59 +45,6 @@ let extract_constant_name { Node.value = expression; _ } =
   | _ -> None
 
 
-(* Figure out what target to pick for an indirect call that resolves to implementation_target.
-   E.g., if the receiver type is A, and A derives from Base, and the target is Base.method, then
-   targetting the override tree of Base.method is wrong, as it would include all siblings for A.
-
- * Instead, we have the following cases:
- * a) receiver type matches implementation_target's declaring type -> override implementation_target
- * b) no implementation_target override entries are subclasses of A -> real implementation_target
- * c) some override entries are subclasses of A -> search upwards for actual implementation,
- *    and override all those where the override name is
- *  1) the override target if it exists in the override shared mem
- *  2) the real target otherwise
- *)
-let compute_indirect_targets ~resolution ~receiver_type implementation_target =
-  (* Target name must be the resolved implementation target *)
-  let global_resolution = Resolution.global_resolution resolution in
-  let get_class_type = GlobalResolution.parse_reference global_resolution in
-  let get_actual_target method_name =
-    if DependencyGraphSharedMemory.overrides_exist method_name then
-      Callable.create_override method_name
-    else
-      Callable.create_method method_name
-  in
-  let receiver_type = strip_optional_and_meta receiver_type |> Type.weaken_literals in
-  let declaring_type = Reference.prefix implementation_target in
-  if
-    declaring_type
-    >>| Reference.equal (Type.class_name receiver_type)
-    |> Option.value ~default:false
-  then (* case a *)
-    [get_actual_target implementation_target]
-  else
-    let target_callable = Callable.create_method implementation_target in
-    match DependencyGraphSharedMemory.get_overriding_types ~member:implementation_target with
-    | None ->
-        (* case b *)
-        [target_callable]
-    | Some overriding_types ->
-        (* case c *)
-        let keep_subtypes candidate =
-          let candidate_type = get_class_type candidate in
-          GlobalResolution.less_or_equal global_resolution ~left:candidate_type ~right:receiver_type
-        in
-        let override_targets =
-          let create_override_target class_name =
-            let method_name = Reference.last implementation_target in
-            Reference.create ~prefix:class_name method_name |> get_actual_target
-          in
-          List.filter overriding_types ~f:keep_subtypes
-          |> fun subtypes -> List.map subtypes ~f:create_override_target
-        in
-        target_callable :: override_targets
-
-
 let rec is_all_names = function
   | Expression.Name (Name.Identifier identifier) when not (is_local identifier) -> true
   | Name (Name.Attribute { base; attribute; _ }) when not (is_local attribute) ->
@@ -137,7 +53,7 @@ let rec is_all_names = function
 
 
 let resolve_target ~resolution ?receiver_type callee =
-  let callable_type = resolve_ignoring_optional ~resolution callee in
+  let callable_type = CallGraph.resolve_ignoring_optional ~resolution callee in
   let global =
     match get_identifier_base callee, Node.value callee with
     | Some "super", _
@@ -153,7 +69,7 @@ let resolve_target ~resolution ?receiver_type callee =
         let is_class =
           match Node.value callee with
           | Name (Name.Attribute { base; _ }) ->
-              resolve_ignoring_optional ~resolution base
+              CallGraph.resolve_ignoring_optional ~resolution base
               |> GlobalResolution.class_definition (Resolution.global_resolution resolution)
               |> Option.is_some
           | _ -> false
@@ -177,10 +93,85 @@ let resolve_target ~resolution ?receiver_type callee =
     | Expression.Name (Name.Identifier name) -> is_local name
     | _ -> false
   in
-  let rec resolve_type callable_type =
+  let resolve_lru_cache ~implementing_class =
+    match implementing_class, Node.value callee with
+    | Type.Top, Name name when is_all_names ->
+        (* If implementing_class is unknown, this must be a function rather than a method. We can
+           use global resolution on the callee. *)
+        GlobalResolution.global
+          (Resolution.global_resolution resolution)
+          (Ast.Expression.name_to_reference_exn name)
+        >>= (fun { AttributeResolution.Global.undecorated_signature; _ } ->
+              Some (undecorated_signature, None))
+        |> Option.value ~default:(None, None)
+    | _ -> (
+        let implementing_class_name =
+          if Type.is_meta implementing_class then
+            Type.parameters implementing_class
+            >>= fun parameters ->
+            List.nth parameters 0
+            >>= function
+            | Single implementing_class -> Some implementing_class
+            | _ -> None
+          else
+            Some implementing_class
+        in
+        match implementing_class_name with
+        | Some implementing_class_name ->
+            let class_primitive =
+              match implementing_class_name with
+              | Parametric { name; _ } -> Some name
+              | Primitive name -> Some name
+              | _ -> None
+            in
+            let method_name =
+              match Node.value callee with
+              | Expression.Name (Name.Attribute { attribute; _ }) -> Some attribute
+              | _ -> None
+            in
+            method_name
+            >>= (fun method_name ->
+                  class_primitive
+                  >>| fun class_name -> Format.sprintf "%s.%s" class_name method_name)
+            >>| Reference.create
+            (* Here, we blindly reconstruct the callable instead of going through the global
+               resolution, as Pyre doesn't have an API to get the undecorated signature of methods. *)
+            >>| (fun name ->
+                  ( Some
+                      {
+                        Type.Callable.kind = Named name;
+                        implementation =
+                          { annotation = Type.Any; parameters = Type.Callable.Defined [] };
+                        overloads = [];
+                      },
+                    Some implementing_class ))
+            |> Option.value ~default:(None, None)
+        | _ -> None, None )
+  in
+  let rec resolve_type ?(callable_class_type = None) callable_type =
     let underlying_callable, self_argument =
       match callable_type with
       | Type.Callable underlying_callable -> Some underlying_callable, None
+      (* For the case of the LRU cache decorator, the type system loses the callable information as
+         it creates a wrapper class. We reconstruct the underlying callable using the implicit. *)
+      | Parametric
+          {
+            name = "BoundMethod";
+            parameters =
+              [
+                Single (Parametric { name = "functools._lru_cache_wrapper"; _ });
+                Single implementing_class;
+              ];
+          } ->
+          resolve_lru_cache ~implementing_class
+      | Parametric { name = "functools._lru_cache_wrapper"; _ } -> (
+          (* Because of the special class, we don't get a bound method & lose the self argument for
+             non-classmethod LRU cache wrappers. Reconstruct self in this case. *)
+          match Node.value callee with
+          | Expression.Name (Name.Attribute { base; _ }) ->
+              CallGraph.resolve_ignoring_optional ~resolution base
+              |> fun implementing_class -> resolve_lru_cache ~implementing_class
+          | _ -> None, None )
       | Parametric
           {
             name = "BoundMethod";
@@ -190,6 +181,15 @@ let resolve_target ~resolution ?receiver_type callee =
       | _ -> None, None
     in
     match underlying_callable, self_argument, callable_type, receiver_type, global with
+    | Some { kind = Named name; _ }, _, _, _, _ when Option.is_some callable_class_type ->
+        [Callable.create_method name, callable_class_type]
+    | Some { kind = Anonymous; _ }, _, _, _, _ when Option.is_some callable_class_type -> (
+        (* TODO(T66895305): Callable protocols don't retain the name of the callable, so we special
+           case them here. *)
+        match callable_class_type >>= Type.primitive_name with
+        | Some class_name ->
+            [`Method { Callable.class_name; method_name = "__call__" }, callable_class_type]
+        | None -> [] )
     | Some { kind = Named name; _ }, self_argument, _, _, Some _ ->
         [Callable.create_function name, self_argument]
     | Some { kind = Named name; _ }, self_argument, _, _, _ when is_super_call ->
@@ -199,7 +199,7 @@ let resolve_target ~resolution ?receiver_type callee =
     | Some { kind = Named name; _ }, self_argument, _, _, _ when is_all_names ->
         [Callable.create_method name, self_argument]
     | Some { kind = Named name; _ }, self_argument, _, Some type_or_class, _ ->
-        compute_indirect_targets ~resolution ~receiver_type:type_or_class name
+        CallGraph.compute_indirect_targets ~resolution ~receiver_type:type_or_class name
         |> List.map ~f:(fun target -> target, self_argument)
     | _, _, Type.Union annotations, _, _ -> List.concat_map ~f:resolve_type annotations
     | Some { kind = Named name; _ }, _, _, _, _ when is_local_variable -> (
@@ -219,13 +219,28 @@ let resolve_target ~resolution ?receiver_type callee =
         match name with
         | Some name -> [Callable.create_function name, None]
         | _ -> [] )
+    (* Handle callable classes. `typing.Type` interacts specially with __call__, so we choose to
+       ignore it for now to make sure our constructor logic via `cls()` still works. *)
+    | _, _, (Type.Primitive _ | Type.Parametric _), _, _ when not (Type.is_meta callable_type) -> (
+        let callable_class_type = callable_type in
+        match
+          Resolution.resolve_attribute_access
+            resolution
+            ~base_type:callable_type
+            ~attribute:"__call__"
+        with
+        | Type.Any
+        | Type.Top ->
+            []
+        | callable_type ->
+            resolve_type ~callable_class_type:(Some callable_class_type) callable_type )
     | _ -> []
   in
   resolve_type callable_type
 
 
 let get_indirect_targets ~resolution ~receiver ~method_name =
-  let receiver_type = resolve_ignoring_optional ~resolution receiver in
+  let receiver_type = CallGraph.resolve_ignoring_optional ~resolution receiver in
   let callee =
     Expression.Name (Name.Attribute { base = receiver; attribute = method_name; special = false })
     |> Node.create_with_default_location
@@ -241,12 +256,12 @@ let resolve_property_targets ~resolution ~base ~attribute ~setter =
   | None -> None
   | Some defining_parent ->
       let targets =
-        let receiver_type = resolve_ignoring_optional ~resolution base in
+        let receiver_type = CallGraph.resolve_ignoring_optional ~resolution base in
         if Type.is_meta receiver_type then
           [Callable.create_method (Reference.create ~prefix:defining_parent attribute), None]
         else
           let callee = Reference.create ~prefix:defining_parent attribute in
-          compute_indirect_targets ~resolution ~receiver_type callee
+          CallGraph.compute_indirect_targets ~resolution ~receiver_type callee
           |> List.map ~f:(fun target -> target, None)
       in
       if setter then
@@ -266,27 +281,7 @@ let resolve_property_targets ~resolution ~base ~attribute ~setter =
         Some targets
 
 
-let resolve_call_targets ~resolution call =
-  let { Call.callee; _ } = Analysis.Annotated.Call.redirect_special_calls ~resolution call in
-  match Node.value callee with
-  | Name (Name.Attribute { base; _ }) ->
-      let receiver_type = resolve_ignoring_optional ~resolution base in
-      resolve_target ~resolution ~receiver_type callee
-  | Name (Name.Identifier name) when not (String.equal name "super") ->
-      let receiver_type = resolve_ignoring_optional ~resolution callee in
-      if Type.is_meta receiver_type then
-        let callee =
-          Expression.Name
-            (Name.Attribute { base = callee; attribute = "__init__"; special = false })
-          |> Node.create_with_default_location
-        in
-        resolve_target ~resolution ~receiver_type callee
-      else
-        resolve_target ~resolution callee
-  | _ -> resolve_target ~resolution callee
-
-
-type target = Callable.t * Type.t option
+type target = Callable.t * Type.t option [@@deriving show, eq]
 
 type constructor_targets = {
   new_targets: target list;
@@ -326,51 +321,3 @@ let get_global_targets ~resolution reference =
       { constructor_targets = get_constructor_targets ~resolution ~receiver:callee; callee }
   else
     GlobalTargets (resolve_target ~resolution callee)
-
-
-let transform_special_calls ~resolution { Call.callee; arguments } =
-  match callee, arguments with
-  | ( {
-        Node.value =
-          Expression.Name
-            (Name.Attribute
-              {
-                base = { Node.value = Expression.Name (Name.Identifier "functools"); _ };
-                attribute = "partial";
-                _;
-              });
-        _;
-      },
-      { Call.Argument.value = actual_callable; _ } :: actual_arguments ) ->
-      Some { Call.callee = actual_callable; arguments = actual_arguments }
-  | ( {
-        Node.value =
-          Name
-            (Name.Attribute
-              {
-                base = { Node.value = Expression.Name (Name.Identifier "multiprocessing"); _ };
-                attribute = "Process";
-                _;
-              });
-        _;
-      },
-      [
-        { Call.Argument.value = process_callee; name = Some { Node.value = "$parameter$target"; _ } };
-        {
-          Call.Argument.value = { Node.value = Expression.Tuple process_arguments; _ };
-          name = Some { Node.value = "$parameter$args"; _ };
-        };
-      ] ) ->
-      Some
-        {
-          Call.callee = process_callee;
-          arguments =
-            List.map process_arguments ~f:(fun value -> { Call.Argument.value; name = None });
-        }
-  | _ -> SpecialCallResolution.redirect ~resolution { Call.callee; arguments }
-
-
-let redirect_special_calls ~resolution call =
-  match transform_special_calls ~resolution call with
-  | Some call -> call
-  | None -> Annotated.Call.redirect_special_calls ~resolution call

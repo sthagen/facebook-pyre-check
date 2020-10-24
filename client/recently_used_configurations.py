@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -26,8 +26,8 @@ class Cache(Generic[T]):
         cache_directory: Path,
         file_base_name: str = "recently-used-local-configurations",
     ) -> None:
-        self._file_path: Path = (cache_directory / f"{file_base_name}.json")
-        self._lock_path: Path = (cache_directory / f"{file_base_name}.lock")
+        self._file_path: Path = cache_directory / f"{file_base_name}.json"
+        self._lock_path: Path = cache_directory / f"{file_base_name}.lock"
 
     @staticmethod
     def _add_recent_item(new_item: T, existing_items: List[T]) -> List[T]:

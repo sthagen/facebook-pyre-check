@@ -1,7 +1,9 @@
-(* Copyright (c) 2018-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Pyre
 open Core
@@ -9,8 +11,9 @@ open OUnit2
 open Test
 open TestHelper
 module Callable = Interprocedural.Callable
+open Taint
 
-let assert_model ?source ?rules ~context ~model_source ~expect () =
+let set_up_environment ?source ?rules ~context ~model_source () =
   let source =
     match source with
     | None -> model_source
@@ -31,46 +34,73 @@ let assert_model ?source ?rules ~context ~model_source ~expect () =
         sources = ["TestTest"; "UserControlled"; "Test"; "Demo"];
         sinks = ["TestSink"; "OtherSink"; "Test"; "Demo"; "XSS"];
         features = ["special"];
-        acceptable_sink_labels = String.Map.Tree.of_alist_exn ["Test", ["a"; "b"]];
+        partial_sink_labels = String.Map.Tree.of_alist_exn ["Test", ["a"; "b"]];
         rules;
       }
   in
-  let models =
-    let source = Test.trim_extra_indentation model_source in
-    let resolution =
-      let global_resolution =
-        Analysis.AnnotatedGlobalEnvironment.read_only global_environment
-        |> Analysis.GlobalResolution.create
-      in
-      TypeCheck.resolution global_resolution (module TypeCheck.DummyContext)
+  let source = Test.trim_extra_indentation model_source in
+  let resolution =
+    let global_resolution =
+      Analysis.AnnotatedGlobalEnvironment.read_only global_environment
+      |> Analysis.GlobalResolution.create
     in
-
-    let rule_filter =
-      match rules with
-      | Some rules ->
-          Some (List.map rules ~f:(fun { Taint.TaintConfiguration.Rule.code; _ } -> code))
-      | None -> None
-    in
-    let { Taint.Model.models; errors; _ } =
-      Taint.Model.parse ~resolution ?rule_filter ~source ~configuration Callable.Map.empty
-    in
-    assert_bool
-      (Format.sprintf "Models have parsing errors: %s" (List.to_string errors ~f:ident))
-      (List.is_empty errors);
-    models
+    TypeCheck.resolution global_resolution (module TypeCheck.DummyContext)
   in
+
+  let rule_filter =
+    match rules with
+    | Some rules -> Some (List.map rules ~f:(fun { Taint.TaintConfiguration.Rule.code; _ } -> code))
+    | None -> None
+  in
+  let ({ Taint.Model.errors; skip_overrides; _ } as parse_result) =
+    Taint.Model.parse ~resolution ?rule_filter ~source ~configuration Callable.Map.empty
+  in
+  assert_bool
+    (Format.sprintf "Models have parsing errors: %s" (List.to_string errors ~f:ident))
+    (List.is_empty errors);
+
+  let environment =
+    Analysis.TypeEnvironment.create global_environment |> Analysis.TypeEnvironment.read_only
+  in
+  parse_result, environment, skip_overrides
+
+
+let assert_model ?source ?rules ?expected_skipped_overrides ~context ~model_source ~expect () =
+  let { Taint.Model.models; _ }, environment, skip_overrides =
+    set_up_environment ?source ?rules ~context ~model_source ()
+  in
+  begin
+    match expected_skipped_overrides with
+    | Some expected ->
+        let expected_set = List.map expected ~f:Ast.Reference.create |> Ast.Reference.Set.of_list in
+        assert_equal ~cmp:Ast.Reference.Set.equal expected_set skip_overrides
+    | None -> ()
+  end;
   let get_model callable =
     let message = Format.asprintf "Model %a missing" Interprocedural.Callable.pp callable in
     Callable.Map.find models callable |> Option.value_exn ?here:None ?error:None ~message, false
     (* obscure *)
   in
-  let environment =
-    Analysis.TypeEnvironment.create global_environment |> Analysis.TypeEnvironment.read_only
-  in
   List.iter ~f:(check_expectation ~environment ~get_model) expect
 
 
-open Taint
+let assert_no_model ?source ?rules ~context ~model_source callable =
+  let { Taint.Model.models; _ }, _, _ =
+    set_up_environment ?source ?rules ~context ~model_source ()
+  in
+  assert_false (Callable.Map.mem models callable)
+
+
+let assert_queries ?source ?rules ~context ~model_source ~expect () =
+  let { Taint.Model.queries; _ }, _, _ =
+    set_up_environment ?source ?rules ~context ~model_source ()
+  in
+  assert_equal
+    ~cmp:(List.equal (fun left right -> Taint.Model.ModelQuery.compare_rule left right = 0))
+    ~printer:(List.to_string ~f:Taint.Model.ModelQuery.show_rule)
+    queries
+    expect
+
 
 let test_source_models context =
   let assert_model = assert_model ~context in
@@ -171,6 +201,93 @@ let test_source_models context =
     ~expect:[outcome ~kind:`Method ~returns:[Sources.NamedSource "Test"] "test.C.foo"]
     ();
   ()
+
+
+let test_sanitize context =
+  let assert_model = assert_model ~context in
+  assert_model
+    ~model_source:{|
+      @Sanitize
+      def test.taint(x): ...
+    |}
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~analysis_mode:(Taint.Result.Sanitize [Taint.Result.SanitizeAll])
+          "test.taint";
+      ]
+    ();
+  assert_model
+    ~model_source:{|
+      @Sanitize(TaintSource)
+      def test.taint(x): ...
+    |}
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~analysis_mode:(Taint.Result.Sanitize [Taint.Result.SanitizeSources])
+          "test.taint";
+      ]
+    ();
+  assert_model
+    ~model_source:{|
+      @Sanitize(TaintSink)
+      def test.taint(x): ...
+    |}
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~analysis_mode:(Taint.Result.Sanitize [Taint.Result.SanitizeSinks])
+          "test.taint";
+      ]
+    ();
+  assert_model
+    ~model_source:{|
+      @Sanitize(TaintInTaintOut)
+      def test.taint(x): ...
+    |}
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~analysis_mode:(Taint.Result.Sanitize [Taint.Result.SanitizeTITO])
+          "test.taint";
+      ]
+    ();
+  assert_model
+    ~model_source:
+      {|
+      @Sanitize(TaintSource)
+      @Sanitize(TaintInTaintOut)
+      def test.taint(x): ...
+    |}
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~analysis_mode:
+            (Taint.Result.Sanitize [Taint.Result.SanitizeSources; Taint.Result.SanitizeTITO])
+          "test.taint";
+      ]
+    ();
+  assert_model
+    ~model_source:
+      {|
+      @Sanitize(TaintSource, TaintInTaintOut)
+      def test.taint(x): ...
+    |}
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~analysis_mode:
+            (Taint.Result.Sanitize [Taint.Result.SanitizeSources; Taint.Result.SanitizeTITO])
+          "test.taint";
+      ]
+    ()
 
 
 let test_sink_models context =
@@ -311,6 +428,49 @@ let test_cross_repository_models context =
           ~source_parameters:
             [{ name = "source_parameter"; sources = [Sources.NamedSource "UserControlled"] }]
           "test.cross_repository_source";
+      ]
+    ();
+  assert_model
+    ~source:{|
+      def cross_repository_source(source_parameter): ...
+    |}
+    ~model_source:
+      {|
+      def test.cross_repository_source(
+        source_parameter: CrossRepositoryTaintAnchor[
+          TaintSource[UserControlled],
+          'crossRepositorySource',
+          'formal(0)',
+        ]): ...
+    |}
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~source_parameters:
+            [{ name = "source_parameter"; sources = [Sources.NamedSource "UserControlled"] }]
+          "test.cross_repository_source";
+      ]
+    ();
+  assert_model
+    ~source:{|
+      def cross_repository_sink(x): ...
+    |}
+    ~model_source:
+      {|
+      def test.cross_repository_sink(
+        x: CrossRepositoryTaintAnchor[
+          TaintSink[Test],
+          'crossRepositorySink',
+          'formal(0)',
+        ]): ...
+    |}
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~sink_parameters:[{ name = "x"; sinks = [Sinks.NamedSink "Test"] }]
+          "test.cross_repository_sink";
       ]
     ()
 
@@ -491,6 +651,19 @@ let test_class_models context =
           ~analysis_mode:Taint.Result.SkipAnalysis
           "test.SkipMe.method_with_multiple_parameters";
       ]
+    ();
+  (* Skip overrides do not generate methods. *)
+  assert_model
+    ~source:
+      {|
+        class SkipMe:
+          def SkipMe.method(parameter): ...
+          def SkipMe.method_with_multiple_parameters(first, second): ...
+      |}
+    ~model_source:"class test.SkipMe(SkipOverrides): ..."
+    ~expected_skipped_overrides:
+      ["test.SkipMe.method"; "test.SkipMe.method_with_multiple_parameters"]
+    ~expect:[]
     ()
 
 
@@ -512,6 +685,17 @@ let test_taint_in_taint_out_models_alternate context =
     ~context
     ~model_source:"def test.tito(parameter: TaintInTaintOut[LocalReturn]): ..."
     ~expect:[outcome ~kind:`Function ~tito_parameters:["parameter"] "test.tito"]
+    ()
+
+
+let test_skip_analysis context =
+  assert_model
+    ~context
+    ~model_source:{|
+      @SkipAnalysis
+      def test.taint(x): ...
+    |}
+    ~expect:[outcome ~kind:`Function ~analysis_mode:Taint.Result.SkipAnalysis "test.taint"]
     ()
 
 
@@ -654,7 +838,7 @@ let test_invalid_models context =
           sinks = ["X"; "Y"; "Test"];
           features = ["featureA"; "featureB"];
           rules = [];
-          acceptable_sink_labels = String.Map.Tree.of_alist_exn ["Test", ["a"; "b"]];
+          partial_sink_labels = String.Map.Tree.of_alist_exn ["Test", ["a"; "b"]];
         }
     in
     let error_message =
@@ -682,7 +866,7 @@ let test_invalid_models context =
     ();
   assert_invalid_model
     ~model_source:"def test.sink(parameter: SkipAnalysis): ..."
-    ~expect:"Invalid model for `test.sink`: SkipAnalysis annotation must be in return position"
+    ~expect:"Invalid model for `test.sink`: Unrecognized taint annotation `SkipAnalysis`"
     ();
   assert_invalid_model
     ~model_source:"def test.sink(parameter: TaintSink[X, Y, LocalReturn]): ..."
@@ -720,7 +904,7 @@ let test_invalid_models context =
     ();
   assert_invalid_model
     ~model_source:"def test.partial_sink(x: PartialSink[X[a]], y: PartialSink[X[b]]): ..."
-    ~expect:"Invalid model for `test.partial_sink`: No labels specified for `X`"
+    ~expect:"Invalid model for `test.partial_sink`: Unrecognized partial sink `X`."
     ();
 
   assert_valid_model
@@ -837,12 +1021,13 @@ let test_invalid_models context =
   assert_invalid_model
     ~model_source:"test.missing_global: TaintSink[Test]"
     ~expect:
-      "Invalid model for `test.missing_global`: Modeled entity is not part of the environment!"
+      "Invalid model for `test.missing_global`: `test.missing_global` does not correspond to a \
+       class's attribute or a global."
     ();
   assert_valid_model ~model_source:"test.C.unannotated_class_variable: TaintSink[Test]" ();
   assert_invalid_model
     ~model_source:"test.C.missing: TaintSink[Test]"
-    ~expect:"Invalid model for `test.C.missing`: Modeled entity is not part of the environment!"
+    ~expect:"Invalid model for `test.C.missing`: Class `test.C` has no attribute `missing`."
     ();
   assert_invalid_model
     ~model_source:
@@ -1008,8 +1193,7 @@ let test_invalid_models context =
     ~source:"def partial_sink(x, y) -> None: ..."
     ~model_source:
       "def test.partial_sink(x: PartialSink[Nonexistent[a]], y: PartialSink[Nonexistent[b]]): ..."
-    ~expect:
-      "Invalid model for `test.partial_sink`: Unrecognized sink for partial sink: `Nonexistent`."
+    ~expect:"Invalid model for `test.partial_sink`: Unrecognized partial sink `Nonexistent`."
     ();
   assert_invalid_model
     ~source:"def f(parameter): ..."
@@ -1067,6 +1251,51 @@ let test_invalid_models context =
     ~expect:
       "Invalid model for `test.foo`: Model signature parameters do not match implementation `def \
        foo(parameter: int) -> int: ...`. Reason(s): missing named parameters: `parameter`."
+    ();
+  assert_valid_model
+    ~source:{|
+      def foo(__: int, kwonly: str) -> None: ...
+    |}
+    ~model_source:"def test.foo(__: TaintSource[A], kwonly): ..."
+    ();
+  assert_invalid_model
+    ~source:{|
+      class C:
+        @property
+        def foo(self) -> int: ...
+    |}
+    ~model_source:"test.C.foo: TaintSource[A] = ..."
+    ~expect:"Invalid model for `test.C.foo`: Class `test.C` has no attribute `foo`."
+    ();
+  assert_invalid_model
+    ~source:{|
+      class C:
+        foo = 1
+      class D(C):
+        pass
+    |}
+    ~model_source:"test.D.foo: TaintSource[A] = ..."
+    ~expect:"Invalid model for `test.D.foo`: Class `test.D` has no attribute `foo`."
+    ();
+  assert_valid_model
+    ~source:{|
+      class C:
+        foo = 1
+      class D(C):
+        pass
+    |}
+    ~model_source:"test.C.foo: TaintSource[A] = ..."
+    ();
+  assert_valid_model
+    ~source:
+      {|
+      class C:
+        foo = 1
+      class D(C):
+        def __init__(self):
+          self.foo = 2
+    |}
+    ~model_source:"test.D.foo: TaintSource[A] = ..."
     ()
 
 
@@ -1098,7 +1327,8 @@ let test_filter_by_rules context =
     ~model_source:"def test.taint() -> TaintSource[TestTest]: ..."
     ~expect:[outcome ~kind:`Function ~returns:[Sources.NamedSource "TestTest"] "test.taint"]
     ();
-  assert_model
+  assert_no_model
+    ~context
     ~rules:
       [
         {
@@ -1110,8 +1340,7 @@ let test_filter_by_rules context =
         };
       ]
     ~model_source:"def test.taint() -> TaintSource[TestTest]: ..."
-    ~expect:[outcome ~kind:`Function ~returns:[] "test.taint"]
-    ();
+    (Callable.create_function (Ast.Reference.create "test.taint"));
   assert_model
     ~rules:
       [
@@ -1132,7 +1361,8 @@ let test_filter_by_rules context =
           "test.taint";
       ]
     ();
-  assert_model
+  assert_no_model
+    ~context
     ~rules:
       [
         {
@@ -1144,7 +1374,219 @@ let test_filter_by_rules context =
         };
       ]
     ~model_source:"def test.taint(x: TaintSink[TestSink]): ..."
-    ~expect:[outcome ~kind:`Function ~sink_parameters:[] "test.taint"]
+    (Callable.create_function (Ast.Reference.create "test.taint"));
+  assert_model
+    ~rules:
+      [
+        {
+          Taint.TaintConfiguration.Rule.sources = [Sources.NamedSource "TestTest"];
+          sinks = [Sinks.TriggeredPartialSink { kind = "Test"; label = "a" }];
+          code = 4321;
+          message_format = "";
+          name = "test multiple sources rule";
+        };
+        {
+          Taint.TaintConfiguration.Rule.sources = [Sources.NamedSource "TestTest"];
+          sinks = [Sinks.TriggeredPartialSink { kind = "Test"; label = "b" }];
+          code = 4321;
+          message_format = "";
+          name = "test multiple sources rule";
+        };
+      ]
+    ~model_source:"def test.partial_sink(x: PartialSink[Test[a]], y: PartialSink[Test[b]]): ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~sink_parameters:
+            [
+              { name = "x"; sinks = [Sinks.PartialSink { kind = "Test"; label = "a" }] };
+              { name = "y"; sinks = [Sinks.PartialSink { kind = "Test"; label = "b" }] };
+            ]
+          "test.partial_sink";
+      ]
+    ()
+
+
+let test_query_parsing context =
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     find = "functions",
+     where = name.matches("foo"),
+     model = Returns(TaintSource[Test])
+    )
+  |}
+    ~expect:
+      [
+        {
+          Model.ModelQuery.name = None;
+          query = [Taint.Model.ModelQuery.NameConstraint "foo"];
+          rule_kind = Model.ModelQuery.FunctionModel;
+          productions =
+            [
+              Model.ModelQuery.ReturnTaint
+                [
+                  Model.Source
+                    {
+                      source = Sources.NamedSource "Test";
+                      breadcrumbs = [];
+                      path = [];
+                      leaf_name_provided = false;
+                    };
+                ];
+            ];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     find = "functions",
+     where = name.matches("foo"),
+     model = [Returns(TaintSource[Test])]
+    )
+  |}
+    ~expect:
+      [
+        {
+          Model.ModelQuery.name = None;
+          query = [Taint.Model.ModelQuery.NameConstraint "foo"];
+          rule_kind = Model.ModelQuery.FunctionModel;
+          productions =
+            [
+              Model.ModelQuery.ReturnTaint
+                [
+                  Model.Source
+                    {
+                      source = Sources.NamedSource "Test";
+                      breadcrumbs = [];
+                      path = [];
+                      leaf_name_provided = false;
+                    };
+                ];
+            ];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     find = "functions",
+     where = [name.matches("foo"), name.matches("bar")],
+     model = Returns(TaintSource[Test])
+    )
+  |}
+    ~expect:
+      [
+        {
+          Model.ModelQuery.name = None;
+          query =
+            [
+              Taint.Model.ModelQuery.NameConstraint "foo";
+              Taint.Model.ModelQuery.NameConstraint "bar";
+            ];
+          rule_kind = Model.ModelQuery.FunctionModel;
+          productions =
+            [
+              Model.ModelQuery.ReturnTaint
+                [
+                  Model.Source
+                    {
+                      source = Sources.NamedSource "Test";
+                      breadcrumbs = [];
+                      path = [];
+                      leaf_name_provided = false;
+                    };
+                ];
+            ];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     find = "functions",
+     where = name.matches("foo"),
+     model = [Returns([TaintSource[Test], TaintSink[Test]])]
+    )
+  |}
+    ~expect:
+      [
+        {
+          Model.ModelQuery.name = None;
+          query = [Taint.Model.ModelQuery.NameConstraint "foo"];
+          rule_kind = Model.ModelQuery.FunctionModel;
+          productions =
+            [
+              Model.ModelQuery.ReturnTaint
+                [
+                  Model.Source
+                    {
+                      source = Sources.NamedSource "Test";
+                      breadcrumbs = [];
+                      path = [];
+                      leaf_name_provided = false;
+                    };
+                  Model.Sink
+                    {
+                      sink = Sinks.NamedSink "Test";
+                      breadcrumbs = [];
+                      path = [];
+                      leaf_name_provided = false;
+                    };
+                ];
+            ];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "foo_finders",
+     find = "functions",
+     where = name.matches("foo"),
+     model = [Returns([TaintSource[Test], TaintSink[Test]])]
+    )
+  |}
+    ~expect:
+      [
+        {
+          Model.ModelQuery.name = Some "foo_finders";
+          query = [Taint.Model.ModelQuery.NameConstraint "foo"];
+          rule_kind = Model.ModelQuery.FunctionModel;
+          productions =
+            [
+              Model.ModelQuery.ReturnTaint
+                [
+                  Model.Source
+                    {
+                      source = Sources.NamedSource "Test";
+                      breadcrumbs = [];
+                      path = [];
+                      leaf_name_provided = false;
+                    };
+                  Model.Sink
+                    {
+                      sink = Sinks.NamedSink "Test";
+                      breadcrumbs = [];
+                      path = [];
+                      leaf_name_provided = false;
+                    };
+                ];
+            ];
+        };
+      ]
     ()
 
 
@@ -1152,12 +1594,15 @@ let () =
   "taint_model"
   >::: [
          "attach_features" >:: test_attach_features;
-         "cross_repository_models" >:: test_cross_repository_models;
          "class_models" >:: test_class_models;
+         "cross_repository_models" >:: test_cross_repository_models;
          "demangle_class_attributes" >:: test_demangle_class_attributes;
          "filter_by_rules" >:: test_filter_by_rules;
          "invalid_models" >:: test_invalid_models;
          "partial_sinks" >:: test_partial_sinks;
+         "query_parsing" >:: test_query_parsing;
+         "sanitize" >:: test_sanitize;
+         "skip_analysis" >:: test_skip_analysis;
          "sink_breadcrumbs" >:: test_sink_breadcrumbs;
          "sink_models" >:: test_sink_models;
          "source_breadcrumbs" >:: test_source_breadcrumbs;

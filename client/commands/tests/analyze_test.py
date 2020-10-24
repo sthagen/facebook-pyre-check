@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -6,34 +6,26 @@
 # pyre-unsafe
 
 import unittest
-from unittest.mock import MagicMock, Mock, patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-from ... import commands
+from ... import commands, find_directories
 from ...analysis_directory import AnalysisDirectory
-from ...commands import check
-from ..command import __name__ as client_name
 from .command_test import mock_arguments, mock_configuration
 
 
-_typeshed_search_path: str = "{}.typeshed_search_path".format(check.__name__)
-
-
 class AnalyzeTest(unittest.TestCase):
-    @patch("{}.find_project_root".format(client_name), return_value=".")
-    @patch("{}.find_local_root".format(client_name), return_value=None)
+    @patch(
+        f"{find_directories.__name__}.find_global_and_local_root",
+        return_value=find_directories.FoundRoot(Path(".")),
+    )
     @patch("subprocess.check_output")
     @patch("os.path.realpath")
-    @patch(_typeshed_search_path, Mock(return_value=["path3"]))
     # pyre-fixme[56]: Argument `set()` to decorator factory
     #  `unittest.mock.patch.object` could not be resolved in a global scope.
     @patch.object(commands.Reporting, "_get_directories_to_analyze", return_value=set())
     def test_analyze(
-        self,
-        directories_to_analyze,
-        realpath,
-        check_output,
-        find_local_root,
-        find_project_root,
+        self, directories_to_analyze, realpath, check_output, find_global_and_local_root
     ) -> None:
         realpath.side_effect = lambda x: x
         arguments = mock_arguments()
@@ -66,15 +58,13 @@ class AnalyzeTest(unittest.TestCase):
                 command._flags(),
                 [
                     "-logging-sections",
-                    "parser,-progress",
+                    "-progress",
                     "-project-root",
-                    ".",
+                    "/root",
                     "-log-directory",
                     ".pyre",
                     "-workers",
                     "5",
-                    "-search-path",
-                    "path1,path2,path3",
                     "-analysis",
                     "taint",
                     "-dump-call-graph",
@@ -104,15 +94,13 @@ class AnalyzeTest(unittest.TestCase):
                 command._flags(),
                 [
                     "-logging-sections",
-                    "parser,-progress",
+                    "-progress",
                     "-project-root",
-                    ".",
+                    "/root",
                     "-log-directory",
                     ".pyre",
                     "-workers",
                     "5",
-                    "-search-path",
-                    "path1,path2,path3",
                     "-analysis",
                     "taint",
                     "-taint-models",
@@ -144,15 +132,13 @@ class AnalyzeTest(unittest.TestCase):
                 command._flags(),
                 [
                     "-logging-sections",
-                    "parser,-progress",
+                    "-progress",
                     "-project-root",
-                    ".",
+                    "/root",
                     "-log-directory",
                     ".pyre",
                     "-workers",
                     "5",
-                    "-search-path",
-                    "path1,path2,path3",
                     "-analysis",
                     "taint",
                     "-taint-models",
@@ -186,15 +172,13 @@ class AnalyzeTest(unittest.TestCase):
                 command._flags(),
                 [
                     "-logging-sections",
-                    "parser,-progress",
+                    "-progress",
                     "-project-root",
-                    ".",
+                    "/root",
                     "-log-directory",
                     ".pyre",
                     "-workers",
                     "5",
-                    "-search-path",
-                    "path1,path2,path3",
                     "-analysis",
                     "taint",
                     "-taint-models",
@@ -227,15 +211,13 @@ class AnalyzeTest(unittest.TestCase):
                 command._flags(),
                 [
                     "-logging-sections",
-                    "parser,-progress",
+                    "-progress",
                     "-project-root",
-                    ".",
+                    "/root",
                     "-log-directory",
                     ".pyre",
                     "-workers",
                     "5",
-                    "-search-path",
-                    "path1,path2,path3",
                     "-analysis",
                     "taint",
                     "-taint-models",
@@ -269,15 +251,13 @@ class AnalyzeTest(unittest.TestCase):
                 command._flags(),
                 [
                     "-logging-sections",
-                    "parser,-progress",
+                    "-progress",
                     "-project-root",
-                    ".",
+                    "/root",
                     "-log-directory",
                     ".pyre",
                     "-workers",
                     "5",
-                    "-search-path",
-                    "path1,path2,path3",
                     "-analysis",
                     "taint",
                     "-taint-models",
@@ -311,15 +291,13 @@ class AnalyzeTest(unittest.TestCase):
                 command._flags(),
                 [
                     "-logging-sections",
-                    "parser,-progress",
+                    "-progress",
                     "-project-root",
-                    ".",
+                    "/root",
                     "-log-directory",
                     ".pyre",
                     "-workers",
                     "5",
-                    "-search-path",
-                    "path1,path2,path3",
                     "-analysis",
                     "taint",
                     "-taint-models",
@@ -353,15 +331,13 @@ class AnalyzeTest(unittest.TestCase):
                 command._flags(),
                 [
                     "-logging-sections",
-                    "parser,-progress",
+                    "-progress",
                     "-project-root",
-                    ".",
+                    "/root",
                     "-log-directory",
                     ".pyre",
                     "-workers",
                     "5",
-                    "-search-path",
-                    "path1,path2,path3",
                     "-analysis",
                     "taint",
                     "-taint-models",
@@ -398,15 +374,13 @@ class AnalyzeTest(unittest.TestCase):
                 command._flags(),
                 [
                     "-logging-sections",
-                    "parser,-progress",
+                    "-progress",
                     "-project-root",
-                    ".",
+                    "/root",
                     "-log-directory",
                     ".pyre",
                     "-workers",
                     "5",
-                    "-search-path",
-                    "path1,path2,path3",
                     "-analysis",
                     "taint",
                     "-taint-models",
@@ -440,15 +414,13 @@ class AnalyzeTest(unittest.TestCase):
                 command._flags(),
                 [
                     "-logging-sections",
-                    "parser,-progress",
+                    "-progress",
                     "-project-root",
-                    ".",
+                    "/root",
                     "-log-directory",
                     ".pyre",
                     "-workers",
                     "5",
-                    "-search-path",
-                    "path1,path2,path3",
                     "-analysis",
                     "liveness",
                     "-taint-models",

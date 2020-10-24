@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open OUnit2
 open IntegrationTest
@@ -1299,6 +1301,50 @@ let test_callable_parameter_variadics context =
        `typing.Callable(invalid)[[Named(x, int), Named(y, str)], int]`.";
       "Missing argument [20]: Call `call_n_times` expects argument in position 1.";
     ];
+  (* Decorator to supply an argument to a method. *)
+  assert_type_errors
+    {|
+      from typing import *
+      from pyre_extensions import ParameterSpecification
+      from pyre_extensions.type_variable_operators import Concatenate
+
+      P = ParameterSpecification("P")
+      R = TypeVar("R")
+
+      class Client: ...
+
+      def with_client(
+        f: Callable[Concatenate["Foo", Client, P], R]
+      ) -> Callable[Concatenate["Foo", P], R]:
+        def inner(__self: "Foo", *args: P.args, **kwargs: P.kwargs) -> R:
+          return f(__self, Client(), *args, **kwargs)
+        return inner
+
+      class Foo:
+        @with_client
+        def takes_int_str(self, client: Client, x: int, y: str) -> int:
+          # Use `client` here.
+
+          return x + 7
+
+      reveal_type(with_client)
+      x: Foo
+      reveal_type(x.takes_int_str)
+
+      x.takes_int_str(1, "A") # Accepted
+      x.takes_int_str("B", 2) # Correctly rejected by the type checker
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `test.with_client` is \
+       `typing.Callable(with_client)[[Named(f, \
+       typing.Callable[pyre_extensions.type_variable_operators.Concatenate[Foo, Client, test.P], \
+       Variable[R]])], typing.Callable[pyre_extensions.type_variable_operators.Concatenate[Foo, \
+       test.P], Variable[R]]]`.";
+      "Revealed type [-1]: Revealed type for `x.takes_int_str` is \
+       `BoundMethod[typing.Callable[[Foo, Named(x, int), Named(y, str)], int], Foo]`.";
+      "Incompatible parameter type [6]: Expected `int` for 1st positional only parameter to \
+       anonymous call but got `str`.";
+    ];
   (* PyTorch style delegation pattern *)
   assert_type_errors
     {|
@@ -2409,6 +2455,50 @@ let test_user_defined_parameter_specification_classes context =
   ()
 
 
+let test_duplicate_type_variables context =
+  let assert_type_errors = assert_type_errors ~context in
+  assert_type_errors
+    {|
+    from typing import TypeVar, Generic
+
+    T = TypeVar("T")
+    S = TypeVar("S")
+    class A(Generic[T, S, T]):
+        pass
+  |}
+    ["Duplicate type variables [59]: Duplicate type variable `T` in Generic[...]."];
+  assert_type_errors
+    {|
+    from typing import TypeVar, Protocol
+
+    T = TypeVar("T")
+    class A(Protocol[T, T, T]):
+        pass
+  |}
+    ["Duplicate type variables [59]: Duplicate type variable `T` in Protocol[...]."];
+  assert_type_errors
+    {|
+    from typing import Generic
+    from pyre_extensions import ListVariadic
+
+    Ts = ListVariadic("Ts")
+    class A(Generic[Ts, Ts]):
+        pass
+  |}
+    ["Duplicate type variables [59]: Duplicate type variable `Ts` in Generic[...]."];
+  assert_type_errors
+    {|
+    from typing import Generic
+    from pyre_extensions import ParameterSpecification
+
+    P = ParameterSpecification("P")
+    class A(Generic[P, P]):
+        pass
+  |}
+    ["Duplicate type variables [59]: Duplicate type variable `P` in Generic[...]."];
+  ()
+
+
 let () =
   "typeVariable"
   >::: [
@@ -2426,5 +2516,6 @@ let () =
          "user_defined_variadics" >:: test_user_defined_variadics;
          "concatenation" >:: test_concatenation_operator;
          "user_defined_parameter_variadics" >:: test_user_defined_parameter_specification_classes;
+         "duplicate_type_variables" >:: test_duplicate_type_variables;
        ]
   |> Test.run

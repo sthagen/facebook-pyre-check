@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 package com.facebook.buck_project_builder.targets;
 
 import com.facebook.buck_project_builder.BuilderException;
@@ -8,6 +15,7 @@ import com.facebook.buck_project_builder.cache.BuilderCache;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedSet;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.FileUtils;
 
@@ -36,7 +44,7 @@ public final class BuildTargetsBuilder {
 
   private final ImmutableSet<String> unsupportedGeneratedSources;
   private final ImmutableSet<String> pythonWheelUrls;
-  private final ImmutableSet<ThriftLibraryTarget> thriftLibraryTargets;
+  private final ImmutableSortedSet<ThriftLibraryTarget> thriftLibraryTargets;
   private final ImmutableSet<String> swigLibraryBuildCommands;
   private final ImmutableSet<String> antlr4LibraryBuildCommands;
 
@@ -52,7 +60,7 @@ public final class BuildTargetsBuilder {
       ImmutableMap<Path, Path> sources,
       ImmutableSet<String> unsupportedGeneratedSources,
       ImmutableSet<String> pythonWheelUrls,
-      ImmutableSet<ThriftLibraryTarget> thriftLibraryTargets,
+      ImmutableSortedSet<ThriftLibraryTarget> thriftLibraryTargets,
       ImmutableSet<String> swigLibraryBuildCommands,
       ImmutableSet<String> antlr4LibraryBuildCommands) {
     this.startTime = startTime;

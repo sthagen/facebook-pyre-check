@@ -1,7 +1,9 @@
-(** Copyright (c) 2016-present, Facebook, Inc.
-
-    This source code is licensed under the MIT license found in the LICENSE file in the root
-    directory of this source tree. *)
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open AbstractDomainCore
 
@@ -155,6 +157,24 @@ module Make (Config : PRODUCT_CONFIG) = struct
 
   exception Strict
 
+  let meet left right =
+    let merge (Slot slot) =
+      let module D = (val Config.slot_domain slot) in
+      let left = get slot left in
+      let right = get slot right in
+      let result = D.meet left right in
+      if Config.strict slot && D.is_bottom result then
+        raise Strict
+      else
+        Element result
+    in
+    if left == right then
+      left
+    else
+      try Array.map merge slots with
+      | Strict -> bottom
+
+
   let subtract to_remove ~from =
     if to_remove == from then
       bottom
@@ -195,6 +215,8 @@ module Make (Config : PRODUCT_CONFIG) = struct
     let bottom = bottom
 
     let join = join
+
+    let less_or_equal = less_or_equal
   end
 
   module C = Common (CommonArg)

@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -43,6 +43,7 @@ class Fixme(ErrorSuppressingCommand):
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
+        # Make this compatible with `fixme-single`.
         super(Fixme, cls).add_arguments(parser)
         parser.set_defaults(command=cls.from_arguments)
         parser.add_argument(
@@ -61,15 +62,15 @@ class Fixme(ErrorSuppressingCommand):
     def run(self) -> None:
         if self._error_source == ErrorSource.GENERATE:
             errors = self._generate_errors()
-            self._suppress_errors(errors)
+            self._apply_suppressions(errors)
 
             if self._lint:
                 if self._repository.format():
                     errors = self._generate_errors()
-                    self._suppress_errors(errors)
+                    self._apply_suppressions(errors)
         else:
             errors = Errors.from_stdin(self._only_fix_error_code)
-            self._suppress_errors(errors)
+            self._apply_suppressions(errors)
 
     def _generate_errors(self) -> Errors:
         configuration_path = Configuration.find_project_configuration()

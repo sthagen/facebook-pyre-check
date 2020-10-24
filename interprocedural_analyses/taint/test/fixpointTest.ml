@@ -1,7 +1,9 @@
-(* Copyright (c) 2018-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open OUnit2
@@ -24,7 +26,7 @@ let assert_fixpoint ?models ~context source ~expect:{ iterations = expect_iterat
     |> DependencyGraph.union overrides
     |> DependencyGraph.reverse
   in
-  let analyses = [Taint.Analysis.abstract_kind] in
+  let analyses = [TaintAnalysis.abstract_kind] in
   let iterations =
     Analysis.compute_fixpoint
       ~scheduler
@@ -315,7 +317,8 @@ let test_skipped_analysis context =
     ~context
     ~models:
       {|
-      def qualifier.skipped_model(x, y: TaintSink[Demo], z: TaintInTaintOut) -> SkipAnalysis: ...
+      @SkipAnalysis
+      def qualifier.skipped_model(x, y: TaintSink[Demo], z: TaintInTaintOut): ...
     |}
     {|
       from builtins import __test_sink, __user_controlled
@@ -343,7 +346,8 @@ let test_sanitized_analysis context =
     ~context
     ~models:
       {|
-      def qualifier.sanitized_model(x, y: TaintSink[Demo], z: TaintInTaintOut) -> Sanitize: ...
+      @Sanitize
+      def qualifier.sanitized_model(x, y: TaintSink[Demo], z: TaintInTaintOut): ...
     |}
     {|
       from builtins import __test_sink, __user_controlled
@@ -361,7 +365,7 @@ let test_sanitized_analysis context =
               ~sink_parameters:[{ name = "y"; sinks = [Sinks.NamedSink "Demo"] }]
               ~tito_parameters:["z"]
               ~errors:[{ code = 5001; pattern = ".*" }]
-              ~analysis_mode:Taint.Result.Sanitize
+              ~analysis_mode:(Taint.Result.Sanitize [Taint.Result.SanitizeAll])
               "qualifier.sanitized_model";
           ];
         iterations = 1;

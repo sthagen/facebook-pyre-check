@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
 # pyre-strict
 
 
@@ -10,7 +15,7 @@ from IPython.terminal.prompts import Prompts, Token
 from prompt_toolkit import Application as CommandLineInterface
 from pygments.token import _TokenType
 
-from ..interactive import Interactive
+from ..ui.interactive import Interactive
 
 
 class CustomPrompt(Prompts, Magics):

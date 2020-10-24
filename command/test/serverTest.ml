@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open OUnit2
@@ -109,67 +111,6 @@ let test_server_exits_on_directory_removal context =
 let test_stop_handles_unix_errors context =
   let long_path = bracket_tmpdir ~suffix:(String.init ~f:(fun _ -> 'a') 140) context in
   Commands.Stop.stop ~log_directory:None ~local_root:long_path |> ignore
-
-
-let test_json_socket context =
-  (* The server does not respond on the json socket, so this test is just to sanity check the
-     handshake and verify that a client can send LSP to the server without crashing it. *)
-  let local_root = bracket_tmpdir context |> Pyre.Path.create_absolute in
-  let start_server _ =
-    Pid.of_int (CommandTest.start_server ~local_root ~expected_version:"1234" ())
-  in
-  let stop_server pid _ =
-    Commands.Stop.stop ~log_directory:None ~local_root:(Path.absolute local_root) |> ignore;
-    CommandTest.with_timeout
-      ~seconds:1
-      (fun () ->
-        match Unix.waitpid pid with
-        | Ok _ -> assert true
-        | Error _ -> assert false)
-      ()
-  in
-  let pid = bracket start_server stop_server context in
-  let socket_path =
-    CommandTest.mock_analysis_configuration ~local_root ~expected_version:"1234" ()
-    |> Service.Constants.Server.root
-    |> (fun root -> Path.create_relative ~root ~relative:"json_server.sock")
-    |> Path.real_path
-    |> Path.absolute
-  in
-  let in_channel, out_channel = Unix.open_connection (Unix.ADDR_UNIX socket_path) in
-  (* first, read and validate server handshake message *)
-  ( in_channel
-  |> LanguageServer.Protocol.read_message
-  >>| LanguageServer.Types.HandshakeServer.of_yojson
-  |> function
-  | Some
-      (Ok { jsonrpc = "2.0"; method_ = "handshake/server"; parameters = Some { version = "1234" } })
-    ->
-      ()
-  | _ -> assert_bool "Handshake received from server is malformed" false );
-
-  (* then, write client handshake message back *)
-  {
-    LanguageServer.Types.HandshakeClient.jsonrpc = "2.0";
-    method_ = "handshake/client";
-    parameters = Some { LanguageServer.Types.HandshakeClientParameters.send_confirmation = true };
-  }
-  |> LanguageServer.Types.HandshakeClient.to_yojson
-  |> LanguageServer.Protocol.write_message out_channel;
-  Out_channel.flush out_channel;
-
-  (* send valid and invalid LSP over the json socket *)
-  `Assoc ["jsonrpc", `String "2.0"; "id", `Int 42; "method", `String "telemetry/rage"]
-  |> LanguageServer.Protocol.write_message out_channel;
-  Out_channel.flush out_channel;
-  `Assoc [] |> LanguageServer.Protocol.write_message out_channel;
-  Out_channel.flush out_channel;
-
-  (* verify that the server is still alive at this point *)
-  Unix.sleep 1;
-  match Unix.wait_nohang (`Pid pid) with
-  | Some _ -> assert false
-  | None -> assert true
 
 
 let assert_response_equal expected_response response =
@@ -1009,25 +950,22 @@ let test_query context =
             {
               Protocol.TypeQuery.name = "foo";
               annotation =
-                Type.Parametric
-                  {
-                    name = "BoundMethod";
-                    parameters =
-                      [
-                        Single
-                          (Type.Callable
+                Type.parametric
+                  "BoundMethod"
+                  [
+                    Single
+                      (Type.Callable
+                         {
+                           Type.Callable.kind = Type.Callable.Named !&"test.C.foo";
+                           implementation =
                              {
-                               Type.Callable.kind = Type.Callable.Named !&"test.C.foo";
-                               implementation =
-                                 {
-                                   Type.Callable.annotation = Type.integer;
-                                   parameters = Type.Callable.Defined [];
-                                 };
-                               overloads = [];
-                             });
-                        Single (Primitive "test.C");
-                      ];
-                  };
+                               Type.Callable.annotation = Type.integer;
+                               parameters = Type.Callable.Defined [];
+                             };
+                           overloads = [];
+                         });
+                    Single (Primitive "test.C");
+                  ];
               kind = Protocol.TypeQuery.Regular;
               final = false;
             };
@@ -1648,7 +1586,6 @@ let () =
       "server_exits_on_directory_removal", test_server_exits_on_directory_removal;
       "connect", test_connect;
       "stop_handles_unix_errors", test_stop_handles_unix_errors;
-      "json_socket", test_json_socket;
       "protocol_type_check", test_protocol_type_check;
       "protocol_language_server_protocol", test_protocol_language_server_protocol;
       "protocol_persistent", test_protocol_persistent;

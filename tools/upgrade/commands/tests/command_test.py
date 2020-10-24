@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -6,19 +6,17 @@
 # pyre-unsafe
 
 import argparse
+import tempfile
 import unittest
 from unittest.mock import MagicMock, call
 
 from ...errors import PartialErrorSuppression
-from ..command import (
-    ErrorSource,
-    ErrorSuppressingCommand,
-    ProjectErrorSuppressingCommand,
-)
+from ..command import ErrorSource, ErrorSuppressingCommand
+from ..fixme_single import FixmeSingle
 
 
 class CommandTest(unittest.TestCase):
-    def test_suppress_errors(self) -> None:
+    def test_apply_suppressions(self) -> None:
         arguments = MagicMock()
         arguments.force_format_unsuppressed = False
 
@@ -30,7 +28,7 @@ class CommandTest(unittest.TestCase):
         errors = MagicMock()
         errors.suppress = successful_suppression
 
-        ErrorSuppressingCommand(arguments, repository)._suppress_errors(errors)
+        ErrorSuppressingCommand(arguments, repository)._apply_suppressions(errors)
         successful_suppression.assert_called_once()
 
         errors.reset_mock()
@@ -40,7 +38,7 @@ class CommandTest(unittest.TestCase):
         )
         errors.suppress = repeaded_unsuccessful_suppression
         with self.assertRaises(PartialErrorSuppression):
-            ErrorSuppressingCommand(arguments, repository)._suppress_errors(errors)
+            ErrorSuppressingCommand(arguments, repository)._apply_suppressions(errors)
         repeaded_unsuccessful_suppression.assert_called_once()
 
         errors.reset_mock()
@@ -48,7 +46,7 @@ class CommandTest(unittest.TestCase):
 
         arguments.force_format_unsuppressed = True
         with self.assertRaises(PartialErrorSuppression):
-            ErrorSuppressingCommand(arguments, repository)._suppress_errors(errors)
+            ErrorSuppressingCommand(arguments, repository)._apply_suppressions(errors)
         force_format.assert_called_once()
         repeaded_unsuccessful_suppression.assert_has_calls(
             [
@@ -82,7 +80,7 @@ class CommandTest(unittest.TestCase):
         mixed_suppression = MagicMock(side_effect=MixedSuppression())
         errors.suppress = mixed_suppression
 
-        ErrorSuppressingCommand(arguments, repository)._suppress_errors(errors)
+        ErrorSuppressingCommand(arguments, repository)._apply_suppressions(errors)
         force_format.assert_called_once()
         mixed_suppression.assert_has_calls(
             [
@@ -103,11 +101,14 @@ class CommandTest(unittest.TestCase):
 
     def test_argument_parsing(self) -> None:
         parser = argparse.ArgumentParser()
-        ProjectErrorSuppressingCommand.add_arguments(parser)
-        self.assertEqual(
-            parser.parse_args(["--error-source", "stdin"]).error_source,
-            ErrorSource.STDIN,
-        )
-        self.assertEqual(parser.parse_args([]).error_source, ErrorSource.GENERATE)
-        with self.assertRaises(SystemExit):
-            parser.parse_args(["--error-source", "foo"]).error_source,
+        FixmeSingle.add_arguments(parser)
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(
+                parser.parse_args([directory, "--error-source", "stdin"]).error_source,
+                ErrorSource.STDIN,
+            )
+            self.assertEqual(
+                parser.parse_args([directory]).error_source, ErrorSource.GENERATE
+            )
+            with self.assertRaises(SystemExit):
+                parser.parse_args([directory, "--error-source", "foo"]).error_source,

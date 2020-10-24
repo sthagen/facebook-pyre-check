@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open OUnit2
 open IntegrationTest
@@ -733,7 +735,7 @@ let test_check_typed_dictionaries context =
         movie['name'] += 7
     |}
     [
-      "Incompatible parameter type [6]: `+` is not supported for operand types `str` and `int`.";
+      "Unsupported operand [58]: `+` is not supported for operand types `str` and `int`.";
       "Invalid TypedDict operation [54]: Expected `str` to be assigned to `Movie` field `name` but \
        got `int`.";
     ];

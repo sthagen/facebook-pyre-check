@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Pyre
@@ -19,20 +21,55 @@ module Rule = struct
   [@@deriving eq, show]
 end
 
-type implicit_sinks = { conditional_test: Sinks.t list }
+type literal_string_sink = {
+  pattern: Re2.t;
+  sink_kind: Sinks.t;
+}
 
-let empty_implicit_sinks = { conditional_test = [] }
+type implicit_sinks = {
+  conditional_test: Sinks.t list;
+  literal_string_sinks: literal_string_sink list;
+}
+
+let empty_implicit_sinks = { conditional_test = []; literal_string_sinks = [] }
+
+type literal_string_source = {
+  pattern: Re2.t;
+  source_kind: Sources.t;
+}
+
+type implicit_sources = { literal_strings: literal_string_source list }
+
+let empty_implicit_sources = { literal_strings = [] }
 
 type analysis_model_constraints = {
   maximum_model_width: int;
   maximum_complex_access_path_length: int;
+  maximum_overrides_to_analyze: int option;
 }
 
-let analysis_model_constraints =
-  { maximum_model_width = 25; maximum_complex_access_path_length = 10 }
+let default_analysis_model_constraints =
+  {
+    maximum_model_width = 25;
+    maximum_complex_access_path_length = 10;
+    maximum_overrides_to_analyze = None;
+  }
 
 
-type partial_sink_converter = (Sources.t * Sinks.t) list String.Map.Tree.t
+type partial_sink_converter = (Sources.t list * Sinks.t) list String.Map.Tree.t
+
+type missing_flows_kind =
+  (* Find missing flows through obscure models. *)
+  | Obscure
+  (* Find missing flows due to missing type information. *)
+  | Type
+[@@deriving eq, show]
+
+let missing_flows_kind_from_string = function
+  | "obscure" -> Some Obscure
+  | "type" -> Some Type
+  | _ -> None
+
 
 type t = {
   sources: string list;
@@ -40,9 +77,12 @@ type t = {
   features: string list;
   rules: Rule.t list;
   implicit_sinks: implicit_sinks;
+  implicit_sources: implicit_sources;
   partial_sink_converter: partial_sink_converter;
-  acceptable_sink_labels: string list String.Map.Tree.t;
-  find_obscure_flows: bool;
+  partial_sink_labels: string list String.Map.Tree.t;
+  find_missing_flows: missing_flows_kind option;
+  dump_model_query_results: bool;
+  analysis_model_constraints: analysis_model_constraints;
 }
 
 let empty =
@@ -53,8 +93,11 @@ let empty =
     rules = [];
     partial_sink_converter = String.Map.Tree.empty;
     implicit_sinks = empty_implicit_sinks;
-    acceptable_sink_labels = String.Map.Tree.empty;
-    find_obscure_flows = false;
+    implicit_sources = empty_implicit_sources;
+    partial_sink_labels = String.Map.Tree.empty;
+    find_missing_flows = None;
+    dump_model_query_results = false;
+    analysis_model_constraints = default_analysis_model_constraints;
   }
 
 
@@ -89,16 +132,16 @@ exception
 module PartialSinkConverter = struct
   let mangle { Sinks.kind; label } = Format.sprintf "%s$%s" kind label
 
-  let add map ~first_source ~first_sinks ~second_source ~second_sinks =
+  let add map ~first_sources ~first_sinks ~second_sources ~second_sinks =
     let add map (first_sink, second_sink) =
       (* Trigger second sink when the first sink matches a source, and vice versa. *)
       String.Map.Tree.add_multi
         map
         ~key:(mangle first_sink)
-        ~data:(first_source, Sinks.TriggeredPartialSink second_sink)
+        ~data:(first_sources, Sinks.TriggeredPartialSink second_sink)
       |> String.Map.Tree.add_multi
            ~key:(mangle second_sink)
-           ~data:(second_source, Sinks.TriggeredPartialSink first_sink)
+           ~data:(second_sources, Sinks.TriggeredPartialSink first_sink)
     in
     List.cartesian_product first_sinks second_sinks |> List.fold ~f:add ~init:map
 
@@ -117,8 +160,8 @@ module PartialSinkConverter = struct
   let get_triggered_sink sink_to_sources ~partial_sink ~source =
     match mangle partial_sink |> String.Map.Tree.find sink_to_sources with
     | Some source_and_sink_list ->
-        List.find source_and_sink_list ~f:(fun (supported_source, _) ->
-            Sources.equal source supported_source)
+        List.find source_and_sink_list ~f:(fun (supported_sources, _) ->
+            List.exists supported_sources ~f:(Sources.equal source))
         >>| snd
     | _ -> None
 end
@@ -139,20 +182,8 @@ let parse source_jsons =
     array_member "sources" json |> List.map ~f:parse_source
   in
   let parse_sinks json =
-    let parse_sink (sinks, acceptable_sink_labels) json =
-      let sink = Json.Util.member "name" json |> Json.Util.to_string in
-      let acceptable_sink_labels =
-        if List.exists ~f:(String.equal "multi_sink_labels") (Json.Util.keys json) then
-          Json.Util.member "multi_sink_labels" json
-          |> Json.Util.to_list
-          |> List.map ~f:Json.Util.to_string
-          |> fun data -> String.Map.Tree.set acceptable_sink_labels ~key:sink ~data
-        else
-          acceptable_sink_labels
-      in
-      sink :: sinks, acceptable_sink_labels
-    in
-    array_member "sinks" json |> List.fold ~init:([], String.Map.Tree.empty) ~f:parse_sink
+    let parse_sink json = Json.Util.member "name" json |> Json.Util.to_string in
+    array_member "sinks" json |> List.map ~f:parse_sink
   in
   let parse_features json =
     let parse_feature json = Json.Util.member "name" json |> Json.Util.to_string in
@@ -164,23 +195,16 @@ let parse source_jsons =
       failwith (Format.sprintf "Multiple rules share the same code `%d`." code);
     Hash_set.add seen_rules code
   in
-  let parse_rules ~allowed_sources ~allowed_sinks ~acceptable_sink_labels json =
+  let parse_rules ~allowed_sources ~allowed_sinks json =
     let parse_rule json =
       let sources =
         Json.Util.member "sources" json
         |> parse_string_list
         |> List.map ~f:(Sources.parse ~allowed:allowed_sources)
       in
-      let validate sink =
-        (* Ensure that the sink used for a normal rule is not a multi sink. *)
-        if String.Map.Tree.mem acceptable_sink_labels sink then
-          failwith (Format.sprintf "Multi sink `%s` can't be used for a regular rule." sink);
-        sink
-      in
       let sinks =
         Json.Util.member "sinks" json
         |> parse_string_list
-        |> List.map ~f:validate
         |> List.map ~f:(Sinks.parse ~allowed:allowed_sinks)
       in
       let name = Json.Util.member "name" json |> Json.Util.to_string in
@@ -191,8 +215,8 @@ let parse source_jsons =
     in
     array_member "rules" json |> List.map ~f:parse_rule
   in
-  let parse_combined_source_rules ~allowed_sources ~acceptable_sink_labels json =
-    let parse_combined_source_rule (rules, partial_sink_converter) json =
+  let parse_combined_source_rules ~allowed_sources json =
+    let parse_combined_source_rule (rules, partial_sink_converter, partial_sink_labels) json =
       let name = Json.Util.member "name" json |> Json.Util.to_string in
       let message_format = Json.Util.member "message_format" json |> Json.Util.to_string in
       let code = Json.Util.member "code" json |> Json.Util.to_int in
@@ -201,21 +225,31 @@ let parse source_jsons =
       let keys = Json.Util.keys sources in
       match keys with
       | [first; second] ->
-          let first_source =
-            Json.Util.member first sources
-            |> Json.Util.to_string
-            |> Sources.parse ~allowed:allowed_sources
+          let parse_sources sources =
+            match sources with
+            | `String source -> [Sources.parse ~allowed:allowed_sources source]
+            | `List sources ->
+                List.map sources ~f:Json.Util.to_string
+                |> List.map ~f:(Sources.parse ~allowed:allowed_sources)
+            | _ -> failwith "Expected a string or list of strings for combined rule sources."
           in
-          let second_source =
-            Json.Util.member second sources
-            |> Json.Util.to_string
-            |> Sources.parse ~allowed:allowed_sources
-          in
+          let first_sources = Json.Util.member first sources |> parse_sources in
+          let second_sources = Json.Util.member second sources |> parse_sources in
 
-          let sinks = Json.Util.member "sinks" json |> parse_string_list in
+          let sinks, partial_sink_labels =
+            let partial_sink = Json.Util.member "partial_sink" json |> Json.Util.to_string in
+            if String.Map.Tree.mem partial_sink_labels partial_sink then
+              failwith
+                (Format.sprintf
+                   "Partial sinks must be unique - an entry for `%s` already exists."
+                   partial_sink)
+            else
+              ( [partial_sink],
+                String.Map.Tree.set partial_sink_labels ~key:partial_sink ~data:[first; second] )
+          in
           let create_partial_sink label sink =
             begin
-              match String.Map.Tree.find acceptable_sink_labels sink with
+              match String.Map.Tree.find partial_sink_labels sink with
               | Some labels when not (List.mem ~equal:String.equal labels label) ->
                   failwith
                     (Format.sprintf
@@ -236,14 +270,14 @@ let parse source_jsons =
           let first_sinks = List.map sinks ~f:(create_partial_sink first) in
           let second_sinks = List.map sinks ~f:(create_partial_sink second) in
           ( {
-              Rule.sources = [first_source];
+              Rule.sources = first_sources;
               sinks = List.map first_sinks ~f:(fun sink -> Sinks.TriggeredPartialSink sink);
               name;
               code;
               message_format;
             }
             :: {
-                 Rule.sources = [second_source];
+                 Rule.sources = second_sources;
                  sinks = List.map second_sinks ~f:(fun sink -> Sinks.TriggeredPartialSink sink);
                  name;
                  code;
@@ -252,56 +286,114 @@ let parse source_jsons =
             :: rules,
             PartialSinkConverter.add
               partial_sink_converter
-              ~first_source
+              ~first_sources
               ~first_sinks
-              ~second_source
-              ~second_sinks )
+              ~second_sources
+              ~second_sinks,
+            partial_sink_labels )
       | _ -> failwith "Combined source rules must be of the form {\"a\": SourceA, \"b\": SourceB}"
     in
     array_member "combined_source_rules" json
-    |> List.fold ~init:([], String.Map.Tree.empty) ~f:parse_combined_source_rule
+    |> List.fold
+         ~init:([], String.Map.Tree.empty, String.Map.Tree.empty)
+         ~f:parse_combined_source_rule
   in
   let parse_implicit_sinks ~allowed_sinks json =
     match member "implicit_sinks" json with
     | `Null -> empty_implicit_sinks
     | implicit_sinks ->
         let conditional_test =
-          array_member "conditional_test" implicit_sinks
-          |> List.map ~f:(fun json ->
-                 Json.Util.to_string json |> Sinks.parse ~allowed:allowed_sinks)
+          match member "conditional_test" implicit_sinks with
+          | `Null -> []
+          | conditional_test ->
+              Json.Util.to_list conditional_test
+              |> List.map ~f:(fun json ->
+                     Json.Util.to_string json |> Sinks.parse ~allowed:allowed_sinks)
         in
-        { conditional_test }
+        let literal_string_sinks =
+          match member "literal_strings" implicit_sinks with
+          | `Null -> []
+          | literal_strings ->
+              Json.Util.to_list literal_strings
+              |> List.map ~f:(fun json ->
+                     let sink_kind =
+                       Json.Util.member "kind" json
+                       |> Json.Util.to_string
+                       |> Sinks.parse ~allowed:allowed_sinks
+                     in
+                     let pattern =
+                       Json.Util.member "regexp" json |> Json.Util.to_string |> Re2.create_exn
+                     in
+                     { sink_kind; pattern })
+        in
+        { conditional_test; literal_string_sinks }
   in
+  let parse_implicit_sources ~allowed_sources json =
+    match member "implicit_sources" json with
+    | `Null -> { literal_strings = [] }
+    | implicit_sources ->
+        let literal_strings =
+          array_member "literal_strings" implicit_sources
+          |> List.map ~f:(fun json ->
+                 let source_kind =
+                   Json.Util.member "kind" json
+                   |> Json.Util.to_string
+                   |> Sources.parse ~allowed:allowed_sources
+                 in
+                 let pattern =
+                   Json.Util.member "regexp" json |> Json.Util.to_string |> Re2.create_exn
+                 in
+                 { source_kind; pattern })
+        in
+        { literal_strings }
+  in
+
   let sources = List.concat_map source_jsons ~f:parse_sources in
-  let sinks, acceptable_sink_labels =
-    List.map source_jsons ~f:parse_sinks
-    |> List.unzip
-    |> fun (sinks, acceptable_sink_labels) ->
-    ( List.concat sinks,
-      List.fold acceptable_sink_labels ~init:String.Map.Tree.empty ~f:PartialSinkConverter.merge )
-  in
+  let sinks = List.concat_map source_jsons ~f:parse_sinks in
   let features = List.concat_map source_jsons ~f:parse_features in
   let rules =
-    List.concat_map
-      source_jsons
-      ~f:(parse_rules ~allowed_sources:sources ~allowed_sinks:sinks ~acceptable_sink_labels)
+    List.concat_map source_jsons ~f:(parse_rules ~allowed_sources:sources ~allowed_sinks:sinks)
   in
-  let generated_combined_rules, partial_sink_converter =
-    List.map
-      source_jsons
-      ~f:(parse_combined_source_rules ~allowed_sources:sources ~acceptable_sink_labels)
-    |> List.unzip
-    |> fun (generated_combined_rules, partial_sink_converters) ->
+  let generated_combined_rules, partial_sink_converter, partial_sink_labels =
+    List.map source_jsons ~f:(parse_combined_source_rules ~allowed_sources:sources)
+    |> List.unzip3
+    |> fun (generated_combined_rules, partial_sink_converters, partial_sink_labels) ->
     ( List.concat generated_combined_rules,
-      List.fold partial_sink_converters ~init:String.Map.Tree.empty ~f:PartialSinkConverter.merge )
+      List.fold partial_sink_converters ~init:String.Map.Tree.empty ~f:PartialSinkConverter.merge,
+      List.fold partial_sink_labels ~init:String.Map.Tree.empty ~f:PartialSinkConverter.merge )
   in
 
   let merge_implicit_sinks left right =
-    { conditional_test = left.conditional_test @ right.conditional_test }
+    {
+      conditional_test = left.conditional_test @ right.conditional_test;
+      literal_string_sinks = left.literal_string_sinks @ right.literal_string_sinks;
+    }
   in
   let implicit_sinks =
     List.map source_jsons ~f:(parse_implicit_sinks ~allowed_sinks:sinks)
-    |> List.fold ~init:{ conditional_test = [] } ~f:merge_implicit_sinks
+    |> List.fold ~init:empty_implicit_sinks ~f:merge_implicit_sinks
+  in
+  let maximum_overrides_to_analyze =
+    let parse_overrides_to_analyze json =
+      match member "options" json with
+      | `Null -> None
+      | options -> (
+          match member "maximum_overrides_to_analyze" options with
+          | `Null -> None
+          | overrides_to_analyze -> Some (Json.Util.to_int overrides_to_analyze) )
+    in
+    List.filter_map source_jsons ~f:parse_overrides_to_analyze
+    |> function
+    | [] -> None
+    | [maximum_overrides_to_analyze] -> Some maximum_overrides_to_analyze
+    | _ -> failwith "Multiple values were passed in for overrides to analyze."
+  in
+  let merge_implicit_sources left right =
+    { literal_strings = left.literal_strings @ right.literal_strings }
+  in
+  let implicit_sources =
+    List.map source_jsons ~f:(parse_implicit_sources ~allowed_sources:sources)
+    |> List.fold ~init:empty_implicit_sources ~f:merge_implicit_sources
   in
   {
     sources;
@@ -310,8 +402,12 @@ let parse source_jsons =
     rules = List.rev_append rules generated_combined_rules;
     partial_sink_converter;
     implicit_sinks;
-    acceptable_sink_labels;
-    find_obscure_flows = false;
+    implicit_sources;
+    partial_sink_labels;
+    find_missing_flows = None;
+    dump_model_query_results = false;
+    analysis_model_constraints =
+      { default_analysis_model_constraints with maximum_overrides_to_analyze };
   }
 
 
@@ -435,9 +531,12 @@ let default =
         };
       ];
     partial_sink_converter = String.Map.Tree.empty;
+    partial_sink_labels = String.Map.Tree.empty;
     implicit_sinks = empty_implicit_sinks;
-    acceptable_sink_labels = String.Map.Tree.empty;
-    find_obscure_flows = false;
+    implicit_sources = empty_implicit_sources;
+    find_missing_flows = None;
+    dump_model_query_results = false;
+    analysis_model_constraints = default_analysis_model_constraints;
   }
 
 
@@ -454,7 +553,24 @@ let obscure_flows_configuration configuration =
           message_format = "Data from [{$sources}] source(s) may reach an obscure model";
         };
       ];
-    find_obscure_flows = true;
+    find_missing_flows = Some Obscure;
+  }
+
+
+let missing_type_flows_configuration configuration =
+  {
+    configuration with
+    rules =
+      [
+        {
+          sources = List.map ~f:(fun source -> Sources.NamedSource source) configuration.sources;
+          sinks = [Sinks.NamedSink "UnknownCallee"];
+          code = 6003;
+          name = "Unknown callee flow.";
+          message_format = "Data from [{$sources}] source(s) may flow to an unknown callee";
+        };
+      ];
+    find_missing_flows = Some Type;
   }
 
 
@@ -464,7 +580,7 @@ let get () =
   | Some configuration -> configuration
 
 
-let create ~rule_filter ~find_obscure_flows ~paths =
+let create ~rule_filter ~find_missing_flows ~dump_model_query_results ~paths =
   let file_paths = Path.get_matching_files_recursively ~suffix:".config" ~paths in
   let parse_configuration config_file =
     if not (Path.file_exists config_file) then
@@ -489,11 +605,12 @@ let create ~rule_filter ~find_obscure_flows ~paths =
   let configuration = parse configurations in
   validate configuration;
   let configuration =
-    if find_obscure_flows then
-      obscure_flows_configuration configuration
-    else
-      configuration
+    match find_missing_flows with
+    | Some Obscure -> obscure_flows_configuration configuration
+    | Some Type -> missing_type_flows_configuration configuration
+    | None -> configuration
   in
+  let configuration = { configuration with dump_model_query_results } in
   match rule_filter with
   | None -> configuration
   | Some rule_filter ->
@@ -505,9 +622,35 @@ let create ~rule_filter ~find_obscure_flows ~paths =
 
 let conditional_test_sinks () =
   match get () with
-  | { implicit_sinks = { conditional_test }; _ } -> conditional_test
+  | { implicit_sinks = { conditional_test; _ }; _ } -> conditional_test
+
+
+let literal_string_sinks () =
+  match get () with
+  | { implicit_sinks = { literal_string_sinks; _ }; _ } -> literal_string_sinks
 
 
 let get_triggered_sink ~partial_sink ~source =
   let { partial_sink_converter; _ } = get () in
   PartialSinkConverter.get_triggered_sink partial_sink_converter ~partial_sink ~source
+
+
+let is_missing_flow_analysis kind =
+  match get () with
+  | { find_missing_flows; _ } ->
+      Option.equal equal_missing_flows_kind (Some kind) find_missing_flows
+
+
+let get_maximum_model_width () =
+  match get () with
+  | { analysis_model_constraints = { maximum_model_width; _ }; _ } -> maximum_model_width
+
+
+let literal_string_sources () =
+  let { implicit_sources; _ } = get () in
+  implicit_sources.literal_strings
+
+
+let maximum_return_access_path_width = 5
+
+let maximum_return_access_path_depth = 3

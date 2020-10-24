@@ -1,7 +1,9 @@
-(** Copyright (c) 2019-present, Facebook, Inc.
-
-    This source code is licensed under the MIT license found in the LICENSE file in the root
-    directory of this source tree. *)
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Pyre
@@ -49,9 +51,9 @@ let qualifier_of_relative relative =
           | _ -> last
         in
         let strip = function
-          | "future" :: "builtins" :: tail
-          | "builtins" :: tail ->
-              tail
+          | ["builtins"]
+          | ["builtins"; "future"] ->
+              []
           | "__init__" :: tail -> tail
           | elements -> elements
         in
@@ -73,13 +75,10 @@ let create_from_search_path ~is_external ~search_paths path =
   Some { relative; qualifier; priority; is_stub; is_external; is_init }
 
 
-let should_type_check
-    ~configuration:
-      { Configuration.Analysis.analyze_external_sources; filter_directories; ignore_all_errors; _ }
+let is_internal_path
+    ~configuration:{ Configuration.Analysis.filter_directories; ignore_all_errors; _ }
     path
   =
-  analyze_external_sources
-  ||
   let path = Path.follow_symbolic_link path |> Option.value ~default:path in
   let directory_contains ~path directory = Path.directory_contains ~directory path in
   let filter_directories = Option.value filter_directories ~default:[] in
@@ -88,14 +87,29 @@ let should_type_check
   && not (List.exists ignore_all_errors ~f:(directory_contains ~path))
 
 
-let create ~configuration:({ Configuration.Analysis.excludes; _ } as configuration) path =
+let should_type_check
+    ~configuration:({ Configuration.Analysis.analyze_external_sources; _ } as configuration)
+    path
+  =
+  analyze_external_sources || is_internal_path ~configuration path
+
+
+let create ~configuration:({ Configuration.Analysis.excludes; extensions; _ } as configuration) path
+  =
+  let has_valid_extensions ~extensions path =
+    let valid_suffixes = ".py" :: ".pyi" :: extensions in
+    List.exists valid_suffixes ~f:(fun suffix -> String.is_suffix ~suffix path)
+  in
   let absolute_path = Path.absolute path in
-  match List.exists excludes ~f:(fun regexp -> Str.string_match regexp absolute_path 0) with
-  | true -> None
-  | false ->
-      let search_paths = Configuration.Analysis.search_path configuration in
-      let is_external = not (should_type_check ~configuration path) in
-      create_from_search_path ~is_external ~search_paths path
+  match has_valid_extensions ~extensions absolute_path with
+  | false -> None
+  | true -> (
+      match List.exists excludes ~f:(fun regexp -> Str.string_match regexp absolute_path 0) with
+      | true -> None
+      | false ->
+          let search_paths = Configuration.Analysis.search_path configuration in
+          let is_external = not (should_type_check ~configuration path) in
+          create_from_search_path ~is_external ~search_paths path )
 
 
 let create_for_testing ~relative ~is_external ~priority =

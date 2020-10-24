@@ -1,7 +1,10 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
+
 open Core
 open Pyre
 
@@ -12,7 +15,7 @@ module Setting : sig
     watchman_connection: Watchman.Raw.Connection.t;
     project_name: string;
     project_metadata: string option;
-    critical_files: ServerConfiguration.CriticalFiles.t;
+    critical_files: ServerConfiguration.CriticalFile.t list;
     target: Path.t;
   }
 end

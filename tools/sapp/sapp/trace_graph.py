@@ -1,16 +1,18 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
 # pyre-strict
 
+import logging
 from collections import defaultdict
-from typing import DefaultDict, Dict, Iterable, List, Optional, Set, Tuple
+from typing import DefaultDict, Dict, Iterable, List, NamedTuple, Optional, Set, Tuple
 
 from .bulk_saver import BulkSaver
 from .models import (
     DBID,
+    SHARED_TEXT_LENGTH,
     Issue,
     IssueInstance,
     IssueInstanceFixInfo,
@@ -20,6 +22,15 @@ from .models import (
     TraceFrameAnnotation,
     TraceKind,
 )
+
+
+log: logging.Logger = logging.getLogger("sapp")
+
+
+class LeafMapping(NamedTuple):
+    caller_leaf: int
+    callee_leaf: int
+    transform: int
 
 
 class TraceGraph(object):
@@ -171,7 +182,9 @@ class TraceGraph(object):
     def add_trace_frame(self, trace_frame: TraceFrame) -> None:
         key = (trace_frame.caller_id.local_id, trace_frame.caller_port)
         rev_key = (trace_frame.callee_id.local_id, trace_frame.callee_port)
+        # pyre-fixme[6]: Expected `TraceKind` for 1st param but got `str`.
         self._trace_frames_map[trace_frame.kind][key].add(trace_frame.id.local_id)
+        # pyre-fixme[6]: Expected `TraceKind` for 1st param but got `str`.
         self._trace_frames_rev_map[trace_frame.kind][rev_key].add(
             trace_frame.id.local_id
         )
@@ -205,6 +218,14 @@ class TraceGraph(object):
         self._shared_text_lookup[shared_text.kind][
             shared_text.contents
         ] = shared_text.id.local_id
+
+    def get_or_add_shared_text(self, kind: SharedTextKind, name: str) -> SharedText:
+        name = name[:SHARED_TEXT_LENGTH]
+        shared_text = self.get_shared_text(kind, name)
+        if shared_text is None:
+            shared_text = SharedText.Record(id=DBID(), contents=name, kind=kind)
+            self.add_shared_text(shared_text)
+        return shared_text
 
     def add_trace_frame_leaf_assoc(
         self, trace_frame: TraceFrame, leaf: SharedText, depth: int
@@ -271,18 +292,22 @@ class TraceGraph(object):
 
     def get_next_trace_frames(self, trace_frame: TraceFrame) -> Iterable[TraceFrame]:
         return self.get_trace_frames_from_caller(
-            trace_frame.kind, trace_frame.callee_id, trace_frame.callee_port
+            # pyre-fixme[6]: Expected `TraceKind` for 1st param but got `str`.
+            trace_frame.kind,
+            trace_frame.callee_id,
+            trace_frame.callee_port,
         )
+
+    def add_issue_instance_shared_text_assoc_id(
+        self, instance: IssueInstance, shared_text_id: int
+    ) -> None:
+        self._issue_instance_shared_text_assoc[instance.id.local_id].add(shared_text_id)
+        self._shared_text_issue_instance_assoc[shared_text_id].add(instance.id.local_id)
 
     def add_issue_instance_shared_text_assoc(
         self, instance: IssueInstance, shared_text: SharedText
     ) -> None:
-        self._issue_instance_shared_text_assoc[instance.id.local_id].add(
-            shared_text.id.local_id
-        )
-        self._shared_text_issue_instance_assoc[shared_text.id.local_id].add(
-            instance.id.local_id
-        )
+        self.add_issue_instance_shared_text_assoc_id(instance, shared_text.id.local_id)
 
     def get_issue_instance_shared_texts(
         self, instance_id: int, kind: SharedTextKind
@@ -331,13 +356,61 @@ class TraceGraph(object):
                 )
 
     def _save_trace_frame_leaf_assoc(self, bulk_saver: BulkSaver) -> None:
+        """Adds trace frame leaf assocs to bulk saver after filtering them:
+        1. if frame is a leaf, include all kinds
+        2. otherwise, find outgoing leaf kinds and intersect with union of incoming
+           leaf kinds of all successor frames.
+        3. include only kinds that map to one of these outgoing kinds.
+        """
         for trace_frame_id, leaf_ids in self._trace_frame_leaf_assoc.items():
+            frame = self._trace_frames[trace_frame_id]
+            valid_frame_leaf_ids = self._compute_valid_frame_leaves(frame)
             for (leaf_id, depth) in leaf_ids:
-                bulk_saver.add_trace_frame_leaf_assoc(
-                    self._shared_texts[leaf_id],
-                    self._trace_frames[trace_frame_id],
-                    depth,
-                )
+                leaf_text = self._shared_texts[leaf_id]
+                if leaf_id in valid_frame_leaf_ids or self._is_opposite_leaf(
+                    frame, leaf_text
+                ):
+                    bulk_saver.add_trace_frame_leaf_assoc(leaf_text, frame, depth)
+                else:
+                    # Logging all the leaf kinds that are omitted causes large logs.
+                    pass
+
+    def _is_opposite_leaf(self, frame: TraceFrame, leaf: SharedText) -> bool:
+        """We may be propagating sources along sink traces or vice versa. These should
+        not be filtered and are identified here."""
+        return (
+            frame.kind == TraceKind.PRECONDITION and leaf.kind == SharedTextKind.SOURCE
+        ) or (
+            frame.kind == TraceKind.POSTCONDITION and leaf.kind == SharedTextKind.SINK
+        )
+
+    def _compute_valid_frame_leaves(self, frame: TraceFrame) -> Set[int]:
+        # pyre-fixme[16]: extra fields are not known to pyre
+        leaf_mapping: Set[LeafMapping] = frame.leaf_mapping
+        is_leaf_frame = self.is_leaf_port(frame.callee_port)
+        if not is_leaf_frame:
+            callee_frames = self.get_next_trace_frames(frame)
+            callee_leaf_ids = {
+                callee_map.caller_leaf
+                for callee_frame in callee_frames
+                for callee_map in callee_frame.leaf_mapping
+            }
+        else:
+            callee_leaf_ids = set()
+        return {
+            leaf_map.transform
+            for leaf_map in leaf_mapping
+            if is_leaf_frame or (leaf_map.callee_leaf in callee_leaf_ids)
+        }
+
+    def is_leaf_port(self, port: str) -> bool:
+        return (
+            port == "leaf"
+            or port == "source"
+            or port == "sink"
+            or port.startswith("anchor:")
+            or port.startswith("producer:")
+        )
 
     def _save_issue_instance_shared_text_assoc(self, bulk_saver: BulkSaver) -> None:
         for (
@@ -349,3 +422,75 @@ class TraceGraph(object):
                     self._issue_instances[instance_id],
                     self._shared_texts[shared_text_id],
                 )
+
+    def compute_next_leaf_kinds(
+        self, leaves: Set[int], leaf_mapping: Set[LeafMapping]
+    ) -> Set[int]:
+        """Normally, we would just intersect leaves and frame leaves, but since frame
+        leaves can indicate local transforms of the form T1:...:Tn@G1..Gm:S, we need
+        to be more careful.
+
+        We first need to identify which frame leaves match by substituting the @
+        for :, in general that would be T1:..Tn:G1..Gm:S. Then given these
+        matches, erase everything up to and including the @ sign. That will be
+        the new leaf kind.  In general, that is G1..Gm:S.
+
+        leaf_mapping is already normalized to (caller_leaf_id, callee_leaf_id),
+        i.e. which callers map to which caller ids obtained by performing the
+        substitutions.
+
+        For non-transform kinds, the leaf mapping contains identical
+        caller_leaf_id, callee_leaf_id.
+        """
+
+        next_kinds = set()
+        for leaf_map in leaf_mapping:
+            if leaf_map.caller_leaf in leaves:
+                next_kinds.add(leaf_map.callee_leaf)
+        return next_kinds
+
+    def compute_prev_leaf_kinds(
+        self, leaves: Set[int], leaf_mapping: Set[LeafMapping]
+    ) -> Set[int]:
+        """Same as next_leaf_kinds but when following from leaves to issues."""
+        next_kinds = set()
+        for leaf_map in leaf_mapping:
+            if leaf_map.callee_leaf in leaves:
+                next_kinds.add(leaf_map.caller_leaf)
+        return next_kinds
+
+    def get_transform_normalized_kind_id(self, leaf_kind: SharedText) -> int:
+        assert (
+            leaf_kind.kind == SharedTextKind.SINK
+            or leaf_kind.kind == SharedTextKind.SOURCE
+        )
+        if "@" in leaf_kind.contents:
+            normal_name = leaf_kind.contents.replace("@", ":", 1)
+            normal_kind = self.get_or_add_shared_text(leaf_kind.kind, normal_name)
+            return normal_kind.id.local_id
+        else:
+            return leaf_kind.id.local_id
+
+    def get_transformed_kind_id(self, leaf_kind: SharedText) -> int:
+        assert (
+            leaf_kind.kind == SharedTextKind.SINK
+            or leaf_kind.kind == SharedTextKind.SOURCE
+        )
+        if "@" in leaf_kind.contents:
+            splits = leaf_kind.contents.split("@", 1)
+            remaining_kind = self.get_or_add_shared_text(leaf_kind.kind, splits[1])
+            return remaining_kind.id.local_id
+        else:
+            return leaf_kind.id.local_id
+
+    def get_incoming_leaf_kinds_of_frame(self, trace_frame: TraceFrame) -> Set[int]:
+        # pyre-fixme[16]: extra fields are not known to pyre
+        leaf_mapping: Set[LeafMapping] = trace_frame.leaf_mapping
+        assert leaf_mapping is not None
+        return {leaf_map.callee_leaf for leaf_map in leaf_mapping}
+
+    def get_outgoing_leaf_kinds_of_frame(self, trace_frame: TraceFrame) -> Set[int]:
+        # pyre-fixme[16]: extra fields are not known to pyre
+        leaf_mapping: Set[LeafMapping] = trace_frame.leaf_mapping
+        assert leaf_mapping is not None
+        return {leaf_map.caller_leaf for leaf_map in leaf_mapping}

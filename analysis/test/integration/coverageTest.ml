@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open OUnit2
@@ -22,7 +24,10 @@ let test_check_coverage context =
     let undefined_attribute_errors =
       ["Undefined attribute [16]: `A` has no attribute `undefined`."]
     in
-    assert_type_errors ~context (preprocess source) (additional_errors @ undefined_attribute_errors)
+    assert_type_errors
+      ~context
+      (preprocess source)
+      (additional_errors @ undefined_attribute_errors |> List.sort ~compare:String.compare)
   in
 
   (* Return statement. *)
@@ -97,17 +102,11 @@ let test_check_coverage context =
   (* Binary operator. *)
   assert_covered
     ~additional_errors:
-      [
-        "Incompatible parameter type [6]: `|` is not supported for operand types `unknown` and \
-         `int`.";
-      ]
+      ["Unsupported operand [58]: `|` is not supported for operand types `unknown` and `int`."]
     "ERROR | 1";
   assert_covered
     ~additional_errors:
-      [
-        "Incompatible parameter type [6]: `%` is not supported for operand types `int` and \
-         `unknown`.";
-      ]
+      ["Unsupported operand [58]: `%` is not supported for operand types `int` and `unknown`."]
     "1 % ERROR";
 
   (* Boolean operator. *)
@@ -121,10 +120,7 @@ let test_check_coverage context =
   assert_covered "1 == ERROR";
   assert_covered
     ~additional_errors:
-      [
-        "Incompatible parameter type [6]: `<` is not supported for operand types `unknown` and \
-         `int`.";
-      ]
+      ["Unsupported operand [58]: `<` is not supported for operand types `unknown` and `int`."]
     "ERROR < 1";
 
   (* Dictionaries. *)

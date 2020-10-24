@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 from contextlib import contextmanager
+from pathlib import Path
 from typing import ContextManager, Dict, Generator, Iterable, List, Optional, Set
 
 from .exceptions import EnvironmentException
@@ -65,11 +66,11 @@ def translate_path(root: str, path: str) -> str:
 
 
 def expand_relative_path(root: str, path: str) -> str:
-    path = os.path.expanduser(path)
-    if os.path.isabs(path):
-        return path
+    expanded_path = Path(path).expanduser()
+    if expanded_path.is_absolute():
+        return str(expanded_path)
     else:
-        return os.path.join(root, path)
+        return str(Path(root) / expanded_path)
 
 
 def translate_paths(paths: Set[str], original_directory: str) -> Set[str]:
@@ -82,24 +83,16 @@ def translate_paths(paths: Set[str], original_directory: str) -> Set[str]:
     return {translate_path(translation, path) for path in paths}
 
 
-def find_root(original_directory: str, target_file: str) -> Optional[str]:
-    current_directory = os.path.abspath(original_directory)
-    while True:
-        absolute = os.path.join(current_directory, target_file)
-        if os.path.isfile(absolute):
-            return current_directory
-
-        parent_directory = os.path.dirname(current_directory)
-        if current_directory == parent_directory:
-            break
-        current_directory = parent_directory
-    return None
-
-
 def exists(path: str) -> str:
     if not os.path.isfile(path):
         raise ValueError("%s is not a valid file" % path)
     return path
+
+
+def file_or_directory_exists(path: str) -> str:
+    if os.path.isdir(path) or os.path.isfile(path):
+        return path
+    raise ValueError("%s is not a valid path" % path)
 
 
 def is_parent(parent: str, child: str) -> bool:
@@ -175,13 +168,13 @@ def _compute_symbolic_link_mapping(
     directory: str, extensions: Iterable[str]
 ) -> Dict[str, str]:
     """
-        Given a shared analysis directory, produce a mapping from actual source files
-        to files contained within this directory. Only includes files which have
-        one of the provided extensions.
+    Given a shared analysis directory, produce a mapping from actual source files
+    to files contained within this directory. Only includes files which have
+    one of the provided extensions.
 
-        Watchman watches actual source files, so when a change is detected to a
-        file, this mapping can be used to identify what file changed from Pyre's
-        perspective.
+    Watchman watches actual source files, so when a change is detected to a
+    file, this mapping can be used to identify what file changed from Pyre's
+    perspective.
     """
     symbolic_links = {}
     try:
@@ -271,12 +264,12 @@ class Filesystem:
         self, root: str, patterns: List[str], exclude: Optional[List[str]] = None
     ) -> List[str]:
         """
-            Return the list of files that match any of the patterns within root.
-            If exclude is provided, files that match an exclude pattern are omitted.
+        Return the list of files that match any of the patterns within root.
+        If exclude is provided, files that match an exclude pattern are omitted.
 
-            Note: The `find` command does not understand globs properly.
-                e.g. 'a/*.py' will match 'a/b/c.py'
-            For this reason, avoid calling this method with glob patterns.
+        Note: The `find` command does not understand globs properly.
+            e.g. 'a/*.py' will match 'a/b/c.py'
+        For this reason, avoid calling this method with glob patterns.
         """
 
         command = ["find", "."]

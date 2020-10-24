@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -17,8 +17,13 @@ from ..errors import (
     Errors,
     PartialErrorSuppression,
     SkippingGeneratedFileException,
+    _get_unused_ignore_codes,
+    _remove_unused_ignores,
     _suppress_errors,
 )
+
+
+unittest.util._MAX_LENGTH = 200
 
 
 class ErrorsTest(unittest.TestCase):
@@ -63,6 +68,25 @@ class ErrorsTest(unittest.TestCase):
         with self.assertRaises(UserError):
             Errors.from_json('[{ "path": "test.py", "key": "value" }')
 
+    def test_paths_to_errors(self) -> None:
+        errors = Errors(
+            [
+                {"path": "test1.py", "key": "value", "code": 1},
+                {"path": "test2.py", "key": "value", "code": 2},
+                {"path": "test1.py", "key": "value", "code": 3},
+            ]
+        )
+        self.assertEqual(
+            errors.paths_to_errors,
+            {
+                "test1.py": [
+                    {"code": 1, "key": "value", "path": "test1.py"},
+                    {"code": 3, "key": "value", "path": "test1.py"},
+                ],
+                "test2.py": [{"code": 2, "key": "value", "path": "test2.py"}],
+            },
+        )
+
     @patch.object(errors.Path, "read_text", return_value="")
     @patch.object(errors.Path, "write_text")
     def test_suppress(self, path_write_text, path_read_text) -> None:
@@ -106,6 +130,80 @@ class ErrorsTest(unittest.TestCase):
             self.assertEqual(
                 set(context.exception.unsuppressed_paths), {"path.py", "other.py"}
             )
+
+    def test_get_unused_ignore_codes(self) -> None:
+        self.assertEqual(
+            _get_unused_ignore_codes(
+                [
+                    {
+                        "code": "0",
+                        "description": "The `pyre-ignore[1, 9]` or `pyre-fixme[1, 9]` "
+                        + "comment is not suppressing type errors, please remove it.",
+                    }
+                ]
+            ),
+            [1, 9],
+        )
+        self.assertEqual(
+            _get_unused_ignore_codes(
+                [
+                    {
+                        "code": "0",
+                        "description": "The `pyre-ignore[1, 9]` or `pyre-fixme[1, 9]` "
+                        + "comment is not suppressing type errors, please remove it.",
+                    },
+                    {
+                        "code": "0",
+                        "description": "The `pyre-ignore[2]` or `pyre-fixme[2]` "
+                        + "comment is not suppressing type errors, please remove it.",
+                    },
+                ]
+            ),
+            [1, 2, 9],
+        )
+        self.assertEqual(
+            _get_unused_ignore_codes(
+                [
+                    {
+                        "code": "1",
+                        "description": "The `pyre-ignore[1, 9]` or `pyre-fixme[1, 9]` "
+                        + "comment is not suppressing type errors, please remove it.",
+                    }
+                ]
+            ),
+            [],
+        )
+
+    # pyre-fixme[56]: Pyre was not able to infer the type of argument `errors`.
+    @patch.object(errors, "_get_unused_ignore_codes")
+    def test_remove_unused_ignores(self, get_unused_ignore_codes) -> None:
+        get_unused_ignore_codes.return_value = [1, 3, 4]
+        self.assertEqual(
+            _remove_unused_ignores("# pyre-fixme[1, 2, 3, 4]: Comment", []),
+            "# pyre-fixme[2]: Comment",
+        )
+
+        get_unused_ignore_codes.return_value = [1, 2, 3, 4]
+        self.assertEqual(
+            _remove_unused_ignores("# pyre-fixme[1, 2, 3, 4]: Comment", []), ""
+        )
+
+        get_unused_ignore_codes.return_value = [1]
+        self.assertEqual(
+            _remove_unused_ignores("# pyre-fixme[2, 3, 4]: Comment", []),
+            "# pyre-fixme[2, 3, 4]: Comment",
+        )
+
+        get_unused_ignore_codes.return_value = [1, 2]
+        self.assertEqual(_remove_unused_ignores("# pyre-fixme: Comment", []), "")
+
+        get_unused_ignore_codes.return_value = [1, 2]
+        self.assertEqual(
+            _remove_unused_ignores(
+                "# Unrelated comment. # pyre-fixme[1, 2]: Comment", []
+            ),
+            "# Unrelated comment.",
+        )
 
     def assertSuppressErrors(
         self,
@@ -353,6 +451,109 @@ class ErrorsTest(unittest.TestCase):
             """,
         )
 
+        # Remove unused ignores by error code.
+        self.assertSuppressErrors(
+            {
+                1: [
+                    {
+                        "code": "0",
+                        "description": "The `pyre-ignore[1]` or `pyre-fixme[1]` "
+                        + "comment is not suppressing type errors, please remove it.",
+                    }
+                ]
+            },
+            """
+            def foo() -> None: pass  # FIXME[1, 2]
+            """,
+            """
+            def foo() -> None: pass  # FIXME[2]
+            """,
+        )
+
+        self.assertSuppressErrors(
+            {
+                1: [
+                    {
+                        "code": "0",
+                        "description": "The `pyre-ignore[1, 3]` or `pyre-fixme[1, 3]` "
+                        + "comment is not suppressing type errors, please remove it.",
+                    }
+                ]
+            },
+            """
+            # FIXME[1, 2, 3]
+            # Continuation comment.
+            def foo() -> None: pass
+            """,
+            """
+            # FIXME[2]
+            # Continuation comment.
+            def foo() -> None: pass
+            """,
+        )
+
+        self.assertSuppressErrors(
+            {
+                1: [
+                    {
+                        "code": "0",
+                        "description": "The `pyre-ignore[1, 3]` or `pyre-fixme[1, 3]` "
+                        + "comment is not suppressing type errors, please remove it.",
+                    }
+                ]
+            },
+            """
+            # FIXME[1, 2, 3]: Comment[Comment]
+            def foo() -> None: pass
+            """,
+            """
+            # FIXME[2]: Comment[Comment]
+            def foo() -> None: pass
+            """,
+        )
+
+        self.assertSuppressErrors(
+            {
+                1: [
+                    {
+                        "code": "0",
+                        "description": "The `pyre-ignore[1, 3]` or `pyre-fixme[1, 3]` "
+                        + "comment is not suppressing type errors, please remove it.",
+                    }
+                ]
+            },
+            """
+            # FIXME[1, 3]
+            # Continuation comment.
+            def foo() -> None: pass
+            """,
+            """
+            def foo() -> None: pass
+            """,
+        )
+
+        self.assertSuppressErrors(
+            {
+                1: [
+                    {
+                        "code": "0",
+                        "description": "The `pyre-ignore[1, 3]` or `pyre-fixme[1, 3]` "
+                        + "comment is not suppressing type errors, please remove it.",
+                    }
+                ],
+                2: [{"code": "4", "description": "Description."}],
+            },
+            """
+            # FIXME[1, 2, 3]
+            def foo() -> None: pass
+            """,
+            """
+            # FIXME[2]
+            # FIXME[4]: Description.
+            def foo() -> None: pass
+            """,
+        )
+
         # Truncate long comments.
         self.assertSuppressErrors(
             {1: [{"code": "1", "description": "description"}]},
@@ -382,6 +583,177 @@ class ErrorsTest(unittest.TestCase):
             """,
             """
             # FIXME[1]: this ...
+            def foo() -> None: pass
+            """,
+            max_line_length=25,
+        )
+
+        # Line breaks without errors.
+        self.assertSuppressErrors(
+            {},
+            """
+            def foo() -> None:
+                \"\"\"
+                Random line break that won't parse.
+                /!\\
+                Text.
+                \"\"\"
+                pass
+            """,
+            """
+            def foo() -> None:
+                \"\"\"
+                Random line break that won't parse.
+                /!\\
+                Text.
+                \"\"\"
+                pass
+            """,
+        )
+
+        # Line breaks.
+        self.assertSuppressErrors(
+            {
+                3: [{"code": "1", "description": "description"}],
+                4: [{"code": "2", "description": "description"}],
+            },
+            """
+            def foo() -> None:
+                x = something + \\
+                        error() + \\
+                        error()  # unrelated comment
+            """,
+            """
+            def foo() -> None:
+                x = (something +
+                        # FIXME[1]: description
+                        error() +
+                        # FIXME[2]: description
+                        error())  # unrelated comment
+            """,
+        )
+
+        self.assertSuppressErrors(
+            {3: [{"code": "1", "description": "description"}]},
+            """
+            def foo() -> None:
+                x, y, z = \\
+                    error()
+            """,
+            """
+            def foo() -> None:
+                x, y, z = (
+                    # FIXME[1]: description
+                    error())
+            """,
+        )
+
+        self.assertSuppressErrors(
+            {3: [{"code": "1", "description": "description"}]},
+            """
+            def foo() -> None:
+                del \\
+                    error
+            """,
+            """
+            def foo() -> None:
+                del (
+                    # FIXME[1]: description
+                    error)
+            """,
+        )
+
+        self.assertSuppressErrors(
+            {3: [{"code": "1", "description": "description"}]},
+            """
+            def foo() -> None:
+                assert \\
+                    test
+            """,
+            """
+            def foo() -> None:
+                assert (
+                    # FIXME[1]: description
+                    test)
+            """,
+        )
+
+        self.assertSuppressErrors(
+            {3: [{"code": "1", "description": "description"}]},
+            """
+            def foo() -> None:
+                assert test + \\
+                    test2
+            """,
+            """
+            def foo() -> None:
+                assert (test +
+                    # FIXME[1]: description
+                    test2)
+            """,
+        )
+
+        self.assertSuppressErrors(
+            {3: [{"code": "1", "description": "description"}]},
+            """
+            def foo() -> None:
+                raise \\
+                    Exception()
+            """,
+            """
+            def foo() -> None:
+                raise (
+                    # FIXME[1]: description
+                    Exception())
+            """,
+        )
+
+        self.assertSuppressErrors(
+            {3: [{"code": "1", "description": "description"}]},
+            """
+            def foo() -> None:
+                return a + \\
+                    error
+            """,
+            """
+            def foo() -> None:
+                return (a +
+                    # FIXME[1]: description
+                    error)
+            """,
+        )
+
+        self.assertSuppressErrors(
+            {3: [{"code": "1", "description": "description"}]},
+            """
+            def foo() -> None:
+                return \\
+                    error
+            """,
+            """
+            def foo() -> None:
+                return (
+                    # FIXME[1]: description
+                    error)
+            """,
+        )
+
+    def test_suppress_errors__long_class_name(self) -> None:
+        self.assertSuppressErrors(
+            {
+                1: [
+                    {
+                        "code": "1",
+                        "description": "This is a \
+                        really.long.class.name.exceeding.twenty.five.Characters",
+                    }
+                ]
+            },
+            """
+            def foo() -> None: pass
+            """,
+            """
+            # FIXME[1]: This ...
             def foo() -> None: pass
             """,
             max_line_length=25,

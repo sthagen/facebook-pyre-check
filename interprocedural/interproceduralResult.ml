@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Ast
 open Statement
@@ -102,6 +104,7 @@ module type ANALYZER = sig
   (* Called once on master before analysis of individual callables. *)
   val init
     :  configuration:Yojson.Safe.json ->
+    scheduler:Scheduler.t ->
     environment:Analysis.TypeEnvironment.ReadOnly.t ->
     functions:Callable.t list ->
     stubs:Callable.t list ->

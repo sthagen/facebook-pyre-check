@@ -1,3 +1,8 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
 # flake8: noqa
 
 
@@ -12,3 +17,12 @@ def returns_crtex_source():
 def test():
     s = returns_crtex_source()
     __test_sink(s)
+
+
+def cross_repository_anchor_sink(sink_parameter):
+    pass
+
+
+def test_cross_repository_anchor():
+    source = __test_source()
+    cross_repository_anchor_sink(source)

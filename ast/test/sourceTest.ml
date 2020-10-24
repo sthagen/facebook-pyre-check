@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open OUnit2
@@ -210,7 +212,10 @@ let test_qualifier _ =
     (SourcePath.qualifier_of_relative "module/submodule.py")
     (qualifier ["module"; "submodule"]);
   assert_equal (SourcePath.qualifier_of_relative "builtins.pyi") (qualifier []);
-  assert_equal (SourcePath.qualifier_of_relative "module/builtins.pyi") (qualifier ["module"]);
+  assert_equal (SourcePath.qualifier_of_relative "future/builtins.pyi") (qualifier []);
+  assert_equal
+    (SourcePath.qualifier_of_relative "module/builtins.py")
+    (qualifier ["module"; "builtins"]);
   assert_equal (SourcePath.qualifier_of_relative "module/__init__.pyi") (qualifier ["module"])
 
 

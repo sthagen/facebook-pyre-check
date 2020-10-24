@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open OUnit2
 open IntegrationTest
@@ -143,7 +145,10 @@ let test_check_union context =
       def foo(a: typing.Union[GetItem, Contains]) -> None:
         5 in a
     |}
-    ["Undefined attribute [16]: `Contains` has no attribute `__getitem__`."];
+    [
+      "Unsupported operand [58]: `in` is not supported for right operand type \
+       `typing.Union[Contains, GetItem]`.";
+    ];
   assert_type_errors
     {|
       import typing

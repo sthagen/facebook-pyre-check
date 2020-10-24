@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open OUnit2
@@ -23,6 +25,7 @@ let test_default_builder context =
       ~arguments:[]
       ~dynamic:false
       ~qualifier:(Reference.create "test")
+      ~callee_type:Type.Any
       ~callee:(parse_single_expression callee);
     let printer = List.to_string ~f:Callgraph.show_callee in
     assert_equal

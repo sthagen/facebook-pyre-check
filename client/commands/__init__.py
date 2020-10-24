@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -30,7 +30,6 @@ from .command import (  # noqa; noqa; noqa
     CommandParser as CommandParser,
     ExitCode as ExitCode,
     ProfileOutput as ProfileOutput,
-    typeshed_search_path as typeshed_search_path,
     IncrementalStyle as IncrementalStyle,
 )
 

@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open OUnit2
 open IntegrationTest
@@ -17,14 +19,14 @@ let test_format_string context =
       def foo() -> None:
         f'foo{1 + "x"}'
     |}
-    ["Incompatible parameter type [6]: `+` is not supported for operand types `int` and `str`."];
+    ["Unsupported operand [58]: `+` is not supported for operand types `int` and `str`."];
   assert_type_errors
     {|
       global_number: int = 1
       def foo() -> None:
         f'foo{global_number + "x"}'
     |}
-    ["Incompatible parameter type [6]: `+` is not supported for operand types `int` and `str`."];
+    ["Unsupported operand [58]: `+` is not supported for operand types `int` and `str`."];
   assert_type_errors
     {|
       global_number: int = 1
@@ -40,7 +42,7 @@ let test_format_string context =
       def foo() -> None:
         f'{boo() + "x"}'
     |}
-    ["Incompatible parameter type [6]: `+` is not supported for operand types `int` and `str`."];
+    ["Unsupported operand [58]: `+` is not supported for operand types `int` and `str`."];
   assert_type_errors {|
       def foo() -> None:
         f'{{x}}'

@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open OUnit2
@@ -839,25 +841,22 @@ let test_class_attributes context =
   assert_attribute
     ~parent:"BoundMethod"
     ~parent_instantiated_type:
-      (Type.Parametric
-         {
-           name = "BoundMethod";
-           parameters =
-             [
-               Single
-                 (Type.Callable.create
-                    ~name:(Reference.create "was_named")
-                    ~parameters:
-                      (Defined
-                         [
-                           Named { name = "self"; annotation = tself; default = false };
-                           Named { name = "x"; annotation = Type.string; default = false };
-                         ])
-                    ~annotation:tself
-                    ());
-               Single Type.integer;
-             ];
-         })
+      (Type.parametric
+         "BoundMethod"
+         [
+           Single
+             (Type.Callable.create
+                ~name:(Reference.create "was_named")
+                ~parameters:
+                  (Defined
+                     [
+                       Named { name = "self"; annotation = tself; default = false };
+                       Named { name = "x"; annotation = Type.string; default = false };
+                     ])
+                ~annotation:tself
+                ());
+           Single Type.integer;
+         ])
     ~attribute_name:"__call__"
     ~expected_attribute:
       (create_expected_attribute
@@ -1245,11 +1244,9 @@ let test_typed_dictionary_individual_attributes context =
       ~parent
       ~uninstantiated_annotation:(Callable uninstantiated_annotation)
       ~annotation:
-        (Type.Parametric
-           {
-             name = "BoundMethod";
-             parameters = [Single (Callable uninstantiated_annotation); Single (Primitive parent)];
-           })
+        (Type.parametric
+           "BoundMethod"
+           [Single (Callable uninstantiated_annotation); Single (Primitive parent)])
       ~undecorated_signature:uninstantiated_annotation
   in
 

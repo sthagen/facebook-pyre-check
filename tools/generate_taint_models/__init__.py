@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -25,6 +25,7 @@ from .get_constructor_initialized_attribute_sources import (  # noqa
     ConstructorInitializedAttributeSourceGenerator,
 )
 from .get_django_class_based_view_models import DjangoClassBasedViewModels  # noqa
+from .get_dynamic_graphql_sources import DynamicGraphQLSourceGenerator  # noqa
 from .get_exit_nodes import ExitNodeGenerator  # noqa
 from .get_filtered_sources import FilteredSourceGenerator  # noqa
 from .get_globals import GlobalModelGenerator  # noqa
@@ -114,8 +115,14 @@ def run_from_parsed_arguments(
     arguments: GenerationArguments,
     default_modes: List[str],
     logger_executable: Optional[str] = None,
+    include_default_modes: bool = False,
 ) -> None:
-    modes = arguments.mode or default_modes
+    argument_modes = arguments.mode or []
+    if len(argument_modes) == 0 or include_default_modes:
+        modes = list(set(argument_modes + default_modes))
+    else:
+        modes = argument_modes
+
     generated_models: Dict[str, Set[Model]] = {}
     for mode in modes:
         LOG.info("Computing models for `%s`", mode)
@@ -140,6 +147,7 @@ def run_generators(
     default_modes: List[str],
     verbose: bool = False,
     logger_executable: Optional[str] = None,
+    include_default_modes: bool = False,
 ) -> None:
     arguments = _parse_arguments(generator_options)
     logging.basicConfig(
@@ -148,5 +156,9 @@ def run_generators(
         level=logging.DEBUG if verbose or arguments.verbose else logging.INFO,
     )
     run_from_parsed_arguments(
-        generator_options, arguments, default_modes, logger_executable
+        generator_options,
+        arguments,
+        default_modes,
+        logger_executable,
+        include_default_modes=include_default_modes,
     )

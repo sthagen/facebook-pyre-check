@@ -1,7 +1,9 @@
-(* Copyright (c) 2019-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Pyre
@@ -661,15 +663,12 @@ let test_instantiate_successors_parameters _ =
     (instantiate_successors_parameters
        variadic_order
        ~source:
-         (Type.Parametric
-            {
-              name = "ChildClassParametricOnParamSpec";
-              parameters =
-                [
-                  CallableParameters
-                    (Defined [Named { name = "p"; annotation = Type.integer; default = false }]);
-                ];
-            })
+         (Type.parametric
+            "ChildClassParametricOnParamSpec"
+            [
+              CallableParameters
+                (Defined [Named { name = "p"; annotation = Type.integer; default = false }]);
+            ])
        ~target:"ClassParametricOnParamSpec")
     (Some
        [

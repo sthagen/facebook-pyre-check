@@ -1,13 +1,15 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Ast
 open Analysis
 open Expression
 
-type target = Callable.t * Type.t option
+type target = Callable.t * Type.t option [@@deriving eq, show]
 
 val is_local : Identifier.t -> bool
 
@@ -31,15 +33,6 @@ val resolve_property_targets
   attribute:string ->
   setter:bool ->
   target list option
-
-(* Returns all call targets from Call expressions in the given access *)
-val resolve_call_targets : resolution:Resolution.t -> Call.t -> target list
-
-val transform_special_calls : resolution:Resolution.t -> Call.t -> Call.t option
-
-val redirect_special_calls : resolution:Resolution.t -> Call.t -> Call.t
-
-val resolve_ignoring_optional : resolution:Resolution.t -> Expression.t -> Type.t
 
 type constructor_targets = {
   new_targets: target list;

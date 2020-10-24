@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -26,13 +26,13 @@ class GlobalVersionUpdate(Command):
         error_source: str,
         hash: str,
         paths: List[Path],
-        submit: bool,
+        no_commit: bool,
     ) -> None:
         super().__init__(repository)
         self._error_source: str = error_source
         self._hash: str = hash
         self._paths: List[Path] = paths
-        self._submit: bool = submit
+        self._no_commit: bool = no_commit
 
     @staticmethod
     def from_arguments(
@@ -43,7 +43,7 @@ class GlobalVersionUpdate(Command):
             error_source=arguments.error_source,
             hash=arguments.hash,
             paths=arguments.paths,
-            submit=arguments.submit,
+            no_commit=arguments.no_commit,
         )
 
     @classmethod
@@ -64,7 +64,9 @@ class GlobalVersionUpdate(Command):
             choices=list(ErrorSource),
             default=ErrorSource.GENERATE,
         )
-        parser.add_argument("--submit", action="store_true", help=argparse.SUPPRESS)
+        parser.add_argument(
+            "--no-commit", action="store_true", help="Keep changes in working state."
+        )
 
     def _set_local_overrides(
         self, configuration_paths: List[Path], old_version: str
@@ -93,6 +95,7 @@ class GlobalVersionUpdate(Command):
                 unsafe=False,
                 force_format_unsuppressed=False,
                 lint=True,
+                no_commit=True,
             )
             fixme_command = Fixme(
                 command_arguments,
@@ -101,9 +104,8 @@ class GlobalVersionUpdate(Command):
             )
             fixme_command.run()
 
-        self._repository.submit_changes(
-            commit=True,
-            submit=self._submit,
+        self._repository.commit_changes(
+            commit=(not self._no_commit),
             title="Update pyre global configuration version",
             summary=f"Automatic upgrade to hash `{self._hash}`",
             ignore_failures=True,

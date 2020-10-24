@@ -1,4 +1,4 @@
-# Copyright (c) 2019-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -13,7 +13,7 @@ from . import json_rpc, watchman
 from .analysis_directory import AnalysisDirectory
 from .buck import BuckException
 from .configuration import Configuration
-from .filesystem import find_root
+from .find_directories import find_parent_directory_containing_file
 from .process import Process
 from .socket_connection import SocketConnection
 
@@ -37,10 +37,10 @@ def _log_paths(message: str, paths: Sequence[str]) -> None:
 
 class ProjectFilesMonitor(Subscriber):
     """
-        Logs from this monitor are found in
-        .pyre/<local root>/file_monitor/file_monitor.log
-        One file monitor is spawned per pyre server. When a server is stopped,
-        the process of pyre file monitor associated to it is killed.
+    Logs from this monitor are found in
+    .pyre/<local root>/file_monitor/file_monitor.log
+    One file monitor is spawned per pyre server. When a server is stopped,
+    the process of pyre file monitor associated to it is killed.
     """
 
     NAME = "file_monitor"
@@ -51,19 +51,23 @@ class ProjectFilesMonitor(Subscriber):
         project_root: str,
         analysis_directory: AnalysisDirectory,
     ) -> None:
-        super(ProjectFilesMonitor, self).__init__(self.base_path(configuration))
-        self._configuration = configuration
+        super(ProjectFilesMonitor, self).__init__(
+            self.base_path(configuration), configuration
+        )
         self._analysis_directory = analysis_directory
 
         self._extensions: Set[str] = set(
-            ["py", "pyi", "thrift"] + configuration.extensions
+            ["py", "pyi", "thrift"]
+            + [extension[1:] for extension in configuration.get_valid_extensions()]
         )
 
         self._watchman_path: str = self._find_watchman_path(project_root)
 
         self.socket_connection = SocketConnection(self._configuration.log_directory)
         self.socket_connection.connect()
-        self.socket_connection.perform_handshake(self._configuration.version_hash)
+        self.socket_connection.perform_handshake(
+            self._configuration.get_version_hash_respecting_override() or "unversioned"
+        )
 
     @property
     def _name(self) -> str:
@@ -130,9 +134,8 @@ class ProjectFilesMonitor(Subscriber):
         except KeyError:
             pass
 
-        except BuckException:
-            LOG.info("Unable to build project.")
-            pass
+        except BuckException as exception:
+            LOG.info(f"Unable to build project because of exception: `{exception}`.")
 
         except Exception as exception:
             LOG.info(f"Exception during handling of file update: {exception}")
@@ -140,30 +143,26 @@ class ProjectFilesMonitor(Subscriber):
 
     @staticmethod
     def _find_watchman_path(directory: str) -> str:
-        watchman_path = find_root(directory, ".watchmanconfig")
-        if not watchman_path:
+        watchman_path = find_parent_directory_containing_file(
+            Path(directory), ".watchmanconfig"
+        )
+        if watchman_path is None:
             raise MonitorException(
                 "Could not find a watchman directory from "
                 "the current directory `{}`".format(directory)
             )
-        return watchman_path
+        return str(watchman_path)
 
     @staticmethod
-    def restart_if_dead(
-        configuration: Configuration,
-        project_root: str,
-        analysis_directory: AnalysisDirectory,
-    ) -> None:
+    def is_alive(configuration: Configuration) -> bool:
         pid_path = watchman.compute_pid_path(
             ProjectFilesMonitor.base_path(configuration), ProjectFilesMonitor.NAME
         )
-        if Process.is_alive(Path(pid_path)):
-            return
-        LOG.debug("File monitor is not running.")
-        try:
-            ProjectFilesMonitor(
-                configuration, project_root, analysis_directory
-            ).daemonize()
-            LOG.debug("Restarted file monitor.")
-        except MonitorException as exception:
-            LOG.warning(f"Failed to restart file monitor: {exception}")
+        is_alive = Process.is_alive(Path(pid_path))
+        if not is_alive:
+            LOG.debug("The file monitor is down.")
+        return is_alive
+
+    def cleanup(self) -> None:
+        LOG.info("Cleaning up the analysis directory.")
+        self._analysis_directory.cleanup(delete_long_lasting_files=True)

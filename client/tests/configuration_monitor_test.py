@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -16,59 +16,6 @@ from ..tests.mocks import mock_arguments, mock_configuration
 
 
 class MonitorTest(unittest.TestCase):
-    @patch("os.fork")
-    @patch("os.close")
-    @patch("sys.exit")
-    @patch.object(configuration_monitor.ConfigurationMonitor, "_run")
-    def test_daemonize(
-        self, run: MagicMock, _exit: MagicMock, _close: MagicMock, fork: MagicMock
-    ) -> None:
-        arguments = mock_arguments()
-        configuration = mock_configuration()
-        analysis_directory = AnalysisDirectory("/tmp")
-        project_root = "/"
-        local_configuration_root = None
-        # Ensure that run() only gets called from the child.
-        fork.return_value = 1
-        original_directory = "/"
-        configuration_monitor.ConfigurationMonitor(
-            arguments,
-            configuration,
-            analysis_directory,
-            project_root,
-            original_directory,
-            local_configuration_root,
-            [],
-        ).daemonize()
-        run.assert_not_called()
-        fork.assert_has_calls([call()])
-
-        fork.return_value = 0
-        configuration_monitor.ConfigurationMonitor(
-            arguments,
-            configuration,
-            analysis_directory,
-            project_root,
-            original_directory,
-            local_configuration_root,
-            [],
-        ).daemonize()
-        fork.assert_has_calls([call(), call()])
-        run.assert_has_calls([call()])
-        _exit.assert_has_calls([call(0)])
-
-        run.side_effect = OSError
-        configuration_monitor.ConfigurationMonitor(
-            arguments,
-            configuration,
-            analysis_directory,
-            project_root,
-            original_directory,
-            local_configuration_root,
-            [],
-        ).daemonize()
-        _exit.assert_has_calls([call(0), call(1)])
-
     @patch("os.makedirs")
     # pyre-fixme[56]: Argument `tools.pyre.client.watchman` to decorator factory
     #  `unittest.mock.patch.object` could not be resolved in a global scope.

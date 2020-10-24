@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Pyre
@@ -525,53 +527,58 @@ let run
         _;
       } as server_configuration )
   =
-  (fun () ->
-    try
-      let () =
-        match incremental_style with
-        | Configuration.Analysis.FineGrained -> Log.info "Starting up server ..."
-        | Configuration.Analysis.Shallow ->
-            Log.warning
-              "Starting server in legacy incremental mode. Incremental Pyre check will only get \
-               triggered on changed files but not on any of their dependencies."
-      in
-      if daemonize then
-        Version.log_version_banner ();
-      if not (Lock.check (Path.absolute lock_path)) then
-        raise AlreadyRunning;
-      Log.log ~section:`Server "Creating server socket at `%a`" Path.pp socket_path;
-      let socket = Socket.initialize_unix_socket socket_path in
-      let json_socket = Socket.initialize_unix_socket json_socket_path in
-      let adapter_socket = Socket.initialize_unix_socket adapter_socket_path in
-      if daemonize then (
-        let stdin = Daemon.null_fd () in
-        let log_path = Log.rotate (Path.absolute log_path) in
-        let stdout = Daemon.fd_of_path log_path in
-        Log.log ~section:`Server "Spawning the daemon now.";
-        let ({ Daemon.pid; _ } as handle) =
-          Daemon.spawn
-            (stdin, stdout, stdout)
-            run_server_daemon_entry
-            ( socket,
-              json_socket,
-              adapter_socket,
-              server_configuration,
-              Log.GlobalState.get (),
-              Profiling.GlobalState.get (),
-              Statistics.GlobalState.get () )
+  try
+    (fun () ->
+      try
+        let () =
+          match incremental_style with
+          | Configuration.Analysis.FineGrained -> Log.info "Starting up server ..."
+          | Configuration.Analysis.Shallow ->
+              Log.warning
+                "Starting server in legacy incremental mode. Incremental Pyre check will only get \
+                 triggered on changed files but not on any of their dependencies."
         in
-        Daemon.close handle;
-        Log.log ~section:`Server "Forked off daemon with pid %d" pid;
-        Log.info "Server starting in background";
-        pid )
-      else (
-        acquire_lock ~server_configuration;
-        serve ~socket ~json_socket ~adapter_socket ~server_configuration )
-    with
-    | AlreadyRunning ->
-        Log.info "Server is already running";
-        0)
-  |> Scheduler.run_process
+        if daemonize then
+          Version.log_version_banner ();
+        if not (Lock.check (Path.absolute lock_path)) then
+          raise AlreadyRunning;
+        Log.log ~section:`Server "Creating server socket at `%a`" Path.pp socket_path;
+        let socket = Socket.initialize_unix_socket socket_path in
+        let json_socket = Socket.initialize_unix_socket json_socket_path in
+        let adapter_socket = Socket.initialize_unix_socket adapter_socket_path in
+        if daemonize then (
+          let stdin = Daemon.null_fd () in
+          let log_path = Log.rotate (Path.absolute log_path) in
+          let stdout = Daemon.fd_of_path log_path in
+          Log.log ~section:`Server "Spawning the daemon now.";
+          let ({ Daemon.pid; _ } as handle) =
+            Daemon.spawn
+              (stdin, stdout, stdout)
+              run_server_daemon_entry
+              ( socket,
+                json_socket,
+                adapter_socket,
+                server_configuration,
+                Log.GlobalState.get (),
+                Profiling.GlobalState.get (),
+                Statistics.GlobalState.get () )
+          in
+          Daemon.close handle;
+          Log.log ~section:`Server "Forked off daemon with pid %d" pid;
+          Log.info "Server starting in background";
+          pid )
+        else (
+          acquire_lock ~server_configuration;
+          serve ~socket ~json_socket ~adapter_socket ~server_configuration )
+      with
+      | AlreadyRunning ->
+          Log.info "Server is already running";
+          0)
+    |> Scheduler.run_process
+  with
+  | error ->
+      Log.log_exception error;
+      raise error
 
 
 (** Default configuration when run from command line *)
@@ -615,7 +622,12 @@ let run_start_command
   let source_path = Option.value source_path ~default:[local_root] in
   let local_root = Path.create_absolute local_root in
   Log.GlobalState.initialize ~debug ~sections;
-  Statistics.GlobalState.initialize ~log_identifier ?logger ~project_name:(Path.last local_root) ();
+  Statistics.GlobalState.initialize
+    ~log_identifier
+    ?logger
+    ~project_name:(Path.last local_root)
+    ~project_root
+    ();
   Profiling.GlobalState.initialize ~profiling_output ~memory_profiling_output ();
   let filter_directories =
     filter_directories

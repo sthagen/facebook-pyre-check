@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Ast
@@ -207,11 +209,9 @@ let rec process_type_query_request
                    && List.for_all generics ~f:(function
                           | Type.Variable.Unary _ -> true
                           | _ -> false) ->
-                Type.Parametric
-                  {
-                    name = annotation;
-                    parameters = List.map generics ~f:(fun _ -> Type.Parameter.Single Type.Any);
-                  }
+                Type.parametric
+                  annotation
+                  (List.map generics ~f:(fun _ -> Type.Parameter.Single Type.Any))
             | _ -> Type.Primitive annotation )
         | _ -> annotation
       in
@@ -812,7 +812,11 @@ let rec process_type_query_request
             | None -> configuration.Configuration.Analysis.taint_model_paths
           in
           let configuration =
-            Taint.TaintConfiguration.create ~rule_filter:None ~find_obscure_flows:false ~paths
+            Taint.TaintConfiguration.create
+              ~rule_filter:None
+              ~find_missing_flows:None
+              ~dump_model_query_results:false
+              ~paths
           in
           let get_model_errors sources =
             let model_errors (path, source) =
@@ -932,7 +936,14 @@ let rec process
           open_documents
           ~key:qualifier
           ~data:(File.create path |> File.content |> Option.value ~default:"")
-    | _ ->
+    | ModuleTracker.PathLookup.ShadowedBy _ ->
+        Statistics.event
+          ~flush:true
+          ~name:"ModuleTracker failed lookup"
+          ~normals:
+            ["reason", "Module shadowed by another path in ModuleTracker"; "path", Path.show path]
+          ()
+    | ModuleTracker.PathLookup.NotFound ->
         Statistics.event
           ~flush:true
           ~name:"ModuleTracker failed lookup"

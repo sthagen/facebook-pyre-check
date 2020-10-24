@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Expression
 
@@ -12,11 +14,14 @@ type node =
   | Parameter of Parameter.t
   | Reference of Reference.t Node.t
   | Substring of Substring.t Node.t
+  | Generator of Comprehension.Generator.t
 
 module type NodeVisitor = sig
   type t
 
   val node : t -> node -> t
+
+  val visit_statement_children : t -> Statement.t -> bool
 end
 
 module MakeNodeVisitor (Visitor : NodeVisitor) : sig

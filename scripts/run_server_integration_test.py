@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
 # pyre-unsafe
 
@@ -123,8 +127,6 @@ class Repository:
         assert_readable_directory(repository_path)
         self._base_repository_path = os.path.realpath(repository_path)
         commits_list = os.listdir(self._base_repository_path)
-        # pyre-fixme[6]: Expected `List[Variable[_LT (bound to _SupportsLessThan)]]`
-        #  for 1st param but got `List[str]`.
         list.sort(commits_list)
         for commit in commits_list:
             assert_readable_directory(os.path.join(self._base_repository_path, commit))
@@ -177,8 +179,8 @@ class Repository:
 
     def _copy_commit(self, original_path, destination_path) -> None:
         """
-            Copies the next commit at original_path to destination path. Can be
-            overridden by child classes to change copying logic.
+        Copies the next commit at original_path to destination path. Can be
+        overridden by child classes to change copying logic.
         """
         # I could not find the right flags for rsync to touch/write
         # only the changed files. This is crucial for watchman to

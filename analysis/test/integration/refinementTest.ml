@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open OUnit2
 open IntegrationTest
@@ -545,7 +547,7 @@ let test_assert_contains_none context =
       def foo(x: None) -> None:
         assert None not in x
     |}
-    ["Undefined attribute [16]: `None` has no attribute `__getitem__`."];
+    ["Unsupported operand [58]: `not in` is not supported for right operand type `None`."];
   assert_type_errors
     {|
       def foo(x: Derp) -> None:

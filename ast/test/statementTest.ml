@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open OUnit2
@@ -156,6 +158,8 @@ let test_is_constructor _ =
   assert_is_constructor ~in_test:false ~name:"Foo.asyncSetUp" ~parent:(Some "Foo") false;
   assert_is_constructor ~in_test:false ~name:"Foo.async_setUp" ~parent:(Some "Foo") false;
   assert_is_constructor ~in_test:true ~name:"Foo.with_context" ~parent:(Some "Foo") true;
+  assert_is_constructor ~in_test:true ~name:"Foo.async_with_context" ~parent:(Some "Foo") true;
+  assert_is_constructor ~in_test:false ~name:"Foo.async_with_context" ~parent:(Some "Foo") false;
   assert_is_constructor ~name:"__init__" false;
   assert_is_constructor ~name:"Foo.bar" ~parent:(Some "Foo") false
 
@@ -1016,6 +1020,86 @@ let test_pp _ =
     |}
 
 
+let test_is_generator context =
+  let assert_is_generator ~expected source =
+    let { Source.statements; _ } = Test.parse ~handle:"test.py" source in
+    let actual = Ast.Statement.is_generator statements in
+    assert_equal ~ctxt:context ~cmp:Bool.equal ~printer:Bool.to_string expected actual
+  in
+
+  assert_is_generator "yield" ~expected:true;
+  assert_is_generator "yield from" ~expected:true;
+  assert_is_generator "x = 2" ~expected:false;
+  assert_is_generator "x = yield 2" ~expected:true;
+  assert_is_generator "assert (yield True)" ~expected:true;
+  assert_is_generator "raise (yield True)" ~expected:true;
+  assert_is_generator "return (yield True)" ~expected:true;
+  assert_is_generator ~expected:true {|
+      for x in y:
+        yield
+    |};
+  assert_is_generator ~expected:true {|
+      if x:
+        yield
+    |};
+  assert_is_generator ~expected:true {|
+      if x:
+        return
+      else:
+        yield
+    |};
+  assert_is_generator ~expected:true {|
+      while x:
+        yield
+    |};
+  assert_is_generator ~expected:true {|
+      try:
+        pass
+      except:
+        yield
+    |};
+  assert_is_generator ~expected:true {|
+      with foo() as bar:
+        yield
+    |};
+  assert_is_generator ~expected:false {|
+      def bar():
+        yield
+    |};
+  assert_is_generator
+    ~expected:false
+    {|
+      class A:
+        def bar(self):
+          yield
+    |};
+  assert_is_generator ~expected:false {|
+      if x:
+        def bar():
+          yield
+    |};
+  assert_is_generator
+    ~expected:false
+    {|
+      with foo() as bar:
+        class A:
+          def baz(self):
+            yield
+    |};
+  assert_is_generator
+    ~expected:false
+    {|
+      try:
+        def foo():
+          yield
+      finally:
+        class A:
+          def bar(self):
+            yield
+    |};
+  ()
+
+
 let () =
   "define"
   >::: [
@@ -1036,5 +1120,10 @@ let () =
   |> Test.run;
 
   "statement"
-  >::: ["assume" >:: test_assume; "preamble" >:: test_preamble; "pp" >:: test_pp]
+  >::: [
+         "assume" >:: test_assume;
+         "preamble" >:: test_preamble;
+         "pp" >:: test_pp;
+         "is_generator" >:: test_is_generator;
+       ]
   |> Test.run

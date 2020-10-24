@@ -1,4 +1,7 @@
-# Copyright 2004-present Facebook.  All rights reserved.
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
 # pyre-unsafe
 
@@ -9,7 +12,7 @@ import unittest
 from collections import namedtuple
 from unittest.mock import MagicMock, call, mock_open, patch
 
-from .. import buck
+from .. import buck, source_database_buck_builder
 
 
 BuckOut = namedtuple("BuckOut", "source_directories targets_not_found")
@@ -34,7 +37,9 @@ class BuckTest(unittest.TestCase):
     #  `"{}.find_buck_root".format(tools.pyre.client.buck.__name__)` to decorator
     #  factory `unittest.mock.patch` could not be resolved in a global scope.
     @patch("{}.find_buck_root".format(buck.__name__), return_value="/root")
-    def test_find_built_source_directories(self, find_root) -> None:
+    def test_find_built_source_directories(
+        self, find_parent_directory_containing_file
+    ) -> None:
         trees = [
             "blah-vs_debugger#link-tree",
             "blah-blah#link-tree",
@@ -139,8 +144,6 @@ class BuckTest(unittest.TestCase):
     def test_map_normalized_targets_to_original(self) -> None:
         self.assertEqual(
             sorted(
-                # pyre-fixme[6]: Expected `Iterable[Variable[_LT (bound to
-                #  _SupportsLessThan)]]` for 1st param but got `List[str]`.
                 buck._map_normalized_targets_to_original(
                     ["//t/target1", "//t/target2", "//s:exact_target", "//unknown"],
                     ["//t/...", "//s:exact_target"],
@@ -270,3 +273,19 @@ class BuckTest(unittest.TestCase):
                 buck.query_buck_relative_paths(paths, targets=["targetA"]),
                 {"/BUCK_ROOT/src/python/package.py": "package.py"},
             )
+
+    # pyre-fixme[56]: Pyre was not able to infer the type of argument
+    #  `tools.pyre.client.source_database_buck_builder` to decorator factory
+    #  `unittest.mock.patch.object`.
+    @patch.object(
+        source_database_buck_builder, "build", side_effect=Exception("some exception")
+    )
+    def test_build_exception(self, build: MagicMock) -> None:
+        buck_builder = buck.SourceDatabaseBuckBuilder(
+            buck_root="/root",
+            output_directory="/output",
+            buck_mode=None,
+            isolation_prefix=None,
+        )
+        with self.assertRaises(buck.BuckException):
+            buck_builder.build(["some_broken_target"])

@@ -1,12 +1,14 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
 # pyre-unsafe
 
+import tempfile
 import unittest
 from pathlib import Path
+from typing import Iterable, Optional
 from unittest.mock import MagicMock, mock_open, patch
 
 from ... import errors
@@ -64,10 +66,10 @@ class StrictDefaultTest(unittest.TestCase):
     @patch.object(Configuration, "add_strict")
     @patch.object(Configuration, "get_errors")
     @patch(f"{strict_default.__name__}.add_local_mode")
-    @patch.object(ErrorSuppressingCommand, "_suppress_errors")
+    @patch.object(ErrorSuppressingCommand, "_apply_suppressions")
     def test_run_strict_default(
         self,
-        suppress_errors,
+        apply_suppressions,
         add_local_mode,
         get_errors,
         add_strict,
@@ -83,7 +85,7 @@ class StrictDefaultTest(unittest.TestCase):
         with patch("builtins.open", mock_open(read_data=configuration_contents)):
             StrictDefault.from_arguments(arguments, repository).run()
             add_local_mode.assert_not_called()
-            suppress_errors.assert_not_called()
+            apply_suppressions.assert_not_called()
 
         add_local_mode.reset_mock()
         get_errors.reset_mock()
@@ -105,12 +107,12 @@ class StrictDefaultTest(unittest.TestCase):
         with patch("builtins.open", mock_open(read_data=configuration_contents)):
             StrictDefault.from_arguments(arguments, repository).run()
             add_local_mode.assert_not_called()
-            suppress_errors.assert_called_once_with(errors.Errors(pyre_errors))
+            apply_suppressions.assert_called_once_with(errors.Errors(pyre_errors))
 
         # Exceeding error threshold
         get_errors.return_value = []
         add_local_mode.reset_mock()
-        suppress_errors.reset_mock()
+        apply_suppressions.reset_mock()
         get_errors.reset_mock()
         pyre_errors = [
             {
@@ -141,30 +143,52 @@ class StrictDefaultTest(unittest.TestCase):
         with patch("builtins.open", mock_open(read_data=configuration_contents)):
             StrictDefault.from_arguments(arguments, repository).run()
             add_local_mode.assert_called_once()
-            suppress_errors.assert_not_called()
+            apply_suppressions.assert_not_called()
+
+
+def _ensure_files_exist(root: Path, relatives: Iterable[str]) -> None:
+    for relative in relatives:
+        full_path = root / relative
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.touch(exist_ok=True)
+
+
+class GetConfigurationPathTest(unittest.TestCase):
+    def assert_configuration_path(
+        self, files: Iterable[str], local_root: Optional[str], expected: Optional[str]
+    ) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            _ensure_files_exist(root_path, files)
+            self.assertEqual(
+                _get_configuration_path(
+                    root_path / local_root if local_root is not None else root_path
+                ),
+                root_path / expected if expected is not None else None,
+            )
 
     def test_get_configuration_path(self):
-        project_path = Path("project/path")
-        configuration = _get_configuration_path(
-            local_configuration=Path("local/config/example"),
-            project_configuration=Path("project/example"),
+        self.assert_configuration_path(files=[], local_root=None, expected=None)
+        self.assert_configuration_path(
+            files=[".pyre_configuration"],
+            local_root=None,
+            expected=".pyre_configuration",
         )
-        self.assertEqual(
-            configuration, Path("local/config/example/.pyre_configuration.local")
+        self.assert_configuration_path(
+            files=["a/.pyre_configuration"],
+            local_root="a",
+            expected="a/.pyre_configuration",
         )
-
-        with patch("os.getcwd", returns="fake/path"), patch(
-            f"{strict_default.__name__}.find_local_root", return_value=Path("cwd/path")
-        ):
-            configuration = _get_configuration_path(
-                local_configuration=None, project_configuration=project_path
-            )
-            self.assertEqual(configuration, Path("cwd/path/.pyre_configuration.local"))
-
-        with patch("os.getcwd", returns="fake/path"), patch(
-            f"{strict_default.__name__}.find_local_root", return_value=None
-        ):
-            configuration = _get_configuration_path(
-                local_configuration=None, project_configuration=project_path
-            )
-            self.assertEqual(configuration, project_path)
+        self.assert_configuration_path(
+            files=["a/.pyre_configuration", "b/c"], local_root="b", expected=None
+        )
+        self.assert_configuration_path(
+            files=["a/.pyre_configuration", "a/b/.pyre_configuration.local"],
+            local_root="a/b",
+            expected="a/b/.pyre_configuration.local",
+        )
+        self.assert_configuration_path(
+            files=["a/.pyre_configuration", "a/b/.pyre_configuration.local"],
+            local_root="a/b/.pyre_configuration.local",
+            expected="a/b/.pyre_configuration.local",
+        )

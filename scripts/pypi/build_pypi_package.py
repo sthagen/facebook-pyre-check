@@ -1,9 +1,8 @@
-# Copyright (c) 2018-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import argparse
 import json
 import os
 import platform
@@ -15,7 +14,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 # just validate that it's available, but we don't invoke it directly
-import wheel  # noqa
+import wheel as _wheel  # noqa
 from twine.commands.check import check as twine_check
 
 from .setup import run as run_setup
@@ -23,6 +22,7 @@ from .setup import run as run_setup
 
 MODULE_NAME = "pyre_check"
 RUNTIME_DEPENDENCIES = [
+    "click",
     "dataclasses",
     "pywatchman",
     "psutil",
@@ -71,6 +71,7 @@ def add_init_files(build_root: Path) -> None:
     mkdir_and_init(module_path)
     mkdir_and_init(module_path / "tools")
     mkdir_and_init(module_path / "tools/upgrade")
+    mkdir_and_init(module_path / "tools/upgrade/commands")
     mkdir_and_init(module_path / "client")
 
 

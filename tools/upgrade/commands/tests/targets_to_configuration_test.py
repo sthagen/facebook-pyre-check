@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -144,7 +144,7 @@ class TargetsToConfigurationTest(unittest.TestCase):
     @patch(f"{targets_to_configuration.__name__}.remove_non_pyre_ignores")
     @patch(f"{targets_to_configuration.__name__}.Configuration.get_errors")
     @patch(f"{targets_to_configuration.__name__}.add_local_mode")
-    @patch.object(ErrorSuppressingCommand, "_suppress_errors")
+    @patch.object(ErrorSuppressingCommand, "_apply_suppressions")
     @patch(f"{targets_to_configuration.__name__}.Repository.format")
     @patch(
         f"{targets_to_configuration.__name__}.TargetsToConfiguration.remove_target_typing_fields"
@@ -155,7 +155,7 @@ class TargetsToConfigurationTest(unittest.TestCase):
         run_strict_default,
         remove_target_typing_fields,
         repository_format,
-        suppress_errors,
+        apply_suppressions,
         add_local_mode,
         get_errors,
         remove_non_pyre_ignores,
@@ -223,7 +223,7 @@ class TargetsToConfigurationTest(unittest.TestCase):
             dump_mock.assert_called_once_with(
                 expected_configuration_contents, mocks[0], indent=2, sort_keys=True
             )
-            suppress_errors.assert_has_calls([call(errors.Errors(pyre_errors))])
+            apply_suppressions.assert_has_calls([call(errors.Errors(pyre_errors))])
             add_local_mode.assert_not_called()
             add_paths.assert_called_once_with(
                 [Path("subdirectory/.pyre_configuration.local")]
@@ -231,7 +231,7 @@ class TargetsToConfigurationTest(unittest.TestCase):
             remove_target_typing_fields.assert_called_once()
 
         # Add to existing local project configuration
-        suppress_errors.reset_mock()
+        apply_suppressions.reset_mock()
         open_mock.reset_mock()
         dump_mock.reset_mock()
         remove_target_typing_fields.reset_mock()
@@ -267,13 +267,13 @@ class TargetsToConfigurationTest(unittest.TestCase):
             dump_mock.assert_called_once_with(
                 expected_configuration_contents, mocks[1], indent=2, sort_keys=True
             )
-        suppress_errors.assert_has_calls([call(errors.Errors(pyre_errors))])
+        apply_suppressions.assert_has_calls([call(errors.Errors(pyre_errors))])
         add_local_mode.assert_not_called()
         remove_target_typing_fields.assert_called_once()
         run_strict_default.assert_not_called()
 
         # Add strict to configuration with strict targets
-        suppress_errors.reset_mock()
+        apply_suppressions.reset_mock()
         open_mock.reset_mock()
         dump_mock.reset_mock()
         add_paths.reset_mock()
@@ -309,13 +309,58 @@ class TargetsToConfigurationTest(unittest.TestCase):
             dump_mock.assert_called_once_with(
                 expected_configuration_contents, mocks[0], indent=2, sort_keys=True
             )
-            suppress_errors.assert_has_calls([call(errors.Errors(pyre_errors))])
+            apply_suppressions.assert_has_calls([call(errors.Errors(pyre_errors))])
             add_local_mode.assert_not_called()
             add_paths.assert_called_once_with(
                 [Path("subdirectory/.pyre_configuration.local")]
             )
             remove_target_typing_fields.assert_called_once()
             run_strict_default.assert_called_once()
+
+        # Strict option is on, but no strict targets found.
+        apply_suppressions.reset_mock()
+        open_mock.reset_mock()
+        dump_mock.reset_mock()
+        add_paths.reset_mock()
+        remove_target_typing_fields.reset_mock()
+        run_strict_default.reset_mock()
+        get_errors.side_effect = [
+            errors.Errors(pyre_errors),
+            errors.Errors(pyre_errors),
+        ]
+        find_targets.return_value = {
+            "subdirectory/a/TARGETS": [Target("target_one", strict=False, pyre=True)],
+            "subdirectory/b/c/TARGETS": [
+                Target("target_three", strict=False, pyre=True),
+                Target("target_two", strict=False, pyre=True),
+            ],
+        }
+        with patch("json.dump") as dump_mock:
+            mocks = [mock_open(read_data="{}").return_value]
+            open_mock.side_effect = mocks
+            TargetsToConfiguration.from_arguments(
+                arguments, repository
+            ).convert_directory(Path("subdirectory"))
+            expected_configuration_contents = {
+                "targets": [
+                    "//subdirectory/a:target_one",
+                    "//subdirectory/b/c:target_three",
+                    "//subdirectory/b/c:target_two",
+                ]
+            }
+            open_mock.assert_has_calls(
+                [call(Path("subdirectory/.pyre_configuration.local"), "w")]
+            )
+            dump_mock.assert_called_once_with(
+                expected_configuration_contents, mocks[0], indent=2, sort_keys=True
+            )
+            apply_suppressions.assert_has_calls([call(errors.Errors(pyre_errors))])
+            add_local_mode.assert_not_called()
+            add_paths.assert_called_once_with(
+                [Path("subdirectory/.pyre_configuration.local")]
+            )
+            remove_target_typing_fields.assert_called_once()
+            run_strict_default.assert_not_called()
 
     @patch(f"{targets_to_configuration.__name__}.find_files")
     @patch(f"{targets_to_configuration.__name__}.find_directories")
@@ -397,7 +442,7 @@ class TargetsToConfigurationTest(unittest.TestCase):
         )
         self.assertEqual(expected_directories, directories)
 
-    @patch(f"{targets_to_configuration.__name__}.Repository.submit_changes")
+    @patch(f"{targets_to_configuration.__name__}.Repository.commit_changes")
     @patch(
         f"{targets_to_configuration.__name__}.TargetsToConfiguration._gather_directories"
     )
@@ -405,7 +450,7 @@ class TargetsToConfigurationTest(unittest.TestCase):
         f"{targets_to_configuration.__name__}.TargetsToConfiguration.convert_directory"
     )
     def test_run_targets_to_configuration(
-        self, convert_directory, gather_directories, submit_changes
+        self, convert_directory, gather_directories, commit_changes
     ) -> None:
         arguments = MagicMock()
         arguments.subdirectory = "subdirectory"
@@ -417,7 +462,7 @@ class TargetsToConfigurationTest(unittest.TestCase):
         gather_directories.return_value = [Path("subdirectory")]
         TargetsToConfiguration.from_arguments(arguments, repository).run()
         convert_directory.assert_called_once_with(Path("subdirectory"))
-        submit_changes.assert_called_once()
+        commit_changes.assert_called_once()
 
         convert_directory.reset_mock()
         gather_directories.return_value = [
@@ -474,4 +519,12 @@ class TargetsToConfigurationTest(unittest.TestCase):
         configuration = Configuration(Path("test"), {"targets": ["//a/b:", "//a/b:x"]})
         configuration.deduplicate_targets()
         expected_targets = ["//a/b:"]
+        self.assertEqual(expected_targets, configuration.targets)
+
+        mock_check_output.side_effect = [b"//a/b:x\n//a/b:y", b"//a/b/:x"]
+        configuration = Configuration(
+            Path("test"), {"targets": ["//preserve:order", "//a/b:x", "//a/b/..."]}
+        )
+        configuration.deduplicate_targets()
+        expected_targets = ["//preserve:order", "//a/b/..."]
         self.assertEqual(expected_targets, configuration.targets)

@@ -1,7 +1,9 @@
-(** Copyright (c) 2016-present, Facebook, Inc.
-
-    This source code is licensed under the MIT license found in the LICENSE file in the root
-    directory of this source tree. *)
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open AbstractDomainCore
 module List = Core_kernel.List
@@ -179,6 +181,8 @@ module Make (Key : KEY) (Element : AbstractDomainCore.S) = struct
     let bottom = bottom
 
     let join = join
+
+    let less_or_equal = less_or_equal
   end
 
   module C = Common (CommonArg)
@@ -326,4 +330,7 @@ module Make (Key : KEY) (Element : AbstractDomainCore.S) = struct
         | KeyValue -> Format.sprintf "Map(%s).KeyValue" Key.name
         | Self -> Format.sprintf "Map(%s).Self" Key.name
         | _ -> Element.introspect op )
+
+
+  let meet = C.meet
 end

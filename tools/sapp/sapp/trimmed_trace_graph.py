@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -19,16 +19,14 @@ class TrimmedTraceGraph(TraceGraph):
     def __init__(
         self, affected_files: List[str], affected_issues_only: bool = False
     ) -> None:
-        """Creates an empty TrimmedTraceGraph.
-        """
+        """Creates an empty TrimmedTraceGraph."""
         super().__init__()
         self._affected_files = affected_files
         self._affected_issues_only = affected_issues_only
         self._visited_trace_frame_ids: Set[int] = set()
 
     def populate_from_trace_graph(self, graph: TraceGraph) -> None:
-        """Populates this graph from the given one based on affected_files
-        """
+        """Populates this graph from the given one based on affected_files"""
         # Track which trace frames have been visited as we populate the full
         # traces of the graph.
         self._visited_trace_frame_ids: Set[int] = set()
@@ -75,24 +73,17 @@ class TrimmedTraceGraph(TraceGraph):
 
                 if len(fwd_trace_ids) == 0:
                     self._populate_issue_trace(
-                        graph,
-                        instance_id,
-                        # pyre-fixme[6]: Expected `Optional[TraceKind]` for 3rd
-                        #  param but got `(cls: TraceKind) -> Any`.
-                        TraceKind.POSTCONDITION,
+                        graph, instance_id, TraceKind.POSTCONDITION
                     )
 
                 if len(bwd_trace_ids) == 0:
                     self._populate_issue_trace(
-                        graph,
-                        instance_id,
-                        # pyre-fixme[6]: Expected `Optional[TraceKind]` for 3rd
-                        #  param but got `(cls: TraceKind) -> Any`.
-                        TraceKind.PRECONDITION,
+                        graph, instance_id, TraceKind.PRECONDITION
                     )
 
         self._recompute_instance_properties()
 
+    # pyre-fixme[3]: Return type must be annotated.
     def _recompute_instance_properties(self):
         """Some properties of issue instances will be affected after trimming
         such as min trace length to leaves. This should be called after the
@@ -120,8 +111,6 @@ class TrimmedTraceGraph(TraceGraph):
         source_ids = {
             source.id.local_id
             for source in (
-                # pyre-fixme[6]: Expected `SharedTextKind` for 2nd param but got
-                #  `(cls: SharedTextKind) -> Any`.
                 self.get_issue_instance_shared_texts(instance_id, SharedTextKind.SOURCE)
             )
         }
@@ -137,8 +126,6 @@ class TrimmedTraceGraph(TraceGraph):
         sink_ids = {
             sink.id.local_id
             for sink in (
-                # pyre-fixme[6]: Expected `SharedTextKind` for 2nd param but got
-                #  `(cls: SharedTextKind) -> Any`.
                 self.get_issue_instance_shared_texts(instance_id, SharedTextKind.SINK)
             )
         }
@@ -178,32 +165,20 @@ class TrimmedTraceGraph(TraceGraph):
                 continue
             self._populate_issue_and_traces(graph, instance_id)
 
-    def _get_sink_names(self, graph: TraceGraph, instance_id: int) -> Set[str]:
-        # pyre-fixme[9]: kind has type `SharedTextKind`; used as `(cls:
-        #  SharedTextKind) -> Any`.
+    def _get_sink_kinds(self, graph: TraceGraph, instance_id: int) -> Set[int]:
         kind: SharedTextKind = SharedTextKind.SINK
         sinks = graph.get_issue_instance_shared_texts(instance_id, kind)
-        return {sink.contents for sink in sinks}
+        return {sink.id.local_id for sink in sinks}
 
-    def _get_source_names(self, graph: TraceGraph, instance_id: int) -> Set[str]:
-        # pyre-fixme[9]: kind has type `SharedTextKind`; used as `(cls:
-        #  SharedTextKind) -> Any`.
+    def _get_source_kinds(self, graph: TraceGraph, instance_id: int) -> Set[int]:
         kind: SharedTextKind = SharedTextKind.SOURCE
         sources = graph.get_issue_instance_shared_texts(instance_id, kind)
-        return {source.contents for source in sources}
+        return {source.id.local_id for source in sources}
 
-    def _get_leaf_names(self, graph: TraceGraph, instance_id: int) -> Set[str]:
-        return self._get_source_names(graph, instance_id).union(
-            self._get_sink_names(graph, instance_id)
+    def _get_instance_leaf_ids(self, graph: TraceGraph, instance_id: int) -> Set[int]:
+        return self._get_source_kinds(graph, instance_id).union(
+            self._get_sink_kinds(graph, instance_id)
         )
-
-    def _get_leaf_names_from_pairs(
-        self, graph: TraceGraph, leaf_pairs: Set[Tuple[int, Any]]
-    ) -> Set[str]:
-        return {
-            leaf.contents
-            for leaf in (graph._shared_texts[leaf_id] for (leaf_id, _) in leaf_pairs)
-        }
 
     def _populate_issues_from_affected_trace_frames(self, graph: TraceGraph) -> None:
         """TraceFrames found in affected_files should be reachable via some
@@ -222,23 +197,6 @@ class TrimmedTraceGraph(TraceGraph):
         self._populate_issues_from_affected_conditions(
             initial_trace_frames,
             graph,
-            lambda trace_frame_id: (
-                graph._trace_frame_issue_instance_assoc[trace_frame_id]
-            ),
-            lambda trace_frame: (
-                [
-                    graph._trace_frames[trace_frame_id]
-                    for trace_frame_id in graph._trace_frames_rev_map[trace_frame.kind][
-                        (trace_frame.caller_id.local_id, trace_frame.caller_port)
-                    ]
-                ]
-            ),
-            lambda instance_id: (self._get_leaf_names(graph, instance_id)),
-            lambda trace_frame_id: (
-                self._get_leaf_names_from_pairs(
-                    graph, graph._trace_frame_leaf_assoc[trace_frame_id]
-                )
-            ),
             lambda instance, trace_frame: (
                 self.add_issue_instance_trace_frame_assoc(instance, trace_frame)
             ),
@@ -250,16 +208,37 @@ class TrimmedTraceGraph(TraceGraph):
             ),
         )
 
+    def _get_issue_instances_from_frame_id(
+        self, graph: TraceGraph, trace_frame_id: int
+    ) -> Set[int]:
+        return graph._trace_frame_issue_instance_assoc[trace_frame_id]
+
+    def _get_predecessor_frames(
+        self, graph: TraceGraph, leaves: Set[int], trace_frame: TraceFrame
+    ) -> List[Tuple[TraceFrame, Set[int]]]:
+        """Returns predecessor frames paired with leaf kinds to follow for those frames"""
+        result = []
+        # pyre-fixme[6]: Enums and str are the same but Pyre doesn't think so.
+        for trace_frame_id in graph._trace_frames_rev_map[trace_frame.kind][
+            (trace_frame.caller_id.local_id, trace_frame.caller_port)
+        ]:
+            predecessor = graph._trace_frames[trace_frame_id]
+            # pyre-fixme[16]: extra fields are not known to pyre
+            assert predecessor.leaf_mapping is not None
+            pred_kinds = graph.compute_prev_leaf_kinds(leaves, predecessor.leaf_mapping)
+            result.append((predecessor, pred_kinds))
+        return result
+
     def _populate_issues_from_affected_conditions(
         self,
+        # pyre-fixme[2]: Parameter must be annotated.
         initial_conditions,
         graph: TraceGraph,
-        get_issue_instances_from_condition_id,
-        get_condition_parent,
-        get_instance_leaves,
-        get_condition_leaves,
+        # pyre-fixme[2]: Parameter must be annotated.
         add_instance_condition_assoc,
+        # pyre-fixme[2]: Parameter must be annotated.
         add_condition,
+        # pyre-fixme[2]: Parameter must be annotated.
         add_traces,
     ) -> None:
         """Helper for populating reachable issue instances from the initial
@@ -275,19 +254,6 @@ class TrimmedTraceGraph(TraceGraph):
         graph: The trace graph to search for issues. Nodes/edges in this graph
         will be copied over to the local state
 
-        get_issue_instances_from_condition_id: Function that returns all
-        issue instances associated with a given a pre/postcondition id.
-
-        get_condition_parent: Function that returns the parent condition of
-        a given pre/postcondition. Given a pre/postcondition, p, its parent p',
-        is the pre/postcondition that calls it, i.e. p.caller = p'.callee
-
-        get_instance_leaves: Function that returns a collection of leaf names
-        associated with the given issue instance ID.
-
-        get_condition_leaves: Function that returns a collection of leaf names
-        associated with the given (pre/post)condition ID.
-
         add_instance_condition_assoc: Function that takes in the issue
         instance and condition and adds the assoc between them.
 
@@ -298,10 +264,10 @@ class TrimmedTraceGraph(TraceGraph):
         add_traces: Function that takes a list of initial conditions and
         adds all conditions reachable from these to the graph.
         """
-        visited: Dict[int, Set[str]] = {}
+        visited: Dict[int, Set[int]] = {}
         que = [
-            (cond, get_condition_leaves(cond.id.local_id))
-            for cond in initial_conditions
+            (frame, graph.get_incoming_leaf_kinds_of_frame(frame))
+            for frame in initial_conditions
         ]
 
         # Note that parent conditions may not transitively lead to the leaves
@@ -325,11 +291,13 @@ class TrimmedTraceGraph(TraceGraph):
             # Found instance(s) related to the current condition. Yay.
             # This instance may have been found before, but process it again
             # anyway because we need to add the assoc with this condition.
-            for instance_id in get_issue_instances_from_condition_id(cond_id):
+            for instance_id in self._get_issue_instances_from_frame_id(graph, cond_id):
                 # Check if the leaves (sources/sinks) of the issue reach
                 # the same leaves as the ones relevant to this condition.
                 instance = graph._issue_instances[instance_id]
-                issue_leaves = set(get_instance_leaves(instance.id.local_id))
+                issue_leaves = set(
+                    self._get_instance_leaf_ids(graph, instance.id.local_id)
+                )
                 common_leaves = issue_leaves.intersection(leaves)
                 if len(common_leaves) > 0:
                     if instance_id not in self._issue_instances:
@@ -338,11 +306,11 @@ class TrimmedTraceGraph(TraceGraph):
 
             # Conditions that call this may have originated from other issues,
             # keep searching for parent conditions leading to this one.
-            for next_cond in get_condition_parent(condition):
-                next_leaves = get_condition_leaves(next_cond.id.local_id)
-                common_leaves = leaves.intersection(next_leaves)
-                if len(leaves) > 0:
-                    que.append((next_cond, common_leaves))
+            for (next_frame, frame_leaves) in self._get_predecessor_frames(
+                graph, leaves, condition
+            ):
+                if len(frame_leaves) > 0:
+                    que.append((next_frame, frame_leaves))
 
         # Add traces leading out from initial_conditions, and all visited
         # conditions leading back towards the issues.
@@ -354,7 +322,7 @@ class TrimmedTraceGraph(TraceGraph):
             add_condition(condition_id)
 
     def _populate_issue_and_traces(self, graph: TraceGraph, instance_id: int) -> None:
-        """ Copies an issue over from the given trace graph, including all its
+        """Copies an issue over from the given trace graph, including all its
         traces and assocs.
         """
         self._populate_issue(graph, instance_id)
@@ -399,7 +367,7 @@ class TrimmedTraceGraph(TraceGraph):
             self.add_issue_instance_shared_text_assoc(instance, shared_text)
 
     def _populate_trace(self, graph: TraceGraph, trace_frame_ids: List[int]) -> None:
-        """ Populates (from the given trace graph) the forward and backward
+        """Populates (from the given trace graph) the forward and backward
         traces reachable from the given traces (including input trace frames).
         Make sure to respect trace kind in successors
         """
@@ -421,7 +389,7 @@ class TrimmedTraceGraph(TraceGraph):
             )
 
     def _add_trace_frame(self, graph: TraceGraph, trace_frame: TraceFrame) -> None:
-        """ Copies the trace frame from 'graph' to this (self) graph.
+        """Copies the trace frame from 'graph' to this (self) graph.
         Also copies all the trace_frame-leaf assocs since we don't
         know which ones are needed until we know the issue that reaches it
         """
@@ -443,8 +411,10 @@ class TrimmedTraceGraph(TraceGraph):
 
     @staticmethod
     def _is_filename_prefixed_with(filename: str, prefixes: Iterable[str]) -> bool:
-        return any([filename.startswith(p) for p in prefixes])
+        return any(filename.startswith(p) for p in prefixes)
 
+    # pyre-fixme[2]: Parameter must be annotated.
+    # pyre-fixme[2]: Parameter must be annotated.
     def _populate_shared_text(self, graph, id) -> None:
         text = graph._shared_texts[id.local_id]
         if text.id.local_id not in self._shared_texts:

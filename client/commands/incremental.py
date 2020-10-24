@@ -1,25 +1,23 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import argparse
 import logging
+import os
 from logging import Logger
 from typing import List, Optional
 
-from .. import json_rpc
+from .. import (
+    command_arguments,
+    configuration_monitor,
+    filesystem,
+    json_rpc,
+    project_files_monitor,
+)
 from ..analysis_directory import AnalysisDirectory
 from ..configuration import Configuration
-from ..project_files_monitor import ProjectFilesMonitor
-from .command import (
-    CommandArguments,
-    ExitCode,
-    IncrementalStyle,
-    Result,
-    State,
-    typeshed_search_path,
-)
+from .command import ExitCode, IncrementalStyle, Result, State
 from .reporting import Reporting
 from .start import Start
 
@@ -27,15 +25,19 @@ from .start import Start
 LOG: Logger = logging.getLogger(__name__)
 
 
+class ClientInitializationError(Exception):
+    pass
+
+
 class Incremental(Reporting):
     NAME = "incremental"
 
     def __init__(
         self,
-        command_arguments: CommandArguments,
+        command_arguments: command_arguments.CommandArguments,
         original_directory: str,
         *,
-        configuration: Optional[Configuration] = None,
+        configuration: Configuration,
         analysis_directory: Optional[AnalysisDirectory] = None,
         nonblocking: bool,
         incremental_style: IncrementalStyle,
@@ -50,85 +52,66 @@ class Incremental(Reporting):
         self._no_start_server = no_start_server
         self._no_watchman = no_watchman
 
-    @staticmethod
-    def from_arguments(
-        arguments: argparse.Namespace,
-        original_directory: str,
-        configuration: Optional[Configuration] = None,
-        analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> "Incremental":
-        return Incremental(
-            CommandArguments.from_arguments(arguments),
-            original_directory,
-            configuration=configuration,
-            analysis_directory=analysis_directory,
-            nonblocking=arguments.nonblocking,
-            incremental_style=arguments.incremental_style,
-            no_start_server=arguments.no_start,
-            no_watchman=getattr(arguments, "no_watchman", False),
-        )
+    def _ensure_server_and_monitors_are_initialized(self) -> None:
+        LOG.info("Waiting for server...")
+        client_lock = os.path.join(self._configuration.log_directory, "client.lock")
 
-    @classmethod
-    def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
-        incremental_help = """
-        Connects to a running Pyre server and returns the current type errors for your
-        project. If no server exists for your projects, starts a new one. Running `pyre`
-        implicitly runs `pyre incremental`.
-
-        By default, incremental checks ensure that all dependencies of changed files are
-        analyzed before returning results. If you'd like to get partial type checking
-        results eagerly, you can run `pyre incremental --nonblocking`.
-        """
-        incremental = parser.add_parser(cls.NAME, epilog=incremental_help)
-        incremental.set_defaults(command=cls.from_arguments)
-        incremental.add_argument(
-            "--nonblocking",
-            action="store_true",
-            help=(
-                "Ask the server to return partial results immediately, "
-                "even if analysis is still in progress."
-            ),
-        )
-        incremental.add_argument(
-            "--incremental-style",
-            type=IncrementalStyle,
-            choices=list(IncrementalStyle),
-            default=IncrementalStyle.FINE_GRAINED,
-            help="How to approach doing incremental checks.",
-        )
-        incremental.add_argument(
-            "--no-start", action="store_true", help=argparse.SUPPRESS
-        )
-        # This is mostly to allow `restart` to pass on the flag to `start`.
-        incremental.add_argument(
-            "--no-watchman", action="store_true", help=argparse.SUPPRESS
-        )
+        # The client lock guards the critical section of initializing the
+        # configuration monitor, the analysis directory, the server, and the
+        # file monitor.
+        #
+        # * Otherwise, there may be a race where the server has started up but not yet
+        # finished initializing. That would mean the file monitor wouldn't be
+        # alive yet, which would lead to spurious "file monitor is down" failures.
+        # * Another race is where the analysis directory has been built by a
+        # background `pyre start` but the server has not yet been started up.
+        # That would make Incremental unnecessarily run Start again.
+        with filesystem.acquire_lock(client_lock, blocking=True):
+            if self._state() == State.DEAD:
+                if not self._no_start_server:
+                    LOG.info(
+                        "Starting server at `%s`.", self._analysis_directory.get_root()
+                    )
+                    exit_code = (
+                        Start(
+                            self._command_arguments,
+                            self._original_directory,
+                            configuration=self._configuration,
+                            analysis_directory=self._analysis_directory,
+                            terminal=False,
+                            store_type_check_resolution=False,
+                            use_watchman=not self._no_watchman,
+                            incremental_style=self._incremental_style,
+                        )
+                        .run()
+                        .exit_code()
+                    )
+                    if exit_code != ExitCode.SUCCESS:
+                        self._exit_code = ExitCode.FAILURE
+                        raise ClientInitializationError
+            else:
+                if not self._no_watchman and (
+                    not project_files_monitor.ProjectFilesMonitor.is_alive(
+                        self._configuration
+                    )
+                    or not configuration_monitor.ConfigurationMonitor.is_alive(
+                        self._configuration
+                    )
+                ):
+                    LOG.warning(
+                        "Pyre's file watching service is down."
+                        " Results may be inconsistent with full checks."
+                        " Please run `pyre restart` to bring Pyre server to a "
+                        "consistent state again."
+                    )
+                    self._exit_code = ExitCode.INCONSISTENT_SERVER
+                    raise ClientInitializationError
 
     def _run(self) -> None:
-        if (not self._no_start_server) and self._state() == State.DEAD:
-            LOG.info("Starting server at `%s`.", self._analysis_directory.get_root())
-            exit_code = (
-                Start(
-                    self._command_arguments,
-                    self._original_directory,
-                    configuration=self._configuration,
-                    analysis_directory=self._analysis_directory,
-                    terminal=False,
-                    store_type_check_resolution=False,
-                    use_watchman=not self._no_watchman,
-                    incremental_style=self._incremental_style,
-                )
-                .run()
-                .exit_code()
-            )
-            if exit_code != ExitCode.SUCCESS:
-                self._exit_code = ExitCode.FAILURE
-                return
-        else:
-            self._restart_file_monitor_if_needed()
-
-        if self._state() != State.DEAD:
-            LOG.info("Waiting for server...")
+        try:
+            self._ensure_server_and_monitors_are_initialized()
+        except ClientInitializationError:
+            return
 
         with self._analysis_directory.acquire_shared_reader_lock():
             request = json_rpc.Request(
@@ -144,11 +127,18 @@ class Incremental(Reporting):
 
     def _flags(self) -> List[str]:
         flags = super()._flags()
-        flags.extend(["-expected-binary-version", self._configuration.version_hash])
-
-        search_path = self._configuration.search_path + typeshed_search_path(
-            self._configuration.typeshed
+        flags.extend(
+            [
+                "-expected-binary-version",
+                self._configuration.get_version_hash_respecting_override()
+                or "unversioned",
+            ]
         )
+
+        search_path = [
+            search_path.command_line_argument()
+            for search_path in self._configuration.get_existent_search_paths()
+        ]
         if search_path:
             flags.extend(["-search-path", ",".join(search_path)])
 
@@ -156,7 +146,7 @@ class Incremental(Reporting):
         for exclude in excludes:
             flags.extend(["-exclude", exclude])
 
-        extensions = self._configuration.extensions
+        extensions = self._configuration.get_valid_extensions()
         for extension in extensions:
             flags.extend(["-extension", extension])
 
@@ -164,10 +154,3 @@ class Incremental(Reporting):
             flags.append("-nonblocking")
 
         return flags
-
-    def _restart_file_monitor_if_needed(self) -> None:
-        if self._no_watchman:
-            return
-        ProjectFilesMonitor.restart_if_dead(
-            self._configuration, self._project_root, self._analysis_directory
-        )

@@ -1,19 +1,25 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
 
+import contextlib
 import copy
 import io
 import logging
+import logging.handlers
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from types import TracebackType
-from typing import Iterable, Optional, Pattern, Sequence
+from typing import Generator, Iterable, Optional, Pattern, Sequence
+
+import click
 
 
 PERFORMANCE: int = 15
@@ -54,7 +60,9 @@ class Character:
 
 class SectionFormatter(logging.Formatter):
     def __init__(self) -> None:
-        super(SectionFormatter, self).__init__("%(asctime)s %(levelname)s %(message)s")
+        super(SectionFormatter, self).__init__(
+            "%(asctime)s [PID %(process)d] %(levelname)s %(message)s"
+        )
 
     def format(self, record: logging.LogRecord) -> str:
         formatted = super(SectionFormatter, self).format(record)
@@ -78,11 +86,13 @@ class TimedStreamHandler(logging.StreamHandler):
         self._active_lines: int = 0
 
         # Preamble preparing terminal.
-        sys.stderr.write(
+        click.echo(
             Format.NEWLINE
             + Format.CLEAR_LINE
             + Format.CURSOR_UP_LINE
-            + Format.HIDE_CURSOR
+            + Format.HIDE_CURSOR,
+            file=sys.stderr,
+            nl=False,
         )
 
         thread = threading.Thread(target=self._thread)
@@ -101,24 +111,25 @@ class TimedStreamHandler(logging.StreamHandler):
 
     def emit(self, record: logging.LogRecord, age: Optional[float] = None) -> None:
         suffix = ""
-        color = ""
-        active_lines = record.msg.count("\n") + 1
+        color: Optional[str] = None
+        message = record.msg
+        active_lines = message.count("\n") + 1
         truncate = Format.TRUNCATE_OVERFLOW
         if record.levelname in self.LINE_BREAKING_LEVELS:
-            record.msg += "\n"
+            message += "\n"
 
         if record.levelname == "ERROR":
-            color = Color.RED
+            color = "red"
             self._record = None
             active_lines = 0
             truncate = Format.WRAP_OVERFLOW
         elif record.levelname == "WARNING":
-            color = Color.YELLOW
+            color = "yellow"
             self._record = None
             active_lines = 0
             truncate = Format.WRAP_OVERFLOW
         elif record.levelname == "PROMPT":
-            color = Color.YELLOW
+            color = "yellow"
             self._record = None
             active_lines = 0
             truncate = Format.WRAP_OVERFLOW
@@ -128,27 +139,23 @@ class TimedStreamHandler(logging.StreamHandler):
             truncate = Format.WRAP_OVERFLOW
         elif age:
             if age > 10:
-                color = Color.YELLOW
+                color = "yellow"
             if age > 30:
-                color = Color.RED
-            suffix = " {}[{:.1f}s]{}".format(
-                color if color else "", age, Format.CLEAR if color else ""
-            )
+                color = "red"
+            suffix = click.style(" [{:.1f}s]".format(age), fg=color)
         else:
             self._record = record
             self._last_update = time.time()
 
+        prompt = click.style(f"{Character.LAMBDA}", fg=color)
+        new_message = f"{self.clear_lines()}{prompt} {truncate}{message}{suffix}"
+
         timed_record = copy.copy(record)
         timed_record.msg = (
-            "{clear_line}{color} {cursor}{clear} {truncate}{message}{suffix}"
-        ).format(
-            clear_line=self.clear_lines(),
-            color=color,
-            cursor=Character.LAMBDA,
-            clear=Format.CLEAR,
-            truncate=truncate,
-            message=record.msg,
-            suffix=suffix,
+            f"{click.unstyle(new_message)}\n"
+            # pyre-ignore[16]: Missing typeshed stub for this API
+            if click.utils.should_strip_ansi(stream=sys.stderr)
+            else new_message
         )
         self._active_lines = active_lines
         super(TimedStreamHandler, self).emit(timed_record)
@@ -166,11 +173,11 @@ class TimedStreamHandler(logging.StreamHandler):
         self._terminate = True
 
         if self._active_lines > 0:
-            sys.stderr.write(self.clear_lines())
+            click.echo(self.clear_lines(), file=sys.stderr, nl=False)
             self._active_lines = 0
 
         # Reset terminal.
-        sys.stderr.write(Format.WRAP_OVERFLOW + Format.SHOW_CURSOR)
+        click.echo(Format.WRAP_OVERFLOW + Format.SHOW_CURSOR, file=sys.stderr, nl=False)
         sys.stderr.flush()
 
 
@@ -200,7 +207,14 @@ def start_logging_to_directory(noninteractive: bool, log_directory: str) -> None
     if not noninteractive and log_directory is not None:
         if not os.path.exists(log_directory):
             os.makedirs(log_directory)
-        handler = logging.FileHandler(os.path.join(log_directory, "pyre.stderr"))
+        handler = logging.handlers.RotatingFileHandler(
+            os.path.join(log_directory, "pyre.stderr"),
+            mode="a",
+            # Keep at most 5 log files on disk
+            backupCount=4,
+            # Limit the size of each log file to 10MB
+            maxBytes=10 * 1000 * 1000,
+        )
         handler.setFormatter(SectionFormatter())
         handler.setLevel(logging.DEBUG)
         logger = logging.getLogger()
@@ -216,13 +230,62 @@ def cleanup() -> None:
 
     output = stdout.getvalue()
     if output:
-        sys.stdout.write(output)
+        click.echo(output, nl=False)
         if not output.endswith("\n"):
-            sys.stdout.write("\n")
+            click.echo()
+
+
+@contextlib.contextmanager
+def configured_logger(noninteractive: bool) -> Generator[None, None, None]:
+    try:
+        initialize(noninteractive)
+        yield
+    finally:
+        cleanup()
+
+
+@contextlib.contextmanager
+def file_tailer(file_path: Path) -> Generator[Iterable[str], None, None]:
+    """
+    This function yields a stream of string generated by following the last
+    part of the given file. In other words, the returned stream behaves roughtly
+    the same as `tail -F`: If the file being watched is left untouched, invoking
+    `next` on the returned stream will block indefinitely. If the file being
+    watched gets a line appended to the end of it, invoking `next` on the returned
+    stream will return the appended line. Leaving the context manager will cause
+    the returned stream to stop iteration next time `next` is invoked.
+
+    This API is intended to be used along with `StreamLogger` to concurrently
+    forward the content of a log file to the terminal in the background:
+
+    ```
+    with file_tailer(log_file) as log_stream:
+        with StreamLogger(log_stream) as logger:
+            # Main thread logic happens here
+            ...
+    logger.join()
+    ```
+    """
+    with subprocess.Popen(
+        ["tail", "-F", "-n", "0", str(file_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        universal_newlines=True,
+    ) as tail:
+        try:
+            stdout = tail.stdout
+            if stdout is None:
+                raise RuntimeError(
+                    "subprocess.Popen failed to set up a pipe for stdout"
+                )
+            yield stdout
+        finally:
+            tail.terminate()
 
 
 class StreamLogger:
     _should_stop_reading_stream = False
+    _current_section: Optional[str]
 
     _server_log_pattern: Pattern[str] = re.compile(
         r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} (\w+) (.*)"
@@ -231,6 +294,7 @@ class StreamLogger:
     def __init__(self, stream: Iterable[str]) -> None:
         self._reader = threading.Thread(target=self._read_stream, args=(stream,))
         self._reader.daemon = True
+        self._current_section = None
 
     def join(self) -> None:
         self._reader.join()
@@ -241,20 +305,25 @@ class StreamLogger:
         if match:
             section = match.groups()[0]
             message = match.groups()[1]
-            if section == "ERROR":
-                LOG.error(message)
-            elif section == "INFO":
-                LOG.info(message)
-            elif section == "DUMP":
-                LOG.warning(message)
-            elif section == "WARNING":
-                LOG.warning(message)
-            elif section == "PROGRESS":
-                LOG.info(message)
-            elif section == "PARSER":
-                LOG.error(message)
-            else:
-                LOG.debug("[%s] %s", section, message)
+            self._current_section = section
+        else:
+            section = self._current_section
+            message = line
+
+        if section == "ERROR":
+            LOG.error(message)
+        elif section == "INFO":
+            LOG.info(message)
+        elif section == "DUMP":
+            LOG.warning(message)
+        elif section == "WARNING":
+            LOG.warning(message)
+        elif section == "PROGRESS":
+            LOG.info(message)
+        elif section == "PARSER":
+            LOG.error(message)
+        elif section is not None:
+            LOG.debug("[%s] %s", section, message)
         else:
             LOG.debug(line)
 

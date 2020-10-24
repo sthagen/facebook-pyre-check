@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open OUnit2
 open IntegrationTest
@@ -38,10 +40,7 @@ let test_check_isinstance context =
           reveal_type(x)
         reveal_type(x)
     |}
-    [
-      "Revealed type [-1]: Revealed type for `x` is `str`.";
-      "Revealed type [-1]: Revealed type for `x` is `typing.Union[int, str]`.";
-    ];
+    ["Revealed type [-1]: Revealed type for `x` is `int`."];
   assert_type_errors
     {|
       def foo(x: int) -> None:
@@ -129,10 +128,7 @@ let test_check_isinstance context =
         else:
           reveal_type(x)
     |}
-    [
-      "Revealed type [-1]: Revealed type for `x` is `str`.";
-      "Revealed type [-1]: Revealed type for `x` is `typing.Union[bool, float, int]`.";
-    ];
+    ["Revealed type [-1]: Revealed type for `x` is `typing.Union[bool, float, int]`."];
   assert_type_errors "isinstance(1, (int, str))" [];
   assert_type_errors "isinstance(1, (int, (int, str)))" [];
   assert_type_errors
@@ -190,6 +186,40 @@ let test_check_isinstance context =
         isinstance(x, Y)
     |}
     [];
+  assert_type_errors
+    {|
+      class A:
+        pass
+      class B:
+        pass
+      def foo(x:A) -> None:
+        if (isinstance(x, B)):
+          pass
+        reveal_type(x)
+    |}
+    ["Revealed type [-1]: Revealed type for `x` is `A`."];
+  assert_type_errors
+    {|
+      class A:
+        pass
+      class B:
+        pass
+      def foo(x:A) -> None:
+        if (isinstance(x, B)):
+          reveal_type(x)
+    |}
+    [];
+  assert_type_errors
+    {|
+      class A:
+        pass
+      class B(A):
+        pass
+      def foo(x:A) -> None:
+        if (isinstance(x, B)):
+          reveal_type(x)
+    |}
+    ["Revealed type [-1]: Revealed type for `x` is `B`."];
   ()
 
 

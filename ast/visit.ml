@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Pyre
@@ -15,11 +17,14 @@ type node =
   | Parameter of Parameter.t
   | Reference of Reference.t Node.t
   | Substring of Substring.t Node.t
+  | Generator of Comprehension.Generator.t
 
 module type NodeVisitor = sig
   type t
 
   val node : t -> node -> t
+
+  val visit_statement_children : t -> Statement.t -> bool
 end
 
 module MakeNodeVisitor (Visitor : NodeVisitor) = struct
@@ -42,9 +47,10 @@ module MakeNodeVisitor (Visitor : NodeVisitor) = struct
     let visitor = Option.value visitor_override ~default:Visitor.node in
     let visit_expression = visit_expression ~state ?visitor_override in
     let visit_generator
-        { Comprehension.Generator.target; iterator; conditions; _ }
+        ({ Comprehension.Generator.target; iterator; conditions; _ } as generator)
         ~visit_expression
       =
+      visit_node ~state ~visitor (Generator generator);
       visit_expression target;
       visit_expression iterator;
       List.iter conditions ~f:visit_expression
@@ -71,24 +77,24 @@ module MakeNodeVisitor (Visitor : NodeVisitor) = struct
           List.iter entries ~f:(visit_entry ~visit_expression);
           List.iter keywords ~f:visit_expression |> ignore
       | DictionaryComprehension { Comprehension.element; generators } ->
-          visit_entry element ~visit_expression;
-          List.iter generators ~f:(visit_generator ~visit_expression)
+          List.iter generators ~f:(visit_generator ~visit_expression);
+          visit_entry element ~visit_expression
       | Generator { Comprehension.element; generators } ->
-          visit_expression element;
-          List.iter generators ~f:(visit_generator ~visit_expression)
+          List.iter generators ~f:(visit_generator ~visit_expression);
+          visit_expression element
       | Lambda { Lambda.parameters; body } ->
           List.iter parameters ~f:(visit_parameter ~state ~visitor ~visit_expression);
           visit_expression body
       | List elements -> List.iter elements ~f:visit_expression
       | ListComprehension { Comprehension.element; generators } ->
-          visit_expression element;
-          List.iter generators ~f:(visit_generator ~visit_expression)
+          List.iter generators ~f:(visit_generator ~visit_expression);
+          visit_expression element
       | Name (Name.Identifier _) -> ()
       | Name (Name.Attribute { base; _ }) -> visit_expression base
       | Set elements -> List.iter elements ~f:visit_expression
       | SetComprehension { Comprehension.element; generators } ->
-          visit_expression element;
-          List.iter generators ~f:(visit_generator ~visit_expression)
+          List.iter generators ~f:(visit_generator ~visit_expression);
+          visit_expression element
       | Starred starred -> (
           match starred with
           | Starred.Once expression
@@ -212,7 +218,8 @@ module MakeNodeVisitor (Visitor : NodeVisitor) = struct
       | Break ->
           ()
     in
-    visit_children (Node.value statement);
+    if Visitor.visit_statement_children !state statement then
+      visit_children (Node.value statement);
     visit_node ~state ~visitor (Statement statement)
 
 
@@ -239,6 +246,9 @@ module Make (Visitor : Visitor) = struct
         | Expression expression -> Visitor.expression state expression
         | Statement statement -> Visitor.statement state statement
         | _ -> state
+
+
+      let visit_statement_children _ _ = true
     end)
     in
     NodeVisitor.visit
@@ -354,6 +364,9 @@ struct
         match NodePredicate.predicate node with
         | Some result -> { state with nodes = result :: nodes }
         | None -> state
+
+
+      let visit_statement_children _ _ = true
     end
     in
     let module CollectingVisit = MakeNodeVisitor (CollectingVisitor) in
@@ -410,6 +423,7 @@ let collect_locations source =
           | Parameter node -> Some (Node.location node)
           | Reference node -> Some (Node.location node)
           | Substring node -> Some (Node.location node)
+          | Generator _ -> None
       end)
   in
   let { Collector.nodes; _ } = Collector.collect source in

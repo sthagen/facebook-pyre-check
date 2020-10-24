@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -28,9 +28,7 @@ class PersistentTest(unittest.TestCase):
         Monitor: MagicMock,
     ) -> None:
         original_directory = "/original/directory"
-        configuration = mock_configuration()
-        configuration.version_hash = "hash"
-        configuration.number_of_workers = 42
+        configuration = mock_configuration(version_hash="hash")
 
         # Check start without watchman.
         with patch.object(commands.Command, "_call_client") as call_client:

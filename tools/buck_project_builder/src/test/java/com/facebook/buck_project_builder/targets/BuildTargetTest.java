@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 package com.facebook.buck_project_builder.targets;
 
 import com.facebook.buck_project_builder.BuilderException;
@@ -5,6 +12,7 @@ import com.facebook.buck_project_builder.FileSystemTest;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedSet;
 import org.junit.Test;
 
 import java.io.File;
@@ -49,7 +57,7 @@ public class BuildTargetTest {
             sources,
             ImmutableSet.of(),
             ImmutableSet.of(),
-            ImmutableSet.of(),
+            ImmutableSortedSet.of(),
             ImmutableSet.of(),
             ImmutableSet.of());
     builder.buildTargets(buckRoot.toString(), null);
@@ -70,7 +78,7 @@ public class BuildTargetTest {
             sources,
             ImmutableSet.of(),
             ImmutableSet.of(),
-            ImmutableSet.of(),
+            ImmutableSortedSet.of(),
             ImmutableSet.of(),
             ImmutableSet.of());
     builder.buildTargets(buckRoot.toString(), null);

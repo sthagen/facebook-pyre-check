@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 
@@ -26,7 +28,13 @@ let run_server configuration_file =
       | Result.Ok ({ Newserver.ServerConfiguration.log_path; _ } as server_configuration) ->
           Newserver.StartupNotification.consume ~log_path ()
           |> Option.iter ~f:(fun message -> Log.warning "%s" message);
-          Lwt_main.run (Newserver.Start.start_server_and_wait server_configuration) )
+          let exit_status =
+            Lwt_main.run
+              (Newserver.Start.start_server_and_wait
+                 ~event_channel:Lwt_io.stdout
+                 server_configuration)
+          in
+          exit (Newserver.Start.ExitStatus.exit_code exit_status) )
 
 
 let command =

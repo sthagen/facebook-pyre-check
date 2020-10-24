@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -13,17 +13,20 @@ from ...client.commands import ExitCode
 from . import UserError
 from .ast import UnstableAST
 from .commands.codemods import (
+    EnableSourceDatabaseBuckBuilder,
     MissingGlobalAnnotations,
     MissingOverrideReturnAnnotations,
 )
 from .commands.consolidate_nested_configurations import ConsolidateNestedConfigurations
 from .commands.expand_target_coverage import ExpandTargetCoverage
+from .commands.fix_configuration import FixConfiguration
 from .commands.fixme import Fixme
 from .commands.fixme_all import FixmeAll
 from .commands.fixme_single import FixmeSingle
 from .commands.fixme_targets import FixmeTargets
 from .commands.global_version_update import GlobalVersionUpdate
 from .commands.strict_default import StrictDefault
+from .commands.support_sqlalchemy import SupportSqlalchemy
 from .commands.targets_to_configuration import TargetsToConfiguration
 from .repository import Repository
 
@@ -88,6 +91,18 @@ def run(repository: Repository) -> None:
     # Subcommand: Consolidate nested local configurations
     consolidate_nested_configurations = commands.add_parser("consolidate-nested")
     ConsolidateNestedConfigurations.add_arguments(consolidate_nested_configurations)
+
+    # Subcommand: Attempt remediation on broken configuration.
+    fix_configuration = commands.add_parser("fix-configuration")
+    FixConfiguration.add_arguments(fix_configuration)
+
+    enable_source_database_buck_builder = commands.add_parser(
+        "enable-source-database-buck-builder"
+    )
+    EnableSourceDatabaseBuckBuilder.add_arguments(enable_source_database_buck_builder)
+
+    support_sqlalchemy = commands.add_parser("support-sqlalchemy")
+    SupportSqlalchemy.add_arguments(support_sqlalchemy)
 
     # Initialize default values.
     arguments = parser.parse_args()

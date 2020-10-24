@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Pyre
@@ -21,7 +23,9 @@ let get_logs configuration =
     ~f:get_log
     [
       "server", Constants.Server.log_path configuration;
-      "watchman", Constants.Watchman.log_path configuration;
+      "client", Constants.Client.log_path configuration;
+      "file monitor", Constants.Watchman.file_monitor_log_path configuration;
+      "configuration monitor", Constants.Watchman.configuration_monitor_log_path configuration;
       "persistent", Constants.Persistent.log_path configuration;
       "adapter", Constants.Adapter.log_path configuration;
     ]

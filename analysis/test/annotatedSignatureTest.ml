@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open OUnit2
@@ -935,11 +937,7 @@ let test_resolved_select context =
         implementation =
           {
             annotation =
-              Type.Parametric
-                {
-                  name = "P";
-                  parameters = [Single (Type.variable "T"); Single (Type.variable "X")];
-                };
+              Type.parametric "P" [Single (Type.variable "T"); Single (Type.variable "X")];
             parameters =
               Defined
                 [
@@ -952,26 +950,23 @@ let test_resolved_select context =
     (Found
        {
          selected_return_annotation =
-           Type.Parametric
-             {
-               name = "P";
-               parameters =
-                 [
-                   Single
-                     (Type.Callable.create
-                        ~annotation:(Type.variable "S")
-                        ~parameters:
-                          (Defined
-                             [Named { name = "X"; annotation = Type.variable "S"; default = false }])
-                        ());
-                   (* Only "local" variables should be marked as escaped *)
-                   Single
-                     (Variable
-                        ( Type.Variable.Unary.create "X"
-                        |> Type.Variable.Unary.mark_as_escaped
-                        |> Type.Variable.Unary.namespace ~namespace ));
-                 ];
-             };
+           Type.parametric
+             "P"
+             [
+               Single
+                 (Type.Callable.create
+                    ~annotation:(Type.variable "S")
+                    ~parameters:
+                      (Defined
+                         [Named { name = "X"; annotation = Type.variable "S"; default = false }])
+                    ());
+               (* Only "local" variables should be marked as escaped *)
+               Single
+                 (Variable
+                    ( Type.Variable.Unary.create "X"
+                    |> Type.Variable.Unary.mark_as_escaped
+                    |> Type.Variable.Unary.namespace ~namespace ));
+             ];
        });
   ()
 

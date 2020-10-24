@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 package com.facebook.buck_project_builder.targets;
 
 import com.facebook.buck_project_builder.BuckCells;
@@ -8,6 +15,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedSet;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -96,26 +104,28 @@ public final class BuildTargetsCollector {
   }
 
   /** @return a builder that contains all the target information necessary for building. */
-  public BuildTargetsBuilder getBuilder(long startTime, ImmutableList<String> targets)
+  public BuildTargetsBuilder getBuilder(
+      long startTime, ImmutableList<String> targets, @Nullable String isolationPrefix)
       throws BuilderException, IOException {
     collectBuildTargets(
-        BuckCells.getCellMappings(), BuckQuery.getBuildTargetJson(targets, this.mode));
+        BuckCells.getCellMappings(isolationPrefix),
+        BuckQuery.getBuildTargetJson(targets, this.mode, isolationPrefix));
     // Filter thrift libraries
     this.thriftLibraryTargets.removeIf(
         target -> {
           String commandString = target.getCommand();
           return commandString.contains("py:")
-              && this.thriftLibraryTargets.contains(
-                  new ThriftLibraryTarget(
-                      commandString.replace("py:", "mstch_pyi:"),
-                      target.getBaseModulePath(),
-                      target.getSources()))
+                  && this.thriftLibraryTargets.contains(
+                      new ThriftLibraryTarget(
+                          commandString.replace("py:", "mstch_pyi:"),
+                          target.getBaseModulePath(),
+                          target.getSources()))
               || commandString.contains(":new_style")
-              && this.thriftLibraryTargets.contains(
-                new ThriftLibraryTarget(
-                  commandString.replace(":new_style", ":asyncio,new_style"),
-                  target.getBaseModulePath(),
-                  target.getSources()));
+                  && this.thriftLibraryTargets.contains(
+                      new ThriftLibraryTarget(
+                          commandString.replace(":new_style", ":asyncio,new_style"),
+                          target.getBaseModulePath(),
+                          target.getSources()));
         });
     return new BuildTargetsBuilder(
         startTime,
@@ -126,7 +136,7 @@ public final class BuildTargetsCollector {
         ImmutableMap.copyOf(this.sources),
         ImmutableSet.copyOf(this.unsupportedGeneratedSources),
         ImmutableSet.copyOf(this.pythonWheelUrls),
-        ImmutableSet.copyOf(this.thriftLibraryTargets),
+        ImmutableSortedSet.copyOf(this.thriftLibraryTargets),
         ImmutableSet.copyOf(this.swigLibraryBuildCommands),
         ImmutableSet.copyOf(this.antlr4LibraryBuildCommands));
   }

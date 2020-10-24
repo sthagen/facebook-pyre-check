@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Pyre
@@ -229,15 +231,48 @@ let from_callgraph callgraph =
   Callable.RealMap.fold callgraph ~f:add ~init:Callable.Map.empty
 
 
+let union left right =
+  let combine ~key:_ left right = List.rev_append left right in
+  Map.merge_skewed ~combine left right
+
+
 let from_overrides overrides =
-  let add ~key:method_name ~data:subtypes result =
+  let connect_overrides_to_methods override_graph =
+    let overrides_to_methods =
+      let override_to_method_edge override =
+        match override with
+        | `OverrideTarget _ as override ->
+            let corresponding_method = Callable.get_corresponding_method override in
+            Some (override, [corresponding_method])
+        | _ -> None
+      in
+      Callable.Map.keys override_graph
+      |> List.filter_map ~f:override_to_method_edge
+      |> Callable.Map.of_alist_exn
+    in
+    union overrides_to_methods override_graph
+  in
+  let add ~key:method_name ~data:subtypes (override_map, all_overrides) =
     let key = Callable.create_override method_name in
     let data =
       List.map subtypes ~f:(fun at_type -> Callable.create_derived_override key ~at_type)
     in
-    Callable.Map.set result ~key ~data
+    ( Callable.Map.set override_map ~key ~data,
+      Callable.Set.union all_overrides (Callable.Set.of_list data) )
   in
-  Reference.Map.fold overrides ~f:add ~init:Callable.Map.empty
+  let override_map, all_overrides =
+    Reference.Map.fold overrides ~f:add ~init:(Callable.Map.empty, Callable.Set.empty)
+  in
+  (* Create empty entries for leaves. *)
+  Callable.Set.fold
+    (fun override override_map ->
+      if not (Callable.Map.mem override_map override) then
+        Callable.Map.set override_map ~key:override ~data:[]
+      else
+        override_map)
+    all_overrides
+    override_map
+  |> connect_overrides_to_methods
 
 
 let create_overrides ~environment ~source =
@@ -297,11 +332,6 @@ let create_overrides ~environment ~source =
     |> Map.map ~f:(List.dedup_and_sort ~compare:Reference.compare)
 
 
-let union left right =
-  let combine ~key:_ left right = List.rev_append left right in
-  Map.merge_skewed ~combine left right
-
-
 let expand_callees callees =
   let rec expand_and_gather expanded = function
     | (#Callable.real_target | #Callable.object_target) as real -> real :: expanded
@@ -317,3 +347,38 @@ let expand_callees callees =
         :: List.fold overrides ~f:expand_and_gather ~init:expanded
   in
   List.fold callees ~init:[] ~f:expand_and_gather |> List.dedup_and_sort ~compare:Callable.compare
+
+
+type prune_result = {
+  dependencies: t;
+  pruned_callables: Callable.t list;
+}
+
+let prune dependency_graph ~callables_with_dependency_information =
+  let initial_callables =
+    List.filter_map callables_with_dependency_information ~f:(fun (callable, is_internal) ->
+        Option.some_if is_internal callable)
+  in
+  (* We have an implicit edge from a method to the override it corresponds to during the analysis.
+     During the pruning, we make the edges from the method to the override explicit to make sure the
+     DFS captures the interesting overrides. *)
+  let callables_to_keep =
+    depth_first_search dependency_graph initial_callables
+    |> List.concat
+    |> List.dedup_and_sort ~compare:Callable.compare
+  in
+  let dependency_graph =
+    (* We only keep the keys which were in the original dependency graph to avoid introducing
+       spurious override leaves. *)
+    let to_edge callable =
+      Callable.Map.find dependency_graph callable >>| fun values -> callable, values
+    in
+    Callable.Map.of_alist_exn (List.filter_map callables_to_keep ~f:to_edge)
+  in
+  let callables_to_keep = Callable.Set.of_list callables_to_keep in
+  {
+    dependencies = dependency_graph;
+    pruned_callables =
+      List.filter_map callables_with_dependency_information ~f:(fun (callable, _) ->
+          Option.some_if (Callable.Set.mem callable callables_to_keep) callable);
+  }

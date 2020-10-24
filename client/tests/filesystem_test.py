@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -16,7 +16,7 @@ import unittest
 from contextlib import contextmanager
 from unittest.mock import MagicMock, Mock, call, patch
 
-from .. import buck, commands, filesystem
+from .. import buck, commands, filesystem, find_directories
 from ..analysis_directory import (
     NotWithinLocalConfigurationException,
     SharedAnalysisDirectory,
@@ -30,10 +30,11 @@ from ..filesystem import (
     acquire_lock,
     acquire_lock_if_needed,
     add_symbolic_link,
+    expand_relative_path,
     find_python_paths,
-    find_root,
     remove_if_exists,
 )
+from ..find_directories import FoundRoot
 
 
 class FilesystemTest(unittest.TestCase):
@@ -66,11 +67,7 @@ class FilesystemTest(unittest.TestCase):
         create_symlink("mypy/my.py", "mypy/another.pyi")
         create_symlink("scipyi/sci.pyi", "scipyi/another.py")
         actual_paths = sorted(
-            # pyre-fixme[6]: Expected `Iterable[Variable[_LT (bound to
-            #  _SupportsLessThan)]]` for 1st param but got `Generator[str, None,
-            #  None]`.
-            os.path.relpath(path, root)
-            for path in find_python_paths(root)
+            os.path.relpath(path, root) for path in find_python_paths(root)
         )
         self.assertEqual(
             actual_paths,
@@ -379,11 +376,18 @@ class FilesystemTest(unittest.TestCase):
         self.assertEqual(root, "/scratch/path/to/local")
 
     @patch.object(tempfile, "mkdtemp", return_value="/tmp/pyre_tmp_xyz")
-    @patch.object(filesystem, "find_root", return_value="/buck_root")
+    @patch.object(buck, "find_buck_root", return_value="/buck_root")
     @patch("os.makedirs")
     @patch(filesystem_name + ".acquire_lock")
     @patch.object(SharedAnalysisDirectory, "get_root", return_value="/analysis_root")
-    def test_prepare(self, get_root, acquire_lock, makedirs, find_root, mkdtemp):
+    def test_prepare(
+        self,
+        get_root,
+        acquire_lock,
+        makedirs,
+        find_parent_directory_containing_file,
+        mkdtemp,
+    ):
         @contextmanager
         def acquire(*args, **kwargs):
             yield
@@ -399,27 +403,19 @@ class FilesystemTest(unittest.TestCase):
             merge.assert_has_calls([call()])
             clear.assert_has_calls([call()])
 
-    @patch("{}.Path".format(command_name))
-    @patch("{}.Path.mkdir".format(command_name))
-    @patch("os.path.realpath", side_effect=lambda path: "realpath({})".format(path))
+    @patch(f"{command_name}.Path.mkdir")
+    # pyre-fixme[56]: Pyre was not able to infer the type of argument `lambda
+    #  ($parameter$path) ("realpath({path})"($parameter$path))` to decorator factory
+    #  `unittest.mock.patch`.
+    @patch("os.path.realpath", side_effect=lambda path: f"realpath({path})")
     @patch("os.getcwd", return_value="/root")
     @patch("os.path.exists", return_value=True)
-    @patch("{}.find_project_root".format(command_name), return_value="/root/local")
-    # pyre-fixme[56]: Argument
-    #  `"{}.find_local_root".format(tools.pyre.client.commands.command.__name__)` to
-    #  decorator factory `unittest.mock.patch` could not be resolved in a global scope.
-    @patch("{}.find_local_root".format(command_name), return_value=None)
-    @patch("os.chdir")
+    @patch(
+        f"{find_directories.__name__}.find_global_and_local_root",
+        return_value=find_directories.FoundRoot(pathlib.Path("/root/local")),
+    )
     def test_resolve_source_directories(
-        self,
-        chdir,
-        find_local_root,
-        find_project_root,
-        exists,
-        cwd,
-        realpath,
-        path_mkdir,
-        path,
+        self, find_global_and_local_root, exists, cwd, realpath, path_mkdir
     ) -> None:
         arguments = MagicMock()
         arguments.source_directories = []
@@ -430,6 +426,7 @@ class FilesystemTest(unittest.TestCase):
         arguments.logger = None
         configuration = MagicMock()
         configuration.source_directories = []
+        configuration.project_root = "/root"
         configuration.local_root = "/root/local"
         configuration.use_buck_builder = False
         configuration.ignore_unbuilt_dependencies = False
@@ -464,7 +461,7 @@ class FilesystemTest(unittest.TestCase):
             )
             analysis_directory._resolve_source_directories()
             buck_source_directories.assert_called_with(
-                {"configuration_source_directory"}
+                ["configuration_source_directory"]
             )
             self.assertEqual(
                 analysis_directory._source_directories, {"some_source_directory"}
@@ -485,7 +482,7 @@ class FilesystemTest(unittest.TestCase):
             analysis_directory = command._analysis_directory
             assert isinstance(analysis_directory, SharedAnalysisDirectory)
             analysis_directory._resolve_source_directories()
-            buck_source_directories.assert_called_with({"arguments_target"})
+            buck_source_directories.assert_called_with(["arguments_target"])
             self.assertEqual(
                 analysis_directory._source_directories,
                 {"realpath(root/arguments_target)"},
@@ -509,7 +506,7 @@ class FilesystemTest(unittest.TestCase):
             analysis_directory = command._analysis_directory
             assert isinstance(analysis_directory, SharedAnalysisDirectory)
             analysis_directory._resolve_source_directories()
-            buck_source_directories.assert_called_with({"arguments_target"})
+            buck_source_directories.assert_called_with(["arguments_target"])
             self.assertEqual(
                 analysis_directory._source_directories,
                 {"realpath(root/arguments_target)"},
@@ -533,7 +530,7 @@ class FilesystemTest(unittest.TestCase):
             analysis_directory = command._analysis_directory
             assert isinstance(analysis_directory, SharedAnalysisDirectory)
             analysis_directory._resolve_source_directories()
-            buck_source_directories.assert_called_with({"arguments_target"})
+            buck_source_directories.assert_called_with(["arguments_target"])
             command = commands.Restart(
                 arguments,
                 original_directory,
@@ -546,7 +543,7 @@ class FilesystemTest(unittest.TestCase):
             analysis_directory = command._analysis_directory
             assert isinstance(analysis_directory, SharedAnalysisDirectory)
             analysis_directory._resolve_source_directories()
-            buck_source_directories.assert_called_with({"arguments_target"})
+            buck_source_directories.assert_called_with(["arguments_target"])
 
         # Configuration is picked up when no arguments provided.
         with patch.object(
@@ -569,7 +566,7 @@ class FilesystemTest(unittest.TestCase):
             assert isinstance(analysis_directory, SharedAnalysisDirectory)
             analysis_directory._resolve_source_directories()
 
-            buck_source_directories.assert_called_with({"configuration_target"})
+            buck_source_directories.assert_called_with(["configuration_target"])
             self.assertEqual(
                 analysis_directory._source_directories,
                 {"realpath(root/configuration_source_directory)"},
@@ -595,15 +592,6 @@ class FilesystemTest(unittest.TestCase):
             self.assertEqual(
                 analysis_directory._source_directories, {"realpath(root/.)"}
             )
-
-    @patch("os.path.isfile")
-    def test_find_configuration(self, os_mock_isfile) -> None:
-        os_mock_isfile.side_effect = [False, False, False, True]
-        self.assertEqual(find_root("/a/b/c/d", "configuration"), "/a")
-        os_mock_isfile.side_effect = [True]
-        self.assertEqual(find_root("/a", "configuration"), "/a")
-        os_mock_isfile.side_effect = [False, False, False]
-        self.assertEqual(find_root("/a/b", "configuration"), None)
 
     @patch("os.unlink")
     def test_delete_symbolic_link(self, unlink):
@@ -680,4 +668,11 @@ class FilesystemTest(unittest.TestCase):
                 "LOCAL_ROOT/subX/e.py": "ANALYSIS_ROOT/subX/e.py",
                 "LOCAL_ROOT/subY/subZ/g.pyi": "ANALYSIS_ROOT/subY/subZ/g.pyi",
             },
+        )
+
+    def test_expand_relative_path__globs_are_unchanged(self) -> None:
+        self.assertEqual(expand_relative_path("foo", "bar/*/baz"), "foo/bar/*/baz")
+        self.assertEqual(
+            expand_relative_path("dontcare", "/absolute/path/*/foo"),
+            "/absolute/path/*/foo",
         )

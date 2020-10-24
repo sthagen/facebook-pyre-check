@@ -1,9 +1,8 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import argparse
 import json
 import logging
 import os
@@ -15,9 +14,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from typing_extensions import Final
 
+from .. import command_arguments
 from ..analysis_directory import AnalysisDirectory
 from ..configuration import Configuration
-from .command import Command, CommandArguments, ProfileOutput
+from .command import Command, ProfileOutput
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -206,8 +206,6 @@ class TableStatistics:
                 return float(number[:-1]) * (10 ** 3)
             return float(number)
 
-        # pyre-fixme[6]: Expected `(Tuple[str, str]) -> _SupportsLessThan` for 1st
-        #  param but got `(x: Any) -> float`.
         items.sort(key=lambda x: parse(x[1]), reverse=True)
 
     def add(self, line: str) -> None:
@@ -285,10 +283,10 @@ class Profile(Command):
 
     def __init__(
         self,
-        command_arguments: CommandArguments,
+        command_arguments: command_arguments.CommandArguments,
         original_directory: str,
         *,
-        configuration: Optional[Configuration] = None,
+        configuration: Configuration,
         analysis_directory: Optional[AnalysisDirectory] = None,
         profile_output: ProfileOutput,
     ) -> None:
@@ -297,35 +295,10 @@ class Profile(Command):
         )
         self._profile_output: ProfileOutput = profile_output
 
-    @staticmethod
-    def from_arguments(
-        arguments: argparse.Namespace,
-        original_directory: str,
-        configuration: Optional[Configuration] = None,
-        analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> "Profile":
-        return Profile(
-            CommandArguments.from_arguments(arguments),
-            original_directory,
-            configuration=configuration,
-            analysis_directory=analysis_directory,
-            profile_output=arguments.profile_output,
-        )
-
-    @classmethod
-    def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
-        profile = parser.add_parser(cls.NAME)
-        profile.set_defaults(command=cls.from_arguments)
-        profile.add_argument(
-            "--profile-output",
-            type=ProfileOutput,
-            choices=ProfileOutput,
-            help="Specify what to output.",
-            default=ProfileOutput.COLD_START_PHASES,
-        )
-
     def get_stdout(self) -> Path:
-        server_stdout_path = os.path.join(self._log_directory, "server/server.stdout")
+        server_stdout_path = os.path.join(
+            self._configuration.log_directory, "server/server.stdout"
+        )
         server_stdout = Path(server_stdout_path)
         if not server_stdout.is_file():
             raise RuntimeError(

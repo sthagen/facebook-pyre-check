@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -11,13 +11,147 @@ import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Union, cast
+
+import libcst
+import libcst.matchers as libcst_matchers
 
 from . import UserError, ast
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
 MAX_LINES_PER_FIXME: int = 4
+
+
+PyreError = Dict[str, Any]
+PathsToErrors = Dict[Path, List[PyreError]]
+
+
+class LineBreakTransformer(libcst.CSTTransformer):
+    def leave_SimpleWhitespace(
+        self,
+        original_node: libcst.SimpleWhitespace,
+        updated_node: libcst.SimpleWhitespace,
+    ) -> Union[libcst.SimpleWhitespace, libcst.ParenthesizedWhitespace]:
+        whitespace = original_node.value.replace("\\", "")
+        if "\n" in whitespace:
+            first_line = libcst.TrailingWhitespace(
+                whitespace=libcst.SimpleWhitespace(
+                    value=whitespace.split("\n")[0].rstrip()
+                ),
+                comment=None,
+                newline=libcst.Newline(),
+            )
+            last_line = libcst.SimpleWhitespace(value=whitespace.split("\n")[1])
+            return libcst.ParenthesizedWhitespace(
+                first_line=first_line, empty_lines=[], indent=True, last_line=last_line
+            )
+        return updated_node
+
+    @staticmethod
+    def basic_parenthesize(
+        node: libcst.CSTNode,
+        whitespace: Optional[libcst.BaseParenthesizableWhitespace] = None,
+    ) -> libcst.CSTNode:
+        if not hasattr(node, "lpar"):
+            return node
+        if whitespace:
+            return node.with_changes(
+                lpar=[libcst.LeftParen(whitespace_after=whitespace)],
+                rpar=[libcst.RightParen()],
+            )
+        return node.with_changes(lpar=[libcst.LeftParen()], rpar=[libcst.RightParen()])
+
+    def leave_Assert(
+        self, original_node: libcst.Assert, updated_node: libcst.Assert
+    ) -> libcst.Assert:
+        test = updated_node.test
+        if not test:
+            return updated_node
+        assert_whitespace = updated_node.whitespace_after_assert
+        if isinstance(assert_whitespace, libcst.ParenthesizedWhitespace):
+            return updated_node.with_changes(
+                test=LineBreakTransformer.basic_parenthesize(test, assert_whitespace),
+                whitespace_after_assert=libcst.SimpleWhitespace(value=" "),
+            )
+        return updated_node.with_changes(
+            test=LineBreakTransformer.basic_parenthesize(test)
+        )
+
+    def leave_Assign(
+        self, original_node: libcst.Assign, updated_node: libcst.Assign
+    ) -> libcst.Assign:
+        assign_value = updated_node.value
+        assign_whitespace = updated_node.targets[-1].whitespace_after_equal
+        if libcst_matchers.matches(
+            assign_whitespace, libcst_matchers.ParenthesizedWhitespace()
+        ):
+            adjusted_target = updated_node.targets[-1].with_changes(
+                whitespace_after_equal=libcst.SimpleWhitespace(value=" ")
+            )
+            updated_targets = list(updated_node.targets[:-1])
+            updated_targets.append(adjusted_target)
+            return updated_node.with_changes(
+                targets=tuple(updated_targets),
+                value=LineBreakTransformer.basic_parenthesize(
+                    assign_value, assign_whitespace
+                ),
+            )
+        return updated_node.with_changes(
+            value=LineBreakTransformer.basic_parenthesize(assign_value)
+        )
+
+    def leave_Del(
+        self, original_node: libcst.Del, updated_node: libcst.Del
+    ) -> libcst.Del:
+        delete_target = updated_node.target
+        delete_whitespace = updated_node.whitespace_after_del
+        if isinstance(delete_whitespace, libcst.ParenthesizedWhitespace):
+            return updated_node.with_changes(
+                target=LineBreakTransformer.basic_parenthesize(
+                    delete_target, delete_whitespace
+                ),
+                whitespace_after_del=libcst.SimpleWhitespace(value=" "),
+            )
+        return updated_node.with_changes(
+            target=LineBreakTransformer.basic_parenthesize(delete_target)
+        )
+
+    def leave_Raise(
+        self, original_node: libcst.Raise, updated_node: libcst.Raise
+    ) -> libcst.Raise:
+        exception = updated_node.exc
+        if not exception:
+            return updated_node
+        raise_whitespace = updated_node.whitespace_after_raise
+        if isinstance(raise_whitespace, libcst.ParenthesizedWhitespace):
+            return updated_node.with_changes(
+                exc=LineBreakTransformer.basic_parenthesize(
+                    exception, raise_whitespace
+                ),
+                whitespace_after_raise=libcst.SimpleWhitespace(value=" "),
+            )
+        return updated_node.with_changes(
+            exc=LineBreakTransformer.basic_parenthesize(exception)
+        )
+
+    def leave_Return(
+        self, original_node: libcst.Return, updated_node: libcst.Return
+    ) -> libcst.Return:
+        return_value = updated_node.value
+        if not return_value:
+            return updated_node
+        return_whitespace = updated_node.whitespace_after_return
+        if isinstance(return_whitespace, libcst.ParenthesizedWhitespace):
+            return updated_node.with_changes(
+                value=LineBreakTransformer.basic_parenthesize(
+                    return_value, return_whitespace
+                ),
+                whitespace_after_return=libcst.SimpleWhitespace(value=" "),
+            )
+        return updated_node.with_changes(
+            value=LineBreakTransformer.basic_parenthesize(return_value)
+        )
 
 
 class PartialErrorSuppression(Exception):
@@ -62,24 +196,21 @@ class Errors:
 
     def __init__(self, errors: List[Dict[str, Any]]) -> None:
         self.errors: List[Dict[str, Any]] = errors
-        self.error_iterator: Iterator[
-            Tuple[str, Iterator[Dict[str, Any]]]
-            # pyre-fixme[6]: Expected `(_T) -> _SupportsLessThan` for 2nd param but got
-            #  `(error: Dict[str, typing.Any]) -> str`.
-        ] = itertools.groupby(sorted(errors, key=error_path), error_path)
-        self.length: int = len(errors)
-
-    def __iter__(self) -> Iterator[Tuple[str, Iterator[Dict[str, Any]]]]:
-        return self.error_iterator.__iter__()
-
-    def __next__(self) -> Tuple[str, Iterator[Dict[str, Any]]]:
-        return self.error_iterator.__next__()
 
     def __len__(self) -> int:
-        return self.length
+        return len(self.errors)
 
     def __eq__(self, other: "Errors") -> bool:
         return self.errors == other.errors
+
+    @property
+    def paths_to_errors(self) -> Dict[str, List[PyreError]]:
+        return {
+            path: list(errors)
+            for path, errors in itertools.groupby(
+                sorted(self.errors, key=error_path), key=error_path
+            )
+        }
 
     def suppress(
         self,
@@ -88,9 +219,9 @@ class Errors:
         truncate: bool = False,
         unsafe: bool = False,
     ) -> None:
-        unsuppressed_paths = []
+        unsuppressed_paths_and_exceptions = []
 
-        for path_to_suppress, errors in self:
+        for path_to_suppress, errors in self.paths_to_errors.items():
             LOG.info("Processing `%s`", path_to_suppress)
             try:
                 path = Path(path_to_suppress)
@@ -108,14 +239,18 @@ class Errors:
                 path.write_text(output)
             except SkippingGeneratedFileException:
                 LOG.warning(f"Skipping generated file at {path_to_suppress}")
-            except ast.UnstableAST:
-                unsuppressed_paths.append(path_to_suppress)
+            except (ast.UnstableAST, SyntaxError) as exception:
+                unsuppressed_paths_and_exceptions.append((path_to_suppress, exception))
 
-        if unsuppressed_paths:
-            paths_string = ", ".join(unsuppressed_paths)
+        if unsuppressed_paths_and_exceptions:
+            exception_messages = "\n".join(
+                f"{path} - {str(exception)}"
+                for path, exception in unsuppressed_paths_and_exceptions
+            )
             raise PartialErrorSuppression(
-                f"Could not fully suppress errors in: {paths_string}",
-                unsuppressed_paths,
+                "Could not fully suppress errors due to the "
+                f"following exceptions: {exception_messages}",
+                [path for path, _ in unsuppressed_paths_and_exceptions],
             )
 
 
@@ -213,6 +348,30 @@ def _remove_comment_preamble(lines: List[str]) -> None:
             return
 
 
+def _add_error_to_line_break_block(lines: List[str], errors: List[List[str]]) -> None:
+    # Gather unbroken lines.
+    line_break_block = [lines.pop() for _ in range(0, len(errors))]
+    line_break_block.reverse()
+
+    # Transform line break block to use parenthesis.
+    indent = len(line_break_block[0]) - len(line_break_block[0].lstrip())
+    line_break_block = [line[indent:] for line in line_break_block]
+    statement = "\n".join(line_break_block)
+    transformed_statement = libcst.Module([]).code_for_node(
+        cast(
+            libcst.CSTNode,
+            libcst.parse_statement(statement).visit(LineBreakTransformer()),
+        )
+    )
+    transformed_lines = transformed_statement.split("\n")
+    transformed_lines = [" " * indent + line for line in transformed_lines]
+
+    # Add to lines.
+    for line, comment in zip(transformed_lines, errors):
+        lines.extend(comment)
+        lines.append(line)
+
+
 def _split_across_lines(
     comment: str, indent: int, max_line_length: Optional[int]
 ) -> List[str]:
@@ -247,6 +406,42 @@ class SkippingGeneratedFileException(Exception):
     pass
 
 
+def _get_unused_ignore_codes(errors: List[Dict[str, str]]) -> List[int]:
+    unused_ignore_codes: List[int] = []
+    ignore_errors = [error for error in errors if error["code"] == "0"]
+    for error in ignore_errors:
+        match = re.search(
+            r"The `pyre-ignore\[(.*?)\]` or `pyre-fixme\[.*?\]`", error["description"]
+        )
+        if match:
+            unused_ignore_codes.extend(
+                [int(code.strip()) for code in match.group(1).split(",")]
+            )
+    unused_ignore_codes.sort()
+    return unused_ignore_codes
+
+
+def _remove_unused_ignores(line: str, errors: List[Dict[str, str]]) -> str:
+    unused_ignore_codes = _get_unused_ignore_codes(errors)
+    match = re.search(r"pyre-(ignore|fixme)\[([0-9, ]*)\]", line)
+    stripped_line = re.sub(r"# pyre-(ignore|fixme).*$", "", line).rstrip()
+    if not match:
+        return stripped_line
+
+    # One or more codes are specified in the ignore comment.
+    # Remove only the codes that are erroring as unused.
+    ignore_codes_string = match.group(2)
+    ignore_codes = [int(code.strip()) for code in ignore_codes_string.split(",")]
+    remaining_ignore_codes = set(ignore_codes) - set(unused_ignore_codes)
+    if len(remaining_ignore_codes) == 0 or len(unused_ignore_codes) == 0:
+        return stripped_line
+    else:
+        return line.replace(
+            ignore_codes_string,
+            ", ".join([str(code) for code in remaining_ignore_codes]),
+        )
+
+
 def _suppress_errors(
     input: str,
     errors: Dict[int, List[Dict[str, str]]],
@@ -263,6 +458,7 @@ def _suppress_errors(
     # Replace lines in file.
     new_lines = []
     removing_pyre_comments = False
+    line_break_block_errors: List[List[str]] = []
     for index, line in enumerate(lines):
         if removing_pyre_comments:
             stripped = line.lstrip()
@@ -273,13 +469,9 @@ def _suppress_errors(
             else:
                 removing_pyre_comments = False
         number = index + 1
-        if number not in errors:
-            new_lines.append(line)
-            continue
-
-        if any(error["code"] == "0" for error in errors[number]):
-            # Handle unused ignores.
-            replacement = re.sub(r"# pyre-(ignore|fixme).*$", "", line).rstrip()
+        relevant_errors = errors[number] if number in errors else []
+        if any(error["code"] == "0" for error in relevant_errors):
+            replacement = _remove_unused_ignores(line, relevant_errors)
             if replacement == "":
                 removing_pyre_comments = True
                 _remove_comment_preamble(new_lines)
@@ -287,35 +479,36 @@ def _suppress_errors(
             else:
                 line = replacement
 
-        comments = []
-        for error in errors[number]:
-            if error["code"] == "0":
-                continue
-            indent = len(line) - len(line.lstrip(" "))
-            description = custom_comment if custom_comment else error["description"]
-            comment = "{}# pyre-fixme[{}]: {}".format(
-                " " * indent, error["code"], description
+        indent = len(line) - len(line.lstrip(" "))
+        comments = [
+            line
+            for error in relevant_errors
+            for line in _error_to_fixme_comment_lines(
+                error, indent, truncate, max_line_length, custom_comment
             )
+        ]
 
-            if not max_line_length or len(comment) <= max_line_length:
-                comments.append(comment)
-            else:
-                truncated_comment = comment[: (max_line_length - 3)] + "..."
-                split_comment_lines = _split_across_lines(
-                    comment, indent, max_line_length
-                )
-                if truncate or len(split_comment_lines) > MAX_LINES_PER_FIXME:
-                    comments.append(truncated_comment)
-                else:
-                    comments.extend(split_comment_lines)
+        if len(line_break_block_errors) > 0 and not line.endswith("\\"):
+            # Handle error suppressions in line break block
+            line_break_block_errors.append(comments)
+            new_lines.append(line)
+            if sum(len(errors) for errors in line_break_block_errors) > 0:
+                _add_error_to_line_break_block(new_lines, line_break_block_errors)
+            line_break_block_errors = []
+            continue
 
-        LOG.info(
-            "Adding comment%s on line %d: %s",
-            "s" if len(comments) > 1 else "",
-            number,
-            " \n".join(comments),
-        )
-        new_lines.extend(comments)
+        if line.endswith("\\"):
+            line_break_block_errors.append(comments)
+            comments = []
+
+        if len(comments) > 0:
+            LOG.info(
+                "Adding comment%s on line %d: %s",
+                "s" if len(comments) > 1 else "",
+                number,
+                " \n".join(comments),
+            )
+            new_lines.extend(comments)
         new_lines.append(line)
     output = "\n".join(new_lines)
     if not unsafe:
@@ -323,8 +516,34 @@ def _suppress_errors(
     return output
 
 
+def _error_to_fixme_comment_lines(
+    error: Dict[str, Any],
+    indent: int,
+    truncate: bool,
+    max_line_length: Optional[int],
+    custom_comment: Optional[str],
+) -> List[str]:
+    if error["code"] == "0":
+        return []
+
+    description = custom_comment if custom_comment else error["description"]
+    comment = "{}# pyre-fixme[{}]: {}".format(" " * indent, error["code"], description)
+
+    if not max_line_length:
+        return [comment]
+
+    truncated_comment = comment[: (max_line_length - 3)] + "..."
+    split_comment_lines = _split_across_lines(comment, indent, max_line_length)
+    should_truncate = (
+        truncate
+        or len(split_comment_lines) > MAX_LINES_PER_FIXME
+        or any(len(line) > max_line_length for line in split_comment_lines)
+    )
+    return [truncated_comment] if should_truncate else split_comment_lines
+
+
 def _build_error_map(
-    errors: Iterator[Dict[str, Any]]
+    errors: Iterable[Dict[str, Any]]
 ) -> Dict[int, List[Dict[str, str]]]:
     error_map = defaultdict(lambda: [])
     for error in errors:

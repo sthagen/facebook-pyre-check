@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open OUnit2
@@ -125,6 +127,7 @@ let test_create _ =
   (* Check renaming. *)
   assert_create "typing.List[int]" (Type.list Type.integer);
   assert_create "typing.List" (Primitive "list");
+  assert_create "typing.Set" (Primitive "set");
   assert_create
     "typing.DefaultDict[int, str]"
     (Type.parametric "collections.defaultdict" ![Type.integer; Type.string]);
@@ -395,6 +398,7 @@ let test_create _ =
          overloads = [];
        });
   assert_create "typing.Callable[int]" (Type.Callable.create ~annotation:Type.Top ());
+  assert_create "typing.Callable[int, str]" (Type.Callable.create ~annotation:Type.Top ());
   assert_create "function" (Type.Callable.create ~annotation:Type.Any ());
   assert_create
     "typing.Callable[..., function]"
@@ -467,6 +471,7 @@ let test_create _ =
        ]);
   assert_create "typing_extensions.Literal[ONE]" Type.Top;
   assert_create "typing_extensions.Literal[None]" Type.none;
+  assert_create "_NotImplementedType" Type.Any;
   ()
 
 
@@ -500,40 +505,28 @@ let test_expression _ =
   assert_expression (Type.Primitive "...") "...";
   assert_expression (Type.Primitive "foo.bar") "foo.bar";
   assert_expression Type.Top "$unknown";
-  assert_expression
-    (Type.Parametric { name = "foo.bar"; parameters = ![Type.Primitive "baz"] })
-    "foo.bar.__getitem__(baz)";
+  assert_expression (Type.parametric "foo.bar" ![Type.Primitive "baz"]) "foo.bar.__getitem__(baz)";
   assert_expression
     (Type.Tuple (Type.Bounded (Type.OrderedTypes.Concrete [Type.integer; Type.string])))
     "typing.Tuple.__getitem__((int, str))";
   assert_expression
     (Type.Tuple (Type.Unbounded Type.integer))
     "typing.Tuple.__getitem__((int, ...))";
+  assert_expression (Type.parametric "list" ![Type.integer]) "typing.List.__getitem__(int)";
   assert_expression
-    (Type.Parametric { name = "list"; parameters = ![Type.integer] })
-    "typing.List.__getitem__(int)";
-  assert_expression
-    (Type.Parametric
-       {
-         name = "foo.Variadic";
-         parameters =
-           [Group (Concatenation (create_concatenation (Type.Variable.Variadic.List.create "Ts")))];
-       })
+    (Type.parametric
+       "foo.Variadic"
+       [Group (Concatenation (create_concatenation (Type.Variable.Variadic.List.create "Ts")))])
     "foo.Variadic.__getitem__(Ts)";
+  assert_expression (Type.parametric "foo.Variadic" [Group Any]) "foo.Variadic.__getitem__(...)";
   assert_expression
-    (Type.Parametric { name = "foo.Variadic"; parameters = [Group Any] })
-    "foo.Variadic.__getitem__(...)";
-  assert_expression
-    (Type.Parametric
-       {
-         name = "foo.Variadic";
-         parameters =
-           [
-             Group
-               (Concatenation
-                  (create_concatenation ~mappers:["Foo"] (Type.Variable.Variadic.List.create "Ts")));
-           ];
-       })
+    (Type.parametric
+       "foo.Variadic"
+       [
+         Group
+           (Concatenation
+              (create_concatenation ~mappers:["Foo"] (Type.Variable.Variadic.List.create "Ts")));
+       ])
     "foo.Variadic.__getitem__(pyre_extensions.type_variable_operators.Map.__getitem__((Foo, Ts)))";
 
   (* Callables. *)
@@ -597,16 +590,13 @@ let test_expression _ =
        ())
     ("typing.Callable.__getitem__(([Named($0, int), Variable(int), " ^ "Keywords(str)], int))");
   assert_expression
-    (Type.Parametric
-       {
-         name = "G";
-         parameters =
-           [
-             CallableParameters
-               (Type.Variable.Variadic.Parameters.self_reference
-                  (Type.Variable.Variadic.Parameters.create "TParams"));
-           ];
-       })
+    (Type.parametric
+       "G"
+       [
+         CallableParameters
+           (Type.Variable.Variadic.Parameters.self_reference
+              (Type.Variable.Variadic.Parameters.create "TParams"));
+       ])
     "G[TParams]";
   assert_expression
     (Type.Literal
@@ -990,10 +980,9 @@ let test_is_not_instantiated _ =
 
 
 let test_is_meta _ =
-  assert_true (Type.is_meta (Type.Parametric { name = "type"; parameters = ![Type.integer] }));
+  assert_true (Type.is_meta (Type.parametric "type" ![Type.integer]));
   assert_false (Type.is_meta Type.integer);
-  assert_false
-    (Type.is_meta (Type.Parametric { name = "typing.Type"; parameters = ![Type.integer] }))
+  assert_false (Type.is_meta (Type.parametric "typing.Type" ![Type.integer]))
 
 
 let test_is_none _ =
@@ -1014,13 +1003,9 @@ let test_contains_unknown _ =
   assert_true (Type.contains_unknown (Type.optional Type.Top));
   assert_false (Type.contains_unknown (Type.optional Type.integer));
   assert_true
-    (Type.contains_unknown
-       (Type.optional (Type.Parametric { name = "foo"; parameters = ![Type.integer; Type.Top] })));
-  assert_true
-    (Type.contains_unknown
-       (Type.Parametric { name = "foo"; parameters = ![Type.integer; Type.Top] }));
-  assert_false
-    (Type.contains_unknown (Type.Parametric { name = "foo"; parameters = ![Type.integer] }));
+    (Type.contains_unknown (Type.optional (Type.parametric "foo" ![Type.integer; Type.Top])));
+  assert_true (Type.contains_unknown (Type.parametric "foo" ![Type.integer; Type.Top]));
+  assert_false (Type.contains_unknown (Type.parametric "foo" ![Type.integer]));
   assert_false (Type.contains_unknown Type.integer);
   assert_true (Type.contains_unknown Type.Top);
   assert_true (Type.contains_unknown (Type.Union [Type.integer; Type.Top]));
@@ -1082,13 +1067,10 @@ let test_class_name _ =
 let test_optional_value _ =
   assert_equal
     (Option.value_exn
-       (Type.optional_value
-          (Type.optional (Type.Parametric { name = "foo"; parameters = ![Type.integer; Type.Top] }))))
-    (Type.Parametric { name = "foo"; parameters = ![Type.integer; Type.Top] });
+       (Type.optional_value (Type.optional (Type.parametric "foo" ![Type.integer; Type.Top]))))
+    (Type.parametric "foo" ![Type.integer; Type.Top]);
   assert_true
-    (Option.is_none
-       (Type.optional_value
-          (Type.Parametric { name = "foo"; parameters = ![Type.integer; Type.Top] })))
+    (Option.is_none (Type.optional_value (Type.parametric "foo" ![Type.integer; Type.Top])))
 
 
 let test_async_generator_value _ =
@@ -1096,10 +1078,8 @@ let test_async_generator_value _ =
     ~printer:(Format.asprintf "%a" Type.pp)
     (Option.value_exn
        (Type.async_generator_value
-          (Type.Parametric
-             { name = "typing.AsyncGenerator"; parameters = ![Type.integer; Type.NoneType] })))
-    (Type.Parametric
-       { name = "typing.Generator"; parameters = ![Type.integer; Type.NoneType; Type.NoneType] })
+          (Type.parametric "typing.AsyncGenerator" ![Type.integer; Type.NoneType])))
+    (Type.parametric "typing.Generator" ![Type.integer; Type.NoneType; Type.NoneType])
 
 
 let test_dequalify _ =
@@ -1363,8 +1343,7 @@ let test_visit _ =
       let new_state, transformed_annotation =
         match annotation with
         | Type.Primitive primitive -> state ^ primitive, annotation
-        | Type.Parametric { name; parameters } ->
-            "", Type.Parametric { name = name ^ state; parameters }
+        | Type.Parametric { name; parameters } -> "", Type.parametric (name ^ state) parameters
         | _ -> state, annotation
       in
       { Type.Transform.transformed_annotation; new_state }
@@ -1389,7 +1368,7 @@ let test_visit _ =
       let new_state, transformed_annotation =
         match annotation with
         | Type.Primitive primitive -> "", Type.Primitive (state ^ primitive)
-        | Type.Parametric { name; parameters } -> state ^ name, Type.Parametric { name; parameters }
+        | Type.Parametric { name; parameters } -> state ^ name, Type.parametric name parameters
         | _ -> state, annotation
       in
       { Type.Transform.transformed_annotation; new_state }
@@ -1990,16 +1969,8 @@ let test_replace_all _ =
        (Bounded
           (Concrete
              [
-               Parametric
-                 {
-                   name = "Foo";
-                   parameters = ![Type.Parametric { name = "Bar"; parameters = ![Type.integer] }];
-                 };
-               Parametric
-                 {
-                   name = "Foo";
-                   parameters = ![Type.Parametric { name = "Bar"; parameters = ![Type.string] }];
-                 };
+               Parametric { name = "Foo"; parameters = ![Type.parametric "Bar" ![Type.integer]] };
+               Parametric { name = "Foo"; parameters = ![Type.parametric "Bar" ![Type.string]] };
              ])));
   assert_equal
     (Type.Variable.GlobalTransforms.ListVariadic.replace_all
@@ -2013,25 +1984,19 @@ let test_replace_all _ =
        (fun _ ->
          Some
            (Type.Callable.Defined [Named { name = "p"; annotation = Type.integer; default = false }]))
-       (Type.Parametric
-          {
-            name = "G";
-            parameters =
-              [
-                CallableParameters
-                  (Type.Variable.Variadic.Parameters.self_reference
-                     (Type.Variable.Variadic.Parameters.create "TParams"));
-              ];
-          }))
-    (Type.Parametric
-       {
-         name = "G";
-         parameters =
-           [
-             CallableParameters
-               (Defined [Named { name = "p"; annotation = Type.integer; default = false }]);
-           ];
-       });
+       (Type.parametric
+          "G"
+          [
+            CallableParameters
+              (Type.Variable.Variadic.Parameters.self_reference
+                 (Type.Variable.Variadic.Parameters.create "TParams"));
+          ]))
+    (Type.parametric
+       "G"
+       [
+         CallableParameters
+           (Defined [Named { name = "p"; annotation = Type.integer; default = false }]);
+       ]);
   ()
 
 
@@ -2084,16 +2049,13 @@ let test_collect_all _ =
     [Type.Variable.Variadic.List.create "Ts"];
   assert_equal
     (Type.Variable.GlobalTransforms.ParameterVariadic.collect_all
-       (Type.Parametric
-          {
-            name = "G";
-            parameters =
-              [
-                CallableParameters
-                  (Type.Variable.Variadic.Parameters.self_reference
-                     (Type.Variable.Variadic.Parameters.create "TParams"));
-              ];
-          }))
+       (Type.parametric
+          "G"
+          [
+            CallableParameters
+              (Type.Variable.Variadic.Parameters.self_reference
+                 (Type.Variable.Variadic.Parameters.create "TParams"));
+          ]))
     [Type.Variable.Variadic.Parameters.create "TParams"];
   ()
 
@@ -2134,26 +2096,18 @@ let test_middle_singleton_replace_variable _ =
   assert_replaces_into
     ~middle:(Type.OrderedTypes.Concatenation.Middle.create ~mappers:["Foo"; "Bar"] ~variable)
     ~replacement:Type.integer
-    (Type.Parametric
-       {
-         name = "Foo";
-         parameters = [Single (Parametric { name = "Bar"; parameters = [Single Type.integer] })];
-       });
+    (Type.parametric
+       "Foo"
+       [Single (Parametric { name = "Bar"; parameters = [Single Type.integer] })]);
 
   (* This approach is used to solve concretes against maps *)
   let unary_variable = Type.Variable.Unary.create "T" in
   assert_replaces_into
     ~middle:(Type.OrderedTypes.Concatenation.Middle.create ~mappers:["Foo"; "Bar"] ~variable)
     ~replacement:(Type.Variable unary_variable)
-    (Type.Parametric
-       {
-         name = "Foo";
-         parameters =
-           [
-             Single
-               (Parametric { name = "Bar"; parameters = [Single (Type.Variable unary_variable)] });
-           ];
-       });
+    (Type.parametric
+       "Foo"
+       [Single (Parametric { name = "Bar"; parameters = [Single (Type.Variable unary_variable)] })]);
   ()
 
 
@@ -2230,11 +2184,7 @@ let test_concatenation_operator_replace_variable _ =
                 parameters =
                   [Single (Parametric { name = "Bar"; parameters = [Single Type.integer] })];
               };
-            Parametric
-              {
-                name = "Foo";
-                parameters = ![Type.Parametric { name = "Bar"; parameters = ![Type.string] }];
-              };
+            Parametric { name = "Foo"; parameters = ![Type.parametric "Bar" ![Type.string]] };
           ]));
   assert_replaces_into
     ~middle:(Type.OrderedTypes.Concatenation.Middle.create ~mappers:["Foo"] ~variable)
@@ -2289,11 +2239,11 @@ let test_infer_transform _ =
     assert_equal (Type.infer_transform annotation) expected
   in
   assert_transform
-    ~annotation:(Type.Parametric { name = "_PathLike"; parameters = ![Type.Primitive "string"] })
-    ~expected:(Type.Parametric { name = "PathLike"; parameters = ![Type.Primitive "string"] });
+    ~annotation:(Type.parametric "_PathLike" ![Type.Primitive "string"])
+    ~expected:(Type.parametric "PathLike" ![Type.Primitive "string"]);
   assert_transform
-    ~annotation:(Type.Parametric { name = "typing.Dict"; parameters = ![Type.Bottom; Type.Bottom] })
-    ~expected:(Type.Parametric { name = "dict"; parameters = ![Type.Any; Type.Any] });
+    ~annotation:(Type.parametric "typing.Dict" ![Type.Bottom; Type.Bottom])
+    ~expected:(Type.parametric "dict" ![Type.Any; Type.Any]);
   assert_transform
     ~annotation:
       (Type.Tuple
@@ -2307,20 +2257,15 @@ let test_infer_transform _ =
       (Type.Tuple (Type.Bounded (Concrete [Type.Primitive "string"; Type.Primitive "string"])));
   assert_transform
     ~annotation:
-      (Type.Parametric
-         {
-           name = "Union";
-           parameters = ![Type.Primitive "string"; Type.Primitive "string"; Type.Primitive "int"];
-         })
+      (Type.parametric
+         "Union"
+         ![Type.Primitive "string"; Type.Primitive "string"; Type.Primitive "int"])
     ~expected:(Type.Union [Type.Primitive "int"; Type.Primitive "string"]);
   assert_transform
-    ~annotation:
-      (Type.Parametric
-         { name = "Union"; parameters = ![Type.Primitive "string"; Type.Primitive "string"] })
+    ~annotation:(Type.parametric "Union" ![Type.Primitive "string"; Type.Primitive "string"])
     ~expected:(Type.Primitive "string");
   assert_transform
-    ~annotation:
-      (Type.Parametric { name = "Union"; parameters = ![Type.NoneType; Type.Primitive "string"] })
+    ~annotation:(Type.parametric "Union" ![Type.NoneType; Type.Primitive "string"])
     ~expected:(Type.optional (Type.Primitive "string"))
 
 
@@ -2362,10 +2307,28 @@ let test_is_unit_test _ =
   ()
 
 
+let polynomial_show_normal =
+  Type.Polynomial.show_normal
+    ~show_variable:Type.polynomial_show_variable
+    ~show_variadic:Type.polynomial_show_variadic
+
+
+let polynomial_add = Type.Polynomial.add ~compare_t:Type.compare
+
+let polynomial_subtract = Type.Polynomial.subtract ~compare_t:Type.compare
+
+let polynomial_multiply = Type.Polynomial.multiply ~compare_t:Type.compare
+
+let polynomial_divide = Type.Polynomial.divide ~compare_t:Type.compare
+
+let polynomial_create_from_variables_list =
+  Type.Polynomial.create_from_variables_list ~compare_t:Type.compare
+
+
 let test_polynomial_create_from_list _ =
   let assert_create given expected =
-    let given = Type.Polynomial.create_from_list given in
-    assert_equal ~printer:Fn.id expected (Type.Polynomial.show_normal given)
+    let given = polynomial_create_from_variables_list given in
+    assert_equal ~printer:Fn.id expected (polynomial_show_normal given)
   in
   let x = Type.Variable.Unary.create "x" in
   let y = Type.Variable.Unary.create "y" in
@@ -2391,33 +2354,28 @@ let test_polynomial_create_from_list _ =
 
 let test_add_polynomials _ =
   let assert_add given1 given2 expected =
-    let given1 = Type.Polynomial.create_from_list given1 in
-    let given2 = Type.Polynomial.create_from_list given2 in
-    assert_equal
-      ~printer:Fn.id
-      expected
-      (Type.Polynomial.show_normal (Type.Polynomial.add given1 given2));
-    assert_equal
-      ~printer:Fn.id
-      expected
-      (Type.Polynomial.show_normal (Type.Polynomial.add given2 given1))
+    let given1 = polynomial_create_from_variables_list given1 in
+    let given2 = polynomial_create_from_variables_list given2 in
+    assert_equal ~printer:Fn.id expected (polynomial_show_normal (polynomial_add given1 given2));
+    assert_equal ~printer:Fn.id expected (polynomial_show_normal (polynomial_add given2 given1))
   in
   let x = Type.Variable.Unary.create "x" in
   let y = Type.Variable.Unary.create "y" in
   let z = Type.Variable.Unary.create "z" in
   assert_add [3, []] [2, []] "5";
+  assert_add [3, []] [-3, []; 2, [x, 2]] "2x^2";
   assert_add [1, []; 3, [x, 1]; 2, [y, 1]] [2, []; 1, [x, 1]; 1, [z, 1]] "3 + 4x + 2y + z";
   ()
 
 
 let test_subtract_polynomials _ =
   let assert_subtract given1 given2 expected =
-    let given1 = Type.Polynomial.create_from_list given1 in
-    let given2 = Type.Polynomial.create_from_list given2 in
+    let given1 = polynomial_create_from_variables_list given1 in
+    let given2 = polynomial_create_from_variables_list given2 in
     assert_equal
       ~printer:Fn.id
       expected
-      (Type.Polynomial.show_normal (Type.Polynomial.subtract given1 given2))
+      (polynomial_show_normal (polynomial_subtract given1 given2))
   in
   let x = Type.Variable.Unary.create "x" in
   let y = Type.Variable.Unary.create "y" in
@@ -2433,16 +2391,16 @@ let test_subtract_polynomials _ =
 
 let test_multiply_polynomial _ =
   let assert_multiply given1 given2 expected =
-    let given1 = Type.Polynomial.create_from_list given1 in
-    let given2 = Type.Polynomial.create_from_list given2 in
+    let given1 = polynomial_create_from_variables_list given1 in
+    let given2 = polynomial_create_from_variables_list given2 in
     assert_equal
       ~printer:Fn.id
       expected
-      (Type.Polynomial.show_normal (Type.Polynomial.multiply given1 given2));
+      (polynomial_show_normal (polynomial_multiply given1 given2));
     assert_equal
       ~printer:Fn.id
       expected
-      (Type.Polynomial.show_normal (Type.Polynomial.multiply given2 given1))
+      (polynomial_show_normal (polynomial_multiply given2 given1))
   in
   let x = Type.Variable.Unary.create "x" in
   let y = Type.Variable.Unary.create "y" in
@@ -2455,6 +2413,124 @@ let test_multiply_polynomial _ =
   assert_multiply [2, [y, 1]] [1, [x, 1; z, 1]] "2xyz";
   assert_multiply [3, []; 1, [x, 1]] [1, [y, 1]] "3y + xy";
   assert_multiply [1, [x, 1]; 3, [z, 1]] [2, []; 1, [y, 2]] "2x + 6z + xy^2 + 3y^2z";
+  ()
+
+
+let test_divide_polynomial _ =
+  let assert_divide given1 given2 expected =
+    let given1 = polynomial_create_from_variables_list given1 in
+    let given2 = polynomial_create_from_variables_list given2 in
+    assert_equal ~printer:Fn.id expected (polynomial_show_normal (polynomial_divide given1 given2))
+  in
+  let x = Type.Variable.Unary.create "x" in
+  let y = Type.Variable.Unary.create "y" in
+  let z = Type.Variable.Unary.create "z" in
+  (*Division by zero is checked before calling this function*)
+  assert_divide [1, [x, 1]] [] "0";
+  assert_divide [2, []] [2, []] "1";
+  assert_divide [4, []] [2, []] "2";
+  assert_divide [-3, []] [2, []] "-2";
+  assert_divide [2, [y, 1]] [1, [z, 1]] "(2y//z)";
+  assert_divide [2, [x, 1]; 1, [y, 1]] [1, [y, 1]; 1, [z, 1]] "((2x + y)//(y + z))";
+  assert_divide [2, [y, 1]] [2, [x, 1]] "(y//x)";
+  assert_divide [2, [y, 1; z, 1]] [1, [x, 1; z, 1]] "(2y//x)";
+  assert_divide [2, [y, 1; z, 2]] [1, [z, 1]] "2yz";
+  (*2x^3y + 3x^2z // 4x^2y*)
+  assert_divide [2, [x, 3; y, 1]; 2, [x, 2; z, 1]] [4, [x, 2; y, 1]] "((z + xy)//2y)";
+  ()
+
+
+let test_parameter_create _ =
+  assert_equal
+    (Type.Callable.Parameter.create
+       [{ Type.Callable.Parameter.name = "__"; annotation = Type.integer; default = false }])
+    [
+      Type.Callable.Parameter.PositionalOnly
+        { index = 0; annotation = Type.integer; default = false };
+    ]
+
+
+let test_add_polynomials_with_variadics _ =
+  let assert_add given1 given2 expected =
+    assert_equal ~printer:Fn.id expected (polynomial_show_normal (polynomial_add given1 given2));
+    assert_equal ~printer:Fn.id expected (polynomial_show_normal (polynomial_add given2 given1))
+  in
+  let x = Type.Variable.Unary.create "x" in
+  let ts =
+    Type.Variable.Variadic.List.create "Ts"
+    |> Type.OrderedTypes.Concatenation.Middle.create_bare
+    |> Type.OrderedTypes.Concatenation.create
+  in
+  let shape =
+    Type.Variable.Variadic.List.create "Shape"
+    |> Type.OrderedTypes.Concatenation.Middle.create_bare
+    |> Type.OrderedTypes.Concatenation.create
+  in
+  let polynomial_3_2x = polynomial_create_from_variables_list [3, []; 2, [x, 1]] in
+  let polynomial_ts = Type.Polynomial.create_from_variadic ts ~operation:Type.Monomial.Length in
+  let polynomial_shape =
+    Type.Polynomial.create_from_variadic shape ~operation:Type.Monomial.Product
+  in
+  assert_add
+    (polynomial_add polynomial_3_2x polynomial_ts)
+    (polynomial_add polynomial_ts polynomial_shape)
+    "3 + 2x + 2Length[Ts] + Product[Shape]";
+  ()
+
+
+let test_subtract_polynomials_with_variadics _ =
+  let assert_subtract given1 given2 expected =
+    assert_equal
+      ~printer:Fn.id
+      expected
+      (polynomial_show_normal (polynomial_subtract given1 given2))
+  in
+  let x = Type.Variable.Unary.create "x" in
+  let ts =
+    Type.Variable.Variadic.List.create "Ts"
+    |> Type.OrderedTypes.Concatenation.Middle.create_bare
+    |> Type.OrderedTypes.Concatenation.create
+  in
+  let shape =
+    Type.Variable.Variadic.List.create "Shape"
+    |> Type.OrderedTypes.Concatenation.Middle.create_bare
+    |> Type.OrderedTypes.Concatenation.create
+  in
+  let polynomial_3_2x = polynomial_create_from_variables_list [3, []; 2, [x, 1]] in
+  let polynomial_ts = Type.Polynomial.create_from_variadic ts ~operation:Type.Monomial.Length in
+  let polynomial_shape =
+    Type.Polynomial.create_from_variadic shape ~operation:Type.Monomial.Product
+  in
+  assert_subtract
+    (polynomial_add polynomial_3_2x polynomial_ts)
+    (polynomial_add polynomial_ts polynomial_shape)
+    "3 + 2x + -Product[Shape]";
+  ()
+
+
+let test_multiply_polynomials_with_variadics _ =
+  let assert_multiply given1 given2 expected =
+    assert_equal
+      ~printer:Fn.id
+      expected
+      (polynomial_show_normal (polynomial_multiply given1 given2));
+    assert_equal
+      ~printer:Fn.id
+      expected
+      (polynomial_show_normal (polynomial_multiply given2 given1))
+  in
+  let x = Type.Variable.Unary.create "x" in
+  let ts =
+    Type.Variable.Variadic.List.create "Ts"
+    |> Type.OrderedTypes.Concatenation.Middle.create_bare
+    |> Type.OrderedTypes.Concatenation.create
+  in
+  let polynomial_3_2x = polynomial_create_from_variables_list [3, []; 2, [x, 1]] in
+  let polynomial_ts = Type.Polynomial.create_from_variadic ts ~operation:Type.Monomial.Length in
+  assert_multiply
+    (polynomial_add polynomial_3_2x polynomial_ts)
+    polynomial_ts
+    "3Length[Ts] + 2xLength[Ts] + Length[Ts]^2";
   ()
 
 
@@ -2514,6 +2590,10 @@ let () =
          "add_polynomials" >:: test_add_polynomials;
          "subtract_polynomials" >:: test_subtract_polynomials;
          "multiply_polynomial" >:: test_multiply_polynomial;
+         "divide_polynomial" >:: test_divide_polynomial;
+         "add_polynomials_with_variadics" >:: test_add_polynomials_with_variadics;
+         "subtract_polynomials_with_variadics" >:: test_subtract_polynomials_with_variadics;
+         "multiply_polynomials_with_variadics" >:: test_multiply_polynomials_with_variadics;
        ]
   |> Test.run;
   "primitive" >::: ["is unit test" >:: test_is_unit_test] |> Test.run;
@@ -2522,5 +2602,6 @@ let () =
          "from_overloads" >:: test_from_overloads;
          "with_return_annotation" >:: test_with_return_annotation;
          "overload_parameters" >:: test_overload_parameters;
+         "parameter_create" >:: test_parameter_create;
        ]
   |> Test.run

@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Analysis
@@ -48,6 +50,15 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
       Log.log ~section:`Taint format
 
 
+  let add_first_index index indices =
+    if Features.FirstIndexSet.is_bottom indices then
+      Features.to_first_name index
+      >>| Features.FirstIndexSet.singleton
+      |> Option.value ~default:Features.FirstIndexSet.bottom
+    else
+      indices
+
+
   (* This is where we can observe access paths reaching into LocalReturn and record the extraneous
      paths for more precise tito. *)
   let initial_taint =
@@ -84,10 +95,31 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
 
   let read_tree = BackwardState.Tree.read ~transform_non_leaves
 
-  let is_super expression =
+  let is_super ~resolution expression =
     match expression.Node.value with
     | Expression.Call { callee = { Node.value = Name (Name.Identifier "super"); _ }; _ } -> true
-    | _ -> false
+    | _ ->
+        (* We also support explicit calls to superclass constructors. *)
+        let annotation = Resolution.resolve_expression_to_type resolution expression in
+        if Type.is_meta annotation then
+          let type_parameter = Type.single_parameter annotation in
+          match type_parameter with
+          | Type.Parametric { name = parent_name; _ }
+          | Type.Primitive parent_name ->
+              let class_name =
+                Reference.prefix FunctionContext.definition.Node.value.signature.name.Node.value
+                >>| Reference.show
+              in
+              class_name
+              >>| (fun class_name ->
+                    GlobalResolution.is_transitive_successor
+                      (Resolution.global_resolution resolution)
+                      ~predecessor:class_name
+                      ~successor:parent_name)
+              |> Option.value ~default:false
+          | _ -> false
+        else
+          false
 
 
   module rec FixpointState : FixpointState = struct
@@ -146,7 +178,7 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
                 ~init:BackwardState.bottom
           | None -> BackwardState.bottom
         in
-        let taint_model = Model.get_callsite_model ~call_target ~arguments in
+        let taint_model = Model.get_callsite_model ~resolution ~call_target ~arguments in
         let { TaintResult.backward; _ } = taint_model.model in
         let sink_taint = BackwardState.join backward.sink_taint triggered_taint in
         let sink_argument_matches =
@@ -313,6 +345,22 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
         in
         List.fold ~f:(analyze_argument ~obscure_taint) combined_matches ~init:state
       in
+      let call_targets =
+        match call_targets with
+        | [] when Configuration.is_missing_flow_analysis Type ->
+            (* Create a symbolic callable, using the location as the name *)
+            let location_string =
+              Location.WithModule.show
+                (Location.with_module ~qualifier:FunctionContext.qualifier location)
+            in
+            let callable_name = Reference.create location_string in
+            let callable = Interprocedural.Callable.create_function callable_name in
+            let callable = (callable :> Interprocedural.Callable.t) in
+            if not (Interprocedural.Fixpoint.has_model callable) then
+              Model.register_unknown_callee_model callable;
+            [callable, None]
+        | _ -> call_targets
+      in
       match call_targets with
       | [] ->
           (* If we don't have a call target: propagate argument taint. *)
@@ -442,9 +490,7 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
     and analyze_call ~resolution location ~taint ~state ~callee ~arguments =
       let analyze_regular_call ~taint state ~callee ~arguments =
         let ({ Call.callee; arguments } as call_expression) =
-          Interprocedural.CallResolution.redirect_special_calls
-            ~resolution
-            { Call.callee; arguments }
+          Interprocedural.CallGraph.redirect_special_calls ~resolution { Call.callee; arguments }
         in
         match AccessPath.get_global ~resolution callee, Node.value callee with
         | _, Name (Name.Identifier "reveal_taint") -> (
@@ -493,29 +539,54 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
                   ~taint
                   ~constructor_targets )
         | None, Name (Name.Attribute { base = receiver; attribute; _ }) ->
-            let taint =
-              (* Specially handle super.__init__ calls in constructors for tito *)
-              if
-                FunctionContext.is_constructor ()
-                && String.equal attribute "__init__"
-                && is_super receiver
-              then
-                BackwardState.Tree.create_leaf Domains.local_return_taint
-                |> BackwardState.Tree.join taint
-              else
-                taint
-            in
-            let indirect_targets, receiver =
+            let indirect_targets, receiver_option =
               Interprocedural.CallResolution.get_indirect_targets
                 ~resolution
                 ~receiver
                 ~method_name:attribute
             in
+            let indirect_targets, taint =
+              (* Specially handle super.__init__ calls and explicit calls to superclass' `__init__`
+                 in constructors for tito. *)
+              if
+                FunctionContext.is_constructor ()
+                && String.equal attribute "__init__"
+                && is_super ~resolution receiver
+              then
+                (* If the super call is `object.__init__`, this is likely due to a lack of type
+                   information for that constructor - we treat that case as obscure to not lose
+                   argument taint for these calls. *)
+                let indirect_targets =
+                  match indirect_targets with
+                  | [(`Method { class_name = "object"; method_name = "__init__" }, _)] -> []
+                  | _ -> indirect_targets
+                in
+                ( indirect_targets,
+                  BackwardState.Tree.create_leaf Domains.local_return_taint
+                  |> BackwardState.Tree.join taint )
+              else
+                indirect_targets, taint
+            in
+            let arguments = Option.to_list receiver_option @ arguments in
+            (* Add index breadcrumb if appropriate. *)
+            let taint =
+              if not (String.equal attribute "get") then
+                taint
+              else
+                match arguments with
+                | _ :: index :: _ ->
+                    let label = get_index index.value in
+                    BackwardState.Tree.transform
+                      BackwardTaint.first_indices
+                      Abstract.Domain.(Map (add_first_index label))
+                      taint
+                | _ -> taint
+            in
             apply_call_targets
               ~resolution
               ~call_expression:(Expression.Call call_expression)
               location
-              (Option.to_list receiver @ arguments)
+              arguments
               state
               taint
               indirect_targets
@@ -659,7 +730,13 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
        arguments = [{ Call.Argument.value = argument_value; _ }];
       } ->
           let index = AccessPath.get_index argument_value in
-          let taint = BackwardState.Tree.prepend [index] taint in
+          let taint =
+            BackwardState.Tree.prepend [index] taint
+            |> BackwardState.Tree.transform
+                 BackwardTaint.first_indices
+                 Abstract.Domain.(Map (add_first_index index))
+          in
+
           analyze_expression ~resolution ~taint ~state ~expression:base
       (* Special case x.__next__() as being a random index access (this pattern is the desugaring of
          `for element in x`). *)
@@ -793,6 +870,38 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
           | _ -> analyze_regular_call ~taint state ~callee ~arguments )
 
 
+    and analyze_string_literal ~resolution ~taint ~state ~location { StringLiteral.value; kind } =
+      match kind with
+      | StringLiteral.Format expressions ->
+          let taint =
+            let literal_string_sinks = Configuration.literal_string_sinks () in
+            if List.is_empty literal_string_sinks then
+              taint
+            else
+              List.fold
+                literal_string_sinks
+                ~f:(fun taint { Configuration.sink_kind; pattern } ->
+                  if Re2.matches pattern value then
+                    BackwardState.Tree.join
+                      taint
+                      (BackwardState.Tree.create_leaf (BackwardTaint.singleton ~location sink_kind))
+                  else
+                    taint)
+                ~init:taint
+          in
+          let taint =
+            BackwardState.Tree.transform
+              BackwardTaint.simple_feature
+              Abstract.Domain.(Add Domains.format_string_feature)
+              taint
+          in
+          List.fold
+            expressions
+            ~f:(fun state expression -> analyze_expression ~resolution ~taint ~state ~expression)
+            ~init:state
+      | _ -> state
+
+
     and analyze_expression
         ~resolution
         ~taint
@@ -806,7 +915,7 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
           analyze_expression ~resolution ~taint ~state ~expression:right
           |> fun state -> analyze_expression ~resolution ~taint ~state ~expression:left
       | ComparisonOperator ({ left; operator = _; right } as comparison) -> (
-          match ComparisonOperator.override comparison with
+          match ComparisonOperator.override ~location comparison with
           | Some override -> analyze_expression ~resolution ~taint ~state ~expression:override
           | None ->
               analyze_expression ~resolution ~taint ~state ~expression:right
@@ -858,6 +967,8 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
       | Name _ when AccessPath.is_global ~resolution { Node.location; value = expression } -> state
       | Name (Name.Identifier identifier) ->
           store_weak_taint ~root:(Root.Variable identifier) ~path:[] taint state
+      | Name (Name.Attribute { base; attribute = "__dict__"; _ }) ->
+          analyze_expression ~resolution ~taint ~state ~expression:base
       | Name (Name.Attribute { base; attribute; _ }) -> (
           match
             Interprocedural.CallResolution.resolve_property_targets
@@ -911,18 +1022,13 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
       | Starred (Starred.Twice expression) ->
           let taint = BackwardState.Tree.prepend [Abstract.TreeDomain.Label.Any] taint in
           analyze_expression ~resolution ~taint ~state ~expression
-      | String { StringLiteral.kind = StringLiteral.Format expressions; _ } ->
-          let taint =
-            BackwardState.Tree.transform
-              BackwardTaint.simple_feature
-              Abstract.Domain.(Add Domains.format_string_feature)
-              taint
-          in
-          List.fold
-            expressions
-            ~f:(fun state expression -> analyze_expression ~resolution ~taint ~state ~expression)
-            ~init:state
-      | String _ -> state
+      | String string_literal ->
+          analyze_string_literal
+            ~resolution
+            ~taint
+            ~state
+            ~location:(Location.with_module ~qualifier:FunctionContext.qualifier location)
+            string_literal
       | Ternary { target; test; alternative } ->
           let state_then = analyze_expression ~resolution ~taint ~state ~expression:target in
           let state_else = analyze_expression ~resolution ~taint ~state ~expression:alternative in
@@ -1118,6 +1224,14 @@ end
 (* Split the inferred entry state into externally visible taint_in_taint_out parts and sink_taint. *)
 let extract_tito_and_sink_models define ~is_constructor ~resolution ~existing_backward entry_taint =
   let { Define.signature = { parameters; _ }; _ } = define in
+  let {
+    Configuration.analysis_model_constraints =
+      { maximum_model_width; maximum_complex_access_path_length; _ };
+    _;
+  }
+    =
+    Configuration.get ()
+  in
   let normalized_parameters = AccessPath.Root.normalize_parameters parameters in
   (* Simplify trees by keeping only essential structure and merging details back into that. *)
   let simplify annotation tree =
@@ -1133,9 +1247,8 @@ let extract_tito_and_sink_models define ~is_constructor ~resolution ~existing_ba
     |> BackwardState.Tree.transform
          BackwardTaint.simple_feature_set
          Abstract.Domain.(Map (Features.add_type_breadcrumb ~resolution annotation))
-    |> BackwardState.Tree.limit_to
-         ~width:Configuration.analysis_model_constraints.maximum_model_width
-    |> BackwardState.Tree.approximate_complex_access_paths
+    |> BackwardState.Tree.limit_to ~width:maximum_model_width
+    |> BackwardState.Tree.approximate_complex_access_paths ~maximum_complex_access_path_length
   in
 
   let split_and_simplify model (parameter, name, original) =

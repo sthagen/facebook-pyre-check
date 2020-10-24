@@ -1,47 +1,79 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Ast
 open Analysis
 open Pyre
 
-module Breadcrumb = struct
-  type first_kind =
-    | FirstField
-    | FirstIndex
-  [@@deriving show, compare]
+module First (Kind : sig
+  val kind : string
+end) =
+struct
+  type t = string [@@deriving show]
 
+  let name = "first-" ^ Kind.kind
+
+  let compare = String.compare
+
+  let to_json firsts =
+    match firsts with
+    | [] -> []
+    | _ :: _ ->
+        let first_name = "first-" ^ Kind.kind in
+        let element_to_json element = `Assoc [first_name, `String element] in
+        `Assoc ["has", `String first_name] :: List.map firsts ~f:element_to_json
+end
+
+module FirstIndex = First (struct
+  let kind = "index"
+end)
+
+module FirstField = First (struct
+  let kind = "field"
+end)
+
+module FirstIndexSet = Abstract.SetDomain.Make (FirstIndex)
+module FirstFieldSet = Abstract.SetDomain.Make (FirstField)
+
+module Breadcrumb = struct
   type t =
-    (* Used to determine 'foo' from request.foo and request.GET['foo'] *)
-    | First of {
-        kind: first_kind;
-        name: string;
-      }
     | FormatString (* Via f"{something}" *)
-    | HasFirst of first_kind
     | Obscure
     | Lambda
     | SimpleVia of string (* Declared breadcrumbs *)
-    | ViaValue of string (* Via inferred from ViaValueOf. *)
+    | ViaValue of {
+        tag: string option;
+        value: string;
+      }
+    (* Via inferred from ViaValueOf. *)
+    | ViaType of {
+        tag: string option;
+        value: string;
+      }
+    (* Via inferred from ViaTypeOf. *)
     | Tito
     | Type of string (* Type constraint *)
   [@@deriving show, compare]
 
   let to_json ~on_all_paths breadcrumb =
     let prefix = if on_all_paths then "always-" else "" in
+    let via_value_or_type_annotation ~via_kind ~tag ~value =
+      match tag with
+      | None -> `Assoc [Format.sprintf "%svia-%s" prefix via_kind, `String value]
+      | Some tag -> `Assoc [Format.sprintf "%svia-%s-%s" prefix tag via_kind, `String value]
+    in
     match breadcrumb with
-    | First { name; kind = FirstField } -> `Assoc [prefix ^ "first-field", `String name]
-    | First { name; kind = FirstIndex } -> `Assoc [prefix ^ "first-index", `String name]
     | FormatString -> `Assoc [prefix ^ "via", `String "format-string"]
-    | HasFirst FirstField -> `Assoc [prefix ^ "has", `String "first-field"]
-    | HasFirst FirstIndex -> `Assoc [prefix ^ "has", `String "first-index"]
     | Obscure -> `Assoc [prefix ^ "via", `String "obscure"]
     | Lambda -> `Assoc [prefix ^ "via", `String "lambda"]
     | SimpleVia name -> `Assoc [prefix ^ "via", `String name]
-    | ViaValue name -> `Assoc [prefix ^ "via-value", `String name]
+    | ViaValue { tag; value } -> via_value_or_type_annotation ~via_kind:"value" ~tag ~value
+    | ViaType { tag; value } -> via_value_or_type_annotation ~via_kind:"type" ~tag ~value
     | Tito -> `Assoc [prefix ^ "via", `String "tito"]
     | Type name -> `Assoc [prefix ^ "type", `String name]
 
@@ -69,12 +101,29 @@ module Simple = struct
       }
     | TitoPosition of Location.WithModule.t
     | Breadcrumb of Breadcrumb.t
-    | ViaValueOf of { position: int }
+    | ViaValueOf of {
+        position: int;
+        tag: string option;
+      }
+    | ViaTypeOf of {
+        position: int;
+        tag: string option;
+      }
   [@@deriving show, compare]
 
-  let via_value_of_breadcrumb ~argument:{ Expression.Call.Argument.value; _ } =
-    Interprocedural.CallResolution.extract_constant_name value
-    >>| fun feature -> Breadcrumb (Breadcrumb.ViaValue feature)
+  let via_value_of_breadcrumb ?tag ~argument:{ Expression.Call.Argument.value; _ } =
+    let feature =
+      Interprocedural.CallResolution.extract_constant_name value
+      |> Option.value ~default:"<unknown>"
+    in
+    Breadcrumb (Breadcrumb.ViaValue { value = feature; tag })
+
+
+  let via_type_of_breadcrumb ?tag ~resolution ~argument:{ Expression.Call.Argument.value; _ } =
+    let feature =
+      Resolution.resolve_expression resolution value |> snd |> Type.weaken_literals |> Type.show
+    in
+    Breadcrumb (Breadcrumb.ViaType { value = feature; tag })
 end
 
 module SimpleSet = Abstract.OverUnderSetDomain.Make (Simple)
@@ -103,10 +152,11 @@ module Complex = struct
 
   let widen set =
     let truncate = function
-      | ReturnAccessPath p when List.length p > 3 -> ReturnAccessPath (List.take p 3)
+      | ReturnAccessPath p when List.length p > Configuration.maximum_return_access_path_depth ->
+          ReturnAccessPath (List.take p Configuration.maximum_return_access_path_depth)
       | x -> x
     in
-    if List.length set > 3 then
+    if List.length set > Configuration.maximum_return_access_path_width then
       [ReturnAccessPath []]
     else
       List.map ~f:truncate set
@@ -170,3 +220,15 @@ let gather_breadcrumbs feature breadcrumbs =
 let is_breadcrumb = function
   | { Abstract.OverUnderSetDomain.element = Simple.Breadcrumb _; _ } -> true
   | _ -> false
+
+
+let number_regexp = Str.regexp "[0-9]+"
+
+let is_numeric name = Str.string_match number_regexp name 0
+
+let to_first_name label =
+  match label with
+  | Abstract.TreeDomain.Label.Field name when is_numeric name -> Some "<numeric>"
+  | Field name -> Some name
+  | DictionaryKeys -> None
+  | Any -> Some "<unknown>"

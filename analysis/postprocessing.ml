@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Ast
@@ -147,6 +149,13 @@ let run ~scheduler ~configuration ~environment sources =
     let run_on_module module_name =
       match AstEnvironment.ReadOnly.get_raw_source ast_environment module_name with
       | None -> []
+      | Some
+          ( Result.Ok { Source.source_path = { SourcePath.is_external; _ }; _ }
+          | Result.Error
+              { AstEnvironment.ParserError.source_path = { SourcePath.is_external; _ }; _ } )
+        when is_external ->
+          []
+      | Some (Result.Error { AstEnvironment.ParserError.is_suppressed; _ }) when is_suppressed -> []
       | Some (Result.Error { AstEnvironment.ParserError.message; _ }) ->
           let location =
             {
@@ -174,21 +183,18 @@ let run ~scheduler ~configuration ~environment sources =
               ~kind:(AnalysisError.ParserFailure message)
               ~define;
           ]
-      | Some (Result.Ok ({ Source.source_path = { SourcePath.is_external; _ }; _ } as source)) ->
-          if is_external then
-            []
-          else
-            let global_resolution = TypeEnvironment.ReadOnly.global_resolution environment in
-            let errors_by_define =
-              let unannotated_global_environment =
-                GlobalResolution.unannotated_global_environment global_resolution
-              in
-              UnannotatedGlobalEnvironment.ReadOnly.all_defines_in_module
-                unannotated_global_environment
-                module_name
-              |> List.map ~f:(TypeEnvironment.ReadOnly.get_errors environment)
+      | Some (Result.Ok source) ->
+          let global_resolution = TypeEnvironment.ReadOnly.global_resolution environment in
+          let errors_by_define =
+            let unannotated_global_environment =
+              GlobalResolution.unannotated_global_environment global_resolution
             in
-            run_on_source ~configuration ~global_resolution ~source errors_by_define
+            UnannotatedGlobalEnvironment.ReadOnly.all_defines_in_module
+              unannotated_global_environment
+              module_name
+            |> List.map ~f:(TypeEnvironment.ReadOnly.get_errors environment)
+          in
+          run_on_source ~configuration ~global_resolution ~source errors_by_define
     in
     List.length modules, List.concat_map modules ~f:run_on_module
   in

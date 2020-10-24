@@ -1,14 +1,14 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import argparse
 from typing import Optional
 
+from .. import command_arguments
 from ..analysis_directory import AnalysisDirectory, resolve_analysis_directory
 from ..configuration import Configuration
-from .command import Command, CommandArguments, ExitCode, IncrementalStyle
+from .command import Command, ExitCode, IncrementalStyle
 from .incremental import Incremental
 from .start import Start  # noqa
 from .stop import Stop
@@ -19,10 +19,10 @@ class Restart(Command):
 
     def __init__(
         self,
-        command_arguments: CommandArguments,
+        command_arguments: command_arguments.CommandArguments,
         original_directory: str,
         *,
-        configuration: Optional[Configuration] = None,
+        configuration: Configuration,
         analysis_directory: Optional[AnalysisDirectory] = None,
         terminal: bool,
         store_type_check_resolution: bool,
@@ -37,63 +37,16 @@ class Restart(Command):
         self._use_watchman: bool = use_watchman
         self._incremental_style: IncrementalStyle = incremental_style
 
-    @staticmethod
-    def from_arguments(
-        arguments: argparse.Namespace,
-        original_directory: str,
-        configuration: Optional[Configuration] = None,
-        analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> "Restart":
-        return Restart(
-            CommandArguments.from_arguments(arguments),
-            original_directory,
-            configuration=configuration,
-            analysis_directory=analysis_directory,
-            terminal=arguments.terminal,
-            store_type_check_resolution=arguments.store_type_check_resolution,
-            use_watchman=not arguments.no_watchman,
-            incremental_style=arguments.incremental_style,
-        )
-
-    @classmethod
-    def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
-        restart = parser.add_parser(
-            cls.NAME, epilog="Restarts a server. Equivalent to `pyre stop && pyre`."
-        )
-        restart.set_defaults(command=cls.from_arguments)
-        restart.add_argument(
-            "--terminal", action="store_true", help="Run the server in the terminal."
-        )
-        restart.add_argument(
-            "--store-type-check-resolution",
-            action="store_true",
-            help="Store extra information for `types` queries.",
-        )
-        restart.add_argument(
-            "--no-watchman",
-            action="store_true",
-            help="Do not spawn a watchman client in the background.",
-        )
-        restart.add_argument(
-            "--incremental-style",
-            type=IncrementalStyle,
-            choices=list(IncrementalStyle),
-            default=IncrementalStyle.FINE_GRAINED,
-            help="How to approach doing incremental checks.",
-        )
-
     def generate_analysis_directory(self) -> AnalysisDirectory:
         return resolve_analysis_directory(
-            self._source_directories,
-            self._targets,
+            self._command_arguments.source_directories,
+            self._command_arguments.targets,
             self._configuration,
             self._original_directory,
-            self._project_root,
-            filter_directory=self._filter_directory,
-            use_buck_builder=self._use_buck_builder,
-            debug=self._debug,
-            buck_mode=self._buck_mode,
-            relative_local_root=self.relative_local_root,
+            self._configuration.project_root,
+            filter_directory=self._command_arguments.filter_directory,
+            buck_mode=self._command_arguments.buck_mode,
+            relative_local_root=self._configuration.relative_local_root,
         )
 
     def _run(self) -> None:

@@ -1,7 +1,9 @@
-(* Copyright (c) 2018-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 (* A generalization of what can be a call target during the analysis. - RealTarget refers to an
    actual definition. - OverrideTarget is a set of target represented by an override tree. *)
@@ -138,5 +140,7 @@ module Map : Core.Map.S with type Key.t = t
 module Hashable : Core.Hashable.S with type t := t
 
 module RealMap : Core.Map.S with type Key.t = real_target
+
+module RealSet : Caml.Set.S with type elt = real_target
 
 module OverrideSet : Caml.Set.S with type elt = override_target

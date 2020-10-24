@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Ast
@@ -162,36 +164,62 @@ module Record : sig
   end
 end
 
+module Monomial : sig
+  type variadic_operation =
+    | Length
+    | Product
+  [@@deriving compare, eq, sexp, show, hash]
+
+  type 'a variable [@@deriving compare, eq, sexp, show, hash]
+
+  type 'a t [@@deriving eq, sexp, compare, hash, show]
+end
+
 module Polynomial : sig
-  module Monomial : sig
-    type 'a variable [@@deriving compare, eq, sexp, show, hash]
-
-    type 'a variable_degree [@@deriving eq, sexp, compare, hash, show]
-
-    type 'a t [@@deriving eq, sexp, compare, hash, show]
-  end
-
   type 'a t [@@deriving compare, eq, sexp, hash, show]
 
   val is_base_case : 'a t -> bool
 
-  val show_normal : ?concise:bool -> 'a t -> string
+  val show_normal
+    :  show_variable:('a Record.Variable.RecordUnary.record -> string) ->
+    show_variadic:
+      (( 'a Record.OrderedTypes.RecordConcatenate.Middle.t,
+         'a )
+       Record.OrderedTypes.RecordConcatenate.t ->
+      string) ->
+    'a t ->
+    string
 
   val create_from_variable : 'a Record.Variable.RecordUnary.record -> 'a t
 
   val create_from_int : int -> 'a t
 
-  val create_from_list : (int * ('a Record.Variable.RecordUnary.record * int) list) list -> 'a t
+  val create_from_variadic
+    :  ( 'a Record.OrderedTypes.RecordConcatenate.Middle.t,
+         'a )
+       Record.OrderedTypes.RecordConcatenate.t ->
+    operation:Monomial.variadic_operation ->
+    'a t
 
-  val add : 'a t -> 'a t -> 'a t
+  val create_from_variables_list
+    :  compare_t:('a -> 'a -> int) ->
+    (int * ('a Record.Variable.RecordUnary.record * int) list) list ->
+    'a t
 
-  val subtract : 'a t -> 'a t -> 'a t
+  val add : compare_t:('a -> 'a -> int) -> 'a t -> 'a t -> 'a t
 
-  val multiply : 'a t -> 'a t -> 'a t
+  val subtract : compare_t:('a -> 'a -> int) -> 'a t -> 'a t -> 'a t
 
-  val pow : 'a t -> int -> 'a t
+  val multiply : compare_t:('a -> 'a -> int) -> 'a t -> 'a t -> 'a t
 
-  val replace : 'a t -> by:'a t -> variable:'a Monomial.variable -> 'a t
+  val divide : compare_t:('a -> 'a -> int) -> 'a t -> 'a t -> 'a t
+
+  val replace
+    :  compare_t:('a -> 'a -> int) ->
+    'a t ->
+    by:'a t ->
+    variable:'a Monomial.variable ->
+    'a t
 end
 
 module Primitive : sig
@@ -268,6 +296,14 @@ val pp_typed_dictionary_field
   Format.formatter ->
   t Record.TypedDictionary.typed_dictionary_field ->
   unit
+
+val polynomial_show_variable : type_t Record.Variable.RecordUnary.record -> string
+
+val polynomial_show_variadic
+  :  ( type_t Record.OrderedTypes.RecordConcatenate.Middle.t,
+       type_t )
+     Record.OrderedTypes.RecordConcatenate.t ->
+  string
 
 val pp_concise : Format.formatter -> t -> unit
 

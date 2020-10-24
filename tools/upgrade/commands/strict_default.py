@@ -1,16 +1,19 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
 import argparse
 import logging
-import os
 from pathlib import Path
 from typing import Optional
 
-from tools.pyre.client.find_directories import find_local_root
-
+from ....client.find_directories import (
+    CONFIGURATION_FILE,
+    LOCAL_CONFIGURATION_FILE,
+    find_global_and_local_root,
+)
+from .. import UserError
 from ..configuration import Configuration
 from ..errors import Errors, PartialErrorSuppression
 from ..filesystem import LocalMode, add_local_mode, path_exists
@@ -21,17 +24,18 @@ from .command import CommandArguments, ErrorSuppressingCommand
 LOG: logging.Logger = logging.getLogger(__name__)
 
 
-def _get_configuration_path(
-    local_configuration: Optional[Path], project_configuration: Path
-) -> Path:
-    if local_configuration:
-        configuration_path = local_configuration / ".pyre_configuration.local"
-        return configuration_path
-    original_directory = os.getcwd()
-    configuration_path = find_local_root(original_directory)
-    if configuration_path:
-        return Path(configuration_path) / ".pyre_configuration.local"
-    return project_configuration
+def _get_configuration_path(local_configuration: Optional[Path]) -> Optional[Path]:
+    found_root = find_global_and_local_root(
+        Path(".") if local_configuration is None else local_configuration
+    )
+    if found_root is None:
+        return None
+    else:
+        local_root = found_root.local_root
+        if local_root:
+            return local_root / LOCAL_CONFIGURATION_FILE
+        else:
+            return found_root.global_root / CONFIGURATION_FILE
 
 
 class StrictDefault(ErrorSuppressingCommand):
@@ -86,11 +90,9 @@ class StrictDefault(ErrorSuppressingCommand):
         )
 
     def run(self) -> None:
-        project_configuration = Configuration.find_project_configuration()
-        local_configuration = self._local_configuration
-        configuration_path = _get_configuration_path(
-            local_configuration, project_configuration
-        )
+        configuration_path = _get_configuration_path(self._local_configuration)
+        if configuration_path is None:
+            raise UserError("Cannot find a path to configuration")
         configuration = Configuration(configuration_path)
         LOG.info("Processing %s", configuration.get_directory())
         configuration.add_strict()
@@ -100,14 +102,14 @@ class StrictDefault(ErrorSuppressingCommand):
         if len(all_errors) == 0:
             return
 
-        for path, errors in all_errors:
+        for path, errors in all_errors.paths_to_errors.items():
             errors = list(errors)
             error_count = len(errors)
             if error_count > self._fixme_threshold:
                 add_local_mode(path, LocalMode.UNSAFE)
             else:
                 try:
-                    self._suppress_errors(Errors(errors))
+                    self._apply_suppressions(Errors(errors))
                 except PartialErrorSuppression:
                     LOG.warning(f"Could not suppress all errors in {path}")
                     LOG.info("Run with --unsafe to force suppression anyway.")
@@ -115,3 +117,15 @@ class StrictDefault(ErrorSuppressingCommand):
 
         if self._lint:
             self._repository.format()
+
+        title = f"Convert {self._local_configuration} to use strict default"
+        summary = (
+            "Turning on strict default; files with more than "
+            + f"{self._fixme_threshold} errors opted-out of strict."
+        )
+        self._repository.commit_changes(
+            commit=(not self._no_commit),
+            title=title,
+            summary=summary,
+            set_dependencies=False,
+        )

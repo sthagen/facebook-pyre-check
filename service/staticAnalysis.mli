@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Analysis
 open Ast
@@ -14,12 +16,17 @@ val record_and_merge_call_graph
   source:Source.t ->
   DependencyGraph.callgraph
 
-val record_overrides : DependencyGraph.overrides -> unit
+type found_callable = {
+  callable: Callable.real_target;
+  define: Define.t Node.t;
+  is_internal: bool;
+}
 
 val regular_and_filtered_callables
-  :  resolution:GlobalResolution.t ->
+  :  configuration:Configuration.Analysis.t ->
+  resolution:GlobalResolution.t ->
   source:Source.t ->
-  (Callable.real_target * Define.t Node.t) list * Callable.real_target list
+  found_callable list * Callable.real_target list
 
 val analyze
   :  scheduler:Scheduler.t ->

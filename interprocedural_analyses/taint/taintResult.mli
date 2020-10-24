@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Domains
 
@@ -21,11 +23,18 @@ module Forward : sig
   val empty : model
 end
 
+type sanitize_kind =
+  | SanitizeSources
+  | SanitizeSinks
+  | SanitizeTITO
+  | SanitizeAll
+[@@deriving show, compare, eq]
+
 type mode =
   | SkipAnalysis (* Don't analyze at all *)
-  | Sanitize (* Analyze, but throw away inferred model *)
+  | Sanitize of sanitize_kind list (* Analyze, but throw away inferred model *)
   | Normal
-[@@deriving show]
+[@@deriving show, eq]
 
 type call_model = {
   forward: Forward.model;

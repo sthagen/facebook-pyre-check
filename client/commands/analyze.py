@@ -1,21 +1,23 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
 
-import argparse
-import os
+import enum
 from typing import List, Optional
 
 from typing_extensions import Final
 
-from .. import log
+from .. import command_arguments, log
 from ..analysis_directory import AnalysisDirectory, resolve_analysis_directory
 from ..configuration import Configuration
-from ..filesystem import readable_directory, writable_directory
 from .check import Check
-from .command import CommandArguments
+
+
+class MissingFlowsKind(str, enum.Enum):
+    OBSCURE: str = "obscure"
+    TYPE: str = "type"
 
 
 class Analyze(Check):
@@ -23,10 +25,10 @@ class Analyze(Check):
 
     def __init__(
         self,
-        command_arguments: CommandArguments,
+        command_arguments: command_arguments.CommandArguments,
         original_directory: str,
         *,
-        configuration: Optional[Configuration] = None,
+        configuration: Configuration,
         analysis_directory: Optional[AnalysisDirectory] = None,
         analysis: str,
         taint_models_path: List[str],
@@ -35,7 +37,8 @@ class Analyze(Check):
         dump_call_graph: bool,
         repository_root: Optional[str],
         rules: Optional[List[int]],
-        find_obscure_flows: bool = False,
+        find_missing_flows: Optional[MissingFlowsKind] = None,
+        dump_model_query_results: bool = False,
     ) -> None:
         super(Analyze, self).__init__(
             command_arguments,
@@ -44,86 +47,26 @@ class Analyze(Check):
             analysis_directory=analysis_directory,
         )
         self._analysis: str = analysis
-        self._taint_models_path: List[str] = (
-            taint_models_path or self._configuration.taint_models_path
+        self._taint_models_path: List[str] = taint_models_path or list(
+            self._configuration.taint_models_path
         )
         self._no_verify: bool = no_verify
         self._save_results_to: Final[Optional[str]] = save_results_to
         self._dump_call_graph: bool = dump_call_graph
         self._repository_root: Final[Optional[str]] = repository_root
         self._rules: Final[Optional[List[int]]] = rules
-        self._find_obscure_flows: bool = find_obscure_flows
-
-    @staticmethod
-    def from_arguments(
-        arguments: argparse.Namespace,
-        original_directory: str,
-        configuration: Optional[Configuration] = None,
-        analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> "Analyze":
-        return Analyze(
-            CommandArguments.from_arguments(arguments),
-            original_directory,
-            configuration=configuration,
-            analysis_directory=analysis_directory,
-            analysis=arguments.analysis,
-            taint_models_path=arguments.taint_models_path,
-            no_verify=arguments.no_verify,
-            save_results_to=arguments.save_results_to,
-            dump_call_graph=arguments.dump_call_graph,
-            repository_root=arguments.repository_root,
-            rules=arguments.rule,
-            find_obscure_flows=arguments.find_obscure_flows,
-        )
-
-    @classmethod
-    def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
-        analyze = parser.add_parser(cls.NAME)
-        analyze.set_defaults(command=cls.from_arguments)
-        analyze.add_argument(
-            "analysis",
-            nargs="?",
-            default="taint",
-            help="Type of analysis to run: {taint}",
-        )
-        analyze.add_argument(
-            "--taint-models-path",
-            action="append",
-            default=[],
-            type=readable_directory,
-            help="Location of taint models",
-        )
-        analyze.add_argument(
-            "--no-verify",
-            action="store_true",
-            help="Do not verify models for the taint analysis.",
-        )
-        analyze.add_argument(
-            "--save-results-to",
-            default=None,
-            type=writable_directory,
-            help="Directory to write analysis results to.",
-        )
-        analyze.add_argument("--dump-call-graph", action="store_true")
-        analyze.add_argument("--repository-root", type=os.path.abspath)
-        analyze.add_argument("--rule", action="append", type=int)
-        analyze.add_argument(
-            "--find-obscure-flows",
-            action="store_true",
-            help="Perform a taint analysis to find flows through obscure models.",
-        )
+        self._find_missing_flows: Optional[MissingFlowsKind] = find_missing_flows
+        self._dump_model_query_results = dump_model_query_results
 
     def generate_analysis_directory(self) -> AnalysisDirectory:
         return resolve_analysis_directory(
-            self._source_directories,
-            self._targets,
+            self._command_arguments.source_directories,
+            self._command_arguments.targets,
             self._configuration,
             self._original_directory,
-            self._project_root,
-            filter_directory=self._filter_directory,
-            use_buck_builder=self._use_buck_builder,
-            debug=self._debug,
-            buck_mode=self._buck_mode,
+            self._configuration.project_root,
+            filter_directory=self._command_arguments.filter_directory,
+            buck_mode=self._command_arguments.buck_mode,
             isolate=True,
         )
 
@@ -146,8 +89,11 @@ class Analyze(Check):
         rules = self._rules
         if rules is not None:
             flags.extend(["-rules", ",".join(str(rule) for rule in rules)])
-        if self._find_obscure_flows:
-            flags.append("-find-obscure-flows")
+        find_missing_flows = self._find_missing_flows
+        if find_missing_flows:
+            flags.extend(["-find-missing-flows", find_missing_flows.value])
+        if self._dump_model_query_results:
+            flags.append("-dump-model-query-results")
         return flags
 
     def _run(self, retries: int = 1) -> None:

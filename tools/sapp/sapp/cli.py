@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -13,9 +12,10 @@ from .cli_lib import commands, common_options
 from .context import Context
 from .db import DB, DBType
 from .lint import lint
-from .pysa_taint_parser import Parser
+from .pipeline.pysa_taint_parser import Parser
 
 
+# pyre-fixme[5]: Global expression must be annotated.
 logger = logging.getLogger("sapp")
 
 
@@ -28,6 +28,7 @@ logger = logging.getLogger("sapp")
     help="database engine to use",
 )
 @click.pass_context
+# pyre-fixme[3]: Return type must be annotated.
 def cli(
     ctx: click.Context, repository: str, database_name: str, database_engine: DBType
 ):
@@ -44,4 +45,5 @@ for command in commands:
 cli.add_command(lint)
 
 if __name__ == "__main__":
+    logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s")
     cli()

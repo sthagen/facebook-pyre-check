@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -13,6 +13,8 @@ class ErrorsTest(unittest.TestCase):
         ast.check_stable("def foo(): pass", "def foo():\n   pass")
         with self.assertRaises(ast.UnstableAST):
             ast.check_stable("def foo(): pass", "def bar(): pass")
+        with self.assertRaises(SyntaxError):
+            ast.check_stable("def foo():", "def foo():")
 
     def test_check_stable_decorator(self) -> None:
         @ast.check_stable_transformation

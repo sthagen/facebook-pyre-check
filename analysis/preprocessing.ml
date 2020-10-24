@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Ast
@@ -84,12 +86,16 @@ let expand_string_annotations ({ Source.source_path = { SourcePath.relative; _ }
                   callee = transform_expression callee;
                   arguments = List.map ~f:transform_argument arguments;
                 }
-          | String { StringLiteral.value; _ } -> (
+          | String { StringLiteral.value = string_value; _ } -> (
               try
                 let parsed =
                   (* Start at column + 1 since parsing begins after the opening quote of the string
                      literal. *)
-                  Parser.parse ~start_line ~start_column:(start_column + 1) [value ^ "\n"] ~relative
+                  Parser.parse
+                    ~start_line
+                    ~start_column:(start_column + 1)
+                    [string_value ^ "\n"]
+                    ~relative
                 in
                 match parsed with
                 | [{ Node.value = Expression { Node.value = Name _ as expression; _ }; _ }]
@@ -99,8 +105,9 @@ let expand_string_annotations ({ Source.source_path = { SourcePath.relative; _ }
               with
               | Parser.Error _
               | Failure _ ->
-                  Log.debug "Invalid string annotation `%s` at %a" value Location.pp location;
-                  Name (Name.Identifier "$unparsed_annotation") )
+                  Log.debug "Invalid string annotation `%s` at %a" string_value Location.pp location;
+                  (* TODO(T76231928): replace this silent ignore with something typeCheck.ml can use *)
+                  value )
           | Tuple elements -> Tuple (List.map elements ~f:transform_expression)
           | _ -> value
         in
@@ -1524,6 +1531,143 @@ let dequalify_map ({ Source.source_path = { SourcePath.qualifier; _ }; _ } as so
   ImportDequalifier.transform map source |> fun { ImportDequalifier.state; _ } -> state
 
 
+let is_lazy_import { Node.value; _ } =
+  match value with
+  | Expression.Name name -> (
+      match name_to_reference name with
+      | Some reference
+        when String.Set.mem Recognized.lazy_import_functions (Reference.show reference) ->
+          true
+      | _ -> false )
+  | _ -> false
+
+
+let replace_lazy_import ?(is_lazy_import = is_lazy_import) source =
+  let module LazyImportTransformer = Transform.MakeStatementTransformer (struct
+    type t = unit
+
+    let statement _ ({ Node.value; location } as statement) =
+      match value with
+      | Statement.Assign
+          {
+            Assign.target =
+              {
+                Node.value = Expression.Name (Name.Identifier identifier);
+                location = identifier_location;
+              };
+            value =
+              {
+                Node.value =
+                  Expression.Call
+                    {
+                      callee;
+                      arguments =
+                        [
+                          {
+                            Call.Argument.value =
+                              {
+                                Node.value =
+                                  Expression.String { StringLiteral.kind = String; value = literal };
+                                location = literal_location;
+                              };
+                            _;
+                          };
+                        ];
+                    };
+                _;
+              };
+            _;
+          }
+        when is_lazy_import callee ->
+          ( (),
+            [
+              Statement.Import
+                {
+                  from = None;
+                  imports =
+                    [
+                      {
+                        Import.name =
+                          Reference.create literal |> Node.create ~location:literal_location;
+                        alias =
+                          Some
+                            ( Identifier.sanitized identifier
+                            |> Node.create ~location:identifier_location );
+                      };
+                    ];
+                }
+              |> Node.create ~location;
+            ] )
+      | Statement.Assign
+          {
+            Assign.target =
+              {
+                Node.value = Expression.Name (Name.Identifier identifier);
+                location = identifier_location;
+              };
+            value =
+              {
+                Node.value =
+                  Expression.Call
+                    {
+                      callee;
+                      arguments =
+                        [
+                          {
+                            Call.Argument.value =
+                              {
+                                Node.value =
+                                  Expression.String
+                                    { StringLiteral.kind = String; value = from_literal };
+                                location = from_literal_location;
+                              };
+                            _;
+                          };
+                          {
+                            Call.Argument.value =
+                              {
+                                Node.value =
+                                  Expression.String
+                                    { StringLiteral.kind = String; value = import_literal };
+                                location = import_literal_location;
+                              };
+                            _;
+                          };
+                        ];
+                    };
+                _;
+              };
+            _;
+          }
+        when is_lazy_import callee ->
+          ( (),
+            [
+              Statement.Import
+                {
+                  from =
+                    Some
+                      (Reference.create from_literal |> Node.create ~location:from_literal_location);
+                  imports =
+                    [
+                      {
+                        Import.name =
+                          Reference.create import_literal
+                          |> Node.create ~location:import_literal_location;
+                        alias =
+                          Some
+                            ( Identifier.sanitized identifier
+                            |> Node.create ~location:identifier_location );
+                      };
+                    ];
+                }
+              |> Node.create ~location;
+            ] )
+      | _ -> (), [statement]
+  end)
+  in
+  LazyImportTransformer.transform () source |> LazyImportTransformer.source
+
+
 let replace_mypy_extensions_stub
     ({ Source.source_path = { SourcePath.relative; _ }; statements; _ } as source)
   =
@@ -2661,6 +2805,15 @@ let populate_captures ({ Source.statements; _ } as source) =
                                           special = false;
                                         });
                                })
+                      | Some
+                          ( {
+                              Node.value =
+                                Expression.Name (Name.Attribute { attribute = "kwargs"; _ });
+                              _;
+                            } as annotation ) ->
+                          (* Heuristic: If the annotation is of the form `XXX.kwargs`, treat it as
+                             ParamSpec annotation. *)
+                          Some annotation
                       | Some value_annotation -> Some (dictionary_annotation value_annotation)
                     in
                     Some { Define.Capture.name; kind = Annotation annotation }
@@ -2737,6 +2890,14 @@ let populate_captures ({ Source.statements; _ } as source) =
                                           special = false;
                                         });
                                })
+                      | Some
+                          ( {
+                              Node.value = Expression.Name (Name.Attribute { attribute = "args"; _ });
+                              _;
+                            } as annotation ) ->
+                          (* Heuristic: If the annotation is of the form `XXX.args`, treat it as
+                             ParamSpec annotation. *)
+                          Some annotation
                       | Some value_annotation -> Some (tuple_annotation value_annotation)
                     in
                     Some { Define.Capture.name; kind = Annotation annotation }
@@ -2910,6 +3071,184 @@ let populate_unbound_names source =
   { source with Source.top_level_unbound_names; statements }
 
 
+let replace_union_shorthand source =
+  let module Transform = Transform.Make (struct
+    type t = unit
+
+    let transform_expression_children _ _ = true
+
+    let transform_children _ _ = true
+
+    let transform_shorthand_union_expression =
+      let rec transform_expression ({ Node.value; location } as expression) =
+        let union_value arguments =
+          Expression.Call
+            {
+              callee =
+                {
+                  Node.location;
+                  value =
+                    Name
+                      (Name.Attribute
+                         {
+                           base =
+                             {
+                               Node.location;
+                               value =
+                                 Name
+                                   (Name.Attribute
+                                      {
+                                        base =
+                                          { Node.location; value = Name (Name.Identifier "typing") };
+                                        attribute = "Union";
+                                        special = false;
+                                      });
+                             };
+                           attribute = "__getitem__";
+                           special = true;
+                         });
+                };
+              arguments;
+            }
+        in
+        let value =
+          match value with
+          | Expression.Call
+              {
+                callee = { Node.value = Name (Name.Attribute { base; attribute = "__or__"; _ }); _ };
+                arguments;
+              } ->
+              let base_argument = { Call.Argument.value = base; name = None } in
+              let transform_argument ({ Call.Argument.value; _ } as argument) =
+                { argument with Call.Argument.value = transform_expression value }
+              in
+              let to_expression_list sofar { Call.Argument.value; _ } =
+                match Node.value value with
+                | Expression.Call
+                    {
+                      callee =
+                        {
+                          Node.value =
+                            Name
+                              (Name.Attribute
+                                {
+                                  base =
+                                    {
+                                      value =
+                                        Name
+                                          (Name.Attribute
+                                            {
+                                              base =
+                                                { Node.value = Name (Name.Identifier "typing"); _ };
+                                              attribute = "Union";
+                                              special = false;
+                                            });
+                                      _;
+                                    };
+                                  _;
+                                });
+                          _;
+                        };
+                      arguments =
+                        [
+                          {
+                            Call.Argument.name = None;
+                            value = { Node.value = Tuple argument_list; _ };
+                          };
+                        ];
+                    } ->
+                    List.concat [sofar; argument_list] |> List.rev
+                | _ -> value :: sofar
+              in
+              let arguments =
+                List.concat [[base_argument]; arguments]
+                |> List.map ~f:transform_argument
+                |> List.fold ~init:[] ~f:to_expression_list
+                |> List.rev
+                |> fun argument_list ->
+                [
+                  {
+                    Call.Argument.value = { Node.value = Expression.Tuple argument_list; location };
+                    name = None;
+                  };
+                ]
+              in
+              union_value arguments
+          | Expression.Call
+              {
+                callee =
+                  { value = Name (Name.Attribute { attribute = "__getitem__"; _ }); _ } as callee;
+                arguments;
+              } ->
+              let arguments =
+                List.map arguments ~f:(fun ({ Call.Argument.value; _ } as argument) ->
+                    { argument with value = transform_expression value })
+              in
+              Expression.Call { callee; arguments }
+          | Tuple arguments -> Tuple (List.map ~f:transform_expression arguments)
+          | _ -> value
+        in
+        { expression with Node.value }
+      in
+      transform_expression
+
+
+    let statement _ ({ Node.value; _ } as statement) =
+      let transform_assign ~assign:({ Assign.annotation; _ } as assign) =
+        { assign with Assign.annotation = annotation >>| transform_shorthand_union_expression }
+      in
+      let transform_define
+          ~define:({ Define.signature = { parameters; return_annotation; _ }; _ } as define)
+        =
+        let parameter ({ Node.value = { Parameter.annotation; _ } as parameter; _ } as node) =
+          {
+            node with
+            Node.value =
+              {
+                parameter with
+                Parameter.annotation = annotation >>| transform_shorthand_union_expression;
+              };
+          }
+        in
+        let signature =
+          {
+            define.signature with
+            parameters = List.map parameters ~f:parameter;
+            return_annotation = return_annotation >>| transform_shorthand_union_expression;
+          }
+        in
+        { define with signature }
+      in
+      let statement =
+        let value =
+          match value with
+          | Statement.Assign assign -> Statement.Assign (transform_assign ~assign)
+          | Define define -> Define (transform_define ~define)
+          | _ -> value
+        in
+        { statement with Node.value }
+      in
+      (), [statement]
+
+
+    let expression _ expression =
+      let transform_argument ({ Call.Argument.value; _ } as argument) =
+        { argument with Call.Argument.value = transform_shorthand_union_expression value }
+      in
+      let value =
+        match Node.value expression with
+        | Expression.Call { callee; arguments }
+          when name_is ~name:"isinstance" callee || name_is ~name:"issubclass" callee ->
+            let arguments = List.map ~f:transform_argument arguments in
+            Expression.Call { callee; arguments }
+        | value -> value
+      in
+      { expression with Node.value }
+  end)
+  in
+  Transform.transform () source |> Transform.source
+
+
 let preprocess_phase0 source =
   source
   |> expand_relative_imports
@@ -2925,11 +3264,13 @@ let preprocess_phase1 source =
   source
   |> populate_unbound_names
   |> qualify
+  |> replace_lazy_import
   |> replace_mypy_extensions_stub
   |> expand_typed_dictionary_declarations
   |> expand_sqlalchemy_declarative_base
   |> expand_named_tuples
   |> expand_new_types
+  |> replace_union_shorthand
   |> populate_nesting_defines
   |> populate_captures
 

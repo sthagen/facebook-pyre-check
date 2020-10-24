@@ -1,3 +1,8 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
 from functools import lru_cache
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional
 
@@ -70,18 +75,16 @@ class ClassHierarchy:
                 reversed_mapping[value].append(key)
         return reversed_mapping
 
-    def subclasses(self, class_name: str) -> Optional[List[str]]:
-        return self.reverse_hierarchy.get(class_name)
+    def subclasses(self, class_name: str) -> List[str]:
+        return self.reverse_hierarchy.get(class_name, [])
 
-    def superclasses(self, class_name: str) -> Optional[List[str]]:
-        return self.hierarchy.get(class_name)
+    def superclasses(self, class_name: str) -> List[str]:
+        return self.hierarchy.get(class_name, [])
 
 
 def _defines(pyre_connection: PyreConnection, modules: Iterable[str]) -> List[Define]:
     query = "defines({})".format(",".join(modules))
     result = pyre_connection.query_server(query)
-    if result is None or "response" not in result:
-        return []
     return [
         Define(
             name=element["name"],
@@ -119,10 +122,9 @@ def defines(
     return found_defines
 
 
-def get_class_hierarchy(pyre_connection: PyreConnection) -> Optional[ClassHierarchy]:
+def get_class_hierarchy(pyre_connection: PyreConnection) -> ClassHierarchy:
     result = pyre_connection.query_server("dump_class_hierarchy()")
-    if result is None or "response" not in result:
-        return None
+
     hierarchy = {
         key: edges
         for annotation_and_edges in result["response"]
@@ -134,28 +136,22 @@ def get_class_hierarchy(pyre_connection: PyreConnection) -> Optional[ClassHierar
 def get_superclasses(pyre_connection: PyreConnection, class_name: str) -> List[str]:
     query = f"superclasses({class_name})"
     result = pyre_connection.query_server(query)
-    if result is None or "response" not in result:
-        return []
     return result["response"]["superclasses"]
 
 
 def get_attributes(pyre_connection: PyreConnection, class_name: str) -> List[str]:
     query = f"attributes({class_name})"
-    result = pyre_connection.query_server(query)
-    if result is None or "response" not in result:
-        return []
-    return [attribute["name"] for attribute in result["response"]["attributes"]]
+    response = pyre_connection.query_server(query)["response"]
+    return [attribute["name"] for attribute in response["attributes"]]
 
 
 def get_call_graph(
     pyre_connection: PyreConnection,
 ) -> Optional[Dict[str, List[CallGraphTarget]]]:
-    result = pyre_connection.query_server("dump_call_graph()")
-    if result is None or "response" not in result:
-        return None
+    response = pyre_connection.query_server("dump_call_graph()")["response"]
     call_graph = {}
 
-    for function, calls in result["response"].items():
+    for function, calls in response.items():
         call_graph[function] = [CallGraphTarget(call) for call in calls]
     return call_graph
 

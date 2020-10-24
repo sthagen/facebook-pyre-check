@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open OUnit2
@@ -78,7 +80,7 @@ let test_expand_string_annotations _ =
       constant: Foo = ...
       def foo(f: Foo) -> Foo: ...
     |};
-  assert_expand "def foo(f: '1234'): ..." "def foo(f: $unparsed_annotation): ...";
+  assert_expand "def foo(f: '1234'): ..." "def foo(f: \"1234\"): ...";
   assert_expand
     {|
       class Foo: ...
@@ -113,7 +115,7 @@ let test_expand_string_annotations _ =
       class Foo:
         x: B = cast(float, 42)
     |};
-  assert_expand "x = typing.cast('1234', 42)" "x = typing.cast($unparsed_annotation, 42)";
+  assert_expand "x = typing.cast('1234', 42)" "x = typing.cast(\"1234\", 42)";
   assert_expand
     {|
         from pyre_extensions import safe_cast
@@ -141,7 +143,7 @@ let test_expand_string_annotations _ =
       |};
   assert_expand
     "x = pyre_extensions.safe_cast('1234', 42)"
-    "x = pyre_extensions.safe_cast($unparsed_annotation, 42)";
+    "x = pyre_extensions.safe_cast(\"1234\", 42)";
   assert_expand
     {|
       import typing
@@ -167,6 +169,28 @@ let test_expand_string_annotations _ =
   assert_expand "def foo(f: te.Literal['A', 'B']): ..." "def foo(f: te.Literal['A', 'B']): ...";
   assert_expand "class Foo(typing.List['str']): ..." "class Foo(typing.List[str]): ...";
   assert_expand "class Foo('str'): ..." "class Foo('str'): ...";
+  assert_expand
+    {|
+      def foo(
+        x,  # type: int
+      ):
+        return x
+    |}
+    {|
+      def foo(x: int):
+        return x
+    |};
+  assert_expand
+    {|
+      def foo(
+        x,  # type: int,
+      ):
+        return x
+    |}
+    {|
+      def foo(x: "int,"):
+        return x
+    |};
   ()
 
 
@@ -2186,6 +2210,108 @@ let test_classes _ =
   assert_classes [+Statement.Class class_define] [class_define; inner]
 
 
+let test_replace_lazy_import _ =
+  let is_lazy_import { Node.value; _ } =
+    match value with
+    | Expression.Name name -> (
+        match name_to_reference name with
+        | Some reference when Reference.equal reference (Reference.create "lazy_import") -> true
+        | _ -> false )
+    | _ -> false
+  in
+  let assert_replaced source expected =
+    let parse = parse ~handle:"test.py" in
+    assert_source_equal
+      ~location_insensitive:true
+      (parse expected)
+      (Preprocessing.replace_lazy_import ~is_lazy_import (parse source))
+  in
+
+  assert_replaced {|
+       x = lazy_import("a.b.c")
+    |} {|
+       import a.b.c as x
+    |};
+  assert_replaced {|
+       x: Any = lazy_import("a.b.c")
+    |} {|
+       import a.b.c as x
+    |};
+  assert_replaced
+    {|
+       x = lazy_import("a.b", "c")
+    |}
+    {|
+       from a.b import c as x
+    |};
+  assert_replaced
+    {|
+       if derp:
+         x = lazy_import("a.b.c")
+       else:
+         y = lazy_import("a.b", "c")
+    |}
+    {|
+       if derp:
+         import a.b.c as x
+       else:
+         from a.b import c as y
+    |};
+  assert_replaced
+    {|
+       while derp:
+         x = lazy_import("a.b.c")
+       else:
+         y = lazy_import("a.b", "c")
+    |}
+    {|
+       while derp:
+         import a.b.c as x
+       else:
+         from a.b import c as y
+    |};
+  assert_replaced
+    {|
+       with derp as d:
+         x = lazy_import("a.b.c")
+    |}
+    {|
+       with derp as d:
+         import a.b.c as x
+    |};
+  assert_replaced
+    {|
+       try:
+         x = lazy_import("a.b.c")
+       except:
+         y = lazy_import("a.b", "c")
+       finally:
+         z: Any = lazy_import("a", "b")
+    |}
+    {|
+       try:
+         import a.b.c as x
+       except:
+         from a.b import c as y
+       finally:
+         from a import b as z
+    |};
+  assert_replaced
+    {|
+       def foo():
+         x = lazy_import("a.b.c")
+       class Foo:
+         y = lazy_import("a.b", "c")
+    |}
+    {|
+       def foo():
+         import a.b.c as x
+       class Foo:
+         from a.b import c as y
+    |};
+  ()
+
+
 let test_replace_mypy_extensions_stub _ =
   let given =
     parse
@@ -3454,6 +3580,22 @@ let test_populate_captures _ =
     dict_annotation (int_annotation int_start int_stop) start stop
   in
   let dict_any_annotation (start, stop) = dict_annotation (any_annotation start stop) start stop in
+  let parameter_specification_annotation attribute (start, stop) =
+    Node.create
+      ~location:(location start stop)
+      (Expression.Name
+         (Name.Attribute
+            {
+              base =
+                (let stop =
+                   let line, column = start in
+                   line, column + 1
+                 in
+                 Node.create ~location:(location start stop) (Expression.Name (Name.Identifier "P")));
+              attribute;
+              special = false;
+            }))
+  in
   assert_captures
     {|
      def foo():
@@ -3864,6 +4006,23 @@ let test_populate_captures _ =
          return kwargs["derp"]
   |}
     ~expected:[!&"bar", []];
+
+  (* ParamSpecs should be treated specially. *)
+  assert_captures
+    {|
+     def foo( *args: P.args, **kwargs: P.kwargs):
+       def bar():
+         return f( *args, **kwargs)
+  |}
+    ~expected:
+      [
+        ( !&"bar",
+          [
+            "args", Annotation (Some (parameter_specification_annotation "args" ((2, 16), (2, 22))));
+            ( "kwargs",
+              Annotation (Some (parameter_specification_annotation "kwargs" ((2, 34), (2, 42)))) );
+          ] );
+      ];
 
   (* Capture self *)
   assert_captures
@@ -4358,6 +4517,147 @@ let test_populate_unbound_names _ =
   ()
 
 
+let test_union_shorthand _ =
+  let assert_replace ?(handle = "test.py") source expected =
+    let expected = parse ~handle ~coerce_special_methods:true expected |> Preprocessing.qualify in
+    let actual =
+      parse ~handle source |> Preprocessing.qualify |> Preprocessing.replace_union_shorthand
+    in
+    assert_source_equal ~location_insensitive:true expected actual
+  in
+  assert_replace {|
+    x: int | str = 1
+  |} {|
+    x: typing.Union[int, str] = 1
+  |};
+  assert_replace
+    {|
+    x: int | str | bool = True
+  |}
+    {|
+    x: typing.Union[int, str, bool] = True
+  |};
+  assert_replace
+    {|
+      def foo() -> int | str:
+        pass
+    |}
+    {|
+      def foo() -> typing.Union[int, str]:
+        pass
+    |};
+  assert_replace
+    {|
+      class A:
+        x: bool | typing.List[int] = False
+    |}
+    {|
+      class A:
+        x: typing.Union[bool, typing.List[int]] = False
+    |};
+  assert_replace
+    {|
+      def bar(x: int | str) -> None:
+        pass
+    |}
+    {|
+      def bar(x: typing.Union[int, str]) -> None:
+        pass
+    |};
+  assert_replace
+    {|
+      def bar(x: typing.List[int | str]) -> None:
+        pass
+    |}
+    {|
+      def bar(x: typing.List[typing.Union[int, str]]) -> None:
+        pass
+    |};
+  assert_replace
+    {|
+      def bar(x: list[int | str]) -> None:
+        pass
+    |}
+    {|
+      def bar(x: list[typing.Union[int, str]]) -> None:
+        pass
+    |};
+  assert_replace
+    {|
+      def bar(x: dict[int, int | str]) -> None:
+        pass
+    |}
+    {|
+      def bar(x: dict[int, typing.Union[int, str]]) -> None:
+        pass
+    |};
+  assert_replace
+    {|
+      def bar(x: dict[int, list[int | str]]) -> None:
+        pass
+    |}
+    {|
+      def bar(x: dict[int, list[typing.Union[int, str]]]) -> None:
+        pass
+    |};
+  assert_replace
+    {|
+      def bar(x: dict[int, list[int | list[str | bool]]]) -> None:
+        pass
+    |}
+    {|
+      def bar(x: dict[int, list[typing.Union[int, list[typing.Union[str, bool]]]]]) -> None:
+        pass
+
+    |};
+  assert_replace {| 1 | 2 |} {|
+     1 | 2
+    |};
+  assert_replace
+    {|
+    isinstance(x, int | str)
+  |}
+    {|
+    isinstance(x, typing.Union[int, str])
+  |};
+  assert_replace
+    {|
+    isinstance(x, typing.List[int | str])
+  |}
+    {|
+    isinstance(x, typing.List[typing.Union[int, str]])
+  |};
+  assert_replace
+    {|
+    isinstance(x, int | str) and isinstance(x, bool | float)
+  |}
+    {|
+    isinstance(x, typing.Union[int, str]) and isinstance(x, typing.Union[bool, float])
+  |};
+  assert_replace
+    {|
+      issubclass(int, int | float | int)
+    |}
+    {|
+      issubclass(int, typing.Union[int, float, int])
+    |};
+  assert_replace
+    {|
+      issubclass(int, int | (float | int))
+    |}
+    {|
+      issubclass(int, typing.Union[int, float, int])
+    |};
+  assert_replace
+    {|
+      issubclass(dict, float | str)
+    |}
+    {|
+      issubclass(dict, typing.Union[float, str])
+    |};
+  ()
+
+
 let () =
   "preprocessing"
   >::: [
@@ -4373,11 +4673,13 @@ let () =
          "defines" >:: test_defines;
          "classes" >:: test_classes;
          "transform_ast" >:: test_transform_ast;
+         "replace_lazy_import" >:: test_replace_lazy_import;
          "typed_dictionary_stub_fix" >:: test_replace_mypy_extensions_stub;
          "typed_dictionaries" >:: test_expand_typed_dictionaries;
          "sqlalchemy_declarative_base" >:: test_sqlalchemy_declarative_base;
          "nesting_define" >:: test_populate_nesting_define;
          "captures" >:: test_populate_captures;
          "unbound_names" >:: test_populate_unbound_names;
+         "union_shorthand" >:: test_union_shorthand;
        ]
   |> Test.run

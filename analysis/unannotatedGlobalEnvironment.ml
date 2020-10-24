@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Pyre
@@ -716,15 +718,12 @@ let missing_builtin_classes, missing_typing_classes, missing_typing_extensions_c
         ~host:Type.object_primitive
         ~host_type:(Variable (Type.Variable.Unary.create "typing._S"))
         ~return:
-          (Type.Parametric
-             {
-               name = "BoundMethod";
-               parameters =
-                 [
-                   Single (Variable (Type.Variable.Unary.create "typing._T"));
-                   Single (Variable (Type.Variable.Unary.create "typing._S"));
-                 ];
-             });
+          (Type.parametric
+             "BoundMethod"
+             [
+               Single (Variable (Type.Variable.Unary.create "typing._T"));
+               Single (Variable (Type.Variable.Unary.create "typing._S"));
+             ]);
     ]
     |> List.map ~f:Node.create_with_default_location
   in
@@ -1011,7 +1010,7 @@ let update_this_and_all_preceding_environments { ast_environment } ~scheduler ~c
   in
   let modified_qualifiers = AstEnvironment.UpdateResult.invalidated_modules upstream in
   let update () =
-    Scheduler.iter
+    SharedMemoryKeys.DependencyKey.Registry.collected_iter
       scheduler
       ~policy:
         (Scheduler.Policy.fixed_chunk_count

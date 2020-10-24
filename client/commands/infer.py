@@ -1,12 +1,12 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
 # pyre-unsafe
 
-import argparse
 import functools
+import json
 import logging
 import os
 import re
@@ -16,20 +16,21 @@ import sys
 from collections import defaultdict
 from logging import Logger
 from pathlib import Path
-from typing import IO, Any, List, Optional, Sequence, Set, Union
+from typing import IO, Any, Dict, List, Optional, Sequence, Set, Union
 
 import libcst
-from libcst._version import LIBCST_VERSION
 from libcst.codemod import CodemodContext
 from libcst.codemod.visitors._apply_type_annotations import ApplyTypeAnnotationsVisitor
 from typing_extensions import Final
 
-from .. import log
+from .. import command_arguments, log
 from ..analysis_directory import AnalysisDirectory
+from ..annotation_collector import AnnotationCollector
 from ..configuration import Configuration
-from ..error import Error
-from .command import JSON, Command, CommandArguments, Result, typeshed_search_path
+from ..error import LegacyError
+from .command import Command, Result
 from .reporting import Reporting
+from .statistics import _get_paths, _parse_paths, parse_path_to_module
 
 
 LOG: Logger = logging.getLogger(__name__)
@@ -77,7 +78,7 @@ class FunctionStub:
         return " -> " + dequalify(self.actual) if self.actual else ""
 
     def _get_parameter_string(self) -> str:
-        """ Depending on if an argument has a type, the style for default values
+        """Depending on if an argument has a type, the style for default values
         changes. E.g.
            def fun(x=5)
            def fun(x : int = 5)
@@ -166,7 +167,7 @@ class Stub:
     stub: Optional[Union[FieldStub, FunctionStub]] = None
 
     def __init__(self, error) -> None:
-        self.path = Path(error.path)
+        self.path = Path(error.error.path)
         self.parent = error.inference.get("parent")
         self.stub = None
         if FunctionStub.is_instance(error.inference):
@@ -233,13 +234,13 @@ class StubFile:
         self._fields = [stub for stub in stubs if stub.is_field()]
         self._functions = [stub for stub in stubs if stub.is_function()]
         self._methods = [stub for stub in stubs if stub.is_method()]
-        self._path = Path(errors[0].path)
+        self._path = Path(errors[0].error.path)
 
     def to_string(self) -> str:
         """We currently ignore nested classes, i.e.:
-          class X:
-              class Y:
-                  [ALL OF THIS IS IGNORED]
+        class X:
+            class Y:
+                [ALL OF THIS IS IGNORED]
         """
         classes = defaultdict(list)
         typing_imports = set()
@@ -273,7 +274,7 @@ class StubFile:
 
         for stub in stubs_in_file:
             typing_imports.update(stub.get_typing_imports())
-            alphabetical_imports = sorted(list(typing_imports))
+            alphabetical_imports = sorted(typing_imports)
 
         if alphabetical_imports and contents != "":
             contents = (
@@ -296,17 +297,15 @@ class StubFile:
         path.write_text(contents)
 
 
-def generate_stub_files(full_only: bool, errors: Sequence[Error]) -> List[StubFile]:
-    errors = [
-        error
-        for error in errors
-        if error.inference and not (error.is_external_to_global_root())
-    ]
+def generate_stub_files(
+    full_only: bool, errors: Sequence[LegacyError]
+) -> List[StubFile]:
+    errors = [error for error in errors if error.inference]
     files = defaultdict(list)
-    errors.sort(key=lambda error: error.line)
+    errors.sort(key=lambda error: error.error.line)
 
     for error in errors:
-        files[error.path].append(error)
+        files[error.error.path].append(error)
 
     stubs = []
     for _path, errors in files.items():
@@ -419,10 +418,31 @@ def annotate_from_existing_stubs(
         subprocess.call(formatter, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def file_exists(path):
-    if not os.path.exists(path):
-        raise argparse.ArgumentTypeError("ERROR: " + str(path) + " does not exist")
-    return path
+def _existing_annotations_as_errors(
+    modules: Dict[Path, Optional[libcst.Module]], project_root: str
+) -> List[LegacyError]:
+    errors = []
+    for path_name, module in modules.items():
+        path_name = str(path_name)
+        path = path_name.replace(".py", "").replace(project_root + "/", "")
+        collector = AnnotationCollector(path)
+        if module is not None:
+            module.visit(collector)
+        for stub in collector.stubs:
+            errors.append(
+                LegacyError.create(
+                    {
+                        "path": path_name.replace(project_root + "/", ""),
+                        "inference": stub,
+                        "line": 0,
+                        "column": 0,
+                        "code": 0,
+                        "name": "example_string",
+                        "description": "example description",
+                    }
+                )
+            )
+    return errors
 
 
 class Infer(Reporting):
@@ -430,10 +450,10 @@ class Infer(Reporting):
 
     def __init__(
         self,
-        command_arguments: CommandArguments,
+        arguments: command_arguments.CommandArguments,
         original_directory: str,
         *,
-        configuration: Optional[Configuration] = None,
+        configuration: Configuration,
         analysis_directory: Optional[AnalysisDirectory] = None,
         print_errors: bool,
         full_only: bool,
@@ -442,9 +462,10 @@ class Infer(Reporting):
         errors_from_stdin: bool,
         annotate_from_existing_stubs: bool,
         debug_infer: bool,
+        full_stub_paths: Optional[List[str]],
     ) -> None:
         super(Infer, self).__init__(
-            command_arguments, original_directory, configuration, analysis_directory
+            arguments, original_directory, configuration, analysis_directory
         )
         self._print_errors = print_errors
         self._full_only = full_only
@@ -453,118 +474,69 @@ class Infer(Reporting):
         self._errors_from_stdin = errors_from_stdin
         self._annotate_from_existing_stubs = annotate_from_existing_stubs
         self._debug_infer = debug_infer
-        self._ignore_infer: List[str] = self._configuration.ignore_infer
+        self._ignore_infer: List[
+            str
+        ] = self._configuration.get_existent_ignore_infer_paths()
+        self._full_stub_paths: Final[Optional[List[str]]] = full_stub_paths
 
         self._show_error_traces = True
-        self._output = JSON
-
-    @staticmethod
-    def from_arguments(
-        arguments: argparse.Namespace,
-        original_directory: str,
-        configuration: Optional[Configuration] = None,
-        analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> "Infer":
-        return Infer(
-            CommandArguments.from_arguments(arguments),
-            original_directory,
-            configuration=configuration,
-            analysis_directory=analysis_directory,
-            print_errors=arguments.print_only,
-            full_only=arguments.full_only,
-            recursive=arguments.recursive,
-            in_place=arguments.in_place,
-            errors_from_stdin=arguments.errors_from_stdin,
-            annotate_from_existing_stubs=arguments.annotate_from_existing_stubs,
-            debug_infer=arguments.debug_infer,
-        )
-
-    @classmethod
-    def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
-        infer = parser.add_parser(cls.NAME)
-        infer.set_defaults(command=cls.from_arguments)
-        infer.add_argument(
-            "-p",
-            "--print-only",
-            action="store_true",
-            help="Print raw JSON errors to standard output, "
-            + "without converting to stubs or annnotating.",
-        )
-        infer.add_argument(
-            "-f",
-            "--full-only",
-            action="store_true",
-            help="Only output fully annotated functions. Requires infer flag.",
-        )
-        infer.add_argument(
-            "-r",
-            "--recursive",
-            action="store_true",
-            help="Recursively run infer until no new annotations are generated."
-            + " Requires infer flag.",
-        )
-        infer.add_argument(
-            "-i",
-            "--in-place",
-            nargs="*",
-            metavar="path",
-            type=file_exists,
-            help="Add annotations to functions in selected paths."
-            + " Takes a set of files and folders to add annotations to."
-            + " If no paths are given, all functions are annotated."
-            + " WARNING: Modifies original files and requires infer flag and retype",
-        )
-        infer.add_argument(
-            "--json",
-            action="store_true",
-            dest="errors_from_stdin",
-            help="Accept JSON input instead of running full check.",
-        )
-        infer.add_argument(
-            "--annotate-from-existing-stubs",
-            action="store_true",
-            help="Add annotations from existing stubs.",
-        )
-        infer.add_argument(
-            "--debug-infer",
-            action="store_true",
-            help="Print error message when file fails to annotate.",
-        )
+        self._output = command_arguments.JSON
 
     def run(self) -> Command:
-        self._analysis_directory.prepare()
         if self._annotate_from_existing_stubs:
             if self._in_place is None:
-                raise argparse.ArgumentTypeError(
+                raise ValueError(
                     "--annotate-from-existing-stubs cannot be used without the \
                     --in-place argument"
                 )
 
-            type_directory = Path(os.path.join(self._log_directory, "types"))
+            type_directory = Path(
+                os.path.join(self._configuration.log_directory, "types")
+            )
             annotate_from_existing_stubs(
                 Path(self._original_directory),
-                self._formatter,
+                self._configuration.formatter,
                 type_directory,
                 self._in_place,
                 self._debug_infer,
             )
             return self
+        if self._full_stub_paths is not None:
+            if self._full_stub_paths:
+                paths = _parse_paths([Path(path) for path in self._full_stub_paths])
+            else:
+                paths = _get_paths(Path(self._original_directory))
+            modules = {path: parse_path_to_module(path) for path in paths}
+            errors = _existing_annotations_as_errors(
+                modules, self._configuration.project_root
+            )
+            type_directory = Path(
+                os.path.join(self._configuration.log_directory, "types")
+            )
+            stubs = generate_stub_files(full_only=False, errors=errors)
+            write_stubs_to_disk(stubs, type_directory)
+            return self
         if self._errors_from_stdin:
             result = self._get_errors_from_stdin()
+            from_stdin = True
         else:
+            self._analysis_directory.prepare()
             result = self._call_client(command=Infer.NAME)
-        errors = self._get_errors(result, bypass_filtering=True)
+            from_stdin = False
+        errors = self._get_errors(result, bypass_filtering=True, from_stdin=from_stdin)
         if self._print_errors:
             self._print(errors)
         else:
-            type_directory = Path(os.path.join(self._log_directory, "types"))
+            type_directory = Path(
+                os.path.join(self._configuration.log_directory, "types")
+            )
             stubs = generate_stub_files(self._full_only, errors)
             write_stubs_to_disk(stubs, type_directory)
             if self._in_place is not None:
                 LOG.info("Annotating files")
                 annotate_paths(
                     self._configuration.local_root,
-                    self._formatter,
+                    self._configuration.formatter,
                     stubs,
                     type_directory,
                     self._in_place,
@@ -576,19 +548,35 @@ class Infer(Reporting):
     def _flags(self) -> List[str]:
         flags = super()._flags()
         filter_directories = self._get_directories_to_analyze()
-        if len(filter_directories):
-            # pyre-fixme[6]: Expected `Iterable[Variable[_LT (bound to
-            #  _SupportsLessThan)]]` for 1st param but got `Set[str]`.
-            flags.extend(["-filter-directories", ";".join(sorted(filter_directories))])
-        search_path = self._configuration.search_path + typeshed_search_path(
-            self._configuration.typeshed
+        filter_directories.update(
+            set(self._configuration.get_existent_do_not_ignore_errors_in_paths())
         )
+        if len(filter_directories):
+            flags.extend(["-filter-directories", ";".join(sorted(filter_directories))])
+
+        search_path = [
+            search_path.command_line_argument()
+            for search_path in self._configuration.get_existent_search_paths()
+        ]
         if search_path:
             flags.extend(["-search-path", ",".join(search_path)])
+
         if len(self._ignore_infer) > 0:
             flags.extend(["-ignore-infer", ";".join(self._ignore_infer)])
         return flags
 
+    def _get_errors(
+        self, result: Result, bypass_filtering: bool = False, from_stdin: bool = False
+    ) -> Sequence[LegacyError]:
+        analysis_root = os.path.realpath(self._analysis_directory.get_root())
+        relative_root = self._original_directory if from_stdin else analysis_root
+        errors = self._relativize_errors(relative_root, self._parse_raw_errors(result))
+
+        if bypass_filtering:
+            return errors
+        else:
+            return self._filter_errors(errors)
+
     def _get_errors_from_stdin(self) -> Result:
         input = sys.stdin.read()
-        return Result(0, input)
+        return Result(0, json.dumps({"errors": json.loads(input)}))

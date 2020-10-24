@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open OUnit2
@@ -176,12 +178,9 @@ let parse_callable ?name ?(aliases = fun _ -> None) callable =
   | ( Some name,
       Type.Parametric
         { name = "BoundMethod"; parameters = [Single (Callable callable); Single self_type] } ) ->
-      Type.Parametric
-        {
-          name = "BoundMethod";
-          parameters =
-            [Single (Callable { callable with Type.Callable.kind = Named name }); Single self_type];
-        }
+      Type.parametric
+        "BoundMethod"
+        [Single (Callable { callable with Type.Callable.kind = Named name }); Single self_type]
   | _ -> callable
 
 
@@ -224,6 +223,7 @@ let collect_nodes_as_strings source =
           Some (Identifier.sanitized name, location)
       | Visit.Reference { Node.value; location } -> Some (Reference.show value, location)
       | Visit.Substring { Node.value; location } -> Some (Expression.Substring.show value, location)
+      | Visit.Generator _ -> None
   end)
   in
   Collector.collect source
@@ -421,7 +421,8 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
 
         def __test_sink(arg: Any) -> None: ...
         def __test_source() -> Any: ...
-        class TestCallableTarget: ...
+        class TestCallableTarget:
+          def __call__(self) -> int: ...
         def to_callable_target(f: typing.Callable[..., Any]) -> TestCallableTarget: ...
         def __tito( *x: Any, **kw: Any) -> Any: ...
         __global_sink: Any
@@ -828,6 +829,14 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
               def write(self, __s: Any) -> Any: ...
           # This is only available after from __future__ import print_function.
           def print( *values: object, sep: Optional[Text] = ..., end: Optional[Text] = ..., file: Optional[_Writer] = ...) -> None: ...
+
+        class _NotImplementedType(Any):  # type: ignore
+            # A little weird, but typing the __call__ as NotImplemented makes the error message
+            # for NotImplemented() much better
+            __call__: NotImplemented  # type: ignore
+
+        NotImplemented: _NotImplementedType
+
       |}
     in
     if include_helper_builtins then
@@ -948,7 +957,8 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         Tuple: _SpecialForm = ...
         Generic: _SpecialForm = ...
         ClassVar: _SpecialForm = ...
-        NoReturn: _SpecialForm = ...
+        # TODO(T76821797): This is wrong. But it's what typeshed says
+        NoReturn = Union[None]
 
         if sys.version_info < (3, 7):
             class GenericMeta(type): ...
@@ -1140,7 +1150,7 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
     );
     ( "functools.pyi",
       {|
-        from typing import TypeVar, Generic, Callable, Tuple, Any, Dict
+        from typing import TypeVar, Generic, Callable, Tuple, Any, Dict, Optional
         _T = TypeVar("_T")
         _S = TypeVar("_S")
 
@@ -1158,6 +1168,19 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
             keywords: Dict[str, Any]
             def __init__(self, func: Callable[..., _T], *args: Any, **kwargs: Any) -> None: ...
             def __call__(self, *args: Any, **kwargs: Any) -> _T: ...
+
+        class _lru_cache_wrapper(Generic[_T]):
+            __wrapped__: Callable[..., _T]
+            def __call__(self, *args, **kwargs) -> _T: ...
+            def cache_info(self) -> str: ...
+            def cache_clear(self) -> None: ...
+
+        def lru_cache(
+          maxsize: Optional[int] = ...,
+          typed: bool = ...,
+        ) -> Callable[[Callable[..., _T]], _lru_cache_wrapper[_T]]:
+            ...
+
        |}
     );
     ( "subprocess.pyi",
@@ -1371,6 +1394,10 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         def classproperty(f: Any) -> Any: ...
         class Add(Generic[_A, _B], int): pass
         class Multiply(Generic[_A, _B], int): pass
+        class Divide(Generic[_A, _B], int): pass
+        _Ts = ListVariadic("_Ts")
+        class Length(Generic[_Ts], int): pass
+        class Product(Generic[_Ts], int): pass
         |}
     );
     ( "pyre_extensions/type_variable_operators.pyi",

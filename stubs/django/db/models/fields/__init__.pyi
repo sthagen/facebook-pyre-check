@@ -1,8 +1,15 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
 # pyre-unsafe
 
 import datetime
 from decimal import Decimal
 from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, Union
+
+from django.db.models.enums import TextChoices
 
 # This stub is a lie. These are all actually classes that inherit from a common
 # base Field class. But their usage is to be attached to Model classes like this:
@@ -37,7 +44,9 @@ def CharField(
     unique_for_date: datetime.date = ...,
     unique_for_month: int = ...,
     unique_for_year: int = ...,
-    choices: Sequence[Tuple[str, str]] = ...,
+    choices: Union[
+        Sequence[Tuple[str, str]], Callable[[TextChoices], Sequence[Tuple[str, str]]]
+    ] = ...,
     help_text: str = ...,
     db_column: str = ...,
     db_tablespace: str = ...,

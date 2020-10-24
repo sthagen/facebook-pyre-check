@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open OUnit2
 open IntegrationTest
@@ -11,7 +13,7 @@ let test_scheduling context =
   (* Top-level is scheduled. *)
   assert_type_errors
     "'string' + 1"
-    ["Incompatible parameter type [6]: `+` is not supported for operand types `str` and `int`."];
+    ["Unsupported operand [58]: `+` is not supported for operand types `str` and `int`."];
 
   (* Functions are scheduled. *)
   assert_type_errors
@@ -20,14 +22,14 @@ let test_scheduling context =
       def foo() -> None:
         'string' + 1
     |}
-    ["Incompatible parameter type [6]: `+` is not supported for operand types `str` and `int`."];
+    ["Unsupported operand [58]: `+` is not supported for operand types `str` and `int`."];
   assert_type_errors
     {|
       def bar() -> None:
         def foo() -> None:
           'string' + 1
     |}
-    ["Incompatible parameter type [6]: `+` is not supported for operand types `str` and `int`."];
+    ["Unsupported operand [58]: `+` is not supported for operand types `str` and `int`."];
 
   (* Class bodies are scheduled. *)
   assert_type_errors
@@ -35,7 +37,7 @@ let test_scheduling context =
       class Foo:
         'string' + 1
     |}
-    ["Incompatible parameter type [6]: `+` is not supported for operand types `str` and `int`."];
+    ["Unsupported operand [58]: `+` is not supported for operand types `str` and `int`."];
 
   (* Methods are scheduled. *)
   assert_type_errors
@@ -44,7 +46,7 @@ let test_scheduling context =
         def foo(self) -> None:
           'string' + 1
     |}
-    ["Incompatible parameter type [6]: `+` is not supported for operand types `str` and `int`."];
+    ["Unsupported operand [58]: `+` is not supported for operand types `str` and `int`."];
 
   (* Property getters and setters are both scheduled *)
   assert_type_errors
@@ -171,10 +173,7 @@ let test_check_ternary context =
         else:
           return 1
     |}
-    [
-      "Incompatible parameter type [6]: `>` is not supported for operand types `Optional[int]` and \
-       `int`.";
-    ];
+    ["Unsupported operand [58]: `>` is not supported for operand types `Optional[int]` and `int`."];
   assert_type_errors
     {|
       import typing

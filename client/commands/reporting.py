@@ -1,21 +1,19 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
 
-import fnmatch
 import json
 import logging
 import os
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set
 
-from .. import log
+from .. import command_arguments
 from ..analysis_directory import AnalysisDirectory
 from ..configuration import Configuration
-from ..error import Error
-from .command import TEXT, ClientException, Command, CommandArguments, Result
+from ..error import LegacyError, print_errors
+from .command import ClientException, Command, Result
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -26,26 +24,17 @@ class Reporting(Command):
 
     def __init__(
         self,
-        command_arguments: CommandArguments,
+        command_arguments: command_arguments.CommandArguments,
         original_directory: str,
-        configuration: Optional[Configuration] = None,
+        configuration: Configuration,
         analysis_directory: Optional[AnalysisDirectory] = None,
     ) -> None:
         super().__init__(
             command_arguments, original_directory, configuration, analysis_directory
         )
 
-    def _print(self, errors: Sequence[Error]) -> None:
-        if errors:
-            length = len(errors)
-            LOG.error("Found %d type error%s!", length, "s" if length > 1 else "")
-        else:
-            LOG.log(log.SUCCESS, "No type errors found")
-
-        if self._output == TEXT:
-            log.stdout.write("\n".join([repr(error) for error in errors]))
-        else:
-            log.stdout.write(json.dumps([error.__dict__ for error in errors]))
+    def _print(self, errors: Sequence[LegacyError]) -> None:
+        print_errors([error.error for error in errors], output=self._output)
 
     def _get_directories_to_analyze(self) -> Set[str]:
         return self._analysis_directory.get_filter_roots()
@@ -70,49 +59,42 @@ class Reporting(Command):
             LOG.debug("Invalid JSON output: %s", json_output)
         return error_list
 
-    def _get_errors(
-        self, result: Result, bypass_filtering: bool = False
-    ) -> Sequence[Error]:
+    def _parse_raw_errors(self, result: Result) -> Sequence[LegacyError]:
         result.check()
-        errors: List[Error] = []
+        errors: List[LegacyError] = []
         results: List[Dict[str, Any]] = self._load_errors_from_json(result.output)
-
         for error in results:
-            path = os.path.realpath(error["path"])
-            analysis_root = os.path.realpath(self._analysis_directory.get_root())
-            if not Path(analysis_root) in Path(path).parents:
-                path = os.path.realpath(os.path.join(analysis_root, error["path"]))
+            errors.append(LegacyError.create(error, ignore_error=False))
+        return errors
+
+    def _relativize_errors(
+        self, relative_root: str, errors: Sequence[LegacyError]
+    ) -> Sequence[LegacyError]:
+        relativized_errors = []
+        for error in errors:
+            path = os.path.realpath(os.path.join(relative_root, error.error.path))
+            # Nonexistent paths can be created when search path stubs are renamed.
+            if not path.startswith(
+                self._configuration.project_root
+            ) or not os.path.exists(path):
+                continue
 
             # Relativize path to user's cwd.
             relative_path = self._relative_path(path)
-            error["path"] = relative_path
-            ignore_error = False
-            external_to_global_root = True
-            if path.startswith(self._project_root):
-                external_to_global_root = False
-            if not os.path.exists(path):
-                # Nonexistent paths can be created when search path stubs are renamed.
-                external_to_global_root = True
-            for absolute_ignore_path in self._ignore_all_errors_paths:
-                if fnmatch.fnmatch(path, (absolute_ignore_path + "*")):
-                    ignore_error = True
-                    break
-            errors.append(Error(error, ignore_error, external_to_global_root))
+            relativized_errors.append(error.with_path(relative_path))
 
-        if bypass_filtering:
-            return errors
-        else:
-            filtered_errors = [
-                error
-                for error in errors
-                if (
-                    not error.is_ignored()
-                    and (not (error.is_external_to_global_root()))
-                )
-            ]
-            sorted_errors = sorted(
-                filtered_errors,
-                key=lambda error: (error.path, error.line, error.column),
-            )
+        return relativized_errors
 
-            return sorted_errors
+    def _filter_errors(self, errors: Sequence[LegacyError]) -> Sequence[LegacyError]:
+        filtered_errors = [error for error in errors if not error.is_ignored()]
+        sorted_errors = sorted(
+            filtered_errors,
+            key=lambda error: (error.error.path, error.error.line, error.error.column),
+        )
+        return sorted_errors
+
+    def _get_errors(self, result: Result) -> Sequence[LegacyError]:
+        analysis_root = os.path.realpath(self._analysis_directory.get_root())
+        errors = self._relativize_errors(analysis_root, self._parse_raw_errors(result))
+
+        return self._filter_errors(errors)

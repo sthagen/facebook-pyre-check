@@ -1,9 +1,8 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import argparse
 import logging
 import os
 import shutil
@@ -16,12 +15,17 @@ from typing import Optional
 
 import psutil
 
-from .. import configuration_monitor, recently_used_configurations, watchman
+from .. import (
+    command_arguments,
+    configuration_monitor,
+    recently_used_configurations,
+    watchman,
+)
 from ..analysis_directory import BUCK_BUILDER_CACHE_PREFIX, AnalysisDirectory
 from ..configuration import Configuration
 from ..find_directories import BINARY_NAME, CLIENT_NAME
 from ..project_files_monitor import ProjectFilesMonitor
-from .command import Command, CommandArguments
+from .command import Command
 from .rage import Rage
 
 
@@ -74,10 +78,10 @@ class Kill(Command):
 
     def __init__(
         self,
-        command_arguments: CommandArguments,
+        command_arguments: command_arguments.CommandArguments,
         *,
         original_directory: str,
-        configuration: Optional[Configuration] = None,
+        configuration: Configuration,
         analysis_directory: Optional[AnalysisDirectory] = None,
         with_fire: bool,
     ) -> None:
@@ -85,29 +89,6 @@ class Kill(Command):
             command_arguments, original_directory, configuration, analysis_directory
         )
         self._with_fire = with_fire
-
-    @staticmethod
-    def from_arguments(
-        arguments: argparse.Namespace,
-        original_directory: str,
-        configuration: Optional[Configuration] = None,
-        analysis_directory: Optional[AnalysisDirectory] = None,
-    ) -> "Kill":
-        return Kill(
-            CommandArguments.from_arguments(arguments),
-            original_directory=original_directory,
-            configuration=configuration,
-            analysis_directory=analysis_directory,
-            with_fire=arguments.with_fire,
-        )
-
-    @classmethod
-    def add_subparser(cls, parser: argparse._SubParsersAction) -> None:
-        kill = parser.add_parser(cls.NAME)
-        kill.set_defaults(command=cls.from_arguments)
-        kill.add_argument(
-            "--with-fire", action="store_true", help="A no-op flag that adds emphasis."
-        )
 
     def generate_analysis_directory(self) -> AnalysisDirectory:
         return AnalysisDirectory(".")
@@ -127,7 +108,9 @@ class Kill(Command):
     def _delete_caches(self) -> None:
         # If a resource cache exists, delete it to remove corrupted artifacts.
         try:
-            shutil.rmtree(str(self._dot_pyre_directory / "resource_cache"))
+            shutil.rmtree(
+                str(self._configuration.dot_pyre_directory / "resource_cache")
+            )
         except OSError:
             pass
 
@@ -136,7 +119,7 @@ class Kill(Command):
         try:
             scratch_path = (
                 subprocess.check_output(
-                    f"mkscratch path --subdir pyre {self._project_root}".split()
+                    f"mkscratch path --subdir pyre {self._configuration.project_root}".split()
                 )
                 .decode()
                 .strip()
@@ -158,7 +141,9 @@ class Kill(Command):
                         "Failed to delete buck builder cache due to exception: %s.",
                         exception,
                     )
-        recently_used_configurations.Cache(self._dot_pyre_directory).delete()
+        recently_used_configurations.Cache(
+            self._configuration.dot_pyre_directory
+        ).delete()
 
     def _kill_processes_by_name(self, name: str) -> None:
         for process in psutil.process_iter(attrs=["name"]):
@@ -204,10 +189,11 @@ class Kill(Command):
         self._kill_processes_by_name(binary_name)
 
     def _delete_server_files(self) -> None:
-        LOG.info("Deleting server files under %s", self._dot_pyre_directory)
-        socket_paths = self._dot_pyre_directory.glob("**/server.sock")
-        json_server_paths = self._dot_pyre_directory.glob("**/json_server.sock")
-        pid_paths = self._dot_pyre_directory.glob("**/server.pid")
+        dot_pyre_directory = self._configuration.dot_pyre_directory
+        LOG.info("Deleting server files under %s", dot_pyre_directory)
+        socket_paths = dot_pyre_directory.glob("**/server.sock")
+        json_server_paths = dot_pyre_directory.glob("**/json_server.sock")
+        pid_paths = dot_pyre_directory.glob("**/server.pid")
         for path in chain(socket_paths, json_server_paths, pid_paths):
             self._delete_linked_path(path)
 
@@ -225,7 +211,7 @@ class Kill(Command):
             ).run()
 
     def _run(self) -> None:
-        explicit_local = self.local_root
+        explicit_local = self._configuration.local_root
         if explicit_local:
             LOG.warning(
                 "Pyre kill will terminate all running servers. "

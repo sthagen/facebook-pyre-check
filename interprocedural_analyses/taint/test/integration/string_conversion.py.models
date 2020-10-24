@@ -3,9 +3,9 @@
   "kind": "issue",
   "data": {
     "callable": "string_conversion.repr_is_tainted",
-    "callable_line": 22,
+    "callable_line": 27,
     "code": 5001,
-    "line": 24,
+    "line": 29,
     "start": 9,
     "end": 16,
     "filename": "string_conversion.py",
@@ -19,7 +19,7 @@
             "call": {
               "position": {
                 "filename": "string_conversion.py",
-                "line": 24,
+                "line": 29,
                 "start": 9,
                 "end": 16
               },
@@ -35,8 +35,8 @@
               }
             ],
             "features": [
-              { "always-has": "first-index" },
-              { "always-first-index": "tainted" }
+              { "has": "first-index" },
+              { "first-index": "tainted" }
             ]
           }
         ]
@@ -47,7 +47,7 @@
           {
             "root": {
               "filename": "string_conversion.py",
-              "line": 24,
+              "line": 29,
               "start": 9,
               "end": 16
             },
@@ -62,19 +62,16 @@
         ]
       }
     ],
-    "features": [
-      { "always-has": "first-index" },
-      { "always-first-index": "tainted" }
-    ]
+    "features": [ { "has": "first-index" }, { "first-index": "tainted" } ]
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "string_conversion.str_falls_back_to_repr",
-    "callable_line": 27,
+    "callable_line": 32,
     "code": 5001,
-    "line": 29,
+    "line": 34,
     "start": 9,
     "end": 15,
     "filename": "string_conversion.py",
@@ -88,7 +85,7 @@
             "call": {
               "position": {
                 "filename": "string_conversion.py",
-                "line": 29,
+                "line": 34,
                 "start": 9,
                 "end": 15
               },
@@ -104,8 +101,8 @@
               }
             ],
             "features": [
-              { "always-has": "first-index" },
-              { "always-first-index": "tainted" }
+              { "has": "first-index" },
+              { "first-index": "tainted" }
             ]
           }
         ]
@@ -116,7 +113,7 @@
           {
             "root": {
               "filename": "string_conversion.py",
-              "line": 29,
+              "line": 34,
               "start": 9,
               "end": 15
             },
@@ -131,19 +128,16 @@
         ]
       }
     ],
-    "features": [
-      { "always-has": "first-index" },
-      { "always-first-index": "tainted" }
-    ]
+    "features": [ { "has": "first-index" }, { "first-index": "tainted" } ]
   }
 }
 {
   "kind": "issue",
   "data": {
     "callable": "string_conversion.str_is_tainted",
-    "callable_line": 17,
+    "callable_line": 22,
     "code": 5001,
-    "line": 19,
+    "line": 24,
     "start": 9,
     "end": 15,
     "filename": "string_conversion.py",
@@ -157,7 +151,7 @@
             "call": {
               "position": {
                 "filename": "string_conversion.py",
-                "line": 19,
+                "line": 24,
                 "start": 9,
                 "end": 15
               },
@@ -173,8 +167,8 @@
               }
             ],
             "features": [
-              { "always-has": "first-index" },
-              { "always-first-index": "tainted" }
+              { "has": "first-index" },
+              { "first-index": "tainted" }
             ]
           }
         ]
@@ -185,7 +179,7 @@
           {
             "root": {
               "filename": "string_conversion.py",
-              "line": 19,
+              "line": 24,
               "start": 9,
               "end": 15
             },
@@ -200,10 +194,7 @@
         ]
       }
     ],
-    "features": [
-      { "always-has": "first-index" },
-      { "always-first-index": "tainted" }
-    ]
+    "features": [ { "has": "first-index" }, { "first-index": "tainted" } ]
   }
 }
 {
@@ -229,8 +220,8 @@
               }
             ],
             "features": [
-              { "always-has": "first-index" },
-              { "always-first-index": "tainted" }
+              { "has": "first-index" },
+              { "first-index": "tainted" }
             ]
           }
         ]
@@ -263,8 +254,76 @@
               }
             ],
             "features": [
-              { "always-has": "first-index" },
-              { "always-first-index": "tainted" }
+              { "has": "first-index" },
+              { "first-index": "tainted" }
+            ]
+          }
+        ]
+      }
+    ],
+    "sinks": [],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "Ovr{string_conversion.ReprIsTainted::__repr__}",
+    "sources": [
+      {
+        "port": "result",
+        "taint": [
+          {
+            "root": {
+              "filename": "builtins.pyi",
+              "line": -1,
+              "start": -1,
+              "end": -1
+            },
+            "leaves": [
+              {
+                "kind": "UserControlled",
+                "name": "Obj{django.http.Request.GET}",
+                "on_all_flows": true
+              }
+            ],
+            "features": [
+              { "has": "first-index" },
+              { "first-index": "tainted" }
+            ]
+          }
+        ]
+      }
+    ],
+    "sinks": [],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "Ovr{string_conversion.StrIsTainted::__str__}",
+    "sources": [
+      {
+        "port": "result",
+        "taint": [
+          {
+            "root": {
+              "filename": "builtins.pyi",
+              "line": -1,
+              "start": -1,
+              "end": -1
+            },
+            "leaves": [
+              {
+                "kind": "UserControlled",
+                "name": "Obj{django.http.Request.GET}",
+                "on_all_flows": true
+              }
+            ],
+            "features": [
+              { "has": "first-index" },
+              { "first-index": "tainted" }
             ]
           }
         ]
@@ -285,7 +344,7 @@
           {
             "root": {
               "filename": "string_conversion.py",
-              "line": 14,
+              "line": 19,
               "start": 15,
               "end": 26
             },
@@ -297,8 +356,8 @@
               }
             ],
             "features": [
-              { "always-has": "first-index" },
-              { "always-first-index": "tainted" }
+              { "has": "first-index" },
+              { "first-index": "tainted" }
             ]
           }
         ]
@@ -319,7 +378,7 @@
           {
             "root": {
               "filename": "string_conversion.py",
-              "line": 9,
+              "line": 14,
               "start": 15,
               "end": 26
             },
@@ -331,8 +390,8 @@
               }
             ],
             "features": [
-              { "always-has": "first-index" },
-              { "always-first-index": "tainted" }
+              { "has": "first-index" },
+              { "first-index": "tainted" }
             ]
           }
         ]

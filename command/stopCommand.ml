@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Pyre
@@ -81,8 +83,13 @@ let stop ~log_directory ~local_root =
 
 
 let run log_directory local_root () =
-  let code = stop ~log_directory ~local_root in
-  exit code
+  try
+    let code = stop ~log_directory ~local_root in
+    exit code
+  with
+  | error ->
+      Log.log_exception error;
+      raise error
 
 
 let command =

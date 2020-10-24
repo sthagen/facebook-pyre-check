@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Ast
 
@@ -17,8 +19,7 @@ let clear_alarm previous =
   ()
 
 
-(* seconds *)
-let callable_max_time = 120
+let callable_max_time_in_seconds = 60
 
 let with_alarm name f () =
   let callback _ =
@@ -27,10 +28,10 @@ let with_alarm name f () =
       "The analysis of %a is taking more than %d seconds (pid = %d)"
       Reference.pp
       name
-      callable_max_time
+      callable_max_time_in_seconds
       pid
   in
-  let id = register_alarm callable_max_time callback in
+  let id = register_alarm callable_max_time_in_seconds callback in
   try
     let result = f () in
     clear_alarm id;

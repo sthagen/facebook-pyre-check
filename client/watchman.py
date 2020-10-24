@@ -1,4 +1,4 @@
-# Copyright (c) 2019-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -6,24 +6,35 @@
 
 import functools
 import logging
-import multiprocessing
+import logging.handlers
 import os
 import signal
 import sys
-from multiprocessing import Event
+import time
+from abc import abstractstaticmethod
 from pathlib import Path
 from typing import Any, Dict, List, NamedTuple
 
+from .configuration import Configuration
 from .filesystem import acquire_lock, remove_if_exists
 from .process import Process
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
+WAIT_TIME_IN_SECONDS = 10.0
 
 Subscription = NamedTuple(
     "Subscription", [("root", str), ("name", str), ("subscription", Dict[str, Any])]
 )
+
+
+class WatchmanRestartedException(Exception):
+    pass
+
+
+class WatchmanSubscriberTimedOut(Exception):
+    pass
 
 
 def compute_pid_path(base_path: str, name: str) -> str:
@@ -31,31 +42,42 @@ def compute_pid_path(base_path: str, name: str) -> str:
 
 
 class Subscriber(object):
-    def __init__(self, base_path: str) -> None:
+    def __init__(self, base_path: str, configuration: Configuration) -> None:
         self._base_path: str = base_path
+        self._configuration = configuration
         self._alive: bool = True
-        self._ready: multiprocessing.synchronize.Event = Event()
+        self._ready: bool = False
 
     @property
     def _name(self) -> str:
         """
-            A name to identify the subscriber. Used as the directory and file names
-            for the log, lock, and pid files.
+        A name to identify the subscriber. Used as the directory and file names
+        for the log, lock, and pid files.
         """
         raise NotImplementedError
 
     @property
     def _subscriptions(self) -> List[Subscription]:
         """
-            List of subscriptions
+        List of subscriptions
         """
         raise NotImplementedError
 
     def _handle_response(self, response: Dict[str, Any]) -> None:
         """
-            Callback invoked when a message is received from watchman
+        Callback invoked when a message is received from watchman
         """
         raise NotImplementedError
+
+    @staticmethod
+    @abstractstaticmethod
+    def is_alive(configuration: Configuration) -> bool:
+        """This needs to be a static method. It is called by newly-spawned
+        commands, which are in a different process."""
+        ...
+
+    def cleanup(self) -> None:
+        pass
 
     @property
     @functools.lru_cache(1)
@@ -68,7 +90,6 @@ class Subscriber(object):
             return pywatchman.client(timeout=None)
         except ImportError as exception:
             LOG.info(f"Not starting {self._name} due to {exception}")
-            # pyre-fixme[7]: Expected `client` but got implicit return value of `None`.
             sys.exit(1)
 
     def _subscribe_to_watchman(self, subscription: Subscription) -> None:
@@ -93,11 +114,18 @@ class Subscriber(object):
                 )
             ):
                 LOG.debug(f"Acquired lock on {lock_path}")
-                file_handler = logging.FileHandler(
-                    os.path.join(self._base_path, f"{self._name}.log"), mode="w"
+                file_handler = logging.handlers.RotatingFileHandler(
+                    os.path.join(self._base_path, f"{self._name}.log"),
+                    mode="a",
+                    # Keep at most 5 log files on disk
+                    backupCount=4,
+                    # Limit the size of each log file to 10MB
+                    maxBytes=10 * 1000 * 1000,
                 )
                 file_handler.setFormatter(
-                    logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+                    logging.Formatter(
+                        "%(asctime)s [PID %(process)d] %(levelname)s %(message)s"
+                    )
                 )
                 LOG.addHandler(file_handler)
 
@@ -119,23 +147,34 @@ class Subscriber(object):
                     # This call is blocking, which prevents this loop from burning CPU.
                     response = connection.receive()
                     if response.get("is_fresh_instance", False):
-                        # TODO: is_fresh_instance can occur at any time, not just the
-                        # first response. Ignoring the initial response is fine,
-                        # but if we receive a fresh instance response later we
-                        # should assume that all files may have been changed.
-                        root = response.get("root", "<no-root-found>")
-                        LOG.info(f"Ignoring is_fresh_instance message for {root}")
+                        if not self._ready:
+                            root = response.get("root", "<no-root-found>")
+                            self._ready = True
+                            LOG.info(
+                                f"Ignoring initial is_fresh_instance message for {root}"
+                            )
+                        else:
+                            raise WatchmanRestartedException()
                     else:
                         self._handle_response(response)
-                    self._ready.set()  # At least one message has been received.
         finally:
             LOG.info("Cleaning up lock and pid files before exiting.")
             remove_if_exists(lock_path)
+            self.cleanup()
+
+    def _sleep_until_monitor_is_up(self) -> None:
+        stop_time = time.time() + WAIT_TIME_IN_SECONDS
+        LOG.info("Waiting for monitor to start up...")
+        while time.time() < stop_time:
+            if self.is_alive(self._configuration):
+                return
+            time.sleep(0.1)
+        raise WatchmanSubscriberTimedOut
 
     def daemonize(self) -> None:
         """We double-fork here to detach the daemon process from the parent.
-           If we were to just fork the child as a daemon, we'd have to worry about the
-           parent process exiting zombifying the daemon."""
+        If we were to just fork the child as a daemon, we'd have to worry about the
+        parent process exiting zombifying the daemon."""
         LOG.debug(f"Daemonizing the {self._name}.")
         if os.fork() == 0:
             pid = os.fork()
@@ -147,12 +186,14 @@ class Subscriber(object):
                     os.close(sys.stdout.fileno())
                     os.close(sys.stderr.fileno())
                     self._run()
-                    sys.exit(0)
+                    os._exit(0)
                 except Exception as exception:
                     LOG.info(f"Not running {self._name} due to {exception}")
-                    sys.exit(1)
+                    os._exit(1)
             else:
-                sys.exit(0)
+                os._exit(0)
+
+        self._sleep_until_monitor_is_up()
 
 
 def stop_subscriptions(base_path: str, subscriber_name: str) -> None:

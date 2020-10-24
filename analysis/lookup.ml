@@ -1,7 +1,9 @@
-(* Copyright (c) 2016-present, Facebook, Inc.
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree. *)
+ * LICENSE file in the root directory of this source tree.
+ *)
 
 open Core
 open Pyre
@@ -199,6 +201,8 @@ module NodeVisitor = struct
   let node = node_base ~postcondition:false
 
   let node_postcondition = node_base ~postcondition:true
+
+  let visit_statement_children _ _ = true
 end
 
 module Visit = struct

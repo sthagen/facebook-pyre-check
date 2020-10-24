@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
 import gc
 from unittest import TestCase, mock
@@ -17,6 +21,7 @@ class RetryableTest(TestCase):
         self.times_through = 0
 
     @retryable(num_tries=5)
+    # pyre-fixme[3]: Return type must be annotated.
     def semiRaiseException(self):
         self.times_through += 1
         if self.times_through < 3:
@@ -25,6 +30,7 @@ class RetryableTest(TestCase):
             return True
 
     @retryable(num_tries=5, retryable_exs=[ImportError])
+    # pyre-fixme[3]: Return type must be annotated.
     def raiseRetryableException(self):
         self.times_through += 1
         if self.times_through < 3:
@@ -32,6 +38,7 @@ class RetryableTest(TestCase):
         else:
             raise Exception("You are killing me.")
 
+    # pyre-fixme[3]: Return type must be annotated.
     def testRetries(self):
         self.assertTrue(self.semiRaiseException())
         self.assertTrue(
@@ -42,11 +49,13 @@ class RetryableTest(TestCase):
             self.times_through == 4, "times_through = %d" % (self.times_through)
         )
 
+    # pyre-fixme[3]: Return type must be annotated.
     def testRetryableExceptions(self):
         self.assertRaises(Exception, lambda: self.raiseRetryableException())
         self.assertEqual(3, self.times_through)
 
 
+# pyre-fixme[3]: Return type must be annotated.
 def mocked_time_generator():
     """
     Returns time in 10s increments
@@ -60,9 +69,12 @@ def mocked_time_generator():
 @mock.patch("time.time", side_effect=mocked_time_generator())
 class LogTimeTest(TestCase):
     @log_time
+    # pyre-fixme[3]: Return type must be annotated.
     def takes_some_time(self):
         pass
 
+    # pyre-fixme[3]: Return type must be annotated.
+    # pyre-fixme[2]: Parameter must be annotated.
     def testBasic(self, mocked_time_generator):
         with self.assertLogs("sapp") as context_manager:
             self.takes_some_time()
@@ -77,9 +89,11 @@ class LogTimeTest(TestCase):
 
 class CatchUserErrorTest(TestCase):
     @catch_user_error()
+    # pyre-fixme[3]: Return type must be annotated.
     def throwsUserError(self):
         raise UserError
 
+    # pyre-fixme[3]: Return type must be annotated.
     def testCatchesUserError(self):
         try:
             self.throwsUserError()
@@ -87,9 +101,11 @@ class CatchUserErrorTest(TestCase):
             self.fail("Unexpected UserError")
 
     @catch_user_error()
+    # pyre-fixme[3]: Return type must be annotated.
     def throwsException(self):
         raise Exception
 
+    # pyre-fixme[3]: Return type must be annotated.
     def testDoesNotCatchOtherExceptions(self):
         with self.assertRaises(Exception):
             self.throwsException()
@@ -97,9 +113,11 @@ class CatchUserErrorTest(TestCase):
 
 class CatchKeyboardInterruptTest(TestCase):
     @catch_keyboard_interrupt()
+    # pyre-fixme[3]: Return type must be annotated.
     def throwsKeyboardInterrupt(self):
         raise KeyboardInterrupt
 
+    # pyre-fixme[3]: Return type must be annotated.
     def testCatchesKeyboardInterrupt(self):
         try:
             self.throwsKeyboardInterrupt()
@@ -107,9 +125,11 @@ class CatchKeyboardInterruptTest(TestCase):
             self.fail("Unexpected KeyboardInterrupt")
 
     @catch_keyboard_interrupt()
+    # pyre-fixme[3]: Return type must be annotated.
     def throwsException(self):
         raise Exception
 
+    # pyre-fixme[3]: Return type must be annotated.
     def testDoesNotCatchOtherExceptions(self):
         with self.assertRaises(Exception):
             self.throwsException()
