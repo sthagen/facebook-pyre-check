@@ -400,16 +400,18 @@ class SharedAnalysisDirectory(AnalysisDirectory):
             message_type = json_rpc.LanguageServerMessageType.INFORMATION.value
         show_status_message = json_rpc.Request(
             method="window/showStatus",
-            parameters={
-                "message": message,
-                "shortMessage": short_message,
-                "type": message_type,
-                "actions": [],
-                "progress": {
-                    "numerator": DONT_CARE_PROGRESS_VALUE,
-                    "denominator": DONT_CARE_PROGRESS_VALUE,
-                },
-            },
+            parameters=json_rpc.ByNameParameters(
+                {
+                    "message": message,
+                    "shortMessage": short_message,
+                    "type": message_type,
+                    "actions": [],
+                    "progress": {
+                        "numerator": DONT_CARE_PROGRESS_VALUE,
+                        "denominator": DONT_CARE_PROGRESS_VALUE,
+                    },
+                }
+            ),
         )
         try:
             with SocketConnection(configuration.log_directory) as socket_connection:
@@ -491,6 +493,7 @@ class SharedAnalysisDirectory(AnalysisDirectory):
         LOG.info("Updating shared directory `%s`", self.get_root())
 
         self.rebuild()
+        # pyre-fixme[35]: Target cannot be annotated.
         new_paths: Set[str] = set(self._symbolic_links.keys())
 
         buck.clear_buck_query_cache()
@@ -861,7 +864,7 @@ def resolve_analysis_directory(
             project_root=project_root,
             filter_paths=filter_paths,
             local_configuration_root=local_configuration_root,
-            extensions=configuration.get_valid_extensions(),
+            extensions=configuration.get_valid_extension_suffixes(),
             search_path=[
                 search_path.path()
                 for search_path in configuration.get_existent_search_paths()

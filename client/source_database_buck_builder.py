@@ -7,6 +7,7 @@ import argparse
 import itertools
 import json
 import logging
+import re
 import shutil
 import subprocess
 import sys
@@ -51,16 +52,16 @@ def _get_buck_query_arguments(
         "query",
         "--json",
         *mode_sublist,
-        'kind("python_binary|python_library|python_test", "%s")'
+        'kind("python_binary|python_library|python_test", %s)'
         # Don't check generated rules.
-        " - attrfilter(labels, generated, '%s')"
+        " - attrfilter(labels, generated, %s)"
         # `python_unittest()` sources are separated into a macro-generated
         # library, so make sure we include those.
-        " + attrfilter(labels, unittest-library, '%s')"
+        " + attrfilter(labels, unittest-library, %s)"
         # Provide an opt-out label so that rules can avoid type-checking (e.g.
         # some libraries wrap generated sources which are expensive to build
         # and therefore typecheck).
-        " - attrfilter(labels, no_pyre, '%s')",
+        " - attrfilter(labels, no_pyre, %s)",
         *specifications,
     ]
 
@@ -74,6 +75,22 @@ def _ignore_target(target: str) -> bool:
     return target.endswith(suffixes_for_ignored_targets)
 
 
+def _load_json_ignoring_extra_data(source: str) -> Dict[str, str]:
+    try:
+        return json.loads(source)
+    except json.JSONDecodeError as exception:
+        LOG.debug(f"JSON output: {source}")
+        LOG.warning("Failed to parse JSON. Retrying by ignoring extra data...")
+
+        match = re.search(r"Extra data: line ([0-9]+) column", exception.args[0])
+        if match is None:
+            raise exception
+
+        line_number = int(match.group(1))
+        source_without_extra_data = "\n".join(source.splitlines()[: line_number - 1])
+        return json.loads(source_without_extra_data)
+
+
 def _query_targets(
     target_specifications: List[str],
     mode: Optional[str],
@@ -85,7 +102,7 @@ def _query_targets(
     ]
     query_arguments = _get_buck_query_arguments(normalized_target_specifications, mode)
     LOG.info("Running `buck query`...")
-    specification_targets_dictionary = json.loads(
+    specification_targets_dictionary = _load_json_ignoring_extra_data(
         _buck(query_arguments, isolation_prefix)
     )
     targets = list(chain(*specification_targets_dictionary.values()))
@@ -112,7 +129,9 @@ def _build_targets(
         "w+", prefix="pyre_buck_build_arguments"
     ) as arguments_file:
         Path(arguments_file.name).write_text("\n".join(build_arguments))
-        return json.loads(_buck(["build", f"@{arguments_file.name}"], isolation_prefix))
+
+        output = _buck(["build", f"@{arguments_file.name}"], isolation_prefix)
+        return _load_json_ignoring_extra_data(output)
 
 
 def _load_source_databases(

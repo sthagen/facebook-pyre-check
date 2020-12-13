@@ -17,6 +17,7 @@ import testslide
 from .. import command_arguments, find_directories
 from ..configuration import (
     Configuration,
+    ExtensionElement,
     InvalidConfiguration,
     PartialConfiguration,
     SimpleSearchPathElement,
@@ -129,7 +130,33 @@ class PartialConfigurationTest(unittest.TestCase):
                     json.dumps({"extensions": [".foo", ".bar"]})
                 ).extensions
             ),
-            [".foo", ".bar"],
+            [ExtensionElement(".foo", False), ExtensionElement(".bar", False)],
+        )
+        self.assertListEqual(
+            list(
+                PartialConfiguration.from_string(
+                    json.dumps(
+                        {
+                            "extensions": [
+                                ".foo",
+                                {
+                                    "suffix": ".bar",
+                                    "include_suffix_in_module_qualifier": True,
+                                },
+                                {
+                                    "suffix": ".baz",
+                                    "include_suffix_in_module_qualifier": False,
+                                },
+                            ]
+                        }
+                    )
+                ).extensions
+            ),
+            [
+                ExtensionElement(".foo", False),
+                ExtensionElement(".bar", True),
+                ExtensionElement(".baz", False),
+            ],
         )
         self.assertEqual(
             PartialConfiguration.from_string(
@@ -264,7 +291,7 @@ class PartialConfigurationTest(unittest.TestCase):
         assert_raises(json.dumps({"do_not_ignore_errors_in": "abc"}))
         assert_raises(json.dumps({"dot_pyre_directory": {}}))
         assert_raises(json.dumps({"exclude": 42}))
-        assert_raises(json.dumps({"extensions": {"derp": 42}}))
+        assert_raises(json.dumps({"extensions": 42}))
         assert_raises(json.dumps({"formatter": 4.2}))
         assert_raises(json.dumps({"ignore_all_errors": [1, 2, 3]}))
         assert_raises(json.dumps({"ignore_infer": [False, "bc"]}))
@@ -487,7 +514,7 @@ class ConfigurationTest(testslide.TestCase):
                 do_not_ignore_all_errors_in=["foo"],
                 dot_pyre_directory=None,
                 excludes=["exclude"],
-                extensions=[".ext"],
+                extensions=[ExtensionElement(".ext", False)],
                 file_hash="abc",
                 formatter="formatter",
                 ignore_all_errors=["bar"],
@@ -515,7 +542,7 @@ class ConfigurationTest(testslide.TestCase):
         self.assertListEqual(list(configuration.do_not_ignore_all_errors_in), ["foo"])
         self.assertEqual(configuration.dot_pyre_directory, Path("root/.pyre"))
         self.assertListEqual(list(configuration.excludes), ["exclude"])
-        self.assertEqual(configuration.extensions, [".ext"])
+        self.assertEqual(configuration.extensions, [ExtensionElement(".ext", False)])
         self.assertEqual(configuration.file_hash, "abc")
         self.assertEqual(configuration.formatter, "formatter")
         self.assertListEqual(list(configuration.ignore_all_errors), ["bar"])
@@ -583,7 +610,7 @@ class ConfigurationTest(testslide.TestCase):
 
     def test_existent_search_path(self) -> None:
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             ensure_directories_exists(root_path, ["a", "b/c", "d/e/f"])
 
             self.assertListEqual(
@@ -644,10 +671,10 @@ class ConfigurationTest(testslide.TestCase):
 
     def test_existent_ignore_infer(self) -> None:
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             ensure_directories_exists(root_path, ["a", "b/c"])
 
-            self.assertListEqual(
+            self.assertCountEqual(
                 Configuration(
                     project_root=str(root_path),
                     dot_pyre_directory=Path(".pyre"),
@@ -663,10 +690,10 @@ class ConfigurationTest(testslide.TestCase):
 
     def test_existent_do_not_ignore_errors(self) -> None:
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             ensure_directories_exists(root_path, ["a", "b/c"])
 
-            self.assertListEqual(
+            self.assertCountEqual(
                 Configuration(
                     project_root=str(root_path),
                     dot_pyre_directory=Path(".pyre"),
@@ -682,10 +709,10 @@ class ConfigurationTest(testslide.TestCase):
 
     def test_existent_ignore_all_errors(self) -> None:
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             ensure_directories_exists(root_path, ["a", "b/c", "b/d"])
 
-            self.assertListEqual(
+            self.assertCountEqual(
                 Configuration(
                     project_root=str(root_path),
                     dot_pyre_directory=Path(".pyre"),
@@ -704,13 +731,6 @@ class ConfigurationTest(testslide.TestCase):
                     str(root_path / "b/d"),
                 ],
             )
-
-    def test_get_binary_version_unset(self) -> None:
-        self.assertIsNone(
-            Configuration(
-                project_root="irrelevant", dot_pyre_directory=Path(".pyre"), binary=None
-            ).get_binary_version()
-        )
 
     def test_get_binary_version_ok(self) -> None:
         binary_path = "foo"
@@ -877,29 +897,36 @@ class ConfigurationTest(testslide.TestCase):
                 "abc",
             )
 
-    def test_get_valid_extensions(self) -> None:
+    def test_get_valid_extension_suffixes(self) -> None:
         self.assertListEqual(
             Configuration(
                 project_root="irrelevant",
                 dot_pyre_directory=Path(".pyre"),
                 extensions=[],
-            ).get_valid_extensions(),
+            ).get_valid_extension_suffixes(),
             [],
         )
         self.assertListEqual(
             Configuration(
                 project_root="irrelevant",
                 dot_pyre_directory=Path(".pyre"),
-                extensions=[".foo", ".bar"],
-            ).get_valid_extensions(),
+                extensions=[
+                    ExtensionElement(".foo", False),
+                    ExtensionElement(".bar", False),
+                ],
+            ).get_valid_extension_suffixes(),
             [".foo", ".bar"],
         )
         self.assertListEqual(
             Configuration(
                 project_root="irrelevant",
                 dot_pyre_directory=Path(".pyre"),
-                extensions=["foo", ".bar", "baz"],
-            ).get_valid_extensions(),
+                extensions=[
+                    ExtensionElement("foo", False),
+                    ExtensionElement(".bar", False),
+                    ExtensionElement("baz", False),
+                ],
+            ).get_valid_extension_suffixes(),
             [".bar"],
         )
 
@@ -907,7 +934,7 @@ class ConfigurationTest(testslide.TestCase):
         # We assume there does not exist a `.pyre_configuration` file that
         # covers this temporary directory.
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             with switch_working_directory(root_path):
                 configuration = create_configuration(
                     command_arguments.CommandArguments(
@@ -921,7 +948,7 @@ class ConfigurationTest(testslide.TestCase):
 
     def test_create_from_global_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             write_configuration_file(root_path, {"strict": False})
 
             with switch_working_directory(root_path):
@@ -940,7 +967,7 @@ class ConfigurationTest(testslide.TestCase):
 
     def test_create_from_local_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             ensure_directories_exists(root_path, ["foo", "bar", "baz"])
             write_configuration_file(
                 root_path, {"strict": False, "search_path": ["foo"]}
@@ -975,7 +1002,7 @@ class ConfigurationTest(testslide.TestCase):
 
     def test_check_nested_local_configuration_no_nesting(self) -> None:
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             write_configuration_file(root_path, {})
             write_configuration_file(root_path, {}, relative="local")
 
@@ -992,7 +1019,7 @@ class ConfigurationTest(testslide.TestCase):
 
     def test_check_nested_local_configuration_not_excluded(self) -> None:
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             write_configuration_file(root_path, {})
             write_configuration_file(root_path, {}, relative="nest")
             write_configuration_file(root_path, {}, relative="nest/local")
@@ -1008,7 +1035,7 @@ class ConfigurationTest(testslide.TestCase):
 
     def test_check_nested_local_configuration_excluded(self) -> None:
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             write_configuration_file(root_path, {})
             write_configuration_file(
                 root_path,
@@ -1030,7 +1057,7 @@ class ConfigurationTest(testslide.TestCase):
 
     def test_check_nested_local_configuration_excluded_parent(self) -> None:
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             write_configuration_file(root_path, {})
             write_configuration_file(
                 root_path,
@@ -1052,7 +1079,7 @@ class ConfigurationTest(testslide.TestCase):
 
     def test_check_nested_local_configuration_not_all_nesting_excluded(self) -> None:
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             write_configuration_file(root_path, {})
             write_configuration_file(root_path, {}, relative="nest0")
             write_configuration_file(
@@ -1073,7 +1100,7 @@ class ConfigurationTest(testslide.TestCase):
 
     def test_check_nested_local_configuration_all_nesting_excluded(self) -> None:
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             write_configuration_file(root_path, {})
             write_configuration_file(
                 root_path,
@@ -1100,7 +1127,7 @@ class ConfigurationTest(testslide.TestCase):
 
     def test_check_nested_local_configuration_expand_global_root(self) -> None:
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             write_configuration_file(root_path, {})
             write_configuration_file(
                 root_path,
@@ -1127,7 +1154,7 @@ class ConfigurationTest(testslide.TestCase):
 
     def test_check_nested_local_configuration_expand_relative_root(self) -> None:
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             write_configuration_file(root_path, {})
             write_configuration_file(
                 root_path, {"ignore_all_errors": ["nest1/local"]}, relative="nest0"

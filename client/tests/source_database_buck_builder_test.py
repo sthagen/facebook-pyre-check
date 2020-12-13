@@ -17,10 +17,10 @@ class SourceDatabaseBuckBuilderTest(unittest.TestCase):
         self._query_arguments = [
             "query",
             "--json",
-            'kind("python_binary|python_library|python_test", "%s") '
-            "- attrfilter(labels, generated, '%s') "
-            "+ attrfilter(labels, unittest-library, '%s') "
-            "- attrfilter(labels, no_pyre, '%s')",
+            'kind("python_binary|python_library|python_test", %s) '
+            "- attrfilter(labels, generated, %s) "
+            "+ attrfilter(labels, unittest-library, %s) "
+            "- attrfilter(labels, no_pyre, %s)",
             "//foo/bar/...",
             "//bar:baz",
         ]
@@ -41,10 +41,10 @@ class SourceDatabaseBuckBuilderTest(unittest.TestCase):
                 "query",
                 "--json",
                 "@mode/foo",
-                'kind("python_binary|python_library|python_test", "%s") '
-                "- attrfilter(labels, generated, '%s') "
-                "+ attrfilter(labels, unittest-library, '%s') "
-                "- attrfilter(labels, no_pyre, '%s')",
+                'kind("python_binary|python_library|python_test", %s) '
+                "- attrfilter(labels, generated, %s) "
+                "+ attrfilter(labels, unittest-library, %s) "
+                "- attrfilter(labels, no_pyre, %s)",
                 "//foo/bar/...",
                 "//bar:baz",
             ],
@@ -213,3 +213,39 @@ class SourceDatabaseBuckBuilderTest(unittest.TestCase):
             ),
             "some_root//foo/bar:baz",
         )
+
+    def test_load_json__no_extra_data(self) -> None:
+        self.assertEqual(
+            source_database_buck_builder._load_json_ignoring_extra_data(
+                """
+                {
+                    "a": "b",
+                    "a2": "b2"
+                }
+                """
+            ),
+            {"a": "b", "a2": "b2"},
+        )
+
+    def test_load_json__extra_data(self) -> None:
+        self.assertEqual(
+            source_database_buck_builder._load_json_ignoring_extra_data(
+                """
+                {
+                    "a": "b",
+                    "a2": "b2"
+                }
+                Some error message.
+                Some error message.
+                """
+            ),
+            {"a": "b", "a2": "b2"},
+        )
+
+    def test_load_json__exception(self) -> None:
+        with self.assertRaises(json.JSONDecodeError):
+            source_database_buck_builder._load_json_ignoring_extra_data(
+                """
+                Malformed JSON.
+                """
+            )

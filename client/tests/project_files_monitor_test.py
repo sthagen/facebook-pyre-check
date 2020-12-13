@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 from .. import json_rpc, project_files_monitor
 from ..analysis_directory import UpdatedPaths
-from ..json_rpc import Request, read_request
+from ..json_rpc import Request, read_lsp_request
 from ..project_files_monitor import MonitorException, ProjectFilesMonitor
 from ..socket_connection import SocketConnection, SocketException
 from ..tests.mocks import mock_configuration
@@ -61,7 +61,7 @@ class MonitorTest(unittest.TestCase):
         )
 
         # additional extensions
-        configuration.get_valid_extensions = lambda: [".thrift", ".whl"]
+        configuration.get_valid_extension_suffixes = lambda: [".thrift", ".whl"]
         monitor = ProjectFilesMonitor(configuration, ".", analysis_directory)
         self.assertEqual(len(monitor._subscriptions), 1)
         subscription = monitor._subscriptions[0]
@@ -121,22 +121,22 @@ class MonitorTest(unittest.TestCase):
                 outfile = connection.makefile(mode="wb")
                 infile = connection.makefile(mode="rb")
                 request = Request(
-                    method="handshake/server", parameters={"version": "123"}
+                    method="handshake/server",
+                    parameters=json_rpc.ByNameParameters({"version": "123"}),
                 )
-                request.write(outfile)
+                json_rpc.write_lsp_request(outfile, request)
 
-                response = read_request(infile)
-                if not response or response.method != "handshake/client":
+                response = read_lsp_request(infile)
+                if response.method != "handshake/client":
                     errors.append("Client handshake malformed")
                     return
 
                 request = Request(method="handshake/socket_added")
-                request.write(outfile)
+                json_rpc.write_lsp_request(outfile, request)
 
-                updated_message = read_request(infile)
+                updated_message = read_lsp_request(infile)
                 if (
-                    not updated_message
-                    or updated_message.method != "updateFiles"
+                    updated_message.method != "updateFiles"
                     or not updated_message.parameters
                     or updated_message.parameters.get("files")
                     != ["/ANALYSIS/a.py", "/ANALYSIS/subdir/b.py"]
@@ -187,6 +187,7 @@ class MonitorTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             configuration = mock_configuration()
             configuration.extensions = []
+            configuration.log_directory = root + ".pyre"
             analysis_directory = MagicMock()
             analysis_directory.get_root.return_value = root
 

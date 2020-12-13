@@ -104,12 +104,12 @@ class InteractiveTest(TestCase):
             filename=filename,
         )
 
-    def testState(self):
-        self.interactive.current_run_id = 1
-        self.interactive.current_issue_instance_id = 2
-        self.interactive.current_frame_id = 3
-        self.interactive.sources = {1}
-        self.interactive.sinks = {2}
+    def testState(self) -> None:
+        self.interactive._current_run_id = DBID(1)
+        self.interactive.current_issue_instance_id = DBID(2)
+        self.interactive.current_frame_id = DBID(3)
+        self.interactive.sources = {"1"}
+        self.interactive.sinks = {"2"}
 
         self.interactive.state()
         output = self.stdout.getvalue()
@@ -118,8 +118,8 @@ class InteractiveTest(TestCase):
         self.assertIn("Current run: 1", output)
         self.assertIn("Current issue instance: 2", output)
         self.assertIn("Current trace frame: 3", output)
-        self.assertIn("Sources filter: {1}", output)
-        self.assertIn("Sinks filter: {2}", output)
+        self.assertIn("Sources filter: {'1'}", output)
+        self.assertIn("Sinks filter: {'2'}", output)
 
     def testListIssuesBasic(self):
         run = self.fakes.run()
@@ -614,16 +614,16 @@ class InteractiveTest(TestCase):
             session.commit()
 
         self.interactive.latest_run("c")
-        self.assertEqual(self.interactive.current_run_id, 6)
+        self.assertEqual(int(self.interactive._current_run_id), 6)
 
         self.interactive.latest_run("b")
-        self.assertEqual(self.interactive.current_run_id, 5)
+        self.assertEqual(int(self.interactive._current_run_id), 5)
 
         self.interactive.latest_run("a")
-        self.assertEqual(self.interactive.current_run_id, 3)
+        self.assertEqual(int(self.interactive._current_run_id), 3)
 
         self.interactive.latest_run("d")
-        self.assertEqual(self.interactive.current_run_id, 3)
+        self.assertEqual(int(self.interactive._current_run_id), 3)
         self.assertIn("No runs with kind 'd'", self.stderr.getvalue())
 
     def testSetIssue(self):
@@ -641,14 +641,14 @@ class InteractiveTest(TestCase):
         self.interactive.setup()
 
         self.interactive.issue(2)
-        self.assertEqual(self.interactive.current_issue_instance_id, 2)
+        self.assertEqual(int(self.interactive.current_issue_instance_id), 2)
         stdout = self.stdout.getvalue().strip()
         self.assertNotIn("Issue 1", stdout)
         self.assertIn("Issue 2", stdout)
         self.assertNotIn("Issue 3", stdout)
 
         self.interactive.issue(1)
-        self.assertEqual(self.interactive.current_issue_instance_id, 1)
+        self.assertEqual(int(self.interactive.current_issue_instance_id), 1)
         stdout = self.stdout.getvalue().strip()
         self.assertIn("Issue 1", stdout)
         self.assertNotIn("Issue 3", stdout)
@@ -682,9 +682,9 @@ class InteractiveTest(TestCase):
             session.commit()
 
         self.interactive.setup()
-        self.assertEqual(int(self.interactive.current_run_id), 2)
+        self.assertEqual(int(self.interactive._current_run_id), 2)
         self.interactive.issue(1)
-        self.assertEqual(int(self.interactive.current_run_id), 1)
+        self.assertEqual(int(self.interactive._current_run_id), 1)
 
     def testGetSources(self):
         self.fakes.instance()
@@ -1637,26 +1637,26 @@ class InteractiveTest(TestCase):
         self.interactive.trace_tuples[0].trace_frame.id = 4
         self.assertEqual(-1, self.interactive._current_branch_index(trace_frames))
 
-    def testVerifyEntrypointSelected(self):
-        self.interactive.current_issue_instance_id = -1
-        self.interactive.current_frame_id = -1
+    def testVerifyEntrypointSelected(self) -> None:
+        self.interactive.current_issue_instance_id = DBID(-1)
+        self.interactive.current_frame_id = DBID(-1)
         with self.assertRaises(UserError):
             self.interactive._verify_entrypoint_selected()
 
-        self.interactive.current_issue_instance_id = 1
+        self.interactive.current_issue_instance_id = DBID(1)
         try:
             self.interactive._verify_entrypoint_selected()
         except UserError:
             self.fail("Unexpected UserError")
 
-        self.interactive.current_issue_instance_id = -1
-        self.interactive.current_frame_id = 1
+        self.interactive.current_issue_instance_id = DBID(-1)
+        self.interactive.current_frame_id = DBID(1)
         try:
             self.interactive._verify_entrypoint_selected()
         except UserError:
             self.fail("Unexpected UserError")
 
-        self.interactive.current_issue_instance_id = 1
+        self.interactive.current_issue_instance_id = DBID(1)
         with self.assertRaises(AssertionError):
             self.interactive._verify_entrypoint_selected()
 
@@ -1720,7 +1720,8 @@ class InteractiveTest(TestCase):
 
     def testCreateIssueOutputStringNoSourcesNoSinks(self):
         issue = IssueQueryResult(
-            id=1,
+            issue_id=1,
+            issue_instance_id=1,
             filename="module.py",
             location=SourceLocation(1, 2, 3),
             code=1000,
@@ -1729,6 +1730,7 @@ class InteractiveTest(TestCase):
             min_trace_length_to_sources=1,
             min_trace_length_to_sinks=1,
             features=set(),
+            is_new_issue=False,
         )
         sources = []
         sinks = ["sink1", "sink2"]
@@ -1749,7 +1751,8 @@ class InteractiveTest(TestCase):
 
     def testCreateIssueOutputStringNoFeatures(self):
         issue = IssueQueryResult(
-            id=1,
+            issue_id=1,
+            issue_instance_id=1,
             filename="module.py",
             location=SourceLocation(1, 2, 3),
             code=1000,
@@ -1758,6 +1761,7 @@ class InteractiveTest(TestCase):
             min_trace_length_to_sources=1,
             min_trace_length_to_sinks=1,
             features=set(),
+            is_new_issue=False,
         )
         sources = []
         sinks = ["sink1"]
@@ -1777,7 +1781,8 @@ class InteractiveTest(TestCase):
 
     def testCreateIssueOutputStringTraceLength(self):
         issue1 = IssueQueryResult(
-            id=1,
+            issue_id=1,
+            issue_instance_id=1,
             filename="module.py",
             location=SourceLocation(1, 2, 3),
             code=1000,
@@ -1786,6 +1791,7 @@ class InteractiveTest(TestCase):
             min_trace_length_to_sources=0,
             min_trace_length_to_sinks=6,
             features=set(),
+            is_new_issue=False,
         )
         sources = []
         sinks = ["sink1", "sink2"]
@@ -1796,7 +1802,8 @@ class InteractiveTest(TestCase):
         self.assertIn("Min Trace Length: Source (0) | Sink (6)", result)
 
         issue2 = IssueQueryResult(
-            id=1,
+            issue_id=1,
+            issue_instance_id=1,
             filename="module.py",
             location=SourceLocation(1, 2, 3),
             code=1000,
@@ -1805,6 +1812,7 @@ class InteractiveTest(TestCase):
             min_trace_length_to_sources=3,
             min_trace_length_to_sinks=1,
             features=set(),
+            is_new_issue=False,
         )
         sources = []
         sinks = ["sink1", "sink2"]
@@ -1971,7 +1979,7 @@ else:
         )
         self.fakes.save_all(self.db)
 
-        self.interactive.current_run_id = 1
+        self.interactive._current_run_id = 1
         self._clear_stdout()
         self.interactive.frames(kind=TraceKind.POSTCONDITION)
         self.assertEqual(
@@ -2003,7 +2011,7 @@ else:
             session.add(run)
             session.commit()
 
-        self.interactive.current_run_id = 1
+        self.interactive._current_run_id = 1
         self._clear_stdout()
         self.interactive.frames(callers=["call2"])
         self.assertEqual(
@@ -2117,9 +2125,9 @@ else:
             session.commit()
 
         self.interactive.setup()
-        self.assertEqual(int(self.interactive.current_run_id), 2)
+        self.assertEqual(int(self.interactive._current_run_id), 2)
         self.interactive.frame(int(frames[0].id))
-        self.assertEqual(int(self.interactive.current_run_id), 1)
+        self.assertEqual(int(self.interactive._current_run_id), 1)
 
     def testIsBeforeRoot(self):
         self.interactive.trace_tuples = [
@@ -2262,27 +2270,6 @@ else:
             ["caller", "F", "D", "E"],
         )
         self.assertTrue(self.interactive.trace_tuples[0].placeholder)
-
-    def testAllLeavesByKind(self):
-        shared_texts = [
-            SharedText(id=1, contents="source1", kind=SharedTextKind.SOURCE),
-            SharedText(id=2, contents="source2", kind=SharedTextKind.SOURCE),
-            SharedText(id=3, contents="source3", kind=SharedTextKind.SOURCE),
-            SharedText(id=4, contents="sink4", kind=SharedTextKind.SINK),
-            SharedText(id=5, contents="sink5", kind=SharedTextKind.SINK),
-        ]
-        with self.db.make_session() as session:
-            self._add_to_session(session, shared_texts)
-            session.commit()
-
-            self.assertEqual(
-                self.interactive._all_leaves_by_kind(session, SharedTextKind.SOURCE),
-                {1: "source1", 2: "source2", 3: "source3"},
-            )
-            self.assertEqual(
-                self.interactive._all_leaves_by_kind(session, SharedTextKind.SINK),
-                {4: "sink4", 5: "sink5"},
-            )
 
     def testDetails(self):
         run = self.fakes.run()

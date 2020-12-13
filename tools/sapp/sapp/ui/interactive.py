@@ -3,6 +3,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+from __future__ import annotations
+
 import builtins
 import enum
 import itertools
@@ -10,12 +12,14 @@ import os
 import sys
 from collections import defaultdict
 from typing import (
+    Any,
     Callable,
     DefaultDict,
     Dict,
     Iterable,
     List,
     Optional,
+    Sequence,
     Set,
     Tuple,
     Type,
@@ -57,22 +61,22 @@ from ..models import (
     create as create_models,
 )
 from ..pipeline.base_parser import BaseParser
-from . import trace
-from .issues import IssueQueryResult, Query
+from . import issues as issues_module, trace
+from .issues import Instance, IssueQueryResult
 from .trace import TraceFrameQueryResult, TraceTuple
 
 
 T = TypeVar("T")
 
-# pyre-fixme[5]: Global expression must be annotated.
+# pyre-ignore[5]: SQLAlchemy
 FilenameText = aliased(SharedText)
-# pyre-fixme[5]: Global expression must be annotated.
+# pyre-ignore[5]: SQLAlchemy
 CallableText = aliased(SharedText)
-# pyre-fixme[5]: Global expression must be annotated.
+# pyre-ignore[5]: SQLAlchemy
 CallerText = aliased(SharedText)
-# pyre-fixme[5]: Global expression must be annotated.
+# pyre-ignore[5]: SQLAlchemy
 CalleeText = aliased(SharedText)
-# pyre-fixme[5]: Global expression must be annotated.
+# pyre-ignore[5]: SQLAlchemy
 MessageText = aliased(SharedText)
 
 
@@ -83,6 +87,9 @@ class ListFilterException(Exception):
 class LeafOrderBy(str, enum.Enum):
     name = "name"
     number_issues = "number_issues"
+
+
+ScopeVariables = Dict[str, Union[Callable[..., None], TraceKind]]
 
 
 class Interactive:
@@ -127,17 +134,15 @@ details              show additional information about the current trace frame
     SELF_SCOPE_KEY = "_interactive"
     PARSER_CLASS_SCOPE_KEY = "_parser_class"
 
-    # pyre-fixme[3]: Return type must be annotated.
     def __init__(
         self,
         *,
         database: DB,
-        repository_directory: str = "",
+        repository_directory: Optional[str] = None,
         parser_class: Type[BaseParser],
-    ):
+    ) -> None:
         self.db = database
-        # pyre-fixme[24]: Generic type `Callable` expects 2 type parameters.
-        self.scope_vars: Dict[str, Union[Callable, TraceKind]] = {
+        self.scope_vars: ScopeVariables = {
             "precondition": TraceKind.PRECONDITION,
             "postcondition": TraceKind.POSTCONDITION,
             "help": self.help,
@@ -166,24 +171,21 @@ details              show additional information about the current trace frame
             self.SELF_SCOPE_KEY: self,
             self.PARSER_CLASS_SCOPE_KEY: parser_class,
         }
-        # pyre-fixme[4]: Attribute must be annotated.
-        self.repository_directory = repository_directory or os.getcwd()
+        self.repository_directory: str = repository_directory or os.getcwd()
         self.current_analysis_output: Optional[AnalysisOutput] = None
 
-        self.current_run_id: int = -1
+        self._current_run_id: DBID = DBID(-1)
 
         # Trace exploration relies on either of these
-        self.current_issue_instance_id: int = -1
-        self.current_frame_id: int = -1
+        self.current_issue_instance_id: DBID = DBID(-1)
+        self.current_frame_id: DBID = DBID(-1)
 
         self.sources: Set[str] = set()
         self.sinks: Set[str] = set()
         self.features: Set[str] = set()
-        self.sources_dict: Dict[int, str] = {}
         self.sinks_dict: Dict[int, str] = {}
-        self.features_dict: Dict[int, str] = {}
-        # pyre-fixme[4]: Attribute must be annotated.
-        self.leaf_dicts = {}
+
+        self._leaf_lookup: trace.LeafLookup = trace.LeafLookup({}, {}, {})
 
         # Tuples representing the trace of the current issue
         self.trace_tuples: List[TraceTuple] = []
@@ -194,8 +196,7 @@ details              show additional information about the current trace frame
         # history_key on self.prompt().
         self.prompt_history: Dict[str, History] = {}
 
-    # pyre-fixme[24]: Generic type `Callable` expects 2 type parameters.
-    def setup(self) -> Dict[str, Callable]:
+    def setup(self) -> ScopeVariables:
         create_models(self.db)
         with self.db.make_session() as session:
             latest_run_id = (
@@ -204,12 +205,7 @@ details              show additional information about the current trace frame
                 .scalar()
             )
 
-            self.sources_dict = self._all_leaves_by_kind(session, SharedTextKind.SOURCE)
-            self.sinks_dict = self._all_leaves_by_kind(session, SharedTextKind.SINK)
-            self.features_dict = self._all_leaves_by_kind(
-                session, SharedTextKind.FEATURE
-            )
-            self.leaf_dicts = (self.sources_dict, self.sinks_dict, self.features_dict)
+            self._leaf_lookup = trace.LeafLookup.create(session)
 
         print("=" * len(self.welcome_message))
         print(self.welcome_message)
@@ -221,15 +217,11 @@ details              show additional information about the current trace frame
                 f"Try running '{os.path.basename(sys.argv[0])} analyze' first."
             )
         else:
-            self.current_run_id = int(latest_run_id)
+            self._current_run_id = latest_run_id
 
-        # pyre-fixme[7]: Expected `Dict[str, Callable[..., Any]]` but got `Dict[str,
-        #  Union[Callable[..., Any], TraceKind]]`.
         return self.scope_vars
 
-    # pyre-fixme[3]: Return type must be annotated.
-    # pyre-fixme[2]: Parameter must be annotated.
-    def help(self, object=None):
+    def help(self, object: Optional[object] = None) -> None:
         if object is None:
             print(self.help_message)
             return
@@ -237,21 +229,18 @@ details              show additional information about the current trace frame
         # pyre-fixme[16]: Module `builtins` has no attribute `help`.
         builtins.help(object)
 
-    # pyre-fixme[3]: Return type must be annotated.
-    def state(self):
+    def state(self) -> None:
         print(f"              Database: {self.db.dbtype}:{self.db.dbname}")
         print(f"       Analysis Output: {self.current_analysis_output}")
         print(f"  Repository directory: {self.repository_directory}")
-        print(f"           Current run: {self.current_run_id}")
-        print(f"Current issue instance: {self.current_issue_instance_id}")
-        print(f"   Current trace frame: {self.current_frame_id}")
+        print(f"           Current run: {self._current_run_id}")
+        print(f"Current issue instance: {int(self.current_issue_instance_id)}")
+        print(f"   Current trace frame: {int(self.current_frame_id)}")
         print(f"        Sources filter: {self.sources}")
         print(f"          Sinks filter: {self.sinks}")
 
     @catch_keyboard_interrupt()
-    # pyre-fixme[3]: Return type must be annotated.
-    # pyre-fixme[2]: Parameter must be annotated.
-    def runs(self, use_pager=None):
+    def runs(self, use_pager: bool = False) -> None:
         pager = self._resolve_pager(use_pager)
 
         with self.db.make_session() as session:
@@ -267,9 +256,7 @@ details              show additional information about the current trace frame
         print(f"Found {len(run_strings)} runs.")
 
     @catch_keyboard_interrupt()
-    # pyre-fixme[3]: Return type must be annotated.
-    # pyre-fixme[2]: Parameter must be annotated.
-    def run(self, run_id):
+    def run(self, run_id: DBID) -> None:
         with self.db.make_session() as session:
             selected_run = (
                 session.query(Run)
@@ -285,7 +272,7 @@ details              show additional information about the current trace frame
             )
             return
 
-        self.current_run_id = int(selected_run.id)
+        self._current_run_id = selected_run.id
         print(f"Set run to {run_id}.")
 
     def _get_profile_basedir(self) -> str:
@@ -308,10 +295,8 @@ details              show additional information about the current trace frame
         self,
         message: Optional[str] = "",
         history_key: Optional[str] = None,
-        # pyre-fixme[2]: Parameter must be annotated.
-        *args,
-        # pyre-fixme[2]: Parameter must be annotated.
-        **kwargs,
+        *args: Any,
+        **kwargs: Any,
     ) -> str:
         try:
             ret = prompt(
@@ -371,13 +356,11 @@ details              show additional information about the current trace frame
         if selected_run_id.resolved() is None:
             raise UserError(f"No runs with kind '{run_kind}'.")
 
-        self.current_run_id = int(selected_run_id)
-        print(f"Set run to {self.current_run_id}.")
+        self._current_run_id = selected_run_id
+        print(f"Set run to {self._current_run_id}.")
 
     @catch_keyboard_interrupt()
-    # pyre-fixme[3]: Return type must be annotated.
-    # pyre-fixme[2]: Parameter must be annotated.
-    def issue(self, issue_instance_id):
+    def issue(self, issue_instance_id: DBID) -> None:
         """Select an issue.
 
         Parameters:
@@ -412,14 +395,14 @@ details              show additional information about the current trace frame
                 session, issue_instance_id, SharedTextKind.FEATURE
             )
 
-        self.current_issue_instance_id = int(selected_issue.id)
-        self.current_frame_id = -1
+        self.current_issue_instance_id = selected_issue.id
+        self.current_frame_id = DBID(-1)
         self.current_trace_frame_index = 1  # first one after the source
 
         print(f"Set issue to {issue_instance_id}.")
-        if int(selected_issue.run_id) != self.current_run_id:
-            self.current_run_id = int(selected_issue.run_id)
-            print(f"Set run to {self.current_run_id}.")
+        if selected_issue.run_id != self._current_run_id:
+            self._current_run_id = selected_issue.run_id
+            print(f"Set run to {self._current_run_id}.")
         print()
 
         self._generate_trace_from_issue()
@@ -427,12 +410,11 @@ details              show additional information about the current trace frame
 
     @catch_keyboard_interrupt()
     @catch_user_error()
-    # pyre-fixme[3]: Return type must be annotated.
-    def show(self):
+    def show(self) -> None:
         """More details about the selected issue or trace frame."""
         self._verify_entrypoint_selected()
 
-        if self.current_issue_instance_id != -1:
+        if int(self.current_issue_instance_id) != -1:
             self._show_current_issue_instance()
             return
 
@@ -440,11 +422,9 @@ details              show additional information about the current trace frame
 
     @catch_keyboard_interrupt()
     @catch_user_error()
-    # pyre-fixme[3]: Return type must be annotated.
     def issues(
         self,
-        # pyre-fixme[9]: use_pager has type `bool`; used as `None`.
-        use_pager: bool = None,
+        use_pager: bool = False,
         *,
         codes: Optional[Union[int, List[int]]] = None,
         callables: Optional[Union[str, List[str]]] = None,
@@ -456,7 +436,7 @@ details              show additional information about the current trace frame
         exact_trace_length_to_sinks: Optional[int] = None,
         max_trace_length_to_sources: Optional[int] = None,
         max_trace_length_to_sinks: Optional[int] = None,
-    ):
+    ) -> None:
         """Lists issues for the selected run.
 
         Parameters (all optional):
@@ -492,7 +472,7 @@ details              show additional information about the current trace frame
         pager = self._resolve_pager(use_pager)
 
         with self.db.make_session() as session:
-            builder = Query(session, self.current_run_id)
+            builder = Instance(session, self._current_run_id)
 
             if codes is not None:
                 if not isinstance(codes, int) and not isinstance(codes, list):
@@ -591,9 +571,18 @@ details              show additional information about the current trace frame
                 builder = builder.where_exclude_features(exclude_features)
 
             issues = builder.get()
-            sources_list = [builder.sources(issue.id) for issue in issues]
-            sinks_list = [builder.sinks(issue.id) for issue in issues]
-            features_list = [builder.features(issue.id) for issue in issues]
+            sources_list = [
+                issues_module.sources(session, issue.issue_instance_id)
+                for issue in issues
+            ]
+            sinks_list = [
+                issues_module.sinks(session, issue.issue_instance_id)
+                for issue in issues
+            ]
+            features_list = [
+                issues_module.features(session, issue.issue_instance_id)
+                for issue in issues
+            ]
 
         issue_strings = []
         for issue, sources, sinks, features in zip(
@@ -605,11 +594,10 @@ details              show additional information about the current trace frame
 
         issue_output = f"\n{'-' * 80}\n".join(issue_strings)
         pager(issue_output)
-        print(f"Found {len(issue_strings)} issues with run_id {self.current_run_id}.")
+        print(f"Found {len(issue_strings)} issues with run_id {self._current_run_id}.")
 
     @catch_user_error()
-    # pyre-fixme[3]: Return type must be annotated.
-    def trace(self):
+    def trace(self) -> None:
         """Show a trace for the selected issue or trace frame.
 
         The '-->' token points to the currently active trace frame within the
@@ -637,7 +625,6 @@ details              show additional information about the current trace frame
 
     @catch_keyboard_interrupt()
     @catch_user_error()
-    # pyre-fixme[3]: Return type must be annotated.
     def frames(
         self,
         *,
@@ -645,7 +632,7 @@ details              show additional information about the current trace frame
         callees: Optional[Union[str, List[str]]] = None,
         kind: Optional[TraceKind] = None,
         limit: Optional[int] = 10,
-    ):
+    ) -> None:
         """Display trace frames independent of the current issue.
 
         Parameters (all optional):
@@ -671,7 +658,7 @@ details              show additional information about the current trace frame
                     CalleeText.contents.label("callee"),
                     TraceFrame.callee_port,
                 )
-                .filter(TraceFrame.run_id == self.current_run_id)
+                .filter(TraceFrame.run_id == self._current_run_id)
                 .join(CallerText, CallerText.id == TraceFrame.caller_id)
                 .join(CalleeText, CalleeText.id == TraceFrame.callee_id)
             )
@@ -726,24 +713,24 @@ details              show additional information about the current trace frame
 
             if selected_frame.kind == TraceKind.POSTCONDITION:
                 self.sinks = set()
-                self.sources = trace.Query(session).get_leaves_trace_frame(
-                    self.leaf_dicts, int(selected_frame.id), SharedTextKind.SOURCE
+                self.sources = trace.get_leaves_trace_frame(
+                    session, int(selected_frame.id), SharedTextKind.SOURCE
                 )
 
             else:
-                self.sinks = trace.Query(session).get_leaves_trace_frame(
-                    self.leaf_dicts, int(selected_frame.id), SharedTextKind.SINK
+                self.sinks = trace.get_leaves_trace_frame(
+                    session, int(selected_frame.id), SharedTextKind.SINK
                 )
 
                 self.sources = set()
 
-        self.current_frame_id = int(selected_frame.id)
-        self.current_issue_instance_id = -1
+        self.current_frame_id = selected_frame.id
+        self.current_issue_instance_id = DBID(-1)
 
         print(f"Set trace frame to {frame_id}.")
-        if int(selected_frame.run_id) != self.current_run_id:
-            self.current_run_id = int(selected_frame.run_id)
-            print(f"Set run to {self.current_run_id}.")
+        if int(selected_frame.run_id) != self._current_run_id:
+            self._current_run_id = selected_frame.run_id
+            print(f"Set run to {self._current_run_id}.")
         print()
 
         self._generate_trace_from_frame()
@@ -754,7 +741,7 @@ details              show additional information about the current trace frame
     def leaves(
         self,
         kind: str = "sink",
-        use_pager: Optional[bool] = None,
+        use_pager: bool = False,
         limit: Optional[int] = None,
         order_by: Optional[LeafOrderBy] = None,
     ) -> None:
@@ -792,12 +779,13 @@ details              show additional information about the current trace frame
                     IssueInstance,
                     IssueInstanceSharedTextAssoc.issue_instance_id == IssueInstance.id,
                 )
-                .filter(IssueInstance.run_id == self.current_run_id)
+                .filter(IssueInstance.run_id == self._current_run_id)
                 .filter(SharedText.kind == text_kind)
             )
             for (_, name) in query:
                 leaves[name] += 1
 
+        # pyre-fixme[35]: Target cannot be annotated.
         query: Iterable[Tuple[str, int]]
         if order_by == LeafOrderBy.name:
             query = sorted(leaves.items(), key=lambda leaf: leaf[0])
@@ -817,7 +805,7 @@ details              show additional information about the current trace frame
 
         pager("\n".join(leaves_strings))
         print(
-            f"Found {len(leaves)} {kind}s in issues with run_id {self.current_run_id}."
+            f"Found {len(leaves)} {kind}s in issues with run_id {self._current_run_id}."
         )
 
     @catch_keyboard_interrupt()
@@ -854,12 +842,12 @@ details              show additional information about the current trace frame
                     or current_trace_tuple.trace_frame.kind == TraceKind.PRECONDITION
                 )
 
-            parent_trace_frames = trace.Query(session).next_trace_frames(
-                self.leaf_dicts,
-                self.current_run_id,
-                leaf_kind,
+            parent_trace_frames = trace.next_frames(
+                session,
                 current_trace_tuple.trace_frame,
+                leaf_kind,
                 set(),
+                self._current_run_id,
                 backwards=True,
             )
         if len(parent_trace_frames) == 0:
@@ -877,30 +865,28 @@ details              show additional information about the current trace frame
     def _generate_trace_from_issue(self) -> None:
         with self.db.make_session() as session:
             issue = self._get_current_issue(session)
-            postcondition_initial_frames = trace.Query(session).initial_trace_frames(
-                # pyre-fixme[6]: Expected `int` for 1st param but got `DBID`.
-                issue.id,
+            postcondition_initial_frames = trace.initial_frames(
+                session,
+                issue.issue_instance_id,
                 TraceKind.POSTCONDITION,
             )
-            precondition_initial_frames = trace.Query(session).initial_trace_frames(
-                # pyre-fixme[6]: Expected `int` for 1st param but got `DBID`.
-                issue.id,
+            precondition_initial_frames = trace.initial_frames(
+                session,
+                issue.issue_instance_id,
                 TraceKind.PRECONDITION,
             )
 
-            postcondition_navigation = trace.Query(session).navigate_trace_frames(
-                self.leaf_dicts,
-                self.current_run_id,
-                self.sources,
-                self.sinks,
+            postcondition_navigation = trace.navigate_trace_frames(
+                session,
                 postcondition_initial_frames,
-            )
-            precondition_navigation = trace.Query(session).navigate_trace_frames(
-                self.leaf_dicts,
-                self.current_run_id,
                 self.sources,
                 self.sinks,
+            )
+            precondition_navigation = trace.navigate_trace_frames(
+                session,
                 precondition_initial_frames,
+                self.sources,
+                self.sinks,
             )
 
         self.trace_tuples = (
@@ -920,8 +906,6 @@ details              show additional information about the current trace frame
             ]
             + self._create_trace_tuples(precondition_navigation)
         )
-        # pyre-fixme[16]: `Interactive` has no attribute `trace_tuples_id`.
-        self.trace_tuples_id = self.current_issue_instance_id
         self.current_trace_frame_index = len(postcondition_navigation)
 
     def _generate_trace_from_frame(self) -> None:
@@ -945,12 +929,11 @@ details              show additional information about the current trace frame
                 .join(FilenameText, FilenameText.id == TraceFrame.filename_id)
                 .one()
             )
-            navigation = trace.Query(session).navigate_trace_frames(
-                self.leaf_dicts,
-                self.current_run_id,
+            navigation = trace.navigate_trace_frames(
+                session,
+                [TraceFrameQueryResult.from_record(trace_frame)],
                 self.sources,
                 self.sinks,
-                [TraceFrameQueryResult.from_record(trace_frame)],
             )
 
         first_trace_frame = navigation[0][0]
@@ -969,8 +952,7 @@ details              show additional information about the current trace frame
         self.current_trace_frame_index = 0
 
     @catch_user_error()
-    # pyre-fixme[3]: Return type must be annotated.
-    def next_cursor_location(self):
+    def next_cursor_location(self) -> None:
         """Move cursor to the next trace frame."""
         self._verify_entrypoint_selected()
         self.current_trace_frame_index = min(
@@ -979,8 +961,7 @@ details              show additional information about the current trace frame
         self.trace()
 
     @catch_user_error()
-    # pyre-fixme[3]: Return type must be annotated.
-    def prev_cursor_location(self):
+    def prev_cursor_location(self) -> None:
         """Move cursor to the previous trace frame."""
         self._verify_entrypoint_selected()
         self.current_trace_frame_index = max(self.current_trace_frame_index - 1, 0)
@@ -1021,8 +1002,8 @@ details              show additional information about the current trace frame
                 ", ".join(
                     [
                         leaf
-                        for leaf in trace.Query(session).get_leaves_trace_frame(
-                            self.leaf_dicts,
+                        for leaf in trace.get_leaves_trace_frame(
+                            session,
                             int(frame.id),
                             trace.trace_kind_to_shared_text_kind(frame.kind),
                         )
@@ -1081,12 +1062,11 @@ details              show additional information about the current trace frame
                     "Branch number invalid "
                     f"(expected 1-{len(branches)} but got {selected_number})."
                 )
-            new_navigation = trace.Query(session).navigate_trace_frames(
-                self.leaf_dicts,
-                self.current_run_id,
+            new_navigation = trace.navigate_trace_frames(
+                session,
+                branches,
                 self.sources,
                 self.sinks,
-                branches,
                 selected_number - 1,
             )
 
@@ -1126,7 +1106,9 @@ details              show additional information about the current trace frame
             self.current_trace_frame_index
         ].trace_frame
 
-        filename = os.path.join(self.repository_directory, current_trace_frame.filename)
+        filename = os.path.join(
+            self.repository_directory, current_trace_frame.filename or "<undefined>"
+        )
         file_lines: List[str] = []
 
         try:
@@ -1191,9 +1173,7 @@ details              show additional information about the current trace frame
                 if self._is_before_root()
                 else TraceKind.PRECONDITION
             )
-            return trace.Query(session).initial_trace_frames(
-                self.current_issue_instance_id, kind
-            )
+            return trace.initial_frames(session, self.current_issue_instance_id, kind)
 
         parent_trace_frame = self.trace_tuples[parent_index].trace_frame
 
@@ -1207,8 +1187,12 @@ details              show additional information about the current trace frame
                 or parent_trace_frame.kind == TraceKind.PRECONDITION
             )
 
-        return trace.Query(session).next_trace_frames(
-            self.leaf_dicts, self.current_run_id, leaf_kind, parent_trace_frame, set()
+        return trace.next_frames(
+            session,
+            parent_trace_frame,
+            leaf_kind,
+            set(),
+            self._current_run_id,
         )
 
     def _is_before_root(self) -> bool:
@@ -1240,44 +1224,50 @@ details              show additional information about the current trace frame
             )
         return caller_buckets
 
-    # pyre-fixme[3]: Return type must be annotated.
     def _add_list_or_string_filter_to_query(
         self,
         filter: Union[str, List[str]],
-        # pyre-fixme[24]: Generic type `RawQuery` expects 1 type parameter.
-        query: RawQuery,
+        query: RawQuery[T],
         column: InstrumentedAttribute,
         argument_name: str,
-    ):
+    ) -> RawQuery[T]:
+        # pyre-fixme[7]: Expected `RawQuery[Variable[T]]` but got `RawQuery[str]`.
         return self._add_list_or_element_filter_to_query(
-            filter, query, column, argument_name, str
+            filter,
+            # pyre-fixme[6]: Expected `RawQuery[Variable[T]]` for 2nd param but got
+            #  `RawQuery[Variable[T]]`.
+            query,
+            column,
+            argument_name,
+            str,
         )
 
-    # pyre-fixme[3]: Return type must be annotated.
     def _add_list_or_int_filter_to_query(
         self,
         filter: Union[int, List[int]],
-        # pyre-fixme[24]: Generic type `RawQuery` expects 1 type parameter.
-        query: RawQuery,
+        query: RawQuery[T],
         column: InstrumentedAttribute,
         argument_name: str,
-    ):
+    ) -> RawQuery[T]:
+        # pyre-fixme[7]: Expected `RawQuery[Variable[T]]` but got `RawQuery[int]`.
         return self._add_list_or_element_filter_to_query(
-            filter, query, column, argument_name, int
+            filter,
+            # pyre-fixme[6]: Expected `RawQuery[Variable[T]]` for 2nd param but got
+            #  `RawQuery[Variable[T]]`.
+            query,
+            column,
+            argument_name,
+            int,
         )
 
     def _add_list_or_element_filter_to_query(
         self,
         filter: Union[T, List[T]],
-        # pyre-fixme[24]: Generic type `RawQuery` expects 1 type parameter.
-        query: RawQuery,
+        query: RawQuery[T],
         column: InstrumentedAttribute,
         argument_name: str,
-        # pyre-fixme[24]: Generic type `type` expects 1 type parameter, use
-        #  `typing.Type` to avoid runtime subscripting errors.
-        element_type: Type,
-        # pyre-fixme[24]: Generic type `RawQuery` expects 1 type parameter.
-    ) -> RawQuery:
+        element_type: Type[Union[str, int]],
+    ) -> RawQuery[T]:
         if isinstance(filter, element_type):
             return query.filter(column.like(filter))
         if isinstance(filter, list):
@@ -1289,15 +1279,13 @@ details              show additional information about the current trace frame
             f"'{argument_name}' should be {element_type} or " f"list of {element_type}."
         )
 
-    # pyre-fixme[3]: Return type must be annotated.
     def _add_max_int_filter_to_query(
         self,
         filter: int,
-        # pyre-fixme[24]: Generic type `RawQuery` expects 1 type parameter.
-        query: RawQuery,
+        query: RawQuery[T],
         column: InstrumentedAttribute,
         argument_name: str,
-    ):
+    ) -> RawQuery[T]:
         if isinstance(filter, int):
             return query.filter(column <= filter)
         raise UserError(f"'{argument_name}' should be int.")
@@ -1388,9 +1376,7 @@ details              show additional information about the current trace frame
                 "To see more, call 'frames' with the 'limit' argument."
             )
 
-    # pyre-fixme[3]: Return type must be annotated.
-    # pyre-fixme[2]: Parameter must be annotated.
-    def _output_trace_tuples(self, trace_tuples):
+    def _output_trace_tuples(self, trace_tuples: Sequence[TraceTuple]) -> None:
         expand = "+"
         max_length_index = len(str(len(trace_tuples) - 1)) + 1
         max_length_split = max(
@@ -1478,7 +1464,7 @@ details              show additional information about the current trace frame
         features_output = f"\n{' ' * 18}".join(features)
         return "\n".join(
             [
-                f"Issue {issue.id}",
+                f"Issue {issue.issue_instance_id}",
                 f"            Code: {issue.code}",
                 f"         Message: {issue.message}",
                 f"        Callable: {issue.callable}",
@@ -1511,9 +1497,7 @@ details              show additional information about the current trace frame
 
         with self.db.make_session() as session:
             leaves_output = f"\n{' ' * 13}".join(
-                trace.Query(session).get_leaves_trace_frame(
-                    self.leaf_dicts, trace_frame.id, leaf_kind
-                )
+                trace.get_leaves_trace_frame(session, trace_frame.id, leaf_kind)
             )
 
         return "\n".join(
@@ -1585,15 +1569,15 @@ details              show additional information about the current trace frame
         self.current_trace_frame_index = 0
 
     # pyre-fixme[3]: Return type must be annotated.
-    # pyre-fixme[2]: Parameter must be annotated.
-    def _resolve_pager(self, use_pager):
+    def _resolve_pager(self, use_pager: bool):
         use_pager = sys.stdin.isatty() if use_pager is None else use_pager
         return page.page if use_pager else page.display_page
 
     def _get_current_issue(self, session: Session) -> IssueQueryResult:
         return (
             session.query(
-                IssueInstance.id,
+                # pyre-ignore[16]: SQLAlchemy
+                IssueInstance.id.label("issue_instance_id"),
                 FilenameText.contents.label("filename"),
                 IssueInstance.location,
                 Issue.code,
@@ -1611,9 +1595,9 @@ details              show additional information about the current trace frame
         )
 
     def _get_leaves_issue_instance(
-        self, session: Session, issue_instance_id: int, kind: SharedTextKind
+        self, session: Session, issue_instance_id: DBID, kind: SharedTextKind
     ) -> Set[str]:
-        message_ids = [
+        ids = [
             int(id)
             for id, in session.query(SharedText.id)
             .distinct(SharedText.id)
@@ -1624,12 +1608,9 @@ details              show additional information about the current trace frame
             .filter(IssueInstanceSharedTextAssoc.issue_instance_id == issue_instance_id)
             .filter(SharedText.kind == kind)
         ]
-        return trace.leaf_dict_lookups(
-            self.sources_dict, self.sinks_dict, self.features_dict, message_ids, kind
-        )
+        return self._leaf_lookup.resolve(ids, kind)
 
-    # pyre-fixme[3]: Return type must be annotated.
-    def _show_current_issue_instance(self):
+    def _show_current_issue_instance(self) -> None:
         with self.db.make_session() as session:
             issue = self._get_current_issue(session)
 
@@ -1639,8 +1620,7 @@ details              show additional information about the current trace frame
             )
         )
 
-    # pyre-fixme[3]: Return type must be annotated.
-    def _show_current_trace_frame(self):
+    def _show_current_trace_frame(self) -> None:
         with self.db.make_session() as session:
             trace_frame = (
                 session.query(
@@ -1671,9 +1651,15 @@ details              show additional information about the current trace frame
         return None
 
     def _verify_entrypoint_selected(self) -> None:
-        assert self.current_issue_instance_id == -1 or self.current_frame_id == -1
+        assert (
+            int(self.current_issue_instance_id) == -1
+            or int(self.current_frame_id) == -1
+        )
 
-        if self.current_issue_instance_id == -1 and self.current_frame_id == -1:
+        if (
+            int(self.current_issue_instance_id) == -1
+            and int(self.current_frame_id) == -1
+        ):
             raise UserError(
                 "Use 'issue ID' or 'frame ID' to select an entrypoint first."
             )
@@ -1682,16 +1668,6 @@ details              show additional information about the current trace frame
         current_trace_tuple = self.trace_tuples[self.current_trace_frame_index]
         if current_trace_tuple.branches < 2:
             raise UserError("This trace frame has no alternate branches to take.")
-
-    def _all_leaves_by_kind(
-        self, session: Session, kind: SharedTextKind
-    ) -> Dict[int, str]:
-        return {
-            int(id): contents
-            for id, contents in session.query(
-                SharedText.id, SharedText.contents
-            ).filter(SharedText.kind == kind)
-        }
 
     def _num_issues_with_callable(self, callable: str) -> int:
         with self.db.make_session() as session:

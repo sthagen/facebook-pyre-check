@@ -3,7 +3,6 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import io
 import tempfile
 from pathlib import Path
 from typing import Iterable, Tuple
@@ -14,9 +13,7 @@ from .... import command_arguments, commands, configuration
 from ....tests import setup
 from ..start import (
     Arguments,
-    BackgroundEventWaiter,
     CriticalFile,
-    EventParsingException,
     LoadSavedStateFromFile,
     LoadSavedStateFromProject,
     MatchPolicy,
@@ -25,6 +22,7 @@ from ..start import (
     get_critical_files,
     get_saved_state_action,
     get_server_identifier,
+    background_server_log_file,
 )
 
 
@@ -205,7 +203,7 @@ class ServerIdentifierTest(testslide.TestCase):
 class StartTest(testslide.TestCase):
     def test_get_critical_files(self) -> None:
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             setup.ensure_directories_exists(root_path, [".pyre", "project/local"])
             setup.write_configuration_file(
                 root_path, {"critical_files": ["foo", "bar/baz"]}
@@ -278,7 +276,7 @@ class StartTest(testslide.TestCase):
 
     def test_find_watchman_root(self) -> None:
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             setup.ensure_files_exist(
                 root_path,
                 ["foo/qux/derp", "foo/bar/.watchmanconfig", "foo/bar/baz/derp"],
@@ -296,7 +294,7 @@ class StartTest(testslide.TestCase):
 
     def test_create_server_arguments(self) -> None:
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             setup.ensure_directories_exists(
                 root_path, [".pyre", "allows", "blocks", "search", "taint", "local/src"]
             )
@@ -381,7 +379,7 @@ class StartTest(testslide.TestCase):
 
     def test_create_server_arguments_watchman_not_found(self) -> None:
         with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
+            root_path = Path(root).resolve()
             setup.ensure_directories_exists(root_path, [".pyre", "src"])
             setup.write_configuration_file(
                 root_path,
@@ -400,40 +398,33 @@ class StartTest(testslide.TestCase):
             )
             self.assertIsNone(arguments.watchman_root)
 
-    def test_background_waiter_socket_create(self) -> None:
-        def assert_ok(event_output: str, wait_on_initialization: bool) -> None:
-            BackgroundEventWaiter(
-                wait_on_initialization=wait_on_initialization
-            ).wait_on(io.StringIO(event_output))
+    def test_create_server_arguments_disable_saved_state(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()
+            setup.ensure_directories_exists(root_path, [".pyre", "src"])
+            setup.write_configuration_file(
+                root_path,
+                {"source_directories": ["src"]},
+            )
+            arguments = create_server_arguments(
+                configuration.create_configuration(
+                    command_arguments.CommandArguments(
+                        dot_pyre_directory=root_path / ".pyre",
+                    ),
+                    root_path,
+                ),
+                command_arguments.StartArguments(
+                    no_saved_state=True, saved_state_project="some/project"
+                ),
+            )
+            self.assertIsNone(arguments.saved_state_action)
 
-        def assert_raises(event_output: str, wait_on_initialization: bool) -> None:
-            with self.assertRaises(EventParsingException):
-                BackgroundEventWaiter(
-                    wait_on_initialization=wait_on_initialization
-                ).wait_on(io.StringIO(event_output))
-
-        assert_raises("garbage", wait_on_initialization=False)
-        assert_raises("[]", wait_on_initialization=False)
-        assert_ok('["SocketCreated", "/path/to/socket"]', wait_on_initialization=False)
-        assert_raises('["ServerInitialized"]', wait_on_initialization=False)
-        assert_raises('["ServerException", "message"]', wait_on_initialization=False)
-
-        assert_raises("garbage", wait_on_initialization=True)
-        assert_raises("[]", wait_on_initialization=True)
-        assert_raises(
-            '["SocketCreated", "/path/to/socket"]', wait_on_initialization=True
-        )
-        assert_raises('["ServerException", "message"]', wait_on_initialization=True)
-        assert_raises(
-            '["SocketCreated", "/path/to/socket"]\n' + '["ServerException", "message"]',
-            wait_on_initialization=True,
-        )
-        assert_raises(
-            '["SocketCreated", "/path/to/socket"]\n'
-            + '["SocketCreated", "/path/to/socket"]',
-            wait_on_initialization=True,
-        )
-        assert_ok(
-            '["SocketCreated", "/path/to/socket"]\n' + '["ServerInitialized"]',
-            wait_on_initialization=True,
-        )
+    def test_background_server_log_placement(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()
+            with background_server_log_file(root_path) as log_file:
+                print("foo", file=log_file)
+            # Make sure that the log content can be read from a known location.
+            self.assertEqual(
+                (root_path / "new_server" / "server.stderr").read_text().strip(), "foo"
+            )

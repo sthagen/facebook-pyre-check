@@ -6,20 +6,11 @@
 
 set -e
 
-# Prefer a python3.6 interpreter to maintain full backward compatibility.
-if command -v python3.6 &>/dev/null; then
-  PYTHON_INTERPRETER=$(command -v python3.6)
-elif command -v python3 &>/dev/null; then
-  PYTHON_INTERPRETER=$(command -v python3)
-else
-  echo 'Could not find a suitable python interpreter to run tests.'
-  exit 2
-fi
-
-echo "  Using interpreter at ${PYTHON_INTERPRETER} with version: $(${PYTHON_INTERPRETER} --version)"
+SCRIPTS_DIRECTORY="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+cd "${SCRIPTS_DIRECTORY}/.."
 
 echo '  Enumerating test files:'
-files=$(find client -name '*_test.py')
+files=$(find client -name '*_test.py' ! -name 'watchman_test.py')
 echo "${files}"
 if [[ -z "${files}" ]]; then
   echo 'No test files found, exiting.'
@@ -27,4 +18,4 @@ if [[ -z "${files}" ]]; then
 fi
 
 echo '  Running all tests:'
-echo "${files}" | sed 's/.py$//' | sed 's:/:.:g' | xargs "${PYTHON_INTERPRETER}" -m unittest -v
+echo "${files}" | sed 's/.py$//' | sed 's:/:.:g' | xargs python -m unittest -v

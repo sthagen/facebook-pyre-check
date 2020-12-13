@@ -6,7 +6,7 @@
 import unittest
 from unittest.mock import MagicMock, call, patch
 
-from .. import query
+from .. import connection, query
 
 
 class QueryAPITest(unittest.TestCase):
@@ -140,14 +140,127 @@ class QueryAPITest(unittest.TestCase):
     def test_get_attributes(self) -> None:
         pyre_connection = MagicMock()
         pyre_connection.query_server.return_value = {
-            "response": {
-                "attributes": [
-                    {"annotation": "int", "name": "a"},
-                    {"annotation": "typing.Callable(a.C.foo)[[], str]", "name": "foo"},
-                ]
-            }
+            "response": [
+                {
+                    "response": {
+                        "attributes": [
+                            {"annotation": "int", "name": "a"},
+                            {
+                                "annotation": "typing.Callable(a.C.foo)[[], str]",
+                                "name": "foo",
+                            },
+                        ]
+                    }
+                }
+            ]
         }
-        self.assertEqual(query.get_attributes(pyre_connection, "a.C"), ["a", "foo"])
+        self.assertEqual(
+            query.get_attributes(pyre_connection, ["a.C"]),
+            {
+                "a.C": [
+                    query.Attributes(name="a", annotation="int"),
+                    query.Attributes(
+                        name="foo", annotation="typing.Callable(a.C.foo)[[], str]"
+                    ),
+                ]
+            },
+        )
+
+    def test_get_attributes_batch(self) -> None:
+        pyre_connection = MagicMock()
+        pyre_connection.query_server.return_value = {
+            "response": [
+                {
+                    "response": {
+                        "attributes": [
+                            {"annotation": "int", "name": "a"},
+                            {
+                                "annotation": "typing.Callable(a.C.foo)[[], str]",
+                                "name": "foo",
+                            },
+                        ]
+                    }
+                },
+                {
+                    "response": {
+                        "attributes": [
+                            {"annotation": "str", "name": "b"},
+                            {"annotation": None, "name": "c"},
+                        ]
+                    }
+                },
+            ]
+        }
+        self.assertEqual(
+            query.get_attributes(
+                pyre_connection,
+                [
+                    "TestClassA",
+                    "TestClassB",
+                ],
+                batch_size=100,
+            ),
+            {
+                "TestClassA": [
+                    query.Attributes(name="a", annotation="int"),
+                    query.Attributes(
+                        name="foo", annotation="typing.Callable(a.C.foo)[[], str]"
+                    ),
+                ],
+                "TestClassB": [
+                    query.Attributes(name="b", annotation="str"),
+                    query.Attributes(name="c", annotation=None),
+                ],
+            },
+        )
+
+    def test_get_attributes_batch_no_size(self) -> None:
+        pyre_connection = MagicMock()
+        pyre_connection.query_server.return_value = {
+            "response": [
+                {
+                    "response": {
+                        "attributes": [
+                            {"annotation": "int", "name": "a"},
+                            {
+                                "annotation": "typing.Callable(a.C.foo)[[], str]",
+                                "name": "foo",
+                            },
+                        ]
+                    }
+                },
+                {
+                    "response": {
+                        "attributes": [
+                            {"annotation": "str", "name": "b"},
+                            {"annotation": None, "name": "c"},
+                        ]
+                    }
+                },
+            ]
+        }
+        self.assertEqual(
+            query.get_attributes(
+                pyre_connection,
+                [
+                    "TestClassA",
+                    "TestClassB",
+                ],
+                batch_size=None,
+            ),
+            {
+                "TestClassA": [
+                    query.Attributes(name="a", annotation="int"),
+                    query.Attributes(
+                        name="foo", annotation="typing.Callable(a.C.foo)[[], str]"
+                    ),
+                ],
+                "TestClassB": [
+                    query.Attributes(name="b", annotation="str"),
+                    query.Attributes(name="c", annotation=None),
+                ],
+            },
+        )
 
     def test_get_call_graph(self) -> None:
         pyre_connection = MagicMock()
@@ -222,3 +335,69 @@ class QueryAPITest(unittest.TestCase):
                 ],
             },
         )
+
+    def test_get_invalid_taint_models(self) -> None:
+        pyre_connection = MagicMock()
+        pyre_connection.query_server.side_effect = connection.PyreQueryError(
+            "Invalid model for `path.to.first.model` defined in `/path/to/first.py:11`"
+            + ": Modeled entity is not part of the environment!"
+        )
+        self.assertEqual(
+            query.get_invalid_taint_models(pyre_connection),
+            [
+                query.InvalidModel(
+                    fully_qualified_name="path.to.first.model",
+                    path="/path/to/first.py",
+                    line=11,
+                    full_error_message="Invalid model for `path.to.first.model` "
+                    + "defined in `/path/to/first.py:11`: Modeled entity is "
+                    + "not part of the environment!",
+                )
+            ],
+        )
+
+        pyre_connection = MagicMock()
+        pyre_connection.query_server.side_effect = connection.PyreQueryError(
+            "Invalid model for `path.to.first.model` defined in `/path/to/"
+            + "first.py:11`: Modeled entity is not part of the environment!\n"
+            + "Invalid model for `path.to.second.model` defined in `/path/to/"
+            + "second.py:22`: Modeled entity is not part of the environment!\n"
+            + "Invalid model for `path.to.third.model` defined in `/path/to/"
+            + "third.py:33`: Modeled entity is not part of the environment!"
+        )
+        self.assertEqual(
+            query.get_invalid_taint_models(pyre_connection),
+            [
+                query.InvalidModel(
+                    fully_qualified_name="path.to.first.model",
+                    path="/path/to/first.py",
+                    line=11,
+                    full_error_message="Invalid model for `path.to.first.model` "
+                    + "defined in `/path/to/first.py:11`: Modeled entity is "
+                    + "not part of the environment!",
+                ),
+                query.InvalidModel(
+                    fully_qualified_name="path.to.second.model",
+                    path="/path/to/second.py",
+                    line=22,
+                    full_error_message="Invalid model for `path.to.second.model` "
+                    + "defined in `/path/to/second.py:22`: Modeled entity is "
+                    + "not part of the environment!",
+                ),
+                query.InvalidModel(
+                    fully_qualified_name="path.to.third.model",
+                    path="/path/to/third.py",
+                    line=33,
+                    full_error_message="Invalid model for `path.to.third.model` "
+                    + "defined in `/path/to/third.py:33`: Modeled entity is "
+                    + "not part of the environment!",
+                ),
+            ],
+        )
+
+        pyre_connection = MagicMock()
+        pyre_connection.query_server.side_effect = connection.PyreQueryError(
+            "This is an invalid error message"
+        )
+        with self.assertRaises(connection.PyreQueryError):
+            query.get_invalid_taint_models(pyre_connection)

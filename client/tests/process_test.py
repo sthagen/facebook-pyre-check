@@ -55,7 +55,7 @@ class ProcessTest(unittest.TestCase):
     @patch.object(psutil, "Process")
     @patch.object(Path, "read_text", return_value="123")
     def test_get_process(self, read_text: MagicMock, process_class: MagicMock) -> None:
-        process = Process.get_process("/root/some-monitor.pid")
+        process = Process.get_process(Path("/root/some-monitor.pid"))
         process_class.assert_called_once_with(123)
         self.assertIsNotNone(process)
 
@@ -70,7 +70,18 @@ class ProcessTest(unittest.TestCase):
             raise FileNotFoundError
 
         read_text.side_effect = failed_read_text
-        process = Process.get_process("/root/non-existent.pid")
+        process = Process.get_process(Path("/root/non-existent.pid"))
+        process_class.assert_not_called()
+        self.assertIsNone(process)
+
+    # pyre-fixme[56]: Argument `psutil` to decorator factory
+    #  `unittest.mock.patch.object` could not be resolved in a global scope.
+    @patch.object(psutil, "Process")
+    @patch.object(Path, "read_text", return_value="")
+    def test_get_process_file_empty(
+        self, read_text: MagicMock, process_class: MagicMock
+    ) -> None:
+        process = Process.get_process(Path("/root/empty-file.pid"))
         process_class.assert_not_called()
         self.assertIsNone(process)
 
@@ -85,7 +96,7 @@ class ProcessTest(unittest.TestCase):
             raise psutil.Error
 
         process_class.side_effect = failed_process_instance
-        process = Process.get_process("/root/failed-process.pid")
+        process = Process.get_process(Path("/root/failed-process.pid"))
         self.assertIsNone(process)
         process_class.assert_called_once_with(123)
 

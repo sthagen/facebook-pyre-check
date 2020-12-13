@@ -24,6 +24,7 @@ MODULE_NAME = "pyre_check"
 RUNTIME_DEPENDENCIES = [
     "click",
     "dataclasses",
+    "dataclasses-json",
     "pywatchman",
     "psutil",
     "libcst>=0.3.6",
@@ -99,14 +100,10 @@ def sync_python_files(pyre_directory: Path, build_root: Path) -> None:
 
 
 def sync_pysa_stubs(pyre_directory: Path, build_root: Path) -> None:
-    filters = ["+ */", "-! *.pysa"]
+    filters = ["+ */"]
     rsync_files(filters, pyre_directory / "stubs" / "taint", build_root, ["-avm"])
     rsync_files(
         filters, pyre_directory / "stubs" / "third_party_taint", build_root, ["-avm"]
-    )
-    shutil.copy(
-        pyre_directory / "stubs" / "taint/taint.config",
-        build_root / "taint/taint.config",
     )
 
 
@@ -168,12 +165,15 @@ def patch_version(version: str, build_root: Path) -> None:
 
 
 def binary_exists(pyre_directory: Path) -> bool:
-    return (pyre_directory / "_build/default/main.exe").is_file()
+    return (pyre_directory / "source" / "_build/default/main.exe").is_file()
 
 
 def sync_binary(pyre_directory: Path, build_root: Path) -> None:
     (build_root / "bin").mkdir()
-    shutil.copy(pyre_directory / "_build/default/main.exe", build_root / "bin/pyre.bin")
+    shutil.copy(
+        pyre_directory / "source" / "_build/default/main.exe",
+        build_root / "bin/pyre.bin",
+    )
 
 
 def sync_documentation_files(pyre_directory: Path, build_root: Path) -> None:

@@ -374,8 +374,8 @@ def annotate_path(stub_path: str, file_path: str, debug_infer: bool) -> None:
 def annotate_paths(
     root,
     formatter: Optional[str],
-    stubs,
-    type_directory,
+    stubs: Sequence[StubFile],
+    type_directory: Path,
     in_place: Sequence[str],
     debug_infer: bool,
 ) -> None:
@@ -436,6 +436,8 @@ def _existing_annotations_as_errors(
                         "inference": stub,
                         "line": 0,
                         "column": 0,
+                        "stop_line": 0,
+                        "stop_column": 0,
                         "code": 0,
                         "name": "example_string",
                         "description": "example description",

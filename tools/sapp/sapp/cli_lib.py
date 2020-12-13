@@ -106,7 +106,6 @@ def default_database(ctx: click.Context, _param: Parameter, value: Optional[str]
 def explore(ctx: Context, ipython_args):
     scope_vars = Interactive(
         database=ctx.database,
-        # pyre-fixme[6]: Expected `str` for 2nd param but got `Optional[str]`.
         repository_directory=ctx.repository,
         parser_class=ctx.parser_class,
     ).setup()
@@ -232,12 +231,20 @@ def analyze(
 @option(
     "--source-directory", default=os.getcwd(), help="Directory to look for source code"
 )
+@option(
+    "--editor-schema",
+    default=None,
+    help="Editor schema to open files from a browser, e.g. `vscode:`",
+)
 @pass_context
-# pyre-fixme[3]: Return type must be annotated.
 def server(
-    ctx: Context, debug: bool, static_resources: Optional[str], source_directory: str
-):
-    start_server(ctx.database, debug, static_resources, source_directory)
+    ctx: Context,
+    debug: bool,
+    static_resources: Optional[str],
+    source_directory: str,
+    editor_schema: Optional[str],
+) -> None:
+    start_server(ctx.database, debug, static_resources, source_directory, editor_schema)
 
 
 # pyre-fixme[5]: Global expression must be annotated.

@@ -83,9 +83,8 @@ def _pyre_configuration_directory(local_configuration: Optional[str]) -> Path:
 
 def _find_paths(local_configuration: Optional[str], paths: Set[str]) -> List[Path]:
     pyre_configuration_directory = _pyre_configuration_directory(local_configuration)
-
     if paths:
-        return [pyre_configuration_directory / path for path in paths]
+        return [Path(path).absolute() for path in paths]
     return [pyre_configuration_directory]
 
 
@@ -157,7 +156,7 @@ class Statistics(Command):
 
     def _log_to_scuba(self, data: Dict[str, Any]) -> None:
         if self._configuration and self._configuration.logger:
-            root = str(_pyre_configuration_directory(self._configuration.local_root))
+            root = str(self._configuration.relative_local_root)
             for path, counts in data["annotations"].items():
                 statistics.log_with_configuration(
                     statistics.LoggerCategory.ANNOTATION_COUNTS,

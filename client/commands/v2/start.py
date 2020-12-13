@@ -5,6 +5,7 @@
 
 import contextlib
 import dataclasses
+import datetime
 import enum
 import json
 import logging
@@ -14,9 +15,10 @@ import tempfile
 from pathlib import Path
 from typing import (
     IO,
+    TextIO,
     Any,
     Dict,
-    Generator,
+    Iterator,
     List,
     Mapping,
     Optional,
@@ -32,7 +34,7 @@ from ... import (
     find_directories,
     log,
 )
-from . import server_event
+from . import server_connection, server_event
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -266,11 +268,13 @@ def create_server_arguments(
         critical_files=get_critical_files(configuration),
         debug=start_arguments.debug,
         excludes=configuration.excludes,
-        extensions=configuration.get_valid_extensions(),
+        extensions=configuration.get_valid_extension_suffixes(),
         local_root=configuration.local_root,
         number_of_workers=configuration.get_number_of_workers(),
         parallel=not start_arguments.sequential,
-        saved_state_action=get_saved_state_action(
+        saved_state_action=None
+        if start_arguments.no_saved_state
+        else get_saved_state_action(
             start_arguments, relative_local_root=configuration.relative_local_root
         ),
         search_paths=configuration.get_existent_search_paths(),
@@ -328,57 +332,41 @@ def _run_in_foreground(
         return commands.ExitCode.FAILURE
 
 
-class EventParsingException(Exception):
-    pass
-
-
-def parse_server_event(event_string: str) -> server_event.Event:
-    event = server_event.create_from_string(event_string)
-    if event is None:
-        raise EventParsingException(
-            f"Unrecognized status update from server: {event_string}"
-        )
-    elif isinstance(event, server_event.ServerException):
-        raise EventParsingException(f"Failed to start server: {event.message}")
-    return event
-
-
-class BackgroundEventWaiter:
-    wait_on_initialization: bool
-
-    def __init__(self, wait_on_initialization: bool) -> None:
-        self.wait_on_initialization = wait_on_initialization
-
-    def wait_on(self, event_stream: IO[str]) -> None:
-        # The first event is expected to be socket creation
-        initial_event = parse_server_event(event_stream.readline().strip())
-        if isinstance(initial_event, server_event.SocketCreated):
-            if not self.wait_on_initialization:
-                return
-
-            # The second event is expected to be server initialization
-            second_event = parse_server_event(event_stream.readline().strip())
-            if isinstance(second_event, server_event.ServerInitialized):
-                return
-
-        raise EventParsingException(
-            f"Unexpected initial server status update: {initial_event}"
-        )
-
-
 @contextlib.contextmanager
-def _background_logging(log_file: Path) -> Generator[None, None, None]:
+def background_logging(log_file: Path) -> Iterator[None]:
     with log.file_tailer(log_file) as log_stream:
         with log.StreamLogger(log_stream) as logger:
             yield
     logger.join()
 
 
+def _create_symbolic_link(source: Path, target: Path) -> None:
+    try:
+        source.unlink()
+    except FileNotFoundError:
+        pass
+    source.symlink_to(target)
+
+
+@contextlib.contextmanager
+def background_server_log_file(log_directory: Path) -> Iterator[TextIO]:
+    new_server_log_directory = log_directory / "new_server"
+    new_server_log_directory.mkdir(parents=True, exist_ok=True)
+    log_file_path = new_server_log_directory / datetime.datetime.now().strftime(
+        "server.stderr.%Y_%m_%d_%H_%M_%S_%f"
+    )
+    with open(str(log_file_path), "a") as log_file:
+        yield log_file
+    # Symlink the log file to a known location for subsequent `pyre incremental`
+    # to find.
+    _create_symbolic_link(new_server_log_directory / "server.stderr", log_file_path)
+
+
 def _run_in_background(
     command: Sequence[str],
     environment: Mapping[str, str],
     log_directory: Path,
-    event_waiter: BackgroundEventWaiter,
+    event_waiter: server_event.Waiter,
 ) -> commands.ExitCode:
     # In background mode, we asynchronously start the server with `Popen` and
     # detach it from the current process immediately with `start_new_session`.
@@ -386,8 +374,8 @@ def _run_in_background(
     # Server stderr will be forwarded to dedicated log files.
     # Server stdout will be used as additional communication channel for status
     # updates.
-    log_file = log_directory / "server.stderr"
-    with open(str(log_file), "a") as server_stderr:
+    with background_server_log_file(log_directory) as server_stderr:
+        log_file = Path(server_stderr.name)
         server_process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -401,11 +389,40 @@ def _run_in_background(
     server_stdout = server_process.stdout
     if server_stdout is None:
         raise RuntimeError("subprocess.Popen failed to set up a pipe for server stdout")
-    # Block until an expected server event is obtained from stdout
-    with _background_logging(log_file):
-        event_waiter.wait_on(server_stdout)
+
+    try:
+        # Block until an expected server event is obtained from stdout
+        with background_logging(log_file):
+            event_waiter.wait_on(server_stdout)
+            server_stdout.close()
+            return commands.ExitCode.SUCCESS
+    except KeyboardInterrupt:
+        LOG.info("SIGINT received. Terminating background server...")
+
+        # If a background server has spawned and the user hits Ctrl-C, bring down
+        # the spwaned server as well.
         server_stdout.close()
-        return commands.ExitCode.SUCCESS
+        server_process.terminate()
+        server_process.wait()
+
+        # Since we abruptly terminate the background server, it may not have the
+        # chance to clean up the socket file properly. Make sure the file is
+        # removed on our side.
+        try:
+            server_connection.get_default_socket_path(log_directory).unlink()
+        except FileNotFoundError:
+            pass
+
+        raise commands.ClientException("Interrupted by user. No server is spawned.")
+
+
+@contextlib.contextmanager
+def server_argument_file(server_arguments: Arguments) -> Iterator[Path]:
+    with tempfile.NamedTemporaryFile(
+        mode="w", prefix="pyre_arguments_", suffix=".json"
+    ) as argument_file:
+        _write_argument_file(argument_file, server_arguments)
+        yield Path(argument_file.name)
 
 
 def run(
@@ -418,8 +435,7 @@ def run(
             "Cannot locate a Pyre binary to run."
         )
 
-    log_directory = Path(configuration.log_directory) / "new_server"
-    log_directory.mkdir(parents=True, exist_ok=True)
+    log_directory = Path(configuration.log_directory)
 
     server_arguments = create_server_arguments(configuration, start_arguments)
     if not start_arguments.no_watchman and server_arguments.watchman_root is None:
@@ -429,12 +445,8 @@ def run(
         )
 
     LOG.info(f"Starting server at `{get_server_identifier(configuration)}`...")
-    with tempfile.NamedTemporaryFile(
-        mode="w", prefix="pyre_arguments_", suffix=".json"
-    ) as argument_file:
-        _write_argument_file(argument_file, server_arguments)
-
-        server_command = [binary_location, "newserver", argument_file.name]
+    with server_argument_file(server_arguments) as argument_file_path:
+        server_command = [binary_location, "newserver", str(argument_file_path)]
         server_environment = {
             **os.environ,
             # This is to make sure that backend server shares the socket root
@@ -450,7 +462,7 @@ def run(
                 server_command,
                 server_environment,
                 log_directory,
-                BackgroundEventWaiter(
+                server_event.Waiter(
                     wait_on_initialization=start_arguments.wait_on_initialization
                 ),
             )

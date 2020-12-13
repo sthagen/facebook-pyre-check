@@ -15,7 +15,7 @@ from ....client.find_directories import (
 )
 from .. import UserError
 from ..configuration import Configuration
-from ..errors import Errors, PartialErrorSuppression
+from ..errors import Errors
 from ..filesystem import LocalMode, add_local_mode, path_exists
 from ..repository import Repository
 from .command import CommandArguments, ErrorSuppressingCommand
@@ -89,35 +89,7 @@ class StrictDefault(ErrorSuppressingCommand):
             help="Mark file as unsafe if fixme count exceeds threshold.",
         )
 
-    def run(self) -> None:
-        configuration_path = _get_configuration_path(self._local_configuration)
-        if configuration_path is None:
-            raise UserError("Cannot find a path to configuration")
-        configuration = Configuration(configuration_path)
-        LOG.info("Processing %s", configuration.get_directory())
-        configuration.add_strict()
-        configuration.write()
-        all_errors = configuration.get_errors()
-
-        if len(all_errors) == 0:
-            return
-
-        for path, errors in all_errors.paths_to_errors.items():
-            errors = list(errors)
-            error_count = len(errors)
-            if error_count > self._fixme_threshold:
-                add_local_mode(path, LocalMode.UNSAFE)
-            else:
-                try:
-                    self._apply_suppressions(Errors(errors))
-                except PartialErrorSuppression:
-                    LOG.warning(f"Could not suppress all errors in {path}")
-                    LOG.info("Run with --unsafe to force suppression anyway.")
-                    self._repository.revert_all(remove_untracked=True)
-
-        if self._lint:
-            self._repository.format()
-
+    def _commit_changes(self) -> None:
         title = f"Convert {self._local_configuration} to use strict default"
         summary = (
             "Turning on strict default; files with more than "
@@ -129,3 +101,32 @@ class StrictDefault(ErrorSuppressingCommand):
             summary=summary,
             set_dependencies=False,
         )
+
+    def run(self) -> None:
+        configuration_path = _get_configuration_path(self._local_configuration)
+        if configuration_path is None:
+            raise UserError("Cannot find a path to configuration")
+        configuration = Configuration(configuration_path)
+        LOG.info("Processing %s", configuration.get_directory())
+        configuration.add_strict()
+        configuration.write()
+        all_errors = configuration.get_errors()
+
+        # Early exit if adding strict did not result in new errors.
+        if len(all_errors) == 0:
+            self._commit_changes()
+            return
+
+        # Suppress new errors, or add local mode where threshold is exceeded.
+        for path, errors in all_errors.paths_to_errors.items():
+            errors = list(errors)
+            error_count = len(errors)
+            if error_count > self._fixme_threshold:
+                add_local_mode(path, LocalMode.UNSAFE)
+            else:
+                self._apply_suppressions(Errors(errors))
+
+        # Re-suppress and apply lint after changing local modes.
+        self._suppress_errors(configuration)
+
+        self._commit_changes()

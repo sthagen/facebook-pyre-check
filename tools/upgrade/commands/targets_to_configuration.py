@@ -13,7 +13,7 @@ import libcst
 from typing_extensions import Final
 
 from ..configuration import Configuration
-from ..errors import Errors, PartialErrorSuppression
+from ..errors import Errors
 from ..filesystem import (
     LocalMode,
     add_local_mode,
@@ -214,6 +214,7 @@ class TargetsToConfiguration(ErrorSuppressingCommand):
                 )
                 configuration.targets = original_targets
                 configuration.write()
+                all_errors = configuration.get_errors()
             else:
                 targets_files = [
                     directory / path
@@ -229,7 +230,7 @@ class TargetsToConfiguration(ErrorSuppressingCommand):
         if not self._pyre_only:
             remove_non_pyre_ignores(directory)
 
-        # Suppress errors.
+        # Suppress errors in individual files where fixme threshold is not exceeded.
         error_threshold = self._fixme_threshold
         for path, errors in all_errors.paths_to_errors.items():
             errors = list(errors)
@@ -242,13 +243,9 @@ class TargetsToConfiguration(ErrorSuppressingCommand):
                 )
                 add_local_mode(path, LocalMode.IGNORE)
             else:
-                try:
-                    self._apply_suppressions(Errors(errors))
-                except PartialErrorSuppression:
-                    LOG.warning(f"Could not suppress all errors in {path}")
-                    LOG.info("Run with --unsafe to force suppression anyway.")
-                    self._repository.revert_all(remove_untracked=True)
+                self._apply_suppressions(Errors(errors))
 
+        # Spin up strict codemod if applicable, otherwise skip to final clean and lint.
         if apply_strict:
             LOG.info(
                 "Some targets were running strict type checking. "
@@ -263,6 +260,7 @@ class TargetsToConfiguration(ErrorSuppressingCommand):
                     force_format_unsuppressed=self._force_format_unsuppressed,
                     lint=self._lint,
                     no_commit=True,
+                    should_clean=True,
                 ),
                 repository=self._repository,
                 local_configuration=directory,
@@ -270,17 +268,40 @@ class TargetsToConfiguration(ErrorSuppressingCommand):
                 fixme_threshold=0,
             )
             strict_codemod.run()
+        else:
+            self._suppress_errors(configuration)
 
-        # Lint and re-run pyre once to resolve most formatting issues
-        if self._lint:
-            if self._repository.format():
-                errors = configuration.get_errors(should_clean=False)
-                try:
-                    self._apply_suppressions(errors)
-                except PartialErrorSuppression:
-                    LOG.warning(f"Could not suppress all errors in {path}")
-                    LOG.info("Run with --unsafe to force suppression anyway.")
-                    self._repository.revert_all(remove_untracked=True)
+    def _gather_directories(self, subdirectory: Path) -> List[Path]:
+        configurations = find_files(subdirectory, ".pyre_configuration.local")
+        configuration_directories = [
+            configuration.replace("/.pyre_configuration.local", "")
+            for configuration in configurations
+        ]
+        sorted_directories = sorted(
+            (directory.split("/") for directory in configuration_directories),
+            key=lambda directory: (len(directory), directory),
+        )
+        if len(configuration_directories) == 0:
+            configuration_directories = [str(subdirectory)]
+        else:
+            # Fill in missing coverage
+            missing_directories = []
+            current_depth = len(str(subdirectory).split("/"))
+            for directory in sorted_directories:
+                if len(directory) <= current_depth:
+                    continue
+                all_subdirectories = find_directories(
+                    Path("/".join(directory[0:current_depth]))
+                )
+                for subdirectory in all_subdirectories:
+                    if all(
+                        not configuration_directory.startswith(str(subdirectory))
+                        for configuration_directory in configuration_directories
+                    ):
+                        missing_directories.append(subdirectory)
+                current_depth += 1
+            configuration_directories.extend(missing_directories)
+        return [Path(directory) for directory in configuration_directories]
 
     def run(self) -> None:
         # TODO(T62926437): Basic integration testing.
@@ -314,35 +335,3 @@ class TargetsToConfiguration(ErrorSuppressingCommand):
             summary=summary,
             set_dependencies=False,
         )
-
-    def _gather_directories(self, subdirectory: Path) -> List[Path]:
-        configurations = find_files(subdirectory, ".pyre_configuration.local")
-        configuration_directories = [
-            configuration.replace("/.pyre_configuration.local", "")
-            for configuration in configurations
-        ]
-        sorted_directories = sorted(
-            (directory.split("/") for directory in configuration_directories),
-            key=lambda directory: (len(directory), directory),
-        )
-        if len(configuration_directories) == 0:
-            configuration_directories = [str(subdirectory)]
-        else:
-            # Fill in missing coverage
-            missing_directories = []
-            current_depth = len(str(subdirectory).split("/"))
-            for directory in sorted_directories:
-                if len(directory) <= current_depth:
-                    continue
-                all_subdirectories = find_directories(
-                    Path("/".join(directory[0:current_depth]))
-                )
-                for subdirectory in all_subdirectories:
-                    if all(
-                        not configuration_directory.startswith(str(subdirectory))
-                        for configuration_directory in configuration_directories
-                    ):
-                        missing_directories.append(subdirectory)
-                current_depth += 1
-            configuration_directories.extend(missing_directories)
-        return [Path(directory) for directory in configuration_directories]

@@ -8,7 +8,8 @@ import dataclasses
 import json
 import logging
 import sys
-from typing import Any, Dict, Sequence
+from pathlib import Path
+from typing import Any, Dict, Sequence, Union
 
 import click
 
@@ -27,7 +28,9 @@ class ErrorParsingFailure(Exception):
 class Error:
     line: int
     column: int
-    path: str
+    stop_line: int
+    stop_column: int
+    path: Path
     code: int
     name: str
     description: str
@@ -40,7 +43,9 @@ class Error:
             return Error(
                 line=error_json["line"],
                 column=error_json["column"],
-                path=error_json["path"],
+                stop_line=error_json["stop_line"],
+                stop_column=error_json["stop_column"],
+                path=Path(error_json["path"]),
                 code=error_json["code"],
                 name=error_json["name"],
                 description=error_json["description"],
@@ -63,27 +68,24 @@ class Error:
             raise ErrorParsingFailure(message) from decode_error
 
     def to_json(self) -> Dict[str, Any]:
-        return dataclasses.asdict(self)
+        return {
+            "line": self.line,
+            "column": self.column,
+            "stop_line": self.stop_line,
+            "stop_column": self.stop_column,
+            "path": str(self.path),
+            "code": self.code,
+            "name": self.name,
+            "description": self.description,
+            "long_description": self.long_description,
+            "concise_description": self.concise_description,
+        }
 
     def to_text(self) -> str:
-        path = click.style(self.path, fg="red")
+        path = click.style(str(self.path), fg="red")
         line = click.style(str(self.line), fg="yellow")
         column = click.style(str(self.column), fg="yellow")
         return f"{path}:{line}:{column} {self.description}"
-
-
-def print_errors(errors: Sequence[Error], output: str) -> None:
-    length = len(errors)
-    if length != 0:
-        suffix = "s" if length > 1 else ""
-        LOG.error(f"Found {length} type error{suffix}!")
-    else:
-        LOG.log(log.SUCCESS, "No type errors found")
-
-    if output == command_arguments.TEXT:
-        log.stdout.write("\n".join([error.to_text() for error in errors]))
-    else:
-        log.stdout.write(json.dumps([error.to_json() for error in errors]))
 
 
 class LegacyError:
@@ -127,14 +129,12 @@ class LegacyError:
         return key + " " + self.error.description
 
     def __key(self) -> str:
-        return (
-            self.error.path + ":" + str(self.error.line) + ":" + str(self.error.column)
-        )
+        return f"{self.error.path}:{self.error.line}:{self.error.column}"
 
     def _key_with_color(self) -> str:
         return (
             Color.RED
-            + self.error.path
+            + str(self.error.path)
             + Format.CLEAR
             + ":"
             + Color.YELLOW
@@ -161,3 +161,31 @@ class LegacyError:
 
     def is_ignored(self) -> bool:
         return self.ignore_error
+
+    def to_json(self) -> Dict[str, Any]:
+        error_mapping = self.error.to_json()
+        error_mapping["inference"] = self.inference
+        error_mapping["ignore_error"] = self.ignore_error
+        return error_mapping
+
+    def to_text(self) -> str:
+        path = click.style(str(self.error.path), fg="red")
+        line = click.style(str(self.error.line), fg="yellow")
+        column = click.style(str(self.error.column), fg="yellow")
+        return f"{path}:{line}:{column} {self.error.description}"
+
+
+def print_errors(
+    errors: Union[Sequence[Error], Sequence[LegacyError]], output: str
+) -> None:
+    length = len(errors)
+    if length != 0:
+        suffix = "s" if length > 1 else ""
+        LOG.error(f"Found {length} type error{suffix}!")
+    else:
+        LOG.log(log.SUCCESS, "No type errors found")
+
+    if output == command_arguments.TEXT:
+        log.stdout.write("\n".join([error.to_text() for error in errors]))
+    else:
+        log.stdout.write(json.dumps([error.to_json() for error in errors]))

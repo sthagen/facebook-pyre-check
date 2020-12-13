@@ -4,14 +4,14 @@
 # LICENSE file in the root directory of this source tree.
 
 import unittest
-from typing import Any, Dict, List
+from typing import Any, List
 from unittest import TestCase
 
-from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
 
 from ...db import DB, DBType
 from ...models import (
+    DBID,
     Run,
     RunStatus,
     SharedText,
@@ -20,7 +20,8 @@ from ...models import (
     create as create_models,
 )
 from ...tests.fake_object_generator import FakeObjectGenerator
-from ..trace import Query, TraceFrameQueryResult
+from .. import trace as trace_module
+from ..trace import LeafLookup, TraceFrameQueryResult
 
 
 class QueryTest(TestCase):
@@ -48,15 +49,33 @@ class QueryTest(TestCase):
             ),
         ]
 
-    def _all_leaves_by_kind(
-        self, session: Session, kind: SharedTextKind
-    ) -> Dict[int, str]:
-        return {
-            int(id): contents
-            for id, contents in session.query(
-                SharedText.id, SharedText.contents
-            ).filter(SharedText.kind == kind)
-        }
+    def testLeafLookup(self) -> None:
+        shared_texts = [
+            SharedText(id=DBID(1), contents="source1", kind=SharedTextKind.SOURCE),
+            SharedText(id=DBID(2), contents="source2", kind=SharedTextKind.SOURCE),
+            SharedText(id=DBID(3), contents="source3", kind=SharedTextKind.SOURCE),
+            SharedText(id=DBID(4), contents="sink4", kind=SharedTextKind.SINK),
+            SharedText(id=DBID(5), contents="sink5", kind=SharedTextKind.SINK),
+        ]
+        with self.db.make_session() as session:
+            for shared_text in shared_texts:
+                session.add(shared_text)
+            session.commit()
+
+            leaf_lookup = LeafLookup.create(session)
+
+            self.assertEqual(
+                leaf_lookup.resolve([1, 2], SharedTextKind.SOURCE),
+                {"source1", "source2"},
+            )
+            self.assertEqual(
+                leaf_lookup.resolve([3], SharedTextKind.SOURCE),
+                {"source3"},
+            )
+            self.assertEqual(
+                leaf_lookup.resolve([4, 5], SharedTextKind.SINK),
+                {"sink4", "sink5"},
+            )
 
     def testNextTraceFrames(self) -> None:
         run = self.fakes.run()
@@ -72,21 +91,8 @@ class QueryTest(TestCase):
         with self.db.make_session() as session:
             session.add(run)
             session.commit()
-            leaf_dicts = (
-                self._all_leaves_by_kind(session, SharedTextKind.SOURCE),
-                self._all_leaves_by_kind(session, SharedTextKind.SINK),
-                self._all_leaves_by_kind(session, SharedTextKind.FEATURE),
-            )
 
-            latest_run_id = (
-                session.query(func.max(Run.id))
-                .filter(Run.status == RunStatus.FINISHED)
-                .scalar()
-            )
-
-            next_frames = Query(session).next_trace_frames(
-                leaf_dicts, latest_run_id, {"sink1"}, frames[0], set()
-            )
+            next_frames = trace_module.next_frames(session, frames[0], {"sink1"}, set())
             self.assertEqual(len(next_frames), 1)
             self.assertEqual(int(next_frames[0].id), int(frames[1].id))
 
@@ -126,20 +132,8 @@ class QueryTest(TestCase):
             session.add(run)
             session.commit()
 
-            latest_run_id = (
-                session.query(func.max(Run.id))
-                .filter(Run.status == RunStatus.FINISHED)
-                .scalar()
-            )
-
-            leaf_dicts = (
-                self._all_leaves_by_kind(session, SharedTextKind.SOURCE),
-                self._all_leaves_by_kind(session, SharedTextKind.SINK),
-                self._all_leaves_by_kind(session, SharedTextKind.FEATURE),
-            )
-
-            next_frames = Query(session).next_trace_frames(
-                leaf_dicts, latest_run_id, {"sink1"}, frames[1], set(), backwards=True
+            next_frames = trace_module.next_frames(
+                session, frames[1], {"sink1"}, set(), backwards=True
             )
 
             self.assertEqual(len(next_frames), 1)
@@ -171,21 +165,7 @@ class QueryTest(TestCase):
             session.add(run2)
             session.commit()
 
-            leaf_dicts = (
-                self._all_leaves_by_kind(session, SharedTextKind.SOURCE),
-                self._all_leaves_by_kind(session, SharedTextKind.SINK),
-                self._all_leaves_by_kind(session, SharedTextKind.FEATURE),
-            )
-
-            latest_run_id = (
-                session.query(func.max(Run.id))
-                .filter(Run.status == RunStatus.FINISHED)
-                .scalar()
-            )
-
-            next_frames = Query(session).next_trace_frames(
-                leaf_dicts, latest_run_id, {"sink1"}, frames[2], set()
-            )
+            next_frames = trace_module.next_frames(session, frames[2], {"sink1"}, set())
             self.assertEqual(len(next_frames), 1)
             self.assertEqual(int(next_frames[0].id), int(frames[3].id))
 
@@ -204,24 +184,11 @@ class QueryTest(TestCase):
             session.add(run)
             session.commit()
 
-            leaf_dicts = (
-                self._all_leaves_by_kind(session, SharedTextKind.SOURCE),
-                self._all_leaves_by_kind(session, SharedTextKind.SINK),
-                self._all_leaves_by_kind(session, SharedTextKind.FEATURE),
-            )
-
-            latest_run_id = (
-                session.query(func.max(Run.id))
-                .filter(Run.status == RunStatus.FINISHED)
-                .scalar()
-            )
-
-            result = Query(session).navigate_trace_frames(
-                leaf_dicts,
-                latest_run_id,
+            result = trace_module.navigate_trace_frames(
+                session,
+                [TraceFrameQueryResult.from_record(frames[0])],
                 set(),
                 {"sink1"},
-                [TraceFrameQueryResult.from_record(frames[0])],
             )
             self.assertEqual(len(result), 2)
             self.assertEqual(int(result[0][0].id), int(frames[0].id))
@@ -283,24 +250,11 @@ class QueryTest(TestCase):
             session.add(run)
             session.commit()
 
-            leaf_dicts = (
-                self._all_leaves_by_kind(session, SharedTextKind.SOURCE),
-                self._all_leaves_by_kind(session, SharedTextKind.SINK),
-                self._all_leaves_by_kind(session, SharedTextKind.FEATURE),
-            )
-
-            latest_run_id = (
-                session.query(func.max(Run.id))
-                .filter(Run.status == RunStatus.FINISHED)
-                .scalar()
-            )
-
-            result = Query(session).navigate_trace_frames(
-                leaf_dicts,
-                latest_run_id,
+            result = trace_module.navigate_trace_frames(
+                session,
+                [TraceFrameQueryResult.from_record(frames[0])],
                 set(),
                 {"sink"},
-                [TraceFrameQueryResult.from_record(frames[0])],
             )
             self.assertEqual(len(frames), 4)
             self.assertNotEqual(

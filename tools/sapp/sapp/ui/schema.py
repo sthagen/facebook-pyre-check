@@ -5,27 +5,22 @@
 
 import os
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, List, NamedTuple, Optional
 
 import graphene
 from graphene import relay
 from graphene_sqlalchemy import get_session
 from graphql.execution.base import ResolveInfo
-from sqlalchemy.orm import Session
-from sqlalchemy.sql import func
 
-from ..models import (
-    DBID,
-    Run,
-    RunStatus,
-    SharedText,
-    SharedTextKind,
-    TraceFrame,
-    TraceKind,
-)
-from . import filters as filters_module, issues, trace, typeahead
+from ..models import DBID, TraceFrame, TraceKind
+from . import filters as filters_module, issues, run, trace, typeahead
 from .issues import IssueQueryResult, IssueQueryResultType
 from .trace import TraceFrameQueryResult, TraceFrameQueryResultType
+
+
+class RunConnection(relay.Connection):
+    class Meta:
+        node = run.Run
 
 
 class IssueConnection(relay.Connection):
@@ -38,37 +33,33 @@ class TraceFrameConnection(relay.Connection):
         node = TraceFrameQueryResultType
 
 
-class FileType(graphene.ObjectType):
+class File(graphene.ObjectType):
     class Meta:
         interfaces = (relay.Node,)
 
     path = graphene.String()
     contents = graphene.String()
-
-
-class File(NamedTuple):
-    path: str
-    contents: str
+    editor_link = graphene.String()
 
 
 class FileConnection(relay.Connection):
     class Meta:
-        node = FileType
+        node = File
 
 
 class CodeConnection(relay.Connection):
     class Meta:
-        node = typeahead.CodeType
+        node = typeahead.Code
 
 
 class PathConnection(relay.Connection):
     class Meta:
-        node = typeahead.PathType
+        node = typeahead.Path
 
 
 class CallableConnection(relay.Connection):
     class Meta:
-        node = typeahead.CallableType
+        node = typeahead.Callable
 
 
 class FeatureConnection(relay.Connection):
@@ -89,8 +80,14 @@ class FeatureCondition(graphene.InputObjectType):
 class Query(graphene.ObjectType):
     # pyre-fixme[4]: Attribute must be annotated.
     node = relay.Node.Field()
+
+    runs = relay.ConnectionField(
+        RunConnection,
+    )
+
     issues = relay.ConnectionField(
         IssueConnection,
+        run_id=graphene.Int(required=True),
         codes=graphene.List(graphene.Int, default_value=["%"]),
         paths=graphene.List(graphene.String, default_value=["%"]),
         callables=graphene.List(graphene.String, default_value=["%"]),
@@ -99,16 +96,17 @@ class Query(graphene.ObjectType):
         max_trace_length_to_sinks=graphene.Int(),
         min_trace_length_to_sources=graphene.Int(),
         max_trace_length_to_sources=graphene.Int(),
-        issue_id=graphene.Int(),
+        issue_instance_id=graphene.Int(),
+        is_new_issue=graphene.Boolean(),
     )
 
-    trace = relay.ConnectionField(TraceFrameConnection, issue_id=graphene.ID())
+    trace = relay.ConnectionField(TraceFrameConnection, issue_instance_id=graphene.ID())
     initial_trace_frames = relay.ConnectionField(
-        TraceFrameConnection, issue_id=graphene.Int(), kind=graphene.String()
+        TraceFrameConnection, issue_instance_id=graphene.Int(), kind=graphene.String()
     )
     next_trace_frames = relay.ConnectionField(
         TraceFrameConnection,
-        issue_id=graphene.Int(),
+        issue_instance_id=graphene.Int(),
         frame_id=graphene.Int(),
         kind=graphene.String(),
     )
@@ -123,9 +121,14 @@ class Query(graphene.ObjectType):
 
     filters = relay.ConnectionField(FilterConnection)
 
+    def resolve_runs(self, info: ResolveInfo) -> List[run.Run]:
+        session = get_session(info.context)
+        return run.runs(session)
+
     def resolve_issues(
         self,
         info: ResolveInfo,
+        run_id: int,
         codes: List[int],
         paths: List[str],
         callables: List[str],
@@ -134,14 +137,14 @@ class Query(graphene.ObjectType):
         max_trace_length_to_sinks: Optional[int] = None,
         min_trace_length_to_sources: Optional[int] = None,
         max_trace_length_to_sources: Optional[int] = None,
-        issue_id: Optional[int] = None,
+        issue_instance_id: Optional[int] = None,
+        is_new_issue: Optional[bool] = None,
         **kwargs: Any,
     ) -> List[IssueQueryResult]:
         session = get_session(info.context)
-        run_id = Query.latest_run_id(session)
 
         builder = (
-            issues.Query(session, run_id)
+            issues.Instance(session, DBID(run_id))
             .where_codes_is_any_of(codes)
             .where_callables_is_any_of(callables)
             .where_path_is_any_of(paths)
@@ -151,54 +154,51 @@ class Query(graphene.ObjectType):
             .where_trace_length_to_sources(
                 min_trace_length_to_sources, max_trace_length_to_sources
             )
-            .where_issue_id_is(issue_id)
+            .where_issue_instance_id_is(issue_instance_id)
+            .where_is_new_issue(is_new_issue)
         )
 
         for feature in features or []:
             if feature.mode == "any of":
-                # pyre-ignore[6]: graphene too dynamic.
+                # pyre-fixme[6]: Expected `List[str]` for 1st param but got `List`.
                 builder = builder.where_any_features(feature.features)
             if feature.mode == "all of":
-                # pyre-ignore[6]: graphene too dynamic.
+                # pyre-fixme[6]: Expected `List[str]` for 1st param but got `List`.
                 builder = builder.where_all_features(feature.features)
             if feature.mode == "none of":
-                # pyre-ignore[6]: graphene too dynamic.
+                # pyre-fixme[6]: Expected `List[str]` for 1st param but got `List`.
                 builder = builder.where_exclude_features(feature.features)
 
         return builder.get()
 
     def resolve_initial_trace_frames(
-        self, info: ResolveInfo, issue_id: int, kind: str
+        self, info: ResolveInfo, issue_instance_id: int, kind: str
     ) -> List[TraceFrameQueryResult]:
         session = info.context.get("session")
-        return trace.Query(session).initial_trace_frames(
-            issue_id, TraceKind.create_from_string(kind)
+        return trace.initial_frames(
+            session, DBID(issue_instance_id), TraceKind.create_from_string(kind)
         )
 
     def resolve_next_trace_frames(
-        self, info: ResolveInfo, issue_id: int, frame_id: int, kind: str
+        self, info: ResolveInfo, issue_instance_id: int, frame_id: int, kind: str
     ) -> List[TraceFrameQueryResult]:
         session = info.context.get("session")
 
-        leaf_kinds = Query.all_leaf_kinds(session)
-        run_id = DBID(Query.latest_run_id(session))
-
         trace_kind = TraceKind.create_from_string(kind)
         if trace_kind == TraceKind.POSTCONDITION:
-            leaf_kind = issues.Query(session, run_id).get_leaves_issue_instance(
-                session, issue_id, SharedTextKind.SOURCE
-            )
+            leaf_kind = issues.sources(session, DBID(issue_instance_id))
         elif trace_kind == TraceKind.PRECONDITION:
-            leaf_kind = issues.Query(session, run_id).get_leaves_issue_instance(
-                session, issue_id, SharedTextKind.SINK
-            )
+            leaf_kind = issues.sinks(session, DBID(issue_instance_id))
 
         trace_frame = session.query(TraceFrame).get(frame_id)
         if trace_frame is None:
             raise ValueError(f"`{frame_id}` is not a valid trace frame id")
 
-        return trace.Query(session).next_trace_frames(
-            leaf_kinds, run_id, leaf_kind, trace_frame, visited_ids=set()
+        return trace.next_frames(
+            session,
+            trace_frame,
+            leaf_kind,
+            visited_ids=set(),
         )
 
     def resolve_codes(self, info: ResolveInfo) -> List[typeahead.Code]:
@@ -222,47 +222,19 @@ class Query(graphene.ObjectType):
             raise FileNotFoundError("Attempted directory traversal")
 
         source_directory = Path(info.context.get("source_directory") or os.getcwd())
-        contents = (source_directory / path).read_text()
-        return [File(path=path, contents=contents)]
+        full_path = source_directory / path
+        contents = full_path.read_text()
+
+        editor_link = None
+        editor_schema = info.context.get("editor_schema")
+        if editor_schema is not None:
+            editor_link = f"{editor_schema}//file/{str(full_path)}"
+
+        return [File(path=path, contents=contents, editor_link=editor_link)]
 
     def resolve_filters(self, info: ResolveInfo) -> List[filters_module.Filter]:
         session = info.context["session"]
         return filters_module.all_filters(session)
-
-    @staticmethod
-    def all_leaf_kinds(
-        session: Session,
-    ) -> Tuple[Dict[int, str], Dict[int, str], Dict[int, str]]:
-        return (
-            {
-                int(id): contents
-                for id, contents in session.query(
-                    SharedText.id, SharedText.contents
-                ).filter(SharedText.kind == SharedTextKind.SOURCE)
-            },
-            {
-                int(id): contents
-                for id, contents in session.query(
-                    SharedText.id, SharedText.contents
-                ).filter(SharedText.kind == SharedTextKind.SINK)
-            },
-            {
-                int(id): contents
-                for id, contents in session.query(
-                    SharedText.id, SharedText.contents
-                ).filter(SharedText.kind == SharedTextKind.FEATURE)
-            },
-        )
-
-    @staticmethod
-    def latest_run_id(session: Session) -> DBID:
-        return DBID(
-            (
-                session.query(func.max(Run.id))
-                .filter(Run.status == RunStatus.FINISHED)
-                .scalar()
-            )
-        )
 
 
 class SaveFilterMutation(relay.ClientIDMutation):

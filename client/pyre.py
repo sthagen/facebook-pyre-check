@@ -112,6 +112,7 @@ def run_pyre_command(
     try:
         configuration_module.check_nested_local_configuration(configuration)
         log.start_logging_to_directory(noninteractive, configuration.log_directory)
+        LOG.debug(f"Running cli command `{' '.join(sys.argv)}`...")
         exit_code = command.run().exit_code()
     except (buck.BuckException, EnvironmentException) as error:
         client_exception_message = str(error)
@@ -167,19 +168,43 @@ def _run_incremental_command(
     no_watchman: bool,
 ) -> ExitCode:
     configuration = _create_configuration_with_retry(arguments, Path("."))
-    return run_pyre_command(
-        commands.Incremental(
-            arguments,
-            original_directory=os.getcwd(),
-            configuration=configuration,
-            nonblocking=nonblocking,
-            incremental_style=incremental_style,
-            no_start_server=no_start_server,
+    if arguments.use_command_v2:
+        start_arguments = command_arguments.StartArguments(
+            changed_files_path=arguments.changed_files_path,
+            debug=arguments.debug,
+            load_initial_state_from=arguments.load_initial_state_from,
+            no_saved_state=arguments.no_saved_state,
             no_watchman=no_watchman,
-        ),
-        configuration,
-        arguments.noninteractive,
-    )
+            save_initial_state_to=arguments.save_initial_state_to,
+            saved_state_project=arguments.saved_state_project,
+            sequential=arguments.sequential,
+            show_error_traces=arguments.show_error_traces,
+            store_type_check_resolution=False,
+            terminal=False,
+            wait_on_initialization=True,
+        )
+        return v2.incremental.run(
+            configuration,
+            command_arguments.IncrementalArguments(
+                output=arguments.output,
+                no_start=no_start_server,
+                start_arguments=start_arguments,
+            ),
+        )
+    else:
+        return run_pyre_command(
+            commands.Incremental(
+                arguments,
+                original_directory=os.getcwd(),
+                configuration=configuration,
+                nonblocking=nonblocking,
+                incremental_style=incremental_style,
+                no_start_server=no_start_server,
+                no_watchman=no_watchman,
+            ),
+            configuration,
+            arguments.noninteractive,
+        )
 
 
 def _run_default_command(arguments: command_arguments.CommandArguments) -> ExitCode:
@@ -228,7 +253,7 @@ def _create_configuration_with_retry(
             "Cannot determine which recent local root to rerun. "
         )
 
-    LOG.warning(f"Restarting pyre under local root `{local_root_for_rerun}`...")
+    LOG.warning(f"Running pyre under local root `{local_root_for_rerun}`...")
     LOG.warning(
         f"Hint: To avoid this prompt, run `pyre -l {local_root_for_rerun}` "
         f"or `cd {local_root_for_rerun} && pyre`."
@@ -483,6 +508,12 @@ def pyre(
     default=False,
     help="Provide model query debugging output.",
 )
+@click.option(
+    "--use-cache",
+    is_flag=True,
+    default=False,
+    help="Store information in .pyre/pysa.cache for faster runs.",
+)
 @click.pass_context
 def analyze(
     context: click.Context,
@@ -495,6 +526,7 @@ def analyze(
     rule: Iterable[int],
     find_missing_flows: Optional[str],
     dump_model_query_results: bool,
+    use_cache: bool,
 ) -> int:
     """
     Run Pysa, the inter-procedural static analysis tool.
@@ -520,6 +552,7 @@ def analyze(
                 else None
             ),
             dump_model_query_results=dump_model_query_results,
+            use_cache=use_cache,
         ),
         configuration,
         command_argument.noninteractive,
@@ -577,39 +610,15 @@ def incremental(
     results eagerly, you can run `pyre incremental --nonblocking`.
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
-    if command_argument.use_command_v2:
-        configuration = _create_configuration_with_retry(command_argument, Path("."))
-        start_arguments = command_arguments.StartArguments(
-            changed_files_path=command_argument.changed_files_path,
-            debug=command_argument.debug,
-            load_initial_state_from=command_argument.load_initial_state_from,
-            no_watchman=no_watchman,
-            save_initial_state_to=command_argument.save_initial_state_to,
-            saved_state_project=command_argument.saved_state_project,
-            sequential=command_argument.sequential,
-            show_error_traces=command_argument.show_error_traces,
-            store_type_check_resolution=False,
-            terminal=False,
-            wait_on_initialization=True,
-        )
-        return v2.incremental.run(
-            configuration,
-            command_arguments.IncrementalArguments(
-                output=command_argument.output,
-                no_start=no_start,
-                start_arguments=start_arguments,
-            ),
-        )
-    else:
-        return _run_incremental_command(
-            arguments=command_argument,
-            nonblocking=nonblocking,
-            incremental_style=commands.IncrementalStyle.SHALLOW
-            if incremental_style == str(commands.IncrementalStyle.SHALLOW)
-            else commands.IncrementalStyle.FINE_GRAINED,
-            no_start_server=no_start,
-            no_watchman=no_watchman,
-        )
+    return _run_incremental_command(
+        arguments=command_argument,
+        nonblocking=nonblocking,
+        incremental_style=commands.IncrementalStyle.SHALLOW
+        if incremental_style == str(commands.IncrementalStyle.SHALLOW)
+        else commands.IncrementalStyle.FINE_GRAINED,
+        no_start_server=no_start,
+        no_watchman=no_watchman,
+    )
 
 
 @pyre.command()
@@ -761,16 +770,38 @@ def persistent(context: click.Context, no_watchman: bool) -> int:
     configuration = configuration_module.create_configuration(
         command_argument, Path(".")
     )
-    return run_pyre_command(
-        commands.Persistent(
-            command_argument,
-            original_directory=os.getcwd(),
-            configuration=configuration,
-            no_watchman=no_watchman,
-        ),
-        configuration,
-        True,
-    )
+    if command_argument.use_command_v2:
+        log.start_logging_to_directory(
+            command_argument.noninteractive, configuration.log_directory
+        )
+        return v2.persistent.run(
+            configuration,
+            command_arguments.StartArguments(
+                changed_files_path=command_argument.changed_files_path,
+                debug=command_argument.debug,
+                load_initial_state_from=command_argument.load_initial_state_from,
+                no_saved_state=command_argument.no_saved_state,
+                no_watchman=no_watchman,
+                save_initial_state_to=command_argument.save_initial_state_to,
+                saved_state_project=command_argument.saved_state_project,
+                sequential=command_argument.sequential,
+                show_error_traces=command_argument.show_error_traces,
+                store_type_check_resolution=False,
+                terminal=False,
+                wait_on_initialization=True,
+            ),
+        )
+    else:
+        return run_pyre_command(
+            commands.Persistent(
+                command_argument,
+                original_directory=os.getcwd(),
+                configuration=configuration,
+                no_watchman=no_watchman,
+            ),
+            configuration,
+            True,
+        )
 
 
 @pyre.command()
@@ -905,6 +936,7 @@ def restart(
             changed_files_path=command_argument.changed_files_path,
             debug=command_argument.debug,
             load_initial_state_from=command_argument.load_initial_state_from,
+            no_saved_state=command_argument.no_saved_state,
             no_watchman=no_watchman,
             save_initial_state_to=command_argument.save_initial_state_to,
             saved_state_project=command_argument.saved_state_project,
@@ -1023,6 +1055,7 @@ def start(
                 changed_files_path=command_argument.changed_files_path,
                 debug=command_argument.debug,
                 load_initial_state_from=command_argument.load_initial_state_from,
+                no_saved_state=command_argument.no_saved_state,
                 no_watchman=no_watchman,
                 save_initial_state_to=command_argument.save_initial_state_to,
                 saved_state_project=command_argument.saved_state_project,

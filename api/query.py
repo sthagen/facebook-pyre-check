@@ -3,10 +3,20 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import re
 from functools import lru_cache
-from typing import Any, Dict, Iterable, List, NamedTuple, Optional
+from itertools import islice
+from typing import Any, Dict, Generator, Iterable, List, NamedTuple, Optional, TypeVar
 
-from .connection import PyreConnection
+from .connection import PyreConnection, PyreQueryError
+
+
+T = TypeVar("T")
+
+
+class Attributes(NamedTuple):
+    name: str
+    annotation: Optional[str]
 
 
 class DefineParameter(NamedTuple):
@@ -82,6 +92,13 @@ class ClassHierarchy:
         return self.hierarchy.get(class_name, [])
 
 
+class InvalidModel(NamedTuple):
+    fully_qualified_name: str
+    path: str
+    line: int
+    full_error_message: str
+
+
 def _defines(pyre_connection: PyreConnection, modules: Iterable[str]) -> List[Define]:
     query = "defines({})".format(",".join(modules))
     result = pyre_connection.query_server(query)
@@ -139,10 +156,55 @@ def get_superclasses(pyre_connection: PyreConnection, class_name: str) -> List[s
     return result["response"]["superclasses"]
 
 
-def get_attributes(pyre_connection: PyreConnection, class_name: str) -> List[str]:
+def _get_batch(
+    iterable: Iterable[T], batch_size: Optional[int]
+) -> Generator[Iterable[T], None, None]:
+    if not batch_size:
+        yield iterable
+    elif batch_size <= 0:
+        raise ValueError(
+            "batch_size must a positive integer, provided: `{}`".format(batch_size)
+        )
+    else:
+        iterator = iter(iterable)
+        batch = list(islice(iterator, batch_size))
+        while batch:
+            yield batch
+            batch = list(islice(iterator, batch_size))
+
+
+def _get_attributes(
+    pyre_connection: PyreConnection, class_name: str
+) -> List[Attributes]:
     query = f"attributes({class_name})"
     response = pyre_connection.query_server(query)["response"]
-    return [attribute["name"] for attribute in response["attributes"]]
+    return [
+        Attributes(name=attribute["name"], annotation=attribute["annotation"])
+        for attribute in response["attributes"]
+    ]
+
+
+def get_attributes(
+    pyre_connection: PyreConnection,
+    class_names: Iterable[str],
+    batch_size: Optional[int] = None,
+) -> Dict[str, List[Attributes]]:
+    all_responses = {}
+    for batch in _get_batch(class_names, batch_size):
+        query = "batch({})".format(", ".join([f"attributes({name})" for name in batch]))
+        responses = pyre_connection.query_server(query)["response"]
+        all_responses.update(
+            {
+                class_name: [
+                    Attributes(
+                        name=attribute["name"], annotation=attribute["annotation"]
+                    )
+                    for attribute in response["response"]["attributes"]
+                ]
+                for class_name, response in zip(batch, responses)
+            }
+        )
+    return all_responses
 
 
 def get_call_graph(
@@ -166,3 +228,38 @@ def _parse_location(location_json: Dict[str, Any]) -> Location:
 
 def _parse_position(position_json: Dict[str, Any]) -> Position:
     return Position(line=position_json["line"], column=position_json["column"])
+
+
+def get_invalid_taint_models(
+    pyre_connection: PyreConnection,
+) -> List[InvalidModel]:
+    errors: List[InvalidModel] = []
+    try:
+        _ = pyre_connection.query_server("validate_taint_models()")
+    except PyreQueryError as exception:
+        message = exception.args[0]
+        if "Invalid model for" not in message:
+            raise exception
+
+        model_extractor = re.compile(
+            r".*`(?P<name>.*)`.*`(?P<path>.*):(?P<line>\d*)`.*"
+        )
+
+        for error in message.split("\n"):
+            extracted = model_extractor.search(error)
+            if not extracted:
+                raise exception
+            fully_qualified_name = extracted.group("name")
+            path = extracted.group("path")
+            line = int(extracted.group("line"))
+
+            errors.append(
+                InvalidModel(
+                    fully_qualified_name=fully_qualified_name,
+                    path=path,
+                    line=line,
+                    full_error_message=error,
+                )
+            )
+
+    return errors

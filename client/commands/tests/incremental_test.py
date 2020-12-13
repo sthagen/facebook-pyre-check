@@ -27,8 +27,8 @@ class IncrementalTest(unittest.TestCase):
         "_convert_json_response_to_result",
         return_value=command.Result(output="{}", code=0),
     )
-    @patch.object(json_rpc.Request, "write")
-    @patch.object(json_rpc, "read_response")
+    @patch.object(json_rpc, "write_lsp_request")
+    @patch.object(json_rpc, "read_lsp_response")
     @patch.object(SocketConnection, "connect")
     @patch.object(SocketConnection, "perform_handshake")
     @patch(
@@ -272,6 +272,8 @@ class IncrementalTest(unittest.TestCase):
                     {
                         "line": 4,
                         "column": 11,
+                        "stop_line": 4,
+                        "stop_column": 21,
                         "path": "test/path.py",
                         "code": -1,
                         "name": "Revealed type",

@@ -3,6 +3,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import dataclasses
 import json
 import logging
 from pathlib import Path
@@ -24,9 +25,8 @@ class InvalidServerResponse(Exception):
     pass
 
 
-def parse_type_error_response(response: str) -> List[error.Error]:
+def parse_type_error_response_json(response_json: object) -> List[error.Error]:
     try:
-        response_json = json.loads(response)
         # The response JSON is expected to have the following form:
         # `["TypeErrors", [error_json0, error_json1, ...]]`
         if (
@@ -41,15 +41,26 @@ def parse_type_error_response(response: str) -> List[error.Error]:
         raise InvalidServerResponse(
             f"Unexpected JSON response from server: {response_json}"
         )
-    except json.JSONDecodeError as decode_error:
-        message = f"Cannot parse response as JSON: {decode_error}"
-        raise InvalidServerResponse(message) from decode_error
     except error.ErrorParsingFailure as parsing_error:
         message = f"Unexpected error JSON from server: {parsing_error}"
         raise InvalidServerResponse(message) from parsing_error
 
 
-def _display_type_errors(socket_path: Path) -> None:
+def parse_type_error_response(response: str) -> List[error.Error]:
+    try:
+        response_json = json.loads(response)
+        return parse_type_error_response_json(response_json)
+    except json.JSONDecodeError as decode_error:
+        message = f"Cannot parse response as JSON: {decode_error}"
+        raise InvalidServerResponse(message) from decode_error
+
+
+def _relativize_error_path(error: error.Error) -> error.Error:
+    relativized_path = error.path.relative_to(Path.cwd())
+    return dataclasses.replace(error, path=relativized_path)
+
+
+def _display_type_errors(socket_path: Path, output: str) -> None:
     with server_connection.connect_in_text_mode(socket_path) as (
         input_channel,
         output_channel,
@@ -57,7 +68,17 @@ def _display_type_errors(socket_path: Path) -> None:
         # The empty list argument means we want all type errors from the server.
         output_channel.write('["DisplayTypeError", []]\n')
         type_errors = parse_type_error_response(input_channel.readline())
-        error.print_errors(type_errors, output="text")
+        error.print_errors(
+            [_relativize_error_path(error) for error in type_errors], output=output
+        )
+
+
+def _show_progress_and_display_type_errors(
+    log_path: Path, socket_path: Path, output: str
+) -> None:
+    LOG.info("Waiting for server...")
+    with start.background_logging(log_path):
+        _display_type_errors(socket_path, output)
 
 
 def run_incremental(
@@ -67,8 +88,11 @@ def run_incremental(
     socket_path = server_connection.get_default_socket_path(
         log_directory=Path(configuration.log_directory)
     )
+    # Need to be consistent with the log symlink location in start command
+    log_path = Path(configuration.log_directory) / "new_server" / "server.stderr"
+    output = incremental_arguments.output
     try:
-        _display_type_errors(socket_path)
+        _show_progress_and_display_type_errors(log_path, socket_path, output)
     except OSError:
         if incremental_arguments.no_start:
             raise commands.ClientException("Cannot find a running Pyre server.")
@@ -79,7 +103,7 @@ def run_incremental(
             raise commands.ClientException(
                 f"`pyre start` failed with non-zero exit code: {start_status}"
             )
-        _display_type_errors(socket_path)
+        _show_progress_and_display_type_errors(log_path, socket_path, output)
 
 
 def run(

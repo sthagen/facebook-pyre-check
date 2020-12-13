@@ -115,7 +115,8 @@ class Incremental(Reporting):
 
         with self._analysis_directory.acquire_shared_reader_lock():
             request = json_rpc.Request(
-                method="displayTypeErrors", parameters={"files": []}
+                method="displayTypeErrors",
+                parameters=json_rpc.ByNameParameters({"files": []}),
             )
             self._send_and_handle_socket_request(request, self._version_hash)
 
@@ -146,7 +147,10 @@ class Incremental(Reporting):
         for exclude in excludes:
             flags.extend(["-exclude", exclude])
 
-        extensions = self._configuration.get_valid_extensions()
+        extensions = [
+            extension.command_line_argument()
+            for extension in self._configuration.extensions
+        ]
         for extension in extensions:
             flags.extend(["-extension", extension])
 

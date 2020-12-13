@@ -58,7 +58,10 @@ class ProjectFilesMonitor(Subscriber):
 
         self._extensions: Set[str] = set(
             ["py", "pyi", "thrift"]
-            + [extension[1:] for extension in configuration.get_valid_extensions()]
+            + [
+                extension[1:]
+                for extension in configuration.get_valid_extension_suffixes()
+            ]
         )
 
         self._watchman_path: str = self._find_watchman_path(project_root)
@@ -121,12 +124,14 @@ class ProjectFilesMonitor(Subscriber):
 
             message = json_rpc.Request(
                 method="updateFiles",
-                parameters={
-                    "files": updated_paths.updated_paths,
-                    "invalidated": updated_paths.deleted_paths,
-                },
+                parameters=json_rpc.ByNameParameters(
+                    {
+                        "files": updated_paths.updated_paths,
+                        "invalidated": updated_paths.deleted_paths,
+                    }
+                ),
             )
-            if not message.write(self.socket_connection.output):
+            if not json_rpc.write_lsp_request(self.socket_connection.output, message):
                 LOG.info("Failed to communicate with server. Shutting down.")
                 self._alive = False  # terminate daemon
                 self.socket_connection.close()

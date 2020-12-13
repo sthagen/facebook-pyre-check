@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import logging
+import os
 
 import click
 
@@ -15,8 +16,7 @@ from .lint import lint
 from .pipeline.pysa_taint_parser import Parser
 
 
-# pyre-fixme[5]: Global expression must be annotated.
-logger = logging.getLogger("sapp")
+LOG: logging.Logger = logging.getLogger("sapp")
 
 
 @common_options
@@ -28,16 +28,17 @@ logger = logging.getLogger("sapp")
     help="database engine to use",
 )
 @click.pass_context
-# pyre-fixme[3]: Return type must be annotated.
 def cli(
-    ctx: click.Context, repository: str, database_name: str, database_engine: DBType
-):
+    ctx: click.Context, repository: str, database_name: str, database_engine: str
+) -> None:
     ctx.obj = Context(
         repository=repository,
-        database=DB(database_engine, database_name, assertions=True),
+        database=DB(
+            database_engine, os.path.expanduser(database_name), assertions=True
+        ),
         parser_class=Parser,
     )
-    logger.debug(f"Context: {ctx.obj}")
+    LOG.debug(f"Context: {ctx.obj}")
 
 
 for command in commands:

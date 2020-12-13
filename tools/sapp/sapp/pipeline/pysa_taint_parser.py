@@ -214,6 +214,7 @@ class Parser(BaseParser):
             issue["features"] = json["features"]
         else:
             issue["features"] = bw_features + fw_features  # legacy
+
         yield issue
 
     # pyre-fixme[3]: Return type must be annotated.
@@ -256,11 +257,6 @@ class Parser(BaseParser):
             if trace["name"] == name:
                 return self._parse_issue_trace_fragments(leaf_port, trace["roots"])
         return ([], set(), set())
-
-    # pyre-fixme[3]: Return type must be annotated.
-    # pyre-fixme[2]: Parameter must be annotated.
-    def _get_position_or_default(self, json):
-        return json.get("position", {"line": 0, "start": 0, "end": 0})
 
     # pyre-fixme[3]: Return type must be annotated.
     # pyre-fixme[2]: Parameter must be annotated.
@@ -315,7 +311,7 @@ class Parser(BaseParser):
                 yield {
                     "callee": callee_name,
                     "port": port,
-                    "location": trace["root"],
+                    "location": self._adjust_location(trace["root"]),
                     "leaves": leaves,
                     "titos": trace.get("tito", []),
                     "features": trace.get("features", []),
@@ -323,7 +319,7 @@ class Parser(BaseParser):
                 }
         elif "call" in trace:
             call = trace["call"]
-            location = call["position"]
+            location = self._adjust_location(call["position"])
             port = call["port"]
             resolves_to = call.get("resolves_to", [])
             length = call.get("length", 0)
@@ -335,10 +331,15 @@ class Parser(BaseParser):
                     "port": port,
                     "location": location,
                     "leaves": leaves,
-                    "titos": trace.get("tito", []),
+                    "titos": [
+                        self._adjust_location(tito) for tito in trace.get("tito", [])
+                    ],
                     "features": trace.get("features", []),
                     "type_interval": {},
                 }
+
+    def _adjust_location(self, location: Dict[str, Any]) -> Dict[str, Any]:
+        return {**location, "start": location["start"] + 1}
 
     # pyre-fixme[2]: Parameter must be annotated.
     def _leaf_name(self, leaf) -> str:
