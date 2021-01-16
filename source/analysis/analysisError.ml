@@ -230,6 +230,10 @@ and invalid_decoration_reason =
   | NonCallableDecorator of Type.t
   | DecoratorFactoryFailedToApply of kind option
   | ApplicationFailed of kind option
+  | SetterNameMismatch of {
+      actual: string;
+      expected: string;
+    }
 
 and kind =
   | AnalysisFailure of Type.t
@@ -1085,6 +1089,16 @@ let rec messages ~concise ~signature location kind =
       | Some inner_message ->
           [Format.asprintf "While applying decorator `%s%s`: %s" name arguments inner_message]
       | None -> [Format.asprintf "Decorator `%s%s` failed to apply." name arguments] )
+  | InvalidDecoration { decorator = { name; _ }; reason = SetterNameMismatch { expected; actual } }
+    ->
+      let name = Node.value name |> Reference.sanitized |> Reference.show in
+      [
+        Format.asprintf
+          "Invalid property setter `%s`: `%s` does not match decorated method `%s`."
+          name
+          actual
+          expected;
+      ]
   | InvalidException { expression; annotation } ->
       [
         Format.asprintf
@@ -2155,7 +2169,6 @@ let rec messages ~concise ~signature location kind =
       ]
   | UnusedLocalMode { unused_mode; actual_mode } ->
       let mode_string = function
-        | { Node.value = Source.Debug; _ } -> "pyre-debug"
         | { Node.value = Source.Strict; _ } -> "pyre-strict"
         | { Node.value = Source.Unsafe; _ } -> "pyre-unsafe"
         | { Node.value = Source.Declare; _ } -> "pyre-ignore-all-errors"

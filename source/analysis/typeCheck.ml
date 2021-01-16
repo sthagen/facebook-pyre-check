@@ -677,7 +677,29 @@ module State (Context : Context) = struct
           || is_attr_validator decorator
         in
         if is_whitelisted decorator then
-          errors
+          let { Ast.Statement.Decorator.name = { Node.value = decorator_name; _ }; _ } =
+            decorator
+          in
+          match Reference.as_list decorator_name |> List.rev with
+          | "setter" :: decorated_property_name :: _ ->
+              if String.equal (Reference.last (Node.value name)) decorated_property_name then
+                errors
+              else
+                emit_error
+                  ~errors
+                  ~location
+                  ~kind:
+                    (Error.InvalidDecoration
+                       {
+                         decorator;
+                         reason =
+                           Error.SetterNameMismatch
+                             {
+                               actual = decorated_property_name;
+                               expected = Reference.last (Node.value name);
+                             };
+                       })
+          | _ -> errors
         else
           let { Resolved.errors = decorator_errors; _ } =
             forward_expression
@@ -2992,7 +3014,11 @@ module State (Context : Context) = struct
               | Some attribute ->
                   let attribute =
                     if not (Annotated.Attribute.defined attribute) then
-                      Resolution.fallback_attribute class_name ~resolution ~name
+                      Resolution.fallback_attribute
+                        class_name
+                        ~accessed_through_class
+                        ~resolution
+                        ~name
                       |> Option.value ~default:attribute
                     else
                       attribute
@@ -4590,11 +4616,17 @@ module State (Context : Context) = struct
           in
           let partition annotation ~boundary =
             let consistent_with_boundary, not_consistent_with_boundary =
+              let unfolded_annotation =
+                match annotation with
+                | Type.RecursiveType recursive_type ->
+                    Type.RecursiveType.unfold_recursive_type recursive_type
+                | _ -> annotation
+              in
               let extract_union_members = function
                 | Type.Union parameters -> parameters
                 | annotation -> [annotation]
               in
-              extract_union_members annotation
+              extract_union_members unfolded_annotation
               |> List.partition_tf ~f:(fun left ->
                      Resolution.is_consistent_with resolution left boundary ~expression:None)
             in

@@ -4,14 +4,16 @@
 # LICENSE file in the root directory of this source tree.
 
 import json
+import logging
 import os
 import platform
 import re
 import shutil
 import subprocess
 import tempfile
+import textwrap
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 # just validate that it's available, but we don't invoke it directly
 import wheel as _wheel  # noqa
@@ -25,20 +27,23 @@ RUNTIME_DEPENDENCIES = [
     "click",
     "dataclasses",
     "dataclasses-json",
-    "pywatchman",
-    "psutil",
+    "fb-sapp",
     "libcst>=0.3.6",
+    "psutil",
     "pyre_extensions",
+    "pywatchman",
 ]
 
+LOG: logging.Logger = logging.getLogger(__name__)
 
-def distribution_platform() -> str:
+
+def _distribution_platform() -> str:
     if platform.system() == "Linux":
         return "-manylinux1_x86_64"
     return "-macosx_10_11_x86_64"
 
 
-def validate_typeshed(typeshed_path: Path) -> None:
+def _validate_typeshed(typeshed_path: Path) -> None:
     path = typeshed_path.absolute() / "stdlib"
     if not path.is_dir():
         raise ValueError(
@@ -47,36 +52,41 @@ def validate_typeshed(typeshed_path: Path) -> None:
         )
 
 
-def validate_version(version: str) -> None:
+def _validate_version(version: str) -> None:
     pattern = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
     if not pattern.match(version):
         raise ValueError("Invalid version format.")
 
 
-# sapp directory is either beside or inside pyre-check directory
-def sapp_directory(pyre_directory: Path) -> Path:
-    path = pyre_directory / "tools/sapp"
-    if not path.is_dir():
-        path = pyre_directory.parent / "sapp"
-    return path
-
-
-def mkdir_and_init(module_path: Path) -> None:
+def _mkdir_and_init(module_path: Path, version: Optional[str] = None) -> None:
     module_path.mkdir()
-    (module_path / "__init__.py").touch()
+    init_path = module_path / "__init__.py"
+    if version is None:
+        init_path.touch()
+    else:
+        init_path.write_text(
+            f"""\
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
+__version__ = "{version}"
+"""
+        )
 
 
-def add_init_files(build_root: Path) -> None:
+def _add_init_files(build_root: Path, version: str) -> None:
     # setup.py sdist will refuse to work for directories without a `__init__.py`.
     module_path = build_root / MODULE_NAME
-    mkdir_and_init(module_path)
-    mkdir_and_init(module_path / "tools")
-    mkdir_and_init(module_path / "tools/upgrade")
-    mkdir_and_init(module_path / "tools/upgrade/commands")
-    mkdir_and_init(module_path / "client")
+    _mkdir_and_init(module_path, version)
+    _mkdir_and_init(module_path / "tools")
+    _mkdir_and_init(module_path / "tools/upgrade")
+    _mkdir_and_init(module_path / "tools/upgrade/commands")
+    _mkdir_and_init(module_path / "client")
 
 
-def rsync_files(
+def _rsync_files(
     filters: List[str],
     source_directory: Path,
     target_directory: Path,
@@ -90,35 +100,25 @@ def rsync_files(
     subprocess.run(command)
 
 
-def sync_python_files(pyre_directory: Path, build_root: Path) -> None:
+def _sync_python_files(pyre_directory: Path, build_root: Path) -> None:
     target_root = build_root / MODULE_NAME
     filters = ["- tests/", "+ */", "-! *.py"]
-    rsync_files(filters, pyre_directory / "client", target_root, ["-avm"])
-    rsync_files(
+    _rsync_files(filters, pyre_directory / "client", target_root, ["-avm"])
+    _rsync_files(
         filters, pyre_directory / "tools" / "upgrade", target_root / "tools", ["-avm"]
     )
 
 
-def sync_pysa_stubs(pyre_directory: Path, build_root: Path) -> None:
+def _sync_pysa_stubs(pyre_directory: Path, build_root: Path) -> None:
     filters = ["+ */"]
-    rsync_files(filters, pyre_directory / "stubs" / "taint", build_root, ["-avm"])
-    rsync_files(
+    _rsync_files(filters, pyre_directory / "stubs" / "taint", build_root, ["-avm"])
+    _rsync_files(
         filters, pyre_directory / "stubs" / "third_party_taint", build_root, ["-avm"]
     )
 
 
-def sync_sapp_files(pyre_directory: Path, build_root: Path) -> None:
-    filters = ["- tests/", "+ */", "+ *.py", "+ *requirements.json", "- *"]
-    rsync_files(
-        filters,
-        sapp_directory(pyre_directory),
-        build_root / MODULE_NAME / "tools",
-        ["-avm"],
-    )
-
-
-def sync_stubs(pyre_directory: Path, build_root: Path) -> None:
-    rsync_files(
+def _sync_stubs(pyre_directory: Path, build_root: Path) -> None:
+    _rsync_files(
         [],
         pyre_directory / "stubs",
         build_root,
@@ -134,15 +134,15 @@ def sync_stubs(pyre_directory: Path, build_root: Path) -> None:
     )
 
 
-def sync_typeshed(build_root: Path, typeshed_path: Path) -> None:
+def _sync_typeshed(build_root: Path, typeshed_path: Path) -> None:
     typeshed_target = build_root / "typeshed"
-    rsync_files(
+    _rsync_files(
         ["+ */", "-! *.pyi"], typeshed_path / "stdlib", typeshed_target, ["-avm"]
     )
-    rsync_files(
+    _rsync_files(
         ["+ */", "-! *.pyi"], typeshed_path / "third_party", typeshed_target, ["-avm"]
     )
-    rsync_files(
+    _rsync_files(
         [],
         typeshed_target,
         build_root,
@@ -159,16 +159,16 @@ def sync_typeshed(build_root: Path, typeshed_path: Path) -> None:
     )
 
 
-def patch_version(version: str, build_root: Path) -> None:
+def _patch_version(version: str, build_root: Path) -> None:
     file_contents = "__version__ = {}".format(version)
     (build_root / MODULE_NAME / "client/version.py").write_text(file_contents)
 
 
-def binary_exists(pyre_directory: Path) -> bool:
+def _binary_exists(pyre_directory: Path) -> bool:
     return (pyre_directory / "source" / "_build/default/main.exe").is_file()
 
 
-def sync_binary(pyre_directory: Path, build_root: Path) -> None:
+def _sync_binary(pyre_directory: Path, build_root: Path) -> None:
     (build_root / "bin").mkdir()
     shutil.copy(
         pyre_directory / "source" / "_build/default/main.exe",
@@ -176,53 +176,49 @@ def sync_binary(pyre_directory: Path, build_root: Path) -> None:
     )
 
 
-def sync_documentation_files(pyre_directory: Path, build_root: Path) -> None:
+def _sync_documentation_files(pyre_directory: Path, build_root: Path) -> None:
     shutil.copy(pyre_directory / "README.md", build_root)
     shutil.copy(pyre_directory / "LICENSE", build_root)
 
 
-def generate_setup_py(pyre_directory: Path, version: str) -> str:
-    path = pyre_directory / "scripts/pypi/setup.py"
-    setup_template = path.read_text()
-    sapp_dependencies = (
-        sapp_directory(pyre_directory) / "requirements.json"
-    ).read_text()
-    runtime_dependencies = json.dumps(RUNTIME_DEPENDENCIES)
-    return setup_template.format(
-        PACKAGE_NAME="pyre-check",
-        PACKAGE_VERSION=version,
-        MODULE_NAME=MODULE_NAME,
-        RUNTIME_DEPENDENCIES=runtime_dependencies,
-        SAPP_DEPENDENCIES=sapp_dependencies,
-    )
-
-
-def create_setup_cfg(build_root: Path) -> None:
+def _create_setup_configuration(build_root: Path) -> None:
     setup_cfg = build_root / "setup.cfg"
     setup_cfg.touch()
     setup_cfg.write_text("[metadata]\nlicense_file = LICENSE")
 
 
-def create_setup_py(pyre_directory: Path, version: str, build_root: Path) -> None:
-    setup_contents = generate_setup_py(pyre_directory, version)
+def _create_setup_py(
+    pyre_directory: Path, version: str, build_root: Path, nightly: bool
+) -> None:
+    path = pyre_directory / "scripts/pypi/setup.py"
+    setup_template = path.read_text()
+    runtime_dependencies = json.dumps(RUNTIME_DEPENDENCIES)
+    setup_contents = setup_template.format(
+        PACKAGE_NAME="pyre-check-nightly" if nightly else "pyre-check",
+        PACKAGE_VERSION=version,
+        MODULE_NAME=MODULE_NAME,
+        RUNTIME_DEPENDENCIES=runtime_dependencies,
+    )
+
     (build_root / "setup.py").write_text(setup_contents)
 
 
-def run_setup_command(
-    pyre_directory: Path, build_root: Path, version: str, command: str
+def _run_setup_command(
+    pyre_directory: Path,
+    build_root: Path,
+    version: str,
+    command: str,
+    nightly: bool,
 ) -> None:
     with open(pyre_directory / "README.md") as f:
         long_description = f.read()
     old_dir = os.getcwd()
     os.chdir(build_root)
     run_setup(
-        package_name="pyre-check",
+        package_name="pyre-check-nightly" if nightly else "pyre-check",
         package_version=version,
         module_name=MODULE_NAME,
         runtime_dependencies=RUNTIME_DEPENDENCIES,
-        sapp_dependencies=json.loads(
-            (sapp_directory(pyre_directory) / "requirements.json").read_text()
-        ),
         long_description=long_description,
         script_name="setup.py",
         script_args=[command],
@@ -230,19 +226,11 @@ def run_setup_command(
     os.chdir(old_dir)
 
 
-def build_distribution(pyre_directory: Path, build_root: Path, version: str) -> None:
-    run_setup_command(pyre_directory, build_root, version, "sdist")
-
-
-def build_wheel(pyre_directory: Path, build_root: Path, version: str) -> None:
-    run_setup_command(pyre_directory, build_root, version, "bdist_wheel")
-
-
-def create_dist_directory(pyre_directory: Path) -> None:
+def _create_dist_directory(pyre_directory: Path) -> None:
     (pyre_directory / "scripts" / "dist").mkdir(exist_ok=True)
 
 
-def rename_and_move_artifacts(
+def _rename_and_move_artifacts(
     pyre_directory: Path, build_root: Path
 ) -> Tuple[Path, Path]:
     dist_directory = build_root / "dist"
@@ -256,22 +244,24 @@ def rename_and_move_artifacts(
     source_distribution_name = source_distribution.name
     source_distribution_destination = destination_path / (
         source_distribution_name.split(".tar.gz")[0]
-        + distribution_platform()
+        + _distribution_platform()
         + ".tar.gz"
     )
     wheel_name = wheel.name
     wheel_destination = destination_path / wheel_name.replace(
-        "-any", distribution_platform()
+        "-any", _distribution_platform()
     )
     shutil.move(wheel, wheel_destination)
     shutil.move(source_distribution, source_distribution_destination)
     return wheel_destination, source_distribution_destination
 
 
-def run(pyre_directory: Path, typeshed_path: Path, version: str) -> None:
-    validate_typeshed(typeshed_path)
-    validate_version(version)
-    if not binary_exists(pyre_directory):
+def build_pypi_package(
+    pyre_directory: Path, typeshed_path: Path, version: str, nightly: bool
+) -> None:
+    _validate_typeshed(typeshed_path)
+    _validate_version(version)
+    if not _binary_exists(pyre_directory):
         raise ValueError(
             "The binary file does not exist. \
             Have you run 'make' in the toplevel directory?"
@@ -279,31 +269,30 @@ def run(pyre_directory: Path, typeshed_path: Path, version: str) -> None:
 
     with tempfile.TemporaryDirectory() as build_root:
         build_path = Path(build_root)
-        add_init_files(build_path)
-        patch_version(version, build_path)
-        create_setup_py(pyre_directory, version, build_path)
+        _add_init_files(build_path, version)
+        _patch_version(version, build_path)
+        _create_setup_py(pyre_directory, version, build_path, nightly)
 
-        sync_python_files(pyre_directory, build_path)
-        sync_pysa_stubs(pyre_directory, build_path)
-        sync_stubs(pyre_directory, build_path)
-        sync_sapp_files(pyre_directory, build_path)
-        sync_typeshed(build_path, typeshed_path)
-        sync_binary(pyre_directory, build_path)
-        sync_documentation_files(pyre_directory, build_path)
-        sync_stubs(pyre_directory, build_path)
+        _sync_python_files(pyre_directory, build_path)
+        _sync_pysa_stubs(pyre_directory, build_path)
+        _sync_stubs(pyre_directory, build_path)
+        _sync_typeshed(build_path, typeshed_path)
+        _sync_binary(pyre_directory, build_path)
+        _sync_documentation_files(pyre_directory, build_path)
+        _sync_stubs(pyre_directory, build_path)
 
-        build_distribution(pyre_directory, build_path, version)
-        create_dist_directory(pyre_directory)
-        create_setup_cfg(build_path)
+        _run_setup_command(pyre_directory, build_root, version, "sdist", nightly)
+        _create_dist_directory(pyre_directory)
+        _create_setup_configuration(build_path)
         twine_check([path.as_posix() for path in (build_path / "dist").iterdir()])
-        build_wheel(pyre_directory, build_path, version)
 
-        wheel_destination, distribution_destination = rename_and_move_artifacts(
+        _run_setup_command(pyre_directory, build_root, version, "bdist_wheel", nightly)
+        wheel_destination, distribution_destination = _rename_and_move_artifacts(
             pyre_directory, build_path
         )
-        print("\nAll done.")
-        print("\n Build artifact available at:\n {}\n".format(wheel_destination))
-        print(
+        LOG.info("All done.")
+        LOG.info("\n Build artifact available at:\n {}\n".format(wheel_destination))
+        LOG.info(
             "\n Source distribution available at:\n {}\n".format(
                 distribution_destination
             )

@@ -36,11 +36,39 @@ from .statistics import _get_paths, _parse_paths, parse_path_to_module
 LOG: Logger = logging.getLogger(__name__)
 
 
-def dequalify(annotation):
+class AnnotationFixer(libcst.CSTTransformer):
+    def leave_Subscript(
+        self,
+        original_node: libcst.Subscript,
+        updated_node: Union[libcst.Subscript, libcst.SimpleString],
+    ) -> Union[libcst.Subscript, libcst.SimpleString]:
+        if libcst.matchers.matches(
+            original_node.value, libcst.matchers.Name("PathLike")
+        ):
+            name_node = libcst.Attribute(
+                value=libcst.Name(
+                    value="os",
+                    lpar=[],
+                    rpar=[],
+                ),
+                attr=libcst.Name(value="PathLike"),
+            )
+            node_as_string = libcst.parse_module("").code_for_node(
+                updated_node.with_changes(value=name_node)
+            )
+            updated_node = libcst.SimpleString(f"'{node_as_string}'")
+        return updated_node
+
+
+def dequalify_and_fix_pathlike(annotation: str) -> str:
+    if annotation.find("PathLike") >= 0:
+        tree = libcst.parse_module(annotation)
+        annotation = tree.visit(AnnotationFixer()).code
+
     return annotation.replace("typing.", "")
 
 
-def split_imports(types_list) -> Set[Any]:
+def split_imports(types_list: List[str]) -> Set[str]:
     typing_imports = set()
     for full_type in types_list:
         if full_type:
@@ -50,7 +78,7 @@ def split_imports(types_list) -> Set[Any]:
     return typing_imports
 
 
-def _relativize_access(access, path):
+def _relativize_access(access, path) -> List[str]:
     if not access:
         return []
     path = str(path).split(".", 1)[0].replace("/", ".").replace(".__init__", "")
@@ -70,12 +98,12 @@ class FunctionStub:
         required_fields = ["parameters", "decorators", "async", "function_name"]
         return all(field in stub.keys() for field in required_fields)
 
-    def _get_name(self):
+    def _get_name(self) -> str:
         """ The last part of the access path is the function name """
         return self.name.split(".")[-1] if self.name.split(".") else ""
 
     def _get_annotation(self) -> str:
-        return " -> " + dequalify(self.actual) if self.actual else ""
+        return " -> " + dequalify_and_fix_pathlike(self.actual) if self.actual else ""
 
     def _get_parameter_string(self) -> str:
         """Depending on if an argument has a type, the style for default values
@@ -87,7 +115,7 @@ class FunctionStub:
         for parameter in self.parameters:
             name = parameter["name"]
             if parameter["type"]:
-                name += ": " + dequalify(parameter["type"])
+                name += ": " + dequalify_and_fix_pathlike(parameter["type"])
                 if parameter["value"]:
                     name += " = " + parameter["value"]
             elif parameter["value"]:
@@ -123,7 +151,7 @@ class FunctionStub:
         )
 
     @functools.lru_cache(maxsize=1)
-    def get_typing_imports(self):
+    def get_typing_imports(self) -> Set[str]:
         types_list = re.split("[^\\w.]+", self.actual) if self.actual else []
         for parameter in self.parameters:
             if parameter["type"]:
@@ -151,15 +179,17 @@ class FieldStub:
         required_fields = ["annotation", "attribute_name"]
         return all(field in stub.keys() for field in required_fields)
 
-    def _get_name(self):
+    def _get_name(self) -> str:
         """ The last part of the access path is the function name """
         return self.name.split(".")[-1] if self.name.split(".") else ""
 
     def to_string(self) -> str:
-        return "{}: {} = ...".format(self._get_name(), dequalify(self.actual))
+        return "{}: {} = ...".format(
+            self._get_name(), dequalify_and_fix_pathlike(self.actual)
+        )
 
     @functools.lru_cache(maxsize=1)
-    def get_typing_imports(self):
+    def get_typing_imports(self) -> Set[str]:
         return split_imports(re.split("[^\\w.]+", self.actual))
 
 
@@ -178,7 +208,7 @@ class Stub:
     def is_function(self) -> bool:
         return isinstance(self.stub, FunctionStub) and not self.parent
 
-    def is_method(self):
+    def is_method(self) -> bool:
         return isinstance(self.stub, FunctionStub) and self.parent
 
     def is_field(self) -> bool:
@@ -191,10 +221,12 @@ class Stub:
             and self.stub.is_complete()
         )
 
-    def to_string(self):
+    def to_string(self) -> str:
+        # pyre-fixme[16]: `Optional` has no attribute `to_string`.
         return self.stub.to_string()
 
-    def get_typing_imports(self):
+    def get_typing_imports(self) -> Set[str]:
+        # pyre-fixme[16]: `Optional` has no attribute `get_typing_imports`.
         return self.stub.get_typing_imports()
 
     def join_with(self, other) -> None:
@@ -206,7 +238,7 @@ class Stub:
             raise Exception("Tried to join incompatible stubs")
 
 
-def join_stubs(stubs):
+def join_stubs(stubs) -> List[Stub]:
     # Join function stubs if they have the same parent and name
     stub_map = defaultdict(list)
     new_stubs = []
@@ -285,10 +317,10 @@ class StubFile:
             )
         return contents
 
-    def is_empty(self):
+    def is_empty(self) -> bool:
         return self._stubs == []
 
-    def path(self, directory):
+    def path(self, directory) -> Path:
         return directory / Path("{}i".format(self._path))
 
     def output_to_file(self, path) -> None:
@@ -315,7 +347,10 @@ def generate_stub_files(
     return stubs
 
 
-def write_stubs_to_disk(stubs, type_directory) -> None:
+def write_stubs_to_disk(
+    stubs,
+    type_directory: Path,
+) -> None:
     if type_directory.exists():
         LOG.log(log.SUCCESS, "Deleting {}".format(type_directory))
         shutil.rmtree(type_directory)
@@ -328,7 +363,7 @@ def write_stubs_to_disk(stubs, type_directory) -> None:
 
 def filter_paths(
     stubs: Sequence[StubFile], type_directory: Path, in_place: Sequence[str]
-):
+) -> List[StubFile]:
     unused_annotates = [
         path
         for path in in_place
@@ -388,7 +423,7 @@ def annotate_paths(
             file_path = (root / stub._path).resolve()
         else:
             file_path = stub._path.resolve()
-        annotate_path(stub_path, file_path, debug_infer)
+        annotate_path(str(stub_path), file_path, debug_infer)
     if formatter:
         subprocess.call(formatter, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 

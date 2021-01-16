@@ -2516,6 +2516,28 @@ let test_concatenation_operator context =
 
 let test_user_defined_parameter_specification_classes context =
   let assert_type_errors = assert_type_errors ~context in
+
+  (* Make sure `typing.ParamSpec` works. *)
+  assert_type_errors
+    {|
+      from typing import Callable, ParamSpec
+      TParams = ParamSpec("TParams")
+      def client(f: Callable[TParams, int]) -> None:
+        def inner( *args: TParams.args, **kwargs: TParams.kwargs) -> int:
+          return f( *args, **kwargs)
+    |}
+    [];
+  (* Make sure `typing_extensions.ParamSpec` works. *)
+  assert_type_errors
+    {|
+      from typing import Callable
+      from typing_extensions import ParamSpec
+      TParams = ParamSpec("TParams")
+      def client(f: Callable[TParams, int]) -> None:
+        def inner( *args: TParams.args, **kwargs: TParams.kwargs) -> int:
+          return f( *args, **kwargs)
+    |}
+    [];
   assert_type_errors
     {|
       from pyre_extensions import ParameterSpecification
@@ -3040,6 +3062,441 @@ let test_recursive_aliases context =
     [
       "Revealed type [-1]: Revealed type for `x` is `test.Tree (resolves to Union[Tuple[Tree, \
        Tree], int])`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Tuple, Union
+
+      Tree = Union[int, Tuple["Tree", "Tree"]]
+
+      x: Tree
+
+      some_int: int
+      x = some_int
+
+      tuple_int: Tuple[int, int]
+      x = tuple_int
+
+      tuple_tuple_int: Tuple[Tuple[int, int], int]
+      x = tuple_tuple_int
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Tuple, Union
+
+      Tree = Union[int, Tuple["Tree", "Tree"]]
+
+      x: Tree
+
+      x = 1
+      x = (2, 3)
+      x = ((4, 5), (6, 7))
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Tuple, Union
+
+      Tree = Union[int, Tuple["Tree", "Tree"]]
+
+      x: Tree
+
+      some_str: str
+      x = some_str
+
+      tuple_int_str: Tuple[int, str]
+      x = tuple_int_str
+    |}
+    [
+      "Incompatible variable type [9]: x is declared to have type `test.Tree (resolves to \
+       Union[Tuple[Tree, Tree], int])` but is used as type `str`.";
+      "Incompatible variable type [9]: x is declared to have type `test.Tree (resolves to \
+       Union[Tuple[Tree, Tree], int])` but is used as type `Tuple[int, str]`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Tuple, Union
+
+      Tree = Union[int, Tuple["Tree", "Tree"]]
+
+      x: Tree
+      x = "hello"
+      x = (1, "hello")
+      x = ((2, 3), (4, "hello"))
+    |}
+    [
+      "Incompatible variable type [9]: x is declared to have type `test.Tree (resolves to \
+       Union[Tuple[Tree, Tree], int])` but is used as type `str`.";
+      "Incompatible variable type [9]: x is declared to have type `test.Tree (resolves to \
+       Union[Tuple[Tree, Tree], int])` but is used as type `Tuple[int, str]`.";
+      "Incompatible variable type [9]: x is declared to have type `test.Tree (resolves to \
+       Union[Tuple[Tree, Tree], int])` but is used as type `Tuple[Tuple[int, int], Tuple[int, \
+       str]]`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Mapping, Union
+
+      StringDict = Union[str, Mapping[str, "StringDict"]]
+
+      valid: StringDict = {"hello": {"world": "from here"}}
+      contains_int: StringDict = {"hello": {"world": 1}}
+    |}
+    [
+      "Incompatible variable type [9]: contains_int is declared to have type `test.StringDict \
+       (resolves to Union[Mapping[str, StringDict], str])` but is used as type `typing.Dict[str, \
+       typing.Dict[str, int]]`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import List, Tuple
+
+      Tree = Tuple[str, List["Tree"]]
+
+      tree: Tree = ("foo", [])
+      tree2: Tree = ("foo", [("branch1", [("leaf1", [])]), ("leaf2", [])])
+    |}
+    [];
+  (* Useless but valid recursive alias. *)
+  assert_type_errors
+    {|
+      from typing import List, Union
+      X = List["X"]
+
+      def foo() -> None:
+        x: X = [[], [[], []], []]
+     |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Mapping, Union
+
+      StringMapping = Union[str, Mapping[str, "StringMapping"]]
+
+      d: Mapping[str, str]
+      d2: StringMapping = d
+    |}
+    [];
+  (* Incompatible because Dict is invariant. *)
+  assert_type_errors
+    {|
+      from typing import Dict, Union
+
+      StringDict = Union[str, Dict[str, "StringDict"]]
+
+      d: Dict[str, str]
+      d2: StringDict = d
+    |}
+    [
+      "Incompatible variable type [9]: d2 is declared to have type `test.StringDict (resolves to \
+       Union[Dict[str, StringDict], str])` but is used as type `Dict[str, str]`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Tuple, Union
+
+      X = Union[int, Tuple[int, "X"]]
+      Y = Union[int, Tuple[int, "Y"]]
+
+      x: X
+      y: Y = x
+
+      y2: Y
+      x2: X = y2
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Tuple, Union
+
+      X = Union[int, Tuple[int, "X"]]
+      NotQuiteIsomorphicToX = Union[int, Tuple[str, "NotQuiteIsomorphicToX"]]
+
+      x: X
+      not_quite_isomorphic: NotQuiteIsomorphicToX = x
+
+      not_quite_isomorphic2: NotQuiteIsomorphicToX
+      x2: X = not_quite_isomorphic2
+    |}
+    [
+      "Incompatible variable type [9]: not_quite_isomorphic is declared to have type \
+       `test.NotQuiteIsomorphicToX (resolves to Union[Tuple[str, NotQuiteIsomorphicToX], int])` \
+       but is used as type `test.X (resolves to Union[Tuple[int, X], int])`.";
+      "Incompatible variable type [9]: x2 is declared to have type `test.X (resolves to \
+       Union[Tuple[int, X], int])` but is used as type `test.NotQuiteIsomorphicToX (resolves to \
+       Union[Tuple[str, NotQuiteIsomorphicToX], int])`.";
+    ];
+  (* Unrolling an equirecursive type still makes it equivalent to the original recursive type. *)
+  assert_type_errors
+    {|
+      from typing import Tuple, Union
+
+      X = Union[int, Tuple[int, "X"]]
+
+      unrolled: Tuple[int, X]
+      x: X = unrolled
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Tuple, Union
+
+      X = Union[int, Tuple[int, "X"]]
+
+      unrolled: Tuple[int, X]
+      unrolled2: Tuple[int, X] = unrolled
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Tuple, Union
+
+      X = Union[int, Tuple[int, "X"]]
+
+      unrolled_union: Union[int, Tuple[int, X]]
+      x: X = unrolled_union
+
+      x2: X
+      unrolled_union2: Union[int, Tuple[int, X]] = x2
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Tuple, Union
+
+      X = Union[int, Tuple[int, "X"]]
+
+      x: X
+      unrolled_multiple_times: Union[int, Tuple[int, Union[int, Tuple[int, X]]]] = x
+
+      unrolled_multiple_times2: Union[int, Tuple[int, Union[int, Tuple[int, X]]]]
+      x2: X = unrolled_multiple_times2
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Tuple, Union
+
+      X = Union[int, Tuple[int, "X"]]
+
+      unrolled_once: Union[int, Tuple[int, X]]
+      unrolled_multiple_times: Union[int, Tuple[int, Union[int, Tuple[int, X]]]]
+      unrolled_once = unrolled_multiple_times
+
+      unrolled_once2: Union[int, Tuple[int, X]]
+      unrolled_multiple_times2: Union[int, Tuple[int, Union[int, Tuple[int, X]]]]
+      unrolled_multiple_times2 = unrolled_once2
+    |}
+    [];
+  (* Cannot assign a recursive type to a concrete type *)
+  assert_type_errors
+    {|
+      from typing import Tuple, Union
+
+      X = Union[int, Tuple[int, "X"]]
+
+      x: X
+      y: Union[int, Tuple[int, int]] = x
+    |}
+    [
+      "Incompatible variable type [9]: y is declared to have type `Union[Tuple[int, int], int]` \
+       but is used as type `test.X (resolves to Union[Tuple[int, X], int])`.";
+    ];
+  (* Fixpoint should not blow up on a loop that constructs a recursive type. *)
+  assert_type_errors
+    {|
+      from typing import Tuple, Union
+
+      X = Union[int, Tuple[int, "X"]]
+
+      def foo(x: X, n: int) -> X:
+        result = x
+
+        for i in range(n):
+          result = (i, result)
+          reveal_type(result)
+
+        reveal_type(result)
+        return result
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `result` is `Tuple[int, test.X (resolves to \
+       Union[Tuple[int, X], int])]`.";
+      "Revealed type [-1]: Revealed type for `result` is `test.X (resolves to Union[Tuple[int, X], \
+       int])`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Tuple, Union
+
+      Tree = Union[int, Tuple["Tree", "Tree"]]
+
+      def foo(tree: Tree, some_bool: bool) -> Tree:
+        if some_bool:
+          x = 42
+        else:
+          x = (1, (2, tree))
+        return x
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Tuple, Union
+
+      Tree = Union[int, Tuple["Tree", "Tree"]]
+      Unrolled = Union[int, Tuple[Union[int, Tuple["Unrolled", "Unrolled"]], "Unrolled"]]
+
+      def foo(some_bool: bool) -> Tree:
+        tree: Tree
+        unrolled_tree: Unrolled
+        if some_bool:
+          x = tree
+        else:
+          x = unrolled_tree
+        return x
+    |}
+    [];
+  Type.RecursiveType.Namespace.reset ();
+  assert_type_errors
+    {|
+      from typing import Tuple, Union
+
+      Tree = Union[int, Tuple["Tree", "Tree"]]
+      # str instead of int.
+      Wrong = Union[int, Tuple[Union[str, Tuple["Wrong", "Wrong"]], "Wrong"]]
+
+      def foo(some_bool: bool) -> Tree:
+        tree: Tree
+        wrong_unrolled_tree: Wrong
+        if some_bool:
+          x = tree
+        else:
+          x = wrong_unrolled_tree
+        return x
+    |}
+    [
+      "Incompatible return type [7]: Expected `test.Tree (resolves to Union[Tuple[Tree, Tree], \
+       int])` but got `$RecursiveType1 (resolves to Union[Tuple[Union[Tuple[$RecursiveType1, \
+       $RecursiveType1], str], $RecursiveType1], Tuple[$RecursiveType1, $RecursiveType1], int])`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Final
+      from typing_extensions import Literal
+      x: Final[str] = "x"
+      y: Literal["y"] = "y"
+      reveal_type(x)
+      reveal_type(y)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `x` is `str` (inferred: \
+       `typing_extensions.Literal['x']`).";
+      "Revealed type [-1]: Revealed type for `y` is `typing_extensions.Literal['y']`.";
+    ];
+  assert_type_errors
+    {|
+      x: str = "x"
+      reveal_type(x)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `x` is `str` (inferred: \
+       `typing_extensions.Literal['x']`).";
+    ];
+  assert_type_errors
+    {|
+      import typing
+      MyInt = int
+      X: typing.TypeAlias = "MyInt"
+      y: X
+      reveal_type(y)
+    |}
+    ["Revealed type [-1]: Revealed type for `y` is `int`."];
+  assert_type_errors
+    {|
+      from typing import List, Union
+      X = List[Union[int, "X"]]
+
+      def foo() -> None:
+        x: X
+        y = x[0]
+        reveal_type(y)
+     |}
+    [
+      "Revealed type [-1]: Revealed type for `y` is `Union[int, test.X (resolves to List[Union[X, \
+       int]])]`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Dict, Union
+      D = Dict[str, Union[str, "D"]]
+
+      def foo(d: D) -> None:
+        y = d["hello"]
+        reveal_type(y)
+        if isinstance(y, str):
+          reveal_type(y)
+        else:
+          z = y["world"]
+          reveal_type(z)
+     |}
+    [
+      "Revealed type [-1]: Revealed type for `y` is `Union[str, test.D (resolves to Dict[str, \
+       Union[D, str]])]`.";
+      "Revealed type [-1]: Revealed type for `y` is `str`.";
+      "Revealed type [-1]: Revealed type for `z` is `Union[str, test.D (resolves to Dict[str, \
+       Union[D, str]])]`.";
+    ];
+  (* Forbid directly-recursive aliases. *)
+  assert_type_errors
+    {|
+      from typing import Union
+      D = Union[int, "D"]
+      D2 = Union[int, "D2"]
+
+      def foo() -> None:
+        d: D
+        reveal_type(d)
+        d2: D2
+        d = d2
+    |}
+    [
+      "Missing global annotation [5]: Globally accessible variable `D` has no type specified.";
+      "Missing global annotation [5]: Globally accessible variable `D2` has no type specified.";
+      "Undefined or invalid type [11]: Annotation `D` is not defined as a type.";
+      "Revealed type [-1]: Revealed type for `d` is `typing.Any`.";
+      "Undefined or invalid type [11]: Annotation `D2` is not defined as a type.";
+    ];
+  assert_type_errors
+    {|
+      from typing import List, Union
+
+      NestedList = List[Union[int, "NestedList"]]
+
+      def pass_spurious_parameter(x: NestedList[int]) -> None:
+        reveal_type(x)
+    |}
+    (* TODO(T78935633): We should raise an error on parameters to non-generic recursive alias. *)
+    [
+      "Revealed type [-1]: Revealed type for `x` is `test.NestedList (resolves to \
+       List[Union[NestedList, int]])`.";
+    ];
+  (* TODO(T82613757): Generic recursive aliases are unsupported as of now. *)
+  assert_type_errors
+    {|
+      from typing import Tuple, TypeVar, Union
+
+      T = TypeVar("T")
+      GenericTree = Union[T, Tuple["GenericTree[T]", "GenericTree[T]"]]
+
+      def foo(x: GenericTree[int]) -> None:
+        reveal_type(x)
+    |}
+    [
+      "Missing global annotation [5]: Globally accessible variable `GenericTree` has no type \
+       specified.";
+      "Undefined or invalid type [11]: Annotation `GenericTree` is not defined as a type.";
+      "Revealed type [-1]: Revealed type for `x` is `unknown`.";
     ];
   ()
 

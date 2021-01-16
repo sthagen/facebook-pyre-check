@@ -11,8 +11,6 @@ open Ast
 open Analysis
 open Expression
 
-let raise_invalid_model message = raise (Model.InvalidModel message)
-
 type parameter_requirements = {
   anonymous_parameters_count: int;
   parameter_set: String.Set.t;
@@ -58,27 +56,39 @@ let demangle_class_attribute name =
     name
 
 
-let model_compatible ~type_parameters ~normalized_model_parameters =
+let model_compatible
+    ~path
+    ~location
+    ~callable_name
+    ~callable_type
+    ~type_parameters
+    ~normalized_model_parameters
+  =
+  let open Result in
   let parameter_requirements = create_parameters_requirements ~type_parameters in
   (* Once a requirement has been satisfied, it is removed from requirement object. At the end, we
      check whether there remains unsatisfied requirements. *)
-  let validate_model_parameter (errors, requirements) (model_parameter, _, original) =
+  let validate_model_parameter errors_and_requirements (model_parameter, _, original) =
     (* Ensure that the parameter's default value is either not present or `...` to catch common
        errors when declaring models. *)
-    let () =
+    let open ModelVerificationError.T in
+    let errors_and_requirements =
       match Node.value original with
       | { Parameter.value = Some expression; name; _ } ->
           if not (Expression.equal_expression (Node.value expression) Expression.Ellipsis) then
-            let message =
-              Format.sprintf
-                "Default values of parameters must be `...`. Did you mean to write `%s: %s`?"
-                name
-                (Expression.show expression)
-            in
-            raise_invalid_model message
-      | _ -> ()
+            Error
+              {
+                ModelVerificationError.T.path;
+                location;
+                kind = InvalidDefaultValue { callable_name; name; expression };
+              }
+          else
+            errors_and_requirements
+      | _ -> errors_and_requirements
     in
     let open AccessPath.Root in
+    errors_and_requirements
+    >>| fun (errors, requirements) ->
     match model_parameter with
     | LocalResult
     | Variable _ ->
@@ -90,7 +100,7 @@ let model_compatible ~type_parameters ~normalized_model_parameters =
         if anonymous_parameters_count >= 1 then
           errors, { requirements with anonymous_parameters_count = anonymous_parameters_count - 1 }
         else
-          Format.sprintf "unexpected positional only parameter: `%s`" name :: errors, requirements
+          UnexpectedPositionalOnlyParameter name :: errors, requirements
     | PositionalParameter { name; _ }
     | NamedParameter { name } ->
         let name = Identifier.sanitized name in
@@ -103,7 +113,7 @@ let model_compatible ~type_parameters ~normalized_model_parameters =
             (* If all positional only parameter quota is used, it might be covered by a `*args` *)
             errors, requirements
           else
-            Format.sprintf "unexpected positional only parameter: `%s`" name :: errors, requirements
+            UnexpectedPositionalOnlyParameter name :: errors, requirements
         else
           let { parameter_set; has_star_parameter; has_star_star_parameter; _ } = requirements in
           (* Consume an required or optional named parameter. *)
@@ -114,28 +124,38 @@ let model_compatible ~type_parameters ~normalized_model_parameters =
             (* If the name is not found in the set, it might be covered by ``**kwargs` *)
             errors, requirements
           else
-            Format.sprintf "unexpected named parameter: `%s`" name :: errors, requirements
+            UnexpectedNamedParameter name :: errors, requirements
     | StarParameter _ ->
         if requirements.has_star_parameter then
           errors, requirements
         else
-          "unexpected star parameter" :: errors, requirements
+          UnexpectedStarredParameter :: errors, requirements
     | StarStarParameter _ ->
         if requirements.has_star_star_parameter then
           errors, requirements
         else
-          "unexpected star star parameter" :: errors, requirements
+          UnexpectedDoubleStarredParameter :: errors, requirements
   in
-  let errors, _ =
+  let errors_and_requirements =
     List.fold_left
       normalized_model_parameters
       ~f:validate_model_parameter
-      ~init:([], parameter_requirements)
+      ~init:(Result.Ok ([], parameter_requirements))
   in
-  errors
+  errors_and_requirements
+  >>= fun (errors, _) ->
+  if List.is_empty errors then
+    Result.Ok ()
+  else
+    Result.Error
+      {
+        path;
+        location;
+        kind = IncompatibleModelError { name = callable_name; callable_type; reasons = errors };
+      }
 
 
-let verify_signature ~normalized_model_parameters ~name callable_annotation =
+let verify_signature ~path ~location ~normalized_model_parameters ~name callable_annotation =
   match callable_annotation with
   | Some
       ( {
@@ -144,60 +164,26 @@ let verify_signature ~normalized_model_parameters ~name callable_annotation =
           kind;
           _;
         } as callable ) -> (
-      let error =
-        match kind with
-        | Type.Callable.Named actual_name when not (Reference.equal name actual_name) ->
-            Some
-              (Format.asprintf
-                 "The modelled function is an imported function `%a`, please model it directly."
-                 Reference.pp
-                 actual_name)
-        | _ ->
-            let model_compatibility_errors =
-              model_compatible
-                ~type_parameters:implementation_parameters
-                ~normalized_model_parameters
-            in
-            if List.is_empty model_compatibility_errors then
-              None
-            else
-              Some
-                (Format.asprintf
-                   "Model signature parameters do not match implementation `%s`. Reason%s: %s."
-                   (Type.show_for_hover (Type.Callable callable))
-                   (if List.length model_compatibility_errors > 1 then "s" else "")
-                   (String.concat model_compatibility_errors ~sep:"; "))
-      in
-      match error with
-      | Some error ->
-          Log.error "%s" error;
-          raise_invalid_model error
-      | None -> () )
-  | _ -> ()
+      match kind with
+      | Type.Callable.Named actual_name when not (Reference.equal name actual_name) ->
+          Error
+            {
+              ModelVerificationError.T.location;
+              path;
+              kind = ImportedFunctionModel { name; actual_name };
+            }
+      | _ ->
+          model_compatible
+            ~path
+            ~location
+            ~callable_name:(Reference.show name)
+            ~callable_type:callable
+            ~type_parameters:implementation_parameters
+            ~normalized_model_parameters )
+  | _ -> Result.Ok ()
 
 
-type verification_error =
-  | GlobalVerificationError of {
-      name: string;
-      message: string;
-    }
-
-let display_verification_error ~path ~location ~name error =
-  let model_origin =
-    match path with
-    | None -> ""
-    | Some path ->
-        Format.sprintf
-          " defined in `%s:%d`"
-          (Path.absolute path)
-          location.Location.start.Location.line
-  in
-  match error with
-  | GlobalVerificationError { message; _ } ->
-      Format.asprintf "Invalid model for `%s`%s: %s" name model_origin message
-
-
-let verify_global ~resolution ~name =
+let verify_global ~path ~location ~resolution ~name =
   let name = demangle_class_attribute (Reference.show name) |> Reference.create in
   let global_resolution = Resolution.global_resolution resolution in
   let global = GlobalResolution.global global_resolution name in
@@ -226,17 +212,12 @@ let verify_global ~resolution ~name =
         then
           Result.Ok ()
         else
-          let error =
-            Format.sprintf
-              "Class `%s` has no attribute `%s`."
-              (Reference.show class_name)
-              attribute_name
-          in
-          Result.Error (GlobalVerificationError { name = Reference.show name; message = error })
+          Result.Error
+            {
+              ModelVerificationError.T.path;
+              location;
+              kind = MissingAttribute { class_name = Reference.show class_name; attribute_name };
+            }
     | _ ->
-        let error =
-          Format.sprintf
-            "`%s` does not correspond to a class's attribute or a global."
-            (Reference.show name)
-        in
-        Result.Error (GlobalVerificationError { name = Reference.show name; message = error })
+        Result.Error
+          { ModelVerificationError.T.path; location; kind = NotInEnvironment (Reference.show name) }

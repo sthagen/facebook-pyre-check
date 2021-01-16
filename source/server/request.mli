@@ -30,12 +30,6 @@ val process_client_shutdown_request
   id:LanguageServer.Types.RequestId.t ->
   response
 
-val process_type_query_request
-  :  state:State.t ->
-  configuration:Configuration.Analysis.t ->
-  request:Protocol.TypeQuery.request ->
-  response
-
 val process_display_type_errors_request
   :  state:State.t ->
   configuration:Configuration.Analysis.t ->

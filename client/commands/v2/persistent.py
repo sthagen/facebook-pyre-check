@@ -75,7 +75,7 @@ async def try_initialize(
     output_channel: connection.TextWriter,
 ) -> Union[InitializationSuccess, InitializationFailure, InitializationExit]:
     """
-    Read a LSP message from the input channel and try to initialize an LSP
+    Read an LSP message from the input channel and try to initialize an LSP
     server. Also write to the output channel with proper response if the input
     message is a request instead of a notification.
 
@@ -84,7 +84,7 @@ async def try_initialize(
     - If the initialization fails, return `InitializationFailure`. There could
       be many reasons for the failure: The incoming LSP message may not be an
       initiailization request. The incoming LSP request may be malformed. Or the
-      client may not support the right capabilities that we want them to support.
+      client may not complete the handshake by sending back an `initialized` request.
     - If an exit notification is received, return `InitializationExit`. The LSP
       spec allows exiting a server without a preceding initialize request.
     """
@@ -116,6 +116,12 @@ async def try_initialize(
             # pyre-fixme[16]: Pyre doesn't understand `dataclasses_json`
             json_rpc.SuccessResponse(id=request_id, result=result.to_dict()),
         )
+
+        initialized_notification = await lsp.read_json_rpc(input_channel)
+        if initialized_notification.method != "initialized":
+            raise lsp.ServerNotInitializedError(
+                "Failed to receive an `initialized` request from client"
+            )
 
         return InitializationSuccess(
             client_capabilities=initialize_parameters.capabilities
@@ -232,12 +238,16 @@ class Server:
         self.state.opened_documents.add(document_path)
         LOG.info(f"File opened: {document_path}")
 
-        document_diagnostics = self.state.diagnostics.get(document_path, None)
-        if document_diagnostics is not None:
-            LOG.info(f"Update diagnostics for {document_path}")
-            await _publish_diagnostics(
-                self.output_channel, document_path, document_diagnostics
-            )
+        # Attempt to trigger a background Pyre server start on each file open
+        if not self.pyre_manager.is_task_running():
+            await self.pyre_manager.ensure_task_running()
+        else:
+            document_diagnostics = self.state.diagnostics.get(document_path, None)
+            if document_diagnostics is not None:
+                LOG.info(f"Update diagnostics for {document_path}")
+                await _publish_diagnostics(
+                    self.output_channel, document_path, document_diagnostics
+                )
 
     async def process_close_request(
         self, parameters: lsp.DidCloseTextDocumentParameters
@@ -256,6 +266,22 @@ class Server:
                 await _publish_diagnostics(self.output_channel, document_path, [])
         except KeyError:
             LOG.warning(f"Trying to close an un-opened file: {document_path}")
+
+    async def process_did_save_request(
+        self, parameters: lsp.DidSaveTextDocumentParameters
+    ) -> None:
+        document_path = parameters.text_document.document_uri().to_file_path()
+        if document_path is None:
+            raise json_rpc.InvalidRequestError(
+                f"Document URI is not a file: {parameters.text_document.uri}"
+            )
+
+        # Attempt to trigger a background Pyre server start on each file save
+        if (
+            not self.pyre_manager.is_task_running()
+            and document_path in self.state.opened_documents
+        ):
+            await self.pyre_manager.ensure_task_running()
 
     async def _run(self) -> int:
         while True:
@@ -291,6 +317,17 @@ class Server:
                         )
                     await self.process_close_request(
                         lsp.DidCloseTextDocumentParameters.from_json_rpc_parameters(
+                            parameters
+                        )
+                    )
+                elif request.method == "textDocument/didSave":
+                    parameters = request.parameters
+                    if parameters is None:
+                        raise json_rpc.InvalidRequestError(
+                            "Missing parameters for didSave method"
+                        )
+                    await self.process_did_save_request(
+                        lsp.DidSaveTextDocumentParameters.from_json_rpc_parameters(
                             parameters
                         )
                     )
@@ -469,12 +506,12 @@ class PyreServerHandler(connection.BackgroundTask):
         self, server_input_channel: connection.TextReader
     ) -> AsyncIterator[str]:
         try:
-            raw_response = await server_input_channel.readline()
+            raw_response = await server_input_channel.read_until(separator="\n")
             yield raw_response
         except incremental.InvalidServerResponse as error:
             LOG.error(f"Pyre server returns invalid response: {error}")
 
-    async def subscribe_to_type_error(
+    async def _subscribe_to_type_error(
         self,
         server_input_channel: connection.TextReader,
         server_output_channel: connection.TextWriter,
@@ -500,6 +537,23 @@ class PyreServerHandler(connection.BackgroundTask):
                     self.update_type_errors(subscription_response.body)
                     await self.show_type_errors_to_client()
 
+    async def subscribe_to_type_error(
+        self,
+        server_input_channel: connection.TextReader,
+        server_output_channel: connection.TextWriter,
+    ) -> None:
+        try:
+            await self._subscribe_to_type_error(
+                server_input_channel, server_output_channel
+            )
+        finally:
+            await self.show_message_to_client(
+                "Lost connection to background Pyre server.",
+                level=lsp.MessageType.WARNING,
+            )
+            self.server_state.diagnostics = {}
+            await self.show_type_errors_to_client()
+
     async def run(self) -> None:
         socket_path = server_connection.get_default_socket_path(
             log_directory=Path(self.pyre_arguments.log_path)
@@ -514,8 +568,8 @@ class PyreServerHandler(connection.BackgroundTask):
                     f"`{self.server_identifier}`."
                 )
                 await self.subscribe_to_type_error(input_channel, output_channel)
-        except OSError:
-            self.log_and_show_message_to_client(
+        except connection.ConnectionFailure:
+            await self.log_and_show_message_to_client(
                 f"Starting a new Pyre server at `{self.server_identifier}` in "
                 "the background..."
             )
@@ -590,6 +644,12 @@ def run(
 
     server_identifier = start.get_server_identifier(configuration)
     pyre_arguments = start.create_server_arguments(configuration, start_arguments)
+    if pyre_arguments.watchman_root is None:
+        raise commands.ClientException(
+            "Cannot locate a `watchman` root. Pyre's server will not function "
+            "properly."
+        )
+
     return asyncio.get_event_loop().run_until_complete(
         run_persistent(binary_location, server_identifier, pyre_arguments)
     )

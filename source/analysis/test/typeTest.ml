@@ -548,22 +548,27 @@ let test_resolve_aliases _ =
   let tree_body = Type.union [Type.integer; Type.list (Type.Primitive "Tree")] in
   let aliases ?replace_unbound_parameters_with_any:_ name =
     match name with
-    | "Tree" -> Some (Type.TypeAlias (Type.RecursiveType { name = "Tree"; body = tree_body }))
+    | "Tree" -> Some (Type.TypeAlias (Type.RecursiveType.create ~name:"Tree" ~body:tree_body))
     | _ -> None
   in
   assert_resolved
     ~aliases
     (Type.Primitive "Tree")
-    (Type.RecursiveType { name = "Tree"; body = tree_body });
+    (Type.RecursiveType.create ~name:"Tree" ~body:tree_body);
   (* Don't resolve the `Tree` reference within the body. *)
   assert_resolved
     ~aliases
-    (Type.RecursiveType { name = "Tree"; body = tree_body })
-    (Type.RecursiveType { name = "Tree"; body = tree_body });
+    (Type.RecursiveType.create ~name:"Tree" ~body:tree_body)
+    (Type.RecursiveType.create ~name:"Tree" ~body:tree_body);
   assert_resolved
     ~aliases
     (Type.list (Type.Primitive "Tree"))
-    (Type.list (Type.RecursiveType { name = "Tree"; body = tree_body }));
+    (Type.list (Type.RecursiveType.create ~name:"Tree" ~body:tree_body));
+  (* Ignore spurious parameters to a non-generic recursive alias. *)
+  assert_resolved
+    ~aliases
+    (Type.parametric "Tree" [Single Type.integer])
+    (Type.RecursiveType.create ~name:"Tree" ~body:tree_body);
   ()
 
 
@@ -922,8 +927,9 @@ let test_elements _ =
   assert_equal
     ["int"; "tuple"]
     (Type.elements
-       (Type.RecursiveType
-          { name = "Tree"; body = Type.tuple [Type.integer; Type.Primitive "Tree"] }));
+       (Type.RecursiveType.create
+          ~name:"Tree"
+          ~body:(Type.tuple [Type.integer; Type.Primitive "Tree"])));
   ()
 
 
@@ -1104,6 +1110,38 @@ let test_is_none _ =
 let test_is_type_alias _ =
   assert_true (Type.is_type_alias (Type.Primitive "typing.TypeAlias"));
   assert_false (Type.is_type_alias (Type.parametric "typing.TypeAlias" ![Type.Top]))
+
+
+let test_create_recursive_type _ =
+  let tree_name, tree_body =
+    "Tree", Type.union [Type.integer; Type.tuple [Type.Primitive "Foo"; Type.Primitive "Tree"]]
+  in
+  (* No error. *)
+  let tree_annotation = Type.RecursiveType.create ~name:tree_name ~body:tree_body in
+  assert_raises
+    (Failure "Body of recursive type contains a recursive type with the same name")
+    (fun () -> Type.RecursiveType.create ~name:tree_name ~body:tree_annotation);
+  ()
+
+
+let test_unfold_recursive_type _ =
+  let assert_unfolded recursive_type expected =
+    assert_equal
+      ~cmp:Type.equal
+      ~printer:Type.show
+      expected
+      ( match recursive_type with
+      | Type.RecursiveType record -> Type.RecursiveType.unfold_recursive_type record
+      | _ -> failwith "expected RecursiveType" )
+  in
+  let tree_name, tree_body =
+    "Tree", Type.union [Type.integer; Type.tuple [Type.Primitive "Foo"; Type.Primitive "Tree"]]
+  in
+  let tree_annotation = Type.RecursiveType.create ~name:tree_name ~body:tree_body in
+  assert_unfolded
+    (Type.RecursiveType.create ~name:tree_name ~body:tree_body)
+    (Type.union [Type.integer; Type.tuple [Type.Primitive "Foo"; tree_annotation]]);
+  ()
 
 
 let test_contains_unknown _ =
@@ -2709,6 +2747,100 @@ let test_multiply_polynomials_with_variadics _ =
   ()
 
 
+let test_resolve_class _ =
+  let assert_resolved_class annotation expected =
+    assert_equal
+      ~printer:(fun x -> [%sexp_of: Type.class_data list option] x |> Sexp.to_string_hum)
+      expected
+      (Type.resolve_class annotation)
+  in
+  assert_resolved_class Type.Any (Some []);
+  assert_resolved_class
+    (Type.meta Type.integer)
+    (Some [{ instantiated = Type.integer; accessed_through_class = true; class_name = "int" }]);
+  assert_resolved_class
+    (Type.optional Type.integer)
+    (Some
+       [
+         {
+           instantiated = Type.optional Type.integer;
+           accessed_through_class = false;
+           class_name = "typing.Optional";
+         };
+       ]);
+  assert_resolved_class
+    (Type.union [Type.integer; Type.string])
+    (Some
+       [
+         { instantiated = Type.integer; accessed_through_class = false; class_name = "int" };
+         { instantiated = Type.string; accessed_through_class = false; class_name = "str" };
+       ]);
+  assert_resolved_class
+    (Type.union [Type.Primitive "Foo"; Type.list Type.integer])
+    (Some
+       [
+         {
+           instantiated = Type.list Type.integer;
+           accessed_through_class = false;
+           class_name = "list";
+         };
+         { instantiated = Type.Primitive "Foo"; accessed_through_class = false; class_name = "Foo" };
+       ]);
+  assert_resolved_class
+    (Type.union [Type.Primitive "Foo"; Type.list Type.integer])
+    (Some
+       [
+         {
+           instantiated = Type.list Type.integer;
+           accessed_through_class = false;
+           class_name = "list";
+         };
+         { instantiated = Type.Primitive "Foo"; accessed_through_class = false; class_name = "Foo" };
+       ]);
+  let tree_annotation =
+    Type.RecursiveType.create
+      ~name:"Tree"
+      ~body:(Type.union [Type.integer; Type.tuple [Type.Primitive "Foo"; Type.Primitive "Tree"]])
+  in
+
+  assert_resolved_class
+    tree_annotation
+    (Some
+       [
+         { instantiated = Type.integer; accessed_through_class = false; class_name = "int" };
+         {
+           instantiated = Type.tuple [Type.Primitive "Foo"; tree_annotation];
+           accessed_through_class = false;
+           class_name = "tuple";
+         };
+       ]);
+  let recursive_list =
+    Type.RecursiveType.create
+      ~name:"RecursiveList"
+      ~body:(Type.list (Type.union [Type.integer; Type.Primitive "RecursiveList"]))
+  in
+
+  assert_resolved_class
+    recursive_list
+    (Some
+       [
+         {
+           instantiated = Type.list (Type.union [Type.integer; recursive_list]);
+           accessed_through_class = false;
+           class_name = "list";
+         };
+       ]);
+  (* TODO(T44784951): We should forbid defining a directly recursive type like this. This regression
+     test is here just to test we don't go into an infinite loop in case one makes it through. *)
+  let directly_recursive_type =
+    Type.RecursiveType.create ~name:"Tree" ~body:(Type.union [Type.integer; Type.Primitive "Tree"])
+  in
+  assert_resolved_class
+    directly_recursive_type
+    (Some [{ instantiated = Type.integer; accessed_through_class = false; class_name = "int" }]);
+  ()
+
+
 let () =
   "type"
   >::: [
@@ -2731,6 +2863,8 @@ let () =
          "is_meta" >:: test_is_meta;
          "is_none" >:: test_is_none;
          "is_type_alias" >:: test_is_type_alias;
+         "create_recursive_type" >:: test_create_recursive_type;
+         "unfold_recursive_type" >:: test_unfold_recursive_type;
          "contains_unknown" >:: test_contains_unknown;
          "is_resolved" >:: test_is_resolved;
          "is_iterator" >:: test_is_iterator;
@@ -2770,6 +2904,7 @@ let () =
          "add_polynomials_with_variadics" >:: test_add_polynomials_with_variadics;
          "subtract_polynomials_with_variadics" >:: test_subtract_polynomials_with_variadics;
          "multiply_polynomials_with_variadics" >:: test_multiply_polynomials_with_variadics;
+         "resolve_class" >:: test_resolve_class;
        ]
   |> Test.run;
   "primitive" >::: ["is unit test" >:: test_is_unit_test] |> Test.run;

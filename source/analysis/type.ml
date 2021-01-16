@@ -417,6 +417,8 @@ module Record = struct
       body: 'annotation;
     }
     [@@deriving compare, eq, sexp, show, hash]
+
+    let name { name; _ } = name
   end
 end
 
@@ -973,6 +975,7 @@ type class_data = {
   accessed_through_class: bool;
   class_name: Primitive.t;
 }
+[@@deriving sexp]
 
 type type_t = t [@@deriving compare, eq, sexp, show, hash]
 
@@ -2452,6 +2455,20 @@ type alias =
 let empty_aliases ?replace_unbound_parameters_with_any:_ _ = None
 
 module RecursiveType = struct
+  include Record.RecursiveType
+
+  let contains_recursive_type_with_name ~name =
+    exists ~predicate:(function
+        | RecursiveType { name = inner_name; _ } -> Identifier.equal inner_name name
+        | _ -> false)
+
+
+  let create ~name ~body =
+    if contains_recursive_type_with_name ~name body then
+      failwith "Body of recursive type contains a recursive type with the same name";
+    RecursiveType { name; body }
+
+
   let is_recursive_alias_reference ~alias_name =
     exists ~predicate:(function
         | Primitive name
@@ -2459,6 +2476,48 @@ module RecursiveType = struct
           when Identifier.equal name alias_name ->
             true
         | _ -> false)
+
+
+  (* We assume that recursive alias names are unique. So, we don't need to worry about accidentally
+     renaming a nested recursive type here. *)
+  let unfold_recursive_type { name; body } =
+    instantiate
+      ~constraints:(function
+        | Primitive primitive_name when Identifier.equal primitive_name name ->
+            Some (RecursiveType { name; body })
+        | _ -> None)
+      body
+
+
+  let body_with_replaced_name ~new_name { name; body } =
+    instantiate
+      ~constraints:(function
+        | Primitive primitive_name when Identifier.equal primitive_name name ->
+            Some (Primitive new_name)
+        | _ -> None)
+      body
+
+
+  let replace_references_with_recursive_type ~recursive_type:{ name; body } =
+    instantiate ~constraints:(function
+        | Primitive primitive_name when Identifier.equal primitive_name name ->
+            Some (RecursiveType { name; body })
+        | _ -> None)
+
+
+  module Namespace = struct
+    let fresh = ref 1
+
+    let reset () = fresh := 1
+
+    let create_fresh () =
+      let namespace = !fresh in
+      fresh := namespace + 1;
+      namespace
+
+
+    let create_fresh_name () = Format.asprintf "$RecursiveType%d" (create_fresh ())
+  end
 end
 
 let resolve_aliases ~aliases annotation =
@@ -2476,10 +2535,18 @@ let resolve_aliases ~aliases annotation =
           annotation
         else (
           Core.Hash_set.add visited annotation;
+          let mark_recursive_alias_as_visited = function
+            | RecursiveType { name; _ } ->
+                (* Don't resolve the inner reference to the type. *)
+                Core.Hash_set.add visited (Primitive name)
+            | _ -> ()
+          in
           match annotation with
           | Primitive name -> (
               match aliases ?replace_unbound_parameters_with_any:(Some true) name with
-              | Some (TypeAlias alias) -> alias
+              | Some (TypeAlias alias) ->
+                  mark_recursive_alias_as_visited alias;
+                  alias
               | _ -> annotation )
           | Parametric { name; parameters = [Single parameter] } -> (
               (* Don't replace unbound generic parameters with Any. Otherwise, a generic alias Foo
@@ -2488,23 +2555,30 @@ let resolve_aliases ~aliases annotation =
                  Foo[Any]. *)
               match aliases ?replace_unbound_parameters_with_any:(Some false) name with
               | Some (TypeAlias alias) ->
-                  instantiate
-                    ~constraints:(function
-                      | Variable _ -> Some parameter
-                      | _ -> None)
-                    alias
+                  let instantiated_alias =
+                    instantiate
+                      ~constraints:(function
+                        | Variable _ -> Some parameter
+                        | _ -> None)
+                      alias
+                  in
+                  mark_recursive_alias_as_visited instantiated_alias;
+                  instantiated_alias
               | _ -> annotation )
-          | Parametric { name = alias_name; parameters = alias_parameters } -> (
-              match aliases ?replace_unbound_parameters_with_any:(Some false) alias_name with
-              | Some
-                  (TypeAlias
-                    (Parametric { name = resolved_name; parameters = resolved_parameters }))
-                when List.length resolved_parameters = List.length alias_parameters ->
-                  Parametric { name = resolved_name; parameters = alias_parameters }
-              | _ -> annotation )
-          | RecursiveType { name; _ } ->
-              (* Don't resolve the inner reference to the type. *)
-              Core.Hash_set.add visited (Primitive name);
+          | Parametric { name = alias_name; parameters = alias_parameters } ->
+              let resolved =
+                match aliases ?replace_unbound_parameters_with_any:(Some false) alias_name with
+                | Some
+                    (TypeAlias
+                      (Parametric { name = resolved_name; parameters = resolved_parameters }))
+                  when List.length resolved_parameters = List.length alias_parameters ->
+                    Parametric { name = resolved_name; parameters = alias_parameters }
+                | _ -> annotation
+              in
+              mark_recursive_alias_as_visited resolved;
+              resolved
+          | RecursiveType _ ->
+              mark_recursive_alias_as_visited annotation;
               annotation
           | _ -> annotation )
       in
@@ -3925,25 +3999,50 @@ end = struct
       let parse_declaration value ~target =
         match value with
         | {
-         Node.value =
-           Expression.Call
-             {
-               callee =
-                 {
-                   Node.value =
-                     Name
-                       (Name.Attribute
-                         {
-                           base = { Node.value = Name (Name.Identifier "pyre_extensions"); _ };
-                           attribute = "ParameterSpecification";
-                           special = false;
-                         });
-                   _;
-                 };
-               arguments = [{ Call.Argument.value = { Node.value = String _; _ }; _ }];
-             };
-         _;
-        } ->
+            Node.value =
+              Expression.Call
+                {
+                  callee =
+                    {
+                      Node.value =
+                        Name
+                          (Name.Attribute
+                            {
+                              base = { Node.value = Name (Name.Identifier "pyre_extensions"); _ };
+                              attribute = "ParameterSpecification";
+                              special = false;
+                            });
+                      _;
+                    };
+                  arguments = [{ Call.Argument.value = { Node.value = String _; _ }; _ }];
+                };
+            _;
+          }
+        | {
+            Node.value =
+              Expression.Call
+                {
+                  callee =
+                    {
+                      Node.value =
+                        Name
+                          (Name.Attribute
+                            {
+                              base =
+                                {
+                                  Node.value =
+                                    Name (Name.Identifier ("typing" | "typing_extensions"));
+                                  _;
+                                };
+                              attribute = "ParamSpec";
+                              special = false;
+                            });
+                      _;
+                    };
+                  arguments = [{ Call.Argument.value = { Node.value = String _; _ }; _ }];
+                };
+            _;
+          } ->
             Some (create (Reference.show target))
         | _ -> None
 
@@ -5038,10 +5137,16 @@ let contains_prohibited_any annotation =
 
 let to_yojson annotation = `String (show annotation)
 
+(* `resolve_class` is used to extract a class name (like "list") from a type (or classes from a
+   union) so that we can get its attributes, global location, etc. It also returns the instantiated
+   type `List[int]` since that is also needed for attribute lookup. *)
 let resolve_class annotation =
   let rec extract ~meta original_annotation =
     let annotation =
       match original_annotation with
+      (* Variables return their upper bound because we need to take the least informative type in
+         their interval. Otherwise, we might access an attribute that doesn't exist on the actual
+         type. *)
       | Variable variable -> Variable.Unary.upper_bound variable
       | _ -> original_annotation
     in
@@ -5063,6 +5168,8 @@ let resolve_class annotation =
             };
           ]
     | Union annotations ->
+        (* Unions return the list of member classes because an attribute lookup has to be supported
+           by all members of the union. *)
         let flatten_optional sofar optional =
           match sofar, optional with
           | Some sofar, Some optional -> Some (optional :: sofar)
@@ -5072,8 +5179,27 @@ let resolve_class annotation =
         |> List.fold ~init:(Some []) ~f:flatten_optional
         >>| List.concat
         >>| List.rev
+    | RecursiveType ({ name; body } as recursive_type) ->
+        extract ~meta body
+        (* Filter out the recursive type name itself since it's not a valid class name.
+
+           Removing the inner occurrences of the recursive type is fine because of induction. If the
+           other classes in a union support an attribute lookup, the recursive type will too. If
+           they don't, then the recursive type won't either. *)
+        >>| List.filter ~f:(fun { class_name; _ } -> not (Identifier.equal class_name name))
+        >>| List.map ~f:(fun ({ instantiated; _ } as class_data) ->
+                {
+                  class_data with
+                  instantiated =
+                    RecursiveType.replace_references_with_recursive_type
+                      ~recursive_type
+                      instantiated;
+                })
     | Annotated annotation -> extract ~meta annotation
-    | annotation when is_meta annotation -> single_parameter annotation |> extract ~meta:true
+    | annotation when is_meta annotation ->
+        (* Metaclasses return accessed_through_class=true since they allow looking up only class
+           attribute, etc. *)
+        single_parameter annotation |> extract ~meta:true
     | _ -> (
         match split annotation |> fst |> primitive_name with
         | Some class_name ->

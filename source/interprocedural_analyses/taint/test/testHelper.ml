@@ -356,7 +356,7 @@ let run_with_taint_models tests ~name =
     assert_bool
       (Format.sprintf
          "The models shouldn't have any parsing errors: %s."
-         (List.to_string errors ~f:ident))
+         (List.to_string errors ~f:Taint.Model.display_verification_error))
       (List.is_empty errors);
     Callable.Map.map models ~f:(Interprocedural.Result.make_model Taint.Result.kind)
     |> Interprocedural.Analysis.record_initial_models ~functions:[] ~stubs:[]
@@ -402,15 +402,6 @@ let initialize
       ast_environment
       (Reference.create (String.chop_suffix_exn handle ~suffix:".py"))
     |> fun option -> Option.value_exn option
-  in
-  let errors =
-    let keep { AnalysisError.kind; _ } =
-      match kind with
-      (* TODO(T47874282): Don't filter these. *)
-      | AnalysisError.NotCallable _ -> false
-      | _ -> true
-    in
-    List.filter errors ~f:keep
   in
   ( if not (List.is_empty errors) then
       let errors =
@@ -459,10 +450,11 @@ let initialize
         assert_bool
           (Format.sprintf
              "The models shouldn't have any parsing errors: %s."
-             (List.to_string errors ~f:ident))
+             (List.to_string errors ~f:Taint.Model.display_verification_error))
           (List.is_empty errors);
 
-        ( TaintModelQuery.ModelQuery.apply_all_rules
+        let models =
+          TaintModelQuery.ModelQuery.apply_all_rules
             ~resolution
             ~configuration:taint_configuration
             ~scheduler:(Test.mock_scheduler ())
@@ -473,8 +465,30 @@ let initialize
               (List.filter_map (List.rev_append stubs callables) ~f:(function
                   | (`Function _ as callable), _ -> Some (callable :> Callable.real_target)
                   | (`Method _ as callable), _ -> Some (callable :> Callable.real_target)
-                  | _ -> None)),
-          skip_overrides )
+                  | _ -> None))
+        in
+        let remove_sinks models = Callable.Map.map ~f:Model.remove_sinks models in
+        let add_obscure_sinks models =
+          let add_obscure_sink models callable =
+            let model =
+              Callable.Map.find models callable
+              |> Option.value ~default:Taint.Result.empty_model
+              |> Model.add_obscure_sink ~resolution ~call_target:callable
+            in
+            Callable.Map.set models ~key:callable ~data:model
+          in
+          stubs
+          |> List.map ~f:fst
+          |> List.filter ~f:(fun callable -> not (Callable.Map.mem models callable))
+          |> List.fold ~init:models ~f:add_obscure_sink
+        in
+        let models =
+          match taint_configuration.find_missing_flows with
+          | Some Obscure -> models |> remove_sinks |> add_obscure_sinks
+          | Some Type -> models |> remove_sinks
+          | None -> models
+        in
+        models, skip_overrides
   in
   (* Overrides must be done first, as they influence the call targets. *)
   let overrides =
@@ -482,7 +496,7 @@ let initialize
       DependencyGraph.create_overrides ~environment ~source
       |> Reference.Map.filter_keys ~f:(fun override -> not (Set.mem skip_overrides override))
     in
-    DependencyGraphSharedMemory.record_overrides overrides;
+    let _ = DependencyGraphSharedMemory.record_overrides overrides in
     DependencyGraph.from_overrides overrides
   in
   let callgraph =

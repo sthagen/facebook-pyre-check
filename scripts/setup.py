@@ -52,7 +52,7 @@ class BuildType(Enum):
     FACEBOOK = "facebook"
 
 
-class Runner(NamedTuple):
+class Setup(NamedTuple):
     opam_root: Path
 
     development: bool = False
@@ -233,7 +233,7 @@ class Runner(NamedTuple):
             return output
 
 
-def make_opam_root(local: bool, temporary_root: bool, default: Optional[Path]) -> Path:
+def _make_opam_root(local: bool, temporary_root: bool, default: Optional[Path]) -> Path:
     home = Path.home()
     home_opam = home / ".opam"
     if local:
@@ -247,7 +247,7 @@ def make_opam_root(local: bool, temporary_root: bool, default: Optional[Path]) -
     return default or home_opam
 
 
-def main(runner_type: Type[Runner]) -> None:
+def setup(runner_type: Type[Setup]) -> None:
     logging.basicConfig(
         level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s"
     )
@@ -271,7 +271,7 @@ def main(runner_type: Type[Runner]) -> None:
     if not pyre_directory:
         pyre_directory = Path(__file__).parent.parent.absolute()
 
-    opam_root = make_opam_root(parsed.local, parsed.temporary_root, parsed.opam_root)
+    opam_root = _make_opam_root(parsed.local, parsed.temporary_root, parsed.opam_root)
 
     runner = runner_type(
         opam_root=opam_root, development=parsed.development, release=parsed.release
@@ -301,4 +301,4 @@ def main(runner_type: Type[Runner]) -> None:
 
 
 if __name__ == "__main__":
-    main(Runner)
+    setup(Setup)

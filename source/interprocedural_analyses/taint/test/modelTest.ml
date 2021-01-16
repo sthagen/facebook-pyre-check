@@ -73,7 +73,9 @@ let set_up_environment ?source ?rules ~context ~model_source () =
     Taint.Model.parse ~resolution ?rule_filter ~source ~configuration Callable.Map.empty
   in
   assert_bool
-    (Format.sprintf "Models have parsing errors: %s" (List.to_string errors ~f:ident))
+    (Format.sprintf
+       "Models have parsing errors: %s"
+       (List.to_string errors ~f:Taint.Model.display_verification_error))
     (List.is_empty errors);
 
   let environment =
@@ -428,6 +430,58 @@ let test_sanitize context =
                      (Mode.SpecificTito
                         {
                           sanitized_tito_sources = [];
+                          sanitized_tito_sinks = [Sinks.NamedSink "Test"];
+                        });
+               })
+          "test.taint";
+      ]
+    ();
+  assert_model
+    ~model_source:
+      {|
+      @Sanitize(TaintSource[Test], TaintInTaintOut[TaintSink[Test]])
+      def test.taint(x): ...
+    |}
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~analysis_mode:
+            (Mode.Sanitize
+               {
+                 Mode.sources = Some (Mode.SpecificSources [Sources.NamedSource "Test"]);
+                 sinks = None;
+                 tito =
+                   Some
+                     (Mode.SpecificTito
+                        {
+                          sanitized_tito_sources = [];
+                          sanitized_tito_sinks = [Sinks.NamedSink "Test"];
+                        });
+               })
+          "test.taint";
+      ]
+    ();
+  assert_model
+    ~model_source:
+      {|
+      @Sanitize(TaintInTaintOut[TaintSource[Test], TaintSink[Test]])
+      def test.taint(x): ...
+    |}
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~analysis_mode:
+            (Mode.Sanitize
+               {
+                 Mode.sources = None;
+                 sinks = None;
+                 tito =
+                   Some
+                     (Mode.SpecificTito
+                        {
+                          sanitized_tito_sources = [Sources.NamedSource "Test"];
                           sanitized_tito_sinks = [Sinks.NamedSink "Test"];
                         });
                })
@@ -1024,7 +1078,10 @@ let test_invalid_models context =
         ?path
         ~source:(Test.trim_extra_indentation model_source)
         Callable.Map.empty
-      |> fun { Taint.Model.errors; _ } -> List.hd errors |> Option.value ~default:"no failure"
+      |> fun { Taint.Model.errors; _ } ->
+      List.hd errors
+      >>| Taint.Model.display_verification_error
+      |> Option.value ~default:"no failure"
     in
     assert_equal ~printer:ident expect error_message
   in
@@ -1088,14 +1145,11 @@ let test_invalid_models context =
 
   assert_invalid_model
     ~model_source:"def not_in_the_environment(parameter: InvalidTaintDirection[Test]): ..."
-    ~expect:
-      "Invalid model for `not_in_the_environment`: Modeled entity is not part of the environment!"
+    ~expect:"`not_in_the_environment` is not part of the environment!"
     ();
   assert_invalid_model
     ~model_source:"def not_in_the_environment.derp(parameter: InvalidTaintDirection[Test]): ..."
-    ~expect:
-      "Invalid model for `not_in_the_environment.derp`: Modeled entity is not part of the \
-       environment!"
+    ~expect:"`not_in_the_environment.derp` is not part of the environment!"
     ();
 
   assert_valid_model ~model_source:"def test.sink(): ..." ();
@@ -1109,40 +1163,38 @@ let test_invalid_models context =
     ~model_source:
       "def test.sink_with_optional(parameter, firstOptional, secondOptional, thirdOptional): ..."
     ~expect:
-      "Invalid model for `test.sink_with_optional`: Model signature parameters do not match \
-       implementation `def sink_with_optional(parameter: unknown, firstOptional: unknown = ..., \
-       secondOptional: unknown = ...) -> None: ...`. Reason: unexpected named parameter: \
-       `thirdOptional`."
+      "Model signature parameters for `test.sink_with_optional` do not match implementation `def \
+       sink_with_optional(parameter: unknown, firstOptional: unknown = ..., secondOptional: \
+       unknown = ...) -> None: ...`. Reason: unexpected named parameter: `thirdOptional`."
     ();
   assert_invalid_model
     ~model_source:"def test.sink_with_optional(parameter, firstBad, secondBad): ..."
     ~expect:
-      "Invalid model for `test.sink_with_optional`: Model signature parameters do not match \
-       implementation `def sink_with_optional(parameter: unknown, firstOptional: unknown = ..., \
-       secondOptional: unknown = ...) -> None: ...`. Reasons: unexpected named parameter: \
-       `firstBad`; unexpected named parameter: `secondBad`."
+      "Model signature parameters for `test.sink_with_optional` do not match implementation `def \
+       sink_with_optional(parameter: unknown, firstOptional: unknown = ..., secondOptional: \
+       unknown = ...) -> None: ...`. Reasons: unexpected named parameter: `firstBad`; unexpected \
+       named parameter: `secondBad`."
     ();
   assert_invalid_model
     ~model_source:"def test.sink_with_optional(parameter, *args): ..."
     ~expect:
-      "Invalid model for `test.sink_with_optional`: Model signature parameters do not match \
-       implementation `def sink_with_optional(parameter: unknown, firstOptional: unknown = ..., \
-       secondOptional: unknown = ...) -> None: ...`. Reason: unexpected star parameter."
+      "Model signature parameters for `test.sink_with_optional` do not match implementation `def \
+       sink_with_optional(parameter: unknown, firstOptional: unknown = ..., secondOptional: \
+       unknown = ...) -> None: ...`. Reason: unexpected star parameter."
     ();
   assert_invalid_model
     ~model_source:"def test.sink_with_optional(parameter, **kwargs): ..."
     ~expect:
-      "Invalid model for `test.sink_with_optional`: Model signature parameters do not match \
-       implementation `def sink_with_optional(parameter: unknown, firstOptional: unknown = ..., \
-       secondOptional: unknown = ...) -> None: ...`. Reason: unexpected star star parameter."
+      "Model signature parameters for `test.sink_with_optional` do not match implementation `def \
+       sink_with_optional(parameter: unknown, firstOptional: unknown = ..., secondOptional: \
+       unknown = ...) -> None: ...`. Reason: unexpected star star parameter."
     ();
   assert_invalid_model
     ~model_source:"def test.sink_with_optional(__parameter): ..."
     ~expect:
-      "Invalid model for `test.sink_with_optional`: Model signature parameters do not match \
-       implementation `def sink_with_optional(parameter: unknown, firstOptional: unknown = ..., \
-       secondOptional: unknown = ...) -> None: ...`. Reason: unexpected positional only parameter: \
-       `__parameter`."
+      "Model signature parameters for `test.sink_with_optional` do not match implementation `def \
+       sink_with_optional(parameter: unknown, firstOptional: unknown = ..., secondOptional: \
+       unknown = ...) -> None: ...`. Reason: unexpected positional only parameter: `__parameter`."
     ();
   assert_valid_model
     ~model_source:"def test.function_with_args(normal_arg, __random_name, named_arg, *args): ..."
@@ -1169,8 +1221,7 @@ let test_invalid_models context =
     ~path:"broken_model.pysa"
     ~model_source:"def test.sink(parameter: Any): ..."
     ~expect:
-      "Invalid model for `test.sink` defined in `broken_model.pysa:1`: Unrecognized taint \
-       annotation `Any`"
+      "broken_model.pysa:1: Invalid model for `test.sink`: Unrecognized taint annotation `Any`"
     ();
   assert_invalid_model
     ~model_source:"def test.sink(parameter: TaintSink[Test, Via[bad_feature]]): ..."
@@ -1183,14 +1234,20 @@ let test_invalid_models context =
   assert_valid_model ~model_source:"test.unannotated_global: TaintSink[Test]" ();
   assert_invalid_model
     ~model_source:"test.missing_global: TaintSink[Test]"
-    ~expect:
-      "Invalid model for `test.missing_global`: `test.missing_global` does not correspond to a \
-       class's attribute or a global."
+    ~expect:"`test.missing_global` is not part of the environment!"
+    ();
+  assert_invalid_model
+    ~source:{|
+      class C:
+        a: int = 1
+     |}
+    ~model_source:"test.C.b: TaintSink[Test] = ..."
+    ~expect:"Class `test.C` has no attribute `b`."
     ();
   assert_valid_model ~model_source:"test.C.unannotated_class_variable: TaintSink[Test]" ();
   assert_invalid_model
     ~model_source:"test.C.missing: TaintSink[Test]"
-    ~expect:"Invalid model for `test.C.missing`: Class `test.C` has no attribute `missing`."
+    ~expect:"Class `test.C` has no attribute `missing`."
     ();
   assert_invalid_model
     ~model_source:
@@ -1233,14 +1290,14 @@ let test_invalid_models context =
   assert_invalid_model
     ~model_source:"def test.sink(parameter = TaintSink[Test]): ..."
     ~expect:
-      "Invalid model for `test.sink`: Default values of parameters must be `...`. Did you mean to \
-       write `parameter: TaintSink[Test]`?"
+      "Default values of `test.sink`'s parameters must be `...`. Did you mean to write `parameter: \
+       TaintSink[Test]`?"
     ();
   assert_invalid_model
     ~model_source:"def test.sink(parameter = 1): ..."
     ~expect:
-      "Invalid model for `test.sink`: Default values of parameters must be `...`. Did you mean to \
-       write `parameter: 1`?"
+      "Default values of `test.sink`'s parameters must be `...`. Did you mean to write `parameter: \
+       1`?"
     ();
 
   (* ViaValueOf models must specify existing parameters. *)
@@ -1266,8 +1323,8 @@ let test_invalid_models context =
       def test.C.foo(self, value) -> TaintSource[Test]: ...
     |}
     ~expect:
-      "Invalid model for `test.C.foo`: Model signature parameters do not match implementation \
-       `(self: C) -> int`. Reason: unexpected named parameter: `value`."
+      "Model signature parameters for `test.C.foo` do not match implementation `(self: C) -> int`. \
+       Reason: unexpected named parameter: `value`."
     ();
   assert_valid_model
     ~source:
@@ -1292,8 +1349,8 @@ let test_invalid_models context =
       def accidental_decorator_passed_in() -> TaintSource[Test]: ...
     |}
     ~expect:
-      "Invalid model for `accidental_decorator_passed_in`: Unexpected decorators found when \
-       parsing model: `decorated`"
+      "Unexpected decorators found when parsing model for `accidental_decorator_passed_in`: \
+       `decorated`."
     ();
   assert_invalid_model
     ~source:
@@ -1309,10 +1366,20 @@ let test_invalid_models context =
       @wrong_name.setter
       def test.C.foo(self, value: TaintSink[Test]): ...
     |}
-    ~expect:
-      "Invalid model for `test.C.foo`: Unexpected decorators found when parsing model: \
-       `wrong_name.setter`"
+    ~expect:"Unexpected decorators found when parsing model for `test.C.foo`: `wrong_name.setter`."
     ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      @custom_property
+      def accidental_decorator_passed_in() -> TaintSource[Test]: ...
+    |}
+    ~expect:
+      "Unexpected decorators found when parsing model for `accidental_decorator_passed_in`: \
+       `custom_property`. If you're looking to model a custom property decorator, use the \
+       @property decorator."
+    ();
+
   assert_valid_model
     ~source:
       {|
@@ -1334,8 +1401,8 @@ let test_invalid_models context =
       def unittest.TestCase.assertIsNotNone(self, x: TaintSink[Test]): ...
     |}
     ~expect:
-      "Invalid model for `unittest.TestCase.assertIsNotNone`: The modelled function is an imported \
-       function `unittest.case.TestCase.assertIsNotNone`, please model it directly."
+      "The modelled function `unittest.TestCase.assertIsNotNone` is an imported function, please \
+       model `unittest.case.TestCase.assertIsNotNone` directly."
     ();
   assert_invalid_model
     ~model_source:
@@ -1422,7 +1489,7 @@ let test_invalid_models context =
         def foo(self) -> int: ...
     |}
     ~model_source:"test.C.foo: TaintSource[A] = ..."
-    ~expect:"Invalid model for `test.C.foo`: Class `test.C` has no attribute `foo`."
+    ~expect:"Class `test.C` has no attribute `foo`."
     ();
   assert_invalid_model
     ~source:{|
@@ -1432,7 +1499,7 @@ let test_invalid_models context =
         pass
     |}
     ~model_source:"test.D.foo: TaintSource[A] = ..."
-    ~expect:"Invalid model for `test.D.foo`: Class `test.D` has no attribute `foo`."
+    ~expect:"Class `test.D` has no attribute `foo`."
     ();
   assert_valid_model
     ~source:{|
@@ -1530,6 +1597,19 @@ let test_invalid_models context =
   breadcrumbs =
   [(Features.Simple.Breadcrumb (Features.Breadcrumb.SimpleVia "featureA"))];
   path = []; leaf_name_provided = false}` is not a supported taint annotation for sanitizers.|}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        fnid = "functions",
+        where = name.matches("foo"),
+        model = Returns(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      {|The model query arguments at `{ Expression.Call.Argument.name = (Some fnid); value = "functions" }, { Expression.Call.Argument.name = (Some where); value = name.matches("foo") }, { Expression.Call.Argument.name = (Some model);
+  value = Returns(TaintSource[Test]) }` are invalid: expected a find, where and model clause.|}
     ()
 
 
@@ -2106,6 +2186,39 @@ let test_query_parsing context =
                     (Model.Sink
                        {
                          sink = Sinks.NamedSink "Test";
+                         breadcrumbs = [];
+                         path = [];
+                         leaf_name_provided = false;
+                       });
+                ];
+            ];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     find = "methods",
+     where = any_decorator.name.matches("foo"),
+     model = [Returns([TaintSource[Test]])],
+    )
+  |}
+    ~expect:
+      [
+        {
+          name = None;
+          query = [DecoratorNameConstraint "foo"];
+          rule_kind = MethodModel;
+          productions =
+            [
+              ReturnTaint
+                [
+                  TaintAnnotation
+                    (Model.Source
+                       {
+                         source = Sources.NamedSource "Test";
                          breadcrumbs = [];
                          path = [];
                          leaf_name_provided = false;

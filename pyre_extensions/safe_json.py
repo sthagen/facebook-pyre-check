@@ -7,7 +7,7 @@
 
 import json
 import sys
-from typing import Any, Dict, List, Type, TypeVar, cast
+from typing import Any, Dict, List, Type, TypeVar, cast, IO, Union
 
 if sys.version_info[:2] >= (3, 9):
     # pyre-fixme[21]: Could not find name `_TypedDictMeta` in `typing`.
@@ -27,6 +27,10 @@ else:
 class InvalidJson(json.JSONDecodeError):
     def __init__(self, message: str) -> None:
         super().__init__(message, "", 0)
+
+
+def _is_primitive(target_type: Type[object]) -> bool:
+    return target_type in (int, float, str, bool)
 
 
 def _is_list(target_type: Type[object]) -> bool:
@@ -94,6 +98,11 @@ def _validate_value(value: object, target_type: Type[object]) -> None:
 
 
 def _validate_toplevel(value: object, target_type: Type[object]) -> None:
+    if _is_primitive(target_type):
+        if not isinstance(value, target_type):
+            raise InvalidJson(f"`{value}` is not a {target_type}")
+        else:
+            return
     if _is_list(target_type):
         _validate_list(value, cast(Type[List[object]], target_type))
     elif _is_dictionary(target_type):
@@ -107,7 +116,16 @@ def _validate_toplevel(value: object, target_type: Type[object]) -> None:
 T = TypeVar("T")
 
 
-def loads(input_: str, target: Type[T], *, validate: bool = True) -> T:
+def load(
+    input_: Union[IO[str], IO[bytes]],
+    target: Type[T],
+    *,
+    validate: bool = True,
+) -> T:
+    return loads(input_.read(), target, validate=validate)
+
+
+def loads(input_: Union[str, bytes], target: Type[T], *, validate: bool = True) -> T:
     try:
         parsed = json.loads(input_)
         if validate:
@@ -115,3 +133,8 @@ def loads(input_: str, target: Type[T], *, validate: bool = True) -> T:
         return parsed
     except Exception as exception:
         raise InvalidJson(str(exception))
+
+
+def validate(input: object, target: Type[T]) -> T:
+    _validate_toplevel(input, target)
+    return cast(T, input)

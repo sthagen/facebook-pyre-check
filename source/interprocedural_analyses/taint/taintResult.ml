@@ -314,6 +314,13 @@ module ResultArgument = struct
     `Assoc ["codes", codes]
 
 
+  let statistics () =
+    let model_verification_errors =
+      ModelVerificationError.get () |> List.map ~f:ModelVerificationError.to_json
+    in
+    `Assoc ["model_verification_errors", `List model_verification_errors]
+
+
   let strip_for_callsite
       { forward = { source_taint }; backward = { sink_taint; taint_in_taint_out }; mode }
     =

@@ -13,22 +13,16 @@ open Analysis
 val demangle_class_attribute : string -> string
 
 val verify_signature
-  :  normalized_model_parameters:(AccessPath.Root.t * string * Ast.Expression.Parameter.t) list ->
-  name:Reference.t ->
-  Type.Callable.t option ->
-  unit
-
-type verification_error =
-  | GlobalVerificationError of {
-      name: string;
-      message: string;
-    }
-
-val display_verification_error
   :  path:Pyre.Path.t option ->
   location:Location.t ->
-  name:string ->
-  verification_error ->
-  string
+  normalized_model_parameters:(AccessPath.Root.t * string * Ast.Expression.Parameter.t) list ->
+  name:Reference.t ->
+  Type.Callable.t option ->
+  (unit, ModelVerificationError.t) result
 
-val verify_global : resolution:Resolution.t -> name:Reference.t -> (unit, verification_error) result
+val verify_global
+  :  path:Pyre.Path.t option ->
+  location:Location.t ->
+  resolution:Resolution.t ->
+  name:Reference.t ->
+  (unit, ModelVerificationError.t) result

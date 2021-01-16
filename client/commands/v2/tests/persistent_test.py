@@ -3,14 +3,16 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import asyncio
 import json
 from pathlib import Path
+from typing import Iterable
 
 import testslide
 
 from .... import json_rpc, error
 from ....tests import setup
-from .. import language_server_protocol as lsp
+from .. import language_server_protocol as lsp, start
 from ..async_server_connection import (
     TextReader,
     TextWriter,
@@ -33,13 +35,17 @@ from ..persistent import (
     SubscriptionResponse,
     type_error_to_diagnostic,
     type_errors_to_diagnostics,
+    PyreServerHandler,
 )
 
 
-async def _create_input_channel_with_request(request: json_rpc.Request) -> TextReader:
+async def _create_input_channel_with_requests(
+    requests: Iterable[json_rpc.Request],
+) -> TextReader:
     bytes_writer = MemoryBytesWriter()
-    await lsp.write_json_rpc(TextWriter(bytes_writer), request)
-    return TextReader(MemoryBytesReader(bytes_writer.items()[0]))
+    for request in requests:
+        await lsp.write_json_rpc(TextWriter(bytes_writer), request)
+    return TextReader(MemoryBytesReader(b"\n".join(bytes_writer.items())))
 
 
 class NoOpBackgroundTask(BackgroundTask):
@@ -47,28 +53,38 @@ class NoOpBackgroundTask(BackgroundTask):
         pass
 
 
+class WaitForeverBackgroundTask(BackgroundTask):
+    async def run(self) -> None:
+        await asyncio.Event().wait()
+
+
 class PersistentTest(testslide.TestCase):
     @setup.async_test
     async def test_try_initialize_success(self) -> None:
-        input_channel = await _create_input_channel_with_request(
-            json_rpc.Request(
-                id=0,
-                method="initialize",
-                parameters=json_rpc.ByNameParameters(
-                    {
-                        "processId": 42,
-                        "rootUri": None,
-                        "capabilities": {
-                            "textDocument": {
-                                "publishDiagnostics": {},
-                                "synchronization": {
-                                    "didSave": True,
+        input_channel = await _create_input_channel_with_requests(
+            [
+                json_rpc.Request(
+                    id=0,
+                    method="initialize",
+                    parameters=json_rpc.ByNameParameters(
+                        {
+                            "processId": 42,
+                            "rootUri": None,
+                            "capabilities": {
+                                "textDocument": {
+                                    "publishDiagnostics": {},
+                                    "synchronization": {
+                                        "didSave": True,
+                                    },
                                 },
                             },
-                        },
-                    }
+                        }
+                    ),
                 ),
-            )
+                json_rpc.Request(
+                    method="initialized", parameters=json_rpc.ByNameParameters({})
+                ),
+            ]
         )
         output_channel = create_memory_text_writer()
         result = await try_initialize(input_channel, output_channel)
@@ -76,8 +92,8 @@ class PersistentTest(testslide.TestCase):
 
     @setup.async_test
     async def test_try_initialize_failure__not_a_request(self) -> None:
-        input_channel = await _create_input_channel_with_request(
-            json_rpc.Request(method="derp", parameters=None)
+        input_channel = await _create_input_channel_with_requests(
+            [json_rpc.Request(method="derp", parameters=None)]
         )
         output_channel = create_memory_text_writer()
         result = await try_initialize(input_channel, output_channel)
@@ -85,8 +101,39 @@ class PersistentTest(testslide.TestCase):
 
     @setup.async_test
     async def test_try_initialize_failure__invalid_parameters(self) -> None:
-        input_channel = await _create_input_channel_with_request(
-            json_rpc.Request(id=0, method="initialize", parameters=None)
+        input_channel = await _create_input_channel_with_requests(
+            [json_rpc.Request(id=0, method="initialize", parameters=None)]
+        )
+        output_channel = create_memory_text_writer()
+        result = await try_initialize(input_channel, output_channel)
+        self.assertIsInstance(result, InitializationFailure)
+
+    @setup.async_test
+    async def test_try_initialize_failure__no_initialized(self) -> None:
+        input_channel = await _create_input_channel_with_requests(
+            [
+                json_rpc.Request(
+                    id=0,
+                    method="initialize",
+                    parameters=json_rpc.ByNameParameters(
+                        {
+                            "processId": 42,
+                            "rootUri": None,
+                            "capabilities": {
+                                "textDocument": {
+                                    "publishDiagnostics": {},
+                                    "synchronization": {
+                                        "didSave": True,
+                                    },
+                                },
+                            },
+                        }
+                    ),
+                ),
+                json_rpc.Request(
+                    method="derp", parameters=json_rpc.ByNameParameters({})
+                ),
+            ]
         )
         output_channel = create_memory_text_writer()
         result = await try_initialize(input_channel, output_channel)
@@ -94,8 +141,8 @@ class PersistentTest(testslide.TestCase):
 
     @setup.async_test
     async def test_try_initialize_exit(self) -> None:
-        input_channel = await _create_input_channel_with_request(
-            json_rpc.Request(method="exit", parameters=None)
+        input_channel = await _create_input_channel_with_requests(
+            [json_rpc.Request(method="exit", parameters=None)]
         )
         output_channel = create_memory_text_writer()
         result = await try_initialize(input_channel, output_channel)
@@ -227,13 +274,18 @@ class PersistentTest(testslide.TestCase):
             }
         )
         bytes_writer = MemoryBytesWriter()
+        fake_task_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
         server = Server(
             input_channel=create_memory_text_reader(""),
             output_channel=TextWriter(bytes_writer),
             client_capabilities=lsp.ClientCapabilities(),
             state=server_state,
-            pyre_manager=BackgroundTaskManager(NoOpBackgroundTask()),
+            pyre_manager=fake_task_manager,
         )
+
+        # Ensure the background task is running
+        await fake_task_manager.ensure_task_running()
+        await asyncio.sleep(0)
 
         await server.process_open_request(
             lsp.DidOpenTextDocumentParameters(
@@ -257,6 +309,55 @@ class PersistentTest(testslide.TestCase):
         )
         # Another diagnostic update is sent via the output channel
         self.assertEqual(len(bytes_writer.items()), 2)
+
+    @setup.async_test
+    async def test_open_triggers_pyre_restart(self) -> None:
+        fake_task_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
+        server = Server(
+            input_channel=create_memory_text_reader(""),
+            output_channel=create_memory_text_writer(),
+            client_capabilities=lsp.ClientCapabilities(),
+            state=ServerState(),
+            pyre_manager=fake_task_manager,
+        )
+        self.assertFalse(fake_task_manager.is_task_running())
+
+        test_path = Path("/foo.py")
+        await server.process_open_request(
+            lsp.DidOpenTextDocumentParameters(
+                text_document=lsp.TextDocumentItem(
+                    language_id="python",
+                    text="",
+                    uri=lsp.DocumentUri.from_file_path(test_path).unparse(),
+                    version=0,
+                )
+            )
+        )
+        await asyncio.sleep(0)
+        self.assertTrue(fake_task_manager.is_task_running())
+
+    @setup.async_test
+    async def test_save_triggers_pyre_restart(self) -> None:
+        test_path = Path("/foo.py")
+        fake_task_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
+        server = Server(
+            input_channel=create_memory_text_reader(""),
+            output_channel=create_memory_text_writer(),
+            client_capabilities=lsp.ClientCapabilities(),
+            state=ServerState(opened_documents={test_path}),
+            pyre_manager=fake_task_manager,
+        )
+        self.assertFalse(fake_task_manager.is_task_running())
+
+        await server.process_did_save_request(
+            lsp.DidSaveTextDocumentParameters(
+                text_document=lsp.TextDocumentIdentifier(
+                    uri=lsp.DocumentUri.from_file_path(test_path).unparse(),
+                )
+            )
+        )
+        await asyncio.sleep(0)
+        self.assertTrue(fake_task_manager.is_task_running())
 
     def test_diagnostics(self) -> None:
         self.assertEqual(
@@ -354,4 +455,50 @@ class PersistentTest(testslide.TestCase):
                     )
                 ],
             },
+        )
+
+    @setup.async_test
+    async def test_server_connection_lost(self) -> None:
+        test_path = Path("/foo.py")
+        server_state = ServerState(
+            opened_documents={test_path},
+        )
+
+        bytes_writer = MemoryBytesWriter()
+        server_handler = PyreServerHandler(
+            binary_location="/bin/pyre",
+            server_identifier="foo",
+            pyre_arguments=start.Arguments(
+                log_path="/log/path",
+                global_root="/global/root",
+            ),
+            client_output_channel=TextWriter(bytes_writer),
+            server_state=server_state,
+        )
+
+        with self.assertRaises(asyncio.IncompleteReadError):
+            await server_handler.subscribe_to_type_error(
+                # Intentionally inject a broken server response
+                create_memory_text_reader("derp"),
+                create_memory_text_writer(),
+            )
+        client_visible_messages = bytes_writer.items()
+        self.assertTrue(len(client_visible_messages) > 0)
+        self.assertEqual(
+            await lsp.read_json_rpc(
+                TextReader(
+                    MemoryBytesReader(
+                        # The server may send several status updates but we are
+                        # mostly interested in the last message, which contains
+                        # the diagnostics.
+                        client_visible_messages[-1]
+                    )
+                )
+            ),
+            json_rpc.Request(
+                method="textDocument/publishDiagnostics",
+                parameters=json_rpc.ByNameParameters(
+                    {"uri": "file:///foo.py", "diagnostics": []}
+                ),
+            ),
         )

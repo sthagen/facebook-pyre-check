@@ -160,7 +160,7 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
         call_location
         arguments
         state
-        (call_targets : Interprocedural.Callable.t list)
+        call_targets
       =
       (* We keep a table of kind -> set of triggered labels across all targets, and merge triggered
          sinks at the end. *)
@@ -430,11 +430,11 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
       let call_targets =
         match call_targets with
         | [] when Configuration.is_missing_flow_analysis Type ->
-            (* Create a symbolic callable, using the location as the name *)
-            let location_string = Location.WithModule.show call_location in
-            let callable_name = Reference.create location_string in
-            let callable = Interprocedural.Callable.create_function callable_name in
-            let callable = (callable :> Interprocedural.Callable.t) in
+            let callable =
+              Model.unknown_callee
+                ~location:call_location
+                ~call:(Expression.Call { callee; arguments })
+            in
             if not (Interprocedural.Fixpoint.has_model callable) then
               Model.register_unknown_callee_model callable;
             [callable]
@@ -443,10 +443,8 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
       match call_targets with
       | [] ->
           (* If we don't have a call target: propagate argument taint. *)
-          List.fold
-            arguments
-            ~init:(ForwardState.Tree.empty, state)
-            ~f:(analyze_argument ~resolution)
+          let callee_taint, state = analyze_expression ~resolution ~state ~expression:callee in
+          List.fold_left arguments ~init:(callee_taint, state) ~f:(analyze_argument ~resolution)
           |>> ForwardState.Tree.transform
                 ForwardTaint.simple_feature
                 Abstract.Domain.(Add Features.obscure)
@@ -499,38 +497,17 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
     and analyze_comprehension_generators ~resolution ~state generators =
-      let add_binding
-          (state, resolution)
-          ({ Comprehension.Generator.target; iterator; conditions; _ } as generator)
-        =
-        let taint, state =
-          let iterator_is_dictionary =
-            match Resolution.resolve_expression_to_type resolution iterator with
-            | Type.Parametric { name; _ } ->
-                GlobalResolution.is_transitive_successor
-                  (Resolution.global_resolution resolution)
-                  ~predecessor:name
-                  ~successor:Type.mapping_primitive
-            | _ -> false
-          in
-          let label =
-            if iterator_is_dictionary then
-              Abstract.TreeDomain.Label.DictionaryKeys
-            else
-              Abstract.TreeDomain.Label.Any
-          in
-          analyze_expression ~resolution ~state ~expression:iterator
-          |>> ForwardState.Tree.read [label]
+      let add_binding (state, resolution) ({ Comprehension.Generator.conditions; _ } as generator) =
+        let ({ Ast.Statement.Assign.target; value; _ } as assignment) =
+          Ast.Statement.Statement.generator_assignment generator
+        in
+        let assign_value_taint, state = analyze_expression ~resolution ~state ~expression:value in
+        let state =
+          analyze_assignment ~resolution target assign_value_taint assign_value_taint state
         in
         (* Since generators create variables that Pyre sees as scoped within the generator, handle
            them by adding the generator's bindings to the resolution. *)
-        let resolution =
-          Resolution.resolve_assignment
-            resolution
-            (Ast.Statement.Statement.generator_assignment generator)
-        in
-        let access_path = AccessPath.of_expression ~resolution target in
-        let state = store_taint_option access_path taint state in
+        let resolution = Resolution.resolve_assignment resolution assignment in
         (* Analyzing the conditions might have issues and side effects. *)
         let analyze_condition state condiiton =
           analyze_expression ~resolution ~state ~expression:condiiton |> snd
@@ -994,16 +971,14 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
                         (Resolution.resolve_expression_to_type resolution expression |> Type.show)
                   | _ -> ()
                 end;
-                let callee_taint, state =
-                  analyze_expression ~resolution ~state ~expression:callee
-                in
-                List.fold_left
+                apply_call_targets
+                  ~resolution
+                  ~callee
+                  ~collapse_tito:false
+                  location
                   arguments
-                  ~f:(analyze_argument ~resolution)
-                  ~init:(callee_taint, state)
-                |>> ForwardState.Tree.transform
-                      ForwardTaint.simple_feature
-                      Abstract.Domain.(Add Features.obscure)
+                  state
+                  []
           in
           let taint =
             match Node.value callee with

@@ -148,17 +148,11 @@ let test_subscription context =
   Subscription.send ~response:Response.Ok subscription
   >>= fun () ->
   Lwt_io.read_line input_channel
-  >>= fun raw_response ->
-  let actual_response =
-    Yojson.Safe.from_string raw_response |> Subscription.Response.of_yojson |> Result.ok_or_failwith
+  >>= fun actual_response ->
+  let expected_response =
+    Subscription.Response.to_yojson { name = "foo"; body = Response.Ok } |> Yojson.Safe.to_string
   in
-  assert_equal
-    ~ctxt:context
-    ~cmp:[%compare.equal: Subscription.Response.t]
-    ~printer:(fun response ->
-      Format.asprintf "%a" Sexp.pp_hum (Subscription.Response.sexp_of_t response))
-    { Subscription.Response.name = "foo"; body = Response.Ok }
-    actual_response;
+  assert_equal ~ctxt:context ~cmp:String.equal ~printer:Fn.id expected_response actual_response;
   Lwt.return_unit
 
 
@@ -397,16 +391,6 @@ let test_subscription_responses client =
   Client.assert_subscription_response
     client
     ~expected:{ Subscription.Response.name = "foo"; body = Response.TypeErrors [error] }
-  >>= fun () ->
-  Client.close client
-  >>= fun () ->
-  (* Yield control to event loop so server has a chance to respond to the client shutdown. *)
-  Lwt.pause ()
-  >>= fun () ->
-  (* Verifies that the subscription goes away after the connection is closed. *)
-  let { ServerState.subscriptions; _ } = Client.current_server_state client in
-  assert_bool "Subscription `foo` removed" (not (Hashtbl.mem subscriptions "foo"));
-  Lwt.return_unit
 
 
 let test_subscription_responses context =

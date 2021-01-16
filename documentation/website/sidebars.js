@@ -10,43 +10,60 @@
 const {fbContent, fbInternalOnly} = require('internaldocs-fb-helpers');
 
 module.exports = {
-  documentation: {
-    Pyre: [
-      ...fbContent({
-        internal: ['fb/getting-started'],
-        external: ['getting-started'],
-      }),
-      ...fbContent({
-        external: ['installation'],
-      }),
-      'configuration',
-      'types-in-python',
-      ...fbInternalOnly(['fb/increasing-type-coverage']),
-      'errors',
-      'querying-pyre',
-    ],
-    Pysa: [
-      ...fbInternalOnly(['fb/pysa-basics-internal']),
-      'pysa-basics',
-      ...fbInternalOnly(['fb/pysa-running-internal']),
-      ...fbInternalOnly(['fb/pysa-on-fbcode-internal']),
-      ...fbInternalOnly(['fb/pysa-running-opensource-internal']),
-      ...fbInternalOnly(['fb/pysa-running-common-internal']),
-      ...fbInternalOnly(['fb/pysa-shipping-rules-models-internal']),
-      'pysa-running',
-      'pysa-features',
-      'pysa-advanced',
-      ...fbInternalOnly(['fb/pysa-model-generators-internal']),
-      'pysa-model-generators',
-      'pysa-model-dsl',
-      'pysa-tips',
-      'pysa-coverage',
-      ...fbInternalOnly(['fb/sapp-cli-internal']),
-      ...fbInternalOnly(['fb/sapp-ui-internal']),
-      'static-analysis-post-processor',
-      ...fbInternalOnly(['fb/pysa-additional-resources-internal']),
-      'pysa-additional-resources',
-    ],
-  },
+  pyre: [
+    ...fbContent({
+      internal: ['fb/getting-started'],
+      external: ['getting-started'],
+    }),
+    ...fbContent({
+      external: ['installation'],
+    }),
+    'configuration',
+    'types-in-python',
+    ...fbInternalOnly(['fb/increasing-type-coverage']),
+    'errors',
+    'querying-pyre',
+  ],
+  pysa: [
+    {
+      'How Pysa Works': [
+        'pysa-basics',
+        'pysa-features',
+        'pysa-advanced',
+        'pysa-implementation-details',
+      ],
+    },
+
+    ...fbContent({
+      internal: [
+        {
+          'Running Pysa': [
+            'fb/pysa-running-internal',
+            'fb/pysa-on-fbcode-internal',
+            'fb/pysa-running-opensource-internal',
+            'fb/pysa-running-common-internal',
+          ],
+        },
+      ],
+      external: ['pysa-running'],
+    }),
+    ...fbInternalOnly(['fb/pysa-shipping-rules-models-internal']),
+    {
+      'Scaling Beyond Individual Models': [
+        'pysa-model-generators',
+        'pysa-model-dsl',
+      ],
+    },
+    {
+      'Development Tips': [
+        'pysa-false-negatives',
+        'pysa-coverage',
+        'pysa-tips',
+      ],
+    },
+    ...fbInternalOnly(['fb/pysa-deployment']),
+    'static-analysis-post-processor',
+    'pysa-additional-resources',
+  ],
   ...fbInternalOnly(() => require('./fb/sidebars.js')),
 };

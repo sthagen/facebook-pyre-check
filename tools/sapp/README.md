@@ -1,7 +1,3 @@
-# SAPP (Static Analysis Post Processor)
+# SAPP
 
-See the pyre website for documentation (https://pyre-check.org/docs/static-analysis-post-processor.html).
-
-## License
-
-SAPP is licensed under the MIT license.
+SAPP has moved to [its own repository](https://github.com/facebook/sapp).

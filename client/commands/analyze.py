@@ -5,6 +5,8 @@
 
 
 import enum
+import json
+import os
 from typing import List, Optional
 
 from typing_extensions import Final
@@ -12,7 +14,10 @@ from typing_extensions import Final
 from .. import command_arguments, log
 from ..analysis_directory import AnalysisDirectory, resolve_analysis_directory
 from ..configuration import Configuration
+from ..error import print_errors
 from .check import Check
+from .command import ClientException, ExitCode, Result
+from .validate_models import ValidateModels
 
 
 class MissingFlowsKind(str, enum.Enum):
@@ -104,5 +109,19 @@ class Analyze(Check):
         self._analysis_directory.prepare()
         result = self._call_client(command=self.NAME)
         result.check()
-        if self._save_results_to is None:
+
+        try:
+            errors = ValidateModels.parse_errors(
+                json.loads(result.output),
+                self._configuration,
+                self._analysis_directory,
+                self._original_directory,
+            )
+        except json.JSONDecodeError:
+            raise ClientException(f"Invalid JSON output: `{result.output}`.")
+
+        if errors:
+            print_errors(errors, output=self._output, error_kind="model verification")
+            self._exit_code = ExitCode.FOUND_ERRORS
+        elif self._save_results_to is None:
             log.stdout.write(result.output)

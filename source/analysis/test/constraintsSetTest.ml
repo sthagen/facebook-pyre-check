@@ -71,7 +71,7 @@ let attribute_from_attributes attributes =
   attribute
 
 
-let test_add_constraint context =
+let make_assert_functions context =
   let environment =
     environment
       ~source:
@@ -366,7 +366,11 @@ let test_add_constraint context =
     let right = parse_annotation right in
     assert_add_direct ~left ~right ~do_prep
   in
+  assert_add, assert_add_direct, prep, resolution
 
+
+let test_add_constraint context =
+  let assert_add, assert_add_direct, prep, resolution = make_assert_functions context in
   assert_add
     ~leave_unbound_in_left:["T_Unconstrained"]
     ~left:"typing.Optional[T_Unconstrained]"
@@ -755,6 +759,15 @@ let test_add_constraint context =
     ~left:"typing.Callable[Ts, int]"
     ~right:"typing.Callable[[Named(A, int), Named(B, str)], int]"
     [];
+  assert_add ~left:"typing.Callable[..., int]" ~right:"typing.Callable[..., object]" [[]];
+  assert_add
+    ~left:"typing.Callable[..., int]"
+    ~right:"typing.Callable[[Named(a, int), Named(b, str)], int]"
+    [[]];
+  assert_add
+    ~left:"typing.Callable[[Named(a, int), Named(b, str)], int]"
+    ~right:"typing.Callable[[int, str], int]"
+    [[]];
 
   (* Map operator *)
   assert_add
@@ -915,6 +928,76 @@ let test_add_constraint context =
     ~right:(parse_annotation "typing.Mapping[str, object]")
     [[]];
   assert_add_direct ~left:keyword_component ~right:(parse_annotation "typing.Mapping[str, int]") [];
+  ()
+
+
+let test_add_constraint_recursive_type context =
+  let _, assert_add_direct, _, _ = make_assert_functions context in
+  let tree_annotation =
+    Type.RecursiveType.create
+      ~name:"test.Tree"
+      ~body:
+        (Type.union
+           [Type.integer; Type.tuple [Type.Primitive "test.Tree"; Type.Primitive "test.Tree"]])
+  in
+  assert_add_direct ~left:tree_annotation ~right:tree_annotation [[]];
+  assert_add_direct ~left:Type.integer ~right:tree_annotation [[]];
+  assert_add_direct ~left:Type.string ~right:tree_annotation [];
+  assert_add_direct ~left:(Type.tuple [Type.integer; Type.integer]) ~right:tree_annotation [[]];
+  assert_add_direct
+    ~left:(Type.union [Type.integer; Type.tuple [Type.integer; Type.integer]])
+    ~right:tree_annotation
+    [[]];
+  assert_add_direct
+    ~left:(Type.tuple [Type.integer; Type.tuple [Type.integer; Type.integer]])
+    ~right:tree_annotation
+    [[]];
+  (* Should fail because of the string. *)
+  assert_add_direct
+    ~left:(Type.tuple [Type.integer; Type.tuple [Type.integer; Type.string]])
+    ~right:tree_annotation
+    [];
+
+  assert_add_direct ~left:tree_annotation ~right:Type.integer [];
+  assert_add_direct ~left:tree_annotation ~right:(Type.union [Type.integer; tree_annotation]) [[]];
+  let isomorphic_tree_annotation =
+    Type.RecursiveType.create
+      ~name:"test.IsomorphicTree"
+      ~body:
+        (Type.union
+           [
+             Type.integer;
+             Type.tuple [Type.Primitive "test.IsomorphicTree"; Type.Primitive "test.IsomorphicTree"];
+           ])
+  in
+  assert_add_direct ~left:tree_annotation ~right:isomorphic_tree_annotation [[]];
+
+  let json_annotation =
+    Type.RecursiveType.create
+      ~name:"test.JSON"
+      ~body:
+        (Type.union
+           [
+             Type.integer;
+             Type.parametric
+               "typing.Mapping"
+               [Single Type.string; Single (Type.Primitive "test.JSON")];
+           ])
+  in
+  assert_add_direct ~left:json_annotation ~right:json_annotation [[]];
+  assert_add_direct ~left:Type.integer ~right:json_annotation [[]];
+  assert_add_direct ~left:Type.string ~right:json_annotation [];
+  assert_add_direct
+    ~left:(Type.dictionary ~key:Type.string ~value:Type.integer)
+    ~right:json_annotation
+    [[]];
+  assert_add_direct
+    ~left:
+      (Type.dictionary
+         ~key:Type.string
+         ~value:(Type.dictionary ~key:Type.string ~value:Type.integer))
+    ~right:json_annotation
+    [[]];
   ()
 
 
@@ -1196,6 +1279,7 @@ let () =
   "order"
   >::: [
          "add_constraint" >:: test_add_constraint;
+         "add_constraint_recursive_type" >:: test_add_constraint_recursive_type;
          "instantiate_protocol_parameters" >:: test_instantiate_protocol_parameters;
          "marks_escaped_as_escaped" >:: test_mark_escaped_as_escaped;
        ]

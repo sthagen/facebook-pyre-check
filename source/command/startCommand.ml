@@ -237,11 +237,8 @@ let computation_thread
 
 
 let request_handler_thread
-    ( ( {
-          Configuration.Server.configuration =
-            { expected_version; local_root; _ } as analysis_configuration;
-          _;
-        } as server_configuration ),
+    ( ( { Configuration.Server.configuration = { expected_version; local_root; _ }; _ } as
+      server_configuration ),
       ({ Server.State.lock; connections = raw_connections } as connections),
       scheduler,
       request_queue )
@@ -291,17 +288,13 @@ let request_handler_thread
       let request = socket |> Unix.in_channel_of_descr |> LanguageServer.Protocol.read_message in
       let origin = request >>| Jsonrpc.Request.origin ~socket |> Option.value ~default:None in
       request
-      >>| Jsonrpc.Request.format_request ~configuration:analysis_configuration
+      >>| Jsonrpc.Request.format_request
       |> function
       | request -> (
           match request, origin with
           | Some request, Some origin -> queue_request ~origin request
           | _, _ -> Log.log ~section:`Server "Failed to parse LSP message from JSON socket." )
     with
-    | Query.InvalidQuery message ->
-        Connections.write_to_json_socket
-          ~socket
-          (TypeQuery.json_socket_response (TypeQuery.Error message))
     | End_of_file
     | Yojson.Json_error _ ->
         handle_disconnect ()
@@ -565,7 +558,7 @@ let run
           in
           Daemon.close handle;
           Log.log ~section:`Server "Forked off daemon with pid %d" pid;
-          Log.info "Server starting in background";
+          Log.info "Starting the server. Please wait...";
           pid )
         else (
           acquire_lock ~server_configuration;
@@ -620,7 +613,7 @@ let run_start_command
     ()
   =
   let source_path = Option.value source_path ~default:[local_root] in
-  let local_root = Path.create_absolute local_root in
+  let local_root = SearchPath.create local_root |> SearchPath.get_root in
   Log.GlobalState.initialize ~debug ~sections;
   Statistics.GlobalState.initialize
     ~log_identifier
@@ -665,7 +658,7 @@ let run_start_command
       ~excludes
       ~extensions:(List.map ~f:Configuration.Extension.create_extension extensions)
       ~local_root
-      ~source_path:(List.map source_path ~f:Path.create_absolute)
+      ~source_path:(List.map source_path ~f:SearchPath.create_normalized)
       ~store_type_check_resolution
       ~incremental_style
       ~perform_autocompletion

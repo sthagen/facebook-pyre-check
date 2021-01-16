@@ -169,11 +169,9 @@ module Record : sig
   end
 
   module RecursiveType : sig
-    type 'annotation record = {
-      name: Identifier.t;
-      body: 'annotation;
-    }
-    [@@deriving compare, eq, sexp, show, hash]
+    type 'annotation record [@@deriving compare, eq, sexp, show, hash]
+
+    val name : 'annotation record -> Identifier.t
   end
 end
 
@@ -285,6 +283,7 @@ type class_data = {
   accessed_through_class: bool;
   class_name: Primitive.t;
 }
+[@@deriving sexp]
 
 type type_t = t [@@deriving compare, eq, sexp, show]
 
@@ -518,7 +517,23 @@ val create
 val empty_aliases : ?replace_unbound_parameters_with_any:bool -> Primitive.t -> alias option
 
 module RecursiveType : sig
+  include module type of struct
+    include Record.RecursiveType
+  end
+
+  val create : name:Primitive.t -> body:t -> t
+
   val is_recursive_alias_reference : alias_name:Primitive.t -> t -> bool
+
+  val unfold_recursive_type : t record -> t
+
+  val body_with_replaced_name : new_name:Primitive.t -> t record -> t
+
+  module Namespace : sig
+    val reset : unit -> unit
+
+    val create_fresh_name : unit -> string
+  end
 end
 
 val contains_callable : t -> bool

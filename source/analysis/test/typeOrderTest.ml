@@ -387,10 +387,12 @@ let default =
   insert order "typing.Generic";
   insert order "int";
   insert order "str";
+  insert order "bytes";
   insert order "bool";
   insert order "float";
   insert order "object";
   connect order ~predecessor:"str" ~successor:"object";
+  connect order ~predecessor:"bytes" ~successor:"object";
   connect order ~predecessor:"int" ~successor:"float";
   connect order ~predecessor:"float" ~successor:"object";
   let type_builtin = "type" in
@@ -2376,6 +2378,14 @@ let test_join context =
       (parse_annotation expected_result)
       (GlobalResolution.join resolution left right)
   in
+  let assert_join_direct ?(source = "") ~left ~right expected_annotation =
+    let resolution = resolution ~source context in
+    let parse_annotation annotation =
+      annotation |> parse_single_expression |> GlobalResolution.parse_annotation resolution
+    in
+    let left, right = parse_annotation left, parse_annotation right in
+    assert_type_equal expected_annotation (GlobalResolution.join resolution left right)
+  in
   assert_join
     ~source:
       {|
@@ -2385,9 +2395,68 @@ let test_join context =
       class GenericBase(Generic[T1, T2]): pass
       class NonGenericChild(GenericBase): pass
     |}
-    ~left:"NonGenericChild"
-    ~right:"GenericBase[int, str]"
-    "GenericBase[typing.Any, typing.Any]";
+    ~left:"test.NonGenericChild"
+    ~right:"test.GenericBase[int, str]"
+    "test.GenericBase[int, str]";
+  let recursive_alias_source =
+    {|
+      from typing import Tuple, Union
+
+      Tree = Union[int, Tuple["Tree", "Tree"]]
+      Tree2 = Union[int, Tuple["Tree2", "Tree2"]]
+      TreeWithStr = Union[str, Tuple["TreeWithStr", "TreeWithStr"]]
+      TreeWithStrAndInt = Union[str, int, Tuple["TreeWithStrAndInt", "TreeWithStrAndInt"]]
+    |}
+  in
+  assert_join ~source:recursive_alias_source ~left:"test.Tree" ~right:"test.Tree" "test.Tree";
+  assert_join ~source:recursive_alias_source ~left:"test.Tree" ~right:"int" "test.Tree";
+  assert_join ~source:recursive_alias_source ~left:"int" ~right:"test.Tree" "test.Tree";
+  assert_join
+    ~source:recursive_alias_source
+    ~left:"test.Tree"
+    ~right:"str"
+    "typing.Union[test.Tree, str]";
+
+  Type.RecursiveType.Namespace.reset ();
+  let fresh_name = Type.RecursiveType.Namespace.create_fresh_name () in
+  Type.RecursiveType.Namespace.reset ();
+  assert_join_direct
+    ~source:recursive_alias_source
+    ~left:"test.Tree"
+    ~right:"test.Tree2"
+    (Type.RecursiveType.create
+       ~name:fresh_name
+       ~body:
+         (Type.union
+            [Type.integer; Type.tuple [Type.Primitive fresh_name; Type.Primitive fresh_name]]));
+  Type.RecursiveType.Namespace.reset ();
+  assert_join_direct
+    ~source:recursive_alias_source
+    ~left:"test.Tree"
+    ~right:"test.TreeWithStrAndInt"
+    (Type.RecursiveType.create
+       ~name:fresh_name
+       ~body:
+         (Type.union
+            [
+              Type.integer;
+              Type.string;
+              Type.tuple [Type.Primitive fresh_name; Type.Primitive fresh_name];
+            ]));
+  Type.RecursiveType.Namespace.reset ();
+  assert_join_direct
+    ~source:recursive_alias_source
+    ~left:"test.Tree"
+    ~right:"test.TreeWithStr"
+    (Type.RecursiveType.create
+       ~name:fresh_name
+       ~body:
+         (Type.union
+            [
+              Type.integer;
+              Type.string;
+              Type.tuple [Type.Primitive fresh_name; Type.Primitive fresh_name];
+            ]));
   ()
 
 
@@ -2431,6 +2500,10 @@ let test_meet _ =
   (* Unions. *)
   assert_meet "typing.Union[int, str]" "typing.Union[int, bytes]" "int";
   assert_meet "typing.Union[int, str]" "typing.Union[str, int]" "typing.Union[int, str]";
+  assert_meet "typing.Union[int, str]" "float" "int";
+  assert_meet "typing.Union[int, str]" "typing.List[int]" "$bottom";
+  assert_meet "typing.Union[int, str]" "typing.Union[float, bool]" "int";
+  assert_meet "typing.Union[int, str]" "typing.Union[int, bool]" "int";
 
   assert_meet
     "typing.Union[int, str]"
@@ -2568,6 +2641,141 @@ let test_meet _ =
     "B[int, str]"
     "A[str]"
     "$bottom";
+
+  let tree_annotation =
+    Type.RecursiveType.create
+      ~name:"Tree"
+      ~body:(Type.union [Type.integer; Type.tuple [Type.Primitive "Tree"; Type.Primitive "Tree"]])
+  in
+  let tree_annotation2 =
+    Type.RecursiveType.create
+      ~name:"Tree2"
+      ~body:(Type.union [Type.integer; Type.tuple [Type.Primitive "Tree2"; Type.Primitive "Tree2"]])
+  in
+  let tree_annotation_with_string =
+    Type.RecursiveType.create
+      ~name:"Tree2"
+      ~body:
+        (Type.union
+           [Type.integer; Type.string; Type.tuple [Type.Primitive "Tree2"; Type.Primitive "Tree2"]])
+  in
+  let non_tree =
+    Type.RecursiveType.create
+      ~name:"NonTree"
+      ~body:(Type.union [Type.bool; Type.tuple [Type.Primitive "NonTree"]])
+  in
+  (* Recursive types. *)
+  assert_type_equal tree_annotation (meet default tree_annotation tree_annotation);
+  assert_type_equal tree_annotation (meet default tree_annotation tree_annotation2);
+  assert_type_equal tree_annotation (meet default tree_annotation tree_annotation_with_string);
+  assert_type_equal Type.integer (meet default tree_annotation Type.integer);
+  assert_type_equal Type.Bottom (meet default tree_annotation Type.string);
+  assert_type_equal Type.Bottom (meet default tree_annotation non_tree);
+  ()
+
+
+let test_meet_callable _ =
+  let assert_meet ?(order = default) left right expected =
+    assert_type_equal expected (meet order left right)
+  in
+  let named_int_to_int =
+    Type.Callable.create
+      ~name:(Reference.create "name")
+      ~parameters:
+        (Defined
+           [
+             Type.Callable.Parameter.Named { name = "a"; annotation = Type.integer; default = false };
+           ])
+      ~annotation:Type.integer
+      ()
+  in
+  assert_meet named_int_to_int named_int_to_int named_int_to_int;
+  let anonymous_str_to_int =
+    Type.Callable.create
+      ~parameters:
+        (Defined
+           [Type.Callable.Parameter.Named { name = "a"; annotation = Type.string; default = false }])
+      ~annotation:Type.integer
+      ()
+  in
+  let anonymous_positional_only_str_to_int =
+    Type.Callable.create
+      ~parameters:
+        (Defined
+           [
+             Type.Callable.Parameter.PositionalOnly
+               { index = 0; annotation = Type.string; default = false };
+           ])
+      ~annotation:Type.integer
+      ()
+  in
+  let anonymous_int_to_float =
+    Type.Callable.create
+      ~parameters:
+        (Defined
+           [
+             Type.Callable.Parameter.Named { name = "a"; annotation = Type.integer; default = false };
+           ])
+      ~annotation:Type.float
+      ()
+  in
+  let anonymous_union_int_str_to_int =
+    Type.Callable.create
+      ~parameters:
+        (Defined
+           [
+             Type.Callable.Parameter.Named
+               { name = "a"; annotation = Type.union [Type.integer; Type.string]; default = false };
+           ])
+      ~annotation:Type.integer
+      ()
+  in
+  assert_meet anonymous_int_to_float anonymous_str_to_int anonymous_union_int_str_to_int;
+  assert_meet anonymous_positional_only_str_to_int anonymous_str_to_int anonymous_str_to_int;
+
+  let anonymous_undefined_to_object = Type.Callable.create ~annotation:Type.object_primitive () in
+  let anonymous_undefined_to_int = Type.Callable.create ~annotation:Type.integer () in
+  let anonymous_str_named_b_to_int =
+    Type.Callable.create
+      ~parameters:
+        (Defined
+           [Type.Callable.Parameter.Named { name = "b"; annotation = Type.string; default = false }])
+      ~annotation:Type.integer
+      ()
+  in
+  assert_meet anonymous_str_to_int anonymous_str_named_b_to_int anonymous_undefined_to_int;
+  assert_meet
+    anonymous_positional_only_str_to_int
+    anonymous_undefined_to_object
+    anonymous_undefined_to_int;
+  assert_meet anonymous_str_to_int anonymous_undefined_to_object anonymous_undefined_to_int;
+  assert_meet named_int_to_int anonymous_undefined_to_object anonymous_undefined_to_int;
+  assert_meet anonymous_undefined_to_object named_int_to_int anonymous_undefined_to_int;
+  assert_meet named_int_to_int anonymous_str_to_int anonymous_union_int_str_to_int;
+  assert_meet anonymous_str_to_int named_int_to_int anonymous_union_int_str_to_int;
+
+  let overloaded_str_to_int =
+    Type.Callable.create
+      ~parameters:
+        (Defined
+           [Type.Callable.Parameter.Named { name = "a"; annotation = Type.string; default = false }])
+      ~annotation:(Type.union [Type.integer; Type.string])
+      ~overloads:
+        [
+          {
+            parameters =
+              Defined
+                [
+                  Type.Callable.Parameter.Named
+                    { name = "a"; annotation = Type.string; default = false };
+                ];
+            annotation = Type.integer;
+          };
+        ]
+      ()
+  in
+  assert_meet overloaded_str_to_int overloaded_str_to_int overloaded_str_to_int;
+  assert_meet overloaded_str_to_int anonymous_str_to_int Type.Bottom;
   ()
 
 
@@ -2579,5 +2787,6 @@ let () =
          "less_or_equal_variance" >:: test_less_or_equal_variance;
          "is_compatible_with" >:: test_is_compatible_with;
          "meet" >:: test_meet;
+         "meet_callable" >:: test_meet_callable;
        ]
   |> Test.run

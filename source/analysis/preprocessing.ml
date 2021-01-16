@@ -495,10 +495,10 @@ let qualify
     let scope, value =
       let local_alias ~qualifier ~name = { name; qualifier; is_forward_reference = false } in
       let qualify_assign { Assign.target; annotation; value; parent } =
-        let qualify_value ~scope = function
+        let qualify_value ~is_potential_alias ~scope = function
           | { Node.value = Expression.String _; _ } ->
               (* String literal assignments might be type aliases. *)
-              qualify_expression ~qualify_strings:is_top_level value ~scope
+              qualify_expression ~qualify_strings:is_potential_alias value ~scope
           | {
               Node.value =
                 Call
@@ -509,7 +509,7 @@ let qualify
                   };
               _;
             } ->
-              qualify_expression ~qualify_strings:is_top_level value ~scope
+              qualify_expression ~qualify_strings:is_potential_alias value ~scope
           | _ -> qualify_expression ~qualify_strings:false value ~scope
         in
         let target_scope, target =
@@ -629,12 +629,22 @@ let qualify
           else
             scope, target
         in
+        let qualified_annotation = annotation >>| qualify_expression ~qualify_strings:true ~scope in
+        let qualified_value =
+          let is_potential_alias =
+            match qualified_annotation >>| Expression.show with
+            | Some "typing.TypeAlias"
+            | None ->
+                is_top_level
+            | _ -> false
+          in
+          qualify_value ~scope:target_scope ~is_potential_alias value
+        in
         ( target_scope,
           {
             Assign.target;
-            annotation = annotation >>| qualify_expression ~qualify_strings:true ~scope;
-            (* Assignments can be type aliases. *)
-            value = qualify_value ~scope:target_scope value;
+            annotation = qualified_annotation;
+            value = qualified_value;
             parent = (parent >>| fun parent -> qualify_reference ~scope parent);
           } )
       in
@@ -3259,6 +3269,48 @@ let replace_union_shorthand source =
   Transform.transform () source |> Transform.source
 
 
+let inline_six_metaclass ({ Source.statements; _ } as source) =
+  let inline_six_metaclass ({ Node.location; value } as statement) =
+    let expanded_declaration =
+      let transform_class ~class_statement:({ Class.bases; decorators; _ } as class_statement) =
+        let is_six_add_metaclass_decorator { Decorator.name; _ } =
+          Identifier.equal (Node.value name |> Reference.show) "six.add_metaclass"
+        in
+        let six_add_metaclass_decorators, rest =
+          List.partition_tf decorators ~f:is_six_add_metaclass_decorator
+        in
+        match six_add_metaclass_decorators with
+        | [
+         {
+           Decorator.arguments =
+             Some
+               [
+                 {
+                   Call.Argument.name = None;
+                   value = { Node.value = Expression.Name _; _ } as name_expression;
+                 };
+               ];
+           _;
+         };
+        ] ->
+            let metaclass =
+              {
+                Call.Argument.name = Some (Node.create ~location "metaclass");
+                value = name_expression;
+              }
+            in
+            { class_statement with bases = bases @ [metaclass]; decorators = rest }
+        | _ -> class_statement
+      in
+      match value with
+      | Statement.Class class_statement -> Statement.Class (transform_class ~class_statement)
+      | _ -> value
+    in
+    { statement with Node.value = expanded_declaration }
+  in
+  { source with Source.statements = List.map ~f:inline_six_metaclass statements }
+
+
 let preprocess_phase0 source =
   source
   |> expand_relative_imports
@@ -3281,6 +3333,7 @@ let preprocess_phase1 source =
   |> expand_sqlalchemy_declarative_base
   |> expand_named_tuples
   |> expand_new_types
+  |> inline_six_metaclass
   |> populate_nesting_defines
   |> populate_captures
 

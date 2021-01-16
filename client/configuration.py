@@ -13,10 +13,12 @@ import json
 import logging
 import multiprocessing
 import os
+import re
 import shutil
 import site
 import subprocess
 import sys
+import textwrap
 from dataclasses import dataclass, field
 from logging import Logger
 from pathlib import Path
@@ -46,7 +48,6 @@ from .resources import LOG_DIRECTORY
 
 
 LOG: Logger = logging.getLogger(__name__)
-
 T = TypeVar("T")
 
 
@@ -110,7 +111,7 @@ class SearchPathElement(abc.ABC):
         raise NotImplementedError
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class SimpleSearchPathElement(SearchPathElement):
     root: str
 
@@ -131,7 +132,7 @@ class SimpleSearchPathElement(SearchPathElement):
         )
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class SubdirectorySearchPathElement(SearchPathElement):
     root: str
     subdirectory: str
@@ -155,7 +156,7 @@ class SubdirectorySearchPathElement(SearchPathElement):
         )
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class SitePackageSearchPathElement(SearchPathElement):
     site_root: str
     package_name: str
@@ -255,6 +256,13 @@ def assert_readable_directory_in_configuration(
         raise InvalidConfiguration(str(error))
 
 
+def _in_virtual_environment(override: Optional[bool] = None) -> bool:
+    if override is not None:
+        return override
+
+    return sys.prefix != sys.base_prefix
+
+
 @dataclass(frozen=True)
 class PartialConfiguration:
     autocomplete: Optional[bool] = None
@@ -274,7 +282,7 @@ class PartialConfiguration:
     number_of_workers: Optional[int] = None
     other_critical_files: Sequence[str] = field(default_factory=list)
     search_path: Sequence[SearchPathElement] = field(default_factory=list)
-    source_directories: Optional[Sequence[str]] = None
+    source_directories: Optional[Sequence[SearchPathElement]] = None
     strict: Optional[bool] = None
     taint_models_path: Sequence[str] = field(default_factory=list)
     targets: Optional[Sequence[str]] = None
@@ -291,6 +299,7 @@ class PartialConfiguration:
     def _get_extra_keys() -> Set[str]:
         return {
             "buck_mode",
+            "create_open_source_configuration",
             "differential",
             "oncall",
             "saved_state",
@@ -304,11 +313,9 @@ class PartialConfiguration:
         arguments: command_arguments.CommandArguments,
     ) -> "PartialConfiguration":
         strict: Optional[bool] = True if arguments.strict else None
-        source_directories: Optional[List[str]] = (
-            arguments.source_directories
-            if len(arguments.source_directories) > 0
-            else None
-        )
+        source_directories = [
+            SimpleSearchPathElement(element) for element in arguments.source_directories
+        ] or None
         targets: Optional[List[str]] = (
             arguments.targets if len(arguments.targets) > 0 else None
         )
@@ -422,6 +429,20 @@ class PartialConfiguration:
                     search_path_json, site_roots=_get_site_roots()
                 )
 
+            source_directories_json = ensure_option_type(
+                configuration_json, "source_directories", list
+            )
+            if isinstance(source_directories_json, list):
+                source_directories = [
+                    element
+                    for json in source_directories_json
+                    for element in create_search_paths(
+                        json, site_roots=_get_site_roots()
+                    )
+                ]
+            else:
+                source_directories = None
+
             partial_configuration = PartialConfiguration(
                 autocomplete=ensure_option_type(
                     configuration_json, "autocomplete", bool
@@ -461,9 +482,7 @@ class PartialConfiguration:
                     configuration_json, "critical_files"
                 ),
                 search_path=search_path,
-                source_directories=ensure_optional_string_list(
-                    configuration_json, "source_directories"
-                ),
+                source_directories=source_directories,
                 strict=ensure_option_type(configuration_json, "strict", bool),
                 taint_models_path=ensure_string_list(
                     configuration_json, "taint_models_path", allow_single_string=True
@@ -523,7 +542,7 @@ class PartialConfiguration:
         source_directories = self.source_directories
         if source_directories is not None:
             source_directories = [
-                expand_relative_path(root, path) for path in source_directories
+                path.expand_relative_root(root) for path in source_directories
             ]
         typeshed = self.typeshed
         if typeshed is not None:
@@ -664,7 +683,7 @@ class Configuration:
     other_critical_files: Sequence[str] = field(default_factory=list)
     relative_local_root: Optional[str] = None
     search_path: Sequence[SearchPathElement] = field(default_factory=list)
-    source_directories: Sequence[str] = field(default_factory=list)
+    source_directories: Sequence[SearchPathElement] = field(default_factory=list)
     strict: bool = False
     taint_models_path: Sequence[str] = field(default_factory=list)
     targets: Sequence[str] = field(default_factory=list)
@@ -678,7 +697,13 @@ class Configuration:
         project_root: Path,
         relative_local_root: Optional[str],
         partial_configuration: PartialConfiguration,
+        in_virtual_environment: Optional[bool] = None,
     ) -> "Configuration":
+        search_path = partial_configuration.search_path
+        if len(search_path) == 0 and _in_virtual_environment(in_virtual_environment):
+            LOG.warning("Using virtual environment site-packages in search path...")
+            search_path = [SimpleSearchPathElement(root) for root in _get_site_roots()]
+
         return Configuration(
             project_root=str(project_root),
             dot_pyre_directory=_get_optional_value(
@@ -703,8 +728,7 @@ class Configuration:
             other_critical_files=partial_configuration.other_critical_files,
             relative_local_root=relative_local_root,
             search_path=[
-                path.expand_global_root(str(project_root))
-                for path in partial_configuration.search_path
+                path.expand_global_root(str(project_root)) for path in search_path
             ],
             source_directories=_get_optional_value(
                 partial_configuration.source_directories, default=[]
@@ -734,14 +758,11 @@ class Configuration:
             return None
         return os.path.join(self.project_root, self.relative_local_root)
 
+    def get_existent_source_directories(self) -> List[SearchPathElement]:
+        return self._get_existent_paths(self.source_directories)
+
     def get_existent_search_paths(self) -> List[SearchPathElement]:
-        existent_paths = []
-        for search_path_element in self.search_path:
-            search_path = search_path_element.path()
-            if os.path.exists(search_path):
-                existent_paths.append(search_path_element)
-            else:
-                LOG.debug(f"Filtering out nonexistent search path: {search_path}")
+        existent_paths = self._get_existent_paths(self.search_path)
 
         typeshed_root = self.get_typeshed_respecting_override()
         typeshed_paths = (
@@ -755,7 +776,22 @@ class Configuration:
             ]
         )
 
+        # pyre-ignore: Unsupported operand [58]: `+` is not supported for
+        # operand types `List[SearchPathElement]` and `Union[List[typing.Any],
+        # List[SimpleSearchPathElement]]`
         return existent_paths + typeshed_paths
+
+    def _get_existent_paths(
+        self, paths: Sequence[SearchPathElement]
+    ) -> List[SearchPathElement]:
+        existent_paths = []
+        for search_path_element in paths:
+            search_path = search_path_element.path()
+            if os.path.exists(search_path):
+                existent_paths.append(search_path_element)
+            else:
+                LOG.debug(f"Filtering out nonexistent search path: {search_path}")
+        return existent_paths
 
     def get_existent_ignore_infer_paths(self) -> List[str]:
         existent_paths = []
@@ -970,3 +1006,28 @@ def check_nested_local_configuration(configuration: Configuration) -> None:
             )
             raise InvalidConfiguration(error_message)
         current_directory = nesting_local_root.parent
+
+
+def check_open_source_version(configuration: Configuration) -> None:
+    """
+    Check if version specified in configuration matches running version and warn
+    if it does not.
+    """
+    expected_version = configuration.version_hash
+    if expected_version is None or not re.match(r"\d+\.\d+\.\d+", expected_version):
+        return
+
+    try:
+        # pyre-ignore[21]: dynamic import
+        from pyre_check import __version__ as actual_version
+
+        if expected_version != actual_version:
+            LOG.warning(
+                textwrap.dedent(
+                    f"""\
+                    Your running version does not match the configured version for this
+                    project (running {actual_version}, expected {expected_version})."""
+                )
+            )
+    except ImportError:
+        pass

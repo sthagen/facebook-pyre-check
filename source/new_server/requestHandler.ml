@@ -127,4 +127,12 @@ let process_request
                   Subscription.send ~response subscription)
               |> Lwt.join
               >>= fun () -> Lwt.return (state, Response.Ok) ) )
+  | Request.Query query_text ->
+      Lwt.return
+        ( state,
+          Response.Query
+            (Server.Query.parse_and_process_request
+               ~environment:type_environment
+               ~configuration
+               query_text) )
   | Request.Stop -> Stop.stop_waiting_server ()

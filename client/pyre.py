@@ -42,10 +42,9 @@ def _log_statistics(
     client_exception_message: str,
     error_message: Optional[str],
     exit_code: int,
-    should_log: bool = True,
 ) -> None:
     configuration = command.configuration
-    if should_log and configuration and configuration.logger:
+    if configuration and configuration.logger:
         statistics_module.log_with_configuration(
             category=statistics_module.LoggerCategory.USAGE,
             configuration=configuration,
@@ -58,6 +57,7 @@ def _log_statistics(
                 "root": configuration.relative_local_root,
                 "cwd": os.getcwd(),
                 "client_version": __version__,
+                "command_line": " ".join(sys.argv),
                 "command": command.NAME,
                 "client_exception": client_exception_message,
                 "error_message": error_message,
@@ -105,12 +105,12 @@ def run_pyre_command(
     start_time = time.time()
 
     client_exception_message = ""
-    should_log_statistics = True
     # Having this as a fails-by-default helps flag unexpected exit
     # from exception flows.
     exit_code = ExitCode.FAILURE
     try:
         configuration_module.check_nested_local_configuration(configuration)
+        configuration_module.check_open_source_version(configuration)
         log.start_logging_to_directory(noninteractive, configuration.log_directory)
         LOG.debug(f"Running cli command `{' '.join(sys.argv)}`...")
         exit_code = command.run().exit_code()
@@ -119,10 +119,10 @@ def run_pyre_command(
         exit_code = ExitCode.FAILURE
         if isinstance(error, buck.BuckException):
             exit_code = ExitCode.BUCK_ERROR
-    except (
-        commands.ClientException,
-        configuration_module.InvalidConfiguration,
-    ) as error:
+    except (configuration_module.InvalidConfiguration) as error:
+        client_exception_message = str(error)
+        exit_code = ExitCode.CONFIGURATION_ERROR
+    except commands.ClientException as error:
         client_exception_message = str(error)
         exit_code = ExitCode.FAILURE
     except Exception:
@@ -144,7 +144,6 @@ def run_pyre_command(
             client_exception_message,
             error_message,
             exit_code,
-            should_log_statistics,
         )
     return exit_code
 
@@ -851,16 +850,20 @@ def query(context: click.Context, query: str) -> int:
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
-    return run_pyre_command(
-        commands.Query(
-            command_argument,
-            original_directory=os.getcwd(),
-            configuration=configuration,
-            query=query,
-        ),
-        configuration,
-        command_argument.noninteractive,
-    )
+
+    if command_argument.use_command_v2:
+        return v2.query.run(configuration, query)
+    else:
+        return run_pyre_command(
+            commands.Query(
+                command_argument,
+                original_directory=os.getcwd(),
+                configuration=configuration,
+                query=query,
+            ),
+            configuration,
+            command_argument.noninteractive,
+        )
 
 
 @pyre.command()
@@ -1130,6 +1133,29 @@ def stop(context: click.Context) -> int:
     else:
         return run_pyre_command(
             commands.Stop(
+                command_argument,
+                original_directory=os.getcwd(),
+                configuration=configuration,
+            ),
+            configuration,
+            command_argument.noninteractive,
+        )
+
+
+@pyre.command()
+@click.pass_context
+def validate_models(context: click.Context) -> int:
+    """
+    Validate the taint models for the given project by querying the Pyre server.
+    """
+    command_argument: command_arguments.CommandArguments = context.obj["arguments"]
+    configuration = _create_configuration_with_retry(command_argument, Path("."))
+
+    if command_argument.use_command_v2:
+        return v2.validate_models.run(configuration, output=command_argument.output)
+    else:
+        return run_pyre_command(
+            commands.ValidateModels(
                 command_argument,
                 original_directory=os.getcwd(),
                 configuration=configuration,

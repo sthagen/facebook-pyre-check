@@ -203,7 +203,7 @@ let extract_alias unannotated_global_environment name ~dependency =
             else
               None
         | Name (Name.Identifier "None"), _ -> None
-        | ( Call _,
+        | ( (Call _ | Name _ | String _),
             Some
               {
                 Node.value =
@@ -216,21 +216,7 @@ let extract_alias unannotated_global_environment name ~dependency =
                       });
                 _;
               } )
-        | ( Name _,
-            Some
-              {
-                Node.value =
-                  Name
-                    (Name.Attribute
-                      {
-                        base = { Node.value = Name (Name.Identifier "typing"); _ };
-                        attribute = "TypeAlias";
-                        _;
-                      });
-                _;
-              } )
-        | Call _, None
-        | Name _, None -> (
+        | (Call _ | Name _), None -> (
             match Type.Variable.parse_declaration (delocalize value) ~target:name with
             | Some variable -> Some (VariableAlias variable)
             | _ ->
@@ -323,9 +309,15 @@ let produce_alias empty_stub_environment global_name ~dependency =
            && Type.RecursiveType.is_recursive_alias_reference
                 ~alias_name:(Reference.show global_name)
                 annotation ->
-        Some
-          (Type.TypeAlias
-             (Type.RecursiveType { name = Reference.show global_name; body = annotation }))
+        let alias_name = Reference.show global_name in
+        let is_directly_recursive =
+          Type.resolve_class annotation
+          >>| List.exists ~f:(fun { Type.class_name; _ } -> Identifier.equal class_name alias_name)
+          |> Option.value ~default:true
+        in
+        let is_generic = Type.contains_variable annotation in
+        Type.TypeAlias (Type.RecursiveType.create ~name:alias_name ~body:annotation)
+        |> Option.some_if ((not is_directly_recursive) && not is_generic)
     | _ -> resolved_alias
 
 

@@ -60,12 +60,13 @@ module Request = struct
     | _ -> Some (Protocol.Request.JSONSocket socket)
 
 
-  let format_request ~configuration request =
+  let format_request request =
     match request_method request with
     | "typeQuery" -> (
         let query = query_parameter request in
-        try Query.parse_query query ~configuration with
-        | Query.InvalidQuery reason -> Protocol.Request.UnparsableQuery { query; reason } )
+        match Query.parse_request query with
+        | Result.Ok request -> Protocol.Request.TypeQueryRequest request
+        | Result.Error reason -> Protocol.Request.UnparsableQuery { query; reason } )
     | "stop" -> Protocol.Request.StopRequest
     | _ ->
         request

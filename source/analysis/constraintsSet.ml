@@ -447,7 +447,23 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         impossible
     | Type.Bottom, _ -> [constraints]
     | _, Type.NoneType -> impossible
-    | Type.Callable _, Type.Primitive protocol when is_protocol right ~protocol_assumptions ->
+    | _, Type.RecursiveType recursive_type ->
+        if
+          [%compare.equal: Type.Parameter.t list option]
+            (instantiate_recursive_type_parameters order ~candidate:left ~recursive_type)
+            (Some [])
+        then
+          [constraints]
+        else
+          impossible
+    | Type.RecursiveType recursive_type, _ ->
+        solve_less_or_equal
+          order
+          ~constraints
+          ~left:(Type.RecursiveType.unfold_recursive_type recursive_type)
+          ~right
+    | (Type.Callable _ | Type.NoneType), Type.Primitive protocol
+      when is_protocol right ~protocol_assumptions ->
         if
           [%compare.equal: Type.Parameter.t list option]
             (instantiate_protocol_parameters order ~protocol ~candidate:left)
@@ -456,7 +472,8 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           [constraints]
         else
           impossible
-    | Type.Callable _, Type.Parametric { name; _ } when is_protocol right ~protocol_assumptions ->
+    | (Type.Callable _ | Type.NoneType), Type.Parametric { name; _ }
+      when is_protocol right ~protocol_assumptions ->
         instantiate_protocol_parameters order ~protocol:name ~candidate:left
         >>| Type.parametric name
         >>| (fun left -> solve_less_or_equal order ~constraints ~left ~right)
@@ -684,8 +701,6 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           ~right
     | Type.Primitive name, Type.Tuple _ ->
         if Type.Primitive.equal name "tuple" then [constraints] else impossible
-    | Type.RecursiveType _, _
-    | _, Type.RecursiveType _
     | Type.Tuple _, _
     | _, Type.Tuple _ ->
         impossible
@@ -1112,6 +1127,27 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
     in
     instantiate_protocol_parameters_with_solve
       ~solve_candidate_less_or_equal_protocol:solve_all_protocol_attributes_less_or_equal
+
+
+  and instantiate_recursive_type_parameters order ~candidate ~recursive_type
+      : Type.Parameter.t list option
+    =
+    (* TODO(T44784951): Allow passing in the generic parameters for generic recursive types. *)
+    let solve_recursive_type_less_or_equal order ~candidate ~protocol_annotation:_ =
+      let expanded_body = Type.RecursiveType.unfold_recursive_type recursive_type in
+      solve_less_or_equal
+        order
+        ~left:candidate
+        ~right:expanded_body
+        ~constraints:TypeConstraints.empty
+      |> List.filter_map ~f:(OrderedConstraints.solve ~order)
+      |> List.hd
+    in
+    instantiate_protocol_parameters_with_solve
+      order
+      ~solve_candidate_less_or_equal_protocol:solve_recursive_type_less_or_equal
+      ~candidate
+      ~protocol:(Type.RecursiveType.name recursive_type)
 
 
   let add existing_constraints ~new_constraint ~order =

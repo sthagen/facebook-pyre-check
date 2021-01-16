@@ -81,7 +81,6 @@ class Subscriber(object):
 
     @property
     @functools.lru_cache(1)
-    # pyre-fixme[10]: Name `pywatchman` is used but not defined.
     def _watchman_client(self) -> "pywatchman.client":  # noqa
         try:
             import pywatchman  # noqa
@@ -158,8 +157,7 @@ class Subscriber(object):
                     else:
                         self._handle_response(response)
         finally:
-            LOG.info("Cleaning up lock and pid files before exiting.")
-            remove_if_exists(lock_path)
+            LOG.info("Cleaning up monitor files before exiting...")
             self.cleanup()
 
     def _sleep_until_monitor_is_up(self) -> None:

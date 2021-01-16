@@ -154,19 +154,6 @@ The command `dump_call_graph()` returns a comprehensive JSON mapping each call t
 
 The command `dump_class_hierarchy()` returns the entire class hierarchy as Pyre understands it; elides type variables.
 
-### Join
-
-The command `join` uses Pyre's type engine to find a common superclass for two types.
-
-```bash
-$ pyre query "join(typing.Iterable[int], typing.Iterable[str])"
-{
-    "response": {
-        "type": "typing.Iterable[typing.Union[int, str]]"
-    }
-}
-```
-
 ### Less or equal
 
 The command `less_or_equal` returns whether the type on the left can be used when the type on the right is expected.
@@ -188,67 +175,6 @@ $ pyre query "less_or_equal(a.C, a.D)"
 {"response":{"boolean":true}}
 ```
 
-### Meet
-
-The command `meet` uses Pyre's type engine to find a common subclass for two types.
-
-```bash
-$ pyre query "meet(typing.Iterable[int], typing.Iterable[typing.Union[int, str]])"
-{
-    "response": {
-        "type": "typing.Iterable[int]"
-    }
-}
-```
-
-### Methods
-
-The command `methods` returns the list of methods for a type, excluding inherited ones.
-
-```python
-# a.py
-class C:
-  def f(self, x: int) -> str:
-    return ""
-```
-
-```bash
-$ pyre query "methods(a.C)"
-{
-    "response": {
-        "methods": [
-            {
-                "name": "foo",
-                "parameters": [
-                    "self",
-                    "int"
-                ],
-                "return_annotation": "str"
-            }
-        ]
-    }
-}
-```
-
-### Normalize type
-
-The command `normalize_type` resolves type aliases for a given type.
-
-```python
-# a.py
-A = typing.Union[int, str]
-B = typing.Union[A, typing.List[str]]
-```
-
-```bash
-$ pyre query "normalize_type(a.B)"
-{
-    "response": {
-        "type": "typing.Union[typing.List[int], int, str]"
-    }
-}
-```
-
 ### Path of module
 
 The command `path_of_module` returns the full absolute path for a given module.
@@ -259,84 +185,6 @@ $ pyre query "path_of_module(module_name)"
     "response": {
         "path": "/Users/user/my_project/module_name.py"
     }
-}
-```
-
-### Qualified names
-
-The command `qualified_names` returns a map from each given path to a list of all qualified names contained in that path. It can be called on multiple files at once with `qualified_names('path1', 'path2', ...)`.
-
-```python
-# a.py
-class A: pass
-
-# b.py
-from .a import A as RenamedA
-
-a = RenamedA
-```
-```bash
-$ pyre query "qualified_names(path='b.py')"
-{
-    "response": [
-        {
-            "path": "b.py",
-            "qualified_names": [
-                {
-                    "location": {
-                        "start": {
-                            "line": 1,
-                            "column": 15
-                        },
-                        "stop": {
-                            "line": 1,
-                            "column": 16
-                        }
-                    },
-                    "qualified_name": "a.A"
-                },
-                {
-                    "location": {
-                        "start": {
-                            "line": 1,
-                            "column": 20
-                        },
-                        "stop": {
-                            "line": 1,
-                            "column": 28
-                        }
-                    },
-                    "qualified_name": "a.A"
-                },
-                {
-                    "location": {
-                        "start": {
-                            "line": 3,
-                            "column": 0
-                        },
-                        "stop": {
-                            "line": 3,
-                            "column": 1
-                        }
-                    },
-                    "qualified_name": "b.a"
-                },
-                {
-                    "location": {
-                        "start": {
-                            "line": 3,
-                            "column": 4
-                        },
-                        "stop": {
-                            "line": 3,
-                            "column": 12
-                        }
-                    },
-                    "qualified_name": "a.A"
-                }
-            ]
-        }
-    ]
 }
 ```
 
@@ -355,56 +203,42 @@ $ pyre stop
 $ pyre --load-initial-state-from my_saved_state start
 ```
 
-### Signature
-
-The command `signature` returns the type signature of a given function.
-
-
-```python
-# a.py
-def foo(x: int) -> str:
-  ...
-```
-
-```bash
-$ pyre query "signature(a.foo)"
-{
-    "response": {
-        "signature": [
-            {
-                "parameters": [
-                    {
-                        "annotation": "int",
-                        "parameter_name": "x"
-                    }
-                ],
-                "return_type": "str"
-            }
-        ]
-    }
-}
-```
-
 ### Superclasses
 
-The command `superclasses` returns the superclasses of a given class name.
+The command `superclasses` returns the superclasses of given class names.
 
 ```bash
-$ pyre query "superclasses(int)"
+$ pyre query "superclasses(int, str)"
 {
-    "response": {
-        "superclasses": [
-            "float",
-            "complex",
-            "numbers.Integral",
-            "numbers.Rational",
-            "numbers.Real",
-            "numbers.Complex",
-            "numbers.Number",
-            "typing.SupportsFloat",
-            "typing.Any"
-        ]
-    }
+    "response": [
+        {
+            "int": [
+                "complex",
+                "float",
+                "numbers.Complex",
+                "numbers.Integral",
+                "numbers.Number",
+                "numbers.Rational",
+                "numbers.Real",
+                "object",
+                "typing.Generic",
+                "typing.Protocol",
+                "typing.SupportsFloat"
+            ]
+        },
+        {
+            "str": [
+                "object",
+                "typing.Collection",
+                "typing.Container",
+                "typing.Generic",
+                "typing.Iterable",
+                "typing.Protocol",
+                "typing.Reversible",
+                "typing.Sequence"
+            ]
+        }
+    ]
 }
 ```
 
@@ -421,35 +255,6 @@ $ pyre query "type([1 + 2, ''])"
 }
 ```
 
-
-### Type at position
-
-The command `type_at_position` returns the type of the symbol at the provided position.
-
-```python
-# a.py
-variable = 2
-```
-
-```bash
-$ pyre query "type_at_position('a.py', 1, 2)"
-{
-    "response": {
-        "annotation": "int",
-        "location": {
-            "path": "a.py",
-            "start": {
-                "column": 0,
-                "line": 1
-            },
-            "stop": {
-                "column": 8,
-                "line": 1
-            }
-        }
-    }
-}
-```
 
 ### Types in file
 

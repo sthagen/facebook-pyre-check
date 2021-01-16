@@ -723,6 +723,38 @@ let test_qualify _ =
         $local_qualifier?foo$x = 'arg'
         return {'arg': $local_qualifier?foo$x}
     |};
+  (* Don't qualify a string that is assigned to an explicitly-typed variable. *)
+  assert_qualify {|
+      x: str = "x"
+    |} {|
+      $local_qualifier$x: str = "x"
+    |};
+  (* We qualify global string assignments where the string matches an in-scope variable because
+     these are potential aliases. *)
+  assert_qualify
+    {|
+      x = "x"
+      y = 1
+      string_containing_y = "y"
+    |}
+    {|
+      $local_qualifier$x = "$local_qualifier$x"
+      $local_qualifier$y = 1
+      $local_qualifier$string_containing_y = "$local_qualifier$y"
+    |};
+  assert_qualify
+    {|
+      from typing import TypeAlias
+
+      class C: ...
+      my_alias: TypeAlias = "C"
+    |}
+    {|
+      from typing import TypeAlias
+
+      class qualifier.C: ...
+      $local_qualifier$my_alias: typing.TypeAlias = "qualifier.C"
+    |};
   (* Don't qualify the TypeVar name argument. *)
   assert_qualify
     {|
@@ -1643,12 +1675,12 @@ let test_qualify _ =
   (* Recursive alias definition. *)
   assert_qualify
     {|
-      from typing import List, Tuple, Union
+      from typing import Tuple, Union
 
       Tree = Union[int, Tuple["Tree", "Tree"]]
     |}
     {|
-      from typing import List, Tuple, Union
+      from typing import Tuple, Union
 
       $local_qualifier$Tree = typing.Union[int, \
         typing.Tuple["$local_qualifier$Tree", "$local_qualifier$Tree"]]
@@ -4994,6 +5026,91 @@ let test_union_shorthand _ =
   ()
 
 
+let test_six_metaclass_decorator _ =
+  let assert_replace ?(handle = "test.py") source expected =
+    let expected = parse ~handle ~coerce_special_methods:true expected |> Preprocessing.qualify in
+    let actual =
+      parse ~handle source |> Preprocessing.qualify |> Preprocessing.inline_six_metaclass
+    in
+    assert_source_equal ~location_insensitive:true expected actual
+  in
+  assert_replace
+    {|
+    import six
+
+    class FooMetaclass(type): ...
+    class Base1: ...
+    class Base2: ...
+
+    @six.add_metaclass(FooMetaclass)
+    class Make(Base1, Base2):
+      existent: int = 1
+  |}
+    {|
+    import six
+
+    class FooMetaclass(type): ...
+    class Base1: ...
+    class Base2: ...
+
+    class Make(Base1, Base2, metaclass=FooMetaclass):
+      existent: int = 1
+  |};
+  (* Leave class unchanged if there are too many arguments to add_metaclass. *)
+  assert_replace
+    {|
+    import six
+
+    class FooMetaclass(type): ...
+    class FooMetaclass2(type): ...
+    class Base1: ...
+    class Base2: ...
+
+    @six.add_metaclass(FooMetaclass, FooMetaclass2)
+    class Make(Base1, Base2):
+      existent: int = 1
+  |}
+    {|
+    import six
+
+    class FooMetaclass(type): ...
+    class FooMetaclass2(type): ...
+    class Base1: ...
+    class Base2: ...
+
+    @six.add_metaclass(FooMetaclass, FooMetaclass2)
+    class Make(Base1, Base2):
+      existent: int = 1
+  |};
+  (* Leave class unchanged if the argument is not a class. *)
+  assert_replace
+    {|
+    import six
+
+    class Base1: ...
+    class Base2: ...
+
+    def foo() -> object: ...
+
+    @six.add_metaclass(foo())
+    class Make(Base1, Base2):
+      existent: int = 1
+  |}
+    {|
+    import six
+
+    class Base1: ...
+    class Base2: ...
+
+    def foo() -> object: ...
+
+    @six.add_metaclass(foo())
+    class Make(Base1, Base2):
+      existent: int = 1
+  |};
+  ()
+
+
 let () =
   "preprocessing"
   >::: [
@@ -5018,5 +5135,6 @@ let () =
          "captures" >:: test_populate_captures;
          "unbound_names" >:: test_populate_unbound_names;
          "union_shorthand" >:: test_union_shorthand;
+         "six_metaclass_decorator" >:: test_six_metaclass_decorator;
        ]
   |> Test.run

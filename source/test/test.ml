@@ -1089,6 +1089,11 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
 
             def _asdict(self) -> collections.OrderedDict[str, Any]: ...
             def _replace(self: _T, **kwargs: Any) -> _T: ...
+
+        class ParamSpec(list):
+            args = object()
+            kwargs = object()
+            def __init__(self, *args: object, **kwargs: object) -> None: ...
       |}
     );
     "asyncio/coroutines.pyi", {|
@@ -1237,7 +1242,7 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         |};
     ( "typing_extensions.pyi",
       {|
-        from typing import Final as Final
+        from typing import Final as Final, ParamSpec as ParamSpec
         class _SpecialForm:
             def __getitem__(self, typeargs: Any) -> Any: ...
         Literal: _SpecialForm = ...
@@ -2630,11 +2635,13 @@ module ScratchProject = struct
     (* We assume that there's only one external source directory that acts as the local root as
        well. *)
     let external_root = bracket_tmpdir context |> Path.create_absolute in
+    let log_directory = bracket_tmpdir context in
     let configuration =
       Configuration.Analysis.create
         ~local_root
-        ~source_path:[local_root]
+        ~source_path:[SearchPath.Root local_root]
         ~search_path:[SearchPath.Root external_root]
+        ~log_directory
         ~filter_directories:[local_root]
         ~ignore_all_errors:[external_root]
         ~incremental_style
@@ -2672,7 +2679,7 @@ module ScratchProject = struct
                 "Scratch projects should have the external root at the start of their search path."
         else
           match source_path with
-          | root :: _ -> root
+          | SearchPath.Root root :: _ -> root
           | _ -> failwith "Scratch projects should have only one source path."
       in
       Path.create_relative ~root ~relative

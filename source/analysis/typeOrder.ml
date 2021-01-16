@@ -153,6 +153,24 @@ module OrderImplementation = struct
             union
         | Type.Annotated left, _ -> Type.annotated (join order left right)
         | _, Type.Annotated right -> Type.annotated (join order left right)
+        | Type.RecursiveType left_recursive_type, Type.RecursiveType right_recursive_type ->
+            let new_name = Type.RecursiveType.Namespace.create_fresh_name () in
+            (* Based on https://cstheory.stackexchange.com/a/38415. *)
+            Type.RecursiveType.create
+              ~name:new_name
+              ~body:
+                (join
+                   order
+                   (Type.RecursiveType.body_with_replaced_name ~new_name left_recursive_type)
+                   (Type.RecursiveType.body_with_replaced_name ~new_name right_recursive_type))
+        | Type.RecursiveType _, _
+        | _, Type.RecursiveType _ ->
+            if always_less_or_equal order ~left ~right then
+              right
+            else if always_less_or_equal order ~left:right ~right:left then
+              left
+            else
+              Type.union [left; right]
         (* n: A_n = B_n -> Union[A_i] <= Union[B_i]. *)
         | Type.Union left, Type.Union right -> Type.union (left @ right)
         | (Type.Union elements as union), other
@@ -281,9 +299,6 @@ module OrderImplementation = struct
             (* Handle cases like `Tuple[int, int]` <= `Iterator[int]`. *)
             let parameter = List.fold ~init:Type.Bottom ~f:(join order) parameters in
             join order (Type.parametric "tuple" [Single parameter]) annotation
-        | Type.RecursiveType _, _
-        | _, Type.RecursiveType _ ->
-            Type.Top
         | Type.Tuple _, _
         | _, Type.Tuple _ ->
             Type.union [left; right]
@@ -340,6 +355,64 @@ module OrderImplementation = struct
             | None -> union )
 
 
+    and meet_callable_implementations
+        order
+        { Type.Callable.parameters = left_parameters; annotation = left_annotation; _ }
+        { Type.Callable.parameters = right_parameters; annotation = right_annotation; _ }
+      =
+      let open Callable in
+      let parameters =
+        match left_parameters, right_parameters with
+        | Undefined, Undefined -> Some Undefined
+        | Defined left, Defined right -> (
+            let meet_of_parameters left right =
+              if Type.Callable.Parameter.names_compatible left right then
+                match left, right with
+                | Parameter.PositionalOnly left, Parameter.PositionalOnly right
+                  when Bool.equal left.default right.default ->
+                    Some
+                      (Parameter.PositionalOnly
+                         { left with annotation = join order left.annotation right.annotation })
+                | Parameter.PositionalOnly anonymous, Parameter.Named named
+                | Parameter.Named named, Parameter.PositionalOnly anonymous
+                  when Bool.equal named.default anonymous.default ->
+                    Some
+                      (Parameter.Named
+                         {
+                           named with
+                           annotation = join order named.annotation anonymous.annotation;
+                         })
+                | Parameter.Named left, Parameter.Named right
+                  when Bool.equal left.default right.default ->
+                    Some
+                      (Parameter.Named
+                         { left with annotation = join order left.annotation right.annotation })
+                | Parameter.Variable (Concrete left), Parameter.Variable (Concrete right) ->
+                    Some (Parameter.Variable (Concrete (join order left right)))
+                | Parameter.Keywords left, Parameter.Keywords right ->
+                    Some (Parameter.Keywords (join order left right))
+                | _ -> None
+              else
+                None
+            in
+            let add_meet_of_parameters sofar left right =
+              sofar
+              >>= fun sofar ->
+              meet_of_parameters left right
+              >>| fun meet_of_parameters -> meet_of_parameters :: sofar
+            in
+            match List.fold2 ~init:(Some []) ~f:add_meet_of_parameters left right with
+            | Ok parameters -> parameters >>| fun parameters -> Defined (List.rev parameters)
+            | Unequal_lengths -> None )
+        | Undefined, Defined _
+        | Defined _, Undefined ->
+            Some Undefined
+        | _ -> None
+      in
+      parameters
+      >>| fun parameters -> { annotation = meet order left_annotation right_annotation; parameters }
+
+
     and meet ({ is_protocol; assumptions = { protocol_assumptions; _ }; _ } as order) left right =
       if Type.equal left right then
         left
@@ -367,15 +440,12 @@ module OrderImplementation = struct
               variable
             else
               Type.Bottom
-        | Type.Union left, Type.Union right ->
-            let union = Set.inter (Type.Set.of_list left) (Type.Set.of_list right) |> Set.to_list in
-            Type.union union
         | (Type.Union elements as union), other
         | other, (Type.Union elements as union) ->
             if always_less_or_equal order ~left:other ~right:union then
               other
             else
-              List.map elements ~f:(meet order other) |> List.fold ~f:(meet order) ~init:Type.Top
+              List.map elements ~f:(meet order other) |> List.fold ~f:(join order) ~init:Type.Bottom
         | Type.Parametric _, Type.Parametric _
         | Type.Primitive _, Type.Primitive _ ->
             if always_less_or_equal order ~left ~right then
@@ -417,21 +487,42 @@ module OrderImplementation = struct
               Type.Bottom
         | Type.RecursiveType _, _
         | _, Type.RecursiveType _ ->
-            Type.Bottom
-        | ( Type.Callable ({ Callable.kind = Callable.Anonymous; _ } as left),
-            Type.Callable ({ Callable.kind = Callable.Anonymous; _ } as right) ) ->
-            join_implementations
-              ~parameter_join:join
-              ~return_join:meet
-              order
-              left.Callable.implementation
-              right.Callable.implementation
-            >>| (fun implementation -> Type.Callable { left with Callable.implementation })
-            |> Option.value ~default:Type.Bottom
+            if always_less_or_equal order ~left ~right then
+              left
+            else if always_less_or_equal order ~left:right ~right:left then
+              right
+            else
+              Type.Bottom
         | ( (Type.Callable { Callable.kind = Callable.Named left; _ } as callable),
             Type.Callable { Callable.kind = Callable.Named right; _ } )
           when Reference.equal left right ->
             callable
+        | ( Type.Callable
+              {
+                overloads = [];
+                kind = left_kind;
+                implementation = { annotation = left_annotation; _ } as left_implementation;
+              },
+            Type.Callable
+              {
+                overloads = [];
+                kind = right_kind;
+                implementation = { annotation = right_annotation; _ } as right_implementation;
+              } ) ->
+            let kind =
+              if Type.Callable.equal_kind left_kind right_kind then
+                left_kind
+              else
+                Type.Callable.Anonymous
+            in
+            meet_callable_implementations order left_implementation right_implementation
+            >>| (fun implementation ->
+                  Type.Callable { Callable.kind; implementation; overloads = [] })
+            |> Option.value
+                 ~default:
+                   (Type.Callable.create
+                      ~annotation:(meet order left_annotation right_annotation)
+                      ())
         | Type.Callable _, _
         | _, Type.Callable _ ->
             Bottom
