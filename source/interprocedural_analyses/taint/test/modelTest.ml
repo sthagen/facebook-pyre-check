@@ -162,6 +162,11 @@ let test_source_models context =
     ~expect:[outcome ~kind:`Function ~returns:[Sources.NamedSource "Test"] "test.f"]
     ();
   assert_model
+    ~source:"def f(x: int): ..."
+    ~model_source:"def test.f() -> TaintSource[Test, ViaValueOf[x]]: ..."
+    ~expect:[outcome ~kind:`Function ~returns:[Sources.NamedSource "Test"] "test.f"]
+    ();
+  assert_model
     ~source:
       {|
     class C:
@@ -1594,9 +1599,8 @@ let test_invalid_models context =
     |}
     ~expect:
       {|Invalid model for `test.foo`: `ModelParser.T.Source {source = (Sources.T.NamedSource "A");
-  breadcrumbs =
-  [(Features.Simple.Breadcrumb (Features.Breadcrumb.SimpleVia "featureA"))];
-  path = []; leaf_name_provided = false}` is not a supported taint annotation for sanitizers.|}
+  breadcrumbs = [(SimpleVia "featureA")]; path = [];
+  leaf_name_provided = false}` is not a supported taint annotation for sanitizers.|}
     ();
   assert_invalid_model
     ~model_source:
@@ -1610,7 +1614,28 @@ let test_invalid_models context =
     ~expect:
       {|The model query arguments at `{ Expression.Call.Argument.name = (Some fnid); value = "functions" }, { Expression.Call.Argument.name = (Some where); value = name.matches("foo") }, { Expression.Call.Argument.name = (Some model);
   value = Returns(TaintSource[Test]) }` are invalid: expected a find, where and model clause.|}
-    ()
+    ();
+
+  (* We error starting on the first decorator. *)
+  assert_invalid_model
+    ~path:"a.py"
+    ~model_source:{|
+      @Sanitize
+      def a.not_in_environment(self): ...
+    |}
+    ~expect:"a.py:2: `a.not_in_environment` is not part of the environment!"
+    ();
+  assert_invalid_model
+    ~path:"a.py"
+    ~model_source:
+      {|
+      @Sanitize(TaintSink)
+      @Sanitize(TaintSource)
+      def a.not_in_environment(self): ...
+    |}
+    ~expect:"a.py:2: `a.not_in_environment` is not part of the environment!"
+    ();
+  ()
 
 
 let test_demangle_class_attributes _ =
@@ -2038,16 +2063,96 @@ let test_query_parsing context =
           productions =
             [
               AllParametersTaint
-                [
-                  TaintAnnotation
-                    (Model.Source
-                       {
-                         source = Sources.NamedSource "Test";
-                         breadcrumbs = [];
-                         path = [];
-                         leaf_name_provided = false;
-                       });
-                ];
+                {
+                  excludes = [];
+                  taint =
+                    [
+                      TaintAnnotation
+                        (Model.Source
+                           {
+                             source = Sources.NamedSource "Test";
+                             breadcrumbs = [];
+                             path = [];
+                             leaf_name_provided = false;
+                           });
+                    ];
+                };
+            ];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "foo_finders",
+     find = "functions",
+     where = name.matches("foo"),
+     model = [AllParameters(TaintSource[Test], exclude="self")]
+    )
+  |}
+    ~expect:
+      [
+        {
+          name = Some "foo_finders";
+          query = [NameConstraint "foo"];
+          rule_kind = FunctionModel;
+          productions =
+            [
+              AllParametersTaint
+                {
+                  excludes = ["self"];
+                  taint =
+                    [
+                      TaintAnnotation
+                        (Model.Source
+                           {
+                             source = Sources.NamedSource "Test";
+                             breadcrumbs = [];
+                             path = [];
+                             leaf_name_provided = false;
+                           });
+                    ];
+                };
+            ];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "foo_finders",
+     find = "functions",
+     where = name.matches("foo"),
+     model = [AllParameters(TaintSource[Test], exclude=["self", "other"])]
+    )
+  |}
+    ~expect:
+      [
+        {
+          name = Some "foo_finders";
+          query = [NameConstraint "foo"];
+          rule_kind = FunctionModel;
+          productions =
+            [
+              AllParametersTaint
+                {
+                  excludes = ["self"; "other"];
+                  taint =
+                    [
+                      TaintAnnotation
+                        (Model.Source
+                           {
+                             source = Sources.NamedSource "Test";
+                             breadcrumbs = [];
+                             path = [];
+                             leaf_name_provided = false;
+                           });
+                    ];
+                };
             ];
         };
       ]
@@ -2076,10 +2181,14 @@ let test_query_parsing context =
           productions =
             [
               AllParametersTaint
-                [
-                  ParametricSourceFromAnnotation
-                    { source_pattern = "DynamicSource"; kind = "Dynamic" };
-                ];
+                {
+                  excludes = [];
+                  taint =
+                    [
+                      ParametricSourceFromAnnotation
+                        { source_pattern = "DynamicSource"; kind = "Dynamic" };
+                    ];
+                };
             ];
         };
       ]
@@ -2108,7 +2217,13 @@ let test_query_parsing context =
           productions =
             [
               AllParametersTaint
-                [ParametricSinkFromAnnotation { sink_pattern = "DynamicSink"; kind = "Dynamic" }];
+                {
+                  excludes = [];
+                  taint =
+                    [
+                      ParametricSinkFromAnnotation { sink_pattern = "DynamicSink"; kind = "Dynamic" };
+                    ];
+                };
             ];
         };
       ]

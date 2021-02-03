@@ -16,12 +16,14 @@ from ..start import (
     CriticalFile,
     LoadSavedStateFromFile,
     LoadSavedStateFromProject,
+    RemoteLogging,
     MatchPolicy,
     create_server_arguments,
     find_watchman_root,
     get_critical_files,
     get_saved_state_action,
     get_server_identifier,
+    get_profiling_log_path,
     background_server_log_file,
 )
 
@@ -63,6 +65,16 @@ class ArgumentTest(testslide.TestCase):
                 "load_from_project",
                 {"project_name": "my_project", "project_metadata": "my_metadata"},
             ),
+        )
+
+    def test_serialize_remote_logging(self) -> None:
+        self.assertDictEqual(
+            RemoteLogging(logger="/bin/logger").serialize(),
+            {"logger": "/bin/logger", "identifier": ""},
+        )
+        self.assertDictEqual(
+            RemoteLogging(logger="/bin/logger", identifier="foo").serialize(),
+            {"logger": "/bin/logger", "identifier": "foo"},
         )
 
     def test_serialize_arguments(self) -> None:
@@ -143,7 +155,7 @@ class ArgumentTest(testslide.TestCase):
             Arguments(
                 log_path="/log",
                 global_root="/project",
-                local_root="/project/local",
+                relative_local_root="local",
                 watchman_root=Path("/project"),
             ),
             [("local_root", "/project/local"), ("watchman_root", "/project")],
@@ -167,6 +179,23 @@ class ArgumentTest(testslide.TestCase):
                         },
                     ),
                 )
+            ],
+        )
+
+        assert_serialized(
+            Arguments(
+                log_path="/log",
+                global_root="/project",
+                additional_logging_sections=["foo", "bar"],
+                remote_logging=RemoteLogging(logger="/logger", identifier="baz"),
+                profiling_output=Path("/derp"),
+                memory_profiling_output=Path("/derp2"),
+            ),
+            [
+                ("additional_logging_sections", ["foo", "bar"]),
+                ("profiling_output", "/derp"),
+                ("remote_logging", {"logger": "/logger", "identifier": "baz"}),
+                ("memory_profiling_output", "/derp2"),
             ],
         )
 
@@ -346,6 +375,7 @@ class StartTest(testslide.TestCase):
                 Arguments(
                     log_path=str(root_path / ".pyre/local"),
                     global_root=str(root_path),
+                    additional_logging_sections=["server"],
                     checked_directory_allowlist=[
                         str(root_path / "local/src"),
                         str(root_path / "allows"),
@@ -367,7 +397,7 @@ class StartTest(testslide.TestCase):
                     debug=True,
                     excludes=["exclude"],
                     extensions=[".ext"],
-                    local_root=str(root_path / "local"),
+                    relative_local_root="local",
                     number_of_workers=42,
                     parallel=True,
                     saved_state_action=LoadSavedStateFromProject(
@@ -430,6 +460,47 @@ class StartTest(testslide.TestCase):
                 ),
             )
             self.assertIsNone(arguments.saved_state_action)
+
+    def test_create_server_arguments_logging(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()
+            log_path = root_path / ".pyre"
+            logger_path = root_path / "logger"
+
+            setup.ensure_directories_exists(root_path, [".pyre", "src"])
+            setup.ensure_files_exist(root_path, ["logger"])
+            setup.write_configuration_file(
+                root_path,
+                {"source_directories": ["src"], "logger": str(logger_path)},
+            )
+
+            arguments = create_server_arguments(
+                configuration.create_configuration(
+                    command_arguments.CommandArguments(dot_pyre_directory=log_path),
+                    root_path,
+                ),
+                command_arguments.StartArguments(
+                    logging_sections="foo,bar,-baz",
+                    noninteractive=True,
+                    enable_profiling=True,
+                    enable_memory_profiling=True,
+                    log_identifier="derp",
+                ),
+            )
+            self.assertListEqual(
+                list(arguments.additional_logging_sections),
+                ["foo", "bar", "-baz", "-progress", "server"],
+            )
+            self.assertEqual(
+                arguments.profiling_output, get_profiling_log_path(log_path)
+            )
+            self.assertEqual(
+                arguments.memory_profiling_output, get_profiling_log_path(log_path)
+            )
+            self.assertEqual(
+                arguments.remote_logging,
+                RemoteLogging(logger=str(logger_path), identifier="derp"),
+            )
 
     def test_background_server_log_placement(self) -> None:
         with tempfile.TemporaryDirectory() as root:

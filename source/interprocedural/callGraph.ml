@@ -110,6 +110,15 @@ let defining_attribute ~resolution parent_type attribute =
 
 
 let rec resolve_ignoring_optional ~resolution expression =
+  let resolve_expression_to_type expression =
+    match Resolution.resolve_expression_to_type resolution expression, Node.value expression with
+    | ( Type.Callable ({ Type.Callable.kind = Anonymous; _ } as callable),
+        Expression.Name (Name.Identifier function_name) )
+      when function_name |> String.is_prefix ~prefix:"$local_" ->
+        (* Treat nested functions as named callables. *)
+        Type.Callable { callable with kind = Named (Reference.create function_name) }
+    | annotation, _ -> annotation
+  in
   let annotation =
     match Node.value expression with
     | Expression.Name (Name.Attribute { base; attribute; _ }) -> (
@@ -119,9 +128,9 @@ let rec resolve_ignoring_optional ~resolution expression =
         in
         match defining_attribute ~resolution base_type attribute with
         | Some _ -> Resolution.resolve_attribute_access resolution ~base_type ~attribute
-        | None -> Resolution.resolve_expression_to_type resolution expression
+        | None -> resolve_expression_to_type expression
         (* Lookup the base_type for the attribute you were interested in *) )
-    | _ -> Resolution.resolve_expression_to_type resolution expression
+    | _ -> resolve_expression_to_type expression
   in
   Type.optional_value annotation |> Option.value ~default:annotation
 
@@ -397,7 +406,11 @@ and resolve_constructor_callee ~resolution class_type =
       | _ -> None )
 
 
-let resolve_lru_cache ~resolution ~callee:{ Node.value = callee; _ } ~implementing_class =
+let resolve_callee_from_defining_expression
+    ~resolution
+    ~callee:{ Node.value = callee; _ }
+    ~implementing_class
+  =
   match implementing_class, callee with
   | Type.Top, Expression.Name name when is_all_names callee ->
       (* If implementing_class is unknown, this must be a function rather than a method. We can use
@@ -521,20 +534,19 @@ let resolve_regular_callees ~resolution ~callee =
       Parametric
         {
           name = "BoundMethod";
-          parameters =
-            [
-              Single (Parametric { name = "functools._lru_cache_wrapper"; _ });
-              Single implementing_class;
-            ];
-        } ) ->
-      resolve_lru_cache ~resolution ~callee ~implementing_class
-  | _, Parametric { name = "functools._lru_cache_wrapper"; _ } -> (
+          parameters = [Single (Parametric { name; _ }); Single implementing_class];
+        } )
+    when Set.mem Recognized.allowlisted_callable_class_decorators name ->
+      resolve_callee_from_defining_expression ~resolution ~callee ~implementing_class
+  | _, Parametric { name; _ } when Set.mem Recognized.allowlisted_callable_class_decorators name
+    -> (
       (* Because of the special class, we don't get a bound method & lose the self argument for
          non-classmethod LRU cache wrappers. Reconstruct self in this case. *)
       match Node.value callee with
       | Expression.Name (Name.Attribute { base; _ }) ->
           resolve_ignoring_optional ~resolution base
-          |> fun implementing_class -> resolve_lru_cache ~resolution ~callee ~implementing_class
+          |> fun implementing_class ->
+          resolve_callee_from_defining_expression ~resolution ~callee ~implementing_class
       | _ -> None )
   | _ -> resolve_callees_from_type ~callee_kind ~resolution ~collapse_tito callee_type
 
@@ -871,4 +883,5 @@ let create_callgraph ?(use_shared_memory = false) ~environment ~source =
         |> fun callees ->
         Callable.RealMap.set dependencies ~key:(Callable.create define) ~data:callees
   in
-  Preprocessing.defines source |> List.fold ~init:Callable.RealMap.empty ~f:fold_defines
+  Preprocessing.defines ~include_nested:true source
+  |> List.fold ~init:Callable.RealMap.empty ~f:fold_defines

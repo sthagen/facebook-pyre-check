@@ -4,15 +4,18 @@
 # LICENSE file in the root directory of this source tree.
 
 import asyncio
-import contextlib
 import dataclasses
+import enum
 import json
 import logging
 import os
 import subprocess
 import tempfile
+import traceback
 from pathlib import Path
 from typing import Union, Optional, AsyncIterator, Set, List, Sequence, Dict
+
+import async_generator
 
 from ... import (
     json_rpc,
@@ -21,17 +24,57 @@ from ... import (
     command_arguments,
     commands,
     configuration as configuration_module,
+    statistics,
+    version,
 )
 from . import (
     language_server_protocol as lsp,
     server_connection,
     async_server_connection as connection,
     start,
+    stop,
     incremental,
     server_event,
 )
 
 LOG: logging.Logger = logging.getLogger(__name__)
+
+CONSECUTIVE_START_ATTEMPT_THRESHOLD: int = 6
+
+
+class LSPEvent(enum.Enum):
+    INITIALIZED = "initialized"
+    CONNECTED = "connected"
+    NOT_CONNECTED = "not connected"
+    DISCONNECTED = "disconnected"
+    SUSPENDED = "suspended"
+
+
+def _log_lsp_event(
+    remote_logging: Optional[start.RemoteLogging],
+    event: LSPEvent,
+    integers: Optional[Dict[str, int]] = None,
+    normals: Optional[Dict[str, Optional[str]]] = None,
+) -> None:
+    if remote_logging is not None:
+        logger = remote_logging.logger
+        if logger is not None:
+            log_identifier = remote_logging.identifier
+            statistics.log(
+                category=statistics.LoggerCategory.LSP_EVENTS,
+                logger=logger,
+                integers=integers,
+                normals={
+                    **(normals or {}),
+                    "event": event.value,
+                    "pyre client version": version.__version__,
+                    **(
+                        {"identifier": log_identifier}
+                        if log_identifier is not None
+                        else {}
+                    ),
+                },
+            )
 
 
 def process_initialize_request(
@@ -58,6 +101,7 @@ def process_initialize_request(
 @dataclasses.dataclass(frozen=True)
 class InitializationSuccess:
     client_capabilities: lsp.ClientCapabilities
+    client_info: Optional[lsp.Info] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -124,7 +168,8 @@ async def try_initialize(
             )
 
         return InitializationSuccess(
-            client_capabilities=initialize_parameters.capabilities
+            client_capabilities=initialize_parameters.capabilities,
+            client_info=initialize_parameters.client_info,
         )
     except json_rpc.JSONRPCException as json_rpc_error:
         await lsp.write_json_rpc(
@@ -139,7 +184,7 @@ async def try_initialize(
         return InitializationFailure(exception=json_rpc_error)
 
 
-@contextlib.asynccontextmanager
+@async_generator.asynccontextmanager
 async def _read_lsp_request(
     input_channel: connection.TextReader, output_channel: connection.TextWriter
 ) -> AsyncIterator[json_rpc.Request]:
@@ -183,6 +228,7 @@ async def _publish_diagnostics(
 
 @dataclasses.dataclass
 class ServerState:
+    consecutive_start_failure: int = 0
     opened_documents: Set[Path] = dataclasses.field(default_factory=set)
     diagnostics: Dict[Path, List[lsp.Diagnostic]] = dataclasses.field(
         default_factory=dict
@@ -227,6 +273,15 @@ class Server:
                 else:
                     raise json_rpc.InvalidRequestError("LSP server has been shut down")
 
+    async def _try_restart_pyre_server(self) -> None:
+        if self.state.consecutive_start_failure < CONSECUTIVE_START_ATTEMPT_THRESHOLD:
+            await self.pyre_manager.ensure_task_running()
+        else:
+            LOG.info(
+                "Not restarting Pyre since failed consecutive start attempt limit"
+                " has been reached."
+            )
+
     async def process_open_request(
         self, parameters: lsp.DidOpenTextDocumentParameters
     ) -> None:
@@ -240,7 +295,7 @@ class Server:
 
         # Attempt to trigger a background Pyre server start on each file open
         if not self.pyre_manager.is_task_running():
-            await self.pyre_manager.ensure_task_running()
+            await self._try_restart_pyre_server()
         else:
             document_diagnostics = self.state.diagnostics.get(document_path, None)
             if document_diagnostics is not None:
@@ -281,7 +336,7 @@ class Server:
             not self.pyre_manager.is_task_running()
             and document_path in self.state.opened_documents
         ):
-            await self.pyre_manager.ensure_task_running()
+            await self._try_restart_pyre_server()
 
     async def _run(self) -> int:
         while True:
@@ -342,9 +397,19 @@ class Server:
             await self.pyre_manager.ensure_task_stop()
 
 
+@dataclasses.dataclass(frozen=True)
+class StartSuccess:
+    pass
+
+
+@dataclasses.dataclass(frozen=True)
+class StartFailure:
+    detail: str
+
+
 async def _start_pyre_server(
     binary_location: str, pyre_arguments: start.Arguments
-) -> bool:
+) -> Union[StartSuccess, StartFailure]:
     try:
         with start.server_argument_file(pyre_arguments) as argument_file_path:
             server_environment = {
@@ -380,10 +445,11 @@ async def _start_pyre_server(
                 connection.TextReader(connection.StreamBytesReader(server_stdout))
             )
 
-        return True
+        return StartSuccess()
     except Exception as error:
-        LOG.error(f"Exception occured during server start: {error}")
-        return False
+        detail = traceback.format_exc()
+        LOG.error(f"Exception occured during server start. {detail}")
+        return StartFailure(detail)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -501,7 +567,7 @@ class PyreServerHandler(connection.BackgroundTask):
                     self.client_output_channel, path, diagnostics
                 )
 
-    @contextlib.asynccontextmanager
+    @async_generator.asynccontextmanager
     async def _read_server_response(
         self, server_input_channel: connection.TextReader
     ) -> AsyncIterator[str]:
@@ -554,7 +620,19 @@ class PyreServerHandler(connection.BackgroundTask):
             self.server_state.diagnostics = {}
             await self.show_type_errors_to_client()
 
-    async def run(self) -> None:
+    def _auxiliary_logging_info(self) -> Dict[str, Optional[str]]:
+        return {
+            "binary": self.binary_location,
+            "log_path": self.pyre_arguments.log_path,
+            "global_root": self.pyre_arguments.global_root,
+            **(
+                {}
+                if self.pyre_arguments.local_root is None
+                else {"local_root": self.pyre_arguments.relative_local_root}
+            ),
+        }
+
+    async def _run(self) -> None:
         socket_path = server_connection.get_default_socket_path(
             log_directory=Path(self.pyre_arguments.log_path)
         )
@@ -564,8 +642,16 @@ class PyreServerHandler(connection.BackgroundTask):
                 output_channel,
             ):
                 await self.log_and_show_message_to_client(
-                    "Established connection with existing pyre server at "
+                    "Established connection with existing Pyre server at "
                     f"`{self.server_identifier}`."
+                )
+                _log_lsp_event(
+                    remote_logging=self.pyre_arguments.remote_logging,
+                    event=LSPEvent.CONNECTED,
+                    normals={
+                        "connected_to": "already_running_server",
+                        **self._auxiliary_logging_info(),
+                    },
                 )
                 await self.subscribe_to_type_error(input_channel, output_channel)
         except connection.ConnectionFailure:
@@ -574,21 +660,86 @@ class PyreServerHandler(connection.BackgroundTask):
                 "the background..."
             )
 
-            if await _start_pyre_server(self.binary_location, self.pyre_arguments):
+            start_status = await _start_pyre_server(
+                self.binary_location, self.pyre_arguments
+            )
+            if isinstance(start_status, StartSuccess):
                 await self.log_and_show_message_to_client(
                     f"Pyre server at `{self.server_identifier}` has been initialized."
                 )
 
+                self.server_state.consecutive_start_failure = 0
                 async with connection.connect_in_text_mode(socket_path) as (
                     input_channel,
                     output_channel,
                 ):
+                    _log_lsp_event(
+                        remote_logging=self.pyre_arguments.remote_logging,
+                        event=LSPEvent.CONNECTED,
+                        normals={
+                            "connected_to": "newly_started_server",
+                            **self._auxiliary_logging_info(),
+                        },
+                    )
                     await self.subscribe_to_type_error(input_channel, output_channel)
+            elif isinstance(start_status, StartFailure):
+                self.server_state.consecutive_start_failure += 1
+                if (
+                    self.server_state.consecutive_start_failure
+                    < CONSECUTIVE_START_ATTEMPT_THRESHOLD
+                ):
+                    _log_lsp_event(
+                        remote_logging=self.pyre_arguments.remote_logging,
+                        event=LSPEvent.NOT_CONNECTED,
+                        normals={
+                            **self._auxiliary_logging_info(),
+                            "exception": str(start_status.detail),
+                        },
+                    )
+                    await self.show_message_to_client(
+                        f"Cannot start a new Pyre server at `{self.server_identifier}`.",
+                        level=lsp.MessageType.ERROR,
+                    )
+
+                    if (
+                        self.server_state.consecutive_start_failure
+                        == CONSECUTIVE_START_ATTEMPT_THRESHOLD - 1
+                    ):
+                        # The heuristic here is that if the restart has failed
+                        # this many times, it is highly likely that the restart was
+                        # blocked by a defunct socket file instead of a concurrent
+                        # server start, in which case removing the file could unblock
+                        # the server.
+                        LOG.warning(f"Removing defunct socket file {socket_path}...")
+                        stop.remove_socket_if_exists(socket_path)
+                else:
+                    await self.show_message_to_client(
+                        f"Pyre server restart at `{self.server_identifier}` has been "
+                        "failing repeatedly. Disabling The Pyre plugin for now.",
+                        level=lsp.MessageType.ERROR,
+                    )
+                    _log_lsp_event(
+                        remote_logging=self.pyre_arguments.remote_logging,
+                        event=LSPEvent.SUSPENDED,
+                        normals=self._auxiliary_logging_info(),
+                    )
+
             else:
-                await self.show_message_to_client(
-                    f"Cannot start a new Pyre server at `{self.server_identifier}`.",
-                    level=lsp.MessageType.ERROR,
-                )
+                raise RuntimeError("Impossible type for `start_status`")
+
+    async def run(self) -> None:
+        try:
+            await self._run()
+        except Exception:
+            _log_lsp_event(
+                remote_logging=self.pyre_arguments.remote_logging,
+                event=LSPEvent.DISCONNECTED,
+                normals={
+                    **self._auxiliary_logging_info(),
+                    "exception": traceback.format_exc(),
+                },
+            )
+            raise
 
 
 async def run_persistent(
@@ -601,8 +752,22 @@ async def run_persistent(
             LOG.info("Received exit request before initialization.")
             return 0
         elif isinstance(initialize_result, InitializationSuccess):
-            client_capabilities = initialize_result.client_capabilities
             LOG.info("Initialization successful.")
+            client_info = initialize_result.client_info
+            _log_lsp_event(
+                remote_logging=pyre_arguments.remote_logging,
+                event=LSPEvent.INITIALIZED,
+                normals=(
+                    {}
+                    if client_info is None
+                    else {
+                        "lsp client name": client_info.name,
+                        "lsp client version": client_info.version,
+                    }
+                ),
+            )
+
+            client_capabilities = initialize_result.client_capabilities
             LOG.debug(f"Client capabilities: {client_capabilities}")
             initial_server_state = ServerState()
             server = Server(

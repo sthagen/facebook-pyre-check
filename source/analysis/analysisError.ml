@@ -167,6 +167,7 @@ and invalid_type_kind =
   | NestedAlias of Identifier.t
   | NestedTypeVariables of Type.Variable.t
   | SingleExplicit of Type.t
+  | InvalidLiteral of Reference.t
 
 and unawaited_awaitable = {
   references: Reference.t list;
@@ -538,10 +539,11 @@ let name = function
 let weaken_literals kind =
   let weaken_mismatch { actual; expected; due_to_invariance } =
     let actual =
-      if Type.contains_literal expected then
+      let weakened_actual = Type.weaken_literals actual in
+      if Type.contains_literal expected || Type.equal weakened_actual expected then
         actual
       else
-        Type.weaken_literals actual
+        weakened_actual
     in
     { actual; expected; due_to_invariance }
   in
@@ -894,8 +896,16 @@ let rec messages ~concise ~signature location kind =
           name
           start_line
           (if due_to_invariance then " " ^ invariance_message else "")
+        ::
+        ( if Type.equal (Type.weaken_literals actual) expected then
+            [
+              "Hint: To avoid this error, you may need to use explicit type parameters in your \
+               constructor: e.g., `Foo[str](\"hello\")` instead of `Foo(\"hello\")`.";
+            ]
+        else
+          [] )
       in
-      [message; trace]
+      [message] @ trace
   | InconsistentOverride { parent; override; override_kind; overridden_method } ->
       let kind =
         match override_kind with
@@ -1152,7 +1162,9 @@ let rec messages ~concise ~signature location kind =
               "TypeVar can't have a single explicit constraint. Did you mean `bound=%a`?"
               Expression.pp
               (Type.expression variable);
-          ] )
+          ]
+      | InvalidLiteral reference ->
+          [Format.asprintf "Expression `%a` is not a literal value." Reference.pp reference] )
   | InvalidTypeParameters
       {
         name;
@@ -3592,6 +3604,8 @@ let dequalify
     | InvalidType (NestedTypeVariables variable) ->
         InvalidType (NestedTypeVariables (Type.Variable.dequalify dequalify_map variable))
     | InvalidType (SingleExplicit explicit) -> InvalidType (SingleExplicit (dequalify explicit))
+    | InvalidType (InvalidLiteral reference) ->
+        InvalidType (InvalidLiteral (dequalify_reference reference))
     | InvalidTypeParameters invalid_type_parameters ->
         InvalidTypeParameters (dequalify_invalid_type_parameters invalid_type_parameters)
     | InvalidTypeVariable { annotation; origin } ->

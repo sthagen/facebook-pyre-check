@@ -139,7 +139,13 @@ class CountCollector(StatisticsCollector):
     def visit_Comment(self, node: cst.Comment) -> None:
         match = self.regex.match(node.value)
         if match:
-            self.counts[match.group(1)] += 1
+            code_group = match.group(1)
+            if code_group:
+                codes = code_group.strip("[] ").split(",")
+            else:
+                codes = ["No Code"]
+            for code in codes:
+                self.counts[code.strip()] += 1
 
     def build_json(self) -> Dict[str, int]:
         return dict(self.counts)
@@ -147,12 +153,12 @@ class CountCollector(StatisticsCollector):
 
 class FixmeCountCollector(CountCollector):
     def __init__(self) -> None:
-        super().__init__(r"# pyre-fixme\[(\d*)\]:")
+        super().__init__(r".*# *pyre-fixme(\[(\d* *,? *)*\])?")
 
 
 class IgnoreCountCollector(CountCollector):
     def __init__(self) -> None:
-        super().__init__(r"# pyre-ignore\[(\d*)\]:")
+        super().__init__(r".*# *pyre-ignore(\[(\d* *,? *)*\])?")
 
 
 class StrictCountCollector(StatisticsCollector):
@@ -162,9 +168,9 @@ class StrictCountCollector(StatisticsCollector):
         self.strict_count: int = 0
         self.unsafe_count: int = 0
         self.strict_by_default: bool = strict_by_default
-        self.unsafe_regex: Pattern[str] = compile(r"# pyre-unsafe")
-        self.strict_regex: Pattern[str] = compile(r"# pyre-strict")
-        self.ignore_all_regex: Pattern[str] = compile(r"# pyre-ignore-all-errors")
+        self.unsafe_regex: Pattern[str] = compile(r" ?#+ *pyre-unsafe")
+        self.strict_regex: Pattern[str] = compile(r" ?#+ *pyre-strict")
+        self.ignore_all_regex: Pattern[str] = compile(r" ?#+ *pyre-ignore-all-errors")
 
     def is_unsafe_module(self) -> bool:
         if self.is_unsafe:

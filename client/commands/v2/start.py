@@ -34,7 +34,7 @@ from ... import (
     find_directories,
     log,
 )
-from . import server_connection, server_event
+from . import server_connection, server_event, stop
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -99,6 +99,15 @@ SavedStateAction = Union[LoadSavedStateFromFile, LoadSavedStateFromProject]
 
 
 @dataclasses.dataclass(frozen=True)
+class RemoteLogging:
+    logger: str
+    identifier: str = ""
+
+    def serialize(self) -> Dict[str, str]:
+        return {"logger": self.logger, "identifier": self.identifier}
+
+
+@dataclasses.dataclass(frozen=True)
 class Arguments:
     """
     Data structure for configuration options the backend server can recognize.
@@ -108,15 +117,19 @@ class Arguments:
     log_path: str
     global_root: str
 
+    additional_logging_sections: Sequence[str] = dataclasses.field(default_factory=list)
     checked_directory_allowlist: Sequence[str] = dataclasses.field(default_factory=list)
     checked_directory_blocklist: Sequence[str] = dataclasses.field(default_factory=list)
     critical_files: Sequence[CriticalFile] = dataclasses.field(default_factory=list)
     debug: bool = False
     excludes: Sequence[str] = dataclasses.field(default_factory=list)
     extensions: Sequence[str] = dataclasses.field(default_factory=list)
-    local_root: Optional[str] = None
+    relative_local_root: Optional[str] = None
+    memory_profiling_output: Optional[Path] = None
     number_of_workers: int = 1
     parallel: bool = True
+    profiling_output: Optional[Path] = None
+    remote_logging: Optional[RemoteLogging] = None
     saved_state_action: Optional[SavedStateAction] = None
     search_paths: Sequence[configuration_module.SearchPathElement] = dataclasses.field(
         default_factory=list
@@ -130,7 +143,14 @@ class Arguments:
     taint_models_path: Sequence[str] = dataclasses.field(default_factory=list)
     watchman_root: Optional[Path] = None
 
+    @property
+    def local_root(self) -> Optional[str]:
+        if self.relative_local_root is None:
+            return None
+        return os.path.join(self.global_root, self.relative_local_root)
+
     def serialize(self) -> Dict[str, Any]:
+        local_root = self.local_root
         return {
             "source_paths": [
                 element.command_line_argument() for element in self.source_paths
@@ -144,7 +164,7 @@ class Arguments:
             "extensions": self.extensions,
             "log_path": self.log_path,
             "global_root": self.global_root,
-            **({} if self.local_root is None else {"local_root": self.local_root}),
+            **({} if local_root is None else {"local_root": local_root}),
             **(
                 {}
                 if self.watchman_root is None
@@ -165,6 +185,22 @@ class Arguments:
             "store_type_check_resolution": self.store_type_check_resolution,
             "parallel": self.parallel,
             "number_of_workers": self.number_of_workers,
+            "additional_logging_sections": self.additional_logging_sections,
+            **(
+                {}
+                if self.remote_logging is None
+                else {"remote_logging": self.remote_logging.serialize()}
+            ),
+            **(
+                {}
+                if self.profiling_output is None
+                else {"profiling_output": str(self.profiling_output)}
+            ),
+            **(
+                {}
+                if self.memory_profiling_output is None
+                else {"memory_profiling_output": str(self.memory_profiling_output)}
+            ),
         }
 
 
@@ -241,6 +277,10 @@ def find_watchman_root(base: Path) -> Optional[Path]:
     )
 
 
+def get_profiling_log_path(log_directory: Path) -> Path:
+    return log_directory / "profiling.log"
+
+
 def create_server_arguments(
     configuration: configuration_module.Configuration,
     start_arguments: command_arguments.StartArguments,
@@ -260,12 +300,41 @@ def create_server_arguments(
         raise configuration_module.InvalidConfiguration(
             "New server does not have buck support yet."
         )
+
+    logging_sections = start_arguments.logging_sections
+    additional_logging_sections = (
+        [] if logging_sections is None else logging_sections.split(",")
+    )
+    if start_arguments.noninteractive:
+        additional_logging_sections.append("-progress")
+    # Server section is usually useful when Pyre server is involved
+    additional_logging_sections.append("server")
+
+    profiling_output = (
+        get_profiling_log_path(Path(configuration.log_directory))
+        if start_arguments.enable_profiling
+        else None
+    )
+    memory_profiling_output = (
+        get_profiling_log_path(Path(configuration.log_directory))
+        if start_arguments.enable_memory_profiling
+        else None
+    )
+
+    logger = configuration.logger
+    remote_logging = (
+        RemoteLogging(logger=logger, identifier=start_arguments.log_identifier or "")
+        if logger is not None
+        else None
+    )
+
     check_directory_allowlist = [
         search_path.path() for search_path in source_directories
     ] + configuration.get_existent_do_not_ignore_errors_in_paths()
     return Arguments(
         log_path=configuration.log_directory,
         global_root=configuration.project_root,
+        additional_logging_sections=additional_logging_sections,
         checked_directory_allowlist=check_directory_allowlist,
         checked_directory_blocklist=(
             configuration.get_existent_ignore_all_errors_paths()
@@ -274,9 +343,12 @@ def create_server_arguments(
         debug=start_arguments.debug,
         excludes=configuration.excludes,
         extensions=configuration.get_valid_extension_suffixes(),
-        local_root=configuration.local_root,
+        relative_local_root=configuration.relative_local_root,
+        memory_profiling_output=memory_profiling_output,
         number_of_workers=configuration.get_number_of_workers(),
         parallel=not start_arguments.sequential,
+        profiling_output=profiling_output,
+        remote_logging=remote_logging,
         saved_state_action=None
         if start_arguments.no_saved_state
         else get_saved_state_action(
@@ -413,10 +485,9 @@ def _run_in_background(
         # Since we abruptly terminate the background server, it may not have the
         # chance to clean up the socket file properly. Make sure the file is
         # removed on our side.
-        try:
-            server_connection.get_default_socket_path(log_directory).unlink()
-        except FileNotFoundError:
-            pass
+        stop.remove_socket_if_exists(
+            server_connection.get_default_socket_path(log_directory)
+        )
 
         raise commands.ClientException("Interrupted by user. No server is spawned.")
 

@@ -109,8 +109,7 @@ def run_pyre_command(
     # from exception flows.
     exit_code = ExitCode.FAILURE
     try:
-        configuration_module.check_nested_local_configuration(configuration)
-        configuration_module.check_open_source_version(configuration)
+        _check_configuration(configuration)
         log.start_logging_to_directory(noninteractive, configuration.log_directory)
         LOG.debug(f"Running cli command `{' '.join(sys.argv)}`...")
         exit_code = command.run().exit_code()
@@ -167,13 +166,22 @@ def _run_incremental_command(
     no_watchman: bool,
 ) -> ExitCode:
     configuration = _create_configuration_with_retry(arguments, Path("."))
-    if arguments.use_command_v2:
+    if configuration.use_command_v2:
+        _check_configuration(configuration)
+        log.start_logging_to_directory(
+            arguments.noninteractive, configuration.log_directory
+        )
         start_arguments = command_arguments.StartArguments(
             changed_files_path=arguments.changed_files_path,
             debug=arguments.debug,
+            enable_memory_profiling=arguments.enable_memory_profiling,
+            enable_profiling=arguments.enable_profiling,
             load_initial_state_from=arguments.load_initial_state_from,
+            log_identifier=arguments.log_identifier,
+            logging_sections=arguments.logging_sections,
             no_saved_state=arguments.no_saved_state,
             no_watchman=no_watchman,
+            noninteractive=arguments.noninteractive,
             save_initial_state_to=arguments.save_initial_state_to,
             saved_state_project=arguments.saved_state_project,
             sequential=arguments.sequential,
@@ -226,6 +234,25 @@ def _run_default_command(arguments: command_arguments.CommandArguments) -> ExitC
         return _run_check_command(arguments)
 
 
+def _run_servers_list_command(
+    arguments: command_arguments.CommandArguments,
+) -> ExitCode:
+    if arguments.use_command_v2:
+        return v2.servers.run_list()
+    else:
+        configuration = configuration_module.create_configuration(arguments, Path("."))
+        return run_pyre_command(
+            commands.Servers(
+                arguments,
+                original_directory=os.getcwd(),
+                configuration=configuration,
+                subcommand="list",
+            ),
+            configuration,
+            arguments.noninteractive,
+        )
+
+
 def _create_configuration_with_retry(
     arguments: command_arguments.CommandArguments, base_directory: Path
 ) -> configuration_module.Configuration:
@@ -268,7 +295,15 @@ def _create_configuration_with_retry(
     raise configuration_module.InvalidConfiguration(error_message)
 
 
-@click.group(invoke_without_command=True)
+def _check_configuration(configuration: configuration_module.Configuration) -> None:
+    configuration_module.check_nested_local_configuration(configuration)
+    configuration_module.check_open_source_version(configuration)
+
+
+@click.group(
+    invoke_without_command=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 @click.pass_context
 @click.option(
     "-l",
@@ -381,7 +416,7 @@ def _create_configuration_with_retry(
 @click.option("--changed-files-path", type=str, hidden=True)
 @click.option("--saved-state-project", type=str, hidden=True)
 @click.option("--features", type=str, hidden=True)
-@click.option("--use-command-v2", is_flag=True, default=False, hidden=True)
+@click.option("--use-command-v2", is_flag=True, default=None, hidden=True)
 @click.option("--isolation-prefix", type=str, hidden=True)
 def pyre(
     context: click.Context,
@@ -418,7 +453,7 @@ def pyre(
     changed_files_path: Optional[str],
     saved_state_project: Optional[str],
     features: Optional[str],
-    use_command_v2: bool,
+    use_command_v2: Optional[bool],
     isolation_prefix: Optional[str],
 ) -> int:
     arguments = command_arguments.CommandArguments(
@@ -769,18 +804,25 @@ def persistent(context: click.Context, no_watchman: bool) -> int:
     configuration = configuration_module.create_configuration(
         command_argument, Path(".")
     )
-    if command_argument.use_command_v2:
+    if configuration.use_command_v2:
         log.start_logging_to_directory(
-            command_argument.noninteractive, configuration.log_directory
+            # Always log to file regardless of whether `-n` is given
+            noninteractive=False,
+            log_directory=configuration.log_directory,
         )
         return v2.persistent.run(
             configuration,
             command_arguments.StartArguments(
                 changed_files_path=command_argument.changed_files_path,
                 debug=command_argument.debug,
+                enable_memory_profiling=command_argument.enable_memory_profiling,
+                enable_profiling=command_argument.enable_profiling,
                 load_initial_state_from=command_argument.load_initial_state_from,
+                log_identifier=command_argument.log_identifier,
+                logging_sections=command_argument.logging_sections,
                 no_saved_state=command_argument.no_saved_state,
                 no_watchman=no_watchman,
+                noninteractive=command_argument.noninteractive,
                 save_initial_state_to=command_argument.save_initial_state_to,
                 saved_state_project=command_argument.saved_state_project,
                 sequential=command_argument.sequential,
@@ -851,7 +893,10 @@ def query(context: click.Context, query: str) -> int:
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
 
-    if command_argument.use_command_v2:
+    if configuration.use_command_v2:
+        log.start_logging_to_directory(
+            command_argument.noninteractive, configuration.log_directory
+        )
         return v2.query.run(configuration, query)
     else:
         return run_pyre_command(
@@ -873,7 +918,7 @@ def query(context: click.Context, query: str) -> int:
     help="The path to the output file (defaults to stdout)",
 )
 @click.pass_context
-def rage(context: click.Context, output_file: str) -> int:
+def rage(context: click.Context, output_file: Optional[str]) -> int:
     """
     Collects troubleshooting diagnostics for Pyre, and writes this information
     to the terminal or to a file.
@@ -882,16 +927,22 @@ def rage(context: click.Context, output_file: str) -> int:
     configuration = configuration_module.create_configuration(
         command_argument, Path(".")
     )
-    return run_pyre_command(
-        commands.Rage(
-            command_argument,
-            original_directory=os.getcwd(),
-            configuration=configuration,
-            output_path=output_file,
-        ),
-        configuration,
-        command_argument.noninteractive,
-    )
+
+    if configuration.use_command_v2:
+        return v2.rage.run(
+            configuration, Path(output_file) if output_file is not None else None
+        )
+    else:
+        return run_pyre_command(
+            commands.Rage(
+                command_argument,
+                original_directory=os.getcwd(),
+                configuration=configuration,
+                output_path=output_file,
+            ),
+            configuration,
+            command_argument.noninteractive,
+        )
 
 
 @pyre.command()
@@ -934,13 +985,22 @@ def restart(
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
-    if command_argument.use_command_v2:
+    if configuration.use_command_v2:
+        _check_configuration(configuration)
+        log.start_logging_to_directory(
+            command_argument.noninteractive, configuration.log_directory
+        )
         start_arguments = command_arguments.StartArguments(
             changed_files_path=command_argument.changed_files_path,
             debug=command_argument.debug,
+            enable_memory_profiling=command_argument.enable_memory_profiling,
+            enable_profiling=command_argument.enable_profiling,
             load_initial_state_from=command_argument.load_initial_state_from,
+            log_identifier=command_argument.log_identifier,
+            logging_sections=command_argument.logging_sections,
             no_saved_state=command_argument.no_saved_state,
             no_watchman=no_watchman,
+            noninteractive=command_argument.noninteractive,
             save_initial_state_to=command_argument.save_initial_state_to,
             saved_state_project=command_argument.saved_state_project,
             sequential=command_argument.sequential,
@@ -975,33 +1035,52 @@ def restart(
         )
 
 
-@pyre.command()
-@click.argument("subcommand", type=click.Choice(["list", "stop"]), default="list")
+@pyre.group(
+    invoke_without_command=True,
+)
 @click.pass_context
-def servers(context: click.Context, subcommand: str) -> int:
+def servers(context: click.Context) -> int:
     """
-    Command to manipulate multiple Pyre servers.
+    Commands to manipulate multiple Pyre servers.
+    """
+    if context.invoked_subcommand is None:
+        return _run_servers_list_command(context.obj["arguments"])
+    # This return value is not used anywhere.
+    return ExitCode.SUCCESS
 
-    Supported subcommands:
 
-    - `list`: List running servers.
+@servers.command(name="list")
+@click.pass_context
+def servers_list(context: click.Context) -> int:
+    """
+    List all running servers.
+    """
+    return _run_servers_list_command(context.obj["arguments"])
 
-    - `stop`: Stop all running servers.
+
+@servers.command(name="stop")
+@click.pass_context
+def servers_stop(context: click.Context) -> int:
+    """
+    Stop all running servers.
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
-    configuration = configuration_module.create_configuration(
-        command_argument, Path(".")
-    )
-    return run_pyre_command(
-        commands.Servers(
-            command_argument,
-            original_directory=os.getcwd(),
-            configuration=configuration,
-            subcommand=subcommand,
-        ),
-        configuration,
-        command_argument.noninteractive,
-    )
+    if command_argument.use_command_v2:
+        return v2.servers.run_stop()
+    else:
+        configuration = configuration_module.create_configuration(
+            command_argument, Path(".")
+        )
+        return run_pyre_command(
+            commands.Servers(
+                command_argument,
+                original_directory=os.getcwd(),
+                configuration=configuration,
+                subcommand="stop",
+            ),
+            configuration,
+            command_argument.noninteractive,
+        )
 
 
 @pyre.command()
@@ -1051,15 +1130,24 @@ def start(
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
-    if command_argument.use_command_v2:
+    if configuration.use_command_v2:
+        _check_configuration(configuration)
+        log.start_logging_to_directory(
+            command_argument.noninteractive, configuration.log_directory
+        )
         return v2.start.run(
             configuration,
             command_arguments.StartArguments(
                 changed_files_path=command_argument.changed_files_path,
                 debug=command_argument.debug,
+                enable_memory_profiling=command_argument.enable_memory_profiling,
+                enable_profiling=command_argument.enable_profiling,
                 load_initial_state_from=command_argument.load_initial_state_from,
+                log_identifier=command_argument.log_identifier,
+                logging_sections=command_argument.logging_sections,
                 no_saved_state=command_argument.no_saved_state,
                 no_watchman=no_watchman,
+                noninteractive=command_argument.noninteractive,
                 save_initial_state_to=command_argument.save_initial_state_to,
                 saved_state_project=command_argument.saved_state_project,
                 sequential=command_argument.sequential,
@@ -1128,7 +1216,10 @@ def stop(context: click.Context) -> int:
     configuration = configuration_module.create_configuration(
         command_argument, Path(".")
     )
-    if command_argument.use_command_v2:
+    if configuration.use_command_v2:
+        log.start_logging_to_directory(
+            command_argument.noninteractive, configuration.log_directory
+        )
         return v2.stop.run(configuration)
     else:
         return run_pyre_command(
@@ -1151,7 +1242,10 @@ def validate_models(context: click.Context) -> int:
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
 
-    if command_argument.use_command_v2:
+    if configuration.use_command_v2:
+        log.start_logging_to_directory(
+            command_argument.noninteractive, configuration.log_directory
+        )
         return v2.validate_models.run(configuration, output=command_argument.output)
     else:
         return run_pyre_command(

@@ -289,6 +289,7 @@ class PartialConfiguration:
     typeshed: Optional[str] = None
     use_buck_builder: Optional[bool] = None
     use_buck_source_database: Optional[bool] = None
+    use_command_v2: Optional[bool] = None
     version_hash: Optional[str] = None
 
     @staticmethod
@@ -298,6 +299,7 @@ class PartialConfiguration:
     @staticmethod
     def _get_extra_keys() -> Set[str]:
         return {
+            "accept_command_v2",
             "buck_mode",
             "create_open_source_configuration",
             "differential",
@@ -346,6 +348,7 @@ class PartialConfiguration:
             typeshed=arguments.typeshed,
             use_buck_builder=arguments.use_buck_builder,
             use_buck_source_database=arguments.use_buck_source_database,
+            use_command_v2=arguments.use_command_v2,
             version_hash=None,
         )
 
@@ -495,6 +498,9 @@ class PartialConfiguration:
                 use_buck_source_database=ensure_option_type(
                     configuration_json, "use_buck_source_database", bool
                 ),
+                use_command_v2=ensure_option_type(
+                    configuration_json, "use_command_v2", bool
+                ),
                 version_hash=ensure_option_type(configuration_json, "version", str),
             )
 
@@ -583,6 +589,7 @@ class PartialConfiguration:
             typeshed=typeshed,
             use_buck_builder=self.use_buck_builder,
             use_buck_source_database=self.use_buck_source_database,
+            use_command_v2=self.use_command_v2,
             version_hash=self.version_hash,
         )
 
@@ -657,6 +664,7 @@ def merge_partial_configurations(
         use_buck_source_database=overwrite_base(
             base.use_buck_source_database, override.use_buck_source_database
         ),
+        use_command_v2=overwrite_base(base.use_command_v2, override.use_command_v2),
         version_hash=overwrite_base(base.version_hash, override.version_hash),
     )
 
@@ -690,6 +698,7 @@ class Configuration:
     typeshed: Optional[str] = None
     use_buck_builder: bool = False
     use_buck_source_database: bool = False
+    use_command_v2: bool = False
     version_hash: Optional[str] = None
 
     @staticmethod
@@ -743,6 +752,9 @@ class Configuration:
             use_buck_source_database=_get_optional_value(
                 partial_configuration.use_buck_source_database, default=False
             ),
+            use_command_v2=_get_optional_value(
+                partial_configuration.use_command_v2, default=False
+            ),
             version_hash=partial_configuration.version_hash,
         )
 
@@ -757,6 +769,62 @@ class Configuration:
         if self.relative_local_root is None:
             return None
         return os.path.join(self.project_root, self.relative_local_root)
+
+    def to_json(self) -> Dict[str, object]:
+        """
+        This method is for display purpose only. Do *NOT* expect this method
+        to produce JSONs that can be de-serialized back into configurations.
+        """
+        binary = self.binary
+        buck_builder_binary = self.buck_builder_binary
+        formatter = self.formatter
+        isolation_prefix = self.isolation_prefix
+        logger = self.logger
+        number_of_workers = self.number_of_workers
+        relative_local_root = self.relative_local_root
+        typeshed = self.typeshed
+        version_hash = self.version_hash
+        return {
+            "global_root": self.project_root,
+            "dot_pyre_directory": str(self.dot_pyre_directory),
+            "autocomplete": self.autocomplete,
+            **({"binary": binary} if binary is not None else {}),
+            **(
+                {"buck_builder_binary": buck_builder_binary}
+                if buck_builder_binary is not None
+                else {}
+            ),
+            "disabled": self.disabled,
+            "do_not_ignore_all_errors_in": list(self.do_not_ignore_all_errors_in),
+            "excludes": list(self.excludes),
+            "extensions": list(self.extensions),
+            **({"formatter": formatter} if formatter is not None else {}),
+            "ignore_all_errors": list(self.ignore_all_errors),
+            "ignore_infer": list(self.ignore_infer),
+            **(
+                {"isolation_prefix": isolation_prefix}
+                if isolation_prefix is not None
+                else {}
+            ),
+            **({"logger": logger} if logger is not None else {}),
+            **({"workers": number_of_workers} if number_of_workers is not None else {}),
+            "other_critical_files": list(self.other_critical_files),
+            **(
+                {"relative_local_root": relative_local_root}
+                if relative_local_root is not None
+                else {}
+            ),
+            "search_path": [path.path() for path in self.search_path],
+            "source_directories": [path.path() for path in self.source_directories],
+            "strict": self.strict,
+            "taint_models_path": list(self.taint_models_path),
+            "targets": list(self.targets),
+            **({"typeshed": typeshed} if typeshed is not None else {}),
+            "use_buck_builder": self.use_buck_builder,
+            "use_buck_source_database": self.use_buck_source_database,
+            "use_command_v2": self.use_command_v2,
+            **({"version_hash": version_hash} if version_hash is not None else {}),
+        }
 
     def get_existent_source_directories(self) -> List[SearchPathElement]:
         return self._get_existent_paths(self.source_directories)

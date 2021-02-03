@@ -72,13 +72,15 @@ let handle_request ~server_state request =
   >>= fun server_state ->
   let on_uncaught_server_exception exn =
     Log.info "Uncaught server exception: %s" (Exn.to_string exn);
+    let server_state = !server_state in
     let () =
-      let { ServerState.server_configuration; _ } = !server_state in
+      let { ServerState.server_configuration; _ } = server_state in
       StartupNotification.produce_for_configuration
         ~server_configuration
         "Restarting Pyre server due to unexpected crash"
     in
-    Stop.stop_waiting_server ()
+    Statistics.log_exception exn ~fatal:true ~origin:"server";
+    Stop.log_and_stop_waiting_server ~reason:"uncaught exception" ~state:server_state ()
   in
   Lwt.catch
     (fun () -> RequestHandler.process_request ~state:!server_state request)
@@ -95,7 +97,8 @@ let handle_subscription ~server_state ~output_channel request =
   match request with
   | Subscription.Request.SubscribeToTypeErrors subscriber_name ->
       let subscription = Subscription.create ~name:subscriber_name ~output_channel () in
-      ServerState.add_subscription !server_state ~name:subscriber_name ~subscription;
+      let { ServerState.subscriptions; _ } = !server_state in
+      ServerState.Subscriptions.add subscriptions ~name:subscriber_name ~subscription;
       Lwt.return subscription
 
 
@@ -107,7 +110,7 @@ module ConnectionState = struct
   let create () = { subscription_names = [] }
 
   let add_subscription ~name { subscription_names } =
-    Log.info "Subscription added: %s" name;
+    Log.log ~section:`Server "Subscription added: %s" name;
     { subscription_names = name :: subscription_names }
 
 
@@ -117,8 +120,9 @@ module ConnectionState = struct
       Lazy.force server_state
       >|= fun server_state ->
       List.iter subscription_names ~f:(fun name ->
-          Log.info "Subscription removed: %s" name;
-          ServerState.remove_subscription ~name !server_state)
+          Log.log ~section:`Server "Subscription removed: %s" name;
+          let { ServerState.subscriptions; _ } = !server_state in
+          ServerState.Subscriptions.remove ~name subscriptions)
     else
       Lwt.return_unit
 end
@@ -130,7 +134,7 @@ let handle_connection ~server_state _client_address (input_channel, output_chann
     Lwt_io.read_line_opt input_channel
     >>= function
     | None ->
-        Log.info "Connection closed";
+        Log.log ~section:`Server "Connection closed";
         ConnectionState.cleanup ~server_state connection_state
     | Some message ->
         let result =
@@ -187,14 +191,12 @@ let initialize_server_state
       List.iter errors ~f:add_error;
       table
     in
-    {
-      ServerState.socket_path = socket_path_of log_path;
-      server_configuration;
-      configuration;
-      type_environment = environment;
-      error_table;
-      subscriptions = String.Table.create ();
-    }
+    ServerState.create
+      ~socket_path:(socket_path_of log_path)
+      ~server_configuration
+      ~type_environment:environment
+      ~error_table
+      ()
   in
   let fetch_saved_state_from_files ~shared_memory_path ~changed_files_path () =
     try
@@ -283,14 +285,12 @@ let initialize_server_state
           in
           Analysis.SharedMemoryKeys.DependencyKey.Registry.load ();
           let error_table = Server.SavedState.ServerErrors.load () in
-          {
-            ServerState.socket_path = socket_path_of log_path;
-            server_configuration;
-            configuration;
-            type_environment;
-            error_table;
-            subscriptions = String.Table.create ();
-          }
+          ServerState.create
+            ~socket_path:(socket_path_of log_path)
+            ~server_configuration
+            ~type_environment
+            ~error_table
+            ()
         in
         let open Lwt.Infix in
         Log.info "Processing recent updates not included in saved state...";
@@ -300,16 +300,43 @@ let initialize_server_state
   in
   let open Lwt.Infix in
   let get_initial_state () =
+    let with_performance_logging ?(normals = []) ~f =
+      let timer = Timer.start () in
+      f ()
+      >>= fun result ->
+      let normals =
+        let version =
+          (* HACK: Use `Version.version ()` directly when all servers are migrated. *)
+          Format.sprintf "newserver-%s" (Version.version ())
+        in
+        ("binary_version", version) :: normals
+      in
+      Statistics.performance ~name:"initialization" ~timer ~normals ();
+      Lwt.return result
+    in
     match saved_state_action with
-    | None -> Lwt.return (start_from_scratch ())
+    | None ->
+        with_performance_logging ~normals:["initialization method", "cold start"] ~f:(fun _ ->
+            Lwt.return (start_from_scratch ()))
     | Some
         (ServerConfiguration.SavedStateAction.LoadFromFile
           { shared_memory_path; changed_files_path }) ->
-        fetch_saved_state_from_files ~shared_memory_path ~changed_files_path ()
-        >>= load_from_saved_state
+        with_performance_logging ~normals:["initialization method", "saved state"] ~f:(fun _ ->
+            fetch_saved_state_from_files ~shared_memory_path ~changed_files_path ()
+            >>= load_from_saved_state)
     | Some (ServerConfiguration.SavedStateAction.LoadFromProject { project_name; project_metadata })
       ->
-        fetch_saved_state_from_project ~project_name ~project_metadata () >>= load_from_saved_state
+        let normals =
+          let normals =
+            ["initialization method", "saved state"; "saved_state_project", project_name]
+          in
+          match project_metadata with
+          | None -> normals
+          | Some metadata -> ("saved_state_metadata", metadata) :: normals
+        in
+        with_performance_logging ~normals ~f:(fun _ ->
+            fetch_saved_state_from_project ~project_name ~project_metadata ()
+            >>= load_from_saved_state)
   in
   get_initial_state ()
   >>= fun state ->
@@ -461,5 +488,5 @@ let start_server_and_wait ?event_channel server_configuration =
             "A Pyre server is already running for the current project."
         | _ -> Exn.to_string exn
       in
-      Log.error "%s" message;
+      Log.info "%s" message;
       write_event (ServerEvent.Exception message) >>= fun () -> return ExitStatus.Error)
