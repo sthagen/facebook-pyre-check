@@ -63,10 +63,12 @@ let parse_attributes ~class_name ~parse_annotation attributes =
 
 let get_typed_dictionary _ = None
 
-let hierarchy class_hierarchy_handler =
+let hierarchy ~order class_hierarchy_handler =
   {
     ConstraintsSet.instantiate_successors_parameters =
-      ClassHierarchy.instantiate_successors_parameters class_hierarchy_handler;
+      ClassHierarchy.instantiate_successors_parameters
+        class_hierarchy_handler
+        ~join:(fun left right -> join (Lazy.force order) left right);
     is_transitive_successor = ClassHierarchy.is_transitive_successor class_hierarchy_handler;
     variables = ClassHierarchy.variables class_hierarchy_handler;
     least_upper_bound = ClassHierarchy.least_upper_bound class_hierarchy_handler;
@@ -86,79 +88,87 @@ let less_or_equal
     ?(is_protocol = fun _ ~protocol_assumptions:_ -> false)
     handler
   =
-  let class_hierarchy = hierarchy handler in
-  always_less_or_equal
-    {
-      class_hierarchy;
-      all_attributes = attributes;
-      attribute = attribute_from_attributes attributes;
-      is_protocol;
-      assumptions =
-        {
-          protocol_assumptions = ProtocolAssumptions.empty;
-          callable_assumptions = CallableAssumptions.empty;
-          decorator_assumptions = DecoratorAssumptions.empty;
-        };
-      get_typed_dictionary;
-      metaclass = (fun _ ~assumptions:_ -> Some (Type.Primitive "type"));
-    }
+  let rec order =
+    lazy
+      {
+        ConstraintsSet.class_hierarchy = hierarchy ~order handler;
+        all_attributes = attributes;
+        attribute = attribute_from_attributes attributes;
+        is_protocol;
+        assumptions =
+          {
+            protocol_assumptions = ProtocolAssumptions.empty;
+            callable_assumptions = CallableAssumptions.empty;
+            decorator_assumptions = DecoratorAssumptions.empty;
+          };
+        get_typed_dictionary;
+        metaclass = (fun _ ~assumptions:_ -> Some (Type.Primitive "type"));
+      }
+  in
+  always_less_or_equal (Lazy.force order)
 
 
 let is_compatible_with handler =
-  let class_hierarchy = hierarchy handler in
-  is_compatible_with
-    {
-      class_hierarchy;
-      all_attributes = (fun _ ~assumptions:_ -> None);
-      attribute = (fun _ ~assumptions:_ ~name:_ -> None);
-      is_protocol = (fun _ ~protocol_assumptions:_ -> false);
-      assumptions =
-        {
-          protocol_assumptions = ProtocolAssumptions.empty;
-          callable_assumptions = CallableAssumptions.empty;
-          decorator_assumptions = DecoratorAssumptions.empty;
-        };
-      get_typed_dictionary;
-      metaclass = (fun _ ~assumptions:_ -> Some (Type.Primitive "type"));
-    }
+  let rec order =
+    lazy
+      {
+        ConstraintsSet.class_hierarchy = hierarchy ~order handler;
+        all_attributes = (fun _ ~assumptions:_ -> None);
+        attribute = (fun _ ~assumptions:_ ~name:_ -> None);
+        is_protocol = (fun _ ~protocol_assumptions:_ -> false);
+        assumptions =
+          {
+            protocol_assumptions = ProtocolAssumptions.empty;
+            callable_assumptions = CallableAssumptions.empty;
+            decorator_assumptions = DecoratorAssumptions.empty;
+          };
+        get_typed_dictionary;
+        metaclass = (fun _ ~assumptions:_ -> Some (Type.Primitive "type"));
+      }
+  in
+  is_compatible_with (Lazy.force order)
 
 
 let join ?(attributes = fun _ ~assumptions:_ -> None) handler =
-  let class_hierarchy = hierarchy handler in
-  join
-    {
-      class_hierarchy;
-      all_attributes = attributes;
-      attribute = attribute_from_attributes attributes;
-      is_protocol = (fun _ ~protocol_assumptions:_ -> false);
-      assumptions =
-        {
-          protocol_assumptions = ProtocolAssumptions.empty;
-          callable_assumptions = CallableAssumptions.empty;
-          decorator_assumptions = DecoratorAssumptions.empty;
-        };
-      get_typed_dictionary;
-      metaclass = (fun _ ~assumptions:_ -> Some (Type.Primitive "type"));
-    }
+  let rec order =
+    lazy
+      {
+        ConstraintsSet.class_hierarchy = hierarchy ~order handler;
+        all_attributes = attributes;
+        attribute = attribute_from_attributes attributes;
+        is_protocol = (fun _ ~protocol_assumptions:_ -> false);
+        assumptions =
+          {
+            protocol_assumptions = ProtocolAssumptions.empty;
+            callable_assumptions = CallableAssumptions.empty;
+            decorator_assumptions = DecoratorAssumptions.empty;
+          };
+        get_typed_dictionary;
+        metaclass = (fun _ ~assumptions:_ -> Some (Type.Primitive "type"));
+      }
+  in
+  join (Lazy.force order)
 
 
 let meet handler =
-  let class_hierarchy = hierarchy handler in
-  meet
-    {
-      class_hierarchy;
-      all_attributes = (fun _ ~assumptions:_ -> None);
-      attribute = (fun _ ~assumptions:_ ~name:_ -> None);
-      is_protocol = (fun _ ~protocol_assumptions:_ -> false);
-      assumptions =
-        {
-          protocol_assumptions = ProtocolAssumptions.empty;
-          callable_assumptions = CallableAssumptions.empty;
-          decorator_assumptions = DecoratorAssumptions.empty;
-        };
-      get_typed_dictionary;
-      metaclass = (fun _ ~assumptions:_ -> Some (Type.Primitive "type"));
-    }
+  let rec order =
+    lazy
+      {
+        ConstraintsSet.class_hierarchy = hierarchy ~order handler;
+        all_attributes = (fun _ ~assumptions:_ -> None);
+        attribute = (fun _ ~assumptions:_ ~name:_ -> None);
+        is_protocol = (fun _ ~protocol_assumptions:_ -> false);
+        assumptions =
+          {
+            protocol_assumptions = ProtocolAssumptions.empty;
+            callable_assumptions = CallableAssumptions.empty;
+            decorator_assumptions = DecoratorAssumptions.empty;
+          };
+        get_typed_dictionary;
+        metaclass = (fun _ ~assumptions:_ -> Some (Type.Primitive "type"));
+      }
+  in
+  meet (Lazy.force order)
 
 
 (*          0 - 3
@@ -658,31 +668,6 @@ let test_less_or_equal context =
        default
        ~left:(Type.tuple [Type.integer; Type.float])
        ~right:(Type.Tuple (Type.Unbounded Type.float)));
-  let list_variadic =
-    Type.Variable.Variadic.List.create "Ts"
-    |> Type.Variable.Variadic.List.mark_as_bound
-    |> Type.Variable.Variadic.List.self_reference
-  in
-  assert_false
-    (less_or_equal
-       default
-       ~left:(Type.Tuple (Bounded list_variadic))
-       ~right:(Type.Tuple (Type.Unbounded Type.integer)));
-  assert_true
-    (less_or_equal
-       default
-       ~left:(Type.Tuple (Bounded list_variadic))
-       ~right:(Type.Tuple (Type.Unbounded Type.object_primitive)));
-  assert_true
-    (less_or_equal
-       default
-       ~left:(Type.Tuple (Bounded (Concrete [Type.integer; Type.string])))
-       ~right:(Type.Tuple (Bounded Any)));
-  assert_true
-    (less_or_equal
-       default
-       ~left:(Type.Tuple (Bounded Any))
-       ~right:(Type.Tuple (Bounded (Concrete [Type.integer; Type.string]))));
   let order =
     let order = MockClassHierarchyHandler.create () in
     let open MockClassHierarchyHandler in
@@ -1929,17 +1914,6 @@ let test_join context =
 
   (* TODO(T41082573) throw here instead of unioning *)
   assert_join "typing.Tuple[int, int]" "typing.Iterator[int]" "typing.Iterator[int]";
-  let bound_list_variadic =
-    Type.Variable.Variadic.List.create "Ts" |> Type.Variable.Variadic.List.mark_as_bound
-  in
-  assert_join
-    ~aliases:(fun ?replace_unbound_parameters_with_any:_ name ->
-      match name with
-      | "Ts" -> Some (Type.VariableAlias (ListVariadic bound_list_variadic))
-      | _ -> None)
-    "typing.Tuple[Ts]"
-    "typing.Tuple[float, ...]"
-    "typing.Tuple[object, ...]";
 
   (* Optionals. *)
   assert_join "str" "typing.Optional[str]" "typing.Optional[str]";

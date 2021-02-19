@@ -90,10 +90,6 @@ and invalid_argument =
       expression: Expression.t option;
       annotation: Type.t;
     }
-  | ListVariadicVariable of {
-      variable: Type.OrderedTypes.t;
-      mismatch: SignatureSelectionTypes.mismatch_with_list_variadic_type_variable;
-    }
 
 and precondition_mismatch =
   | Found of mismatch
@@ -228,7 +224,7 @@ and invalid_decoration = {
 }
 
 and kind =
-  | AnalysisFailure of Type.t
+  | AnalysisFailure of string
   | ParserFailure of string
   | IllegalAnnotationTarget of {
       target: Expression.t;

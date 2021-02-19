@@ -34,10 +34,15 @@ module T = struct
       }
     | InvalidModelQueryClauses of Expression.Call.Argument.t list
     | InvalidParameterExclude of Expression.t
+    | InvalidTaintAnnotation of {
+        taint_annotation: Expression.t;
+        reason: string;
+      }
     | MissingAttribute of {
         class_name: string;
         attribute_name: string;
       }
+    | ModelingClassAsDefine of string
     | NotInEnvironment of string
     | UnexpectedDecorators of {
         name: Reference.t;
@@ -99,6 +104,11 @@ let description error =
       Format.asprintf
         "The AllParameters exclude must be either a string or a list of strings, got: `%s`."
         (Expression.show expression)
+  | InvalidTaintAnnotation { taint_annotation; reason } ->
+      Format.asprintf
+        "`%s` is an invalid taint annotation: %s"
+        (Expression.show taint_annotation)
+        reason
   | UnexpectedDecorators { name; unexpected_decorators } ->
       let decorators =
         List.map unexpected_decorators ~f:Statement.Decorator.to_expression
@@ -120,6 +130,11 @@ let description error =
       Format.sprintf "Invalid model for `%s`: %s" model_name message
   | MissingAttribute { class_name; attribute_name } ->
       Format.sprintf "Class `%s` has no attribute `%s`." class_name attribute_name
+  | ModelingClassAsDefine class_name ->
+      Format.sprintf
+        "The class `%s` is not a valid define - did you mean to model `%s.__init__()`?"
+        class_name
+        class_name
   | NotInEnvironment name -> Format.sprintf "`%s` is not part of the environment!" name
 
 
@@ -134,6 +149,8 @@ let code { kind; _ } =
   | NotInEnvironment _ -> 6
   | UnexpectedDecorators _ -> 7
   | InvalidParameterExclude _ -> 8
+  | InvalidTaintAnnotation _ -> 9
+  | ModelingClassAsDefine _ -> 10
 
 
 let display { kind = error; path; location } =

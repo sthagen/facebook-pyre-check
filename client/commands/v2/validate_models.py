@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import List
 
 from ... import commands, configuration as configuration_module, error as error_module
-from . import query, server_connection
+from . import query, server_connection, remote_logging
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -44,12 +44,16 @@ def parse_validation_errors(
         message = f"Invalid error payload for model validation: `{errors_payload}`."
         raise query.InvalidQueryResponse(message)
 
-    return [
-        _relativize_error_path(error_module.ModelVerificationError.from_json(item))
-        for item in errors_payload
-    ]
+    return sorted(
+        (
+            _relativize_error_path(error_module.ModelVerificationError.from_json(item))
+            for item in errors_payload
+        ),
+        key=lambda error: (error.path, error.line, error.code),
+    )
 
 
+@remote_logging.log_usage(command_name="validate-models")
 def run(
     configuration: configuration_module.Configuration, output: str
 ) -> commands.ExitCode:

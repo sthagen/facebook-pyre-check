@@ -53,10 +53,12 @@ let environment ?source context =
   global_environment
 
 
-let hierarchy class_hierarchy_handler =
+let hierarchy ~order class_hierarchy_handler =
   {
     ConstraintsSet.instantiate_successors_parameters =
-      ClassHierarchy.instantiate_successors_parameters class_hierarchy_handler;
+      ClassHierarchy.instantiate_successors_parameters
+        class_hierarchy_handler
+        ~join:(fun left right -> TypeOrder.join (Lazy.force order) left right);
     is_transitive_successor = ClassHierarchy.is_transitive_successor class_hierarchy_handler;
     variables = ClassHierarchy.variables class_hierarchy_handler;
     least_upper_bound = ClassHierarchy.least_upper_bound class_hierarchy_handler;
@@ -89,8 +91,6 @@ let make_assert_functions context =
       T_D_Q = typing.TypeVar('T_D_Q', D, Q)
       T_C_Q_int = typing.TypeVar('T_C_Q_int', C, Q, int)
       V = pyre_extensions.ParameterSpecification("V")
-      Ts = pyre_extensions.ListVariadic("Ts")
-      T2s = pyre_extensions.ListVariadic("T2s")
 
       T = typing.TypeVar('T')
       T1 = typing.TypeVar('T1')
@@ -106,15 +106,6 @@ let make_assert_functions context =
       class Constructable:
         def Constructable.__init__(self, x: int) -> None:
           pass
-
-      class UserDefinedVariadic(typing.Generic[Ts]):
-        pass
-
-      class UserDefinedVariadicSimpleChild(UserDefinedVariadic[Ts]):
-        pass
-
-      class UserDefinedVariadicMapChild(UserDefinedVariadic[pyre_extensions.type_variable_operators.Map[typing.List, Ts]]):
-        pass
 
       class Parent: pass
       class ChildA(Parent): pass
@@ -147,8 +138,6 @@ let make_assert_functions context =
           "T_D_Q";
           "T_C_Q_int";
           "V";
-          "Ts";
-          "T2s";
           "T";
           "T1";
           "T2";
@@ -193,25 +182,26 @@ let make_assert_functions context =
         AnnotatedGlobalEnvironment.read_only environment
         |> GlobalResolution.create
         |> GlobalResolution.class_hierarchy
-        |> hierarchy
       in
       let metaclass name ~assumptions:_ = GlobalResolution.metaclass ~resolution name in
-      let order =
-        {
-          ConstraintsSet.class_hierarchy;
-          all_attributes = attributes;
-          attribute = attribute_from_attributes attributes;
-          is_protocol;
-          assumptions =
-            {
-              protocol_assumptions = ProtocolAssumptions.empty;
-              callable_assumptions = CallableAssumptions.empty;
-              decorator_assumptions = DecoratorAssumptions.empty;
-            };
-          get_typed_dictionary;
-          metaclass;
-        }
+      let rec order =
+        lazy
+          {
+            ConstraintsSet.class_hierarchy = hierarchy ~order class_hierarchy;
+            all_attributes = attributes;
+            attribute = attribute_from_attributes attributes;
+            is_protocol;
+            assumptions =
+              {
+                protocol_assumptions = ProtocolAssumptions.empty;
+                callable_assumptions = CallableAssumptions.empty;
+                decorator_assumptions = DecoratorAssumptions.empty;
+              };
+            get_typed_dictionary;
+            metaclass;
+          }
       in
+      let order = Lazy.force order in
       let attributes annotation ~assumptions =
         match attributes annotation ~assumptions with
         | Some attributes -> Some attributes
@@ -248,22 +238,12 @@ let make_assert_functions context =
                 | Type.Callable { implementation = { parameters; _ }; _ } -> parameters
                 | _ -> failwith "impossible"
               in
-              let parse_ordered_types ordered =
-                if String.equal ordered "" then
-                  Type.OrderedTypes.Concrete []
-                else
-                  match parse_annotation (Printf.sprintf "typing.Tuple[%s]" ordered) with
-                  | Type.Tuple (Bounded ordered) -> ordered
-                  | _ -> failwith "impossible"
-              in
               let global_resolution =
                 AnnotatedGlobalEnvironment.read_only environment |> GlobalResolution.create
               in
               match GlobalResolution.aliases global_resolution primitive with
               | Some (Type.VariableAlias (ParameterVariadic variable)) ->
                   Type.Variable.ParameterVariadicPair (variable, parse_parameters value)
-              | Some (Type.VariableAlias (ListVariadic variable)) ->
-                  Type.Variable.ListVariadicPair (variable, parse_ordered_types value)
               | _ -> failwith "not available" )
           | _ -> failwith "not a variable"
         in
@@ -345,23 +325,9 @@ let make_assert_functions context =
             (Type.Callable.ParameterVariadicTypeVariable
                { head = []; variable = Type.Variable.Variadic.Parameters.mark_as_bound variable })
       in
-      let mark_list_variadic variable =
-        if
-          List.mem
-            leave_unbound_in_left
-            (Type.Variable.Variadic.List.name variable)
-            ~equal:Identifier.equal
-        then
-          None
-        else
-          Some
-            (Type.Variable.Variadic.List.self_reference
-               (Type.Variable.Variadic.List.mark_as_bound variable))
-      in
       parse_annotation left
       |> Type.Variable.GlobalTransforms.Unary.replace_all mark_unary
       |> Type.Variable.GlobalTransforms.ParameterVariadic.replace_all mark_parameter_variadic
-      |> Type.Variable.GlobalTransforms.ListVariadic.replace_all mark_list_variadic
     in
     let right = parse_annotation right in
     assert_add_direct ~left ~right ~do_prep
@@ -700,65 +666,7 @@ let test_add_constraint context =
     ~left:"typing.Tuple[typing.Callable[[int, int], int], typing.Callable[[int], int]]"
     ~right:"typing.Tuple[typing.Callable[V, int], typing.Callable[V, int]]"
     [];
-  assert_add
-    ~left:"typing.Tuple[int, str, bool]"
-    ~right:"typing.Tuple[Ts]"
-    [["Ts", "int, str, bool"]];
-  assert_add
-    ~leave_unbound_in_left:["Ts"]
-    ~left:"typing.Tuple[Ts]"
-    ~right:"typing.Tuple[int, str, bool]"
-    [["Ts", "int, str, bool"]];
-  assert_add
-    ~left:"typing.Tuple[typing.Tuple[int, str], typing.Tuple[bool, str]]"
-    ~right:"typing.Tuple[typing.Tuple[Ts], typing.Tuple[Ts]]"
-    [["Ts", "typing.Union[bool, int], str"]];
-  assert_add
-    ~left:"typing.Tuple[typing.Tuple[int, str], typing.Tuple[bool, str, int]]"
-    ~right:"typing.Tuple[typing.Tuple[Ts], typing.Tuple[Ts]]"
-    [];
-  assert_add
-    ~leave_unbound_in_left:["Ts"]
-    ~left:"typing.Tuple[Ts]"
-    ~right:"typing.Tuple[T2s]"
-    [["T2s", "Ts"]; ["Ts", "T2s"]];
 
-  assert_add ~left:"typing.Tuple[...]" ~right:"typing.Tuple[Ts]" [[]];
-  assert_add
-    ~left:"typing.Callable[[int, str, bool], int]"
-    ~right:"typing.Callable[Ts, int]"
-    [["Ts", "int, str, bool"]];
-
-  (* This does not bind anything to Ts because the rule is that we assume that type variables in
-     Callable types in the left are from the scope of that callable, while type variables in
-     callable types in the right are from an outer scope. This remaining asymmetry is required in
-     order to make passing generic functions into generic higher order functions work without
-     marking scopes explicitly. *)
-  assert_add
-    ~leave_unbound_in_left:["Ts"]
-    ~left:"typing.Callable[Ts, int]"
-    ~right:"typing.Callable[[int, str, bool], int]"
-    [[]];
-
-  (* This is the situation we are supporting with the above odd behavior *)
-  assert_add
-    ~leave_unbound_in_left:["Ts"]
-    ~left:"typing.Callable[Ts, typing.Tuple[Ts]]"
-    ~right:"typing.Callable[[int, str, bool], typing.Tuple[int, str, bool]]"
-    [[]];
-  assert_add
-    ~left:"typing.Callable[[int, str, bool], int]"
-    ~right:"typing.Callable[[int, str, bool, Variable(Ts)], int]"
-    [["Ts", ""]];
-  assert_add
-    ~left:"typing.Callable[[Named(A, int), Named(B, str)], int]"
-    ~right:"typing.Callable[Ts, int]"
-    [["Ts", "int, str"]];
-  assert_add
-    ~leave_unbound_in_left:["Ts"]
-    ~left:"typing.Callable[Ts, int]"
-    ~right:"typing.Callable[[Named(A, int), Named(B, str)], int]"
-    [];
   assert_add ~left:"typing.Callable[..., int]" ~right:"typing.Callable[..., object]" [[]];
   assert_add
     ~left:"typing.Callable[..., int]"
@@ -769,129 +677,6 @@ let test_add_constraint context =
     ~right:"typing.Callable[[int, str], int]"
     [[]];
 
-  (* Map operator *)
-  assert_add
-    ~left:"typing.Tuple[typing.List[int], typing.List[str], typing.List[bool]]"
-    ~right:"typing.Tuple[pyre_extensions.type_variable_operators.Map[typing.List, Ts]]"
-    [["Ts", "int, str, bool"]];
-  assert_add
-    ~left:"typing.Tuple[typing.List[int], typing.List[str], typing.List[bool]]"
-    ~right:"typing.Tuple[pyre_extensions.type_variable_operators.Map[typing.Iterable, Ts]]"
-    [["Ts", "int, str, bool"]];
-  assert_add
-    ~left:"typing.Tuple[typing.Iterable[int], typing.Iterable[str], typing.Iterable[bool]]"
-    ~right:"typing.Tuple[pyre_extensions.type_variable_operators.Map[typing.List, Ts]]"
-    [];
-  assert_add
-    ~leave_unbound_in_left:["Ts"]
-    ~left:"typing.Tuple[pyre_extensions.type_variable_operators.Map[typing.List, Ts]]"
-    ~right:"typing.Tuple[pyre_extensions.type_variable_operators.Map[typing.List, Ts]]"
-    [[]];
-
-  (* We are not handling comparing two different maps *)
-  assert_add
-    ~left:"typing.Tuple[pyre_extensions.type_variable_operators.Map[typing.List, Ts]]"
-    ~right:"typing.Tuple[pyre_extensions.type_variable_operators.Map[typing.List, Ts]]"
-    [];
-  assert_add
-    ~leave_unbound_in_left:["Ts"]
-    ~left:"typing.Tuple[pyre_extensions.type_variable_operators.Map[typing.List, Ts]]"
-    ~right:"typing.Tuple[typing.Iterable[int], typing.Iterable[str], typing.Iterable[bool]]"
-    [["Ts", "int, str, bool"]];
-  assert_add
-    ~leave_unbound_in_left:["Ts"]
-    ~left:"typing.Tuple[pyre_extensions.type_variable_operators.Map[typing.List, Ts]]"
-    ~right:"typing.Tuple[typing.Iterable[int], typing.Iterable[str], bool]"
-    [];
-  assert_add
-    ~left:"typing.Tuple[pyre_extensions.type_variable_operators.Map[typing.List, Ts]]"
-    ~right:"typing.Tuple[typing.List[object], typing.List[object]]"
-    [];
-  assert_add
-    ~left:"typing.Tuple[pyre_extensions.type_variable_operators.Map[typing.List, Ts]]"
-    ~right:"typing.Iterable[object]"
-    [[]];
-  assert_add
-    ~left:
-      "typing.Tuple[typing.Tuple[typing.List[int], typing.List[str]], \
-       typing.Tuple[typing.List[int], typing.List[str]]]"
-    ~right:
-      "typing.Tuple[typing.Tuple[pyre_extensions.type_variable_operators.Map[typing.List, Ts]], \
-       typing.Tuple[pyre_extensions.type_variable_operators.Map[typing.List, Ts]]]"
-    [["Ts", "int, str"]];
-  assert_add
-    ~left:
-      "typing.Tuple[typing.Tuple[typing.List[int], typing.List[str]], \
-       typing.Tuple[typing.List[float], typing.List[str]]]"
-    ~right:
-      "typing.Tuple[typing.Tuple[pyre_extensions.type_variable_operators.Map[typing.List, Ts]], \
-       typing.Tuple[pyre_extensions.type_variable_operators.Map[typing.List, Ts]]]"
-    [];
-
-  (* We currently assume all mappers are invariant *)
-  assert_add
-    ~left:
-      "typing.Tuple[typing.Tuple[typing.Iterable[int], typing.Iterable[str]], \
-       typing.Tuple[typing.Iterable[float], typing.Iterable[str]]]"
-    ~right:
-      "typing.Tuple[typing.Tuple[pyre_extensions.type_variable_operators.Map[typing.Iterable, \
-       Ts]], typing.Tuple[pyre_extensions.type_variable_operators.Map[typing.Iterable, Ts]]]"
-    [];
-  assert_add
-    ~left:"typing.Callable[[typing.List[int], typing.List[str], typing.List[bool]], int]"
-    ~right:
-      "typing.Callable[[Variable(pyre_extensions.type_variable_operators.Map[typing.List, Ts])], \
-       int]"
-    [["Ts", "int, str, bool"]];
-
-  assert_add ~left:"UserDefinedVariadic[int, str]" ~right:"UserDefinedVariadic[int, str]" [[]];
-  assert_add
-    ~left:"UserDefinedVariadic[int, str]"
-    ~right:"UserDefinedVariadic[int, T]"
-    [["T", "str"]];
-  assert_add ~left:"UserDefinedVariadic[int, str]" ~right:"UserDefinedVariadic[int, str, bool]" [];
-
-  (* All variadics are invariant for now *)
-  assert_add ~left:"UserDefinedVariadic[int, str]" ~right:"UserDefinedVariadic[float, str]" [];
-  assert_add ~left:"UserDefinedVariadic[...]" ~right:"UserDefinedVariadic[int, str]" [[]];
-  assert_add
-    ~left:"UserDefinedVariadicSimpleChild[int, str]"
-    ~right:"UserDefinedVariadic[int, str]"
-    [[]];
-  assert_add
-    ~left:"UserDefinedVariadicSimpleChild[int, str]"
-    ~right:"UserDefinedVariadic[int, T]"
-    [["T", "str"]];
-  assert_add
-    ~left:"UserDefinedVariadicMapChild[int, str]"
-    ~right:"UserDefinedVariadic[typing.List[int], typing.List[str]]"
-    [[]];
-  assert_add
-    ~left:"UserDefinedVariadicMapChild[int, str]"
-    ~right:"UserDefinedVariadic[T, typing.List[str]]"
-    [["T", "typing.List[int]"]];
-  assert_add
-    ~left:"UserDefinedVariadicMapChild[int, str]"
-    ~right:"UserDefinedVariadic[Ts]"
-    [["Ts", "typing.List[int], typing.List[str]"]];
-  assert_add
-    ~left:"UserDefinedVariadicMapChild[int, str]"
-    ~right:"UserDefinedVariadic[pyre_extensions.type_variable_operators.Map[typing.List, Ts]]"
-    [["Ts", "int, str"]];
-  assert_add
-    ~left:"typing.Tuple[int, str, float, bool]"
-    ~right:"typing.Tuple[pyre_extensions.type_variable_operators.Concatenate[int, Ts, bool]]"
-    [["Ts", "str, float"]];
-  assert_add
-    ~left:"typing.Tuple[str, int, bool, float]"
-    ~right:"typing.Tuple[pyre_extensions.type_variable_operators.Concatenate[int, Ts, bool]]"
-    [];
-  assert_add
-    ~left:"typing.Tuple[int, typing.List[str], typing.List[float], bool]"
-    ~right:
-      "typing.Tuple[pyre_extensions.type_variable_operators.Concatenate[int, \
-       pyre_extensions.type_variable_operators.Map[list, Ts], bool]]"
-    [["Ts", "str, float"]];
   assert_add
     ~left:"typing.Union[typing.Type[test.ChildA], typing.Type[test.ChildB]]"
     ~right:"typing.Callable[[], test.Parent]"
@@ -1016,7 +801,6 @@ let test_instantiate_protocol_parameters context =
       name
       |> String.substr_replace_all ~pattern:"P" ~with_:"test.P"
       |> String.substr_replace_all ~pattern:"T1" ~with_:"test.T1"
-      |> String.substr_replace_all ~pattern:"Ts" ~with_:"test.Ts"
       |> String.substr_replace_all ~pattern:"VariadicCol" ~with_:"test.VariadicCol"
     in
     let protocol = substitute protocol in
@@ -1037,7 +821,7 @@ let test_instantiate_protocol_parameters context =
       in
       List.map ~f:parse_class
     in
-    let order =
+    let rec order =
       let classes, protocols = parse_attributes classes, parse_attributes protocols in
       let attributes annotation ~assumptions:_ =
         match annotation with
@@ -1052,21 +836,23 @@ let test_instantiate_protocol_parameters context =
         | _ -> false
       in
       let handler = GlobalResolution.class_hierarchy resolution in
-      {
-        ConstraintsSet.class_hierarchy = hierarchy handler;
-        all_attributes = attributes;
-        attribute = attribute_from_attributes attributes;
-        is_protocol;
-        assumptions =
-          {
-            protocol_assumptions = ProtocolAssumptions.empty;
-            callable_assumptions = CallableAssumptions.empty;
-            decorator_assumptions = DecoratorAssumptions.empty;
-          };
-        get_typed_dictionary;
-        metaclass = (fun _ ~assumptions:_ -> Some (Type.Primitive "type"));
-      }
+      lazy
+        {
+          ConstraintsSet.class_hierarchy = hierarchy ~order handler;
+          all_attributes = attributes;
+          attribute = attribute_from_attributes attributes;
+          is_protocol;
+          assumptions =
+            {
+              protocol_assumptions = ProtocolAssumptions.empty;
+              callable_assumptions = CallableAssumptions.empty;
+              decorator_assumptions = DecoratorAssumptions.empty;
+            };
+          get_typed_dictionary;
+          metaclass = (fun _ ~assumptions:_ -> Some (Type.Primitive "type"));
+        }
     in
+    let order = Lazy.force order in
     assert_equal
       ~printer:optional_ordered_types_printer
       expected
@@ -1187,28 +973,6 @@ let test_instantiate_protocol_parameters context =
     ~candidate:"A"
     ~protocol:"P1"
     (Some []);
-  assert_instantiate_protocol_parameters
-    ~source:
-      {|
-      Ts = pyre_extensions.ListVariadic("Ts")
-      class VariadicCol(typing.Generic[Ts]): pass
-    |}
-    ~classes:["A", ["prop", "typing.Tuple[int, str]"]]
-    ~protocols:["VariadicCol", ["prop", "typing.Tuple[Ts]"]]
-    ~candidate:"A"
-    ~protocol:"VariadicCol"
-    (Some [Group (Concrete [Type.integer; Type.string])]);
-  assert_instantiate_protocol_parameters
-    ~source:
-      {|
-      Ts = pyre_extensions.ListVariadic("Ts")
-      class VariadicCol(typing.Generic[Ts]): pass
-    |}
-    ~classes:["A", ["method", "typing.Callable[[int, str], bool]"]]
-    ~protocols:["VariadicCol", ["method", "typing.Callable[Ts, bool]"]]
-    ~candidate:"A"
-    ~protocol:"VariadicCol"
-    (Some [Group (Concrete [Type.integer; Type.string])]);
   ()
 
 
@@ -1235,32 +999,34 @@ let test_mark_escaped_as_escaped context =
     Type.Callable.create ~annotation:variable ~parameters:(Type.Callable.Defined []) ()
   in
   let result =
-    let handler =
+    let class_hierarchy =
       AnnotatedGlobalEnvironment.read_only environment
       |> GlobalResolution.create
       |> GlobalResolution.class_hierarchy
     in
-    let handler =
-      {
-        ConstraintsSet.class_hierarchy = hierarchy handler;
-        all_attributes = (fun _ ~assumptions:_ -> None);
-        attribute = (fun _ ~assumptions:_ ~name:_ -> None);
-        is_protocol = (fun _ ~protocol_assumptions:_ -> false);
-        assumptions =
-          {
-            protocol_assumptions = ProtocolAssumptions.empty;
-            callable_assumptions = CallableAssumptions.empty;
-            decorator_assumptions = DecoratorAssumptions.empty;
-          };
-        get_typed_dictionary;
-        metaclass = (fun _ ~assumptions:_ -> Some (Type.Primitive "type"));
-      }
+    let rec order =
+      lazy
+        {
+          ConstraintsSet.class_hierarchy = hierarchy ~order class_hierarchy;
+          all_attributes = (fun _ ~assumptions:_ -> None);
+          attribute = (fun _ ~assumptions:_ ~name:_ -> None);
+          is_protocol = (fun _ ~protocol_assumptions:_ -> false);
+          assumptions =
+            {
+              protocol_assumptions = ProtocolAssumptions.empty;
+              callable_assumptions = CallableAssumptions.empty;
+              decorator_assumptions = DecoratorAssumptions.empty;
+            };
+          get_typed_dictionary;
+          metaclass = (fun _ ~assumptions:_ -> Some (Type.Primitive "type"));
+        }
     in
+    let order = Lazy.force order in
     TypeOrder.OrderedConstraintsSet.add
       ConstraintsSet.empty
       ~new_constraint:(LessOrEqual { left; right })
-      ~order:handler
-    |> List.filter_map ~f:(OrderedConstraints.solve ~order:handler)
+      ~order
+    |> List.filter_map ~f:(OrderedConstraints.solve ~order)
   in
   match result with
   | [result] ->

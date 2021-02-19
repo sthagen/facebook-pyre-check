@@ -15,11 +15,18 @@ val expand_strings_in_annotation_expression : Expression.t -> Expression.t
 
 val expand_format_string : Source.t -> Source.t
 
+val qualify_local_identifier : qualifier:Reference.t -> Identifier.t -> Identifier.t
+
 (* Resolve imports and fully qualify names. *)
 val qualify : Source.t -> Source.t
 
 (* Resolves sys.version_info related checks at parse time. *)
-val replace_version_specific_code : Source.t -> Source.t
+val replace_version_specific_code
+  :  major_version:int ->
+  minor_version:int ->
+  micro_version:int ->
+  Source.t ->
+  Source.t
 
 (* Uses heuristics to pick platform-specific code at parse time. *)
 val replace_platform_specific_code : Source.t -> Source.t
@@ -51,6 +58,8 @@ val replace_union_shorthand : Source.t -> Source.t
 
 val inline_six_metaclass : Source.t -> Source.t
 
+val expand_starred_type_variable_tuple : Source.t -> Source.t
+
 (* List of function definitions in a source. include_toplevels copies all definitions into a
    toplevel definition. *)
 val defines
@@ -71,7 +80,7 @@ val classes : Source.t -> Statement.Class.t Node.t list
 (* Creates a map used for dequalification from imports in the source *)
 val dequalify_map : Source.t -> Reference.t Reference.Map.t
 
-(* Steps that may affect wildcard imports *)
+(* Steps that may affect wildcard imports, excluding version-specific code replacement *)
 val preprocess_phase0 : Source.t -> Source.t
 
 (* Steps that does not affect wildcard imports *)

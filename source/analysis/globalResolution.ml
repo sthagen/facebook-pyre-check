@@ -161,21 +161,6 @@ let parse_reference ?(allow_untracked = false) ({ dependency; _ } as resolution)
        (attribute_resolution resolution)
 
 
-let parse_as_list_variadic ({ dependency; _ } as resolution) name =
-  let parsed_as_type_variable =
-    AttributeResolution.ReadOnly.parse_annotation
-      ?dependency
-      ~validation:ValidatePrimitives
-      (attribute_resolution resolution)
-      name
-    |> Type.primitive_name
-    >>= aliases resolution
-  in
-  match parsed_as_type_variable with
-  | Some (VariableAlias (ListVariadic variable)) -> Some variable
-  | _ -> None
-
-
 let is_invariance_mismatch resolution ~left ~right =
   match left, right with
   | ( Type.Parametric { name = left_name; parameters = left_parameters },
@@ -506,10 +491,6 @@ let resolve_literal ({ dependency; _ } as resolution) =
   AttributeResolution.ReadOnly.resolve_literal ?dependency (attribute_resolution resolution)
 
 
-let parse_as_concatenation ({ dependency; _ } as resolution) =
-  AliasEnvironment.ReadOnly.parse_as_concatenation (alias_environment resolution) ?dependency
-
-
 let parse_as_parameter_specification_instance_annotation ({ dependency; _ } as resolution) =
   AliasEnvironment.ReadOnly.parse_as_parameter_specification_instance_annotation
     (alias_environment resolution)
@@ -525,7 +506,6 @@ let annotation_parser ?(allow_invalid_type_parameters = false) resolution =
   in
   {
     AnnotatedCallable.parse_annotation = parse_annotation ~validation resolution;
-    parse_as_concatenation = parse_as_concatenation resolution;
     parse_as_parameter_specification_instance_annotation =
       parse_as_parameter_specification_instance_annotation resolution;
   }
@@ -572,3 +552,29 @@ let overrides class_name ~resolution ~name =
     >>= fun attribute -> Option.some_if (AnnotatedAttribute.defined attribute) attribute
   in
   successors class_name ~resolution |> List.find_map ~f:find_override
+
+
+let get_decorator_define resolution decorator_name =
+  (* Nested function bodies are empty by default. We have to fill them in. *)
+  let rec get_define define_name =
+    function_definition resolution define_name
+    >>| FunctionDefinition.all_bodies
+    >>= function
+    | [{ Node.value = { Define.body; _ } as define; location }] ->
+        let transform_statement = function
+          | {
+              Node.value =
+                Statement.Define
+                  { body = []; signature = { name = { Node.value = define_name; _ }; _ }; _ };
+              _;
+            } as statement ->
+              get_define define_name
+              >>| (fun define -> { Node.value = Statement.Define define; location })
+              |> Option.value ~default:statement
+          | statement -> statement
+        in
+        { define with body = List.map body ~f:transform_statement } |> Option.some
+    (* Ignore functions that have overloads. *)
+    | _ -> None
+  in
+  get_define decorator_name

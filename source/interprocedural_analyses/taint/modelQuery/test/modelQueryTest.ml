@@ -21,7 +21,8 @@ let test_apply_rule context =
       | None -> Sources.NamedSource name
       | Some subkind -> Sources.ParametricSource { source_name = name; subkind }
     in
-    Model.Source { source; breadcrumbs = []; path = []; leaf_name_provided = false }
+    Model.Source
+      { source; breadcrumbs = []; path = []; leaf_names = []; leaf_name_provided = false }
   in
   let assert_applied_rules ~source ~rule ~callable ~expected =
     let { ScratchProject.BuiltGlobalEnvironment.global_environment; _ } =
@@ -487,6 +488,7 @@ let test_apply_rule context =
               sink = Sinks.ParametricSink { sink_name = "Dynamic"; subkind = "BSink" };
               breadcrumbs = [];
               path = [];
+              leaf_names = [];
               leaf_name_provided = false;
             } );
       ];
@@ -579,6 +581,64 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.foo")
+    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+  assert_applied_rules
+    ~source:
+      {|
+      class C:
+        def foo(): ...
+      class D:
+        def foo(): ...
+      class DC:
+        def foo(): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [ParentConstraint (Matches (Re2.create_exn "C"))];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = MethodModel;
+      }
+    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+  assert_applied_rules
+    ~source:
+      {|
+      class C:
+        def foo(): ...
+      class D:
+        def foo(): ...
+      class DC:
+        def foo(): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [ParentConstraint (Matches (Re2.create_exn "C"))];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = MethodModel;
+      }
+    ~callable:(`Method { Interprocedural.Callable.class_name = "test.D"; method_name = "foo" })
+    ~expected:[];
+
+  assert_applied_rules
+    ~source:
+      {|
+      class C:
+        def foo(): ...
+      class D:
+        def foo(): ...
+      class DC:
+        def foo(): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [ParentConstraint (Matches (Re2.create_exn "C"))];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = MethodModel;
+      }
+    ~callable:(`Method { Interprocedural.Callable.class_name = "test.DC"; method_name = "foo" })
     ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
   ()
 

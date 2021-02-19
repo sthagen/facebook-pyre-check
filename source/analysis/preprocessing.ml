@@ -90,7 +90,12 @@ let transform_string_annotation_expression ~relative =
           with
           | Parser.Error _
           | Failure _ ->
-              Log.debug "Invalid string annotation `%s` at %a" string_value Location.pp location;
+              Log.debug
+                "Invalid string annotation `%s` at %s:%a"
+                string_value
+                relative
+                Location.pp
+                location;
               (* TODO(T76231928): replace this silent ignore with something typeCheck.ml can use *)
               value )
       | Tuple elements -> Tuple (List.map elements ~f:transform_expression)
@@ -101,7 +106,7 @@ let transform_string_annotation_expression ~relative =
   transform_expression
 
 
-let expand_string_annotations ({ Source.source_path = { SourcePath.relative; _ }; _ } as source) =
+let transform_annotations ~transform_annotation_expression source =
   let module Transform = Transform.Make (struct
     type t = unit
 
@@ -111,13 +116,9 @@ let expand_string_annotations ({ Source.source_path = { SourcePath.relative; _ }
 
     let statement _ ({ Node.value; _ } as statement) =
       let transform_assign ~assign:({ Assign.annotation; _ } as assign) =
-        {
-          assign with
-          Assign.annotation = annotation >>| transform_string_annotation_expression ~relative;
-        }
+        { assign with Assign.annotation = annotation >>| transform_annotation_expression }
       in
-      let transform_define
-          ~define:({ Define.signature = { parameters; return_annotation; _ }; _ } as define)
+      let transform_define ({ Define.signature = { parameters; return_annotation; _ }; _ } as define)
         =
         let parameter ({ Node.value = { Parameter.annotation; _ } as parameter; _ } as node) =
           {
@@ -125,8 +126,7 @@ let expand_string_annotations ({ Source.source_path = { SourcePath.relative; _ }
             Node.value =
               {
                 parameter with
-                Parameter.annotation =
-                  annotation >>| transform_string_annotation_expression ~relative;
+                Parameter.annotation = annotation >>| transform_annotation_expression;
               };
           }
         in
@@ -134,19 +134,14 @@ let expand_string_annotations ({ Source.source_path = { SourcePath.relative; _ }
           {
             define.signature with
             parameters = List.map parameters ~f:parameter;
-            return_annotation =
-              return_annotation >>| transform_string_annotation_expression ~relative;
+            return_annotation = return_annotation >>| transform_annotation_expression;
           }
         in
         { define with signature }
       in
       let transform_class ~class_statement:({ Class.bases; _ } as class_statement) =
         let transform_base ({ Call.Argument.value; _ } as base) =
-          let value =
-            match value with
-            | { Node.value = Expression.String _; _ } -> value
-            | _ -> transform_string_annotation_expression ~relative value
-          in
+          let value = transform_annotation_expression value in
           { base with value }
         in
         { class_statement with bases = List.map bases ~f:transform_base }
@@ -155,7 +150,7 @@ let expand_string_annotations ({ Source.source_path = { SourcePath.relative; _ }
         let value =
           match value with
           | Statement.Assign assign -> Statement.Assign (transform_assign ~assign)
-          | Define define -> Define (transform_define ~define)
+          | Define define -> Define (transform_define define)
           | Class class_statement -> Class (transform_class ~class_statement)
           | _ -> value
         in
@@ -171,7 +166,7 @@ let expand_string_annotations ({ Source.source_path = { SourcePath.relative; _ }
             type_argument );
             value_argument;
           ] ->
-            let annotation = transform_string_annotation_expression ~relative value in
+            let annotation = transform_annotation_expression value in
             [{ type_argument with value = annotation }; value_argument]
         | arguments -> arguments
       in
@@ -189,6 +184,12 @@ let expand_string_annotations ({ Source.source_path = { SourcePath.relative; _ }
   end)
   in
   Transform.transform () source |> Transform.source
+
+
+let expand_string_annotations ({ Source.source_path = { SourcePath.relative; _ }; _ } as source) =
+  transform_annotations
+    ~transform_annotation_expression:(transform_string_annotation_expression ~relative)
+    source
 
 
 let expand_strings_in_annotation_expression =
@@ -275,8 +276,9 @@ let expand_format_string ({ Source.source_path = { SourcePath.relative; _ }; _ }
             | Parser.Error _
             | Failure _ ->
                 Log.debug
-                  "Pyre could not parse format string `%s` at %a"
+                  "Pyre could not parse format string `%s` at %s:%a"
                   input_string
+                  relative
                   Location.pp
                   location;
                 []
@@ -310,9 +312,9 @@ type scope = {
   is_in_class: bool;
 }
 
-let qualify_local_identifier name ~qualifier =
+let qualify_local_identifier ~qualifier name =
   let qualifier = Reference.show qualifier |> String.substr_replace_all ~pattern:"." ~with_:"?" in
-  name |> Format.asprintf "$local_%s$%s" qualifier |> fun identifier -> Name.Identifier identifier
+  Format.asprintf "$local_%s$%s" qualifier name
 
 
 let qualify
@@ -322,6 +324,13 @@ let qualify
         _;
       } as source )
   =
+  let is_qualified = String.is_prefix ~prefix:"$" in
+  let qualify_if_needed ~qualifier name =
+    if Reference.is_strict_prefix ~prefix:qualifier name then
+      name
+    else
+      Reference.combine qualifier name
+  in
   let prefix_identifier ~scope:({ aliases; immutables; _ } as scope) ~prefix name =
     let stars, name = Identifier.split_star name in
     let renamed = Format.asprintf "$%s$%s" prefix name in
@@ -404,9 +413,8 @@ let qualify
     =
     if is_in_function then
       match Reference.as_list name with
-      | [simple_name]
-        when (not (String.is_prefix simple_name ~prefix:"$")) && not (Set.mem immutables name) ->
-          let alias = qualify_local_identifier simple_name ~qualifier |> name_to_reference_exn in
+      | [simple_name] when (not (is_qualified simple_name)) && not (Set.mem immutables name) ->
+          let alias = qualify_local_identifier simple_name ~qualifier |> Reference.create in
           ( {
               scope with
               aliases =
@@ -457,18 +465,21 @@ let qualify
         (scope, reversed_parameters)
         ({ Node.value = { Parameter.name; value; annotation }; _ } as parameter)
       =
-      let scope, stars, renamed = prefix_identifier ~scope ~prefix:"parameter" name in
-      ( scope,
-        {
-          parameter with
-          Node.value =
-            {
-              Parameter.name = stars ^ renamed;
-              value = value >>| qualify_expression ~qualify_strings:false ~scope;
-              annotation;
-            };
-        }
-        :: reversed_parameters )
+      if not (is_qualified (snd (Identifier.split_star name))) then
+        let scope, stars, renamed = prefix_identifier ~scope ~prefix:"parameter" name in
+        ( scope,
+          {
+            parameter with
+            Node.value =
+              {
+                Parameter.name = stars ^ renamed;
+                value = value >>| qualify_expression ~qualify_strings:false ~scope;
+                annotation;
+              };
+          }
+          :: reversed_parameters )
+      else
+        scope, parameter :: reversed_parameters
     in
     let scope, parameters =
       List.fold
@@ -561,16 +572,13 @@ let qualify
                 | Name (Name.Identifier name) ->
                     (* Incrementally number local variables to avoid shadowing. *)
                     let scope =
-                      let qualified = String.is_prefix name ~prefix:"$" in
                       let reference = Reference.create name in
                       if
-                        (not qualified)
+                        (not (is_qualified name))
                         && (not (Set.mem locals reference))
                         && not (Set.mem immutables reference)
                       then
-                        let alias =
-                          qualify_local_identifier name ~qualifier |> name_to_reference_exn
-                        in
+                        let alias = qualify_local_identifier name ~qualifier |> Reference.create in
                         {
                           scope with
                           aliases =
@@ -591,34 +599,15 @@ let qualify
                         (Expression.Name (Name.Identifier name)) )
                 | Name name ->
                     let name =
-                      let qualified =
+                      if qualify_assign then
+                        qualify_if_needed ~qualifier (name_to_reference_exn name)
+                        |> create_name_from_reference ~location
+                        |> fun name -> Expression.Name name
+                      else
                         match qualify_name ~qualify_strings:false ~location ~scope (Name name) with
                         | Name (Name.Identifier name) ->
                             Expression.Name (Name.Identifier (Identifier.sanitized name))
                         | qualified -> qualified
-                      in
-                      if qualify_assign then
-                        let rec combine qualifier = function
-                          | Expression.Name (Name.Identifier identifier) ->
-                              Expression.Name
-                                (Name.Attribute
-                                   {
-                                     base = Node.create ~location:(Node.location target) qualifier;
-                                     attribute = identifier;
-                                     special = false;
-                                   })
-                          | Name (Name.Attribute ({ base; _ } as name)) ->
-                              let qualified_base =
-                                Node.create
-                                  ~location:(Node.location base)
-                                  (combine qualifier (Node.value base))
-                              in
-                              Name (Name.Attribute { name with base = qualified_base })
-                          | _ -> failwith "Impossible."
-                        in
-                        combine (Name (create_name_from_reference ~location qualifier)) qualified
-                      else
-                        qualified
                     in
                     scope, name
                 | target -> scope, target
@@ -684,7 +673,7 @@ let qualify
         (* Take care to qualify the function name before parameters, as parameters shadow it. *)
         let scope, _ = qualify_function_name ~scope name in
         let scope, parameters = qualify_parameters ~scope parameters in
-        let qualifier = Reference.combine qualifier name in
+        let qualifier = qualify_if_needed ~qualifier name in
         let _, body =
           qualify_statements ~scope:{ scope with qualifier; is_in_function = true } body
         in
@@ -715,7 +704,7 @@ let qualify
         in
         let decorators = List.map decorators ~f:(qualify_decorator ~qualify_strings:false ~scope) in
         let body =
-          let qualifier = Reference.combine qualifier name in
+          let qualifier = qualify_if_needed ~qualifier name in
           let original_scope =
             { scope with qualifier; is_in_function = false; is_in_class = true }
           in
@@ -777,7 +766,7 @@ let qualify
         {
           definition with
           (* Ignore aliases, imports, etc. when declaring a class name. *)
-          Class.name = { Node.location; value = Reference.combine scope.qualifier name };
+          Class.name = { Node.location; value = qualify_if_needed ~qualifier:scope.qualifier name };
           bases = List.map bases ~f:qualify_base;
           body;
           decorators;
@@ -893,7 +882,7 @@ let qualify
             let qualify_handler { Try.Handler.kind; name; body } =
               let renamed_scope, name =
                 match name with
-                | Some name ->
+                | Some name when not (is_qualified name) ->
                     let scope, _, renamed = prefix_identifier ~scope ~prefix:"target" name in
                     scope, Some renamed
                 | _ -> scope, name
@@ -955,7 +944,7 @@ let qualify
       | { Node.value = Expression.Tuple elements; _ } ->
           List.fold elements ~init:scope ~f:renamed_scope
       | { Node.value = Name (Name.Identifier name); _ } ->
-          if Set.mem locals (Reference.create name) then
+          if Set.mem locals (Reference.create name) || is_qualified name then
             scope
           else
             let scope, _, _ = prefix_identifier ~scope ~prefix:"target" name in
@@ -975,7 +964,7 @@ let qualify
         match Map.find aliases (Reference.create head) with
         | Some { name; is_forward_reference; qualifier }
           when (not is_forward_reference) || use_forward_references ->
-            if Reference.show name |> String.is_prefix ~prefix:"$" && suppress_synthetics then
+            if Reference.show name |> is_qualified && suppress_synthetics then
               Reference.combine qualifier reference
             else
               Reference.combine name (Reference.create_from_list tail)
@@ -990,7 +979,7 @@ let qualify
         match Map.find aliases (Reference.create identifier) with
         | Some { name; is_forward_reference; qualifier }
           when (not is_forward_reference) || use_forward_references ->
-            if Reference.show name |> String.is_prefix ~prefix:"$" && suppress_synthetics then
+            if Reference.show name |> is_qualified && suppress_synthetics then
               Name
                 (Name.Attribute
                    {
@@ -1139,7 +1128,12 @@ let qualify
             with
             | Parser.Error _
             | Failure _ ->
-                Log.debug "Invalid string annotation `%s` at %a" value Location.pp location;
+                Log.debug
+                  "Invalid string annotation `%s` at %s:%a"
+                  value
+                  relative
+                  Location.pp
+                  location;
                 String { StringLiteral.value; kind } )
           else
             String { StringLiteral.value; kind }
@@ -1206,63 +1200,271 @@ let qualify
   { source with Source.statements = qualify_statements ~scope statements |> snd }
 
 
-let replace_version_specific_code source =
+let replace_version_specific_code ~major_version ~minor_version ~micro_version source =
   let module Transform = Transform.MakeStatementTransformer (struct
     include Transform.Identity
 
     type t = unit
 
-    type operator =
-      | Equality of Expression.t * Expression.t
-      | Comparison of Expression.t * Expression.t
-      | Neither
+    module Comparison = struct
+      type t =
+        | LessThan
+        | LessThanOrEquals
+        | GreaterThan
+        | GreaterThanOrEquals
+        | Equals
+        | NotEquals
+      [@@deriving sexp]
+
+      let inverse = function
+        | LessThan -> GreaterThan
+        | LessThanOrEquals -> GreaterThanOrEquals
+        | GreaterThan -> LessThan
+        | GreaterThanOrEquals -> LessThanOrEquals
+        | Equals -> Equals
+        | NotEquals -> NotEquals
+
+
+      let evaluate ~operator compare_result =
+        match operator with
+        | LessThan -> compare_result < 0
+        | LessThanOrEquals -> compare_result <= 0
+        | GreaterThan -> compare_result > 0
+        | GreaterThanOrEquals -> compare_result >= 0
+        | Equals -> compare_result = 0
+        | NotEquals -> compare_result <> 0
+    end
+
+    let evaluate_one_version ~operator actual_version given_version =
+      [%compare: int] actual_version given_version |> Comparison.evaluate ~operator
+
+
+    let evaluate_two_versions ~operator actual_versions given_versions =
+      [%compare: int * int] actual_versions given_versions |> Comparison.evaluate ~operator
+
+
+    let evaluate_three_versions ~operator actual_versions given_versions =
+      [%compare: int * int * int] actual_versions given_versions |> Comparison.evaluate ~operator
+
 
     let statement _ ({ Node.location; value } as statement) =
       match value with
       | Statement.If { If.test; body; orelse } -> (
-          (* Normalizes a comparison of a < b, a <= b, b >= a or b > a to Some (a, b). *)
-          let extract_single_comparison { Node.value; _ } =
+          let extract_comparison { Node.value; _ } =
             match value with
             | Expression.ComparisonOperator { ComparisonOperator.left; operator; right } -> (
                 match operator with
-                | ComparisonOperator.LessThan
+                | ComparisonOperator.LessThan -> Some (Comparison.LessThan, left, right)
                 | ComparisonOperator.LessThanOrEquals ->
-                    Comparison (left, right)
-                | ComparisonOperator.GreaterThan
+                    Some (Comparison.LessThanOrEquals, left, right)
+                | ComparisonOperator.GreaterThan -> Some (Comparison.GreaterThan, left, right)
                 | ComparisonOperator.GreaterThanOrEquals ->
-                    Comparison (right, left)
-                | ComparisonOperator.Equals -> Equality (left, right)
-                | _ -> Neither )
-            | _ -> Neither
+                    Some (Comparison.GreaterThanOrEquals, left, right)
+                | ComparisonOperator.Equals -> Some (Comparison.Equals, left, right)
+                | ComparisonOperator.NotEquals -> Some (Comparison.NotEquals, left, right)
+                | _ -> None )
+            | _ -> None
           in
+
           let add_pass_statement ~location body =
             if List.is_empty body then
               [Node.create ~location Statement.Pass]
             else
               body
           in
-          match extract_single_comparison test with
-          | Comparison
-              ( left,
-                { Node.value = Expression.Tuple ({ Node.value = Expression.Integer 3; _ } :: _); _ }
-              )
-            when String.equal (Expression.show left) "sys.version_info" ->
-              (), add_pass_statement ~location orelse
-          | Comparison (left, { Node.value = Expression.Integer 3; _ })
-            when String.equal (Expression.show left) "sys.version_info[0]" ->
-              (), add_pass_statement ~location orelse
-          | Comparison ({ Node.value = Expression.Tuple ({ Node.value = major; _ } :: _); _ }, right)
-            when String.equal (Expression.show right) "sys.version_info"
-                 && Expression.equal_expression major (Expression.Integer 3) ->
+          let do_replace condition =
+            if condition then
               (), add_pass_statement ~location body
-          | Comparison ({ Node.value = Expression.Integer 3; _ }, right)
-            when String.equal (Expression.show right) "sys.version_info[0]" ->
-              (), add_pass_statement ~location body
-          | Equality (left, right)
-            when String.is_prefix ~prefix:"sys.version_info" (Expression.show left)
-                 || String.is_prefix ~prefix:"sys.version_info" (Expression.show right) ->
-              (* Never pin our stubs to a python version. *)
+            else
               (), add_pass_statement ~location orelse
+          in
+
+          let is_system_version_expression = function
+            | {
+                Node.value =
+                  Expression.Name
+                    (Name.Attribute
+                      {
+                        base = { Node.value = Expression.Name (Name.Identifier "sys"); _ };
+                        attribute = "version_info";
+                        _;
+                      });
+                _;
+              } ->
+                true
+            | _ -> false
+          in
+          let is_system_version_tuple_access_expression ?index = function
+            | {
+                Node.value =
+                  Expression.Call
+                    {
+                      Call.callee =
+                        {
+                          Node.value =
+                            Expression.Name
+                              (Name.Attribute
+                                {
+                                  base =
+                                    {
+                                      Node.value =
+                                        Expression.Name
+                                          (Name.Attribute
+                                            {
+                                              base =
+                                                {
+                                                  Node.value =
+                                                    Expression.Name (Name.Identifier "sys");
+                                                  _;
+                                                };
+                                              attribute = "version_info";
+                                              _;
+                                            });
+                                      _;
+                                    };
+                                  attribute = "__getitem__";
+                                  special = true;
+                                });
+                          _;
+                        };
+                      arguments = [argument];
+                    };
+                _;
+              } -> (
+                match index, argument with
+                | None, _ -> true
+                | ( Some expected_index,
+                    { Call.Argument.value = { Node.value = Expression.Integer actual_index; _ }; _ }
+                  )
+                  when Int.equal expected_index actual_index ->
+                    true
+                | _ -> false )
+            | _ -> false
+          in
+
+          match extract_comparison test with
+          | Some
+              ( operator,
+                left,
+                {
+                  Node.value =
+                    Expression.Tuple
+                      ({ Node.value = Expression.Integer given_major_version; _ }
+                      :: { Node.value = Expression.Integer given_minor_version; _ }
+                         :: { Node.value = Expression.Integer given_micro_version; _ } :: _);
+                  _;
+                } )
+            when is_system_version_expression left ->
+              evaluate_three_versions
+                ~operator
+                (major_version, minor_version, micro_version)
+                (given_major_version, given_minor_version, given_micro_version)
+              |> do_replace
+          | Some
+              ( operator,
+                left,
+                {
+                  Node.value =
+                    Expression.Tuple
+                      ({ Node.value = Expression.Integer given_major_version; _ }
+                      :: { Node.value = Expression.Integer given_minor_version; _ } :: _);
+                  _;
+                } )
+            when is_system_version_expression left ->
+              evaluate_two_versions
+                ~operator
+                (major_version, minor_version)
+                (given_major_version, given_minor_version)
+              |> do_replace
+          | Some
+              ( operator,
+                left,
+                {
+                  Node.value =
+                    Expression.Tuple
+                      ({ Node.value = Expression.Integer given_major_version; _ } :: _);
+                  _;
+                } )
+            when is_system_version_expression left ->
+              evaluate_one_version ~operator major_version given_major_version |> do_replace
+          | Some (operator, left, { Node.value = Expression.Integer given_major_version; _ })
+            when is_system_version_tuple_access_expression ~index:0 left ->
+              evaluate_one_version ~operator major_version given_major_version |> do_replace
+          | Some (operator, left, { Node.value = Expression.Integer given_minor_version; _ })
+            when is_system_version_tuple_access_expression ~index:1 left ->
+              evaluate_one_version ~operator minor_version given_minor_version |> do_replace
+          | Some (operator, left, { Node.value = Expression.Integer given_micro_version; _ })
+            when is_system_version_tuple_access_expression ~index:2 left ->
+              evaluate_one_version ~operator micro_version given_micro_version |> do_replace
+          | Some
+              ( operator,
+                {
+                  Node.value =
+                    Expression.Tuple
+                      ({ Node.value = Expression.Integer given_major_version; _ }
+                      :: { Node.value = Expression.Integer given_minor_version; _ }
+                         :: { Node.value = Expression.Integer given_micro_version; _ } :: _);
+                  _;
+                },
+                right )
+            when is_system_version_expression right ->
+              evaluate_three_versions
+                ~operator:(Comparison.inverse operator)
+                (major_version, minor_version, micro_version)
+                (given_major_version, given_minor_version, given_micro_version)
+              |> do_replace
+          | Some
+              ( operator,
+                {
+                  Node.value =
+                    Expression.Tuple
+                      ({ Node.value = Expression.Integer given_major_version; _ }
+                      :: { Node.value = Expression.Integer given_minor_version; _ } :: _);
+                  _;
+                },
+                right )
+            when is_system_version_expression right ->
+              evaluate_two_versions
+                ~operator:(Comparison.inverse operator)
+                (major_version, minor_version)
+                (given_major_version, given_minor_version)
+              |> do_replace
+          | Some
+              ( operator,
+                {
+                  Node.value =
+                    Expression.Tuple
+                      ({ Node.value = Expression.Integer given_major_version; _ } :: _);
+                  _;
+                },
+                right )
+            when is_system_version_expression right ->
+              evaluate_one_version
+                ~operator:(Comparison.inverse operator)
+                major_version
+                given_major_version
+              |> do_replace
+          | Some (operator, { Node.value = Expression.Integer given_major_version; _ }, right)
+            when is_system_version_tuple_access_expression ~index:0 right ->
+              evaluate_one_version
+                ~operator:(Comparison.inverse operator)
+                major_version
+                given_major_version
+              |> do_replace
+          | Some (operator, { Node.value = Expression.Integer given_minor_version; _ }, right)
+            when is_system_version_tuple_access_expression ~index:1 right ->
+              evaluate_one_version
+                ~operator:(Comparison.inverse operator)
+                minor_version
+                given_minor_version
+              |> do_replace
+          | Some (operator, { Node.value = Expression.Integer given_micro_version; _ }, right)
+            when is_system_version_tuple_access_expression ~index:2 right ->
+              evaluate_one_version
+                ~operator:(Comparison.inverse operator)
+                micro_version
+                given_micro_version
+              |> do_replace
           | _ -> (), [statement] )
       | _ -> (), [statement]
   end)
@@ -3315,11 +3517,121 @@ let inline_six_metaclass ({ Source.statements; _ } as source) =
   { source with Source.statements = List.map ~f:inline_six_metaclass statements }
 
 
+let expand_starred_type_variable_tuple source =
+  let rec transform_annotation_expression ({ Node.value; _ } as expression) =
+    let transform_argument ({ Call.Argument.value; _ } as argument) =
+      { argument with Call.Argument.value = transform_annotation_expression value }
+    in
+    let value =
+      match value with
+      | Call
+          {
+            callee =
+              {
+                Node.value =
+                  Name
+                    (Name.Attribute
+                      {
+                        base =
+                          {
+                            Node.value =
+                              Name
+                                (Name.Attribute
+                                  {
+                                    base =
+                                      { Node.value = Name (Name.Identifier "typing_extensions"); _ };
+                                    attribute = "Literal";
+                                    _;
+                                  });
+                            _;
+                          };
+                        attribute = "__getitem__";
+                        _;
+                      });
+                _;
+              };
+            _;
+          } ->
+          (* Don't transform arguments in Literals. *)
+          value
+      | Call
+          {
+            callee =
+              { Node.value = Name (Name.Attribute { attribute = "__getitem__"; _ }); _ } as callee;
+            arguments;
+          } ->
+          Call { callee; arguments = List.map ~f:transform_argument arguments }
+      | Expression.Call { callee; arguments = variable_name :: remaining_arguments }
+        when name_is ~name:"typing.TypeVar" callee
+             || name_is ~name:"$local_typing$TypeVar" callee
+             || name_is ~name:"typing_extensions.IntVar" callee ->
+          Expression.Call
+            {
+              callee;
+              arguments = variable_name :: List.map ~f:transform_argument remaining_arguments;
+            }
+      | Starred
+          (Once
+            {
+              Node.value =
+                ( Name (Name.Identifier _)
+                | Call
+                    {
+                      callee =
+                        { Node.value = Name (Name.Attribute { attribute = "__getitem__"; _ }); _ };
+                      _;
+                    } ) as starred_value;
+              location;
+            }) ->
+          Expression.Call
+            {
+              callee =
+                {
+                  Node.location;
+                  value =
+                    Expression.Name
+                      (Attribute
+                         {
+                           base =
+                             {
+                               Node.location;
+                               value =
+                                 Name
+                                   (Name.Attribute
+                                      {
+                                        base =
+                                          {
+                                            Node.location;
+                                            value = Name (Identifier "pyre_extensions");
+                                          };
+                                        attribute = "Unpack";
+                                        special = false;
+                                      });
+                             };
+                           attribute = "__getitem__";
+                           special = true;
+                         });
+                };
+              arguments =
+                [
+                  {
+                    name = None;
+                    value = transform_annotation_expression { Node.location; value = starred_value };
+                  };
+                ];
+            }
+      | Tuple elements -> Tuple (List.map elements ~f:transform_annotation_expression)
+      | _ -> value
+    in
+    { expression with Node.value }
+  in
+  transform_annotations ~transform_annotation_expression source
+
+
 let preprocess_phase0 source =
   source
   |> expand_relative_imports
   |> replace_platform_specific_code
-  |> replace_version_specific_code
   |> expand_type_checking_imports
   |> expand_format_string
   |> expand_implicit_returns
@@ -3329,6 +3641,7 @@ let preprocess_phase1 source =
   source
   |> populate_unbound_names
   |> replace_union_shorthand
+  |> expand_starred_type_variable_tuple
   |> qualify
   |> replace_lazy_import
   |> expand_string_annotations

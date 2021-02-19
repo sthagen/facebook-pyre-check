@@ -303,10 +303,9 @@ let analyze_define
     | Analysis.ClassHierarchy.Untracked annotation ->
         Log.log
           ~section:`Info
-          "Could not generate model for `%a` due to invalid annotation `%a`"
+          "Could not generate model for `%a` due to invalid annotation `%s`"
           Reference.pp
           (Node.value name)
-          Analysis.Type.pp
           annotation;
         Result.Kind.Map.empty, Result.Kind.Map.empty
     | Sys.Break as exn -> analysis_failed step ~exn ~message:"Hit Ctrl+C" callable
@@ -668,13 +667,14 @@ let compute_fixpoint
         in
         callables_to_dump := Callable.Set.union !callables_to_dump iteration_callables_to_dump;
         Fixpoint.remove_old old_batch;
-        Log.log
-          ~section:`Performance
-          "Expensive callables for iteration %d: %s"
-          iteration
-          ( List.map iteration_expensive_callables ~f:(fun { time_to_analyze_in_ms; callable } ->
-                Format.sprintf "`%s`: %d ms" (Callable.show callable) time_to_analyze_in_ms)
-          |> String.concat ~sep:", " )
+        if not (List.is_empty iteration_expensive_callables) then
+          Log.log
+            ~section:`Performance
+            "Expensive callables for iteration %d: %s"
+            iteration
+            ( List.map iteration_expensive_callables ~f:(fun { time_to_analyze_in_ms; callable } ->
+                  Format.sprintf "`%s`: %d ms" (Callable.show callable) time_to_analyze_in_ms)
+            |> String.concat ~sep:", " )
       in
       let callables_to_analyze =
         compute_callables_to_reanalyze
@@ -686,10 +686,10 @@ let compute_fixpoint
       in
       let () =
         Log.info
-          "Iteration #%n, %d callables, heap size %n took %fs"
+          "Iteration #%n, %d callables, heap size %.3fGB took %.2fs"
           iteration
           number_of_callables
-          (SharedMem.heap_size ())
+          (Int.to_float (SharedMem.heap_size ()) /. 1000000000.0)
           (Timer.stop timer |> Time.Span.to_sec)
       in
       iterate ~iteration:(iteration + 1) callables_to_analyze
@@ -772,6 +772,7 @@ let save_results
   match result_json_path with
   | None -> ()
   | Some directory ->
+      let timer = Timer.start () in
       let models_path analysis_name = Format.sprintf "%s-output.json" analysis_name in
       let root = configuration.local_root |> Path.absolute in
       let save_models (Result.Analysis { Result.analysis; kind }) =
@@ -828,7 +829,12 @@ let save_results
       in
       List.iter analyses ~f:save_models;
       List.iter analyses ~f:save_metadata;
-      Log.info "Analysis results were written to `%s`." (Path.absolute directory)
+      Log.info "Analysis results were written to `%s`." (Path.absolute directory);
+      Statistics.performance
+        ~name:"Wrote analysis results"
+        ~phase_name:"Writing analysis results"
+        ~timer
+        ()
 
 
 let record_initial_models ~functions ~stubs models =

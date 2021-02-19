@@ -11,13 +11,13 @@ open Core
 open Ast
 open Pyre
 
-exception Cyclic
+exception Cyclic of String.Hash_set.t
 
 exception Incomplete
 
 exception InconsistentMethodResolutionOrder of Type.Primitive.t
 
-exception Untracked of Type.t
+exception Untracked of string
 
 module Target = struct
   type t = {
@@ -112,7 +112,7 @@ let is_instantiated (module Handler : Handler) annotation =
 
 let raise_if_untracked order annotation =
   if not (contains order annotation) then
-    raise (Untracked (Type.Primitive annotation))
+    raise (Untracked annotation)
 
 
 let method_resolution_order_linearize ~get_successors class_name =
@@ -145,18 +145,23 @@ let method_resolution_order_linearize ~get_successors class_name =
         let linearized_successors = List.filter_map ~f:(strip_head head) linearized_successors in
         head :: merge linearized_successors
   in
-  let rec linearize class_name =
+  let rec linearize ~visited class_name =
+    if Hash_set.mem visited class_name then (
+      Log.error "Order is cyclic:\nTrace: {%s}" (Hash_set.to_list visited |> String.concat ~sep:", ");
+      raise (Cyclic visited) );
+    let visited = Hash_set.copy visited in
+    Hash_set.add visited class_name;
     let linearized_successors =
       let create_annotation { Target.target = index; _ } = IndexTracker.annotation index in
       index_of class_name
       |> get_successors
       |> Option.value ~default:[]
       |> List.map ~f:create_annotation
-      |> List.map ~f:linearize
+      |> List.map ~f:(linearize ~visited)
     in
     class_name :: merge linearized_successors
   in
-  linearize class_name
+  linearize ~visited:(String.Hash_set.create ()) class_name
 
 
 let successors (module Handler : Handler) annotation =
@@ -174,13 +179,8 @@ let immediate_parents (module Handler : Handler) class_name =
 
 
 let clean not_clean =
-  let open Type.OrderedTypes.Concatenation in
   List.map not_clean ~f:(function
       | Type.Parameter.Single (Type.Variable variable) -> Some (Type.Variable.Unary variable)
-      | Group (Type.OrderedTypes.Concatenation concatenation) ->
-          unwrap_if_only_middle concatenation
-          >>= Middle.unwrap_if_bare
-          >>| fun variable -> Type.Variable.ListVariadic variable
       | CallableParameters (ParameterVariadicTypeVariable { head = []; variable }) ->
           Some (ParameterVariadic variable)
       | _ -> None)
@@ -296,15 +296,15 @@ let is_transitive_successor
   iterate worklist
 
 
-let instantiate_successors_parameters ((module Handler : Handler) as handler) ~source ~target =
+let instantiate_successors_parameters ((module Handler : Handler) as handler) ~join ~source ~target =
   raise_if_untracked handler target;
   let generic_index = IndexTracker.index generic_primitive in
   match source with
   | Type.Bottom ->
       let to_any = function
         | Type.Variable.Unary _ -> Type.Parameter.Single Type.Any
-        | ListVariadic _ -> Group Any
         | ParameterVariadic _ -> CallableParameters Undefined
+        | TupleVariadic _ -> failwith "not yet implemented - T84854853"
       in
       index_of target
       |> Handler.edges
@@ -315,15 +315,17 @@ let instantiate_successors_parameters ((module Handler : Handler) as handler) ~s
       let split =
         match Type.split source with
         | Primitive primitive, _ when not (contains handler primitive) -> None
-        | Primitive "tuple", [Type.Parameter.Group parameters] ->
-            Some
-              ( "tuple",
-                [
-                  Type.Parameter.Single
-                    (Type.weaken_literals (Type.OrderedTypes.union_upper_bound parameters));
-                ] )
-        | Primitive "tuple", [Type.Parameter.Single parameter] ->
-            Some ("tuple", [Type.Parameter.Single (Type.weaken_literals parameter)])
+        | Type.Primitive ("tuple" as primitive), parameters -> (
+            match Type.Parameter.all_singles parameters with
+            | Some singles ->
+                (* Handle cases like `Tuple[int, int]` <= `Iterator[int]`. *)
+                let parameters =
+                  [List.fold ~init:Type.Bottom ~f:join singles]
+                  |> List.map ~f:(fun annotation ->
+                         Type.Parameter.Single (Type.weaken_literals annotation))
+                in
+                Some (primitive, parameters)
+            | None -> Some (primitive, parameters) )
         | Primitive primitive, parameters -> Some (primitive, parameters)
         | _ ->
             (* We can only propagate from those that actually split off a primitive *)
@@ -350,27 +352,21 @@ let instantiate_successors_parameters ((module Handler : Handler) as handler) ~s
                   let replacement = function
                     | Type.Parameter.Single parameter, Type.Variable.Unary variable ->
                         Type.Variable.UnaryPair (variable, parameter)
-                    | CallableParameters _, Unary variable
-                    | Group _, Unary variable ->
+                    | CallableParameters _, Unary variable ->
                         Type.Variable.UnaryPair (variable, Type.Any)
-                    | Group parameter, ListVariadic variable ->
-                        Type.Variable.ListVariadicPair (variable, parameter)
-                    | CallableParameters _, ListVariadic variable
-                    | Single _, ListVariadic variable ->
-                        Type.Variable.ListVariadicPair (variable, Any)
                     | CallableParameters parameters, ParameterVariadic variable ->
                         Type.Variable.ParameterVariadicPair (variable, parameters)
-                    | Single _, ParameterVariadic variable
-                    | Group _, ParameterVariadic variable ->
+                    | Single _, ParameterVariadic variable ->
                         Type.Variable.ParameterVariadicPair (variable, Undefined)
+                    | Unpacked _, _ -> failwith "not yet implemented - T84854853"
+                    | _, TupleVariadic _ -> failwith "not yet implemented - T84854853"
                   in
                   let replacement =
                     let to_any = function
                       | Type.Variable.Unary variable -> Type.Variable.UnaryPair (variable, Type.Any)
-                      | ListVariadic variable ->
-                          Type.Variable.ListVariadicPair (variable, Type.OrderedTypes.Any)
                       | ParameterVariadic variable ->
                           Type.Variable.ParameterVariadicPair (variable, Undefined)
+                      | TupleVariadic _ -> failwith "not yet implemented - T84854853"
                     in
 
                     Type.Variable.zip_on_parameters ~parameters variables
@@ -385,14 +381,12 @@ let instantiate_successors_parameters ((module Handler : Handler) as handler) ~s
                       | Type.Parameter.Single single ->
                           Type.Parameter.Single
                             (TypeConstraints.Solution.instantiate replacement single)
-                      | Group group ->
-                          Group
-                            (TypeConstraints.Solution.instantiate_ordered_types replacement group)
                       | CallableParameters parameters ->
                           CallableParameters
                             (TypeConstraints.Solution.instantiate_callable_parameters
                                replacement
                                parameters)
+                      | Unpacked _ -> failwith "not yet implemented - T84854853"
                     in
                     { Target.target; parameters = List.map parameters ~f:instantiate }
                   in
@@ -433,12 +427,9 @@ let check_integrity (module Handler : Handler) ~(indices : IndexTracker.t list) 
     if not (Set.mem !started_from start) then
       let rec visit reverse_visited index =
         if List.mem ~equal:IndexTracker.equal reverse_visited index then (
-          let trace =
-            List.rev_map ~f:IndexTracker.annotation (index :: reverse_visited)
-            |> String.concat ~sep:" -> "
-          in
-          Log.error "Order is cyclic:\nTrace: %s" (* (Handler.show ()) *) trace;
-          raise Cyclic )
+          let trace = List.rev_map ~f:IndexTracker.annotation (index :: reverse_visited) in
+          Log.error "Order is cyclic:\nTrace: %s" (String.concat ~sep:" -> " trace);
+          raise (Cyclic (String.Hash_set.of_list trace)) )
         else if not (Set.mem !started_from index) then (
           started_from := Set.add !started_from index;
           match Handler.edges index with

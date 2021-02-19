@@ -40,6 +40,42 @@ end)
 module FirstIndexSet = Abstract.SetDomain.Make (FirstIndex)
 module FirstFieldSet = Abstract.SetDomain.Make (FirstField)
 
+module TitoPosition = struct
+  let name = "tito positions"
+
+  type t = Location.t [@@deriving show, compare]
+
+  let max_count () = Configuration.maximum_tito_positions
+end
+
+module TitoPositionSet = Abstract.ToppedSetDomain.Make (TitoPosition)
+
+module LeafName = struct
+  let name = "leaf names"
+
+  type t = {
+    leaf: string;
+    port: string option;
+  }
+  [@@deriving show, compare]
+
+  let pp formatter { leaf; port } =
+    match port with
+    | None -> Format.fprintf formatter "LeafName(%s)" leaf
+    | Some port -> Format.fprintf formatter "LeafName(%s, port=%s)" leaf port
+
+
+  let to_json ~leaf_kind_json { leaf; port } =
+    let port_assoc =
+      match port with
+      | Some port -> ["port", `String port]
+      | None -> []
+    in
+    `Assoc (port_assoc @ ["kind", leaf_kind_json; "name", `String leaf])
+end
+
+module LeafNameSet = Abstract.SetDomain.Make (LeafName)
+
 module Breadcrumb = struct
   type t =
     | FormatString (* Via f"{something}" *)
@@ -90,16 +126,6 @@ module Simple = struct
   let name = "simple features"
 
   type t =
-    | LeafName of {
-        leaf: string;
-        port: string option;
-      }
-    | CrossRepositoryTaintInformation of {
-        producer_id: int;
-        canonical_name: string;
-        canonical_port: string;
-      }
-    | TitoPosition of Location.WithModule.t
     | Breadcrumb of Breadcrumb.t
     | ViaValueOf of {
         parameter: AccessPath.Root.t;
@@ -112,11 +138,6 @@ module Simple = struct
   [@@deriving show { with_path = false }, compare]
 
   let pp formatter = function
-    | LeafName { leaf; port } -> (
-        match port with
-        | None -> Format.fprintf formatter "LeafName(%s)" leaf
-        | Some port -> Format.fprintf formatter "LeafName(%s, port=%s)" leaf port )
-    | TitoPosition location -> Format.fprintf formatter "Tito(%a)" Location.WithModule.pp location
     | Breadcrumb breadcrumb -> Format.fprintf formatter "%a" Breadcrumb.pp breadcrumb
     | simple -> pp formatter simple
 
@@ -145,15 +166,6 @@ module Simple = struct
 end
 
 module SimpleSet = Abstract.OverUnderSetDomain.Make (Simple)
-
-let strip_simple_feature_for_callsite features =
-  let strip feature =
-    match feature.Abstract.OverUnderSetDomain.element with
-    | Simple.TitoPosition _ -> None
-    | _ -> Some feature
-  in
-  List.filter_map ~f:strip features
-
 
 (* Set of complex features, where element can be abstracted and joins are expensive. Should only be
    used for elements that need this kind of joining. *)

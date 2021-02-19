@@ -32,10 +32,15 @@ module T : sig
       }
     | InvalidModelQueryClauses of Expression.Call.Argument.t list
     | InvalidParameterExclude of Expression.t
+    | InvalidTaintAnnotation of {
+        taint_annotation: Expression.t;
+        reason: string;
+      }
     | MissingAttribute of {
         class_name: string;
         attribute_name: string;
       }
+    | ModelingClassAsDefine of string
     | NotInEnvironment of string
     | UnexpectedDecorators of {
         name: Reference.t;

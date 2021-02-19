@@ -397,22 +397,14 @@ let test_register_aliases context =
     List.iter aliases ~f:assert_alias
   in
   assert_resolved
-    [
-      ( "test.py",
-        {|
+    ["test.py", {|
           Tparams = pyre_extensions.ParameterSpecification('Tparams')
-          Ts = pyre_extensions.ListVariadic('Ts')
-      |}
-      );
-    ]
+      |}]
     [
       ( "test.Tparams",
         Type.VariableAlias
           (Type.Variable.ParameterVariadic (Type.Variable.Variadic.Parameters.create "test.Tparams"))
       );
-      ( "test.Ts",
-        Type.VariableAlias
-          (Type.Variable.ListVariadic (Type.Variable.Variadic.List.create "test.Ts")) );
     ];
   ()
 
@@ -764,7 +756,7 @@ let test_populate context =
       |}]
       |> ignore
     with
-  | ClassHierarchy.Cyclic -> assert_unreached () );
+  | ClassHierarchy.Cyclic _ -> assert_unreached () );
 
   (* Check meta variables are registered. *)
   let assert_global =
@@ -970,7 +962,7 @@ let test_join_type_order context =
   assert_equal
     (TypeOrder.join order (Type.Union [Type.integer; Type.string]) Type.integer)
     (Type.Union [Type.integer; Type.string]);
-  assert_raises (ClassHierarchy.Untracked (Type.Primitive "test.durp")) (fun _ ->
+  assert_raises (ClassHierarchy.Untracked "test.durp") (fun _ ->
       TypeOrder.join order bar (Type.Primitive "test.durp"));
 
   (* Special cases. *)

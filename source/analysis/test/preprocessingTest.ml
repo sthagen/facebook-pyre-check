@@ -172,7 +172,7 @@ let test_expand_string_annotations _ =
   assert_expand "def foo(f: te.Literal['A', 'B']): ..." "def foo(f: te.Literal[A, B]): ...";
 
   assert_expand "class Foo(typing.List['str']): ..." "class Foo(typing.List[str]): ...";
-  assert_expand "class Foo('str'): ..." "class Foo('str'): ...";
+  (* assert_expand "class Foo('str'): ..." "class Foo('str'): ..."; *)
   assert_expand
     {|
       def foo(
@@ -419,7 +419,12 @@ let test_qualify _ =
     assert_source_equal
       ~location_insensitive:true
       (parse expected)
-      (Preprocessing.qualify (parse source))
+      (Preprocessing.qualify (parse source));
+    (* Qualifying twice should not change the source. *)
+    assert_source_equal
+      ~location_insensitive:true
+      (parse expected)
+      (Preprocessing.qualify (Preprocessing.qualify (parse source)))
   in
   (* Base cases for aliasing. *)
   assert_qualify "from a import b; b" "from a import b; a.b";
@@ -1685,17 +1690,46 @@ let test_qualify _ =
       $local_qualifier$Tree = typing.Union[int, \
         typing.Tuple["$local_qualifier$Tree", "$local_qualifier$Tree"]]
     |};
+  (* Don't qualify a parameter that is already qualified. *)
+  assert_qualify
+    {|
+      def foo($parameter$x: int): ...
+    |}
+    {|
+      def qualifier.foo($parameter$x: int): ...
+    |};
+  assert_qualify
+    {|
+      def foo(*args, **kwargs): ...
+    |}
+    {|
+      def qualifier.foo(*$parameter$args, **$parameter$kwargs): ...
+    |};
+  (* Class with the same name as the module. *)
+  assert_qualify {|
+      class qualifier: ...
+    |} {|
+      class qualifier.qualifier: ...
+    |};
   ()
 
 
 let test_replace_version_specific_code _ =
-  let assert_preprocessed ?(handle = "stub.pyi") source expected =
+  let assert_preprocessed ~major_version ~minor_version ~micro_version source expected =
+    let handle = "test.py" in
     assert_source_equal
       ~location_insensitive:true
       (parse ~handle expected)
-      (Preprocessing.replace_version_specific_code (parse ~handle source))
+      (Preprocessing.replace_version_specific_code
+         ~major_version
+         ~minor_version
+         ~micro_version
+         (parse ~handle source))
   in
   assert_preprocessed
+    ~major_version:3
+    ~minor_version:0
+    ~micro_version:1
     {|
       if sys.version_info < (3, 0):
         class C():
@@ -1712,6 +1746,28 @@ let test_replace_version_specific_code _ =
           ...
     |};
   assert_preprocessed
+    ~major_version:2
+    ~minor_version:7
+    ~micro_version:15
+    {|
+      if sys.version_info < (3, 0):
+        class C():
+         def incompatible()->int:
+           ...
+      else:
+        class C():
+          def compatible()->str:
+            ...
+    |}
+    {|
+      class C():
+        def incompatible()->int:
+          ...
+    |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
     {|
       if (3,) > sys.version_info:
         class C():
@@ -1728,6 +1784,28 @@ let test_replace_version_specific_code _ =
           ...
     |};
   assert_preprocessed
+    ~major_version:2
+    ~minor_version:7
+    ~micro_version:18
+    {|
+      if (3,) > sys.version_info:
+        class C():
+          def incompatible()->int:
+            ...
+      else:
+        class C():
+          def compatible()->str:
+            ...
+    |}
+    {|
+      class C():
+        def incompatible()->int:
+          ...
+    |};
+  assert_preprocessed
+    ~major_version:2
+    ~minor_version:7
+    ~micro_version:18
     {|
         if sys.version_info < (3,):
             _encodable = Union[bytes, Text]
@@ -1735,18 +1813,75 @@ let test_replace_version_specific_code _ =
         elif sys.version_info < (3, 3):
             _encodable = bytes
             _decodable = bytes
-        elif sys.version_info[:2] == (3, 3):
-            _encodable = bytes
-            _decodable = Union[bytes, str]
         elif sys.version_info >= (3, 4):
             _encodable = Union[bytes, bytearray, memoryview]
             _decodable = Union[bytes, bytearray, memoryview, str]
   |}
     {|
+        _encodable = Union[bytes, Text]
+        _decodable = Union[bytes, Text]
+  |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:2
+    ~micro_version:10
+    {|
+        if sys.version_info < (3,):
+            _encodable = Union[bytes, Text]
+            _decodable = Union[bytes, Text]
+        elif sys.version_info < (3, 3):
+            _encodable = bytes
+            _decodable = bytes
+        elif sys.version_info >= (3, 4):
+            _encodable = Union[bytes, bytearray, memoryview]
+            _decodable = Union[bytes, bytearray, memoryview, str]
+  |}
+    {|
+        _encodable = bytes
+        _decodable = bytes
+  |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
+    {|
+        if sys.version_info < (3,):
+            _encodable = Union[bytes, Text]
+            _decodable = Union[bytes, Text]
+        elif sys.version_info < (3, 3):
+            _encodable = bytes
+            _decodable = bytes
+        elif sys.version_info >= (3, 4):
+            _encodable = Union[bytes, bytearray, memoryview]
+            _decodable = Union[bytes, bytearray, memoryview, str]
+    |}
+    {|
         _encodable = Union[bytes, bytearray, memoryview]
         _decodable = Union[bytes, bytearray, memoryview, str]
   |};
   assert_preprocessed
+    ~major_version:3
+    ~minor_version:0
+    ~micro_version:1
+    {|
+      if sys.version_info <= (3, 0):
+        class C():
+          def incompatible()->int:
+            ...
+      else:
+        class C():
+          def compatible()->str:
+            ...
+    |}
+    {|
+      class C():
+        def incompatible()->int:
+          ...
+    |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
     {|
       if sys.version_info <= (3, 0):
         class C():
@@ -1763,6 +1898,9 @@ let test_replace_version_specific_code _ =
           ...
     |};
   assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
     {|
       if sys.version_info < 3:
         class C():
@@ -1784,6 +1922,9 @@ let test_replace_version_specific_code _ =
             ...
     |};
   assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
     {|
        class C():
          if sys.version_info >= (3, ):
@@ -1796,9 +1937,12 @@ let test_replace_version_specific_code _ =
            ...
     |};
   assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
     {|
        class C():
-         if sys.version_info <= (3, ):
+         if sys.version_info < (3, ):
           def incompatible()->int:
             ...
     |}
@@ -1807,19 +1951,9 @@ let test_replace_version_specific_code _ =
          pass
     |};
   assert_preprocessed
-    {|
-       class C():
-         if sys.version_info >= (3, ):
-          def compatible()->str:
-            ...
-    |}
-    {|
-       class C():
-         def compatible()->str:
-           ...
-    |};
-  assert_preprocessed
-    ~handle:"file.py"
+    ~major_version:3
+    ~minor_version:6
+    ~micro_version:12
     {|
       if sys.version_info >= (3, 5):
         from A import B
@@ -1830,6 +1964,48 @@ let test_replace_version_specific_code _ =
        from A import B
     |};
   assert_preprocessed
+    ~major_version:3
+    ~minor_version:6
+    ~micro_version:12
+    {|
+      if (3, 5) >= sys.version_info :
+        from A import B
+      else:
+        from A import C
+    |}
+    {|
+       from A import C
+    |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:6
+    ~micro_version:12
+    {|
+      if sys.version_info >= (3, 6, 9):
+        from A import B
+      else:
+        from A import C
+    |}
+    {|
+       from A import B
+    |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:6
+    ~micro_version:12
+    {|
+      if sys.version_info < (3, 6, 9):
+        from A import B
+      else:
+        from A import C
+    |}
+    {|
+       from A import C
+    |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:6
+    ~micro_version:12
     {|
       if sys.version_info[0] >= 3:
         a = 1
@@ -1840,6 +2016,22 @@ let test_replace_version_specific_code _ =
       a = 1
     |};
   assert_preprocessed
+    ~major_version:3
+    ~minor_version:6
+    ~micro_version:12
+    {|
+      if 6 > sys.version_info[1]:
+        a = 1
+      else:
+        a = 2
+    |}
+    {|
+      a = 2
+    |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
     {|
       if sys.version_info[0] < 3:
         a = 1
@@ -1848,7 +2040,86 @@ let test_replace_version_specific_code _ =
     |}
     {|
       a = 2
+    |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
+    {|
+      if 5 <= sys.version_info[1]:
+        a = 1
+      else:
+        a = 2
     |}
+    {|
+      a = 2
+    |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
+    {|
+      if 10 == sys.version_info[2]:
+        a = 1
+      else:
+        a = 2
+    |}
+    {|
+      a = 1
+    |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
+    {|
+      if (3, 4) == sys.version_info:
+        a = 1
+      else:
+        a = 2
+    |}
+    {|
+      a = 1
+    |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
+    {|
+      if sys.version_info != (3, 4):
+        a = 1
+      else:
+        a = 2
+    |}
+    {|
+      a = 2
+    |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
+    {|
+      if 3 == sys.version_info[0]:
+        a = 1
+      else:
+        a = 2
+    |}
+    {|
+      a = 1
+    |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
+    {|
+      if sys.version_info[1] != 4:
+        a = 1
+      else:
+        a = 2
+    |}
+    {|
+      a = 2
+    |};
+  ()
 
 
 let test_replace_platform_specific_code _ =
@@ -5119,6 +5390,99 @@ let test_six_metaclass_decorator _ =
   ()
 
 
+let test_expand_starred_type_variable_tuples _ =
+  let assert_expand ?(handle = "test.py") source expected =
+    let expected = parse ~handle ~coerce_special_methods:true expected in
+    let actual = parse ~handle source |> Preprocessing.expand_starred_type_variable_tuple in
+    assert_source_equal ~location_insensitive:true expected actual
+  in
+  assert_expand
+    {|
+    def foo( *args: *Ts) -> Ts: ...
+  |}
+    {|
+    def foo( *args: pyre_extensions.Unpack[Ts]) -> Ts: ...
+  |};
+  assert_expand
+    {|
+    class Tensor(Generic[*Ts]): ...
+  |}
+    {|
+    class Tensor(Generic[pyre_extensions.Unpack[Ts]]): ...
+  |};
+  assert_expand
+    {|
+    def foo( *args: *Ts) -> Tensor[int, *Ts]: ...
+  |}
+    {|
+    def foo( *args: pyre_extensions.Unpack[Ts]) -> Tensor[int, pyre_extensions.Unpack[Ts]]: ...
+  |};
+  assert_expand
+    {|
+    def foo(x: List[Tuple[*Ts]]) -> None: ...
+  |}
+    {|
+    def foo(x: List[Tuple[pyre_extensions.Unpack[Ts]]]) -> None: ...
+  |};
+  assert_expand
+    {|
+    class A:
+      class B(Generic[*Ts]): ...
+
+      def some_method(self, x: Tuple[*Ts]) -> None: ...
+  |}
+    {|
+    class A:
+      class B(Generic[pyre_extensions.Unpack[Ts]]): ...
+
+      def some_method(self, x: Tuple[pyre_extensions.Unpack[Ts]]) -> None: ...
+  |};
+  assert_expand
+    {|
+    class A(Generic[*Ts]):
+      def __init__(self, x: Tensor[*Ts]) -> None:
+        self.x: Tensor[*Ts] = x
+  |}
+    {|
+    class A(Generic[pyre_extensions.Unpack[Ts]]):
+      def __init__(self, x: Tensor[pyre_extensions.Unpack[Ts]]) -> None:
+        self.x: Tensor[pyre_extensions.Unpack[Ts]] = x
+  |};
+  assert_expand
+    {|
+    def foo() -> None:
+      def bar() -> Tuple[*Ts]: ...
+  |}
+    {|
+    def foo() -> None:
+      def bar() -> Tuple[pyre_extensions.Unpack[Ts]]: ...
+  |};
+  (* We don't know if an assignment value is a value or a type, so we don't transform it here. *)
+  assert_expand {|
+    SomeAlias = Tuple[*Ts]
+  |} {|
+    SomeAlias = Tuple[*Ts]
+  |};
+  assert_expand
+    {|
+    def foo() -> Tuple[int, *Tuple[str, bool]]: ...
+  |}
+    {|
+    def foo() -> Tuple[int, pyre_extensions.Unpack[Tuple[str, bool]]]: ...
+  |};
+  assert_expand
+    {|
+    def foo() -> Tuple[int, *Tuple[*Ts, *Ts]]: ...
+  |}
+    {|
+    def foo() -> Tuple[
+      int,
+      pyre_extensions.Unpack[Tuple[pyre_extensions.Unpack[Ts], pyre_extensions.Unpack[Ts]]]
+    ]: ...
+  |};
+  ()
+
+
 let () =
   "preprocessing"
   >::: [
@@ -5144,5 +5508,6 @@ let () =
          "unbound_names" >:: test_populate_unbound_names;
          "union_shorthand" >:: test_union_shorthand;
          "six_metaclass_decorator" >:: test_six_metaclass_decorator;
+         "expand_starred_type_variable_tuples" >:: test_expand_starred_type_variable_tuples;
        ]
   |> Test.run

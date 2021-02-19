@@ -16,37 +16,6 @@ let empty_head variable = { Type.Callable.head = []; variable }
 
 let ( ! ) concretes = List.map concretes ~f:(fun single -> Type.Parameter.Single single)
 
-let create_concatenation ?head ?tail ?mappers variable
-    : (Type.t Type.OrderedTypes.Concatenation.Middle.t, Type.t) Type.OrderedTypes.Concatenation.t
-  =
-  let mappers = Option.value mappers ~default:[] in
-  Type.OrderedTypes.Concatenation.create
-    ?head
-    ?tail
-    (Type.OrderedTypes.Concatenation.Middle.create
-       ~mappers:
-         (List.map
-            ~f:(fun name -> Type.Record.OrderedTypes.RecordConcatenate.Middle.ClassMapper name)
-            mappers)
-       ~variable)
-
-
-let create_concatenation_with_generic_alias_mapper ?head ?tail ?mappers variable
-    : (Type.t Type.OrderedTypes.Concatenation.Middle.t, Type.t) Type.OrderedTypes.Concatenation.t
-  =
-  let mappers = Option.value mappers ~default:[] in
-  Type.OrderedTypes.Concatenation.create
-    ?head
-    ?tail
-    (Type.OrderedTypes.Concatenation.Middle.create
-       ~mappers:
-         (List.map
-            ~f:(fun annotation ->
-              Type.Record.OrderedTypes.RecordConcatenate.Middle.GenericAliasMapper annotation)
-            mappers)
-       ~variable)
-
-
 let test_create _ =
   let assert_create ?(aliases = fun _ -> None) source annotation =
     assert_equal
@@ -66,86 +35,6 @@ let test_create _ =
   assert_create
     "foo[bar, baz]"
     (Type.parametric "foo" ![Type.Primitive "bar"; Type.Primitive "baz"]);
-  let variadic = Type.Variable.Variadic.List.create "Ts" in
-  let unary_variable = Type.Variable.Unary.create "T" in
-  assert_create
-    ~aliases:(function
-      | "Ts" -> Some (VariableAlias (Type.Variable.ListVariadic variadic))
-      | _ -> None)
-    "foo[Ts]"
-    (Type.parametric "foo" [Group (Type.Variable.Variadic.List.self_reference variadic)]);
-  assert_create
-    ~aliases:(function
-      | "Ts" -> Some (VariableAlias (Type.Variable.ListVariadic variadic))
-      | _ -> None)
-    "foo[pyre_extensions.type_variable_operators.Map[typing.List, Ts]]"
-    (Type.parametric
-       "foo"
-       [Group (Concatenation (create_concatenation ~mappers:["list"] variadic))]);
-  assert_create
-    ~aliases:(function
-      | "Ts" -> Some (VariableAlias (Type.Variable.ListVariadic variadic))
-      | "T" -> Some (TypeAlias (Type.Variable unary_variable))
-      | _ -> None)
-    "foo[pyre_extensions.type_variable_operators.Map[typing.Union[T, int], Ts]]"
-    (Type.parametric
-       "foo"
-       [
-         Group
-           (Concatenation
-              (create_concatenation_with_generic_alias_mapper
-                 ~mappers:[Type.union [Type.Variable unary_variable; Type.integer]]
-                 variadic));
-       ]);
-  assert_create
-    ~aliases:(function
-      | "Ts" -> Some (VariableAlias (Type.Variable.ListVariadic variadic))
-      | _ -> None)
-    "foo[pyre_extensions.type_variable_operators.Concatenate[int, bool, Ts]]"
-    (Type.parametric
-       "foo"
-       [Group (Concatenation (create_concatenation ~head:[Type.integer; Type.bool] variadic))]);
-  assert_create
-    ~aliases:(function
-      | "Ts" -> Some (VariableAlias (Type.Variable.ListVariadic variadic))
-      | _ -> None)
-    "foo[pyre_extensions.type_variable_operators.Concatenate[Ts, int, bool]]"
-    (Type.parametric
-       "foo"
-       [Group (Concatenation (create_concatenation ~tail:[Type.integer; Type.bool] variadic))]);
-  assert_create
-    ~aliases:(function
-      | "Ts" -> Some (VariableAlias (Type.Variable.ListVariadic variadic))
-      | _ -> None)
-    "foo[pyre_extensions.type_variable_operators.Concatenate[int, Ts, bool]]"
-    (Type.parametric
-       "foo"
-       [
-         Group (Concatenation (create_concatenation ~head:[Type.integer] ~tail:[Type.bool] variadic));
-       ]);
-  assert_create
-    ~aliases:(function
-      | "Ts" -> Some (VariableAlias (Type.Variable.ListVariadic variadic))
-      | _ -> None)
-    "foo[pyre_extensions.type_variable_operators.Concatenate[int, \
-     pyre_extensions.type_variable_operators.Map[list, Ts], bool]]"
-    (Type.parametric
-       "foo"
-       [
-         Group
-           (Concatenation
-              (create_concatenation
-                 ~head:[Type.integer]
-                 ~tail:[Type.bool]
-                 ~mappers:["list"]
-                 variadic));
-       ]);
-  assert_create
-    ~aliases:(function
-      | "Ts" -> Some (VariableAlias (Type.Variable.ListVariadic variadic))
-      | _ -> None)
-    "foo[...]"
-    (Type.parametric "foo" [Group Any]);
   assert_create "typing.List.__getitem__(int)" (Type.list Type.integer);
   assert_create
     "typing.Dict.__getitem__((int, str))"
@@ -437,52 +326,6 @@ let test_create _ =
   assert_create
     "typing.Callable[..., function]"
     (Type.Callable.create ~annotation:(Type.Callable.create ~annotation:Type.Any ()) ());
-  assert_create
-    ~aliases:(function
-      | "Ts" -> Some (Type.VariableAlias (ListVariadic (Type.Variable.Variadic.List.create "Ts")))
-      | _ -> None)
-    "typing.Tuple[Ts]"
-    (Type.Tuple
-       (Bounded (Concatenation (create_concatenation (Type.Variable.Variadic.List.create "Ts")))));
-  assert_create "typing.Tuple[...]" (Type.Tuple (Bounded Any));
-  assert_create
-    ~aliases:(function
-      | "Ts" -> Some (Type.VariableAlias (ListVariadic (Type.Variable.Variadic.List.create "Ts")))
-      | _ -> None)
-    "typing.Callable[Ts, int]"
-    (Type.Callable.create
-       ~parameters:
-         (Defined
-            [
-              Variable
-                (Concatenation (create_concatenation (Type.Variable.Variadic.List.create "Ts")));
-            ])
-       ~annotation:Type.integer
-       ());
-  assert_create
-    ~aliases:(function
-      | "Ts" -> Some (Type.VariableAlias (ListVariadic (Type.Variable.Variadic.List.create "Ts")))
-      | _ -> None)
-    "typing.Callable[[int, Variable(Ts)], int]"
-    (Type.Callable.create
-       ~parameters:
-         (Defined
-            [
-              PositionalOnly { index = 0; annotation = Type.integer; default = false };
-              Variable
-                (Concatenation (create_concatenation (Type.Variable.Variadic.List.create "Ts")));
-            ])
-       ~annotation:Type.integer
-       ());
-  assert_create
-    ~aliases:(function
-      | "Ts" -> Some (Type.VariableAlias (ListVariadic (Type.Variable.Variadic.List.create "Ts")))
-      | _ -> None)
-    "typing.Tuple[pyre_extensions.type_variable_operators.Map[typing.List, Ts]]"
-    (Type.Tuple
-       (Bounded
-          (Concatenation
-             (create_concatenation ~mappers:["list"] (Type.Variable.Variadic.List.create "Ts")))));
 
   assert_create "typing_extensions.Literal['foo']" (Type.literal_string "foo");
   assert_create "typing_extensions.Literal[u'foo']" (Type.literal_string "foo");
@@ -506,6 +349,98 @@ let test_create _ =
   assert_create "typing_extensions.Literal[ONE]" Type.Top;
   assert_create "typing_extensions.Literal[None]" Type.none;
   assert_create "_NotImplementedType" Type.Any;
+  ()
+
+
+let test_create_variadic_tuple _ =
+  let assert_create ?(aliases = fun _ -> None) source annotation =
+    assert_equal
+      ~printer:Type.show
+      ~cmp:Type.equal
+      annotation
+      (Type.create
+         ~aliases:(fun ?replace_unbound_parameters_with_any:_ -> aliases)
+         (parse_single_expression ~preprocess:true source))
+  in
+  let variadic = Type.Variable.Variadic.Tuple.create "Ts" in
+  (* Parametric types. *)
+  assert_create
+    ~aliases:(function
+      | "Ts" -> Some (VariableAlias (Type.Variable.TupleVariadic variadic))
+      | _ -> None)
+    "Foo[pyre_extensions.Unpack[Ts]]"
+    (Type.parametric "Foo" [Unpacked (Type.OrderedTypes.Concatenation.create_unpackable variadic)]);
+  assert_create
+    ~aliases:(function
+      | "Ts" -> Some (VariableAlias (Type.Variable.TupleVariadic variadic))
+      | _ -> None)
+    "Foo[int, pyre_extensions.Unpack[Ts], str]"
+    (Type.parametric
+       "Foo"
+       [
+         Single Type.integer;
+         Unpacked (Type.OrderedTypes.Concatenation.create_unpackable variadic);
+         Single Type.string;
+       ]);
+  assert_create
+    ~aliases:(function
+      | "Ts" -> Some (VariableAlias (Type.Variable.TupleVariadic variadic))
+      | _ -> None)
+    "Foo[pyre_extensions.Unpack[typing.Tuple[int, str]]]"
+    (Type.parametric "Foo" [Single Type.integer; Single Type.string]);
+  (* Nested unpacks get normalized. *)
+  assert_create
+    ~aliases:(function
+      | "Ts" -> Some (VariableAlias (Type.Variable.TupleVariadic variadic))
+      | _ -> None)
+    "Foo[int, pyre_extensions.Unpack[typing.Tuple[str, pyre_extensions.Unpack[Ts]]]]"
+    (Type.parametric
+       "Foo"
+       [
+         Single Type.integer;
+         Single Type.string;
+         Unpacked (Type.OrderedTypes.Concatenation.create_unpackable variadic);
+       ]);
+
+  (* Tuples. *)
+  assert_create
+    ~aliases:(function
+      | "Ts" -> Some (VariableAlias (Type.Variable.TupleVariadic variadic))
+      | _ -> None)
+    "typing.Tuple[pyre_extensions.Unpack[Ts]]"
+    (Type.Tuple (Bounded (Concatenation (Type.OrderedTypes.Concatenation.create variadic))));
+  assert_create
+    ~aliases:(function
+      | "Ts" -> Some (VariableAlias (Type.Variable.TupleVariadic variadic))
+      | _ -> None)
+    "typing.Tuple[int, pyre_extensions.Unpack[Ts], str]"
+    (Type.Tuple
+       (Bounded
+          (Concatenation
+             (Type.OrderedTypes.Concatenation.create
+                ~prefix:[Type.integer]
+                ~suffix:[Type.string]
+                variadic))));
+  assert_create
+    ~aliases:(function
+      | "Ts" -> Some (VariableAlias (Type.Variable.TupleVariadic variadic))
+      | _ -> None)
+    "typing.Tuple[pyre_extensions.Unpack[Ts], pyre_extensions.Unpack[Ts]]"
+    Type.Top;
+  assert_create
+    ~aliases:(function
+      | "Ts" -> Some (VariableAlias (Type.Variable.TupleVariadic variadic))
+      | _ -> None)
+    "typing.Tuple[pyre_extensions.Unpack[typing.Tuple[int, str]]]"
+    (Type.tuple [Type.integer; Type.string]);
+  (* Nested concrete unpacks get normalized. *)
+  assert_create
+    ~aliases:(function
+      | "Ts" -> Some (VariableAlias (Type.Variable.TupleVariadic variadic))
+      | _ -> None)
+    "typing.Tuple[bool, pyre_extensions.Unpack[typing.Tuple[int, \
+     pyre_extensions.Unpack[typing.Tuple[int, str]]]]]"
+    (Type.tuple [Type.bool; Type.integer; Type.integer; Type.string]);
   ()
 
 
@@ -610,33 +545,6 @@ let test_expression _ =
     (Type.Tuple (Type.Unbounded Type.integer))
     "typing.Tuple.__getitem__((int, ...))";
   assert_expression (Type.parametric "list" ![Type.integer]) "typing.List.__getitem__(int)";
-  assert_expression
-    (Type.parametric
-       "foo.Variadic"
-       [Group (Concatenation (create_concatenation (Type.Variable.Variadic.List.create "Ts")))])
-    "foo.Variadic.__getitem__(Ts)";
-  assert_expression (Type.parametric "foo.Variadic" [Group Any]) "foo.Variadic.__getitem__(...)";
-  assert_expression
-    (Type.parametric
-       "foo.Variadic"
-       [
-         Group
-           (Concatenation
-              (create_concatenation ~mappers:["Foo"] (Type.Variable.Variadic.List.create "Ts")));
-       ])
-    "foo.Variadic.__getitem__(pyre_extensions.type_variable_operators.Map.__getitem__((Foo, Ts)))";
-  assert_expression
-    (Type.parametric
-       "foo.SomeVariadic"
-       [
-         Group
-           (Concatenation
-              (create_concatenation_with_generic_alias_mapper
-                 ~mappers:[Type.list (Type.Variable (Type.Variable.Unary.create "T"))]
-                 (Type.Variable.Variadic.List.create "Ts")));
-       ])
-    "foo.SomeVariadic.__getitem__(pyre_extensions.type_variable_operators.Map.__getitem__((typing.List.__getitem__((T)), \
-     Ts)))";
 
   (* Callables. *)
   let open Type.Callable in
@@ -1192,14 +1100,6 @@ let test_is_resolved _ =
           ~parameters:(Type.Callable.ParameterVariadicTypeVariable (empty_head parameter_variadic))
           ~annotation:Type.integer
           ()));
-  let list_variadic = Type.Variable.Variadic.List.create "Ts" in
-  assert_false
-    (Type.Variable.all_variables_are_resolved
-       (Type.Tuple (Bounded (Concatenation (create_concatenation list_variadic)))));
-  let list_variadic = list_variadic |> Type.Variable.Variadic.List.mark_as_bound in
-  assert_true
-    (Type.Variable.all_variables_are_resolved
-       (Type.Tuple (Bounded (Concatenation (create_concatenation list_variadic)))));
   ()
 
 
@@ -1286,9 +1186,6 @@ let test_dequalify _ =
   assert_dequalify_variable
     (Type.Variable.ParameterVariadic (Type.Variable.Variadic.Parameters.create "A.B.C"))
     (Type.Variable.ParameterVariadic (Type.Variable.Variadic.Parameters.create "C"));
-  assert_dequalify_variable
-    (Type.Variable.ListVariadic (Type.Variable.Variadic.List.create "A.B.C"))
-    (Type.Variable.ListVariadic (Type.Variable.Variadic.List.create "C"));
   ()
 
 
@@ -1607,28 +1504,6 @@ let test_mark_all_variables_as_bound _ =
   assert_false (Type.Variable.all_variables_are_resolved callable);
   let callable = Type.Variable.mark_all_variables_as_bound callable in
   assert_true (Type.Variable.all_variables_are_resolved callable);
-  let tuple =
-    let list_variadic = Type.Variable.Variadic.List.create "Ts" in
-    Type.Tuple (Bounded (Concatenation (create_concatenation list_variadic)))
-  in
-  assert_false (Type.Variable.all_variables_are_resolved tuple);
-  let tuple = Type.Variable.mark_all_variables_as_bound tuple in
-  assert_true (Type.Variable.all_variables_are_resolved tuple);
-  let callable =
-    let list_variadic = Type.Variable.Variadic.List.create "Ts" in
-    Type.Callable.create
-      ~parameters:
-        (Defined
-           [
-             PositionalOnly { index = 0; annotation = Type.bool; default = false };
-             Variable (Concatenation (create_concatenation list_variadic));
-           ])
-      ~annotation:Type.integer
-      ()
-  in
-  assert_false (Type.Variable.all_variables_are_resolved callable);
-  let callable = Type.Variable.mark_all_variables_as_bound callable in
-  assert_true (Type.Variable.all_variables_are_resolved callable);
   ()
 
 
@@ -1681,74 +1556,6 @@ let test_namespace_all_free_variables _ =
   assert_equal
     (Type.Variable.namespace_all_free_variables annotation ~namespace)
     (Type.parametric "p" ![namespaced_free_callable; bound_variable_callable]);
-  let free_variable_tuple =
-    let list_variadic = Type.Variable.Variadic.List.create "Ts" in
-    Type.Tuple (Bounded (Concatenation (create_concatenation list_variadic)))
-  in
-  let bound_variable_tuple =
-    let list_variadic =
-      Type.Variable.Variadic.List.create "Ts" |> Type.Variable.Variadic.List.mark_as_bound
-    in
-    Type.Tuple (Bounded (Concatenation (create_concatenation list_variadic)))
-  in
-  let annotation = Type.parametric "p" ![free_variable_tuple; bound_variable_tuple] in
-  let namespace = Type.Variable.Namespace.create_fresh () in
-  let namespaced_free_tuple =
-    let list_variadic =
-      Type.Variable.Variadic.List.create "Ts" |> Type.Variable.Variadic.List.namespace ~namespace
-    in
-    Type.Tuple (Bounded (Concatenation (create_concatenation list_variadic)))
-  in
-  assert_equal
-    (Type.Variable.namespace_all_free_variables annotation ~namespace)
-    (Type.parametric "p" ![namespaced_free_tuple; bound_variable_tuple]);
-  let free_variable_star_args_callable =
-    let list_variadic = Type.Variable.Variadic.List.create "Ts" in
-    Type.Callable.create
-      ~parameters:
-        (Defined
-           [
-             PositionalOnly { index = 0; annotation = Type.bool; default = false };
-             Variable (Concatenation (create_concatenation list_variadic));
-           ])
-      ~annotation:Type.integer
-      ()
-  in
-  let bound_variable_star_args_callable =
-    let list_variadic =
-      Type.Variable.Variadic.List.create "Ts" |> Type.Variable.Variadic.List.mark_as_bound
-    in
-    Type.Callable.create
-      ~parameters:
-        (Defined
-           [
-             PositionalOnly { index = 0; annotation = Type.bool; default = false };
-             Variable (Concatenation (create_concatenation list_variadic));
-           ])
-      ~annotation:Type.integer
-      ()
-  in
-  let annotation =
-    Type.parametric "p" ![free_variable_star_args_callable; bound_variable_star_args_callable]
-  in
-  let namespace = Type.Variable.Namespace.create_fresh () in
-  let namespaced_free_star_args_callable =
-    let list_variadic =
-      Type.Variable.Variadic.List.create "Ts" |> Type.Variable.Variadic.List.namespace ~namespace
-    in
-    Type.Callable.create
-      ~parameters:
-        (Defined
-           [
-             PositionalOnly { index = 0; annotation = Type.bool; default = false };
-             Variable (Concatenation (create_concatenation list_variadic));
-           ])
-      ~annotation:Type.integer
-      ()
-  in
-  assert_equal
-    (Type.Variable.namespace_all_free_variables annotation ~namespace)
-    (Type.parametric "p" ![namespaced_free_star_args_callable; bound_variable_star_args_callable]);
   ()
 
 
@@ -1807,82 +1614,6 @@ let test_mark_all_free_variables_as_escaped _ =
   assert_equal
     (Type.Variable.mark_all_free_variables_as_escaped annotation)
     (Type.parametric "p" ![escaped_free_callable; bound_variable_callable]);
-  let free_variable_tuple =
-    let list_variadic = Type.Variable.Variadic.List.create "Ts" in
-    Type.Tuple (Bounded (Concatenation (create_concatenation list_variadic)))
-  in
-  let bound_variable_tuple =
-    let list_variadic =
-      Type.Variable.Variadic.List.create "Ts" |> Type.Variable.Variadic.List.mark_as_bound
-    in
-    Type.Tuple (Bounded (Concatenation (create_concatenation list_variadic)))
-  in
-  let annotation = Type.parametric "p" ![free_variable_tuple; bound_variable_tuple] in
-  Type.Variable.Namespace.reset ();
-  let escaped_free_tuple =
-    let namespace = Type.Variable.Namespace.create_fresh () in
-    let list_variadic =
-      Type.Variable.Variadic.List.create "Ts"
-      |> Type.Variable.Variadic.List.mark_as_escaped
-      |> Type.Variable.Variadic.List.namespace ~namespace
-    in
-    Type.Tuple (Bounded (Concatenation (create_concatenation list_variadic)))
-  in
-  Type.Variable.Namespace.reset ();
-  assert_equal
-    (Type.Variable.mark_all_free_variables_as_escaped annotation)
-    (Type.parametric "p" ![escaped_free_tuple; bound_variable_tuple]);
-  let free_variable_star_args_callable =
-    let list_variadic = Type.Variable.Variadic.List.create "Ts" in
-    Type.Callable.create
-      ~parameters:
-        (Defined
-           [
-             PositionalOnly { index = 0; annotation = Type.bool; default = false };
-             Variable (Concatenation (create_concatenation list_variadic));
-           ])
-      ~annotation:Type.integer
-      ()
-  in
-  let bound_variable_star_args_callable =
-    let list_variadic =
-      Type.Variable.Variadic.List.create "Ts" |> Type.Variable.Variadic.List.mark_as_bound
-    in
-    Type.Callable.create
-      ~parameters:
-        (Defined
-           [
-             PositionalOnly { index = 0; annotation = Type.bool; default = false };
-             Variable (Concatenation (create_concatenation list_variadic));
-           ])
-      ~annotation:Type.integer
-      ()
-  in
-  let annotation =
-    Type.parametric "p" ![free_variable_star_args_callable; bound_variable_star_args_callable]
-  in
-  Type.Variable.Namespace.reset ();
-  let escaped_free_star_args_tuple =
-    let namespace = Type.Variable.Namespace.create_fresh () in
-    let list_variadic =
-      Type.Variable.Variadic.List.create "Ts"
-      |> Type.Variable.Variadic.List.mark_as_escaped
-      |> Type.Variable.Variadic.List.namespace ~namespace
-    in
-    Type.Callable.create
-      ~parameters:
-        (Defined
-           [
-             PositionalOnly { index = 0; annotation = Type.bool; default = false };
-             Variable (Concatenation (create_concatenation list_variadic));
-           ])
-      ~annotation:Type.integer
-      ()
-  in
-  Type.Variable.Namespace.reset ();
-  assert_equal
-    (Type.Variable.mark_all_free_variables_as_escaped annotation)
-    (Type.parametric "p" ![escaped_free_star_args_tuple; bound_variable_star_args_callable]);
   ()
 
 
@@ -1914,47 +1645,6 @@ let test_contains_escaped_free_variable _ =
       ()
   in
   assert_true (Type.Variable.contains_escaped_free_variable escaped_free_variable_callable);
-  let free_variable_tuple =
-    let list_variadic = Type.Variable.Variadic.List.create "Ts" in
-    Type.Tuple (Bounded (Concatenation (create_concatenation list_variadic)))
-  in
-  assert_false (Type.Variable.contains_escaped_free_variable free_variable_tuple);
-  let escaped_free_variable_tuple =
-    let list_variadic =
-      Type.Variable.Variadic.List.create "Ts" |> Type.Variable.Variadic.List.mark_as_escaped
-    in
-    Type.Tuple (Bounded (Concatenation (create_concatenation list_variadic)))
-  in
-  assert_true (Type.Variable.contains_escaped_free_variable escaped_free_variable_tuple);
-  let free_variable_star_args_callable =
-    let list_variadic = Type.Variable.Variadic.List.create "Ts" in
-    Type.Callable.create
-      ~parameters:
-        (Defined
-           [
-             PositionalOnly { index = 0; annotation = Type.bool; default = false };
-             Variable (Concatenation (create_concatenation list_variadic));
-           ])
-      ~annotation:Type.integer
-      ()
-  in
-  assert_false (Type.Variable.contains_escaped_free_variable free_variable_star_args_callable);
-  let escaped_free_variable_star_args_callable =
-    let list_variadic =
-      Type.Variable.Variadic.List.create "Ts" |> Type.Variable.Variadic.List.mark_as_escaped
-    in
-    Type.Callable.create
-      ~parameters:
-        (Defined
-           [
-             PositionalOnly { index = 0; annotation = Type.bool; default = false };
-             Variable (Concatenation (create_concatenation list_variadic));
-           ])
-      ~annotation:Type.integer
-      ()
-  in
-  assert_true
-    (Type.Variable.contains_escaped_free_variable escaped_free_variable_star_args_callable);
   ()
 
 
@@ -1995,69 +1685,6 @@ let test_convert_all_escaped_free_variables_to_anys _ =
   assert_equal
     (Type.Variable.convert_all_escaped_free_variables_to_anys annotation)
     (Type.parametric "p" ![free_variable_callable; any_callable]);
-  let free_variable_tuple =
-    let list_variadic = Type.Variable.Variadic.List.create "Ts" in
-    Type.Tuple (Bounded (Concatenation (create_concatenation list_variadic)))
-  in
-  let escaped_free_tuple =
-    let namespace = Type.Variable.Namespace.create_fresh () in
-    let list_variadic =
-      Type.Variable.Variadic.List.create "Ts"
-      |> Type.Variable.Variadic.List.mark_as_escaped
-      |> Type.Variable.Variadic.List.namespace ~namespace
-    in
-    Type.Tuple (Bounded (Concatenation (create_concatenation list_variadic)))
-  in
-  let annotation = Type.parametric "p" ![free_variable_tuple; escaped_free_tuple] in
-  assert_equal
-    (Type.Variable.convert_all_escaped_free_variables_to_anys annotation)
-    (Type.parametric "p" ![free_variable_tuple; Type.Tuple (Bounded Any)]);
-  let free_variable_star_args_callable =
-    let list_variadic = Type.Variable.Variadic.List.create "Ts" in
-    Type.Callable.create
-      ~parameters:
-        (Defined
-           [
-             PositionalOnly { index = 0; annotation = Type.bool; default = false };
-             Variable (Concatenation (create_concatenation list_variadic));
-           ])
-      ~annotation:Type.integer
-      ()
-  in
-  let escaped_free_star_args_tuple =
-    let namespace = Type.Variable.Namespace.create_fresh () in
-    let list_variadic =
-      Type.Variable.Variadic.List.create "Ts"
-      |> Type.Variable.Variadic.List.mark_as_escaped
-      |> Type.Variable.Variadic.List.namespace ~namespace
-    in
-    Type.Callable.create
-      ~parameters:
-        (Defined
-           [
-             PositionalOnly { index = 0; annotation = Type.bool; default = false };
-             Variable (Concatenation (create_concatenation list_variadic));
-           ])
-      ~annotation:Type.integer
-      ()
-  in
-  let star_args_any_callable =
-    Type.Callable.create
-      ~parameters:
-        (Defined
-           [
-             PositionalOnly { index = 0; annotation = Type.bool; default = false };
-             Variable (Concrete Type.Any);
-           ])
-      ~annotation:Type.integer
-      ()
-  in
-  let annotation =
-    Type.parametric "p" ![free_variable_star_args_callable; escaped_free_star_args_tuple]
-  in
-  assert_equal
-    (Type.Variable.convert_all_escaped_free_variables_to_anys annotation)
-    (Type.parametric "p" ![free_variable_star_args_callable; star_args_any_callable]);
   ()
 
 
@@ -2082,56 +1709,6 @@ let test_replace_all _ =
        (fun _ -> Some (Type.Callable.Defined []))
        (Type.parametric "p" ![Type.integer; free_variable_callable]))
     (Type.parametric "p" ![Type.integer; no_parameter_callable]);
-  let list_variadic = Type.Variable.Variadic.List.create "Ts" in
-  let free_variable_tuple =
-    Type.Tuple (Bounded (Concatenation (create_concatenation list_variadic)))
-  in
-  assert_equal
-    (Type.Variable.GlobalTransforms.ListVariadic.replace_all
-       (fun _ -> Some (Type.OrderedTypes.Concrete [Type.integer; Type.string]))
-       (Type.parametric "p" ![Type.integer; free_variable_tuple]))
-    (Type.parametric
-       "p"
-       ![Type.integer; Type.Tuple (Bounded (Concrete [Type.integer; Type.string]))]);
-  let replaced =
-    Type.Callable.Parameter.create
-      [
-        { name = "__x"; annotation = Type.bool; default = false };
-        { name = "__a"; annotation = Type.integer; default = false };
-        { name = "__b"; annotation = Type.string; default = false };
-      ]
-  in
-  assert_equal
-    (Type.Variable.GlobalTransforms.ListVariadic.replace_all
-       (fun _ -> Some (Type.OrderedTypes.Concrete [Type.integer; Type.string]))
-       (Type.Callable.create
-          ~parameters:
-            (Defined
-               [
-                 PositionalOnly { index = 0; annotation = Type.bool; default = false };
-                 Variable (Concatenation (create_concatenation list_variadic));
-               ])
-          ~annotation:Type.integer
-          ()))
-    (Type.Callable.create ~parameters:(Defined replaced) ~annotation:Type.integer ());
-  assert_equal
-    (Type.Variable.GlobalTransforms.ListVariadic.replace_all
-       (fun _ -> Some (Type.OrderedTypes.Concrete [Type.integer; Type.string]))
-       (Tuple (Bounded (Concatenation (create_concatenation ~mappers:["Foo"; "Bar"] list_variadic)))))
-    (Tuple
-       (Bounded
-          (Concrete
-             [
-               Parametric { name = "Foo"; parameters = ![Type.parametric "Bar" ![Type.integer]] };
-               Parametric { name = "Foo"; parameters = ![Type.parametric "Bar" ![Type.string]] };
-             ])));
-  assert_equal
-    (Type.Variable.GlobalTransforms.ListVariadic.replace_all
-       (fun _ -> Some (Type.OrderedTypes.Concrete [Type.integer; Type.string]))
-       (Type.parametric
-          "Baz"
-          [Group (Concatenation (create_concatenation (Type.Variable.Variadic.List.create "Ts")))]))
-    (Type.parametric "Baz" [Group (Concrete [Type.integer; Type.string])]);
   assert_equal
     (Type.Variable.GlobalTransforms.ParameterVariadic.replace_all
        (fun _ ->
@@ -2170,36 +1747,6 @@ let test_collect_all _ =
     (Type.Variable.GlobalTransforms.ParameterVariadic.collect_all
        (Type.parametric "p" ![Type.integer; free_variable_callable]))
     [Type.Variable.Variadic.Parameters.create "T"];
-  let list_variadic = Type.Variable.Variadic.List.create "Ts" in
-  let free_variable_tuple =
-    Type.Tuple (Bounded (Concatenation (create_concatenation list_variadic)))
-  in
-  assert_equal
-    (Type.Variable.GlobalTransforms.ListVariadic.collect_all
-       (Type.parametric "p" ![Type.integer; free_variable_tuple]))
-    [Type.Variable.Variadic.List.create "Ts"];
-  assert_equal
-    (Type.Variable.GlobalTransforms.ListVariadic.collect_all
-       (Type.Callable.create
-          ~parameters:
-            (Defined
-               [
-                 PositionalOnly { index = 0; annotation = Type.bool; default = false };
-                 Variable (Concatenation (create_concatenation list_variadic));
-               ])
-          ~annotation:Type.integer
-          ()))
-    [Type.Variable.Variadic.List.create "Ts"];
-  assert_equal
-    (Type.Variable.GlobalTransforms.ListVariadic.collect_all
-       (Tuple (Bounded (Concatenation (create_concatenation ~mappers:["Foo"; "Bar"] list_variadic)))))
-    [Type.Variable.Variadic.List.create "Ts"];
-  assert_equal
-    (Type.Variable.GlobalTransforms.ListVariadic.collect_all
-       (Type.parametric
-          "Huh"
-          [Group (Concatenation (create_concatenation ~mappers:["Foo"; "Bar"] list_variadic))]))
-    [Type.Variable.Variadic.List.create "Ts"];
   assert_equal
     (Type.Variable.GlobalTransforms.ParameterVariadic.collect_all
        (Type.parametric
@@ -2233,84 +1780,9 @@ let test_parse_type_variable_declarations _ =
     (Type.Variable.ParameterVariadic (Type.Variable.Variadic.Parameters.create "target"));
   assert_declaration_does_not_parse "pyre_extensions.ParameterSpecification('Tparams', int, str)";
   assert_parses_declaration
-    "pyre_extensions.ListVariadic('Ts')"
-    (Type.Variable.ListVariadic (Type.Variable.Variadic.List.create "target"));
-  assert_declaration_does_not_parse "pyre_extensions.ListVariadic('Ts', int, str)";
-  ()
-
-
-let test_middle_singleton_replace_variable _ =
-  let assert_replaces_into ~middle ~replacement expected =
-    assert_equal
-      ~printer:Type.show
-      (Type.OrderedTypes.Concatenation.Middle.singleton_replace_variable middle ~replacement)
-      expected
-  in
-  let variable = Type.Variable.Variadic.List.create "Ts" in
-  let unary_variable = Type.Variable.Unary.create "T" in
-  assert_replaces_into
-    ~middle:
-      (Type.OrderedTypes.Concatenation.Middle.create
-         ~mappers:
-           [
-             Type.Record.OrderedTypes.RecordConcatenate.Middle.ClassMapper "Foo";
-             Type.Record.OrderedTypes.RecordConcatenate.Middle.ClassMapper "Bar";
-           ]
-         ~variable)
-    ~replacement:Type.integer
-    (Type.parametric
-       "Foo"
-       [Single (Parametric { name = "Bar"; parameters = [Single Type.integer] })]);
-  assert_replaces_into
-    ~middle:
-      (Type.OrderedTypes.Concatenation.Middle.create
-         ~mappers:
-           [
-             Type.Record.OrderedTypes.RecordConcatenate.Middle.GenericAliasMapper
-               (Type.union [Type.Variable unary_variable; Type.integer]);
-             Type.Record.OrderedTypes.RecordConcatenate.Middle.GenericAliasMapper
-               (Type.Tuple
-                  (Type.Bounded
-                     (Concrete [Type.Variable unary_variable; Type.Variable unary_variable])));
-           ]
-         ~variable)
-    ~replacement:Type.string
-    (Type.union [Type.integer; Type.Tuple (Type.Bounded (Concrete [Type.string; Type.string]))]);
-
-  (* This approach is used to solve concretes against maps *)
-  assert_replaces_into
-    ~middle:
-      (Type.OrderedTypes.Concatenation.Middle.create
-         ~mappers:
-           [
-             Type.Record.OrderedTypes.RecordConcatenate.Middle.ClassMapper "Foo";
-             Type.Record.OrderedTypes.RecordConcatenate.Middle.ClassMapper "Bar";
-           ]
-         ~variable)
-    ~replacement:(Type.Variable unary_variable)
-    (Type.parametric
-       "Foo"
-       [Single (Parametric { name = "Bar"; parameters = [Single (Type.Variable unary_variable)] })]);
-  assert_replaces_into
-    ~middle:
-      (Type.OrderedTypes.Concatenation.Middle.create
-         ~mappers:
-           [
-             Type.Record.OrderedTypes.RecordConcatenate.Middle.GenericAliasMapper
-               (Type.union [Type.Variable unary_variable; Type.integer]);
-             Type.Record.OrderedTypes.RecordConcatenate.Middle.GenericAliasMapper
-               (Type.Tuple
-                  (Type.Bounded
-                     (Concrete [Type.Variable unary_variable; Type.Variable unary_variable])));
-           ]
-         ~variable)
-    ~replacement:(Type.Variable unary_variable)
-    (Type.union
-       [
-         Type.integer;
-         Type.Tuple
-           (Type.Bounded (Concrete [Type.Variable unary_variable; Type.Variable unary_variable]));
-       ]);
+    "pyre_extensions.TypeVarTuple('Ts')"
+    (Type.Variable.TupleVariadic (Type.Variable.Variadic.Tuple.create "target"));
+  assert_declaration_does_not_parse "pyre_extensions.TypeVarTuple('Ts', covariant=True)";
   ()
 
 
@@ -2321,135 +1793,6 @@ let test_union_upper_bound _ =
   assert_union_upper_bound
     (Concrete [Type.integer; Type.string; Type.bool])
     (Type.union [Type.integer; Type.string; Type.bool]);
-
-  assert_union_upper_bound Any Any;
-
-  let variable = Type.Variable.Variadic.List.create "Ts" in
-  assert_union_upper_bound (Concatenation (create_concatenation variable)) Type.object_primitive;
-
-  assert_union_upper_bound
-    (Concatenation (create_concatenation ~mappers:["Foo"; "Bar"] variable))
-    Type.object_primitive;
-  ()
-
-
-let test_concatenation_operator_variable _ =
-  let variable = Type.Variable.Variadic.List.create "Ts" in
-  assert_equal
-    (Type.OrderedTypes.Concatenation.variable
-       (create_concatenation ~head:[Type.integer] ~tail:[Type.bool] variable))
-    variable;
-  assert_equal
-    (Type.OrderedTypes.Concatenation.variable
-       (create_concatenation ~head:[Type.integer] ~tail:[Type.bool] ~mappers:["list"] variable))
-    variable;
-  ()
-
-
-let test_concatenation_operator_replace_variable _ =
-  let assert_replaces_into ~concatenation ~replacement expected =
-    assert_equal
-      (Type.OrderedTypes.Concatenation.replace_variable concatenation ~replacement)
-      expected
-  in
-  let variable = Type.Variable.Variadic.List.create "Ts" in
-  assert_replaces_into
-    ~concatenation:(create_concatenation ~head:[Type.integer] ~tail:[Type.bool] variable)
-    ~replacement:(fun _ -> Some (Concrete [Type.string]))
-    (Some (Concrete [Type.integer; Type.string; Type.bool]));
-  let assert_replaces_into ~middle ~replacement expected =
-    let concatenation = Type.OrderedTypes.Concatenation.create ?head:None ?tail:None middle in
-    assert_replaces_into ~concatenation ~replacement expected
-  in
-  let variable = Type.Variable.Variadic.List.create "Ts" in
-  assert_replaces_into
-    ~middle:
-      (Type.OrderedTypes.Concatenation.Middle.create_from_class_mappers
-         ~mappers:["Foo"; "Bar"]
-         ~variable)
-    ~replacement:(fun _ -> Some (Concrete [Type.integer]))
-    (Some
-       (Concrete
-          [
-            Parametric
-              {
-                name = "Foo";
-                parameters =
-                  [Single (Parametric { name = "Bar"; parameters = [Single Type.integer] })];
-              };
-          ]));
-  assert_replaces_into
-    ~middle:
-      (Type.OrderedTypes.Concatenation.Middle.create_from_class_mappers
-         ~mappers:["Foo"; "Bar"]
-         ~variable)
-    ~replacement:(fun _ -> Some (Concrete [Type.integer; Type.string]))
-    (Some
-       (Concrete
-          [
-            Parametric
-              {
-                name = "Foo";
-                parameters =
-                  [Single (Parametric { name = "Bar"; parameters = [Single Type.integer] })];
-              };
-            Parametric { name = "Foo"; parameters = ![Type.parametric "Bar" ![Type.string]] };
-          ]));
-  assert_replaces_into
-    ~middle:
-      (Type.OrderedTypes.Concatenation.Middle.create_from_class_mappers ~mappers:["Foo"] ~variable)
-    ~replacement:(fun _ -> Some (Concatenation (create_concatenation ~mappers:["Bar"] variable)))
-    (Some (Concatenation (create_concatenation ~mappers:["Foo"; "Bar"] variable)));
-  let other_variable = Type.Variable.Variadic.List.create "Ts2" in
-  assert_replaces_into
-    ~middle:
-      (Type.OrderedTypes.Concatenation.Middle.create_from_class_mappers
-         ~mappers:["Foo"; "Bar"]
-         ~variable)
-    ~replacement:(function
-      | _ -> Some (Concatenation (create_concatenation other_variable)))
-    (Some (Concatenation (create_concatenation ~mappers:["Foo"; "Bar"] other_variable)));
-  assert_replaces_into
-    ~middle:
-      (Type.OrderedTypes.Concatenation.Middle.create_from_class_mappers
-         ~mappers:["Foo"; "Bar"]
-         ~variable)
-    ~replacement:(function
-      | _ -> Some Any)
-    (Some Any);
-  assert_replaces_into
-    ~middle:
-      (Type.OrderedTypes.Concatenation.Middle.create_from_class_mappers
-         ~mappers:["Foo"; "Bar"]
-         ~variable)
-    ~replacement:(function
-      | _ -> None)
-    None;
-  ()
-
-
-let test_concatenation_zip _ =
-  let assert_zips ~concatenation ~against expected =
-    assert_equal (Type.OrderedTypes.Concatenation.zip concatenation ~against) expected
-  in
-  let concatenation = Type.OrderedTypes.Concatenation.create ~head:[1; 2] ~tail:[3; 4] "M" in
-  assert_zips
-    ~concatenation
-    ~against:["A"; "B"; "C"; "D"; "E"]
-    (Some
-       (Type.OrderedTypes.Concatenation.create
-          ~head:[1, "A"; 2, "B"]
-          ~tail:[3, "D"; 4, "E"]
-          ("M", ["C"])));
-  assert_zips
-    ~concatenation
-    ~against:["A"; "B"; "C"; "D"; "E"; "F"]
-    (Some
-       (Type.OrderedTypes.Concatenation.create
-          ~head:[1, "A"; 2, "B"]
-          ~tail:[3, "E"; 4, "F"]
-          ("M", ["C"; "D"])));
-  assert_zips ~concatenation ~against:["A"; "B"; "C"] None;
   ()
 
 
@@ -2527,9 +1870,7 @@ let test_is_unit_test _ =
 
 
 let polynomial_show_normal =
-  Type.Polynomial.show_normal
-    ~show_variable:Type.polynomial_show_variable
-    ~show_variadic:Type.polynomial_show_variadic
+  Type.Polynomial.show_normal ~show_variable:Type.polynomial_show_variable
 
 
 let polynomial_add = Type.Polynomial.add ~compare_t:Type.compare
@@ -2669,90 +2010,6 @@ let test_parameter_create _ =
     ]
 
 
-let test_add_polynomials_with_variadics _ =
-  let assert_add given1 given2 expected =
-    assert_equal ~printer:Fn.id expected (polynomial_show_normal (polynomial_add given1 given2));
-    assert_equal ~printer:Fn.id expected (polynomial_show_normal (polynomial_add given2 given1))
-  in
-  let x = Type.Variable.Unary.create "x" in
-  let ts =
-    Type.Variable.Variadic.List.create "Ts"
-    |> Type.OrderedTypes.Concatenation.Middle.create_bare
-    |> Type.OrderedTypes.Concatenation.create
-  in
-  let shape =
-    Type.Variable.Variadic.List.create "Shape"
-    |> Type.OrderedTypes.Concatenation.Middle.create_bare
-    |> Type.OrderedTypes.Concatenation.create
-  in
-  let polynomial_3_2x = polynomial_create_from_variables_list [3, []; 2, [x, 1]] in
-  let polynomial_ts = Type.Polynomial.create_from_variadic ts ~operation:Type.Monomial.Length in
-  let polynomial_shape =
-    Type.Polynomial.create_from_variadic shape ~operation:Type.Monomial.Product
-  in
-  assert_add
-    (polynomial_add polynomial_3_2x polynomial_ts)
-    (polynomial_add polynomial_ts polynomial_shape)
-    "3 + 2x + 2Length[Ts] + Product[Shape]";
-  ()
-
-
-let test_subtract_polynomials_with_variadics _ =
-  let assert_subtract given1 given2 expected =
-    assert_equal
-      ~printer:Fn.id
-      expected
-      (polynomial_show_normal (polynomial_subtract given1 given2))
-  in
-  let x = Type.Variable.Unary.create "x" in
-  let ts =
-    Type.Variable.Variadic.List.create "Ts"
-    |> Type.OrderedTypes.Concatenation.Middle.create_bare
-    |> Type.OrderedTypes.Concatenation.create
-  in
-  let shape =
-    Type.Variable.Variadic.List.create "Shape"
-    |> Type.OrderedTypes.Concatenation.Middle.create_bare
-    |> Type.OrderedTypes.Concatenation.create
-  in
-  let polynomial_3_2x = polynomial_create_from_variables_list [3, []; 2, [x, 1]] in
-  let polynomial_ts = Type.Polynomial.create_from_variadic ts ~operation:Type.Monomial.Length in
-  let polynomial_shape =
-    Type.Polynomial.create_from_variadic shape ~operation:Type.Monomial.Product
-  in
-  assert_subtract
-    (polynomial_add polynomial_3_2x polynomial_ts)
-    (polynomial_add polynomial_ts polynomial_shape)
-    "3 + 2x + -Product[Shape]";
-  ()
-
-
-let test_multiply_polynomials_with_variadics _ =
-  let assert_multiply given1 given2 expected =
-    assert_equal
-      ~printer:Fn.id
-      expected
-      (polynomial_show_normal (polynomial_multiply given1 given2));
-    assert_equal
-      ~printer:Fn.id
-      expected
-      (polynomial_show_normal (polynomial_multiply given2 given1))
-  in
-  let x = Type.Variable.Unary.create "x" in
-  let ts =
-    Type.Variable.Variadic.List.create "Ts"
-    |> Type.OrderedTypes.Concatenation.Middle.create_bare
-    |> Type.OrderedTypes.Concatenation.create
-  in
-  let polynomial_3_2x = polynomial_create_from_variables_list [3, []; 2, [x, 1]] in
-  let polynomial_ts = Type.Polynomial.create_from_variadic ts ~operation:Type.Monomial.Length in
-  assert_multiply
-    (polynomial_add polynomial_3_2x polynomial_ts)
-    polynomial_ts
-    "3Length[Ts] + 2xLength[Ts] + Length[Ts]^2";
-  ()
-
-
 let test_resolve_class _ =
   let assert_resolved_class annotation expected =
     assert_equal
@@ -2851,6 +2108,7 @@ let () =
   "type"
   >::: [
          "create" >:: test_create;
+         "create_variadic_tuple" >:: test_create_variadic_tuple;
          "resolve_aliases" >:: test_resolve_aliases;
          "instantiate" >:: test_instantiate;
          "expression" >:: test_expression;
@@ -2893,11 +2151,7 @@ let () =
          "replace_all" >:: test_replace_all;
          "collect_all" >:: test_collect_all;
          "parse_type_variable_declarations" >:: test_parse_type_variable_declarations;
-         "map_operator_singleton_replace_variable" >:: test_middle_singleton_replace_variable;
          "union_upper_bound" >:: test_union_upper_bound;
-         "concatenation_operator_variable" >:: test_concatenation_operator_variable;
-         "concatenation_operator_replace_variable" >:: test_concatenation_operator_replace_variable;
-         "concatenation_zip" >:: test_concatenation_zip;
          "infer_transform" >:: test_infer_transform;
          "fields_from_constructor" >:: test_fields_from_constructor;
          "map_callable_annotation" >:: test_map_callable_annotation;
@@ -2907,9 +2161,6 @@ let () =
          "subtract_polynomials" >:: test_subtract_polynomials;
          "multiply_polynomial" >:: test_multiply_polynomial;
          "divide_polynomial" >:: test_divide_polynomial;
-         "add_polynomials_with_variadics" >:: test_add_polynomials_with_variadics;
-         "subtract_polynomials_with_variadics" >:: test_subtract_polynomials_with_variadics;
-         "multiply_polynomials_with_variadics" >:: test_multiply_polynomials_with_variadics;
          "resolve_class" >:: test_resolve_class;
        ]
   |> Test.run;

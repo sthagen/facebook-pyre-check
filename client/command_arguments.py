@@ -49,6 +49,8 @@ class CommandArguments:
     features: Optional[str] = None
     use_command_v2: Optional[bool] = None
     isolation_prefix: Optional[str] = None
+    python_major_version: Optional[int] = None
+    python_minor_version: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -77,3 +79,9 @@ class IncrementalArguments:
     output: str = TEXT
     no_start: bool = False
     start_arguments: StartArguments = field(default_factory=StartArguments)
+
+
+@dataclass(frozen=True)
+class RageArguments:
+    output: Optional[Path] = None
+    server_log_count: Optional[int] = None

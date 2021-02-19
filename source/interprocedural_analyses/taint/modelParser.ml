@@ -34,12 +34,14 @@ module T = struct
         sink: Sinks.t;
         breadcrumbs: breadcrumbs;
         path: Abstract.TreeDomain.Label.path;
+        leaf_names: Features.LeafName.t list;
         leaf_name_provided: bool;
       }
     | Source of {
         source: Sources.t;
         breadcrumbs: breadcrumbs;
         path: Abstract.TreeDomain.Label.path;
+        leaf_names: Features.LeafName.t list;
         leaf_name_provided: bool;
       }
     | Tito of {
@@ -67,7 +69,18 @@ module T = struct
     type class_constraint =
       | Equals of string
       | Extends of string
-    [@@deriving compare, show]
+      | Matches of Re2.t
+    [@@deriving compare]
+
+    let pp_class_constraint formatter class_constraint =
+      match class_constraint with
+      | Equals equals -> Format.fprintf formatter "Equals(%s)" equals
+      | Extends extends -> Format.fprintf formatter "Extends(%s)" extends
+      | Matches regular_expression ->
+          Format.fprintf formatter "Matches(%s)" (Re2.to_string regular_expression)
+
+
+    let show_class_constraint = Format.asprintf "%a" pp_class_constraint
 
     type model_constraint =
       | NameConstraint of string
@@ -140,6 +153,8 @@ let invalid_model_error ~path ~location ~name message =
     ~location
     (ModelVerificationError.T.UnclassifiedError { model_name = name; message })
 
+
+let add_leaf_names leaf_names init = List.rev_append leaf_names init
 
 let add_breadcrumbs breadcrumbs init = List.rev_append breadcrumbs init
 
@@ -225,7 +240,12 @@ let rec parse_annotations
     annotation
   =
   let open Core.Result in
-  let annotation_error error = invalid_model_error ~path ~location ~name:model_name error in
+  let annotation_error reason =
+    model_verification_error
+      ~path
+      ~location
+      (ModelVerificationError.T.InvalidTaintAnnotation { taint_annotation = annotation; reason })
+  in
   let get_parameter_position name =
     match Map.find callable_parameter_names_to_positions name with
     | Some position -> Ok position
@@ -377,7 +397,8 @@ let rec parse_annotations
     >>= fun (kinds, breadcrumbs) ->
     List.map kinds ~f:(fun (kind, subkind) ->
         AnnotationParser.parse_source ~allowed:configuration.sources ?subkind kind
-        >>| fun source -> Source { source; breadcrumbs; path = []; leaf_name_provided = false })
+        >>| fun source ->
+        Source { source; breadcrumbs; path = []; leaf_names = []; leaf_name_provided = false })
     |> all
     |> map_error ~f:annotation_error
   in
@@ -387,7 +408,8 @@ let rec parse_annotations
     >>= fun (kinds, breadcrumbs) ->
     List.map kinds ~f:(fun (kind, subkind) ->
         AnnotationParser.parse_sink ~allowed:configuration.sinks ?subkind kind
-        >>| fun sink -> Sink { sink; breadcrumbs; path = []; leaf_name_provided = false })
+        >>| fun sink ->
+        Sink { sink; breadcrumbs; path = []; leaf_names = []; leaf_name_provided = false })
     |> all
     |> map_error ~f:annotation_error
   in
@@ -421,296 +443,297 @@ let rec parse_annotations
           (annotation_error
              (Format.sprintf "All parameters to `%s` must be of the form `Via[feature]`." name))
   in
-  match annotation with
-  | Some ({ Node.value; _ } as expression) ->
-      let invalid_annotation_error () =
-        Error
-          (annotation_error
-             (Format.asprintf "Unrecognized taint annotation `%s`" (Expression.show expression)))
-      in
-      let rec parse_annotation = function
-        | Expression.Call
+  let invalid_annotation_error () =
+    Error (annotation_error "Failed to parse the given taint annotation.")
+  in
+  let rec parse_annotation = function
+    | Expression.Call
+        {
+          callee;
+          arguments =
             {
-              callee;
-              arguments =
+              Call.Argument.value =
                 {
-                  Call.Argument.value =
-                    {
-                      Node.value =
-                        Expression.Tuple [{ Node.value = index; _ }; { Node.value = expression; _ }];
-                      _;
-                    };
+                  Node.value =
+                    Expression.Tuple [{ Node.value = index; _ }; { Node.value = expression; _ }];
                   _;
-                }
-                :: _;
+                };
+              _;
             }
-        | Call
-            {
-              callee;
-              arguments =
-                [
-                  { Call.Argument.value = { Node.value = index; _ }; _ };
-                  { Call.Argument.value = { Node.value = expression; _ }; _ };
-                ];
-            }
-          when [%compare.equal: string option] (base_name callee) (Some "AppliesTo") ->
-            let extend_path annotation =
-              let field =
-                match index with
-                | Expression.Integer index -> Ok (Abstract.TreeDomain.Label.create_int_field index)
-                | Expression.String { StringLiteral.value = index; _ } ->
-                    Ok (Abstract.TreeDomain.Label.create_name_field index)
-                | _ ->
-                    Error
-                      (annotation_error
-                         "Expected either integer or string as index in AppliesTo annotation.")
+            :: _;
+        }
+    | Call
+        {
+          callee;
+          arguments =
+            [
+              { Call.Argument.value = { Node.value = index; _ }; _ };
+              { Call.Argument.value = { Node.value = expression; _ }; _ };
+            ];
+        }
+      when [%compare.equal: string option] (base_name callee) (Some "AppliesTo") ->
+        let extend_path annotation =
+          let field =
+            match index with
+            | Expression.Integer index -> Ok (Abstract.TreeDomain.Label.create_int_field index)
+            | Expression.String { StringLiteral.value = index; _ } ->
+                Ok (Abstract.TreeDomain.Label.create_name_field index)
+            | _ ->
+                Error
+                  (annotation_error
+                     "Expected either integer or string as index in AppliesTo annotation.")
+          in
+          field
+          >>| fun field ->
+          match annotation with
+          | Sink ({ path; _ } as sink) -> Sink { sink with path = field :: path }
+          | Source ({ path; _ } as source) -> Source { source with path = field :: path }
+          | Tito ({ path; _ } as tito) -> Tito { tito with path = field :: path }
+          | AddFeatureToArgument ({ path; _ } as add_feature_to_argument) ->
+              AddFeatureToArgument { add_feature_to_argument with path = field :: path }
+        in
+        parse_annotation expression
+        >>= fun annotations -> List.map ~f:extend_path annotations |> all
+    | Call { callee; arguments }
+      when [%compare.equal: string option] (base_name callee) (Some "CrossRepositoryTaint") -> (
+        match arguments with
+        | [
+         {
+           Call.Argument.value =
+             {
+               Node.value =
+                 Expression.Tuple
+                   [
+                     { Node.value = taint; _ };
+                     {
+                       Node.value = Expression.String { StringLiteral.value = canonical_name; _ };
+                       _;
+                     };
+                     {
+                       Node.value = Expression.String { StringLiteral.value = canonical_port; _ };
+                       _;
+                     };
+                     { Node.value = Expression.Integer producer_id; _ };
+                   ];
+               _;
+             };
+           _;
+         };
+        ] ->
+            let add_cross_repository_information annotation =
+              let leaf_name =
+                Features.LeafName.
+                  {
+                    leaf = canonical_name;
+                    port = Some (Format.sprintf "producer:%d:%s" producer_id canonical_port);
+                  }
               in
-              field
-              >>| fun field ->
               match annotation with
-              | Sink ({ path; _ } as sink) -> Sink { sink with path = field :: path }
-              | Source ({ path; _ } as source) -> Source { source with path = field :: path }
-              | Tito ({ path; _ } as tito) -> Tito { tito with path = field :: path }
-              | AddFeatureToArgument ({ path; _ } as add_feature_to_argument) ->
-                  AddFeatureToArgument { add_feature_to_argument with path = field :: path }
-            in
-            parse_annotation expression
-            >>= fun annotations -> List.map ~f:extend_path annotations |> all
-        | Call { callee; arguments }
-          when [%compare.equal: string option] (base_name callee) (Some "CrossRepositoryTaint") -> (
-            match arguments with
-            | [
-             {
-               Call.Argument.value =
-                 {
-                   Node.value =
-                     Expression.Tuple
-                       [
-                         { Node.value = taint; _ };
-                         {
-                           Node.value =
-                             Expression.String { StringLiteral.value = canonical_name; _ };
-                           _;
-                         };
-                         {
-                           Node.value =
-                             Expression.String { StringLiteral.value = canonical_port; _ };
-                           _;
-                         };
-                         { Node.value = Expression.Integer producer_id; _ };
-                       ];
-                   _;
-                 };
-               _;
-             };
-            ] ->
-                let add_cross_repository_information annotation =
-                  let leaf_name =
-                    Features.Simple.LeafName
-                      {
-                        leaf = canonical_name;
-                        port = Some (Format.sprintf "producer:%d:%s" producer_id canonical_port);
-                      }
-                  in
-                  match annotation with
-                  | Source source ->
-                      Source
-                        {
-                          source with
-                          breadcrumbs = leaf_name :: source.breadcrumbs;
-                          leaf_name_provided = true;
-                        }
-                  | Sink sink ->
-                      Sink
-                        {
-                          sink with
-                          breadcrumbs = leaf_name :: sink.breadcrumbs;
-                          leaf_name_provided = true;
-                        }
-                  | _ -> annotation
-                in
-                parse_annotation taint |> map ~f:(List.map ~f:add_cross_repository_information)
-            | _ ->
-                Error
-                  (annotation_error
-                     "Cross repository taint must be of the form CrossRepositoryTaint[taint, \
-                      canonical_name, canonical_port, producer_id].") )
-        | Call { callee; arguments }
-          when [%compare.equal: string option]
-                 (base_name callee)
-                 (Some "CrossRepositoryTaintAnchor") -> (
-            match arguments with
-            | [
-             {
-               Call.Argument.value =
-                 {
-                   Node.value =
-                     Expression.Tuple
-                       [
-                         { Node.value = taint; _ };
-                         {
-                           Node.value =
-                             Expression.String { StringLiteral.value = canonical_name; _ };
-                           _;
-                         };
-                         {
-                           Node.value =
-                             Expression.String { StringLiteral.value = canonical_port; _ };
-                           _;
-                         };
-                       ];
-                   _;
-                 };
-               _;
-             };
-            ] ->
-                let add_cross_repository_information annotation =
-                  let leaf_name =
-                    Features.Simple.LeafName
-                      {
-                        leaf = canonical_name;
-                        port = Some (Format.sprintf "anchor:%s" canonical_port);
-                      }
-                  in
-                  match annotation with
-                  | Source source ->
-                      Source
-                        {
-                          source with
-                          breadcrumbs = leaf_name :: source.breadcrumbs;
-                          leaf_name_provided = true;
-                        }
-                  | Sink sink ->
-                      Sink
-                        {
-                          sink with
-                          breadcrumbs = leaf_name :: sink.breadcrumbs;
-                          leaf_name_provided = true;
-                        }
-                  | _ -> annotation
-                in
-                parse_annotation taint |> map ~f:(List.map ~f:add_cross_repository_information)
-            | _ ->
-                Error
-                  (annotation_error
-                     "Cross repository taint anchor must be of the form \
-                      CrossRepositoryTaintAnchor[taint, canonical_name, canonical_port].") )
-        | Call
-            {
-              callee;
-              arguments = { Call.Argument.value = { value = Tuple expressions; _ }; _ } :: _;
-            }
-          when [%compare.equal: string option] (base_name callee) (Some "Union") ->
-            List.map expressions ~f:(fun expression ->
-                parse_annotations
-                  ~path
-                  ~location:expression.Node.location
-                  ~model_name
-                  ~configuration
-                  ~parameters
-                  ~callable_parameter_names_to_positions
-                  (Some expression))
-            |> all
-            |> map ~f:List.concat
-        | Call { callee; arguments = { Call.Argument.value = expression; _ } :: _ } -> (
-            let open Core.Result in
-            match base_name callee with
-            | Some "TaintSink" -> get_sink_kinds expression
-            | Some "TaintSource" -> get_source_kinds expression
-            | Some "TaintInTaintOut" -> get_taint_in_taint_out expression
-            | Some "AddFeatureToArgument" ->
-                extract_leafs expression
-                >>| fun (_, breadcrumbs) -> [AddFeatureToArgument { breadcrumbs; path = [] }]
-            | Some "AttachToSink" ->
-                extract_attach_features ~name:"AttachToSink" expression
-                >>| fun breadcrumbs ->
-                [Sink { sink = Sinks.Attach; breadcrumbs; path = []; leaf_name_provided = false }]
-            | Some "AttachToTito" ->
-                extract_attach_features ~name:"AttachToTito" expression
-                >>| fun breadcrumbs -> [Tito { tito = Sinks.Attach; breadcrumbs; path = [] }]
-            | Some "AttachToSource" ->
-                extract_attach_features ~name:"AttachToSource" expression
-                >>| fun breadcrumbs ->
-                [
+              | Source source ->
                   Source
-                    { source = Sources.Attach; breadcrumbs; path = []; leaf_name_provided = false };
-                ]
-            | Some "PartialSink" ->
-                let partial_sink =
-                  match Node.value expression with
-                  | Call
-                      {
-                        callee =
-                          {
-                            Node.value =
-                              Name
-                                (Name.Attribute
-                                  {
-                                    base =
-                                      { Node.value = Expression.Name (Name.Identifier kind); _ };
-                                    attribute = "__getitem__";
-                                    _;
-                                  });
-                            _;
-                          };
-                        arguments =
-                          {
-                            Call.Argument.value = { Node.value = Name (Name.Identifier label); _ };
-                            _;
-                          }
-                          :: _;
-                      } ->
-                      if not (String.Map.Tree.mem configuration.partial_sink_labels kind) then
-                        Error
-                          (annotation_error
-                             (Format.asprintf "Unrecognized partial sink `%s`." kind))
-                      else
-                        let label_options =
-                          String.Map.Tree.find_exn configuration.partial_sink_labels kind
-                        in
-                        if not (List.mem label_options label ~equal:String.equal) then
-                          Error
-                            (annotation_error
-                               (Format.sprintf
-                                  "Unrecognized label `%s` for partial sink `%s` (choices: `%s`)"
-                                  label
-                                  kind
-                                  (String.concat label_options ~sep:", ")))
-                        else
-                          Ok (Sinks.PartialSink { kind; label })
-                  | _ -> invalid_annotation_error ()
-                in
-                partial_sink
-                >>| fun partial_sink ->
-                [
+                    {
+                      source with
+                      leaf_names = leaf_name :: source.leaf_names;
+                      leaf_name_provided = true;
+                    }
+              | Sink sink ->
                   Sink
-                    { sink = partial_sink; breadcrumbs = []; path = []; leaf_name_provided = false };
-                ]
-            | _ -> invalid_annotation_error () )
-        | Name (Name.Identifier "TaintInTaintOut") ->
-            Ok [Tito { tito = Sinks.LocalReturn; breadcrumbs = []; path = [] }]
-        | Expression.Tuple expressions ->
-            List.map expressions ~f:(fun expression ->
-                parse_annotations
-                  ~path
-                  ~location:expression.Node.location
-                  ~model_name
-                  ~configuration
-                  ~parameters
-                  ~callable_parameter_names_to_positions
-                  (Some expression))
-            |> all
-            |> map ~f:List.concat
-        | _ -> invalid_annotation_error ()
-      in
-      parse_annotation value
-  | None -> Ok []
+                    {
+                      sink with
+                      leaf_names = leaf_name :: sink.leaf_names;
+                      leaf_name_provided = true;
+                    }
+              | _ -> annotation
+            in
+            parse_annotation taint |> map ~f:(List.map ~f:add_cross_repository_information)
+        | _ ->
+            Error
+              (annotation_error
+                 "Cross repository taint must be of the form CrossRepositoryTaint[taint, \
+                  canonical_name, canonical_port, producer_id].") )
+    | Call { callee; arguments }
+      when [%compare.equal: string option] (base_name callee) (Some "CrossRepositoryTaintAnchor")
+      -> (
+        match arguments with
+        | [
+         {
+           Call.Argument.value =
+             {
+               Node.value =
+                 Expression.Tuple
+                   [
+                     { Node.value = taint; _ };
+                     {
+                       Node.value = Expression.String { StringLiteral.value = canonical_name; _ };
+                       _;
+                     };
+                     {
+                       Node.value = Expression.String { StringLiteral.value = canonical_port; _ };
+                       _;
+                     };
+                   ];
+               _;
+             };
+           _;
+         };
+        ] ->
+            let add_cross_repository_information annotation =
+              let leaf_name =
+                Features.LeafName.
+                  { leaf = canonical_name; port = Some (Format.sprintf "anchor:%s" canonical_port) }
+              in
+              match annotation with
+              | Source source ->
+                  Source
+                    {
+                      source with
+                      leaf_names = leaf_name :: source.leaf_names;
+                      leaf_name_provided = true;
+                    }
+              | Sink sink ->
+                  Sink
+                    {
+                      sink with
+                      leaf_names = leaf_name :: sink.leaf_names;
+                      leaf_name_provided = true;
+                    }
+              | _ -> annotation
+            in
+            parse_annotation taint |> map ~f:(List.map ~f:add_cross_repository_information)
+        | _ ->
+            Error
+              (annotation_error
+                 "Cross repository taint anchor must be of the form \
+                  CrossRepositoryTaintAnchor[taint, canonical_name, canonical_port].") )
+    | Call
+        { callee; arguments = { Call.Argument.value = { value = Tuple expressions; _ }; _ } :: _ }
+      when [%compare.equal: string option] (base_name callee) (Some "Union") ->
+        List.map expressions ~f:(fun expression ->
+            parse_annotations
+              ~path
+              ~location:expression.Node.location
+              ~model_name
+              ~configuration
+              ~parameters
+              ~callable_parameter_names_to_positions
+              expression)
+        |> all
+        |> map ~f:List.concat
+    | Call { callee; arguments = { Call.Argument.value = expression; _ } :: _ } -> (
+        let open Core.Result in
+        match base_name callee with
+        | Some "TaintSink" -> get_sink_kinds expression
+        | Some "TaintSource" -> get_source_kinds expression
+        | Some "TaintInTaintOut" -> get_taint_in_taint_out expression
+        | Some "AddFeatureToArgument" ->
+            extract_leafs expression
+            >>| fun (_, breadcrumbs) -> [AddFeatureToArgument { breadcrumbs; path = [] }]
+        | Some "AttachToSink" ->
+            extract_attach_features ~name:"AttachToSink" expression
+            >>| fun breadcrumbs ->
+            [
+              Sink
+                {
+                  sink = Sinks.Attach;
+                  breadcrumbs;
+                  path = [];
+                  leaf_names = [];
+                  leaf_name_provided = false;
+                };
+            ]
+        | Some "AttachToTito" ->
+            extract_attach_features ~name:"AttachToTito" expression
+            >>| fun breadcrumbs -> [Tito { tito = Sinks.Attach; breadcrumbs; path = [] }]
+        | Some "AttachToSource" ->
+            extract_attach_features ~name:"AttachToSource" expression
+            >>| fun breadcrumbs ->
+            [
+              Source
+                {
+                  source = Sources.Attach;
+                  breadcrumbs;
+                  path = [];
+                  leaf_names = [];
+                  leaf_name_provided = false;
+                };
+            ]
+        | Some "PartialSink" ->
+            let partial_sink =
+              match Node.value expression with
+              | Call
+                  {
+                    callee =
+                      {
+                        Node.value =
+                          Name
+                            (Name.Attribute
+                              {
+                                base = { Node.value = Expression.Name (Name.Identifier kind); _ };
+                                attribute = "__getitem__";
+                                _;
+                              });
+                        _;
+                      };
+                    arguments =
+                      { Call.Argument.value = { Node.value = Name (Name.Identifier label); _ }; _ }
+                      :: _;
+                  } ->
+                  if not (String.Map.Tree.mem configuration.partial_sink_labels kind) then
+                    Error
+                      (annotation_error (Format.asprintf "Unrecognized partial sink `%s`." kind))
+                  else
+                    let label_options =
+                      String.Map.Tree.find_exn configuration.partial_sink_labels kind
+                    in
+                    if not (List.mem label_options label ~equal:String.equal) then
+                      Error
+                        (annotation_error
+                           (Format.sprintf
+                              "Unrecognized label `%s` for partial sink `%s` (choices: `%s`)"
+                              label
+                              kind
+                              (String.concat label_options ~sep:", ")))
+                    else
+                      Ok (Sinks.PartialSink { kind; label })
+              | _ -> invalid_annotation_error ()
+            in
+            partial_sink
+            >>| fun partial_sink ->
+            [
+              Sink
+                {
+                  sink = partial_sink;
+                  breadcrumbs = [];
+                  path = [];
+                  leaf_names = [];
+                  leaf_name_provided = false;
+                };
+            ]
+        | _ -> invalid_annotation_error () )
+    | Name (Name.Identifier "TaintInTaintOut") ->
+        Ok [Tito { tito = Sinks.LocalReturn; breadcrumbs = []; path = [] }]
+    | Expression.Tuple expressions ->
+        List.map expressions ~f:(fun expression ->
+            parse_annotations
+              ~path
+              ~location:expression.Node.location
+              ~model_name
+              ~configuration
+              ~parameters
+              ~callable_parameter_names_to_positions
+              expression)
+        |> all
+        |> map ~f:List.concat
+    | _ -> invalid_annotation_error ()
+  in
+  parse_annotation (Node.value annotation)
 
 
 let introduce_sink_taint
     ~root
     ~sinks_to_keep
     ~path
+    ~leaf_names
     ~leaf_name_provided
     ({ TaintResult.backward = { sink_taint; _ }; _ } as taint)
     taint_sink_kind
@@ -745,6 +768,9 @@ let introduce_sink_taint
           in
           let leaf_taint =
             BackwardTaint.singleton taint_sink_kind
+            |> BackwardTaint.transform
+                 BackwardTaint.leaf_name_set
+                 Abstract.Domain.(Map (add_leaf_names leaf_names))
             |> BackwardTaint.transform
                  BackwardTaint.simple_feature_set
                  Abstract.Domain.(Map (add_breadcrumbs breadcrumbs))
@@ -808,6 +834,7 @@ let introduce_source_taint
     ~root
     ~sources_to_keep
     ~path
+    ~leaf_names
     ~leaf_name_provided
     ({ TaintResult.forward = { source_taint }; _ } as taint)
     taint_source_kind
@@ -839,6 +866,9 @@ let introduce_source_taint
 
       let leaf_taint =
         ForwardTaint.singleton taint_source_kind
+        |> ForwardTaint.transform
+             ForwardTaint.leaf_name_set
+             Abstract.Domain.(Map (add_leaf_names leaf_names))
         |> ForwardTaint.transform
              ForwardTaint.simple_feature_set
              Abstract.Domain.(Map (add_breadcrumbs breadcrumbs))
@@ -1041,7 +1071,7 @@ let parse_where_clause ~path ({ Node.value; location } as expression) =
                   (Name.Attribute
                     {
                       base = { Node.value = Name (Name.Identifier "parent"); _ };
-                      attribute = ("equals" | "extends") as attribute;
+                      attribute = ("equals" | "extends" | "matches") as attribute;
                       _;
                     });
               _;
@@ -1059,6 +1089,7 @@ let parse_where_clause ~path ({ Node.value; location } as expression) =
           match attribute with
           | "equals" -> ModelQuery.Equals class_name
           | "extends" -> Extends class_name
+          | "matches" -> Matches (Re2.create_exn class_name)
           | _ -> failwith "impossible case"
         in
         Ok (ModelQuery.ParentConstraint constraint_type)
@@ -1131,7 +1162,7 @@ let parse_model_clause ~path ~configuration ({ Node.value; location } as express
               ~configuration
               ~parameters:[]
               ~callable_parameter_names_to_positions:String.Map.empty
-              (Some expression)
+              expression
             >>| List.map ~f:(fun taint -> ModelQuery.TaintAnnotation taint)
       in
 
@@ -1273,17 +1304,16 @@ let parse_parameter_taint
     ~callable_parameter_names_to_positions
     (root, _name, parameter)
   =
-  let open Core.Result in
-  let annotation = parameter.Node.value.Parameter.annotation in
-  parse_annotations
-    ~path
-    ~location
-    ~model_name
-    ~configuration
-    ~parameters
-    ~callable_parameter_names_to_positions
-    annotation
-  |> map ~f:(List.map ~f:(fun annotation -> annotation, ParameterAnnotation root))
+  parameter.Node.value.Parameter.annotation
+  >>| parse_annotations
+        ~path
+        ~location
+        ~model_name
+        ~configuration
+        ~parameters
+        ~callable_parameter_names_to_positions
+  |> Option.value ~default:(Ok [])
+  |> Core.Result.map ~f:(List.map ~f:(fun annotation -> annotation, ParameterAnnotation root))
 
 
 let add_taint_annotation_to_model
@@ -1304,30 +1334,58 @@ let add_taint_annotation_to_model
   | ReturnAnnotation -> (
       let root = AccessPath.Root.LocalResult in
       match annotation with
-      | Sink { sink; breadcrumbs; path; leaf_name_provided } ->
+      | Sink { sink; breadcrumbs; path; leaf_names; leaf_name_provided } ->
           List.map ~f:Features.SimpleSet.inject breadcrumbs
           |> add_signature_based_breadcrumbs ~resolution root ~callable_annotation
-          |> introduce_sink_taint ~root ~path ~leaf_name_provided ~sinks_to_keep model sink
+          |> introduce_sink_taint
+               ~root
+               ~path
+               ~leaf_names
+               ~leaf_name_provided
+               ~sinks_to_keep
+               model
+               sink
           |> map_error ~f:annotation_error
-      | Source { source; breadcrumbs; path; leaf_name_provided } ->
+      | Source { source; breadcrumbs; path; leaf_names; leaf_name_provided } ->
           List.map ~f:Features.SimpleSet.inject breadcrumbs
           |> add_signature_based_breadcrumbs ~resolution root ~callable_annotation
-          |> introduce_source_taint ~root ~path ~leaf_name_provided ~sources_to_keep model source
+          |> introduce_source_taint
+               ~root
+               ~path
+               ~leaf_names
+               ~leaf_name_provided
+               ~sources_to_keep
+               model
+               source
           |> map_error ~f:annotation_error
       | Tito _ -> Error (annotation_error "Invalid return annotation: TaintInTaintOut")
       | AddFeatureToArgument _ ->
           Error (annotation_error "Invalid return annotation: AddFeatureToArgument") )
   | ParameterAnnotation root -> (
       match annotation with
-      | Sink { sink; breadcrumbs; path; leaf_name_provided } ->
+      | Sink { sink; breadcrumbs; path; leaf_names; leaf_name_provided } ->
           List.map ~f:Features.SimpleSet.inject breadcrumbs
           |> add_signature_based_breadcrumbs ~resolution root ~callable_annotation
-          |> introduce_sink_taint ~root ~path ~leaf_name_provided ~sinks_to_keep model sink
+          |> introduce_sink_taint
+               ~root
+               ~path
+               ~leaf_names
+               ~leaf_name_provided
+               ~sinks_to_keep
+               model
+               sink
           |> map_error ~f:annotation_error
-      | Source { source; breadcrumbs; path; leaf_name_provided } ->
+      | Source { source; breadcrumbs; path; leaf_names; leaf_name_provided } ->
           List.map ~f:Features.SimpleSet.inject breadcrumbs
           |> add_signature_based_breadcrumbs ~resolution root ~callable_annotation
-          |> introduce_source_taint ~root ~path ~leaf_name_provided ~sources_to_keep model source
+          |> introduce_source_taint
+               ~root
+               ~path
+               ~leaf_names
+               ~leaf_name_provided
+               ~sources_to_keep
+               model
+               source
           |> map_error ~f:annotation_error
       | Tito { tito; breadcrumbs; path } ->
           (* For tito, both the parameter and the return type can provide type based breadcrumbs *)
@@ -1345,6 +1403,7 @@ let add_taint_annotation_to_model
           |> introduce_sink_taint
                ~root
                ~path
+               ~leaf_names:[]
                ~leaf_name_provided:false
                ~sinks_to_keep
                model
@@ -1483,10 +1542,23 @@ let adjust_mode_and_skipped_overrides
                     when Option.equal String.equal (base_name callee) (Some "TaintInTaintOut") -> (
                       let add_tito_annotation (sanitized_tito_sources, sanitized_tito_sinks)
                         = function
-                        | Source { source; breadcrumbs = []; leaf_name_provided = false; path = [] }
-                          ->
+                        | Source
+                            {
+                              source;
+                              breadcrumbs = [];
+                              leaf_names = [];
+                              leaf_name_provided = false;
+                              path = [];
+                            } ->
                             Ok (source :: sanitized_tito_sources, sanitized_tito_sinks)
-                        | Sink { sink; breadcrumbs = []; leaf_name_provided = false; path = [] } ->
+                        | Sink
+                            {
+                              sink;
+                              breadcrumbs = [];
+                              leaf_names = [];
+                              leaf_name_provided = false;
+                              path = [];
+                            } ->
                             Ok (sanitized_tito_sources, sink :: sanitized_tito_sinks)
                         | taint_annotation ->
                             Error
@@ -1506,7 +1578,7 @@ let adjust_mode_and_skipped_overrides
                           ~configuration
                           ~parameters:[]
                           ~callable_parameter_names_to_positions:String.Map.empty
-                          (Some value)
+                          value
                         >>= List.fold_result ~init:([], []) ~f:add_tito_annotation
                         >>| fun (sanitized_tito_sources, sanitized_tito_sinks) ->
                         Mode.SpecificTito { sanitized_tito_sources; sanitized_tito_sinks }
@@ -1520,8 +1592,14 @@ let adjust_mode_and_skipped_overrides
                       | _ -> { sanitize with tito = Some sanitize_tito } )
                   | _ ->
                       let add_annotation { Mode.sources; sinks; tito } = function
-                        | Source { source; breadcrumbs = []; leaf_name_provided = false; path = [] }
-                          ->
+                        | Source
+                            {
+                              source;
+                              breadcrumbs = [];
+                              leaf_names = [];
+                              leaf_name_provided = false;
+                              path = [];
+                            } ->
                             let sources =
                               match sources with
                               | None -> Some (Mode.SpecificSources [source])
@@ -1530,7 +1608,14 @@ let adjust_mode_and_skipped_overrides
                               | Some Mode.AllSources -> Some Mode.AllSources
                             in
                             Ok { Mode.sources; sinks; tito }
-                        | Sink { sink; breadcrumbs = []; leaf_name_provided = false; path = [] } ->
+                        | Sink
+                            {
+                              sink;
+                              breadcrumbs = [];
+                              leaf_names = [];
+                              leaf_name_provided = false;
+                              path = [];
+                            } ->
                             let sinks =
                               match sinks with
                               | None -> Some (Mode.SpecificSinks [sink])
@@ -1556,7 +1641,7 @@ let adjust_mode_and_skipped_overrides
                         ~configuration
                         ~parameters:[]
                         ~callable_parameter_names_to_positions:String.Map.empty
-                        (Some value)
+                        value
                       >>= fun annotations ->
                       sanitize
                       >>= fun sanitize ->
@@ -1997,6 +2082,14 @@ let create ~resolution ?path ~configuration ~rule_filter source =
             path;
             location;
           }
+      else if Type.is_meta (Annotation.annotation callable_annotation) then
+        Error
+          {
+            ModelVerificationError.T.kind =
+              ModelVerificationError.T.ModelingClassAsDefine (Reference.show name);
+            path;
+            location;
+          }
       else
         Ok callable_annotation
     in
@@ -2072,14 +2165,17 @@ let create ~resolution ?path ~configuration ~rule_filter source =
       |> all
       >>| List.concat
       >>= fun parameter_taint ->
-      parse_return_taint
-        ~path
-        ~location
-        ~model_name:(Reference.show name)
-        ~configuration
-        ~parameters
-        ~callable_parameter_names_to_positions
-        return_annotation
+      return_annotation
+      |> Option.map
+           ~f:
+             (parse_return_taint
+                ~path
+                ~location
+                ~model_name:(Reference.show name)
+                ~configuration
+                ~parameters
+                ~callable_parameter_names_to_positions)
+      |> Option.value ~default:(Ok [])
       >>| fun return_taint -> List.rev_append parameter_taint return_taint
     in
     let model =

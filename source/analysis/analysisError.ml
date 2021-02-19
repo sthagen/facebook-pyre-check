@@ -99,10 +99,6 @@ and invalid_argument =
       expression: Expression.t option;
       annotation: Type.t;
     }
-  | ListVariadicVariable of {
-      variable: Type.OrderedTypes.t;
-      mismatch: SignatureSelectionTypes.mismatch_with_list_variadic_type_variable;
-    }
 
 and precondition_mismatch =
   | Found of mismatch
@@ -237,7 +233,7 @@ and invalid_decoration_reason =
     }
 
 and kind =
-  | AnalysisFailure of Type.t
+  | AnalysisFailure of string
   | ParserFailure of string
   | IllegalAnnotationTarget of {
       target: Expression.t;
@@ -676,9 +672,9 @@ let rec messages ~concise ~signature location kind =
   let kind = weaken_literals kind in
   match kind with
   | AnalysisFailure annotation when concise ->
-      [Format.asprintf "Terminating analysis - type `%a` not defined." pp_type annotation]
+      [Format.asprintf "Terminating analysis - type `%s` not defined." annotation]
   | AnalysisFailure annotation ->
-      [Format.asprintf "Terminating analysis because type `%a` is not defined." pp_type annotation]
+      [Format.asprintf "Terminating analysis because type `%s` is not defined." annotation]
   | ParserFailure message -> [message]
   | DeadStore name -> [Format.asprintf "Value assigned to `%a` is never used." pp_identifier name]
   | Deobfuscation source -> [Format.asprintf "\n%a" Source.pp source]
@@ -973,28 +969,7 @@ let rec messages ~concise ~signature location kind =
               "Keyword argument must be a mapping%s."
               (if require_string_keys then " with string keys" else "");
           ]
-      | ConcreteVariable _ -> ["Variable argument must be an iterable."]
-      | ListVariadicVariable { variable; mismatch = ConstraintFailure _ } ->
-          [
-            Format.asprintf
-              "Variable argument conflicts with constraints on `%a`."
-              Type.OrderedTypes.pp_concise
-              variable;
-          ]
-      | ListVariadicVariable { variable; mismatch = NotDefiniteTuple _ } ->
-          [
-            Format.asprintf
-              "Variable argument for `%a` must be a definite tuple."
-              Type.OrderedTypes.pp_concise
-              variable;
-          ]
-      | ListVariadicVariable { variable; mismatch = CantConcatenate _ } ->
-          [
-            Format.asprintf
-              "Concatenating multiple ListVariadics for variable `%a` is not yet supported."
-              Type.OrderedTypes.pp_concise
-              variable;
-          ] )
+      | ConcreteVariable _ -> ["Variable argument must be an iterable."] )
   | InvalidArgument argument -> (
       match argument with
       | Keyword { expression; annotation; require_string_keys } ->
@@ -1013,41 +988,6 @@ let rec messages ~concise ~signature location kind =
               (show_sanitized_optional_expression expression)
               pp_type
               annotation;
-          ]
-      | ListVariadicVariable { variable; mismatch = ConstraintFailure ordered_types } ->
-          [
-            Format.asprintf
-              "Types `%a` conflict with existing constraints on `%a`."
-              (Type.Record.OrderedTypes.pp_concise ~pp_type)
-              ordered_types
-              (Type.Record.OrderedTypes.pp_concise ~pp_type)
-              variable;
-          ]
-      | ListVariadicVariable { variable; mismatch = NotDefiniteTuple { expression; annotation } } ->
-          [
-            Format.asprintf
-              "Variable argument%s has type `%a` but must be a definite tuple to be included in \
-               variadic type variable `%a`."
-              (show_sanitized_optional_expression expression)
-              pp_type
-              annotation
-              (Type.Record.OrderedTypes.pp_concise ~pp_type)
-              variable;
-          ]
-      | ListVariadicVariable { variable; mismatch = CantConcatenate unconcatenatable } ->
-          let unconcatenatable =
-            List.map
-              unconcatenatable
-              ~f:(Format.asprintf "%a" (Type.Record.OrderedTypes.pp_concise ~pp_type))
-            |> String.concat ~sep:", "
-          in
-          [
-            Format.asprintf
-              "Variadic type variable `%a` cannot be made to contain `%s`, concatenation of \
-               multiple variadic type variables is not yet implemented."
-              (Type.Record.OrderedTypes.pp_concise ~pp_type)
-              variable
-              unconcatenatable;
           ] )
   | InvalidDecoration { decorator = { name; _ }; reason = CouldNotResolve } ->
       let name = Node.value name |> Reference.sanitized |> Reference.show in
@@ -1228,39 +1168,26 @@ let rec messages ~concise ~signature location kind =
       ]
   | InvalidTypeParameters { name; kind = AttributeResolution.UnexpectedKind { expected; actual } }
     ->
-      let details =
-        match expected, actual with
-        | ListVariadic _, Single actual ->
-            [
-              Format.asprintf
-                "If you want to bind a one element list to that variadic, try [%a] instead"
-                Type.pp
-                actual;
-            ]
-        | _ -> []
-      in
       let expected =
         match expected with
         | Unary expected ->
             Format.asprintf "Single type parameter `%a` expected" Type.pp (Type.Variable expected)
-        | ListVariadic expected ->
-            Format.asprintf
-              "Type parameter group expected for variadic parameter `%s`"
-              (Type.Variable.Variadic.List.name expected)
         | ParameterVariadic expected ->
             Format.asprintf
               "Callable parameters expected for parameter specification `%s`"
               (Type.Variable.Variadic.Parameters.name expected)
+        | TupleVariadic expected ->
+            Format.asprintf "Tuple expected for `%s`" (Type.Variable.Variadic.Tuple.name expected)
       in
       let actual =
         match actual with
-        | Group actual ->
-            Format.asprintf "type parameter group `[%a]`" Type.OrderedTypes.pp_concise actual
         | Single actual -> Format.asprintf "single type `%a`" Type.pp actual
         | CallableParameters actual ->
             Format.asprintf "callable parameters `%a`" Type.Callable.pp_parameters actual
+        | Unpacked actual ->
+            Format.asprintf "variadic `%a`" Type.OrderedTypes.Concatenation.pp_unpackable actual
       in
-      Format.asprintf "%s, but a %s was given for generic type %s." expected actual name :: details
+      [Format.asprintf "%s, but a %s was given for generic type %s." expected actual name]
   | InvalidTypeVariable { annotation; origin } when concise -> (
       let format : ('b, Format.formatter, unit, string) format4 =
         match origin with
@@ -1274,8 +1201,8 @@ let rec messages ~concise ~signature location kind =
       | Type.Variable.ParameterVariadic variable ->
           let name = Type.Variable.Variadic.Parameters.name variable in
           [Format.asprintf format name]
-      | Type.Variable.ListVariadic variable ->
-          let name = Type.Variable.Variadic.List.name variable in
+      | Type.Variable.TupleVariadic variable ->
+          let name = Type.Variable.Variadic.Tuple.name variable in
           [Format.asprintf format name] )
   | InvalidTypeVariable { annotation; origin } -> (
       (* The explicit annotation is necessary to appease the compiler. *)
@@ -1306,8 +1233,9 @@ let rec messages ~concise ~signature location kind =
           (* We don't give hints for the more complicated cases. *)
           let name = Type.Variable.Variadic.Parameters.name variable in
           [Format.asprintf format name]
-      | Type.Variable.ListVariadic variable ->
-          let name = Type.Variable.Variadic.List.name variable in
+      | Type.Variable.TupleVariadic variable ->
+          (* We don't give hints for the more complicated cases. *)
+          let name = Type.Variable.Variadic.Tuple.name variable in
           [Format.asprintf format name] )
   | InvalidTypeVariance { origin; _ } when concise -> (
       match origin with
@@ -2036,11 +1964,11 @@ let rec messages ~concise ~signature location kind =
       match variable with
       | Type.Variable.Unary { Type.Record.Variable.RecordUnary.variable = name; _ } ->
           [Format.asprintf format name]
-      | Type.Variable.ParameterVariadic var ->
-          let name = Type.Variable.Variadic.Parameters.name var in
+      | Type.Variable.ParameterVariadic variable ->
+          let name = Type.Variable.Variadic.Parameters.name variable in
           [Format.asprintf format name]
-      | Type.Variable.ListVariadic var ->
-          let name = Type.Variable.Variadic.List.name var in
+      | Type.Variable.TupleVariadic variable ->
+          let name = Type.Variable.Variadic.Tuple.name variable in
           [Format.asprintf format name] )
   | UnboundName name when concise ->
       [Format.asprintf "Name `%a` is used but not defined." Identifier.pp_sanitized name]
@@ -2366,8 +2294,6 @@ let due_to_analysis_limitations { kind; _ } =
   | InconsistentOverride { override = WeakenedPostcondition { actual; _ }; _ }
   | InvalidArgument (Keyword { annotation = actual; _ })
   | InvalidArgument (ConcreteVariable { annotation = actual; _ })
-  | InvalidArgument
-      (ListVariadicVariable { mismatch = NotDefiniteTuple { annotation = actual; _ }; _ })
   | InvalidException { annotation = actual; _ }
   | InvalidType (InvalidType { annotation = actual; _ })
   | InvalidType (FinalNested actual)
@@ -2391,7 +2317,6 @@ let due_to_analysis_limitations { kind; _ } =
   | IncompatibleAsyncGeneratorReturnType _
   | IncompatibleConstructorAnnotation _
   | InconsistentOverride { override = StrengthenedPrecondition (NotFound _); _ }
-  | InvalidArgument (ListVariadicVariable _)
   | InvalidDecoration _
   | InvalidMethodSignature _
   | InvalidTypeParameters _
@@ -2441,7 +2366,7 @@ let less_or_equal ~resolution left right =
   [%compare.equal: Location.WithModule.t] left.location right.location
   &&
   match left.kind, right.kind with
-  | AnalysisFailure left, AnalysisFailure right -> Type.equal left right
+  | AnalysisFailure left, AnalysisFailure right -> String.equal left right
   | ParserFailure left_message, ParserFailure right_message ->
       String.equal left_message right_message
   | DeadStore left, DeadStore right -> Identifier.equal left right
@@ -2779,7 +2704,8 @@ let join ~resolution left right =
   in
   let kind =
     match left.kind, right.kind with
-    | AnalysisFailure left, AnalysisFailure right -> AnalysisFailure (Type.union [left; right])
+    | AnalysisFailure left, AnalysisFailure right when String.equal left right ->
+        AnalysisFailure left
     | ParserFailure left_message, ParserFailure right_message
       when String.equal left_message right_message ->
         ParserFailure left_message
@@ -3453,7 +3379,7 @@ let suppress ~mode ~ignore_codes error =
     | Source.Declare -> true
   with
   | ClassHierarchy.Untracked annotation ->
-      Log.warning "`%s` not found in the type order." (Type.show annotation);
+      Log.warning "`%s` not found in the type order." annotation;
       false
 
 
@@ -3561,7 +3487,7 @@ let dequalify
   in
   let kind =
     match kind with
-    | AnalysisFailure annotation -> AnalysisFailure (dequalify annotation)
+    | AnalysisFailure annotation -> AnalysisFailure annotation
     | DeadStore name -> DeadStore name
     | Deobfuscation left -> Deobfuscation left
     | IllegalAnnotationTarget { target = left; kind } ->
@@ -3581,17 +3507,6 @@ let dequalify
           (Keyword { expression; annotation = dequalify annotation; require_string_keys })
     | InvalidArgument (ConcreteVariable { expression; annotation }) ->
         InvalidArgument (ConcreteVariable { expression; annotation = dequalify annotation })
-    | InvalidArgument (ListVariadicVariable { variable; mismatch }) ->
-        let mismatch =
-          match mismatch with
-          | NotDefiniteTuple { expression; annotation } ->
-              SignatureSelectionTypes.NotDefiniteTuple
-                { expression; annotation = dequalify annotation }
-          | _ ->
-              (* TODO(T45656387): implement dequalify ordered_types *)
-              mismatch
-        in
-        InvalidArgument (ListVariadicVariable { variable; mismatch })
     | InvalidException { expression; annotation } ->
         InvalidException { expression; annotation = dequalify annotation }
     | InvalidMethodSignature ({ annotation; _ } as kind) ->

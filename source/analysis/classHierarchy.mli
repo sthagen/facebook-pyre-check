@@ -7,11 +7,11 @@
 
 open Core
 
-exception Cyclic
+exception Cyclic of String.Hash_set.t
 
 exception Incomplete
 
-exception Untracked of Type.t
+exception Untracked of string
 
 module Target : sig
   type t = {
@@ -107,6 +107,7 @@ val is_transitive_successor
 
 val instantiate_successors_parameters
   :  (module Handler) ->
+  join:(Type.t -> Type.t -> Type.t) ->
   source:Type.t ->
   target:Type.Primitive.t ->
   Type.Parameter.t list option

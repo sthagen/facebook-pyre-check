@@ -44,7 +44,7 @@ def _log_statistics(
     exit_code: int,
 ) -> None:
     configuration = command.configuration
-    if configuration and configuration.logger:
+    if configuration is not None:
         statistics_module.log_with_configuration(
             category=statistics_module.LoggerCategory.USAGE,
             configuration=configuration,
@@ -53,8 +53,6 @@ def _log_statistics(
                 "runtime": int((time.time() - start_time) * 1000),
             },
             normals={
-                "project_root": configuration.project_root,
-                "root": configuration.relative_local_root,
                 "cwd": os.getcwd(),
                 "client_version": __version__,
                 "command_line": " ".join(sys.argv),
@@ -418,6 +416,24 @@ def _check_configuration(configuration: configuration_module.Configuration) -> N
 @click.option("--features", type=str, hidden=True)
 @click.option("--use-command-v2", is_flag=True, default=None, hidden=True)
 @click.option("--isolation-prefix", type=str, hidden=True)
+@click.option(
+    "--python-major-version",
+    type=int,
+    help=(
+        "Specify the major version of Python in which the codebase is written."
+        " By default, the Python version used to run `pyre` itself is used."
+    ),
+    hidden=True,
+)
+@click.option(
+    "--python-minor-version",
+    type=int,
+    help=(
+        "Specify the minor version of Python in which the codebase is written."
+        " By default, the Python version used to run `pyre` itself is used."
+    ),
+    hidden=True,
+)
 def pyre(
     context: click.Context,
     local_configuration: Optional[str],
@@ -455,6 +471,8 @@ def pyre(
     features: Optional[str],
     use_command_v2: Optional[bool],
     isolation_prefix: Optional[str],
+    python_major_version: Optional[int],
+    python_minor_version: Optional[int],
 ) -> int:
     arguments = command_arguments.CommandArguments(
         local_configuration=local_configuration,
@@ -494,6 +512,8 @@ def pyre(
         features=features,
         use_command_v2=use_command_v2,
         isolation_prefix=isolation_prefix,
+        python_major_version=python_major_version,
+        python_minor_version=python_minor_version,
     )
     if arguments.version:
         _show_pyre_version(arguments)
@@ -917,8 +937,16 @@ def query(context: click.Context, query: str) -> int:
     type=os.path.abspath,
     help="The path to the output file (defaults to stdout)",
 )
+@click.option(
+    "--server-log-count",
+    type=int,
+    default=3,
+    help="Number of server logs to include in the diagnositics. Default to 3.",
+)
 @click.pass_context
-def rage(context: click.Context, output_file: Optional[str]) -> int:
+def rage(
+    context: click.Context, output_file: Optional[str], server_log_count: int
+) -> int:
     """
     Collects troubleshooting diagnostics for Pyre, and writes this information
     to the terminal or to a file.
@@ -930,7 +958,11 @@ def rage(context: click.Context, output_file: Optional[str]) -> int:
 
     if configuration.use_command_v2:
         return v2.rage.run(
-            configuration, Path(output_file) if output_file is not None else None
+            configuration,
+            command_arguments.RageArguments(
+                output=Path(output_file) if output_file is not None else None,
+                server_log_count=server_log_count,
+            ),
         )
     else:
         return run_pyre_command(

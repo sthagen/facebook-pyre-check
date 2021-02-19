@@ -102,7 +102,8 @@ module ScratchProject = struct
     let watchman_root = Option.map watchman ~f:(fun _ -> source_root) in
     let server_configuration =
       {
-        ServerConfiguration.source_paths = [SearchPath.Root source_root];
+        ServerConfiguration.source_paths =
+          ServerConfiguration.SourcePaths.Simple [SearchPath.Root source_root];
         search_paths = [SearchPath.Root external_root];
         excludes = [];
         checked_directory_allowlist = [source_root];
@@ -115,6 +116,7 @@ module ScratchProject = struct
         taint_model_paths = [];
         debug = false;
         strict = false;
+        python_version = ServerConfiguration.PythonVersion.default;
         show_error_traces = false;
         store_type_check_resolution = false;
         critical_files = [];
