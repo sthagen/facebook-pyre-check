@@ -200,6 +200,30 @@ module Record = struct
       | Concatenation of 'annotation Concatenation.t
     [@@deriving compare, eq, sexp, show, hash]
 
+    (* This represents the splitting of two ordered types to match each other in length. The prefix
+       contains the prefix elements of known length that both have, the suffix contains the suffix
+       elements of known length that both have, and the middle part contains the rest.
+
+       [int, bool, str, int, bool] <: [int, int, *Ts, T]
+
+       will be represented as:
+
+       * prefix_match: [int; bool], [int; int].
+
+       * middle_match: [str; int], *Ts
+
+       * suffix_match: [bool], T.
+
+       We don't include `str` in the prefixes because the corresponding `*Ts` on the right side is
+       not of known length. Note that this doesn't check for compatibility; it is a purely
+       length-based operation. *)
+    type 'annotation ordered_type_split = {
+      prefix_pairs: ('annotation * 'annotation) list;
+      middle_pair: 'annotation record * 'annotation record;
+      suffix_pairs: ('annotation * 'annotation) list;
+    }
+    [@@deriving compare, eq, sexp, show, hash]
+
     let pp_concise format variable ~pp_type =
       match variable with
       | Concrete types -> Format.fprintf format "%s" (show_type_list types ~pp_type)
@@ -217,6 +241,80 @@ module Record = struct
       | Concatenation _, Concatenation _ ->
           (* TODO(T84854853). *)
           None
+
+
+    let split_matching_elements_by_length left right =
+      let split_concrete_against_concatenation
+          ~is_left_concrete
+          ~concrete
+          ~concatenation:{ Concatenation.prefix; middle; suffix }
+        =
+        let concrete_prefix, concrete_rest = List.split_n concrete (List.length prefix) in
+        let concrete_middle, concrete_suffix =
+          List.split_n concrete_rest (List.length concrete_rest - List.length suffix)
+        in
+        let prefix_pairs, middle_pair, suffix_pairs =
+          if is_left_concrete then
+            ( List.zip concrete_prefix prefix,
+              (Concrete concrete_middle, Concatenation { prefix = []; middle; suffix = [] }),
+              List.zip concrete_suffix suffix )
+          else
+            ( List.zip prefix concrete_prefix,
+              (Concatenation { prefix = []; middle; suffix = [] }, Concrete concrete_middle),
+              List.zip suffix concrete_suffix )
+        in
+        match prefix_pairs, middle_pair, suffix_pairs with
+        | Ok prefix_pairs, middle_pair, Ok suffix_pairs ->
+            Some { prefix_pairs; middle_pair; suffix_pairs }
+        | _ -> None
+      in
+      match left, right with
+      | Concrete left, Concrete right -> (
+          match List.zip left right with
+          | Ok prefix_pairs ->
+              Some { prefix_pairs; middle_pair = Concrete [], Concrete []; suffix_pairs = [] }
+          | Unequal_lengths -> None )
+      | Concrete left, Concatenation concatenation ->
+          split_concrete_against_concatenation ~is_left_concrete:true ~concrete:left ~concatenation
+      | Concatenation concatenation, Concrete right ->
+          split_concrete_against_concatenation
+            ~is_left_concrete:false
+            ~concrete:right
+            ~concatenation
+      | ( Concatenation { prefix = left_prefix; middle = left_middle; suffix = left_suffix },
+          Concatenation { prefix = right_prefix; middle = right_middle; suffix = right_suffix } )
+        -> (
+          let prefix_length = Int.min (List.length left_prefix) (List.length right_prefix) in
+          let suffix_length = Int.min (List.length left_suffix) (List.length right_suffix) in
+          let left_prefix, left_prefix_rest = List.split_n left_prefix prefix_length in
+          let right_prefix, right_prefix_rest = List.split_n right_prefix prefix_length in
+          let left_suffix_rest, left_suffix =
+            List.split_n left_suffix (List.length left_suffix - suffix_length)
+          in
+          let right_suffix_rest, right_suffix =
+            List.split_n right_suffix (List.length right_suffix - suffix_length)
+          in
+          match List.zip left_prefix right_prefix, List.zip left_suffix right_suffix with
+          | Ok prefix_pairs, Ok suffix_pairs ->
+              Some
+                {
+                  prefix_pairs;
+                  middle_pair =
+                    ( Concatenation
+                        {
+                          prefix = left_prefix_rest;
+                          middle = left_middle;
+                          suffix = left_suffix_rest;
+                        },
+                      Concatenation
+                        {
+                          prefix = right_prefix_rest;
+                          middle = right_middle;
+                          suffix = right_suffix_rest;
+                        } );
+                  suffix_pairs;
+                }
+          | _ -> None )
   end
 
   module Callable = struct
@@ -1491,6 +1589,43 @@ let rec expression annotation =
   let location = Location.any in
   let create_name name = Expression.Name (create_name ~location name) in
   let get_item_call = get_item_call ~location in
+  let variadic_to_expression variadic =
+    Expression.Call
+      {
+        callee =
+          {
+            Node.location;
+            value =
+              Name
+                (Name.Attribute
+                   {
+                     base =
+                       create_name Record.OrderedTypes.Concatenation.unpack_public_name
+                       |> Node.create ~location;
+                     attribute = "__getitem__";
+                     special = true;
+                   });
+          };
+        arguments =
+          [
+            {
+              name = None;
+              value =
+                create_name
+                  (Format.asprintf "%a" Record.Variable.RecordVariadic.Tuple.pp_concise variadic)
+                |> Node.create ~location;
+            };
+          ];
+      }
+    |> Node.create ~location
+  in
+  let concatenation_to_expression
+      { Record.OrderedTypes.Concatenation.prefix; middle = Variadic variadic; suffix }
+    =
+    List.map ~f:expression prefix
+    @ [variadic_to_expression variadic]
+    @ List.map ~f:expression suffix
+  in
   let callable_parameters_expression = function
     | Defined parameters ->
         let convert_parameter parameter =
@@ -1641,7 +1776,7 @@ let rec expression annotation =
           let expression_of_parameter = function
             | Record.Parameter.Single single -> expression single
             | CallableParameters parameters -> callable_parameters_expression parameters
-            | Unpacked _ -> failwith "not yet implemented - T84854853"
+            | Unpacked (Variadic variadic) -> variadic_to_expression variadic
           in
           match parameters with
           | parameters -> List.map parameters ~f:expression_of_parameter
@@ -1662,7 +1797,7 @@ let rec expression annotation =
         let parameters =
           match elements with
           | Bounded (Concrete parameters) -> List.map ~f:expression parameters
-          | Bounded (Concatenation _) -> failwith "not yet implemented - T84854853"
+          | Bounded (Concatenation concatenation) -> concatenation_to_expression concatenation
           | Unbounded parameter -> List.map ~f:expression [parameter; Primitive "..."]
         in
         get_item_call "typing.Tuple" parameters
@@ -2343,6 +2478,14 @@ module OrderedTypes = struct
     | _ ->
         (* TODO(T84854853): Proper default for variadic tuple. *)
         None
+
+
+  let to_parameters = function
+    | Concrete elements -> List.map elements ~f:(fun element -> Parameter.Single element)
+    | Concatenation { prefix; middle = unpacked; suffix } ->
+        List.map prefix ~f:(fun element -> Parameter.Single element)
+        @ [Parameter.Unpacked unpacked]
+        @ List.map suffix ~f:(fun element -> Parameter.Single element)
 end
 
 let parameters_from_unpacked_annotation annotation ~variable_aliases =
@@ -2359,20 +2502,9 @@ let parameters_from_unpacked_annotation annotation ~variable_aliases =
   | Parametric { name; parameters = [Single (Primitive _ as element)] }
     when Identifier.equal name Record.OrderedTypes.Concatenation.unpack_public_name ->
       unpacked_variadic_to_parameter element >>| fun parameter -> [parameter]
-  | Parametric { name; parameters = [Single (Tuple (Bounded (Concrete elements)))] }
+  | Parametric { name; parameters = [Single (Tuple (Bounded ordered_type))] }
     when Identifier.equal name Record.OrderedTypes.Concatenation.unpack_public_name ->
-      List.map elements ~f:(fun element -> Parameter.Single element) |> Option.some
-  | Parametric
-      {
-        name;
-        parameters =
-          [Single (Tuple (Bounded (Concatenation { prefix; middle = unpacked; suffix })))];
-      }
-    when Identifier.equal name Record.OrderedTypes.Concatenation.unpack_public_name ->
-      List.map prefix ~f:(fun element -> Parameter.Single element)
-      @ [Parameter.Unpacked unpacked]
-      @ List.map suffix ~f:(fun element -> Parameter.Single element)
-      |> Option.some
+      OrderedTypes.to_parameters ordered_type |> Option.some
   | _ -> None
 
 
@@ -3286,6 +3418,9 @@ module Variable : sig
 
     module ParameterVariadic :
       S with type t = parameter_variadic_t and type domain = Callable.parameters
+
+    module TupleVariadic :
+      S with type t = tuple_variadic_t and type domain = type_t OrderedTypes.record
   end
 
   include module type of struct
@@ -3746,13 +3881,43 @@ end = struct
 
       let mark_as_escaped variable = { variable with state = Free { escaped = true } }
 
-      (* TODO(T84854853): Implement. *)
       let local_collect = function
+        | Parametric { parameters; _ } ->
+            let extract = function
+              | Parameter.Unpacked (Variadic variadic) -> Some variadic
+              | _ -> None
+            in
+            List.filter_map parameters ~f:extract
+        | Tuple (Bounded (Concatenation { middle = Variadic variadic; _ })) -> [variadic]
         | _ -> []
 
 
-      (* TODO(T84854853): Implement. *)
-      let local_replace _ annotation = Some annotation
+      let local_replace replacement = function
+        | Parametric ({ parameters; _ } as parametric) ->
+            let replace parameter =
+              let replaced =
+                match parameter with
+                | Parameter.Unpacked (Variadic variadic) ->
+                    replacement variadic >>| OrderedTypes.to_parameters
+                | _ -> None
+              in
+              Option.value ~default:[parameter] replaced
+            in
+            Parametric { parametric with parameters = List.concat_map parameters ~f:replace }
+            |> Option.some
+        | Tuple (Bounded (Concatenation { prefix; middle = Variadic variadic; suffix })) ->
+            let expand_ordered_type_within_concatenation = function
+              | OrderedTypes.Concrete annotations ->
+                  OrderedTypes.Concrete (prefix @ annotations @ suffix)
+              | Concatenation { prefix = new_prefix; middle; suffix = new_suffix } ->
+                  Concatenation
+                    { prefix = prefix @ new_prefix; middle; suffix = new_suffix @ suffix }
+            in
+            replacement variadic
+            >>| expand_ordered_type_within_concatenation
+            >>| fun ordered_type -> Tuple (Bounded ordered_type)
+        | _ -> None
+
 
       let dequalify ({ name; _ } as variable) ~dequalify_map =
         { variable with name = dequalify_identifier dequalify_map name }

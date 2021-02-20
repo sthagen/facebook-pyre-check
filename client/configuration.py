@@ -93,6 +93,11 @@ class InvalidConfiguration(Exception):
         super().__init__(self.message)
 
 
+class InvalidPythonVersion(InvalidConfiguration):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
 class SearchPathElement(abc.ABC):
     @abc.abstractmethod
     def path(self) -> str:
@@ -277,10 +282,40 @@ def _in_virtual_environment(override: Optional[bool] = None) -> bool:
 
 
 @dataclass(frozen=True)
+class PythonVersion:
+    major: int
+    minor: int = 0
+    micro: int = 0
+
+    @staticmethod
+    def from_string(input: str) -> "PythonVersion":
+        try:
+            splits = input.split(".")
+            if len(splits) == 1:
+                return PythonVersion(major=int(splits[0]))
+            elif len(splits) == 2:
+                return PythonVersion(major=int(splits[0]), minor=int(splits[1]))
+            elif len(splits) == 3:
+                return PythonVersion(
+                    major=int(splits[0]), minor=int(splits[1]), micro=int(splits[2])
+                )
+            raise InvalidPythonVersion(
+                "Version string is expected to have the form of 'X.Y.Z' but got "
+                + f"'{input}'"
+            )
+        except ValueError as error:
+            raise InvalidPythonVersion(str(error))
+
+    def to_string(self) -> str:
+        return f"{self.major}.{self.minor}.{self.micro}"
+
+
+@dataclass(frozen=True)
 class PartialConfiguration:
     autocomplete: Optional[bool] = None
     binary: Optional[str] = None
     buck_builder_binary: Optional[str] = None
+    buck_mode: Optional[str] = None
     disabled: Optional[bool] = None
     do_not_ignore_all_errors_in: Sequence[str] = field(default_factory=list)
     dot_pyre_directory: Optional[Path] = None
@@ -294,8 +329,7 @@ class PartialConfiguration:
     logger: Optional[str] = None
     number_of_workers: Optional[int] = None
     other_critical_files: Sequence[str] = field(default_factory=list)
-    python_major_version: Optional[int] = None
-    python_minor_version: Optional[int] = None
+    python_version: Optional[PythonVersion] = None
     search_path: Sequence[SearchPathElement] = field(default_factory=list)
     source_directories: Optional[Sequence[SearchPathElement]] = None
     strict: Optional[bool] = None
@@ -315,7 +349,6 @@ class PartialConfiguration:
     def _get_extra_keys() -> Set[str]:
         return {
             "accept_command_v2",
-            "buck_mode",
             "create_open_source_configuration",
             "differential",
             "oncall",
@@ -336,10 +369,12 @@ class PartialConfiguration:
         targets: Optional[List[str]] = (
             arguments.targets if len(arguments.targets) > 0 else None
         )
+        python_version_string = arguments.python_version
         return PartialConfiguration(
             autocomplete=None,
             binary=arguments.binary,
             buck_builder_binary=arguments.buck_builder_binary,
+            buck_mode=arguments.buck_mode,
             disabled=None,
             do_not_ignore_all_errors_in=[],
             dot_pyre_directory=arguments.dot_pyre_directory,
@@ -353,8 +388,11 @@ class PartialConfiguration:
             logger=arguments.logger,
             number_of_workers=None,
             other_critical_files=[],
-            python_major_version=arguments.python_major_version,
-            python_minor_version=arguments.python_minor_version,
+            python_version=(
+                PythonVersion.from_string(python_version_string)
+                if python_version_string is not None
+                else None
+            ),
             search_path=[
                 SimpleSearchPathElement(element) for element in arguments.search_path
             ],
@@ -449,6 +487,17 @@ class PartialConfiguration:
                     search_path_json, site_roots=_get_site_roots()
                 )
 
+            python_version_json = configuration_json.pop("python_version", None)
+            if python_version_json is None:
+                python_version = None
+            elif isinstance(python_version_json, str):
+                python_version = PythonVersion.from_string(python_version_json)
+            else:
+                raise InvalidConfiguration(
+                    "Expect python version to be a string but got"
+                    + f"'{python_version_json}'"
+                )
+
             source_directories_json = ensure_option_type(
                 configuration_json, "source_directories", list
             )
@@ -471,6 +520,7 @@ class PartialConfiguration:
                 buck_builder_binary=ensure_option_type(
                     configuration_json, "buck_builder_binary", str
                 ),
+                buck_mode=ensure_option_type(configuration_json, "buck_mode", str),
                 disabled=ensure_option_type(configuration_json, "disabled", bool),
                 do_not_ignore_all_errors_in=ensure_string_list(
                     configuration_json, "do_not_ignore_errors_in"
@@ -501,12 +551,7 @@ class PartialConfiguration:
                 other_critical_files=ensure_string_list(
                     configuration_json, "critical_files"
                 ),
-                python_major_version=ensure_option_type(
-                    configuration_json, "python_major_version", int
-                ),
-                python_minor_version=ensure_option_type(
-                    configuration_json, "python_minor_version", int
-                ),
+                python_version=python_version,
                 search_path=search_path,
                 source_directories=source_directories,
                 strict=ensure_option_type(configuration_json, "strict", bool),
@@ -580,6 +625,7 @@ class PartialConfiguration:
             autocomplete=self.autocomplete,
             binary=binary,
             buck_builder_binary=buck_builder_binary,
+            buck_mode=self.buck_mode,
             disabled=self.disabled,
             do_not_ignore_all_errors_in=[
                 expand_relative_path(root, path)
@@ -602,8 +648,7 @@ class PartialConfiguration:
             other_critical_files=[
                 expand_relative_path(root, path) for path in self.other_critical_files
             ],
-            python_major_version=self.python_major_version,
-            python_minor_version=self.python_minor_version,
+            python_version=self.python_version,
             search_path=[path.expand_relative_root(root) for path in self.search_path],
             source_directories=source_directories,
             strict=self.strict,
@@ -646,6 +691,7 @@ def merge_partial_configurations(
         buck_builder_binary=overwrite_base(
             base.buck_builder_binary, override.buck_builder_binary
         ),
+        buck_mode=overwrite_base(base.buck_mode, override.buck_mode),
         disabled=overwrite_base(base.disabled, override.disabled),
         do_not_ignore_all_errors_in=prepend_base(
             base.do_not_ignore_all_errors_in, override.do_not_ignore_all_errors_in
@@ -671,12 +717,7 @@ def merge_partial_configurations(
         other_critical_files=prepend_base(
             base.other_critical_files, override.other_critical_files
         ),
-        python_major_version=overwrite_base(
-            base.python_major_version, override.python_major_version
-        ),
-        python_minor_version=overwrite_base(
-            base.python_minor_version, override.python_minor_version
-        ),
+        python_version=overwrite_base(base.python_version, override.python_version),
         search_path=prepend_base(base.search_path, override.search_path),
         source_directories=raise_when_overridden(
             base.source_directories,
@@ -708,6 +749,7 @@ class Configuration:
     autocomplete: bool = False
     binary: Optional[str] = None
     buck_builder_binary: Optional[str] = None
+    buck_mode: Optional[str] = None
     disabled: bool = False
     do_not_ignore_all_errors_in: Sequence[str] = field(default_factory=list)
     excludes: Sequence[str] = field(default_factory=list)
@@ -720,8 +762,7 @@ class Configuration:
     logger: Optional[str] = None
     number_of_workers: Optional[int] = None
     other_critical_files: Sequence[str] = field(default_factory=list)
-    python_major_version: Optional[int] = None
-    python_minor_version: Optional[int] = None
+    python_version: Optional[PythonVersion] = None
     relative_local_root: Optional[str] = None
     search_path: Sequence[SearchPathElement] = field(default_factory=list)
     source_directories: Sequence[SearchPathElement] = field(default_factory=list)
@@ -756,6 +797,7 @@ class Configuration:
             ),
             binary=partial_configuration.binary,
             buck_builder_binary=partial_configuration.buck_builder_binary,
+            buck_mode=partial_configuration.buck_mode,
             disabled=_get_optional_value(partial_configuration.disabled, default=False),
             do_not_ignore_all_errors_in=partial_configuration.do_not_ignore_all_errors_in,
             excludes=partial_configuration.excludes,
@@ -768,8 +810,7 @@ class Configuration:
             logger=partial_configuration.logger,
             number_of_workers=partial_configuration.number_of_workers,
             other_critical_files=partial_configuration.other_critical_files,
-            python_major_version=partial_configuration.python_major_version,
-            python_minor_version=partial_configuration.python_minor_version,
+            python_version=partial_configuration.python_version,
             relative_local_root=relative_local_root,
             search_path=[
                 path.expand_global_root(str(project_root)) for path in search_path
@@ -812,12 +853,12 @@ class Configuration:
         """
         binary = self.binary
         buck_builder_binary = self.buck_builder_binary
+        buck_mode = self.buck_mode
         formatter = self.formatter
         isolation_prefix = self.isolation_prefix
         logger = self.logger
         number_of_workers = self.number_of_workers
-        python_major_version = self.python_major_version
-        python_minor_version = self.python_minor_version
+        python_version = self.python_version
         relative_local_root = self.relative_local_root
         typeshed = self.typeshed
         version_hash = self.version_hash
@@ -831,6 +872,7 @@ class Configuration:
                 if buck_builder_binary is not None
                 else {}
             ),
+            **({"buck_mode": buck_mode} if buck_mode is not None else {}),
             "disabled": self.disabled,
             "do_not_ignore_all_errors_in": list(self.do_not_ignore_all_errors_in),
             "excludes": list(self.excludes),
@@ -847,13 +889,8 @@ class Configuration:
             **({"workers": number_of_workers} if number_of_workers is not None else {}),
             "other_critical_files": list(self.other_critical_files),
             **(
-                {"python_major_version": python_major_version}
-                if python_major_version is not None
-                else {}
-            ),
-            **(
-                {"python_minor_version": python_minor_version}
-                if python_minor_version is not None
+                {"python_version": python_version.to_string()}
+                if python_version is not None
                 else {}
             ),
             **(
@@ -1034,17 +1071,17 @@ class Configuration:
         override `isolation_prefix` as `""` in a local configuration."""
         return None if self.isolation_prefix == "" else self.isolation_prefix
 
-    def get_python_major_version(self) -> int:
-        python_major_version = self.python_major_version
-        if python_major_version is not None:
-            return python_major_version
-        return sys.version_info.major
-
-    def get_python_minor_version(self) -> int:
-        python_minor_version = self.python_minor_version
-        if python_minor_version is not None:
-            return python_minor_version
-        return sys.version_info.minor
+    def get_python_version(self) -> PythonVersion:
+        python_version = self.python_version
+        if python_version is not None:
+            return python_version
+        else:
+            version_info = sys.version_info
+            return PythonVersion(
+                major=version_info.major,
+                minor=version_info.minor,
+                micro=version_info.micro,
+            )
 
 
 def create_configuration(

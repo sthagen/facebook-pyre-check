@@ -89,11 +89,23 @@ module Record : sig
       | Concatenation of 'annotation Concatenation.t
     [@@deriving compare, eq, sexp, show, hash]
 
+    type 'annotation ordered_type_split = {
+      prefix_pairs: ('annotation * 'annotation) list;
+      middle_pair: 'annotation record * 'annotation record;
+      suffix_pairs: ('annotation * 'annotation) list;
+    }
+    [@@deriving compare, eq, sexp, show, hash]
+
     val pp_concise
       :  Format.formatter ->
       'a record ->
       pp_type:(Format.formatter -> 'a -> unit) ->
       unit
+
+    val split_matching_elements_by_length
+      :  'annotation record ->
+      'annotation record ->
+      'annotation ordered_type_split option
   end
 
   module Callable : sig
@@ -803,6 +815,9 @@ module Variable : sig
 
     module ParameterVariadic :
       S with type t = parameter_variadic_t and type domain = Callable.parameters
+
+    module TupleVariadic :
+      S with type t = tuple_variadic_t and type domain = type_t OrderedTypes.record
   end
 
   include module type of struct
