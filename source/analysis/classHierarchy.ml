@@ -178,13 +178,8 @@ let immediate_parents (module Handler : Handler) class_name =
   |> Option.value ~default:[]
 
 
-let clean not_clean =
-  List.map not_clean ~f:(function
-      | Type.Parameter.Single (Type.Variable variable) -> Some (Type.Variable.Unary variable)
-      | CallableParameters (ParameterVariadicTypeVariable { head = []; variable }) ->
-          Some (ParameterVariadic variable)
-      | _ -> None)
-  |> Option.all
+let parameters_to_variables parameters =
+  List.map parameters ~f:Type.Parameter.to_variable |> Option.all
 
 
 let variables ?(default = None) (module Handler : Handler) = function
@@ -196,19 +191,13 @@ let variables ?(default = None) (module Handler : Handler) = function
       (* This is not the "real" typing.Callable. We are just proxying to the Callable instance in
          the type order here. *)
       Some [Unary (Type.Variable.Unary.create ~variance:Covariant "_T_meta")]
-  | node -> (
-      let edges =
-        index_of generic_primitive
-        |> fun generic_index ->
-        index_of node
-        |> fun primitive_index ->
-        Handler.edges primitive_index
-        >>= List.find ~f:(fun { Target.target; _ } -> IndexTracker.equal target generic_index)
-        >>| fun { Target.parameters; _ } -> parameters
-      in
-      match edges with
-      | None -> default
-      | Some edges -> clean edges )
+  | primitive_name ->
+      let generic_index = index_of generic_primitive in
+      let primitive_index = index_of primitive_name in
+      Handler.edges primitive_index
+      >>= List.find ~f:(fun { Target.target; _ } -> IndexTracker.equal target generic_index)
+      >>| (fun { Target.parameters; _ } -> parameters_to_variables parameters)
+      |> Option.value ~default
 
 
 let get_generic_parameters ~generic_index edges =
@@ -309,7 +298,7 @@ let instantiate_successors_parameters ((module Handler : Handler) as handler) ~j
       index_of target
       |> Handler.edges
       >>= get_generic_parameters ~generic_index
-      >>= clean
+      >>= parameters_to_variables
       >>| List.map ~f:to_any
   | _ ->
       let split =
@@ -346,20 +335,8 @@ let instantiate_successors_parameters ((module Handler : Handler) as handler) ~j
                 let get_instantiated_successors ~generic_index ~parameters successors =
                   let variables =
                     get_generic_parameters successors ~generic_index
-                    >>= clean
+                    >>= parameters_to_variables
                     |> Option.value ~default:[]
-                  in
-                  let replacement = function
-                    | Type.Parameter.Single parameter, Type.Variable.Unary variable ->
-                        Type.Variable.UnaryPair (variable, parameter)
-                    | CallableParameters _, Unary variable ->
-                        Type.Variable.UnaryPair (variable, Type.Any)
-                    | CallableParameters parameters, ParameterVariadic variable ->
-                        Type.Variable.ParameterVariadicPair (variable, parameters)
-                    | Single _, ParameterVariadic variable ->
-                        Type.Variable.ParameterVariadicPair (variable, Undefined)
-                    | Unpacked _, _ -> failwith "not yet implemented - T84854853"
-                    | _, TupleVariadic _ -> failwith "not yet implemented - T84854853"
                   in
                   let replacement =
                     let to_any = function
@@ -368,12 +345,9 @@ let instantiate_successors_parameters ((module Handler : Handler) as handler) ~j
                           Type.Variable.ParameterVariadicPair (variable, Undefined)
                       | TupleVariadic _ -> failwith "not yet implemented - T84854853"
                     in
-
-                    Type.Variable.zip_on_parameters ~parameters variables
-                    >>| List.map ~f:replacement
-                    |> (function
-                         | Some pairs -> pairs
-                         | None -> List.map ~f:to_any variables)
+                    Type.Variable.zip_variables_with_parameters ~parameters variables
+                    >>| List.map ~f:(function { Type.Variable.variable_pair; _ } -> variable_pair)
+                    |> Option.value ~default:(List.map ~f:to_any variables)
                     |> TypeConstraints.Solution.create
                   in
                   let instantiate_parameters { Target.target; parameters } =

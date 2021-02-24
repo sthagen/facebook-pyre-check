@@ -254,8 +254,11 @@ let make_assert_functions context =
               match GlobalResolution.aliases global_resolution primitive with
               | Some (Type.VariableAlias (ParameterVariadic variable)) ->
                   Type.Variable.ParameterVariadicPair (variable, parse_parameters value)
-              | Some (Type.VariableAlias (TupleVariadic variable)) ->
-                  Type.Variable.TupleVariadicPair (variable, parse_ordered_types value)
+              | Some (Type.VariableAlias (TupleVariadic variable)) -> (
+                  match Type.Tuple (Bounded (parse_ordered_types value)) |> postprocess with
+                  | Type.Tuple (Bounded ordered_type) ->
+                      Type.Variable.TupleVariadicPair (variable, ordered_type)
+                  | _ -> failwith "expected a tuple" )
               | _ -> failwith "not available" )
           | _ -> failwith "not a variable"
         in
@@ -813,7 +816,7 @@ let test_add_constraint_recursive_type context =
 
 
 let test_add_constraint_type_variable_tuple context =
-  let assert_add, _, _, _ = make_assert_functions context in
+  let assert_add, assert_add_direct, _, _ = make_assert_functions context in
   assert_add
     ~left:"typing.Tuple[int, str, bool]"
     ~right:"typing.Tuple[int, pyre_extensions.Unpack[Ts]]"
@@ -830,6 +833,57 @@ let test_add_constraint_type_variable_tuple context =
     ~left:"typing.Tuple[int, str, bool]"
     ~right:"typing.Tuple[pyre_extensions.Unpack[Ts], T]"
     [["Ts", "typing.Tuple[int, str]"; "T", "bool"]];
+  assert_add
+    ~leave_unbound_in_left:["Ts"]
+    ~left:"typing.Tuple[int, pyre_extensions.Unpack[Ts]]"
+    ~right:"typing.Tuple[int, str, bool]"
+    [["Ts", "typing.Tuple[str, bool]"]];
+  (* Ts is bound on the left side. We fail because Ts could be any tuple. *)
+  assert_add
+    ~left:"typing.Tuple[int, pyre_extensions.Unpack[Ts]]"
+    ~right:"typing.Tuple[int, str, bool]"
+    [];
+  (* This ends up checking `[int, str] <: *Ts (bound)`, which is not valid. *)
+  assert_add
+    ~left:"typing.Callable[[typing.Tuple[pyre_extensions.Unpack[Ts]]], bool]"
+    ~right:"typing.Callable[[typing.Tuple[int, str]], bool]"
+    [];
+  assert_add
+    ~left:"typing.Tuple[pyre_extensions.Unpack[Ts]]"
+    ~right:"typing.Tuple[pyre_extensions.Unpack[Ts2]]"
+    [["Ts2", "typing.Tuple[pyre_extensions.Unpack[Ts]]"]];
+  assert_add
+    ~left:"typing.Tuple[int, pyre_extensions.Unpack[Ts], str]"
+    ~right:"typing.Tuple[pyre_extensions.Unpack[Ts2]]"
+    [["Ts2", "typing.Tuple[int, pyre_extensions.Unpack[Ts], str]"]];
+  assert_add
+    ~left:"typing.Tuple[int, bool, pyre_extensions.Unpack[Ts], bool, str]"
+    ~right:"typing.Tuple[int, pyre_extensions.Unpack[Ts2], str]"
+    [["Ts2", "typing.Tuple[bool, pyre_extensions.Unpack[Ts], bool]"]];
+  (* No solution because the middle portion is `[*Ts (bound)] <: [bool, *Ts2 (free), bool]`. The
+     bound `Ts` may not start with `bool`. *)
+  assert_add
+    ~left:"typing.Tuple[int, pyre_extensions.Unpack[Ts], str]"
+    ~right:"typing.Tuple[int, bool, pyre_extensions.Unpack[Ts2], bool, str]"
+    [];
+  let variadic = Type.Variable.Variadic.Tuple.create "test.Ts" in
+  let variadic2 = Type.Variable.Variadic.Tuple.create "test.Ts2" in
+  assert_add_direct
+    ~left:
+      (Type.Tuple
+         (Bounded
+            (Type.OrderedTypes.Concatenation
+               (Type.OrderedTypes.Concatenation.create ~prefix:[] ~suffix:[] variadic))))
+    ~right:
+      ( Type.Tuple
+          (Bounded
+             (Type.OrderedTypes.Concatenation
+                (Type.OrderedTypes.Concatenation.create
+                   ~prefix:[Type.integer]
+                   ~suffix:[Type.string]
+                   variadic2)))
+      |> Type.Variable.mark_all_variables_as_bound )
+    [["Ts", "typing.Tuple[int, pyre_extensions.Unpack[Ts2], str]"]];
   ()
 
 

@@ -926,8 +926,35 @@ let test_attribute_type context =
 
 let test_invalid_type_parameters context =
   let open AttributeResolution in
-  let assert_invalid_type_parameters
+  let assert_invalid_type_parameters_direct
       ?(source = "")
+      ~given_type
+      ~expected_transformed_type
+      expected_mismatches
+    =
+    let global_resolution =
+      let { ScratchProject.BuiltGlobalEnvironment.global_environment; _ } =
+        ScratchProject.setup ~context ["test.py", source] |> ScratchProject.build_global_environment
+      in
+      AnnotatedGlobalEnvironment.read_only global_environment |> GlobalResolution.create
+    in
+    let actual_mismatches, actual_transformed_type =
+      GlobalResolution.check_invalid_type_parameters global_resolution given_type
+    in
+    assert_equal
+      ~cmp:[%equal: Type.t]
+      ~printer:[%show: Type.t]
+      expected_transformed_type
+      actual_transformed_type;
+    assert_equal
+      ~cmp:[%equal: type_parameters_mismatch list]
+      ~printer:[%show: type_parameters_mismatch list]
+      expected_mismatches
+      actual_mismatches
+  in
+  let assert_invalid_type_parameters
+      ?source
+      ?(aliases = Type.empty_aliases)
       ~given_type
       ~expected_transformed_type
       expected_mismatches
@@ -936,27 +963,13 @@ let test_invalid_type_parameters context =
       parse_single_expression ~preprocess:true annotation
       (* Avoid `GlobalResolution.parse_annotation` because that calls
          `check_invalid_type_parameters`. *)
-      |> Type.create ~aliases:Type.empty_aliases
+      |> Type.create ~aliases
     in
-    let global_resolution =
-      let { ScratchProject.BuiltGlobalEnvironment.global_environment; _ } =
-        ScratchProject.setup ~context ["test.py", source] |> ScratchProject.build_global_environment
-      in
-      AnnotatedGlobalEnvironment.read_only global_environment |> GlobalResolution.create
-    in
-    let actual_mismatches, actual_transformed_type =
-      GlobalResolution.check_invalid_type_parameters global_resolution (parse given_type)
-    in
-    assert_equal
-      ~cmp:[%equal: Type.t]
-      ~printer:[%show: Type.t]
-      (parse expected_transformed_type)
-      actual_transformed_type;
-    assert_equal
-      ~cmp:[%equal: type_parameters_mismatch list]
-      ~printer:[%show: type_parameters_mismatch list]
+    assert_invalid_type_parameters_direct
+      ?source
+      ~given_type:(parse given_type)
+      ~expected_transformed_type:(parse expected_transformed_type)
       expected_mismatches
-      actual_mismatches
   in
   assert_invalid_type_parameters
     ~given_type:"typing.List[str, int]"
@@ -1014,6 +1027,77 @@ let test_invalid_type_parameters context =
             { actual = 0; expected = 1; can_accept_more_parameters = true };
       };
     ];
+  let variadic = Type.Variable.Variadic.Tuple.create "Ts" in
+  assert_invalid_type_parameters
+    ~aliases:(fun ?replace_unbound_parameters_with_any:_ -> function
+      | "Ts" -> Some (VariableAlias (Type.Variable.TupleVariadic variadic))
+      | _ -> None)
+    ~given_type:"typing.List[pyre_extensions.Unpack[Ts]]"
+    ~expected_transformed_type:"typing.List[typing.Any]"
+    [
+      {
+        name = "list";
+        kind =
+          UnexpectedKind
+            {
+              actual = Unpacked (Type.OrderedTypes.Concatenation.create_unpackable variadic);
+              expected = Unary (Type.Variable.Unary.create "_T");
+            };
+      };
+    ];
+  let parameter_variadic = Type.Variable.Variadic.Parameters.create "test.TParams" in
+  assert_invalid_type_parameters_direct
+    ~source:
+      {|
+      from typing import Generic
+      from pyre_extensions import ParameterSpecification
+
+      TParams = ParameterSpecification("TParams")
+      class Foo(Generic[TParams]): ...
+    |}
+    ~given_type:
+      (Type.parametric
+         "test.Foo"
+         [Unpacked (Type.OrderedTypes.Concatenation.create_unpackable variadic)])
+    ~expected_transformed_type:(Type.parametric "test.Foo" [CallableParameters Undefined])
+    [
+      {
+        name = "test.Foo";
+        kind =
+          UnexpectedKind
+            {
+              actual = Unpacked (Type.OrderedTypes.Concatenation.create_unpackable variadic);
+              expected = Type.Variable.ParameterVariadic parameter_variadic;
+            };
+      };
+    ];
+  assert_invalid_type_parameters
+    ~source:
+      {|
+      from typing import Generic
+      from pyre_extensions import TypeVarTuple
+
+      Ts = TypeVarTuple("Ts")
+      class Foo(Generic[*Ts]): ...
+    |}
+    ~given_type:"test.Foo[int, str]"
+    ~expected_transformed_type:"test.Foo[int, str]"
+    [];
+  assert_invalid_type_parameters
+    ~aliases:(fun ?replace_unbound_parameters_with_any:_ -> function
+      | "Ts" -> Some (VariableAlias (Type.Variable.TupleVariadic variadic))
+      | _ -> None)
+    ~source:
+      {|
+      from typing import Generic
+      from pyre_extensions import TypeVarTuple
+
+      Ts = TypeVarTuple("Ts")
+      class Foo(Generic[*Ts]): ...
+    |}
+    ~given_type:"test.Foo[pyre_extensions.Unpack[Ts]]"
+    ~expected_transformed_type:"test.Foo[pyre_extensions.Unpack[Ts]]"
+    [];
   ()
 
 

@@ -1104,6 +1104,18 @@ module Parameter = struct
   type t = type_t record [@@deriving compare, eq, sexp, show, hash]
 
   let all_singles parameters = List.map parameters ~f:is_single |> Option.all
+
+  let to_variable = function
+    | Single (Variable variable) -> Some (Record.Variable.Unary variable)
+    | CallableParameters (ParameterVariadicTypeVariable { head = []; variable }) ->
+        Some (ParameterVariadic variable)
+    | Unpacked (Variadic variadic) -> Some (TupleVariadic variadic)
+    | _ -> None
+
+
+  let is_unpacked = function
+    | Unpacked _ -> true
+    | _ -> false
 end
 
 let is_any = function
@@ -3289,22 +3301,23 @@ module Variable : sig
   type unary_t = type_t Record.Variable.RecordUnary.record
   [@@deriving compare, eq, sexp, show, hash]
 
-  type unary_domain = type_t
+  type unary_domain = type_t [@@deriving compare, eq, sexp, show, hash]
 
   type parameter_variadic_t = type_t Record.Variable.RecordVariadic.RecordParameters.record
   [@@deriving compare, eq, sexp, show, hash]
 
-  type parameter_variadic_domain = Callable.parameters
+  type parameter_variadic_domain = Callable.parameters [@@deriving compare, eq, sexp, show, hash]
 
   type tuple_variadic_t = type_t Record.Variable.RecordVariadic.Tuple.record
   [@@deriving compare, eq, sexp, show, hash]
 
-  type tuple_variadic_domain = type_t OrderedTypes.record
+  type tuple_variadic_domain = type_t OrderedTypes.record [@@deriving compare, eq, sexp, show, hash]
 
   type pair =
     | UnaryPair of unary_t * unary_domain
     | ParameterVariadicPair of parameter_variadic_t * parameter_variadic_domain
     | TupleVariadicPair of tuple_variadic_t * tuple_variadic_domain
+  [@@deriving compare, eq, sexp, show, hash]
 
   type t = type_t Record.Variable.record [@@deriving compare, eq, sexp, show, hash]
 
@@ -3429,6 +3442,12 @@ module Variable : sig
 
   module Set : Core.Set.S with type Elt.t = t
 
+  type variable_zip_result = {
+    variable_pair: pair;
+    received_parameter: Parameter.t;
+  }
+  [@@deriving compare, eq, sexp, show, hash]
+
   val pp_concise : Format.formatter -> t -> unit
 
   val parse_declaration : Expression.t -> target:Reference.t -> t option
@@ -3455,10 +3474,10 @@ module Variable : sig
 
   val converge_all_variable_namespaces : type_t -> type_t
 
-  val zip_on_parameters
-    :  parameters:Parameter.t sexp_list ->
-    t sexp_list ->
-    (Parameter.t * t) sexp_list sexp_option
+  val zip_variables_with_parameters
+    :  parameters:Parameter.t list ->
+    t list ->
+    variable_zip_result list option
 
   val zip_on_two_parameter_lists
     :  left_parameters:Parameter.t sexp_list ->
@@ -3486,22 +3505,23 @@ end = struct
   type unary_t = type_t Record.Variable.RecordUnary.record
   [@@deriving compare, eq, sexp, show, hash]
 
-  type unary_domain = type_t
+  type unary_domain = type_t [@@deriving compare, eq, sexp, show, hash]
 
   type parameter_variadic_t = type_t Record.Variable.RecordVariadic.RecordParameters.record
   [@@deriving compare, eq, sexp, show, hash]
 
-  type parameter_variadic_domain = Callable.parameters
+  type parameter_variadic_domain = Callable.parameters [@@deriving compare, eq, sexp, show, hash]
 
   type tuple_variadic_t = type_t Record.Variable.RecordVariadic.Tuple.record
   [@@deriving compare, eq, sexp, show, hash]
 
-  type tuple_variadic_domain = type_t OrderedTypes.record
+  type tuple_variadic_domain = type_t OrderedTypes.record [@@deriving compare, eq, sexp, show, hash]
 
   type pair =
     | UnaryPair of unary_t * unary_domain
     | ParameterVariadicPair of parameter_variadic_t * parameter_variadic_domain
     | TupleVariadicPair of tuple_variadic_t * tuple_variadic_domain
+  [@@deriving compare, eq, sexp, show, hash]
 
   module type VariableKind = sig
     type t [@@deriving compare, eq, sexp, show, hash]
@@ -4072,6 +4092,12 @@ end = struct
     type t = type_t Record.Variable.record [@@deriving compare, sexp]
   end)
 
+  type variable_zip_result = {
+    variable_pair: pair;
+    received_parameter: Parameter.t;
+  }
+  [@@deriving compare, eq, sexp, show, hash]
+
   let pp_concise format = function
     | Unary variable -> Unary.pp_concise format variable ~pp_type
     | ParameterVariadic { name; _ } ->
@@ -4222,22 +4248,95 @@ end = struct
     |> Option.value ~default:parameters
 
 
-  let zip_on_parameters ~parameters variables =
+  let make_variable_pair variable received_parameter =
+    let variable_pair =
+      match variable, received_parameter with
+      | Unary unary, Parameter.Single annotation -> UnaryPair (unary, annotation)
+      | ParameterVariadic parameter_variadic, CallableParameters callable_parameters ->
+          ParameterVariadicPair (parameter_variadic, callable_parameters)
+      | Unary unary, _ -> UnaryPair (unary, Unary.any)
+      | ParameterVariadic parameter_variadic, _ ->
+          ParameterVariadicPair (parameter_variadic, Variadic.Parameters.any)
+      | TupleVariadic tuple_variadic, _ ->
+          (* We should not hit this case at all. *)
+          TupleVariadicPair (tuple_variadic, Variadic.Tuple.any)
+    in
+    { variable_pair; received_parameter }
+
+
+  let pairs_for_variadic_class ~non_variadic_prefix_length variables parameters =
+    let variables_prefix, variables_rest = List.split_n variables non_variadic_prefix_length in
+    match variables_rest with
+    | TupleVariadic variadic :: variables_suffix ->
+        let parameters_prefix, parameters_rest =
+          List.split_n parameters non_variadic_prefix_length
+        in
+        let parameters_middle, parameters_suffix =
+          List.split_n parameters_rest (List.length parameters_rest - List.length variables_suffix)
+        in
+        let pairs () =
+          let ordered_middle_type =
+            match OrderedTypes.concatenation_from_parameters parameters_middle with
+            | Some ordered_type -> Some ordered_type
+            | None ->
+                Parameter.all_singles parameters_middle
+                >>| fun singles -> OrderedTypes.Concrete singles
+          in
+          match
+            ( List.map2 variables_prefix parameters_prefix ~f:make_variable_pair,
+              List.map2 variables_suffix parameters_suffix ~f:make_variable_pair,
+              ordered_middle_type )
+          with
+          | Ok prefix_pairs, Ok suffix_pairs, Some ordered_middle_type ->
+              prefix_pairs
+              @ [
+                  {
+                    variable_pair = TupleVariadicPair (variadic, ordered_middle_type);
+                    received_parameter = Single (Tuple (Bounded ordered_middle_type));
+                  };
+                ]
+              @ suffix_pairs
+              |> Option.some
+          | _ -> None
+        in
+        let has_variadic_in_prefix_or_suffix =
+          List.exists parameters_prefix ~f:Parameter.is_unpacked
+          || List.exists parameters_suffix ~f:Parameter.is_unpacked
+        in
+        if has_variadic_in_prefix_or_suffix then
+          None
+        else
+          pairs ()
+    | _ -> None
+
+
+  (* Zip the generic variables `Generic[T1, T2]` of a class with its parameters Foo[int, str]. *)
+  let zip_variables_with_parameters ~parameters variables =
     let parameters =
       match variables with
       | [ParameterVariadic _] -> coalesce_if_all_single parameters
-      (* TODO(pradeep):. *)
       | _ -> parameters
     in
-    match List.zip parameters variables with
-    | Ok zipped -> Some zipped
-    | Unequal_lengths -> None
+    let variadic_index index = function
+      | TupleVariadic _ -> Some index
+      | _ -> None
+    in
+    match List.filter_mapi variables ~f:variadic_index with
+    | [unpacked_index] ->
+        pairs_for_variadic_class ~non_variadic_prefix_length:unpacked_index variables parameters
+    | [] -> (
+        match List.map2 variables parameters ~f:make_variable_pair with
+        | Ok pairs -> Some pairs
+        | Unequal_lengths -> None )
+    | _ ->
+        (* Reject multiple variadic generics. *)
+        None
 
 
   let zip_on_two_parameter_lists ~left_parameters ~right_parameters variables =
     let left_parameters, right_parameters =
       match variables with
-      (* TODO(pradeep):. *)
+      (* TODO(T84854853):. *)
       | [ParameterVariadic _] ->
           coalesce_if_all_single left_parameters, coalesce_if_all_single right_parameters
       | _ -> left_parameters, right_parameters
@@ -4265,7 +4364,7 @@ end = struct
     | Unary variable -> Parameter.Single (Unary.self_reference variable)
     | ParameterVariadic variable ->
         Parameter.CallableParameters (Variadic.Parameters.self_reference variable)
-    | TupleVariadic _ -> failwith "not yet implemented - T84854853"
+    | TupleVariadic variadic -> Parameter.Unpacked (Variadic variadic)
 end
 
 let namespace_insensitive_compare left right =

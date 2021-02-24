@@ -875,46 +875,68 @@ class base class_metadata_environment dependency =
             in
             let invalid_type_parameters ~name ~given =
               let generics = generics_for_name name in
-              match Type.Variable.zip_on_parameters ~parameters:given generics with
+              match Type.Variable.zip_variables_with_parameters ~parameters:given generics with
               | Some [] -> Type.Primitive name, sofar
               | Some paired ->
-                  let check_parameter (given, generic) =
-                    match generic, given with
-                    | Type.Variable.Unary generic, Type.Parameter.Single given ->
+                  let check_parameter { Type.Variable.variable_pair; received_parameter } =
+                    match variable_pair, received_parameter with
+                    | Type.Variable.UnaryPair (unary, given), Type.Parameter.Single _ ->
                         let invalid =
                           let order = self#full_order ~assumptions in
-                          let pair = Type.Variable.UnaryPair (generic, given) in
                           TypeOrder.OrderedConstraints.add_lower_bound
                             TypeConstraints.empty
                             ~order
-                            ~pair
-                          >>| TypeOrder.OrderedConstraints.add_upper_bound ~order ~pair
+                            ~pair:variable_pair
+                          >>| TypeOrder.OrderedConstraints.add_upper_bound
+                                ~order
+                                ~pair:variable_pair
                           |> Option.is_none
                         in
                         if invalid then
-                          ( Type.Parameter.Single Type.Any,
+                          ( [Type.Parameter.Single Type.Any],
                             Some
                               {
                                 name;
-                                kind = ViolateConstraints { actual = given; expected = generic };
+                                kind = ViolateConstraints { expected = unary; actual = given };
                               } )
                         else
-                          Type.Parameter.Single given, None
-                    | _, Unpacked _ -> failwith "not yet implemented - T84854853"
-                    | TupleVariadic _, _ -> failwith "not yet implemented - T84854853"
-                    | Unary _, CallableParameters _
-                    | ParameterVariadic _, Single _ ->
-                        ( CallableParameters Undefined,
-                          Some
-                            { name; kind = UnexpectedKind { expected = generic; actual = given } } )
-                    | ParameterVariadic _, CallableParameters _ ->
+                          [Type.Parameter.Single given], None
+                    | ParameterVariadicPair (_, given), CallableParameters _ ->
                         (* TODO(T47346673): accept w/ new kind of validation *)
-                        given, None
+                        [CallableParameters given], None
+                    | TupleVariadicPair (_, given), Single (Tuple (Bounded _)) ->
+                        Type.OrderedTypes.to_parameters given, None
+                    | Type.Variable.UnaryPair (unary, given), _ ->
+                        ( [Single given],
+                          Some
+                            {
+                              name;
+                              kind =
+                                UnexpectedKind
+                                  {
+                                    expected = Type.Variable.Unary unary;
+                                    actual = received_parameter;
+                                  };
+                            } )
+                    | ParameterVariadicPair (parameter_variadic, given), _ ->
+                        ( [CallableParameters given],
+                          Some
+                            {
+                              name;
+                              kind =
+                                UnexpectedKind
+                                  {
+                                    expected = ParameterVariadic parameter_variadic;
+                                    actual = received_parameter;
+                                  };
+                            } )
+                    | TupleVariadicPair _, _ -> failwith "not yet implemented - T84854853"
                   in
                   List.map paired ~f:check_parameter
                   |> List.unzip
-                  |> fun (parameters, errors) ->
-                  Type.parametric name parameters, List.filter_map errors ~f:Fn.id @ sofar
+                  |> fun (list_of_parameters, errors) ->
+                  ( Type.parametric name (List.concat list_of_parameters),
+                    List.filter_map errors ~f:Fn.id @ sofar )
               | None when not replace_unbound_parameters_with_any ->
                   Type.parametric name (List.map generics ~f:Type.Variable.to_parameter), sofar
               | None ->

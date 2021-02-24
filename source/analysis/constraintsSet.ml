@@ -676,32 +676,61 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
     if Type.OrderedTypes.equal left right then
       [constraints]
     else
-      let solve_split_ordered_types = function
+      let solve_split_ordered_types { prefix_pairs; middle_pair; suffix_pairs } =
+        match middle_pair with
         (* TODO(T84854853): Optimization: Avoid this splitting and concatenating for Concrete vs
            Concrete. *)
-        | { prefix_pairs; middle_pair = Concrete left_middle, Concrete right_middle; suffix_pairs }
-          -> (
+        | Concrete left_middle, Concrete right_middle -> (
             match List.zip left_middle right_middle with
             | Ok middle_pairs ->
                 solve_non_variadic_pairs
                   ~pairs:(prefix_pairs @ middle_pairs @ suffix_pairs)
                   constraints
             | Unequal_lengths -> impossible )
-        | {
-            prefix_pairs;
-            middle_pair = Concrete concrete, Concatenation concatenation;
-            suffix_pairs;
-          } -> (
+        | Concrete concrete, Concatenation concatenation -> (
             match Type.OrderedTypes.Concatenation.extract_sole_variadic concatenation with
-            | Some variadic ->
+            | Some variadic when Type.Variable.Variadic.Tuple.is_free variadic ->
                 solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
                 |> List.filter_map
                      ~f:
                        (OrderedConstraints.add_lower_bound
                           ~order
                           ~pair:(Type.Variable.TupleVariadicPair (variadic, Concrete concrete)))
-            | None -> impossible )
-        | _ -> failwith "not yet implemented - T84854853"
+            | _ -> impossible )
+        | Concatenation concatenation, Concrete concrete -> (
+            match Type.OrderedTypes.Concatenation.extract_sole_variadic concatenation with
+            | Some variadic when Type.Variable.Variadic.Tuple.is_free variadic ->
+                solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
+                |> List.filter_map
+                     ~f:
+                       (OrderedConstraints.add_upper_bound
+                          ~order
+                          ~pair:(Type.Variable.TupleVariadicPair (variadic, Concrete concrete)))
+            | _ -> impossible )
+        | Concatenation left_concatenation, Concatenation right_concatenation -> (
+            match
+              ( Type.OrderedTypes.Concatenation.extract_sole_variadic left_concatenation,
+                Type.OrderedTypes.Concatenation.extract_sole_variadic right_concatenation )
+            with
+            | _, Some variadic when Type.Variable.Variadic.Tuple.is_free variadic ->
+                solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
+                |> List.filter_map
+                     ~f:
+                       (OrderedConstraints.add_lower_bound
+                          ~order
+                          ~pair:
+                            (Type.Variable.TupleVariadicPair
+                               (variadic, Concatenation left_concatenation)))
+            | Some variadic, _ when Type.Variable.Variadic.Tuple.is_free variadic ->
+                solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
+                |> List.filter_map
+                     ~f:
+                       (OrderedConstraints.add_upper_bound
+                          ~order
+                          ~pair:
+                            (Type.Variable.TupleVariadicPair
+                               (variadic, Concatenation right_concatenation)))
+            | _ -> impossible )
       in
       Type.OrderedTypes.split_matching_elements_by_length left right
       >>| solve_split_ordered_types
