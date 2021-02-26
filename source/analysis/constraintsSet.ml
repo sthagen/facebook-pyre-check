@@ -520,52 +520,67 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         in
         List.append through_protocol_hierarchy through_meta_hierarchy
     | _, Type.Parametric { name = right_name; parameters = right_parameters } ->
-        let solve_parameters left_parameters =
-          let handle_variables constraints (left, right, variable) =
-            match left, right, variable with
-            (* TODO kill these special cases *)
-            | Type.Parameter.Single Type.Bottom, _, _ ->
-                (* T[Bottom] is a subtype of T[_T2], for any _T2 and regardless of its variance. *)
-                constraints
-            | _, Type.Parameter.Single Type.Top, _ ->
-                (* T[_T2] is a subtype of T[Top], for any _T2 and regardless of its variance. *)
-                constraints
-            | Single Top, _, _ -> impossible
-            | ( Single left,
-                Single right,
-                Type.Variable.Unary { Type.Variable.Unary.variance = Covariant; _ } ) ->
-                constraints
-                |> List.concat_map ~f:(fun constraints ->
-                       solve_less_or_equal order ~constraints ~left ~right)
-            | Single left, Single right, Unary { variance = Contravariant; _ } ->
-                constraints
-                |> List.concat_map ~f:(fun constraints ->
-                       solve_less_or_equal order ~constraints ~left:right ~right:left)
-            | Single left, Single right, Unary { variance = Invariant; _ } ->
-                constraints
-                |> List.concat_map ~f:(fun constraints ->
-                       solve_less_or_equal order ~constraints ~left ~right)
-                |> List.concat_map ~f:(fun constraints ->
-                       solve_less_or_equal order ~constraints ~left:right ~right:left)
-            | CallableParameters left, CallableParameters right, ParameterVariadic _ ->
-                let left = Type.Callable.create ~parameters:left ~annotation:Type.Any () in
-                let right = Type.Callable.create ~parameters:right ~annotation:Type.Any () in
-                List.concat_map constraints ~f:(fun constraints ->
-                    solve_less_or_equal order ~constraints ~left ~right)
-            | _ -> impossible
-          in
-          variables right_name
-          >>= Type.Variable.zip_on_two_parameter_lists ~left_parameters ~right_parameters
-          >>| List.fold ~f:handle_variables ~init:[constraints]
+        let solve_respecting_variance constraints = function
+          | Type.Variable.UnaryPair (unary, left), Type.Variable.UnaryPair (_, right) -> (
+              match left, right, unary with
+              (* TODO kill these special cases *)
+              | Type.Bottom, _, _ ->
+                  (* T[Bottom] is a subtype of T[_T2], for any _T2 and regardless of its variance. *)
+                  constraints
+              | _, Type.Top, _ ->
+                  (* T[_T2] is a subtype of T[Top], for any _T2 and regardless of its variance. *)
+                  constraints
+              | Top, _, _ -> impossible
+              | left, right, { Type.Variable.Unary.variance = Covariant; _ } ->
+                  constraints
+                  |> List.concat_map ~f:(fun constraints ->
+                         solve_less_or_equal order ~constraints ~left ~right)
+              | left, right, { variance = Contravariant; _ } ->
+                  constraints
+                  |> List.concat_map ~f:(fun constraints ->
+                         solve_less_or_equal order ~constraints ~left:right ~right:left)
+              | left, right, { variance = Invariant; _ } ->
+                  constraints
+                  |> List.concat_map ~f:(fun constraints ->
+                         solve_less_or_equal order ~constraints ~left ~right)
+                  |> List.concat_map ~f:(fun constraints ->
+                         solve_less_or_equal order ~constraints ~left:right ~right:left) )
+          | ( Type.Variable.ParameterVariadicPair (_, left),
+              Type.Variable.ParameterVariadicPair (_, right) ) ->
+              let left = Type.Callable.create ~parameters:left ~annotation:Type.Any () in
+              let right = Type.Callable.create ~parameters:right ~annotation:Type.Any () in
+              List.concat_map constraints ~f:(fun constraints ->
+                  solve_less_or_equal order ~constraints ~left ~right)
+          | Type.Variable.TupleVariadicPair (_, left), Type.Variable.TupleVariadicPair (_, right) ->
+              (* We assume variadic classes are invariant. *)
+              constraints
+              |> List.concat_map ~f:(fun constraints ->
+                     solve_ordered_types_less_or_equal order ~left ~right ~constraints)
+              |> List.concat_map ~f:(fun constraints ->
+                     solve_ordered_types_less_or_equal order ~left:right ~right:left ~constraints)
+          | _ -> impossible
         in
-        let parameters =
-          let parameters = instantiate_successors_parameters ~source:left ~target:right_name in
-          match parameters with
+        let solve_parameters left_parameters right_parameters =
+          variables right_name
+          >>= Type.Variable.zip_variables_with_two_parameter_lists
+                ~left_parameters
+                ~right_parameters
+          >>| List.map ~f:(function
+                  | ( { Type.Variable.variable_pair = left_variable_pair; _ },
+                      { Type.Variable.variable_pair = right_variable_pair; _ } )
+                  -> left_variable_pair, right_variable_pair)
+          >>| List.fold ~f:solve_respecting_variance ~init:[constraints]
+        in
+        let left_parameters =
+          let left_parameters = instantiate_successors_parameters ~source:left ~target:right_name in
+          match left_parameters with
           | None when is_protocol right ~protocol_assumptions ->
               instantiate_protocol_parameters order ~protocol:right_name ~candidate:left
-          | _ -> parameters
+          | _ -> left_parameters
         in
-        parameters >>= solve_parameters |> Option.value ~default:impossible
+        left_parameters
+        >>= (fun left_parameters -> solve_parameters left_parameters right_parameters)
+        |> Option.value ~default:impossible
     | Type.Primitive source, Type.Primitive target -> (
         let left_typed_dictionary = get_typed_dictionary left in
         let right_typed_dictionary = get_typed_dictionary right in
@@ -781,13 +796,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         | None ->
             let protocol_generics = variables protocol in
             let protocol_generic_parameters =
-              protocol_generics
-              >>| List.map ~f:(function
-                      | Type.Variable.Unary variable ->
-                          Type.Parameter.Single (Type.Variable variable)
-                      | ParameterVariadic variable ->
-                          CallableParameters (ParameterVariadicTypeVariable { head = []; variable })
-                      | TupleVariadic _ -> failwith "not yet implemented - T84854853")
+              protocol_generics >>| List.map ~f:Type.Variable.to_parameter
             in
             let new_assumptions =
               ProtocolAssumptions.add
@@ -840,32 +849,45 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                 let desanitization_solution = TypeConstraints.Solution.create desanitize_map in
                 let instantiate = function
                   | Type.Parameter.Single single ->
-                      Type.Parameter.Single
-                        (TypeConstraints.Solution.instantiate desanitization_solution single)
+                      [
+                        Type.Parameter.Single
+                          (TypeConstraints.Solution.instantiate desanitization_solution single);
+                      ]
                   | CallableParameters parameters ->
-                      CallableParameters
-                        (TypeConstraints.Solution.instantiate_callable_parameters
-                           desanitization_solution
-                           parameters)
-                  | Unpacked _ -> failwith "not yet implemented - T84854853"
+                      [
+                        CallableParameters
+                          (TypeConstraints.Solution.instantiate_callable_parameters
+                             desanitization_solution
+                             parameters);
+                      ]
+                  | Unpacked unpackable ->
+                      TypeConstraints.Solution.instantiate_ordered_types
+                        desanitization_solution
+                        (Concatenation
+                           (Type.OrderedTypes.Concatenation.create_from_unpackable unpackable))
+                      |> Type.OrderedTypes.to_parameters
                 in
-                List.map ~f:instantiate
+                List.concat_map ~f:instantiate
               in
               let instantiate = function
                 | Type.Variable.Unary variable ->
                     TypeConstraints.Solution.instantiate_single_variable solution variable
                     |> Option.value ~default:(Type.Variable variable)
-                    |> fun instantiated -> Type.Parameter.Single instantiated
+                    |> fun instantiated -> [Type.Parameter.Single instantiated]
                 | ParameterVariadic variable ->
                     TypeConstraints.Solution.instantiate_single_parameter_variadic solution variable
                     |> Option.value
                          ~default:
                            (Type.Callable.ParameterVariadicTypeVariable { head = []; variable })
-                    |> fun instantiated -> Type.Parameter.CallableParameters instantiated
-                | TupleVariadic _ -> failwith "not yet implemented - T84854853"
+                    |> fun instantiated -> [Type.Parameter.CallableParameters instantiated]
+                | TupleVariadic variadic ->
+                    TypeConstraints.Solution.instantiate_ordered_types
+                      solution
+                      (Concatenation (Type.OrderedTypes.Concatenation.create variadic))
+                    |> Type.OrderedTypes.to_parameters
               in
               protocol_generics
-              >>| List.map ~f:instantiate
+              >>| List.concat_map ~f:instantiate
               >>| desanitize
               |> Option.value ~default:[]
             in

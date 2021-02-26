@@ -285,36 +285,27 @@ let is_transitive_successor
   iterate worklist
 
 
-let instantiate_successors_parameters ((module Handler : Handler) as handler) ~join ~source ~target =
+let instantiate_successors_parameters ((module Handler : Handler) as handler) ~source ~target =
   raise_if_untracked handler target;
   let generic_index = IndexTracker.index generic_primitive in
   match source with
   | Type.Bottom ->
       let to_any = function
-        | Type.Variable.Unary _ -> Type.Parameter.Single Type.Any
-        | ParameterVariadic _ -> CallableParameters Undefined
-        | TupleVariadic _ -> failwith "not yet implemented - T84854853"
+        | Type.Variable.Unary _ -> [Type.Parameter.Single Type.Any]
+        | ParameterVariadic _ -> [CallableParameters Undefined]
+        | TupleVariadic _ -> Type.OrderedTypes.to_parameters Type.Variable.Variadic.Tuple.any
       in
       index_of target
       |> Handler.edges
       >>= get_generic_parameters ~generic_index
       >>= parameters_to_variables
-      >>| List.map ~f:to_any
+      >>| List.concat_map ~f:to_any
   | _ ->
       let split =
         match Type.split source with
         | Primitive primitive, _ when not (contains handler primitive) -> None
-        | Type.Primitive ("tuple" as primitive), parameters -> (
-            match Type.Parameter.all_singles parameters with
-            | Some singles ->
-                (* Handle cases like `Tuple[int, int]` <= `Iterator[int]`. *)
-                let parameters =
-                  [List.fold ~init:Type.Bottom ~f:join singles]
-                  |> List.map ~f:(fun annotation ->
-                         Type.Parameter.Single (Type.weaken_literals annotation))
-                in
-                Some (primitive, parameters)
-            | None -> Some (primitive, parameters) )
+        | Primitive "tuple", [Type.Parameter.Single parameter] ->
+            Some ("tuple", [Type.Parameter.Single (Type.weaken_literals parameter)])
         | Primitive primitive, parameters -> Some (primitive, parameters)
         | _ ->
             (* We can only propagate from those that actually split off a primitive *)
@@ -343,7 +334,9 @@ let instantiate_successors_parameters ((module Handler : Handler) as handler) ~j
                       | Type.Variable.Unary variable -> Type.Variable.UnaryPair (variable, Type.Any)
                       | ParameterVariadic variable ->
                           Type.Variable.ParameterVariadicPair (variable, Undefined)
-                      | TupleVariadic _ -> failwith "not yet implemented - T84854853"
+                      | TupleVariadic variadic ->
+                          Type.Variable.TupleVariadicPair
+                            (variadic, Type.Variable.Variadic.Tuple.any)
                     in
                     Type.Variable.zip_variables_with_parameters ~parameters variables
                     >>| List.map ~f:(function { Type.Variable.variable_pair; _ } -> variable_pair)
@@ -353,16 +346,26 @@ let instantiate_successors_parameters ((module Handler : Handler) as handler) ~j
                   let instantiate_parameters { Target.target; parameters } =
                     let instantiate = function
                       | Type.Parameter.Single single ->
-                          Type.Parameter.Single
-                            (TypeConstraints.Solution.instantiate replacement single)
+                          [
+                            Type.Parameter.Single
+                              (TypeConstraints.Solution.instantiate replacement single);
+                          ]
                       | CallableParameters parameters ->
-                          CallableParameters
-                            (TypeConstraints.Solution.instantiate_callable_parameters
+                          [
+                            CallableParameters
+                              (TypeConstraints.Solution.instantiate_callable_parameters
+                                 replacement
+                                 parameters);
+                          ]
+                      | Unpacked unpackable ->
+                          Type.OrderedTypes.to_parameters
+                            (TypeConstraints.Solution.instantiate_ordered_types
                                replacement
-                               parameters)
-                      | Unpacked _ -> failwith "not yet implemented - T84854853"
+                               (Concatenation
+                                  (Type.OrderedTypes.Concatenation.create_from_unpackable
+                                     unpackable)))
                     in
-                    { Target.target; parameters = List.map parameters ~f:instantiate }
+                    { Target.target; parameters = List.concat_map parameters ~f:instantiate }
                   in
                   List.map successors ~f:instantiate_parameters
                 in

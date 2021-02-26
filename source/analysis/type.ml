@@ -169,9 +169,11 @@ module Record = struct
 
       let create_unpackable variadic = Variadic variadic
 
-      let create ?(prefix = []) ?(suffix = []) unpackable =
-        { prefix; middle = create_unpackable unpackable; suffix }
+      let create ?(prefix = []) ?(suffix = []) variadic =
+        { prefix; middle = create_unpackable variadic; suffix }
 
+
+      let create_from_unpackable (Variadic variadic) = create variadic
 
       let pp_unpackable format = function
         | Variadic variadic ->
@@ -2466,10 +2468,9 @@ module OrderedTypes = struct
 
   let pp_concise = pp_concise ~pp_type
 
-  let union_upper_bound ordered =
-    match ordered with
+  let union_upper_bound = function
     | Concrete concretes -> union concretes
-    | Concatenation _ -> failwith "not yet implemented - T84854853"
+    | Concatenation _ -> object_primitive
 
 
   let concatenation_from_parameters parameters =
@@ -3205,11 +3206,11 @@ let split annotation =
       Primitive "typing.Optional", [Single parameter]
   | Parametric { name; parameters } -> Primitive name, parameters
   | Tuple tuple ->
+      (* We want to return a type `typing.tuple[X]` where X is the type that would make `given_tuple
+         <: Tuple[X, ...]`. *)
       let parameters =
         match tuple with
-        | Bounded (Concrete parameters) ->
-            List.map parameters ~f:(fun parameter -> Single parameter)
-        | Bounded (Concatenation _) -> failwith "not yet implemented - T84854853"
+        | Bounded ordered_type -> [Single (OrderedTypes.union_upper_bound ordered_type)]
         | Unbounded parameter -> [Single parameter]
       in
       Primitive "tuple", parameters
@@ -3413,6 +3414,8 @@ module Variable : sig
       val name : t -> Identifier.t
 
       val create : string -> t
+
+      val synthetic_class_name_for_error : string
     end
   end
 
@@ -3479,11 +3482,11 @@ module Variable : sig
     t list ->
     variable_zip_result list option
 
-  val zip_on_two_parameter_lists
-    :  left_parameters:Parameter.t sexp_list ->
-    right_parameters:Parameter.t sexp_list ->
-    t sexp_list ->
-    (Parameter.t * Parameter.t * t) sexp_list sexp_option
+  val zip_variables_with_two_parameter_lists
+    :  left_parameters:Parameter.t list ->
+    right_parameters:Parameter.t list ->
+    t list ->
+    (variable_zip_result * variable_zip_result) list option
 
   val all_unary : t list -> Unary.t list option
 
@@ -3873,6 +3876,8 @@ end = struct
       module Map = Core.Map.Make (struct
         type t = type_t record [@@deriving compare, sexp]
       end)
+
+      let synthetic_class_name_for_error = "$synthetic_class_for_variadic_error"
 
       (* TODO(T84854853): Add a better Any using unbound tuples. *)
       let any = OrderedTypes.Concrete [Any]
@@ -4275,28 +4280,37 @@ end = struct
           List.split_n parameters_rest (List.length parameters_rest - List.length variables_suffix)
         in
         let pairs () =
-          let ordered_middle_type =
-            match OrderedTypes.concatenation_from_parameters parameters_middle with
-            | Some ordered_type -> Some ordered_type
-            | None ->
-                Parameter.all_singles parameters_middle
-                >>| fun singles -> OrderedTypes.Concrete singles
-          in
           match
             ( List.map2 variables_prefix parameters_prefix ~f:make_variable_pair,
-              List.map2 variables_suffix parameters_suffix ~f:make_variable_pair,
-              ordered_middle_type )
+              List.map2 variables_suffix parameters_suffix ~f:make_variable_pair )
           with
-          | Ok prefix_pairs, Ok suffix_pairs, Some ordered_middle_type ->
-              prefix_pairs
-              @ [
-                  {
-                    variable_pair = TupleVariadicPair (variadic, ordered_middle_type);
-                    received_parameter = Single (Tuple (Bounded ordered_middle_type));
-                  };
-                ]
-              @ suffix_pairs
-              |> Option.some
+          | Ok prefix_pairs, Ok suffix_pairs ->
+              let variadic_pair =
+                let ordered_type =
+                  match OrderedTypes.concatenation_from_parameters parameters_middle with
+                  | Some ordered_type -> Some ordered_type
+                  | None ->
+                      Parameter.all_singles parameters_middle
+                      >>| fun singles -> OrderedTypes.Concrete singles
+                in
+                ordered_type
+                >>| (fun ordered_type ->
+                      {
+                        variable_pair = TupleVariadicPair (variadic, ordered_type);
+                        received_parameter = Single (Tuple (Bounded ordered_type));
+                      })
+                |> Option.value
+                     ~default:
+                       {
+                         variable_pair = TupleVariadicPair (variadic, Variadic.Tuple.any);
+                         received_parameter =
+                           Single
+                             (parametric
+                                Variadic.Tuple.synthetic_class_name_for_error
+                                parameters_middle);
+                       }
+              in
+              prefix_pairs @ [variadic_pair] @ suffix_pairs |> Option.some
           | _ -> None
         in
         let has_variadic_in_prefix_or_suffix =
@@ -4333,21 +4347,14 @@ end = struct
         None
 
 
-  let zip_on_two_parameter_lists ~left_parameters ~right_parameters variables =
-    let left_parameters, right_parameters =
-      match variables with
-      (* TODO(T84854853):. *)
-      | [ParameterVariadic _] ->
-          coalesce_if_all_single left_parameters, coalesce_if_all_single right_parameters
-      | _ -> left_parameters, right_parameters
+  let zip_variables_with_two_parameter_lists ~left_parameters ~right_parameters variables =
+    let left_pairs, right_pairs =
+      ( zip_variables_with_parameters ~parameters:left_parameters variables,
+        zip_variables_with_parameters ~parameters:right_parameters variables )
     in
-    match List.zip left_parameters right_parameters with
-    | Ok zipped -> (
-        match List.zip zipped variables with
-        | Ok zipped ->
-            let handle ((left, right), variable) = left, right, variable in
-            List.map zipped ~f:handle |> Option.some
-        | _ -> None )
+    Option.map2 left_pairs right_pairs ~f:List.zip
+    >>= function
+    | Ok pairs -> Some pairs
     | Unequal_lengths -> None
 
 

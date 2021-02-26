@@ -808,33 +808,22 @@ class base class_metadata_environment dependency =
           (class_hierarchy_environment class_metadata_environment)
       in
       let metaclass class_name ~assumptions = self#metaclass class_name ~assumptions in
-      (* TODO(T84854853): We have to make this a recursive value to allow
-         `instantiate_successors_parameters` to use `join`. Adding this temporarily to support
-         solving `Tuple[int, int] <: Iterator[T]`, which we can't do without the variadic `Group`.
-         Remove this once variadic tuples are supported. *)
-      let rec full_order =
-        lazy
+      {
+        ConstraintsSet.class_hierarchy =
           {
-            ConstraintsSet.class_hierarchy =
-              {
-                instantiate_successors_parameters =
-                  ClassHierarchy.instantiate_successors_parameters
-                    class_hierarchy_handler
-                    ~join:(fun left right -> TypeOrder.join (Lazy.force full_order) left right);
-                is_transitive_successor =
-                  ClassHierarchy.is_transitive_successor class_hierarchy_handler;
-                variables = ClassHierarchy.variables class_hierarchy_handler;
-                least_upper_bound = ClassHierarchy.least_upper_bound class_hierarchy_handler;
-              };
-            attribute;
-            all_attributes;
-            is_protocol;
-            assumptions;
-            get_typed_dictionary = self#get_typed_dictionary ~assumptions;
-            metaclass;
-          }
-      in
-      Lazy.force full_order
+            instantiate_successors_parameters =
+              ClassHierarchy.instantiate_successors_parameters class_hierarchy_handler;
+            is_transitive_successor = ClassHierarchy.is_transitive_successor class_hierarchy_handler;
+            variables = ClassHierarchy.variables class_hierarchy_handler;
+            least_upper_bound = ClassHierarchy.least_upper_bound class_hierarchy_handler;
+          };
+        attribute;
+        all_attributes;
+        is_protocol;
+        assumptions;
+        get_typed_dictionary = self#get_typed_dictionary ~assumptions;
+        metaclass;
+      }
 
     method check_invalid_type_parameters
         ?(replace_unbound_parameters_with_any = true)
@@ -930,7 +919,18 @@ class base class_metadata_environment dependency =
                                     actual = received_parameter;
                                   };
                             } )
-                    | TupleVariadicPair _, _ -> failwith "not yet implemented - T84854853"
+                    | TupleVariadicPair (tuple_variadic, given), _ ->
+                        ( Type.OrderedTypes.to_parameters given,
+                          Some
+                            {
+                              name;
+                              kind =
+                                UnexpectedKind
+                                  {
+                                    expected = TupleVariadic tuple_variadic;
+                                    actual = received_parameter;
+                                  };
+                            } )
                   in
                   List.map paired ~f:check_parameter
                   |> List.unzip
@@ -940,18 +940,29 @@ class base class_metadata_environment dependency =
               | None when not replace_unbound_parameters_with_any ->
                   Type.parametric name (List.map generics ~f:Type.Variable.to_parameter), sofar
               | None ->
-                  let annotation, can_accept_more_parameters =
+                  let annotation, expected_parameter_count, can_accept_more_parameters =
                     match name with
-                    | "typing.Callable" -> Type.Callable.create ~annotation:Type.Any (), false
-                    | "tuple" -> Type.Tuple (Type.Unbounded Type.Any), true
+                    | "typing.Callable" ->
+                        Type.Callable.create ~annotation:Type.Any (), List.length generics, false
+                    | "tuple" -> Type.Tuple (Type.Unbounded Type.Any), List.length generics, true
                     | _ ->
-                        ( Type.parametric
+                        let is_tuple_variadic = function
+                          | Type.Variable.TupleVariadic _ -> true
+                          | _ -> false
+                        in
+                        let annotation =
+                          Type.parametric
                             name
-                            (List.map generics ~f:(function
-                                | Type.Variable.Unary _ -> Type.Parameter.Single Type.Any
-                                | ParameterVariadic _ -> CallableParameters Undefined
-                                | TupleVariadic _ -> failwith "not yet implemented - T84854853")),
-                          false )
+                            (List.concat_map generics ~f:(function
+                                | Type.Variable.Unary _ -> [Type.Parameter.Single Type.Any]
+                                | ParameterVariadic _ -> [CallableParameters Undefined]
+                                | TupleVariadic _ ->
+                                    Type.OrderedTypes.to_parameters Type.Variable.Variadic.Tuple.any))
+                        in
+                        ( annotation,
+                          List.filter generics ~f:(fun x -> not (is_tuple_variadic x))
+                          |> List.length,
+                          List.exists generics ~f:is_tuple_variadic )
                   in
                   let mismatch =
                     {
@@ -960,7 +971,7 @@ class base class_metadata_environment dependency =
                         IncorrectNumberOfParameters
                           {
                             actual = List.length given;
-                            expected = List.length generics;
+                            expected = expected_parameter_count;
                             can_accept_more_parameters;
                           };
                     }
@@ -1784,26 +1795,30 @@ class base class_metadata_environment dependency =
                     | [Unary generic] ->
                         overload (create_parameter (Type.meta (Variable generic))), []
                     | _ ->
-                        let handle_variadics = function
+                        (* To support the value `GenericFoo[int, str]`, we need `class
+                           GenericFoo[T1, T2]` to have:
+
+                           `def __getitem__(cls, __x: Tuple[Type[T1], Type[T2]] ) -> GenericFoo[T1,
+                           T2]`. *)
+                        let meta_type_and_return_type = function
                           | Type.Variable.Unary single ->
-                              ( Type.Parameter.Single (Type.Variable single),
-                                Type.meta (Variable single) )
+                              ( Type.meta (Variable single),
+                                Type.Parameter.Single (Type.Variable single) )
                           | ParameterVariadic _ ->
                               (* TODO:(T60536033) We'd really like to take FiniteList[Ts], but
                                  without that we can't actually return the correct metatype, which
                                  is a bummer *)
-                              Type.Parameter.CallableParameters Undefined, Type.Any
-                          | TupleVariadic _ -> failwith "not yet implemented - T84854853"
+                              Type.Any, Type.Parameter.CallableParameters Undefined
+                          | TupleVariadic _ -> Type.Any, Single Any
                         in
-                        let return_parameters, parameter_parameters =
-                          List.map generics ~f:handle_variadics |> List.unzip
+                        let meta_types, return_parameters =
+                          List.map generics ~f:meta_type_and_return_type |> List.unzip
                         in
                         ( {
                             Type.Callable.annotation =
                               Type.meta (Type.parametric name return_parameters);
                             parameters =
-                              Defined
-                                [self_parameter; create_parameter (Type.tuple parameter_parameters)];
+                              Defined [self_parameter; create_parameter (Type.tuple meta_types)];
                           },
                           [] ) )
               in
