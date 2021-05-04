@@ -7,7 +7,7 @@
 
 open Core
 open Ast
-open Configuration
+open TaintConfiguration
 open Domains
 
 type flow = {
@@ -53,8 +53,11 @@ type triggered_sinks = String.Hash_set.t
    some node with non-empty taint T, we match T with the join of taint in the upward and downward
    closure from node at path p in F. *)
 let generate_source_sink_matches ~location ~source_tree ~sink_tree =
-  let make_source_sink_matches { BackwardState.Tree.path; tip = sink_taint; _ } matches =
-    let source_taint = ForwardState.Tree.collapse (ForwardState.Tree.read path source_tree) in
+  let make_source_sink_matches (path, sink_taint) matches =
+    let source_taint =
+      ForwardState.Tree.read path source_tree
+      |> ForwardState.Tree.collapse ~transform:(ForwardTaint.add_features Features.issue_broadening)
+    in
     if ForwardTaint.is_bottom source_taint then
       matches
     else
@@ -64,11 +67,7 @@ let generate_source_sink_matches ~location ~source_tree ~sink_tree =
     if ForwardState.Tree.is_empty source_tree then
       []
     else
-      BackwardState.Tree.fold
-        BackwardState.Tree.RawPath
-        ~init:[]
-        ~f:make_source_sink_matches
-        sink_tree
+      BackwardState.Tree.fold BackwardState.Tree.Path ~init:[] ~f:make_source_sink_matches sink_tree
   in
   { location; flows }
 
@@ -148,49 +147,79 @@ let generate_issues ~define { location; flows } =
     let partition { source_taint; sink_taint } =
       {
         source_partition =
-          ForwardTaint.partition ForwardTaint.leaf source_taint ~f:(fun leaf ->
-              Some (erase_source_subkind leaf));
+          ForwardTaint.partition ForwardTaint.leaf By source_taint ~f:(fun leaf ->
+              erase_source_subkind leaf);
         sink_partition =
-          BackwardTaint.partition BackwardTaint.leaf sink_taint ~f:(fun leaf ->
-              Some (erase_sink_subkind leaf));
+          BackwardTaint.partition BackwardTaint.leaf By sink_taint ~f:(fun leaf ->
+              erase_sink_subkind leaf);
       }
     in
     List.map flows ~f:partition
   in
-  let apply_rule { Rule.sources; sinks; code; _ } =
-    let get_source_taint { source_partition; _ } =
-      let add_source_taint source_taint source =
-        match Map.Poly.find source_partition (erase_source_subkind source) with
-        | Some taint -> ForwardTaint.join source_taint taint
-        | None -> source_taint
-      in
-      List.fold sources ~f:add_source_taint ~init:ForwardTaint.bottom
+  let apply_rule_on_flow { Rule.sources; sinks; _ } { source_partition; sink_partition } =
+    let add_source_taint source_taint source =
+      match Map.Poly.find source_partition (erase_source_subkind source) with
+      | Some taint -> ForwardTaint.join source_taint taint
+      | None -> source_taint
     in
-    let get_sink_taint { sink_partition; _ } =
-      let add_sink_taint sink_taint sink =
-        match Map.Poly.find sink_partition (erase_sink_subkind sink) with
-        | Some taint -> BackwardTaint.join sink_taint taint
-        | None -> sink_taint
-      in
-      List.fold sinks ~f:add_sink_taint ~init:BackwardTaint.bottom
+    let add_sink_taint sink_taint sink =
+      match Map.Poly.find sink_partition (erase_sink_subkind sink) with
+      | Some taint -> BackwardTaint.join sink_taint taint
+      | None -> sink_taint
     in
-    let fold_source_taint taint partition = ForwardTaint.join taint (get_source_taint partition) in
-    let fold_sink_taint taint partition = BackwardTaint.join taint (get_sink_taint partition) in
-    let flow =
+    let partition_flow =
       {
-        source_taint = List.fold partitions ~init:ForwardTaint.bottom ~f:fold_source_taint;
-        sink_taint = List.fold partitions ~init:BackwardTaint.bottom ~f:fold_sink_taint;
+        source_taint = List.fold sources ~f:add_source_taint ~init:ForwardTaint.bottom;
+        sink_taint = List.fold sinks ~f:add_sink_taint ~init:BackwardTaint.bottom;
       }
+    in
+    if
+      ForwardTaint.is_bottom partition_flow.source_taint
+      || BackwardTaint.is_bottom partition_flow.sink_taint
+    then
+      None
+    else
+      Some partition_flow
+  in
+  let apply_rule_separate_access_path issues_so_far (rule : Rule.t) =
+    let fold_partitions issues candidate =
+      match apply_rule_on_flow rule candidate with
+      | Some flow ->
+          let features = get_issue_features flow in
+          { code = rule.code; flow; features; issue_location = location; define } :: issues
+      | None -> issues
+    in
+    List.fold partitions ~init:issues_so_far ~f:fold_partitions
+  in
+  let apply_rule_merge_access_path rule =
+    let fold_partitions flow_so_far candidate =
+      match apply_rule_on_flow rule candidate with
+      | Some flow ->
+          {
+            source_taint = ForwardTaint.join flow_so_far.source_taint flow.source_taint;
+            sink_taint = BackwardTaint.join flow_so_far.sink_taint flow.sink_taint;
+          }
+      | None -> flow_so_far
+    in
+    let flow =
+      List.fold
+        partitions
+        ~init:{ source_taint = ForwardTaint.bottom; sink_taint = BackwardTaint.bottom }
+        ~f:fold_partitions
     in
     if ForwardTaint.is_bottom flow.source_taint || BackwardTaint.is_bottom flow.sink_taint then
       None
     else
       let features = get_issue_features flow in
-      let issue = { code; flow; features; issue_location = location; define } in
+      let issue = { code = rule.code; flow; features; issue_location = location; define } in
       Some issue
   in
-  let configuration = Configuration.get () in
-  List.filter_map ~f:apply_rule configuration.rules
+  let configuration = TaintConfiguration.get () in
+  if configuration.lineage_analysis then
+    (* Create different issues for same access path, e.g, Issue{[a] -> [b]}, Issue {[c] -> [d]}. *)
+    List.fold configuration.rules ~init:[] ~f:apply_rule_separate_access_path
+  else (* Create single issue for same access path, e.g, Issue{[a],[c] -> [b], [d]}. *)
+    List.filter_map ~f:apply_rule_merge_access_path configuration.rules
 
 
 let sinks_regexp = Str.regexp_string "{$sinks}"
@@ -198,7 +227,7 @@ let sinks_regexp = Str.regexp_string "{$sinks}"
 let sources_regexp = Str.regexp_string "{$sources}"
 
 let get_name_and_detailed_message { code; flow; _ } =
-  let configuration = Configuration.get () in
+  let configuration = TaintConfiguration.get () in
   match List.find ~f:(fun { code = rule_code; _ } -> code = rule_code) configuration.rules with
   | None -> failwith "issue with code that has no rule"
   | Some { name; message_format; _ } ->
@@ -220,7 +249,7 @@ let get_name_and_detailed_message { code; flow; _ } =
 
 
 let generate_error ({ code; issue_location; define; _ } as issue) =
-  let configuration = Configuration.get () in
+  let configuration = TaintConfiguration.get () in
   match List.find ~f:(fun { code = rule_code; _ } -> code = rule_code) configuration.rules with
   | None -> failwith "issue with code that has no rule"
   | Some _ ->
@@ -292,27 +321,27 @@ let to_json ~filename_lookup callable issue =
 
 
 let code_metadata () =
-  let configuration = Configuration.get () in
+  let configuration = TaintConfiguration.get () in
   `Assoc
     (List.map configuration.rules ~f:(fun rule -> Format.sprintf "%d" rule.code, `String rule.name))
 
 
 let compute_triggered_sinks ~triggered_sinks ~location ~source_tree ~sink_tree =
   let partial_sinks_to_taint =
-    BackwardState.Tree.collapse sink_tree
-    |> BackwardTaint.partition BackwardTaint.leaf ~f:(function
+    BackwardState.Tree.collapse
+      ~transform:(BackwardTaint.add_features Features.issue_broadening)
+      sink_tree
+    |> BackwardTaint.partition BackwardTaint.leaf ByFilter ~f:(function
            | Sinks.PartialSink { Sinks.kind; label } -> Some { Sinks.kind; label }
            | _ -> None)
   in
   if not (Map.Poly.is_empty partial_sinks_to_taint) then
     let sources =
-      source_tree
-      |> ForwardState.Tree.partition ForwardTaint.leaf ~f:(fun source -> Some source)
-      |> Map.Poly.keys
+      source_tree |> ForwardState.Tree.partition ForwardTaint.leaf By ~f:Fn.id |> Map.Poly.keys
     in
     let add_triggered_sinks (triggered, candidates) sink =
       let add_triggered_sinks_for_source source =
-        Configuration.get_triggered_sink ~partial_sink:sink ~source
+        TaintConfiguration.get_triggered_sink ~partial_sink:sink ~source
         |> function
         | Some (Sinks.TriggeredPartialSink triggered_sink) ->
             if Hash_set.mem triggered_sinks (Sinks.show_partial_sink sink) then

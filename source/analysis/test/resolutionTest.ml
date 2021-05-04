@@ -242,11 +242,9 @@ let test_resolve_literal context =
   assert_resolve_literal "{1, i}" Type.Any;
 
   (* Tuple *)
-  assert_resolve_literal "(1,)" (Type.Tuple (Bounded (Concrete [Type.integer])));
-  assert_resolve_literal
-    "(1, 'string')"
-    (Type.Tuple (Bounded (Concrete [Type.integer; Type.string])));
-  assert_resolve_literal "(1, i)" (Type.Tuple (Bounded (Concrete [Type.integer; Type.Any])));
+  assert_resolve_literal "(1,)" (Type.Tuple (Concrete [Type.integer]));
+  assert_resolve_literal "(1, 'string')" (Type.Tuple (Concrete [Type.integer; Type.string]));
+  assert_resolve_literal "(1, i)" (Type.Tuple (Concrete [Type.integer; Type.Any]));
 
   (* Ternary *)
   assert_resolve_literal "1 if x else 2" Type.integer;
@@ -508,6 +506,14 @@ let test_resolve_mutable_literals context =
     ~source:"([test.D()], [test.C()])"
     ~against:"typing.Tuple[typing.List[test.C], ...]"
     "typing.Tuple[typing.List[test.C], ...]";
+  assert_resolve_mutable_literals
+    ~source:"( test.D(), *(test.C(), test.C()))"
+    ~against:"typing.Tuple[test.D, test.D, test.D]"
+    "typing.Tuple[test.D, test.C, test.C]";
+  assert_resolve_mutable_literals
+    ~source:"( test.D(), *(test.C(), test.C()))"
+    ~against:"typing.Tuple[test.D, ...]"
+    "typing.Tuple[test.D, test.C, test.C]";
 
   assert_resolve_mutable_literals
     ~source:"{'foo': 3}"
@@ -983,7 +989,9 @@ let test_resolve_mutable_literals_typed_dictionary context =
        ~resolved:"typing.Tuple[typing.Dict[str, int], typing.Dict[str, str]];");
   assert_resolve_mutable_literals
     ~source:"({ 'name': 37, 'year': 1999 }, { 'name': 'The Matrix', 'year': 'NaN' })"
-    ~against_type:(Type.Tuple (Type.Unbounded (Type.Primitive "test.ClassBasedMovie")))
+    ~against_type:
+      (Type.Tuple
+         (Type.OrderedTypes.create_unbounded_concatenation (Type.Primitive "test.ClassBasedMovie")))
     (name_and_year_type_mismatch
        ~resolved:"typing.Tuple[typing.Dict[str, int], typing.Dict[str, str]];");
   assert_resolve_mutable_literals

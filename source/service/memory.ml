@@ -77,20 +77,32 @@ type configuration = {
 
 let configuration : configuration option ref = ref None
 
+(* Defined in `Gc` module. *)
+let best_fit_allocation_policy = 2
+
 let worker_garbage_control =
-  { (Gc.get ()) with Gc.minor_heap_size = 256 * 1024; (* 256 KB *)
-                                                      space_overhead = 100 }
+  (* GC for the worker process. *)
+  {
+    (Gc.get ()) with
+    Gc.minor_heap_size = 256 * 1024;
+    allocation_policy = best_fit_allocation_policy;
+    space_overhead = 120;
+  }
 
 
 let initialize ~heap_size ~dep_table_pow ~hash_table_pow ~log_level () =
   match !configuration with
   | None ->
-      let minor_heap_size = 4 * 1024 * 1024 in
       (* 4 MB *)
-      let space_overhead = 50 in
-      (* Only sets the GC for the master process - the parallel workers use GC settings with less
-         overhead. *)
-      Gc.set { (Gc.get ()) with Gc.minor_heap_size; space_overhead };
+      let minor_heap_size = 4 * 1024 * 1024 in
+      (* GC for the master process. *)
+      Gc.set
+        {
+          (Gc.get ()) with
+          Gc.minor_heap_size;
+          allocation_policy = best_fit_allocation_policy;
+          space_overhead = 100;
+        };
       let shared_mem_config =
         {
           SharedMemory.global_size = 0;
@@ -129,8 +141,8 @@ let get_heap_handle { Configuration.Analysis.debug; _ } =
       0
   in
   let heap_size =
-    (* 8 GB *)
-    8192 * 1024 * 1024
+    (* 12 GB *)
+    12 * 1024 * 1024 * 1024
   in
   let dep_table_pow = 27 in
   let hash_table_pow = 26 in
@@ -180,6 +192,8 @@ let run_tar arguments =
     ()
 
 
+exception SavedStateLoadingFailure of string
+
 let save_shared_memory ~path ~configuration =
   let open Pyre in
   SharedMemory.collect `aggressive;
@@ -195,11 +209,21 @@ let load_shared_memory ~path ~configuration =
   let open Pyre in
   let { directory; table_path; dependencies_path } = prepare_saved_state_directory configuration in
   run_tar ["xf"; path; "-C"; Path.absolute directory];
-  SharedMem.load_table (Path.absolute table_path);
-  let _edges_count : bytes =
-    SharedMem.load_dep_table_sqlite (Path.absolute dependencies_path) true
-  in
-  ()
+  try
+    SharedMem.load_table (Path.absolute table_path);
+    let _edges_count : bytes =
+      SharedMem.load_dep_table_sqlite (Path.absolute dependencies_path) true
+    in
+    ()
+  with
+  | SharedMem.C_assertion_failure message ->
+      let message =
+        Format.sprintf
+          "Assertion failure in shared memory loading: %s. This is likely due to a mismatch \
+           between the saved state and the binary version."
+          message
+      in
+      raise (SavedStateLoadingFailure message)
 
 
 external pyre_reset : unit -> unit = "pyre_reset"

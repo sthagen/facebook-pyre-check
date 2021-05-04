@@ -43,10 +43,11 @@ class ExitCode(enum.IntEnum):
     SUCCESS = 0
     FOUND_ERRORS = 1
     FAILURE = 2
-    BUCK_ERROR = 3
+    BUCK_INTERNAL_ERROR = 3
     SERVER_NOT_FOUND = 4
     INCONSISTENT_SERVER = 5
     CONFIGURATION_ERROR = 6
+    BUCK_USER_ERROR = 7
     # If the process exited due to a signal, this will be the negative signal number.
     SIGSEGV = -signal.SIGSEGV
 
@@ -82,14 +83,14 @@ class Result:
 
     def check(self) -> None:
         if self.code != ExitCode.SUCCESS:
-            description = ":\n{}".format(self.output) if self.output else ""
+            description = f":\n{self.output}" if self.output else ""
             if self.code == ExitCode.SIGSEGV:
                 description += (
                     "\nThis is a Pyre bug. Please re-run Pyre with --debug "
-                    "and provide the output to the developers."
+                    + "and provide the output to the developers."
                 )
             raise ClientException(
-                "Client exited with error code {}{}".format(self.code, description)
+                f"Client exited with error code {self.code}{description}"
             )
 
 
@@ -106,9 +107,9 @@ def _convert_json_response_to_result(response: json_rpc.Response) -> Result:
 
 def executable_file(file_path: str) -> str:
     if not os.path.isfile(file_path):
-        raise EnvironmentException("%s is not a valid file" % file_path)
+        raise EnvironmentException(f"{file_path} is not a valid file")
     if not os.access(file_path, os.X_OK):
-        raise EnvironmentException("%s is not an executable file" % file_path)
+        raise EnvironmentException(f"{file_path} is not an executable file")
     return file_path
 
 
@@ -252,6 +253,17 @@ class Command(CommandParser, ABC):
         if logger:
             flags.extend(["-logger", logger])
         flags.extend(["-log-directory", self._configuration.log_directory])
+        python_version = self._configuration.get_python_version()
+        flags.extend(
+            [
+                "-python-major-version",
+                str(python_version.major),
+                "-python-minor-version",
+                str(python_version.minor),
+                "-python-micro-version",
+                str(python_version.micro),
+            ]
+        )
         return flags
 
     # temporarily always return empty list to unblock client release
@@ -277,11 +289,13 @@ class Command(CommandParser, ABC):
         command: str,
         capture_output: bool = True,
         stdout: Optional[IO[str]] = None,
+        check_analysis_directory: bool = True,
     ) -> Result:
-        if not os.path.isdir(self._analysis_directory.get_root()):
-            raise EnvironmentException(
-                "`{}` is not a link tree.".format(self._analysis_directory.get_root())
-            )
+        if check_analysis_directory:
+            if not os.path.isdir(self._analysis_directory.get_root()):
+                raise EnvironmentException(
+                    f"`{self._analysis_directory.get_root()}` is not a link tree."
+                )
 
         binary = self._configuration.get_binary_respecting_override()
         if binary is None:

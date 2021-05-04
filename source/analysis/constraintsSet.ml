@@ -118,7 +118,66 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
     let open Callable in
     let solve implementation ~initial_constraints =
       try
-        let rec solve_parameters ~left_parameters ~right_parameters constraints =
+        let rec solve_parameters_against_tuple_variadic
+            ~is_lower_bound
+            ~concretes
+            ~ordered_type
+            ~remaining_parameters
+          =
+          let before_first_keyword, after_first_keyword_inclusive =
+            let is_not_keyword_only = function
+              | Type.Callable.Parameter.Keywords _
+              | Type.Callable.Parameter.KeywordOnly _ ->
+                  false
+              | _ -> true
+            in
+            List.split_while concretes ~f:is_not_keyword_only
+          in
+          let solve_remaining_parameters constraints =
+            if is_lower_bound then
+              solve_parameters
+                ~left_parameters:after_first_keyword_inclusive
+                ~right_parameters:remaining_parameters
+                constraints
+            else
+              solve_parameters
+                ~left_parameters:remaining_parameters
+                ~right_parameters:after_first_keyword_inclusive
+                constraints
+          in
+          let add_bound concretes =
+            let left, right =
+              if is_lower_bound then
+                concretes, ordered_type
+              else
+                ordered_type, concretes
+            in
+            solve_ordered_types_less_or_equal order ~left ~right ~constraints
+          in
+          let ordered_type_from_non_keyword_parameters =
+            let extract_component = function
+              | Type.Callable.Parameter.PositionalOnly { annotation; _ } ->
+                  Some (Type.OrderedTypes.Concrete [annotation])
+              | Named { annotation; _ } when not is_lower_bound ->
+                  (* Named arguments can be called positionally, but positionals can't be called
+                     with a name *)
+                  Some (Type.OrderedTypes.Concrete [annotation])
+              | Variable (Concatenation concatenation) ->
+                  Some (Type.OrderedTypes.Concatenation concatenation)
+              | _ -> None
+            in
+            let concatenate left right =
+              left >>= fun left -> Type.OrderedTypes.concatenate ~left ~right
+            in
+            List.map before_first_keyword ~f:extract_component
+            |> Option.all
+            >>= List.fold ~init:(Some (Type.OrderedTypes.Concrete [])) ~f:concatenate
+          in
+          ordered_type_from_non_keyword_parameters
+          >>| add_bound
+          >>| List.concat_map ~f:solve_remaining_parameters
+          |> Option.value ~default:impossible
+        and solve_parameters ~left_parameters ~right_parameters constraints =
           match left_parameters, right_parameters with
           | Parameter.PositionalOnly _ :: _, Parameter.Named _ :: _ -> []
           | ( Parameter.PositionalOnly { annotation = left_annotation; _ } :: left_parameters,
@@ -155,6 +214,26 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               Parameter.PositionalOnly { annotation = right_annotation; _ } :: right_parameters ) ->
               solve_less_or_equal order ~constraints ~left:right_annotation ~right:left_annotation
               |> List.concat_map ~f:(solve_parameters ~left_parameters ~right_parameters)
+          | ( Parameter.Variable (Concatenation left) :: left_parameters,
+              Parameter.Variable (Concatenation right) :: right_parameters ) ->
+              solve_ordered_types_less_or_equal
+                order
+                ~left:(Type.OrderedTypes.Concatenation left)
+                ~right:(Type.OrderedTypes.Concatenation right)
+                ~constraints
+              |> List.concat_map ~f:(solve_parameters ~left_parameters ~right_parameters)
+          | left, Parameter.Variable (Concatenation concatenation) :: remaining_parameters ->
+              solve_parameters_against_tuple_variadic
+                ~is_lower_bound:false
+                ~concretes:left
+                ~ordered_type:(Concatenation concatenation)
+                ~remaining_parameters
+          | Parameter.Variable (Concatenation concatenation) :: remaining_parameters, right ->
+              solve_parameters_against_tuple_variadic
+                ~is_lower_bound:true
+                ~concretes:right
+                ~ordered_type:(Concatenation concatenation)
+                ~remaining_parameters
           | ( Parameter.Variable (Concrete variable_annotation)
               :: Parameter.Keywords keywords_annotation :: _,
               Parameter.Named { annotation = named_annotation; _ } :: right_parameters ) ->
@@ -345,7 +424,8 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               Type.parametric
                 Type.mapping_primitive
                 [Single Type.string; Single Type.object_primitive]
-          | PositionalArguments -> Type.Tuple (Unbounded Type.object_primitive)
+          | PositionalArguments ->
+              Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation Type.object_primitive)
         in
         solve_less_or_equal order ~constraints ~left ~right
     | _, Type.ParameterVariadicComponent _ -> impossible
@@ -552,12 +632,11 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
               List.concat_map constraints ~f:(fun constraints ->
                   solve_less_or_equal order ~constraints ~left ~right)
           | Type.Variable.TupleVariadicPair (_, left), Type.Variable.TupleVariadicPair (_, right) ->
-              (* We assume variadic classes are invariant. *)
+              (* We assume variadic classes are covariant by default since they represent the
+                 immutable shape of a datatype. *)
               constraints
               |> List.concat_map ~f:(fun constraints ->
                      solve_ordered_types_less_or_equal order ~left ~right ~constraints)
-              |> List.concat_map ~f:(fun constraints ->
-                     solve_ordered_types_less_or_equal order ~left:right ~right:left ~constraints)
           | _ -> impossible
         in
         let solve_parameters left_parameters right_parameters =
@@ -565,10 +644,6 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
           >>= Type.Variable.zip_variables_with_two_parameter_lists
                 ~left_parameters
                 ~right_parameters
-          >>| List.map ~f:(function
-                  | ( { Type.Variable.variable_pair = left_variable_pair; _ },
-                      { Type.Variable.variable_pair = right_variable_pair; _ } )
-                  -> left_variable_pair, right_variable_pair)
           >>| List.fold ~f:solve_respecting_variance ~init:[constraints]
         in
         let left_parameters =
@@ -614,20 +689,18 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
     | Type.Parametric { name = source; _ }, Type.Primitive target ->
         solve_less_or_equal_primitives ~source ~target
     (* A <= B -> A <= Optional[B].*)
-    | Type.Tuple (Type.Unbounded left), Type.Tuple (Type.Unbounded right) ->
-        solve_less_or_equal order ~constraints ~left ~right
-    | Type.Tuple (Type.Bounded lefts), Type.Tuple (Type.Unbounded right) ->
-        let left = Type.OrderedTypes.union_upper_bound lefts in
-        solve_less_or_equal order ~constraints ~left ~right
-    | Type.Tuple (Type.Bounded left), Type.Tuple (Type.Bounded right) ->
+    | Type.Tuple left, Type.Tuple right ->
         solve_ordered_types_less_or_equal order ~left ~right ~constraints
-    | Type.Tuple (Type.Unbounded parameter), Type.Primitive _ ->
-        solve_less_or_equal
-          order
-          ~constraints
-          ~left:(Type.parametric "tuple" [Single parameter])
-          ~right
-    | Type.Tuple (Type.Bounded (Concrete members)), Type.Primitive _ ->
+    | Type.Tuple (Concatenation concatenation), Type.Primitive _ ->
+        Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation concatenation
+        >>| (fun parameter ->
+              solve_less_or_equal
+                order
+                ~constraints
+                ~left:(Type.parametric "tuple" [Single parameter])
+                ~right)
+        |> Option.value ~default:impossible
+    | Type.Tuple (Concrete members), Type.Primitive _ ->
         solve_less_or_equal
           order
           ~constraints
@@ -674,6 +747,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         >>| (fun left -> solve_less_or_equal order ~constraints ~left ~right)
         |> Option.value ~default:impossible
     | Type.Callable _, _ -> impossible
+    | Type.Literal (String (LiteralValue _)), Type.Literal (String AnyLiteral) -> [constraints]
     | _, Type.Literal _ -> impossible
     | Type.Literal _, _ ->
         solve_less_or_equal order ~constraints ~left:(Type.weaken_literals left) ~right
@@ -703,18 +777,32 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                   constraints
             | Unequal_lengths -> impossible )
         | Concrete concrete, Concatenation concatenation -> (
-            match Type.OrderedTypes.Concatenation.extract_sole_variadic concatenation with
-            | Some variadic when Type.Variable.Variadic.Tuple.is_free variadic ->
+            match
+              ( Type.OrderedTypes.Concatenation.extract_sole_variadic concatenation,
+                Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation concatenation )
+            with
+            | Some variadic, _ when Type.Variable.Variadic.Tuple.is_free variadic ->
                 solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
                 |> List.filter_map
                      ~f:
                        (OrderedConstraints.add_lower_bound
                           ~order
                           ~pair:(Type.Variable.TupleVariadicPair (variadic, Concrete concrete)))
+            | _, Some unbounded_element ->
+                solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
+                |> List.concat_map ~f:(fun constraints ->
+                       solve_less_or_equal
+                         order
+                         ~constraints
+                         ~left:(Type.union concrete)
+                         ~right:unbounded_element)
             | _ -> impossible )
         | Concatenation concatenation, Concrete concrete -> (
-            match Type.OrderedTypes.Concatenation.extract_sole_variadic concatenation with
-            | Some variadic when Type.Variable.Variadic.Tuple.is_free variadic ->
+            match
+              ( Type.OrderedTypes.Concatenation.extract_sole_variadic concatenation,
+                Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation concatenation )
+            with
+            | Some variadic, _ when Type.Variable.Variadic.Tuple.is_free variadic ->
                 solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
                 |> List.filter_map
                      ~f:
@@ -745,7 +833,30 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
                           ~pair:
                             (Type.Variable.TupleVariadicPair
                                (variadic, Concatenation right_concatenation)))
-            | _ -> impossible )
+            | _ -> (
+                match
+                  ( Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation
+                      left_concatenation,
+                    Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation
+                      right_concatenation )
+                with
+                | Some left_unbounded_element, Some right_unbounded_element ->
+                    solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
+                    |> List.concat_map ~f:(fun constraints ->
+                           solve_less_or_equal
+                             order
+                             ~constraints
+                             ~left:left_unbounded_element
+                             ~right:right_unbounded_element)
+                | None, Some right_unbounded_element ->
+                    solve_non_variadic_pairs ~pairs:(prefix_pairs @ suffix_pairs) constraints
+                    |> List.concat_map ~f:(fun constraints ->
+                           solve_less_or_equal
+                             order
+                             ~constraints
+                             ~left:Type.object_primitive
+                             ~right:right_unbounded_element)
+                | _ -> impossible ) )
       in
       Type.OrderedTypes.split_matching_elements_by_length left right
       >>| solve_split_ordered_types

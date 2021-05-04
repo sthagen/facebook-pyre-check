@@ -85,14 +85,14 @@ def translate_paths(paths: Set[str], original_directory: str) -> Set[str]:
 
 def exists(path: str) -> str:
     if not os.path.isfile(path):
-        raise ValueError("%s is not a valid file" % path)
+        raise ValueError(f"{path} is not a valid file")
     return path
 
 
 def file_or_directory_exists(path: str) -> str:
     if os.path.isdir(path) or os.path.isfile(path):
         return path
-    raise ValueError("%s is not a valid path" % path)
+    raise ValueError(f"{path} is not a valid path")
 
 
 def is_parent(parent: str, child: str) -> bool:
@@ -142,7 +142,7 @@ def find_python_paths(root: str) -> List[str]:
     except subprocess.CalledProcessError:
         raise EnvironmentException(
             "Pyre was unable to locate an analysis directory. "
-            "Ensure that your project is built and re-run pyre."
+            + "Ensure that your project is built and re-run pyre."
         )
 
 
@@ -183,7 +183,7 @@ def _compute_symbolic_link_mapping(
     except subprocess.CalledProcessError as error:
         LOG.warning(
             "Exception encountered trying to find source files "
-            "in the analysis directory: `%s`",
+            + "in the analysis directory: `%s`",
             error,
         )
         LOG.warning("Starting with an empty set of tracked files.")
@@ -257,67 +257,3 @@ def acquire_lock_if_needed(
         return acquire_lock(lock_path, blocking)
     else:
         return do_nothing()
-
-
-class Filesystem:
-    def list(
-        self, root: str, patterns: List[str], exclude: Optional[List[str]] = None
-    ) -> List[str]:
-        """
-        Return the list of files that match any of the patterns within root.
-        If exclude is provided, files that match an exclude pattern are omitted.
-
-        Note: The `find` command does not understand globs properly.
-            e.g. 'a/*.py' will match 'a/b/c.py'
-        For this reason, avoid calling this method with glob patterns.
-        """
-
-        command = ["find", "."]
-        command += self._match_any(patterns)
-        if exclude:
-            command += ["-and", "!"]
-            command += self._match_any(exclude)
-        return (
-            subprocess.run(command, stdout=subprocess.PIPE, cwd=root)
-            .stdout.decode("utf-8")
-            .split()
-        )
-
-    def _match_any(self, patterns: List[str]) -> List[str]:
-        expression = []
-        for pattern in patterns:
-            if expression:
-                expression.append("-or")
-            expression.extend(["-path", "./{}".format(pattern)])
-        return ["(", *expression, ")"]
-
-
-class MercurialBackedFilesystem(Filesystem):
-    def list(
-        self, root: str, patterns: List[str], exclude: Optional[List[str]] = None
-    ) -> List[str]:
-        try:
-            command = ["hg", "files"]
-            for pattern in patterns:
-                command += ["--include", pattern]
-            if exclude:
-                for pattern in exclude:
-                    command += ["--exclude", pattern]
-            return (
-                subprocess.run(
-                    command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=root
-                )
-                .stdout.decode("utf-8")
-                .split()
-            )
-        except FileNotFoundError:
-            raise EnvironmentException("hg executable not found.")
-
-
-@functools.lru_cache(1)
-def get_filesystem() -> Filesystem:
-    try:
-        subprocess.check_output(["hg", "status"], stderr=subprocess.DEVNULL)
-        return MercurialBackedFilesystem()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return Filesystem()

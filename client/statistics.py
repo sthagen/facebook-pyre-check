@@ -8,7 +8,6 @@ import logging
 import os
 import platform
 import subprocess
-import sys
 import time
 import traceback
 from enum import Enum
@@ -75,6 +74,7 @@ def log_with_configuration(
             "root": configuration.relative_local_root,
             "version": configuration.get_version_hash_respecting_override()
             or "unversioned",
+            "oncall": configuration.oncall or "",
             "configuration": str(configuration),
         },
     )

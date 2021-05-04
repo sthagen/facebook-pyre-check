@@ -115,45 +115,51 @@ let get_callsite_model ~resolution ~call_target ~arguments =
           { forward = { source_taint }; backward = { sink_taint; taint_in_taint_out }; mode }
         =
         let expand features =
-          let transform feature =
-            let open Features in
+          let transform feature features =
             let match_argument_to_parameter parameter =
               AccessPath.match_actuals_to_formals arguments [parameter]
               |> List.find ~f:(fun (_, matches) -> not (List.is_empty matches))
               >>| fst
             in
-            match feature.Abstract.OverUnderSetDomain.element with
-            | Simple.ViaValueOf { parameter; tag } ->
-                Simple.via_value_of_breadcrumb
-                  ?tag
-                  ~argument:(match_argument_to_parameter parameter)
-                |> SimpleSet.inject
-            | Simple.ViaTypeOf { parameter; tag } ->
-                Simple.via_type_of_breadcrumb
-                  ?tag
-                  ~resolution
-                  ~argument:(match_argument_to_parameter parameter)
-                |> SimpleSet.inject
-            | _ -> feature
+            match feature with
+            | Features.Simple.ViaValueOf { parameter; tag } ->
+                features
+                |> Features.SimpleSet.remove feature
+                |> Features.SimpleSet.add
+                     (Features.Simple.via_value_of_breadcrumb
+                        ?tag
+                        ~argument:(match_argument_to_parameter parameter))
+            | Features.Simple.ViaTypeOf { parameter; tag } ->
+                features
+                |> Features.SimpleSet.remove feature
+                |> Features.SimpleSet.add
+                     (Features.Simple.via_type_of_breadcrumb
+                        ?tag
+                        ~resolution
+                        ~argument:(match_argument_to_parameter parameter))
+            | _ -> features
           in
-          List.map features ~f:transform
+          Features.SimpleSet.fold Features.SimpleSet.Element features ~f:transform ~init:features
         in
         let source_taint =
           ForwardState.transform
-            ForwardTaint.simple_feature_set
-            Abstract.Domain.(Map expand)
+            ForwardTaint.simple_feature_self
+            Abstract.Domain.Map
+            ~f:expand
             source_taint
         in
         let sink_taint =
           BackwardState.transform
-            BackwardTaint.simple_feature_set
-            Abstract.Domain.(Map expand)
+            BackwardTaint.simple_feature_self
+            Abstract.Domain.Map
+            ~f:expand
             sink_taint
         in
         let taint_in_taint_out =
           BackwardState.transform
-            BackwardTaint.simple_feature_set
-            Abstract.Domain.(Map expand)
+            BackwardTaint.simple_feature_self
+            Abstract.Domain.Map
+            ~f:expand
             taint_in_taint_out
         in
         { forward = { source_taint }; backward = { sink_taint; taint_in_taint_out }; mode }
@@ -237,7 +243,7 @@ let get_global_sink_model ~resolution ~location ~expression =
   get_global_model ~resolution ~expression >>| to_sink
 
 
-let get_global_tito_model ~resolution ~expression =
+let get_global_tito_model_and_mode ~resolution ~expression =
   let to_tito
       ( _,
         { model = { TaintResult.backward = { TaintResult.Backward.taint_in_taint_out; _ }; _ }; _ }
@@ -245,7 +251,9 @@ let get_global_tito_model ~resolution ~expression =
     =
     BackwardState.read ~root:global_root ~path:[] taint_in_taint_out
   in
-  get_global_model ~resolution ~expression >>| to_tito
+  let get_mode (_, { model = { TaintResult.mode; _ }; _ }) = mode in
+  let global_model = get_global_model ~resolution ~expression in
+  global_model >>| to_tito, global_model >>| get_mode
 
 
 let global_is_sanitized ~resolution ~expression =
@@ -283,14 +291,10 @@ let infer_class_models ~environment =
   let fold_taint position existing_state attribute =
     let leaf =
       BackwardState.Tree.create_leaf (BackwardTaint.singleton Sinks.LocalReturn)
-      |> BackwardState.Tree.transform
-           BackwardTaint.complex_feature_set
-           (Abstract.Domain.Map
-              (fun _ ->
-                [
-                  Features.Complex.ReturnAccessPath
-                    [Abstract.TreeDomain.Label.create_name_field attribute];
-                ]))
+      |> BackwardState.Tree.transform BackwardTaint.complex_feature_set Map ~f:(fun _ ->
+             Features.ComplexSet.singleton
+               (Features.Complex.ReturnAccessPath
+                  [Abstract.TreeDomain.Label.create_name_index attribute]))
     in
     BackwardState.assign
       ~root:

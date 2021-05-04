@@ -21,7 +21,7 @@ module JsonParsing = struct
 
   let to_int_with_default = with_default ~extract:to_int ~extract_optional:to_int_option
 
-  let to_path json = to_string json |> Path.create_absolute ~follow_symbolic_links:false
+  let to_path json = to_string json |> Path.create_absolute
 
   (* The absent of explicit `~default` parameter means that the corresponding JSON field is
      mandantory. *)
@@ -60,25 +60,25 @@ end
 
 module Buck = struct
   type t = {
-    (* This is the buck root of the source directory, i.e. output of `buck root`. *)
-    root: Path.t;
     mode: string option;
     isolation_prefix: string option;
     targets: string list;
+    (* This is the buck root of the source directory, i.e. output of `buck root`. *)
+    source_root: Path.t;
     (* This is the root of directory where built artifacts will be placed. *)
-    build_root: Path.t;
+    artifact_root: Path.t;
   }
   [@@deriving sexp, compare, hash]
 
   let of_yojson json =
     let open JsonParsing in
     try
-      let root = path_member "root" json in
       let mode = optional_string_member "mode" json in
       let isolation_prefix = optional_string_member "isolation_prefix" json in
       let targets = string_list_member "targets" json ~default:[] in
-      let build_root = path_member "build_root" json in
-      Result.Ok { root; mode; isolation_prefix; targets; build_root }
+      let source_root = path_member "source_root" json in
+      let artifact_root = path_member "artifact_root" json in
+      Result.Ok { mode; isolation_prefix; targets; source_root; artifact_root }
     with
     | Yojson.Safe.Util.Type_error (message, _)
     | Yojson.Safe.Util.Undefined (message, _) ->
@@ -86,12 +86,12 @@ module Buck = struct
     | other_exception -> Result.Error (Exn.to_string other_exception)
 
 
-  let to_yojson { root; mode; isolation_prefix; targets; build_root } =
+  let to_yojson { mode; isolation_prefix; targets; source_root; artifact_root } =
     let result =
       [
-        "root", `String (Path.absolute root);
         "targets", `List (List.map targets ~f:(fun target -> `String target));
-        "build_root", `String (Path.absolute build_root);
+        "source_root", `String (Path.absolute source_root);
+        "artifact_root", `String (Path.absolute artifact_root);
       ]
     in
     let result =
@@ -157,13 +157,14 @@ end
 module CriticalFile = struct
   type t =
     | BaseName of string
+    | Extension of string
     | FullPath of Path.t
   [@@deriving sexp, compare, hash]
 
   let of_yojson = function
     | `Assoc [("base_name", `String name)] -> Result.Ok (BaseName name)
-    | `Assoc [("full_path", `String path)] ->
-        Result.Ok (FullPath (Path.create_absolute ~follow_symbolic_links:false path))
+    | `Assoc [("extension", `String name)] -> Result.Ok (Extension name)
+    | `Assoc [("full_path", `String path)] -> Result.Ok (FullPath (Path.create_absolute path))
     | _ as json ->
         let message =
           Format.sprintf "Malformed critical file JSON: %s" (Yojson.Safe.to_string json)
@@ -173,18 +174,17 @@ module CriticalFile = struct
 
   let to_yojson = function
     | BaseName name -> `Assoc ["base_name", `String name]
+    | Extension name -> `Assoc ["extension", `String name]
     | FullPath path -> `Assoc ["full_path", `String (Path.absolute path)]
-
-
-  let base_name_of = function
-    | BaseName name -> name
-    | FullPath path -> Path.last path
 
 
   let matches ~path = function
     | BaseName expect_name ->
         let actual_name = Path.last path in
         String.equal expect_name actual_name
+    | Extension extension ->
+        let actual_name = Path.last path in
+        String.is_suffix actual_name ~suffix:("." ^ extension)
     | FullPath expect_path -> Path.equal expect_path path
 
 
@@ -203,6 +203,7 @@ module SavedStateAction = struct
         project_name: string;
         project_metadata: string option;
       }
+    | SaveToFile of { shared_memory_path: Path.t }
   [@@deriving sexp, compare, hash]
 
   let of_yojson json =
@@ -223,17 +224,14 @@ module SavedStateAction = struct
             Result.Ok
               (LoadFromFile
                  {
-                   shared_memory_path =
-                     Path.create_absolute ~follow_symbolic_links:false shared_memory_path;
-                   changed_files_path =
-                     Some (Path.create_absolute ~follow_symbolic_links:false changed_files_path);
+                   shared_memory_path = Path.create_absolute shared_memory_path;
+                   changed_files_path = Some (Path.create_absolute changed_files_path);
                  })
         | `String shared_memory_path, `Null ->
             Result.Ok
               (LoadFromFile
                  {
-                   shared_memory_path =
-                     Path.create_absolute ~follow_symbolic_links:false shared_memory_path;
+                   shared_memory_path = Path.create_absolute shared_memory_path;
                    changed_files_path = None;
                  })
         | _, _ -> parsing_failed () )
@@ -247,6 +245,11 @@ module SavedStateAction = struct
         | `String project_name, `Null ->
             Result.Ok (LoadFromProject { project_name; project_metadata = None })
         | _, _ -> parsing_failed () )
+    | `List [`String "save_to_file"; save_to_file_options] -> (
+        match member "shared_memory_path" save_to_file_options with
+        | `String shared_memory_path ->
+            Result.Ok (SaveToFile { shared_memory_path = Path.create_absolute shared_memory_path })
+        | _ -> parsing_failed () )
     | _ -> parsing_failed ()
 
 
@@ -275,6 +278,11 @@ module SavedStateAction = struct
               [project_name_option; project_metadata_option]
         in
         `List [`String "load_from_project"; `Assoc load_from_project_options]
+    | SaveToFile { shared_memory_path } ->
+        let save_to_file_options =
+          ["shared_memory_path", `String (Path.absolute shared_memory_path)]
+        in
+        `List [`String "save_to_file"; `Assoc save_to_file_options]
 end
 
 module RemoteLogging = struct
@@ -559,7 +567,7 @@ let analysis_configuration_of
   let source_path =
     match source_paths with
     | SourcePaths.Simple source_paths -> source_paths
-    | Buck { Buck.build_root; _ } -> [SearchPath.Root build_root]
+    | Buck { Buck.artifact_root; _ } -> [SearchPath.Root artifact_root]
   in
   Configuration.Analysis.create
     ~infer:false

@@ -18,6 +18,8 @@ let root context =
   path, root
 
 
+let touch path = Stdio.Out_channel.write_all (Path.absolute path) ~data:""
+
 let test_create context =
   let path, root = root context in
   (* Create absolute paths. *)
@@ -121,17 +123,17 @@ let test_is_python_file _ =
     let actual = Path.is_python_init path in
     if expected then assert_true actual else assert_false actual
   in
-  assert_stub ~path:(Path.create_absolute ~follow_symbolic_links:false "test.py") false;
-  assert_stub ~path:(Path.create_absolute ~follow_symbolic_links:false "test.pyi") true;
-  assert_stub ~path:(Path.create_absolute ~follow_symbolic_links:false "durp/test.pyi") true;
-  assert_init ~path:(Path.create_absolute ~follow_symbolic_links:false "test.py") false;
-  assert_init ~path:(Path.create_absolute ~follow_symbolic_links:false "test.pyi") false;
-  assert_init ~path:(Path.create_absolute ~follow_symbolic_links:false "__init__.py") true;
-  assert_init ~path:(Path.create_absolute ~follow_symbolic_links:false "__init__.pyi") true;
-  assert_init ~path:(Path.create_absolute ~follow_symbolic_links:false "durp/__init__.py") true;
-  assert_init ~path:(Path.create_absolute ~follow_symbolic_links:false "durp/__init__.pyi") true;
+  assert_stub ~path:(Path.create_absolute "test.py") false;
+  assert_stub ~path:(Path.create_absolute "test.pyi") true;
+  assert_stub ~path:(Path.create_absolute "durp/test.pyi") true;
+  assert_init ~path:(Path.create_absolute "test.py") false;
+  assert_init ~path:(Path.create_absolute "test.pyi") false;
+  assert_init ~path:(Path.create_absolute "__init__.py") true;
+  assert_init ~path:(Path.create_absolute "__init__.pyi") true;
+  assert_init ~path:(Path.create_absolute "durp/__init__.py") true;
+  assert_init ~path:(Path.create_absolute "durp/__init__.pyi") true;
 
-  let root = Path.create_absolute ~follow_symbolic_links:false "root" in
+  let root = Path.create_absolute "root" in
   assert_stub ~path:(Path.create_relative ~root ~relative:"test") false;
   assert_stub ~path:(Path.create_relative ~root ~relative:"test.py") false;
   assert_stub ~path:(Path.create_relative ~root ~relative:"test.pyi") true;
@@ -162,7 +164,7 @@ let test_get_directory context =
     let actual = Path.get_directory path in
     assert_equal ~printer:Path.show ~cmp:Path.equal expected actual
   in
-  let create_absolute = Path.create_absolute ~follow_symbolic_links:false in
+  let create_absolute = Path.create_absolute in
   assert_get_directory (create_absolute "/") ~expected:(create_absolute "/");
   assert_get_directory (create_absolute "/foo") ~expected:(create_absolute "/");
   assert_get_directory (create_absolute "/foo/bar") ~expected:(create_absolute "/foo");
@@ -215,9 +217,9 @@ let test_link context =
   let linklink = link ^ "-link" in
   Unix.symlink ~target:path ~link_name:link;
   Unix.symlink ~target:link ~link_name:linklink;
-  let symbolic = Path.create_absolute ~follow_symbolic_links:false link in
-  let link = Path.create_absolute link in
-  let linklink = Path.create_absolute linklink in
+  let symbolic = Path.create_absolute link in
+  let link = Path.create_absolute ~follow_symbolic_links:true link in
+  let linklink = Path.create_absolute ~follow_symbolic_links:true linklink in
   assert_equal root (Path.real_path root);
   assert_equal root (Path.real_path link);
   assert_equal root (Path.real_path linklink);
@@ -225,6 +227,19 @@ let test_link context =
   Unix.remove (Path.absolute link);
   assert_equal link (Path.real_path link);
   assert_equal link (Path.real_path linklink)
+
+
+let test_create_directory_recursively context =
+  let _, root = root context in
+  let first_level = Path.create_relative ~root ~relative:"a" in
+  let second_level = Path.create_relative ~root:first_level ~relative:"b" in
+  let third_level = Path.create_relative ~root:second_level ~relative:"c" in
+  Path.create_directory_recursively third_level |> Result.ok_or_failwith;
+
+  assert_true (Path.is_directory first_level);
+  assert_true (Path.is_directory second_level);
+  assert_true (Path.is_directory third_level);
+  ()
 
 
 let test_remove context =
@@ -236,10 +251,97 @@ let test_remove context =
   Path.remove path
 
 
+let test_remove_recursively context =
+  let _, root = root context in
+  let remove_root = Path.create_relative ~root ~relative:"test" in
+  let top_level_directory =
+    Path.create_relative ~root:remove_root ~relative:"top_level_directory"
+  in
+  let top_level_file = Path.create_relative ~root:remove_root ~relative:"top_level_file" in
+  let second_level_directory =
+    Path.create_relative ~root:top_level_directory ~relative:"second_level_directory"
+  in
+  let second_level_file =
+    Path.create_relative ~root:top_level_directory ~relative:"second_level_file"
+  in
+  let second_level_symlink =
+    Path.create_relative ~root:top_level_directory ~relative:"second_level_symlink"
+  in
+
+  Unix.mkdir (Path.absolute remove_root);
+  Unix.mkdir (Path.absolute top_level_directory);
+  touch top_level_file;
+  Unix.mkdir (Path.absolute second_level_directory);
+  touch second_level_file;
+  Unix.symlink
+    ~target:(Path.absolute top_level_file)
+    ~link_name:(Path.absolute second_level_symlink);
+
+  Path.remove_recursively remove_root;
+  assert_false (Path.file_exists remove_root);
+  assert_false (Path.file_exists top_level_directory);
+  assert_false (Path.file_exists second_level_directory);
+  assert_false (Path.file_exists second_level_file);
+  assert_false (Path.file_exists second_level_symlink);
+  ()
+
+
+let test_remove_contents_of_directory context =
+  let assert_success path =
+    Path.remove_contents_of_directory path |> Result.ok_or_failwith;
+    let elements = Sys.readdir (Path.absolute path) in
+    assert_true (Array.is_empty elements)
+  in
+  let assert_failure path =
+    match Path.remove_contents_of_directory path with
+    | Result.Ok () -> assert_failure "Unexpected success on `ensure_parent_directory`"
+    | _ -> ()
+  in
+
+  let _, root = root context in
+  (* Empty directory *)
+  let root0 = Path.create_relative ~root ~relative:"test0" in
+  Unix.mkdir (Path.absolute root0);
+  assert_success root0;
+
+  (* Files *)
+  let root1 = Path.create_relative ~root ~relative:"test1" in
+  Unix.mkdir (Path.absolute root1);
+  touch (Path.create_relative ~root:root1 ~relative:"file");
+  assert_success root1;
+
+  (* Subdirectory *)
+  let root2 = Path.create_relative ~root ~relative:"test2" in
+  let subdirectory = Path.create_relative ~root:root2 ~relative:"subdirectory" in
+  Unix.mkdir (Path.absolute root2);
+  Unix.mkdir (Path.absolute subdirectory);
+  touch (Path.create_relative ~root:subdirectory ~relative:"file");
+  assert_success root2;
+
+  (* Mixed *)
+  let root3 = Path.create_relative ~root ~relative:"test3" in
+  let subdirectory = Path.create_relative ~root:root3 ~relative:"subdirectory" in
+  Unix.mkdir (Path.absolute root3);
+  touch (Path.create_relative ~root:root3 ~relative:"file0");
+  Unix.mkdir (Path.absolute subdirectory);
+  touch (Path.create_relative ~root:subdirectory ~relative:"file1");
+  assert_success root3;
+
+  (* Not a directory *)
+  let not_a_directory = Path.create_relative ~root ~relative:"not_a_directory" in
+  touch not_a_directory;
+  assert_failure not_a_directory;
+
+  (* Directory does not exist *)
+  let does_not_exist = Path.create_relative ~root ~relative:"does_not_exist" in
+  assert_failure does_not_exist;
+  ()
+
+
 (* Yolo *)
 
 let test_build_symlink_map context =
-  let root = bracket_tmpdir context |> Path.create_absolute in
+  let root = bracket_tmpdir context |> Path.create_absolute ~follow_symbolic_links:true in
   let path relative = Path.create_relative ~root ~relative in
   let create_file path = Out_channel.write_all ~data:"" (Path.absolute path) in
   let link = path "link.py" in
@@ -280,7 +382,10 @@ let () =
          "get_directory" >:: test_get_directory;
          "project_directory" >:: test_project_directory;
          "link" >:: test_link;
+         "create_directory_recursively" >:: test_create_directory_recursively;
          "remove" >:: test_remove;
+         "remove_recursively" >:: test_remove_recursively;
+         "remove_contents_of_directory" >:: test_remove_contents_of_directory;
          "build_symlink_map" >:: test_build_symlink_map;
        ]
   |> Test.run

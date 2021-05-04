@@ -8,10 +8,10 @@
 open OUnit2
 open Pyre
 
-let ( ! ) = Path.create_absolute ~follow_symbolic_links:false
+let ( ! ) = Path.create_absolute
 
 let test_create_search_path _ =
-  let root = Path.create_absolute ~follow_symbolic_links:false "/root" in
+  let root = Path.create_absolute "/root" in
   (* Create root/subdirectory. *)
   let subdirectory = Path.create_relative ~root ~relative:"subdirectory" in
   assert_equal ~cmp:SearchPath.equal (SearchPath.Root root) (SearchPath.create (Path.show root));

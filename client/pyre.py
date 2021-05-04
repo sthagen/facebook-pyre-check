@@ -114,8 +114,10 @@ def run_pyre_command(
     except (buck.BuckException, EnvironmentException) as error:
         client_exception_message = str(error)
         exit_code = ExitCode.FAILURE
-        if isinstance(error, buck.BuckException):
-            exit_code = ExitCode.BUCK_ERROR
+        if isinstance(error, buck.BuckUserError):
+            exit_code = ExitCode.BUCK_USER_ERROR
+        elif isinstance(error, buck.BuckException):
+            exit_code = ExitCode.BUCK_INTERNAL_ERROR
     except (configuration_module.InvalidConfiguration) as error:
         client_exception_message = str(error)
         exit_code = ExitCode.CONFIGURATION_ERROR
@@ -225,8 +227,8 @@ def _run_default_command(arguments: command_arguments.CommandArguments) -> ExitC
         watchman_link = "https://facebook.github.io/watchman/docs/install"
         LOG.warning(
             "No watchman binary found. \n"
-            "To enable pyre incremental, "
-            "you can install watchman: {}".format(watchman_link)
+            + "To enable pyre incremental, "
+            + f"you can install watchman: {watchman_link}"
         )
         LOG.warning("Defaulting to non-incremental check.")
         return _run_check_command(arguments)
@@ -255,8 +257,18 @@ def _create_configuration_with_retry(
     arguments: command_arguments.CommandArguments, base_directory: Path
 ) -> configuration_module.Configuration:
     configuration = configuration_module.create_configuration(arguments, base_directory)
-    if len(configuration.source_directories) > 0 or len(configuration.targets) > 0:
+    if (
+        configuration.source_directories is not None
+        or configuration.targets is not None
+    ):
         return configuration
+
+    if arguments.local_configuration is not None:
+        raise configuration_module.InvalidConfiguration(
+            "No buck targets or source directories to analyze.\nHint: Include"
+            + ' a "source_directories" or "targets" entry in your local'
+            + " configuration file."
+        )
 
     # Heuristic: If neither `source_directories` nor `targets` is specified,
     # and if there exists recently-used local configurations, we guess that
@@ -280,14 +292,14 @@ def _create_configuration_with_retry(
     LOG.warning(f"Running pyre under local root `{local_root_for_rerun}`...")
     LOG.warning(
         f"Hint: To avoid this prompt, run `pyre -l {local_root_for_rerun}` "
-        f"or `cd {local_root_for_rerun} && pyre`."
+        + f"or `cd {local_root_for_rerun} && pyre`."
     )
     new_configuration = configuration_module.create_configuration(
         replace(arguments, local_configuration=local_root_for_rerun), base_directory
     )
     if (
-        len(new_configuration.source_directories) > 0
-        or len(new_configuration.targets) > 0
+        new_configuration.source_directories is not None
+        or new_configuration.targets is not None
     ):
         return new_configuration
     raise configuration_module.InvalidConfiguration(error_message)
@@ -341,7 +353,10 @@ def _check_configuration(configuration: configuration_module.Configuration) -> N
     "--enable-memory-profiling/--no-enable-memory-profiling", default=False, hidden=True
 )
 @click.option(
-    "-n", "--noninteractive", is_flag=True, help="Disable interactive logging."
+    "-n",
+    "--noninteractive",
+    is_flag=True,
+    help="Enable verbose non-interactive logging.",
 )
 @click.option("--logging-sections", type=str, hidden=True)
 @click.option("--log-identifier", type=str, default=None, hidden=True)
@@ -540,7 +555,12 @@ def pyre(
 )
 @click.option("--dump-call-graph", is_flag=True, default=False, hidden=True)
 @click.option("--repository-root", type=os.path.abspath)
-@click.option("--rule", type=int, multiple=True, hidden=True)
+@click.option(
+    "--rule",
+    type=int,
+    multiple=True,
+    help="Only track taint flows for the given rule.",
+)
 @click.option(
     "--find-missing-flows",
     type=click.Choice([kind.value for kind in MissingFlowsKind]),
@@ -558,6 +578,12 @@ def pyre(
     default=False,
     help="Store information in .pyre/pysa.cache for faster runs.",
 )
+@click.option(
+    "--inline-decorators",
+    is_flag=True,
+    default=False,
+    help="Inline decorators at use sites to catch flows through decorators.",
+)
 @click.pass_context
 def analyze(
     context: click.Context,
@@ -571,6 +597,7 @@ def analyze(
     find_missing_flows: Optional[str],
     dump_model_query_results: bool,
     use_cache: bool,
+    inline_decorators: bool,
 ) -> int:
     """
     Run Pysa, the inter-procedural static analysis tool.
@@ -597,6 +624,7 @@ def analyze(
             ),
             dump_model_query_results=dump_model_query_results,
             use_cache=use_cache,
+            inline_decorators=inline_decorators,
         ),
         configuration,
         command_argument.noninteractive,
@@ -856,6 +884,48 @@ def persistent(context: click.Context, no_watchman: bool) -> int:
             configuration,
             True,
         )
+
+
+@pyre.command()
+@click.option("--no-watchman", is_flag=True, default=False, hidden=True)
+@click.pass_context
+def pysa_language_server(context: click.Context, no_watchman: bool) -> int:
+    """
+    Entry point for IDE integration to Pysa. Communicates with a Pysa server using
+    the Language Server Protocol, accepts input from stdin and writing diagnostics
+    and responses from the Pysa server to stdout.
+    """
+    command_argument: command_arguments.CommandArguments = context.obj["arguments"]
+    configuration = configuration_module.create_configuration(
+        command_argument, Path(".")
+    )
+    log.start_logging_to_directory(
+        # Always log to file regardless of whether `-n` is given
+        noninteractive=False,
+        log_directory=configuration.log_directory,
+    )
+    return v2.pysa_server.run(
+        configuration,
+        command_arguments.StartArguments(
+            changed_files_path=command_argument.changed_files_path,
+            debug=command_argument.debug,
+            enable_memory_profiling=command_argument.enable_memory_profiling,
+            enable_profiling=command_argument.enable_profiling,
+            load_initial_state_from=command_argument.load_initial_state_from,
+            log_identifier=command_argument.log_identifier,
+            logging_sections=command_argument.logging_sections,
+            no_saved_state=command_argument.no_saved_state,
+            no_watchman=no_watchman,
+            noninteractive=command_argument.noninteractive,
+            save_initial_state_to=command_argument.save_initial_state_to,
+            saved_state_project=command_argument.saved_state_project,
+            sequential=command_argument.sequential,
+            show_error_traces=command_argument.show_error_traces,
+            store_type_check_resolution=False,
+            terminal=False,
+            wait_on_initialization=True,
+        ),
+    )
 
 
 @pyre.command()

@@ -14,7 +14,8 @@ open Taint
 include Taint.Result.Register (struct
   include Taint.Result
 
-  let init ~configuration ~scheduler ~environment ~functions ~stubs =
+  let init ~static_analysis_configuration ~scheduler ~environment ~functions ~stubs =
+    let configuration = Configuration.StaticAnalysis.to_json static_analysis_configuration in
     let global_resolution = Analysis.TypeEnvironment.ReadOnly.global_resolution environment in
     let resolution =
       Analysis.TypeCheck.resolution
@@ -36,7 +37,7 @@ include Taint.Result.Register (struct
     let dump_model_query_results_path =
       Yojson.Safe.Util.member "dump_model_query_results_path" taint
       |> Yojson.Safe.Util.to_string_option
-      >>| Path.create_absolute ~follow_symbolic_links:false
+      >>| Path.create_absolute
     in
     let rule_filter =
       if List.mem ~equal:String.equal (Yojson.Safe.Util.keys taint) "rule_filter" then
@@ -142,7 +143,9 @@ include Taint.Result.Register (struct
       | [] -> models, Ast.Reference.Set.empty
       | _ -> (
           try
-            let paths = List.map model_paths ~f:Path.create_absolute in
+            let paths =
+              List.map model_paths ~f:(Path.create_absolute ~follow_symbolic_links:true)
+            in
             let configuration =
               TaintConfiguration.create
                 ~rule_filter
@@ -186,6 +189,7 @@ include Taint.Result.Register (struct
                 ~rule_filter
                 ~rules:queries
                 ~callables
+                ~environment
                 ~models
             in
             let models =
@@ -235,6 +239,7 @@ include Taint.Result.Register (struct
                 let { Forward.source_taint } = forward in
                 ForwardState.partition
                   ForwardTaint.leaf
+                  ByFilter
                   ~f:(fun source ->
                     Option.some_if
                       (not (List.mem ~equal:Sources.equal sanitized_sources source))
@@ -259,6 +264,7 @@ include Taint.Result.Register (struct
                 let { Backward.sink_taint; _ } = backward in
                 BackwardState.partition
                   BackwardTaint.leaf
+                  ByFilter
                   ~f:(fun source ->
                     Option.some_if (not (List.mem ~equal:Sinks.equal sanitized_sinks source)) source)
                   sink_taint
@@ -274,11 +280,34 @@ include Taint.Result.Register (struct
     result, model
 
 
-  let analyze ~callable ~environment ~qualifier ~define ~existing =
+  let analyze
+      ~callable
+      ~environment
+      ~qualifier
+      ~define:
+        ( {
+            Ast.Node.value =
+              { Ast.Statement.Define.signature = { name = { Ast.Node.value = name; _ }; _ }; _ };
+            _;
+          } as define )
+      ~existing
+    =
+    let define_qualifier = Ast.Reference.delocalize name in
+    let qualifier =
+      (* Pysa inlines decorators when a function is decorated. However, we want issues and models to
+         point to the lines in the module where the decorator was defined, not the module where it
+         was inlined. So, look up the originating module, if any, and use that as the module
+         qualifier. *)
+      Interprocedural.DecoratorHelper.DecoratorModule.get define_qualifier
+      |> Option.value ~default:qualifier
+    in
     match existing with
     | Some ({ mode = SkipAnalysis; _ } as model) ->
         let () = Log.info "Skipping taint analysis of %a" Callable.pretty_print callable in
         [], model
     | Some ({ mode; _ } as model) -> analyze ~callable ~environment ~qualifier ~define ~mode model
     | None -> analyze ~callable ~environment ~qualifier ~define ~mode:Normal empty_model
+
+
+  let report = Taint.Reporting.report
 end)

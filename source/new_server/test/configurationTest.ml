@@ -10,7 +10,7 @@ open OUnit2
 open Newserver
 module Path = Pyre.Path
 
-let ( ! ) = Path.create_absolute ~follow_symbolic_links:false
+let ( ! ) = Path.create_absolute
 
 let test_json_parsing context =
   let assert_parsed ~expected json_string =
@@ -122,6 +122,7 @@ let test_json_parsing context =
             "store_type_check_resolution": true,
             "critical_files": [
               { "base_name": "foo.py" },
+              { "extension": "derp" },
               { "full_path": "/home/bar.txt" }
             ]
           }
@@ -136,8 +137,11 @@ let test_json_parsing context =
         "store_type_check_resolution", `Bool true;
         ( "critical_files",
           `List
-            [`Assoc ["base_name", `String "foo.py"]; `Assoc ["full_path", `String "/home/bar.txt"]]
-        );
+            [
+              `Assoc ["base_name", `String "foo.py"];
+              `Assoc ["extension", `String "derp"];
+              `Assoc ["full_path", `String "/home/bar.txt"];
+            ] );
       ];
   assert_parsed
     (Format.sprintf
@@ -269,6 +273,25 @@ let test_json_parsing context =
           {
             %s,
             "saved_state_action": [
+              "save_to_file",
+              {
+                "shared_memory_path": "/some/path"
+              }
+            ]
+          }
+       |}
+       mandatory_fileds)
+    ~expected:
+      [
+        ( "saved_state_action",
+          `List [`String "save_to_file"; `Assoc ["shared_memory_path", `String "/some/path"]] );
+      ];
+  assert_parsed
+    (Format.sprintf
+       {|
+          {
+            %s,
+            "saved_state_action": [
               "load_from_project",
               {
                 "project_name": "my_project"
@@ -343,8 +366,8 @@ let test_json_parsing context =
             %s,
             "source_paths": {
               "kind": "buck",
-              "root": "/buck/root",
-              "build_root": "/build/root"
+              "source_root": "/buck/root",
+              "artifact_root": "/build/root"
             }
           }
        |}
@@ -355,9 +378,9 @@ let test_json_parsing context =
           `Assoc
             [
               "kind", `String "buck";
-              "root", `String "/buck/root";
               "targets", `List [];
-              "build_root", `String "/build/root";
+              "source_root", `String "/buck/root";
+              "artifact_root", `String "/build/root";
             ] );
       ];
   assert_parsed
@@ -367,11 +390,11 @@ let test_json_parsing context =
             %s,
             "source_paths": {
               "kind": "buck",
-              "root": "/buck/root",
               "targets": ["//my:target"],
               "mode": "@mode/opt",
               "isolation_prefix": "prefix",
-              "build_root": "/build/root"
+              "source_root": "/buck/root",
+              "artifact_root": "/build/root"
             }
           }
        |}
@@ -382,11 +405,11 @@ let test_json_parsing context =
           `Assoc
             [
               "kind", `String "buck";
-              "root", `String "/buck/root";
               "targets", `List [`String "//my:target"];
               "mode", `String "@mode/opt";
               "isolation_prefix", `String "prefix";
-              "build_root", `String "/build/root";
+              "source_root", `String "/buck/root";
+              "artifact_root", `String "/build/root";
             ] );
       ];
   ()
@@ -394,6 +417,7 @@ let test_json_parsing context =
 
 let test_critical_files context =
   let base_name name = ServerConfiguration.CriticalFile.BaseName name in
+  let extension name = ServerConfiguration.CriticalFile.Extension name in
   let full_path path = ServerConfiguration.CriticalFile.FullPath !path in
   let assert_find ~expected ~critical_files paths =
     let actual = ServerConfiguration.CriticalFile.find critical_files ~within:paths in
@@ -409,12 +433,17 @@ let test_critical_files context =
   assert_find ~critical_files:[base_name "a.py"] ~expected:None [!"b.py"];
   assert_find ~critical_files:[base_name "a.py"] ~expected:(Some !"a.py") [!"a.py"];
   assert_find ~critical_files:[base_name "a.py"] ~expected:(Some !"foo/a.py") [!"foo/a.py"];
+  assert_find ~critical_files:[extension "derp"] ~expected:None [];
+  assert_find ~critical_files:[extension "derp"] ~expected:None [!"a.py"];
+  assert_find ~critical_files:[extension "derp"] ~expected:(Some !"a.derp") [!"a.derp"];
+  assert_find ~critical_files:[extension "derp"] ~expected:(Some !"a.derp") [!"a.derp"; !"a.derp"];
   assert_find ~critical_files:[full_path "a.py"] ~expected:None [!"/foo/a.py"];
   assert_find ~critical_files:[full_path "/foo/a.py"] ~expected:(Some !"/foo/a.py") [!"/foo/a.py"];
   assert_find
     ~critical_files:[base_name "a.py"]
     ~expected:(Some !"/foo/bar/a.py")
     [!"/foo/bar/a.py"];
+  assert_find ~critical_files:[extension "py"] ~expected:(Some !"/foo/bar/a.py") [!"/foo/bar/a.py"];
   assert_find ~critical_files:[full_path "/bar/a.py"] ~expected:None [!"/foo/bar/a.py"];
   assert_find
     ~critical_files:[full_path "/foo/bar/a.py"]
@@ -432,6 +461,9 @@ let test_critical_files context =
   assert_find ~critical_files:[base_name "a.py"] ~expected:None [!"a/foo.py"; !"/b/a/foo.py"];
   assert_find ~critical_files:[base_name "a.py"] ~expected:(Some !"a.py") [!"a.py"; !"b.py"];
   assert_find ~critical_files:[base_name "a.py"] ~expected:(Some !"a.py") [!"b.py"; !"a.py"];
+  assert_find ~critical_files:[extension "py"] ~expected:(Some !"a.py") [!"a.py"; !"b.py"];
+  assert_find ~critical_files:[extension "py"] ~expected:(Some !"b.py") [!"b.py"; !"a.py"];
+  assert_find ~critical_files:[extension "py"] ~expected:(Some !"a.py") [!"b.derp"; !"a.py"];
   assert_find ~critical_files:[base_name "a.py"; base_name "b.py"] ~expected:None [];
   assert_find ~critical_files:[base_name "a.py"; base_name "b.py"] ~expected:None [!"c.py"];
   assert_find
@@ -446,6 +478,14 @@ let test_critical_files context =
     ~critical_files:[base_name "a.py"; base_name "b.py"]
     ~expected:(Some !"foo/b.py")
     [!"foo/c.py"; !"d.py"; !"foo/b.py"];
+  assert_find
+    ~critical_files:[extension "txt"; extension "pyi"]
+    ~expected:None
+    [!"foo/c.py"; !"d.py"; !"foo/b.py"];
+  assert_find
+    ~critical_files:[extension "txt"; extension "pyi"]
+    ~expected:(Some !"d.pyi")
+    [!"foo/c.py"; !"d.pyi"; !"foo/b.py"];
   assert_find
     ~critical_files:[base_name "a.py"; full_path "b.py"]
     ~expected:None

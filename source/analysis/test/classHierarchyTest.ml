@@ -580,7 +580,7 @@ let test_instantiate_successors_parameters _ =
        ]);
   assert_equal
     (instantiate_successors_parameters variadic_order ~source:Type.Bottom ~target:"Base")
-    (Some [Single Any]);
+    (Some [Unpacked (Type.OrderedTypes.Concatenation.create_unbounded_unpackable Type.Any)]);
   assert_equal
     (instantiate_successors_parameters
        variadic_order
@@ -617,9 +617,7 @@ let test_instantiate_successors_parameters _ =
        variadic_order
        ~source:
          (Type.Tuple
-            (Bounded
-               (Concatenation
-                  (Type.OrderedTypes.Concatenation.create ~prefix:[Type.integer] variadic))))
+            (Concatenation (Type.OrderedTypes.Concatenation.create ~prefix:[Type.integer] variadic)))
        ~target:"typing.Iterable")
     (Some [Single Type.object_primitive]);
   ()

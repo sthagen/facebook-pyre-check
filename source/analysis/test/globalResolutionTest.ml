@@ -1115,7 +1115,10 @@ let test_invalid_type_parameters context =
              (ParameterVariadicTypeVariable
                 { Type.Callable.head = []; variable = parameter_variadic });
          ])
-    ~expected_transformed_type:(Type.parametric "test.Foo" [Single Any])
+    ~expected_transformed_type:
+      (Type.parametric
+         "test.Foo"
+         [Unpacked (Type.OrderedTypes.Concatenation.create_unbounded_unpackable Type.Any)])
     [
       {
         name = "test.Foo";
@@ -1148,7 +1151,8 @@ let test_invalid_type_parameters context =
       class Foo(Generic[T, *Ts]): ...
     |}
     ~given_type:"test.Foo[pyre_extensions.Unpack[Ts]]"
-    ~expected_transformed_type:"test.Foo[typing.Any, typing.Any]"
+    ~expected_transformed_type:
+      "test.Foo[typing.Any, pyre_extensions.Unpack[typing.Tuple[typing.Any, ...]]]"
     [
       {
         name = "test.Foo";
@@ -1483,7 +1487,7 @@ let test_typed_dictionary_individual_attributes context =
                          Type.Record.Callable.RecordParameter.Named
                            {
                              Type.Record.Callable.RecordParameter.name = "k";
-                             annotation = Type.Literal (Type.String "name");
+                             annotation = Type.Literal (Type.String (LiteralValue "name"));
                              default = false;
                            };
                        ];
@@ -1502,7 +1506,7 @@ let test_typed_dictionary_individual_attributes context =
                          Type.Record.Callable.RecordParameter.Named
                            {
                              Type.Record.Callable.RecordParameter.name = "k";
-                             annotation = Type.Literal (Type.String "year");
+                             annotation = Type.Literal (Type.String (LiteralValue "year"));
                              default = false;
                            };
                        ];

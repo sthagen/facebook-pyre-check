@@ -10,13 +10,13 @@ open Pyre
 
 module Buck : sig
   type t = {
-    (* This is the buck root of the source directory, i.e. output of `buck root`. *)
-    root: Path.t;
     mode: string option;
     isolation_prefix: string option;
     targets: string list;
+    (* This is the buck root of the source directory, i.e. output of `buck root`. *)
+    source_root: Path.t;
     (* This is the root of directory where built artifacts will be placed. *)
-    build_root: Path.t;
+    artifact_root: Path.t;
   }
   [@@deriving sexp, compare, hash, yojson]
 end
@@ -31,10 +31,9 @@ end
 module CriticalFile : sig
   type t =
     | BaseName of string
+    | Extension of string
     | FullPath of Path.t
   [@@deriving sexp, compare, hash, yojson]
-
-  val base_name_of : t -> string
 
   val matches : path:Path.t -> t -> bool
 
@@ -53,6 +52,7 @@ module SavedStateAction : sig
         project_name: string;
         project_metadata: string option;
       }
+    | SaveToFile of { shared_memory_path: Path.t }
   [@@deriving sexp, compare, hash, yojson]
 end
 

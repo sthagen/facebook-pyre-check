@@ -50,7 +50,7 @@ let compare left right = String.compare (absolute left) (absolute right)
 
 let pp format path = Format.fprintf format "%s" (absolute path)
 
-let create_absolute ?(follow_symbolic_links = true) path =
+let create_absolute ?(follow_symbolic_links = false) path =
   if follow_symbolic_links then
     Absolute (Filename.realpath path)
   else
@@ -66,6 +66,28 @@ let create_relative ~root ~relative =
   Relative { root; relative }
 
 
+let get_directory path = absolute path |> Filename.dirname |> create_absolute
+
+let create_directory_recursively ?permission path =
+  let rec do_create = function
+    | path when not (Caml.Sys.file_exists path) -> (
+        match do_create (Filename.dirname path) with
+        | Result.Error _ as error -> error
+        | Result.Ok () ->
+            Unix.mkdir path ?perm:permission;
+            Result.Ok () )
+    | path when Caml.Sys.is_directory path -> Result.Ok ()
+    | path ->
+        let message = Format.sprintf "A non-directory already exists: %s" path in
+        Result.Error message
+  in
+  do_create (absolute path)
+
+
+let ensure_parent_directory_exists ?permission path =
+  create_directory_recursively ?permission (get_directory path)
+
+
 let get_relative_to_root ~root ~path =
   let root =
     let root = absolute root in
@@ -74,7 +96,10 @@ let get_relative_to_root ~root ~path =
   String.chop_prefix ~prefix:root (absolute path)
 
 
-let from_uri uri = String.chop_prefix ~prefix:"file://" uri |> Option.map ~f:create_absolute
+let from_uri uri =
+  String.chop_prefix ~prefix:"file://" uri
+  |> Option.map ~f:(create_absolute ~follow_symbolic_links:true)
+
 
 let current_working_directory () = create_absolute (Sys.getcwd ())
 
@@ -137,7 +162,7 @@ let last path =
 let real_path path =
   match path with
   | Absolute _ -> path
-  | Relative _ -> absolute path |> create_absolute
+  | Relative _ -> absolute path |> create_absolute ~follow_symbolic_links:true
 
 
 let follow_symbolic_link path =
@@ -214,6 +239,43 @@ let remove_if_exists path =
       ()
 
 
+let remove_recursively path =
+  let rec do_remove path =
+    try
+      let stats = Unix.lstat path in
+      match stats.Unix.st_kind with
+      | Unix.S_DIR ->
+          let contents = Caml.Sys.readdir path in
+          List.iter (Array.to_list contents) ~f:(fun name ->
+              let name = Filename.concat path name in
+              do_remove name);
+          Unix.rmdir path
+      | Unix.S_LNK
+      | Unix.S_REG
+      | Unix.S_CHR
+      | Unix.S_BLK
+      | Unix.S_FIFO
+      | Unix.S_SOCK ->
+          Unix.unlink path
+    with
+    (* Path has been deleted out from under us - can ignore it. *)
+    | Sys_error message ->
+        Log.warning "Error occurred when removing %s recursively: %s" path message;
+        ()
+    | Unix.Unix_error (Unix.ENOENT, _, _) -> ()
+  in
+  do_remove (absolute path)
+
+
+let remove_contents_of_directory path =
+  try
+    Caml.Sys.readdir (absolute path)
+    |> Array.iter ~f:(fun relative -> remove_recursively (create_relative ~root:path ~relative));
+    Result.Ok ()
+  with
+  | Sys_error message -> Result.Error message
+
+
 let readlink path =
   try Unix.readlink (absolute path) |> Option.some with
   | Unix.Unix_error _ -> None
@@ -256,10 +318,6 @@ let with_suffix path ~suffix =
   match path with
   | Absolute prefix -> Absolute (prefix ^ suffix)
   | Relative { root; relative } -> Relative { root; relative = relative ^ suffix }
-
-
-let get_directory path =
-  absolute path |> Filename.dirname |> create_absolute ~follow_symbolic_links:false
 
 
 let project_directory ~local_root ~filter_directories =

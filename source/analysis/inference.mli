@@ -34,6 +34,13 @@ module State (Context : Context) : Signature
 
 val name : string
 
+val infer_for_define
+  :  configuration:Configuration.Analysis.t ->
+  global_resolution:GlobalResolution.t ->
+  source:Source.t ->
+  define:Define.t Node.t ->
+  InferenceError.t list
+
 val run
   :  configuration:Configuration.Analysis.t ->
   global_resolution:GlobalResolution.t ->

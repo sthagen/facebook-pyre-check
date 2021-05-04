@@ -164,13 +164,17 @@ let test_is_constructor _ =
   assert_is_constructor ~name:"Foo.bar" ~parent:(Some "Foo") false
 
 
-let test_dump _ =
-  let assert_dump source expected =
-    assert_equal expected (parse_single_define source |> Define.dump)
+let test_pyre_dump _ =
+  let assert_dump ?(dump = false) ?(dump_cfg = false) ?(dump_locations = false) source =
+    let parsed = parse_single_define source in
+    assert_equal dump (parsed |> Define.dump);
+    assert_equal dump_cfg (parsed |> Define.dump_cfg);
+    assert_equal dump_locations (parsed |> Define.dump_locations)
   in
-  assert_dump "def foo(): pass" false;
-  assert_dump "def foo(): pyre_dump()" true;
-  assert_dump "def foo(): pyre_dump_cfg()" false;
+  assert_dump "def foo(): pass";
+  assert_dump "def foo(): pyre_dump()" ~dump:true;
+  assert_dump "def foo(): pyre_dump_cfg()" ~dump_cfg:true;
+  assert_dump "def foo(): pyre_dump_locations()" ~dump_locations:true;
   assert_dump
     {|
       def foo():
@@ -178,7 +182,7 @@ let test_dump _ =
         pass
         pyre_dump()
     |}
-    true
+    ~dump:true
 
 
 let test_constructor _ =
@@ -868,8 +872,13 @@ let test_pp _ =
       |> List.map ~f:show
       |> String.concat ~sep:"\n"
       |> String.rstrip ~drop:(Char.equal '\n')
+      |> Test.trim_extra_indentation
     in
-    assert_equal ~printer:Fn.id pretty_print_expected pretty_print_of_source
+    assert_equal
+      ~printer:Fn.id
+      ~pp_diff:(Test.diff ~print:(fun formatter -> Format.fprintf formatter "%s"))
+      pretty_print_expected
+      pretty_print_of_source
   in
   (* Test 1 : simple def *)
   assert_pretty_print
@@ -940,7 +949,7 @@ let test_pp _ =
           for i in xrange(quux):
             i = 1
           i = 2
-    |};
+      |};
 
   (* Test 5 : try/except/finally blocks *)
   assert_pretty_print
@@ -1017,7 +1026,47 @@ let test_pp _ =
       global a
     |} ~expected:{|
       global a
+    |};
+  (* Nested functions.
+
+     Note that the newline after each nested function actually has whitespace to keep it on the same
+     indent as the other statements in the outer function. *)
+  assert_pretty_print
+    {|
+      def foo(bar):
+        def inner(bar):
+          y = "hello world"
+        def inner2(bar):
+          y = "hello world"
+          def inner3(bar):
+            y = "hello world"
+            z = "hello world"
+          def inner4(bar):
+            y = "hello world"
+        x = "hello world"
     |}
+    ~expected:
+      ( {|
+      def foo(bar):
+        def inner(bar):
+          y = "hello world"|}
+      ^ "\n  "
+      ^ {|
+        def inner2(bar):
+          y = "hello world"
+          def inner3(bar):
+            y = "hello world"
+            z = "hello world"|}
+      ^ "\n    "
+      ^ {|
+          def inner4(bar):
+            y = "hello world"|}
+      ^ "\n    "
+      ^ "\n  "
+      ^ {|
+        x = "hello world"
+        |} );
+  ()
 
 
 let test_is_generator context =
@@ -1108,7 +1157,7 @@ let () =
          "is_class_property" >:: test_is_class_property;
          "decorator" >:: test_decorator;
          "is_constructor" >:: test_is_constructor;
-         "dump" >:: test_dump;
+         "pyre_dump" >:: test_pyre_dump;
        ]
   |> Test.run;
   "class"

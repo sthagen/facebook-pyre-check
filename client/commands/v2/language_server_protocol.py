@@ -295,10 +295,20 @@ class ServerCapabilities:
     undefined=dataclasses_json.Undefined.EXCLUDE,
 )
 @dataclasses.dataclass(frozen=True)
+class InitializationOptions:
+    notebook_number: Optional[int] = None
+
+
+@dataclasses_json.dataclass_json(
+    letter_case=dataclasses_json.LetterCase.CAMEL,
+    undefined=dataclasses_json.Undefined.EXCLUDE,
+)
+@dataclasses.dataclass(frozen=True)
 class InitializeParameters:
     capabilities: ClientCapabilities
     process_id: Optional[int] = None
     client_info: Optional[Info] = None
+    initialization_options: Optional[InitializationOptions] = None
 
     @staticmethod
     def from_json_rpc_parameters(
@@ -388,3 +398,29 @@ class DidSaveTextDocumentParameters:
         parameters: json_rpc.Parameters,
     ) -> "DidSaveTextDocumentParameters":
         return _parse_parameters(parameters, target=DidSaveTextDocumentParameters)
+
+
+@dataclasses_json.dataclass_json(
+    letter_case=dataclasses_json.LetterCase.CAMEL,
+    undefined=dataclasses_json.Undefined.EXCLUDE,
+)
+@dataclasses.dataclass(frozen=True)
+class WorkspaceConfiguration:
+    kernel_runtime_dir: List[str]
+
+
+@dataclasses_json.dataclass_json(
+    letter_case=dataclasses_json.LetterCase.CAMEL,
+    undefined=dataclasses_json.Undefined.EXCLUDE,
+)
+@dataclasses.dataclass(frozen=True)
+class WorkspaceDidChangeConfigurationParameters:
+    settings: WorkspaceConfiguration
+
+    @staticmethod
+    def from_json_rpc_parameters(
+        parameters: json_rpc.Parameters,
+    ) -> "WorkspaceDidChangeConfigurationParameters":
+        return _parse_parameters(
+            parameters, target=WorkspaceDidChangeConfigurationParameters
+        )

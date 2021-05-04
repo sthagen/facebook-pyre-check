@@ -10,10 +10,49 @@ open Pyre
 
 let get_analysis_kind = function
   | "taint" -> TaintAnalysis.abstract_kind
-  | "liveness" -> DeadStore.Analysis.abstract_kind
+  | "type_inference" -> TypeInference.Analysis.abstract_kind
   | _ ->
       Log.error "Invalid analysis kind specified.";
       failwith "bad argument"
+
+
+let should_infer analysis = String.equal analysis "type_inference"
+
+let type_environment_with_decorators_inlined ~configuration ~scheduler environment =
+  let open Analysis in
+  let open Interprocedural in
+  let open Ast in
+  let decorator_bodies =
+    DecoratorHelper.all_decorator_bodies (TypeEnvironment.read_only environment)
+  in
+  let environment =
+    AstEnvironment.create
+      ~additional_preprocessing:
+        (DecoratorHelper.inline_decorators
+           ~environment:(TypeEnvironment.read_only environment)
+           ~decorator_bodies)
+      (AstEnvironment.module_tracker (TypeEnvironment.ast_environment environment))
+    |> AnnotatedGlobalEnvironment.create
+    |> TypeEnvironment.create
+  in
+  let all_internal_paths =
+    let get_internal_path source_path =
+      let path = SourcePath.full_path ~configuration source_path in
+      Option.some_if (SourcePath.is_internal_path ~configuration path) path
+    in
+    ModuleTracker.source_paths
+      (AstEnvironment.module_tracker (TypeEnvironment.ast_environment environment))
+    |> List.filter_map ~f:get_internal_path
+  in
+  let _ =
+    Server.IncrementalCheck.recheck
+      ~configuration
+      ~scheduler
+      ~environment
+      ~errors:(Ast.Reference.Table.create ())
+      all_internal_paths
+  in
+  environment
 
 
 let run_analysis
@@ -26,6 +65,7 @@ let run_analysis
     find_missing_flows
     dump_model_query_results
     use_cache
+    inline_decorators
     _verbose
     expected_version
     sections
@@ -67,29 +107,30 @@ let run_analysis
       filter_directories
       >>| String.split_on_chars ~on:[';']
       >>| List.map ~f:String.strip
-      >>| List.map ~f:Path.create_absolute
+      >>| List.map ~f:(Path.create_absolute ~follow_symbolic_links:true)
     in
     let ignore_all_errors =
       ignore_all_errors
       >>| String.split_on_chars ~on:[';']
       >>| List.map ~f:String.strip
-      >>| List.map ~f:Path.create_absolute
+      >>| List.map ~f:(Path.create_absolute ~follow_symbolic_links:true)
     in
-    let repository_root = repository_root >>| Path.create_absolute in
+    let repository_root = repository_root >>| Path.create_absolute ~follow_symbolic_links:true in
     let configuration =
       Configuration.Analysis.create
         ?expected_version
         ~debug
         ~strict
         ~show_error_traces
-        ~infer:false
-        ~project_root:(Path.create_absolute project_root)
+        ~infer:(should_infer analysis)
+        ~project_root:(Path.create_absolute ~follow_symbolic_links:true project_root)
         ~parallel:(not sequential)
         ?filter_directories
         ?ignore_all_errors
         ~number_of_workers
         ~search_path:(List.map search_path ~f:SearchPath.create_normalized)
-        ~taint_model_paths:(List.map taint_models_paths ~f:Path.create_absolute)
+        ~taint_model_paths:
+          (List.map taint_models_paths ~f:(Path.create_absolute ~follow_symbolic_links:true))
         ~excludes
         ~extensions:(List.map ~f:Configuration.Extension.create_extension extensions)
         ?log_directory
@@ -100,7 +141,7 @@ let run_analysis
         ~source_path:(List.map source_path ~f:SearchPath.create_normalized)
         ()
     in
-    let result_json_path = result_json_path >>| Path.create_absolute ~follow_symbolic_links:false in
+    let result_json_path = result_json_path >>| Path.create_absolute in
     let () =
       match result_json_path with
       | Some path when not (Path.is_directory path) ->
@@ -143,7 +184,13 @@ let run_analysis
                   Service.StaticAnalysis.Cache.save_environment ~configuration ~environment;
                 environment
           in
-
+          let environment =
+            if inline_decorators then (
+              Log.info "Inlining decorators for taint analysis...";
+              type_environment_with_decorators_inlined ~configuration ~scheduler environment )
+            else
+              environment
+          in
           let ast_environment =
             Analysis.TypeEnvironment.ast_environment environment
             |> Analysis.AstEnvironment.read_only
@@ -167,26 +214,24 @@ let run_analysis
                   ast_environment
                   path_reference
           in
-          let errors =
-            Service.StaticAnalysis.analyze
-              ~scheduler
-              ~analysis_kind:(get_analysis_kind analysis)
-              ~configuration:
-                {
-                  Configuration.StaticAnalysis.configuration;
-                  result_json_path;
-                  dump_call_graph;
-                  verify_models = not no_verify;
-                  rule_filter;
-                  find_missing_flows;
-                  dump_model_query_results;
-                  use_cache;
-                }
-              ~filename_lookup
-              ~environment:(Analysis.TypeEnvironment.read_only environment)
-              ~qualifiers
-              ()
-          in
+          Service.StaticAnalysis.analyze
+            ~scheduler
+            ~analysis_kind:(get_analysis_kind analysis)
+            ~static_analysis_configuration:
+              {
+                Configuration.StaticAnalysis.configuration;
+                result_json_path;
+                dump_call_graph;
+                verify_models = not no_verify;
+                rule_filter;
+                find_missing_flows;
+                dump_model_query_results;
+                use_cache;
+              }
+            ~filename_lookup
+            ~environment:(Analysis.TypeEnvironment.read_only environment)
+            ~qualifiers
+            ();
           let { Caml.Gc.minor_collections; major_collections; compactions; _ } = Caml.Gc.stat () in
           Statistics.performance
             ~name:"analyze"
@@ -197,13 +242,7 @@ let run_analysis
                 "gc_major_collections", major_collections;
                 "gc_compactions", compactions;
               ]
-            ();
-          (* Print results. *)
-          List.map errors ~f:(fun error ->
-              Interprocedural.Error.instantiate ~show_error_traces ~lookup:filename_lookup error
-              |> Interprocedural.Error.Instantiated.to_yojson)
-          |> (fun result -> Yojson.Safe.pretty_to_string (`List result))
-          |> Log.print "%s"))
+            ()))
     |> Scheduler.run_process
   with
   | error ->
@@ -240,5 +279,9 @@ let command =
            ~doc:"Perform a taint analysis to find missing flows."
       +> flag "-dump-model-query-results" no_arg ~doc:"Provide debugging output for model queries."
       +> flag "-use-cache" no_arg ~doc:"Store information in .pyre/pysa.cache for faster runs."
+      +> flag
+           "-inline-decorators"
+           no_arg
+           ~doc:"Inline decorators at use sites to catch flows through the decorators."
       ++ Specification.base_command_line_arguments)
     run_analysis

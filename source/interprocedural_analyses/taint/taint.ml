@@ -9,7 +9,7 @@ open Core
 module AccessPath = AccessPath
 module BackwardAnalysis = BackwardAnalysis
 module CallGraphBuilder = CallGraphBuilder
-module TaintConfiguration = Configuration
+module TaintConfiguration = TaintConfiguration
 module PartialSinkConverter = PartialSinkConverter
 module Domains = Domains
 module Features = Features
@@ -65,9 +65,10 @@ module Model = struct
 
   let compute_sources_and_sinks_to_keep = ModelParser.compute_sources_and_sinks_to_keep
 
-  let create_model_from_annotations = ModelParser.create_model_from_annotations
+  let create_model_from_annotations = ModelParser.create_callable_model_from_annotations
 end
 
 module Result = TaintResult
+module Reporting = TaintReporting
 module Sinks = Sinks
 module Sources = Sources

@@ -19,7 +19,7 @@ let assert_consumed ~log_path expected =
 
 
 let test_basic context =
-  assert_consumed ~log_path:(Path.create_absolute ~follow_symbolic_links:false "/nonexistent") None;
+  assert_consumed ~log_path:(Path.create_absolute "/nonexistent") None;
 
   let test_root = bracket_tmpdir context |> Path.create_absolute in
   let test_message = "They asked me how well I understood theoretical physics." in

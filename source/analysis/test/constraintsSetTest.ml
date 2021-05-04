@@ -118,7 +118,7 @@ let make_assert_functions context =
       Ts = pyre_extensions.TypeVarTuple("Ts")
       Ts2 = pyre_extensions.TypeVarTuple("Ts2")
 
-      class Tensor(typing.Generic[pyre_extensions.Unpack[Ts]]): ...
+      class Tensor(typing.Generic[T, pyre_extensions.Unpack[Ts]]): ...
     |}
       context
   in
@@ -244,7 +244,7 @@ let make_assert_functions context =
               in
               let parse_ordered_types ordered =
                 match parse_annotation ordered with
-                | Type.Tuple (Bounded ordered_type) -> ordered_type
+                | Type.Tuple ordered_type -> ordered_type
                 | _ -> failwith "expected tuple"
               in
               let global_resolution =
@@ -254,8 +254,8 @@ let make_assert_functions context =
               | Some (Type.VariableAlias (ParameterVariadic variable)) ->
                   Type.Variable.ParameterVariadicPair (variable, parse_parameters value)
               | Some (Type.VariableAlias (TupleVariadic variable)) -> (
-                  match Type.Tuple (Bounded (parse_ordered_types value)) |> postprocess with
-                  | Type.Tuple (Bounded ordered_type) ->
+                  match Type.Tuple (parse_ordered_types value) |> postprocess with
+                  | Type.Tuple ordered_type ->
                       Type.Variable.TupleVariadicPair (variable, ordered_type)
                   | _ -> failwith "expected a tuple" )
               | _ -> failwith "not available" )
@@ -741,6 +741,24 @@ let test_add_constraint context =
     ~right:(parse_annotation "typing.Mapping[str, object]")
     [[]];
   assert_add_direct ~left:keyword_component ~right:(parse_annotation "typing.Mapping[str, int]") [];
+
+  (* Literals. *)
+  assert_add ~left:{| typing_extensions.Literal["hello"] |} ~right:"str" [[]];
+  assert_add
+    ~left:{| typing_extensions.Literal["hello"] |}
+    ~right:{| typing_extensions.Literal["world"] |}
+    [];
+  assert_add
+    ~left:{| typing_extensions.Literal["hello"] |}
+    ~right:"typing_extensions.Literal[str]"
+    [[]];
+  assert_add
+    ~left:{| typing_extensions.Literal[str] |}
+    ~right:{| typing_extensions.Literal[str] |}
+    [[]];
+  assert_add ~left:{| typing_extensions.Literal[str] |} ~right:"str" [[]];
+  assert_add ~left:"str" ~right:{| typing_extensions.Literal["hello"] |} [];
+  assert_add ~left:"str" ~right:{| typing_extensions.Literal[str] |} [];
   ()
 
 
@@ -870,17 +888,15 @@ let test_add_constraint_type_variable_tuple context =
   assert_add_direct
     ~left:
       (Type.Tuple
-         (Bounded
-            (Type.OrderedTypes.Concatenation
-               (Type.OrderedTypes.Concatenation.create ~prefix:[] ~suffix:[] variadic))))
+         (Type.OrderedTypes.Concatenation
+            (Type.OrderedTypes.Concatenation.create ~prefix:[] ~suffix:[] variadic)))
     ~right:
       ( Type.Tuple
-          (Bounded
-             (Type.OrderedTypes.Concatenation
-                (Type.OrderedTypes.Concatenation.create
-                   ~prefix:[Type.integer]
-                   ~suffix:[Type.string]
-                   variadic2)))
+          (Type.OrderedTypes.Concatenation
+             (Type.OrderedTypes.Concatenation.create
+                ~prefix:[Type.integer]
+                ~suffix:[Type.string]
+                variadic2))
       |> Type.Variable.mark_all_variables_as_bound )
     [["Ts", "typing.Tuple[int, pyre_extensions.Unpack[Ts2], str]"]];
   (* Tuple is covariant. *)
@@ -892,11 +908,68 @@ let test_add_constraint_type_variable_tuple context =
 
   (* Parametric types. *)
   assert_add
-    ~left:"test.Tensor[str, bool]"
-    ~right:"test.Tensor[pyre_extensions.Unpack[Ts]]"
+    ~left:"test.Tensor[str, bool, str]"
+    ~right:"test.Tensor[str, pyre_extensions.Unpack[Ts]]"
+    [["Ts", "typing.Tuple[bool, str]"]];
+  (* Tensor is invariant in the datatype. *)
+  assert_add ~left:"Tensor[int, int]" ~right:"Tensor[float, int]" [];
+  (* Tensor is covariant in the shape, since the shape is immutable. *)
+  assert_add ~left:"Tensor[int, int, int]" ~right:"Tensor[int, float, float]" [[]];
+  assert_add
+    ~left:"test.Tensor[str, int]"
+    ~right:"test.Tensor[str, pyre_extensions.Unpack[typing.Tuple[int, ...]]]"
+    [[]];
+
+  (* Callable. *)
+  assert_add
+    ~left:"typing.Callable[[int, str, bool], None]"
+    ~right:"typing.Callable[[int, pyre_extensions.Unpack[Ts]], None]"
     [["Ts", "typing.Tuple[str, bool]"]];
-  (* Tensor is invariant. *)
-  assert_add ~left:"Tensor[int, str]" ~right:"Tensor[float, str]" [];
+  assert_add
+    ~left:"typing.Callable[[int, bool, pyre_extensions.Unpack[Ts], bool, str], None]"
+    ~right:"typing.Callable[[int, pyre_extensions.Unpack[Ts2], str], None]"
+    [["Ts2", "typing.Tuple[bool, pyre_extensions.Unpack[Ts], bool]"]];
+  (* List of empty list means we found a satisfying solution. *)
+  assert_add
+    ~left:
+      "typing.Callable[[int, pyre_extensions.Unpack[Ts]], typing.Tuple[pyre_extensions.Unpack[Ts]]]"
+    ~right:"typing.Callable[[int, str, bool], typing.Tuple[str, bool]]"
+    ~leave_unbound_in_left:["Ts"]
+    [[]];
+
+  (* Unbounded tuples. *)
+  assert_add
+    ~left:"typing.Tuple[int, ...]"
+    ~right:"typing.Tuple[pyre_extensions.Unpack[Ts]]"
+    [["Ts", "typing.Tuple[pyre_extensions.Unpack[typing.Tuple[int, ...]]]"]];
+  assert_add ~left:"typing.Tuple[int, ...]" ~right:"typing.Tuple[T]" [];
+  assert_add
+    ~left:"typing.Tuple[int, str, pyre_extensions.Unpack[typing.Tuple[str, ...]], bool]"
+    ~right:"typing.Tuple[int, pyre_extensions.Unpack[Ts], bool]"
+    [["Ts", "typing.Tuple[str, pyre_extensions.Unpack[typing.Tuple[str, ...]]]"]];
+  assert_add
+    ~left:"typing.Tuple[int, pyre_extensions.Unpack[Ts], bool]"
+    ~right:"typing.Tuple[int, str, pyre_extensions.Unpack[typing.Tuple[str, ...]], bool]"
+    ~leave_unbound_in_left:["Ts"]
+    [["Ts", "typing.Tuple[str, pyre_extensions.Unpack[typing.Tuple[str, ...]]]"]];
+  assert_add
+    ~left:"typing.Tuple[int, str, pyre_extensions.Unpack[typing.Tuple[str, ...]], str, bool]"
+    ~right:"typing.Tuple[int, pyre_extensions.Unpack[typing.Tuple[T, ...]], bool]"
+    [["T", "str"]];
+
+  (* Not valid because the unbounded tuple may be empty. *)
+  assert_add
+    ~left:"typing.Tuple[int, ...]"
+    ~right:"typing.Tuple[int, pyre_extensions.Unpack[Ts]]"
+    [];
+  assert_add
+    ~left:"typing.Tuple[int, ...]"
+    ~right:"typing.Tuple[pyre_extensions.Unpack[Ts], int]"
+    [];
+  assert_add
+    ~left:"typing.Tuple[int, pyre_extensions.Unpack[typing.Tuple[str, ...]], bool]"
+    ~right:"typing.Tuple[int, str, pyre_extensions.Unpack[typing.Tuple[str, ...]], bool]"
+    [];
   ()
 
 

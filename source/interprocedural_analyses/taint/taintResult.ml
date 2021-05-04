@@ -28,7 +28,7 @@ module Forward = struct
 
   let empty = { source_taint = ForwardState.empty }
 
-  let is_empty { source_taint } = ForwardState.is_empty source_taint
+  let is_empty_model { source_taint } = ForwardState.is_empty source_taint
 
   let obscure = empty
 
@@ -70,7 +70,7 @@ module Backward = struct
 
   let empty = { sink_taint = BackwardState.empty; taint_in_taint_out = BackwardState.empty }
 
-  let is_empty { sink_taint; taint_in_taint_out } =
+  let is_empty_model { sink_taint; taint_in_taint_out } =
     BackwardState.is_empty sink_taint && BackwardState.is_empty taint_in_taint_out
 
 
@@ -250,7 +250,9 @@ module ResultArgument = struct
 
   let empty_model = { forward = Forward.empty; backward = Backward.empty; mode = Normal }
 
-  let is_empty { forward; backward; _ } = Forward.is_empty forward && Backward.is_empty backward
+  let is_empty_model { forward; backward; _ } =
+    Forward.is_empty_model forward && Backward.is_empty_model backward
+
 
   let join ~iteration:_ left right =
     {
@@ -268,17 +270,46 @@ module ResultArgument = struct
     }
 
 
-  let get_errors result = List.map ~f:Flow.generate_error result
+  let reached_fixpoint ~iteration ~previous ~next =
+    Forward.reached_fixpoint ~iteration ~previous:previous.forward ~next:next.forward
+    && Backward.reached_fixpoint ~iteration ~previous:previous.backward ~next:next.backward
 
-  let issues_to_json ~filename_lookup callable result =
-    match result with
-    | None -> []
-    | Some issues ->
-        let issue_to_json issue =
-          let json = Flow.to_json ~filename_lookup callable issue in
-          `Assoc ["kind", `String "issue"; "data", json]
-        in
-        List.map ~f:issue_to_json issues
+
+  let strip_for_callsite
+      { forward = { source_taint }; backward = { sink_taint; taint_in_taint_out }; mode }
+    =
+    (* Remove positions and other info that are not needed at call site *)
+    let source_taint =
+      source_taint
+      |> ForwardState.transform
+           ForwardTaint.flow_details
+           Map
+           ~f:Domains.FlowDetails.strip_tito_positions
+      |> ForwardState.transform ForwardTaint.trace_info Map ~f:Domains.TraceInfo.strip_for_callsite
+    in
+    let sink_taint =
+      sink_taint
+      |> BackwardState.transform
+           BackwardTaint.flow_details
+           Map
+           ~f:Domains.FlowDetails.strip_tito_positions
+      |> BackwardState.transform
+           BackwardTaint.trace_info
+           Map
+           ~f:Domains.TraceInfo.strip_for_callsite
+    in
+    let taint_in_taint_out =
+      taint_in_taint_out
+      |> BackwardState.transform
+           BackwardTaint.flow_details
+           Map
+           ~f:Domains.FlowDetails.strip_tito_positions
+      |> BackwardState.transform
+           BackwardTaint.trace_info
+           Map
+           ~f:Domains.TraceInfo.strip_for_callsite
+    in
+    { forward = { source_taint }; backward = { sink_taint; taint_in_taint_out }; mode }
 
 
   let model_to_json ~filename_lookup callable model =
@@ -293,67 +324,11 @@ module ResultArgument = struct
         ]
     in
     `Assoc ["kind", `String "model"; "data", model_json]
-
-
-  let reached_fixpoint ~iteration ~previous ~next =
-    Forward.reached_fixpoint ~iteration ~previous:previous.forward ~next:next.forward
-    && Backward.reached_fixpoint ~iteration ~previous:previous.backward ~next:next.backward
-
-
-  (* Emit both issues and models for external processing *)
-  let externalize ~filename_lookup callable result model =
-    let issues = issues_to_json ~filename_lookup callable result in
-    if is_empty model then
-      issues
-    else
-      model_to_json ~filename_lookup callable model :: issues
-
-
-  let metadata () =
-    let codes = Flow.code_metadata () in
-    `Assoc ["codes", codes]
-
-
-  let statistics () =
-    let model_verification_errors =
-      ModelVerificationError.get () |> List.map ~f:ModelVerificationError.to_json
-    in
-    `Assoc ["model_verification_errors", `List model_verification_errors]
-
-
-  let strip_for_callsite
-      { forward = { source_taint }; backward = { sink_taint; taint_in_taint_out }; mode }
-    =
-    (* Remove positions and other info that are not needed at call site *)
-    let source_taint =
-      source_taint
-      |> ForwardState.transform
-           ForwardTaint.flow_details
-           (Abstract.Domain.Map Domains.FlowDetails.strip_tito_positions)
-      |> ForwardState.transform
-           ForwardTaint.trace_info
-           (Abstract.Domain.Map Domains.TraceInfo.strip_for_callsite)
-    in
-    let sink_taint =
-      sink_taint
-      |> BackwardState.transform
-           BackwardTaint.flow_details
-           (Abstract.Domain.Map Domains.FlowDetails.strip_tito_positions)
-      |> BackwardState.transform
-           BackwardTaint.trace_info
-           (Abstract.Domain.Map Domains.TraceInfo.strip_for_callsite)
-    in
-    let taint_in_taint_out =
-      taint_in_taint_out
-      |> BackwardState.transform
-           BackwardTaint.flow_details
-           (Abstract.Domain.Map Domains.FlowDetails.strip_tito_positions)
-      |> BackwardState.transform
-           BackwardTaint.trace_info
-           (Abstract.Domain.Map Domains.TraceInfo.strip_for_callsite)
-    in
-    { forward = { source_taint }; backward = { sink_taint; taint_in_taint_out }; mode }
 end
+
+let is_empty_model = ResultArgument.is_empty_model
+
+let model_to_json = ResultArgument.model_to_json
 
 include Interprocedural.Result.Make (ResultArgument)
 
@@ -365,11 +340,17 @@ let has_significant_summary root path target =
   | Some { forward; backward; _ } -> (
       match root with
       | AccessPath.Root.LocalResult ->
-          let tree = ForwardState.read ~root ~path forward.source_taint in
-          not (ForwardState.Tree.is_empty tree)
+          let _, tree =
+            ForwardState.read_tree_raw ~use_precise_labels:true ~root ~path forward.source_taint
+          in
+          let taint = ForwardState.Tree.get_root tree in
+          not (ForwardTaint.is_bottom taint)
       | _ ->
-          let tree = BackwardState.read ~root ~path backward.sink_taint in
-          not (BackwardState.Tree.is_empty tree) )
+          let _, tree =
+            BackwardState.read_tree_raw ~use_precise_labels:true ~root ~path backward.sink_taint
+          in
+          let taint = BackwardState.Tree.get_root tree in
+          not (BackwardTaint.is_bottom taint) )
 
 
 let () = TraceInfo.has_significant_summary := has_significant_summary

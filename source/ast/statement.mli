@@ -189,8 +189,6 @@ and Class : sig
 
   val is_frozen : t -> bool
 
-  val explicitly_assigned_attributes : t -> Attribute.t Identifier.SerializableMap.t
-
   type class_t = t [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
   module AttributeComponents : sig
@@ -224,10 +222,10 @@ and Define : sig
       return_annotation: Expression.t option;
       async: bool;
       generator: bool;
-      parent: Reference.t option;
       (* The class owning the method. *)
+      parent: Reference.t option;
+      (* If the define is nested, this is the name of the nesting define. *)
       nesting_define: Reference.t option;
-          (* If the define is nested, this is the name of the nesting define. *)
     }
     [@@deriving compare, eq, sexp, show, hash, to_yojson]
 

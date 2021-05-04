@@ -99,6 +99,10 @@ and invalid_argument =
       expression: Expression.t option;
       annotation: Type.t;
     }
+  | TupleVariadicVariable of {
+      variable: Type.OrderedTypes.t;
+      mismatch: SignatureSelectionTypes.mismatch_with_tuple_variadic_type_variable;
+    }
 
 and precondition_mismatch =
   | Found of mismatch
@@ -213,6 +217,10 @@ and unsupported_operand_kind =
 and illegal_annotation_target_kind =
   | InvalidExpression
   | Reassignment
+
+and tuple_concatenation_problem =
+  | MultipleVariadics of { variadic_expressions: Expression.t list }
+  | UnpackingNonIterable of { annotation: Type.t }
 [@@deriving compare, eq, sexp, show, hash]
 
 type invalid_decoration = {
@@ -393,6 +401,7 @@ and kind =
       variable: Type.Variable.t;
       base: polymorphism_base_class;
     }
+  | TupleConcatenationError of tuple_concatenation_problem
   (* Additional errors. *)
   (* TODO(T38384376): split this into a separate module. *)
   | DeadStore of Identifier.t
@@ -461,6 +470,7 @@ let code = function
   | IncompatibleAsyncGeneratorReturnType _ -> 57
   | UnsupportedOperand _ -> 58
   | DuplicateTypeVariables _ -> 59
+  | TupleConcatenationError _ -> 60
   | ParserFailure _ -> 404
   (* Additional errors. *)
   | UnawaitedAwaitable _ -> 1001
@@ -530,6 +540,7 @@ let name = function
   | UnsupportedOperand _ -> "Unsupported operand"
   | UnusedIgnore _ -> "Unused ignore"
   | UnusedLocalMode _ -> "Unused local mode"
+  | TupleConcatenationError _ -> "Unable to concatenate tuple"
 
 
 let weaken_literals kind =
@@ -886,22 +897,19 @@ let rec messages ~concise ~signature location kind =
             actual
       in
       let trace =
-        Format.asprintf
-          "Redeclare `%a` on line %d if you wish to override the previously declared type.%s"
-          pp_reference
-          name
-          start_line
-          (if due_to_invariance then " " ^ invariance_message else "")
-        ::
-        ( if Type.equal (Type.weaken_literals actual) expected then
+        if due_to_invariance then
+          if Type.equal (Type.weaken_literals actual) expected then
             [
+              invariance_message;
               "Hint: To avoid this error, you may need to use explicit type parameters in your \
                constructor: e.g., `Foo[str](\"hello\")` instead of `Foo(\"hello\")`.";
             ]
+          else
+            [invariance_message]
         else
-          [] )
+          []
       in
-      [message] @ trace
+      message :: trace
   | InconsistentOverride { parent; override; override_kind; overridden_method } ->
       let kind =
         match override_kind with
@@ -969,7 +977,28 @@ let rec messages ~concise ~signature location kind =
               "Keyword argument must be a mapping%s."
               (if require_string_keys then " with string keys" else "");
           ]
-      | ConcreteVariable _ -> ["Variable argument must be an iterable."] )
+      | ConcreteVariable _ -> ["Variable argument must be an iterable."]
+      | TupleVariadicVariable { variable; mismatch = ConstraintFailure _ } ->
+          [
+            Format.asprintf
+              "Variable argument conflicts with constraints on `%a`."
+              Type.OrderedTypes.pp_concise
+              variable;
+          ]
+      | TupleVariadicVariable { variable; mismatch = NotBoundedTuple _ } ->
+          [
+            Format.asprintf
+              "Variable argument for `%a` must be a bounded tuple."
+              Type.OrderedTypes.pp_concise
+              variable;
+          ]
+      | TupleVariadicVariable { variable; mismatch = CannotConcatenate _ } ->
+          [
+            Format.asprintf
+              "Concatenating multiple variadic tuples for variable `%a` is not yet supported."
+              Type.OrderedTypes.pp_concise
+              variable;
+          ] )
   | InvalidArgument argument -> (
       match argument with
       | Keyword { expression; annotation; require_string_keys } ->
@@ -988,6 +1017,41 @@ let rec messages ~concise ~signature location kind =
               (show_sanitized_optional_expression expression)
               pp_type
               annotation;
+          ]
+      | TupleVariadicVariable { variable; mismatch = ConstraintFailure ordered_types } ->
+          [
+            Format.asprintf
+              "Argument types `%a` are not compatible with expected variadic elements `%a`."
+              (Type.Record.OrderedTypes.pp_concise ~pp_type)
+              ordered_types
+              (Type.Record.OrderedTypes.pp_concise ~pp_type)
+              variable;
+          ]
+      | TupleVariadicVariable { variable; mismatch = NotBoundedTuple { expression; annotation } } ->
+          [
+            Format.asprintf
+              "Variable argument%s has type `%a` but must be a definite tuple to be included in \
+               variadic type variable `%a`."
+              (show_sanitized_optional_expression expression)
+              pp_type
+              annotation
+              (Type.Record.OrderedTypes.pp_concise ~pp_type)
+              variable;
+          ]
+      | TupleVariadicVariable { variable; mismatch = CannotConcatenate unconcatenatable } ->
+          let unconcatenatable =
+            List.map
+              unconcatenatable
+              ~f:(Format.asprintf "%a" (Type.Record.OrderedTypes.pp_concise ~pp_type))
+            |> String.concat ~sep:", "
+          in
+          [
+            Format.asprintf
+              "Variadic type variable `%a` cannot be made to contain `%s`; concatenation of \
+               multiple variadic type variables is not yet implemented."
+              (Type.Record.OrderedTypes.pp_concise ~pp_type)
+              variable
+              unconcatenatable;
           ] )
   | InvalidDecoration { decorator = { name; _ }; reason = CouldNotResolve } ->
       let name = Node.value name |> Reference.sanitized |> Reference.show in
@@ -1183,9 +1247,15 @@ let rec messages ~concise ~signature location kind =
         match actual with
         | Single actual -> Format.asprintf "single type `%a`" Type.pp actual
         | CallableParameters actual ->
-            Format.asprintf "callable parameters `%a`" Type.Callable.pp_parameters actual
+            Format.asprintf
+              "callable parameters `%a`"
+              (Type.pp_parameters ~pp_type:Type.pp)
+              [CallableParameters actual]
         | Unpacked actual ->
-            Format.asprintf "variadic `%a`" Type.OrderedTypes.Concatenation.pp_unpackable actual
+            Format.asprintf
+              "variadic `%a`"
+              (Type.OrderedTypes.Concatenation.pp_unpackable ~pp_type:Type.pp)
+              actual
       in
       [Format.asprintf "%s, but a %s was given for generic type %s." expected actual name]
   | InvalidTypeVariable { annotation; origin } when concise -> (
@@ -1828,7 +1898,7 @@ let rec messages ~concise ~signature location kind =
   | UnsafeCast { expression; annotation } ->
       [
         Format.asprintf
-          "`safe_cast` is only permitted to loosen the type of `%s`. `%a` is not a super type of \
+          "`safe_cast` is only permitted to widen the type of `%s`. `%a` is not a super type of \
            `%s`."
           (show_sanitized_expression expression)
           pp_type
@@ -1858,6 +1928,14 @@ let rec messages ~concise ~signature location kind =
           (if provided > 1 then "were" else "was");
       ]
   | Top -> ["Problem with analysis."]
+  | TupleConcatenationError (UnpackingNonIterable { annotation }) ->
+      [Format.asprintf "Expected to unpack an iterable, but got `%a`." pp_type annotation]
+  | TupleConcatenationError (MultipleVariadics { variadic_expressions }) ->
+      [
+        Format.asprintf
+          "Concatenation not yet support for multiple variadic tuples: `%s`."
+          (String.concat ~sep:", " (List.map ~f:show_sanitized_expression variadic_expressions));
+      ]
   | TypedDictionaryAccessWithNonLiteral acceptable_keys ->
       let explanation =
         let acceptable_keys =
@@ -2294,6 +2372,8 @@ let due_to_analysis_limitations { kind; _ } =
   | InconsistentOverride { override = WeakenedPostcondition { actual; _ }; _ }
   | InvalidArgument (Keyword { annotation = actual; _ })
   | InvalidArgument (ConcreteVariable { annotation = actual; _ })
+  | InvalidArgument
+      (TupleVariadicVariable { mismatch = NotBoundedTuple { annotation = actual; _ }; _ })
   | InvalidException { annotation = actual; _ }
   | InvalidType (InvalidType { annotation = actual; _ })
   | InvalidType (FinalNested actual)
@@ -2317,6 +2397,7 @@ let due_to_analysis_limitations { kind; _ } =
   | IncompatibleAsyncGeneratorReturnType _
   | IncompatibleConstructorAnnotation _
   | InconsistentOverride { override = StrengthenedPrecondition (NotFound _); _ }
+  | InvalidArgument (TupleVariadicVariable _)
   | InvalidDecoration _
   | InvalidMethodSignature _
   | InvalidTypeParameters _
@@ -2340,6 +2421,7 @@ let due_to_analysis_limitations { kind; _ } =
   | PrivateProtocolProperty _
   | ProhibitedAny _
   | TooManyArguments _
+  | TupleConcatenationError _
   | TypedDictionaryAccessWithNonLiteral _
   | TypedDictionaryKeyNotFound _
   | TypedDictionaryInitializationError _
@@ -2658,6 +2740,7 @@ let less_or_equal ~resolution left right =
   | UnsafeCast _, _
   | TooManyArguments _, _
   | Top, _
+  | TupleConcatenationError _, _
   | TypedDictionaryAccessWithNonLiteral _, _
   | TypedDictionaryInvalidOperation _, _
   | TypedDictionaryInitializationError _, _
@@ -3083,6 +3166,7 @@ let join ~resolution left right =
     | RevealedType _, _
     | UnsafeCast _, _
     | TooManyArguments _, _
+    | TupleConcatenationError _, _
     | TypedDictionaryAccessWithNonLiteral _, _
     | TypedDictionaryKeyNotFound _, _
     | TypedDictionaryInvalidOperation _, _
@@ -3331,6 +3415,9 @@ let suppress ~mode ~ignore_codes error =
     | InconsistentOverride
         { override = StrengthenedPrecondition (Found { expected = Type.Variable _; _ }); _ } ->
         true
+    | InvalidDecoration { reason = CouldNotResolve; _ }
+    | InvalidDecoration { reason = CouldNotResolveArgument _; _ } ->
+        true
     | InvalidTypeParameters
         { kind = AttributeResolution.IncorrectNumberOfParameters { actual = 0; _ }; _ } ->
         true
@@ -3507,6 +3594,17 @@ let dequalify
           (Keyword { expression; annotation = dequalify annotation; require_string_keys })
     | InvalidArgument (ConcreteVariable { expression; annotation }) ->
         InvalidArgument (ConcreteVariable { expression; annotation = dequalify annotation })
+    | InvalidArgument (TupleVariadicVariable { variable; mismatch }) ->
+        let mismatch =
+          match mismatch with
+          | NotBoundedTuple { expression; annotation } ->
+              SignatureSelectionTypes.NotBoundedTuple
+                { expression; annotation = dequalify annotation }
+          | _ ->
+              (* TODO(T45656387): Implement dequalify for ordered_types *)
+              mismatch
+        in
+        InvalidArgument (TupleVariadicVariable { variable; mismatch })
     | InvalidException { expression; annotation } ->
         InvalidException { expression; annotation = dequalify annotation }
     | InvalidMethodSignature ({ annotation; _ } as kind) ->
@@ -3633,6 +3731,7 @@ let dequalify
             override = WeakenedPostcondition (dequalify_mismatch mismatch);
           }
     | InvalidDecoration expression -> InvalidDecoration expression
+    | TupleConcatenationError expressions -> TupleConcatenationError expressions
     | TypedDictionaryAccessWithNonLiteral expression ->
         TypedDictionaryAccessWithNonLiteral expression
     | TypedDictionaryKeyNotFound { typed_dictionary_name; missing_key } ->

@@ -9,6 +9,8 @@ open Ast
 
 val expand_relative_imports : Source.t -> Source.t
 
+val expand_import_python_calls : Source.t -> Source.t
+
 val expand_string_annotations : Source.t -> Source.t
 
 val expand_strings_in_annotation_expression : Expression.t -> Expression.t
@@ -59,6 +61,8 @@ val replace_union_shorthand : Source.t -> Source.t
 val inline_six_metaclass : Source.t -> Source.t
 
 val expand_starred_type_variable_tuple : Source.t -> Source.t
+
+val expand_starred_variadic_in_annotation_expression : Expression.t -> Expression.t
 
 (* List of function definitions in a source. include_toplevels copies all definitions into a
    toplevel definition. *)

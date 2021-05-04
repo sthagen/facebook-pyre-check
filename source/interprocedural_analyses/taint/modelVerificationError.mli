@@ -10,6 +10,7 @@ open Ast
 module T : sig
   type incompatible_model_error_reason =
     | UnexpectedPositionalOnlyParameter of string
+    | UnexpectedPositionalParameter of string
     | UnexpectedNamedParameter of string
     | UnexpectedStarredParameter
     | UnexpectedDoubleStarredParameter
@@ -31,7 +32,20 @@ module T : sig
         actual_name: Reference.t;
       }
     | InvalidModelQueryClauses of Expression.Call.Argument.t list
+    | InvalidModelQueryWhereClause of {
+        expression: Expression.t;
+        find_clause_kind: string;
+      }
+    | InvalidModelQueryModelClause of {
+        expression: Expression.t;
+        find_clause_kind: string;
+      }
     | InvalidParameterExclude of Expression.t
+    | InvalidExtendsIsTransitive of Expression.t
+    | InvalidModelQueryClauseArguments of {
+        callee: Expression.t;
+        arguments: Expression.Call.Argument.t list;
+      }
     | InvalidTaintAnnotation of {
         taint_annotation: Expression.t;
         reason: string;
@@ -46,6 +60,8 @@ module T : sig
         name: Reference.t;
         unexpected_decorators: Statement.Decorator.t list;
       }
+    | InvalidIdentifier of Expression.t
+    | UnexpectedStatement of Statement.t
     | UnclassifiedError of {
         model_name: string;
         message: string;

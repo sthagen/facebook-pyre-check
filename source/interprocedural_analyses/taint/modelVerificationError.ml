@@ -12,6 +12,7 @@ open Ast
 module T = struct
   type incompatible_model_error_reason =
     | UnexpectedPositionalOnlyParameter of string
+    | UnexpectedPositionalParameter of string
     | UnexpectedNamedParameter of string
     | UnexpectedStarredParameter
     | UnexpectedDoubleStarredParameter
@@ -33,7 +34,20 @@ module T = struct
         actual_name: Reference.t;
       }
     | InvalidModelQueryClauses of Expression.Call.Argument.t list
+    | InvalidModelQueryWhereClause of {
+        expression: Expression.t;
+        find_clause_kind: string;
+      }
+    | InvalidModelQueryModelClause of {
+        expression: Expression.t;
+        find_clause_kind: string;
+      }
     | InvalidParameterExclude of Expression.t
+    | InvalidExtendsIsTransitive of Expression.t
+    | InvalidModelQueryClauseArguments of {
+        callee: Expression.t;
+        arguments: Expression.Call.Argument.t list;
+      }
     | InvalidTaintAnnotation of {
         taint_annotation: Expression.t;
         reason: string;
@@ -48,6 +62,8 @@ module T = struct
         name: Reference.t;
         unexpected_decorators: Statement.Decorator.t list;
       }
+    | InvalidIdentifier of Expression.t
+    | UnexpectedStatement of Statement.t
     (* TODO(T81363867): Remove this variant. *)
     | UnclassifiedError of {
         model_name: string;
@@ -78,6 +94,8 @@ let description error =
         List.map reasons ~f:(function
             | UnexpectedPositionalOnlyParameter name ->
                 Format.sprintf "unexpected positional only parameter: `%s`" name
+            | UnexpectedPositionalParameter name ->
+                Format.sprintf "unexpected positional parameter: `%s`" name
             | UnexpectedNamedParameter name ->
                 Format.sprintf "unexpected named parameter: `%s`" name
             | UnexpectedStarredParameter -> "unexpected star parameter"
@@ -100,10 +118,29 @@ let description error =
       Format.asprintf
         "The model query arguments at `%s` are invalid: expected a find, where and model clause."
         (List.map clause_list ~f:Expression.Call.Argument.show |> String.concat ~sep:", ")
+  | InvalidModelQueryWhereClause { expression; find_clause_kind } ->
+      Format.asprintf
+        "`%s` is not a valid constraint for model queries with find clause of kind `%s`."
+        (Expression.show expression)
+        find_clause_kind
+  | InvalidModelQueryModelClause { expression; find_clause_kind } ->
+      Format.asprintf
+        "`%s` is not a valid model for model queries with find clause of kind `%s`."
+        (Expression.show expression)
+        find_clause_kind
   | InvalidParameterExclude expression ->
       Format.asprintf
         "The AllParameters exclude must be either a string or a list of strings, got: `%s`."
         (Expression.show expression)
+  | InvalidExtendsIsTransitive expression ->
+      Format.asprintf
+        "The Extends is_transitive must be either True or False, got: `%s`."
+        (Expression.show expression)
+  | InvalidModelQueryClauseArguments { callee; arguments } ->
+      Format.asprintf
+        "Unsupported arguments for callee `%s`: `%s`."
+        (Expression.show callee)
+        (List.map arguments ~f:Expression.Call.Argument.show |> String.concat ~sep:", ")
   | InvalidTaintAnnotation { taint_annotation; reason } ->
       Format.asprintf
         "`%s` is an invalid taint annotation: %s"
@@ -126,6 +163,11 @@ let description error =
         name
         (String.concat decorators ~sep:", ")
         property_decorator_message
+  | InvalidIdentifier expression ->
+      Format.sprintf
+        "Invalid identifier: `%s`. Expected a fully-qualified name."
+        (Expression.show expression)
+  | UnexpectedStatement _ -> "Unexpected statement"
   | UnclassifiedError { model_name; message } ->
       Format.sprintf "Invalid model for `%s`: %s" model_name message
   | MissingAttribute { class_name; attribute_name } ->
@@ -151,6 +193,12 @@ let code { kind; _ } =
   | InvalidParameterExclude _ -> 8
   | InvalidTaintAnnotation _ -> 9
   | ModelingClassAsDefine _ -> 10
+  | InvalidModelQueryWhereClause _ -> 11
+  | InvalidModelQueryModelClause _ -> 12
+  | InvalidExtendsIsTransitive _ -> 13
+  | InvalidModelQueryClauseArguments _ -> 14
+  | InvalidIdentifier _ -> 15
+  | UnexpectedStatement _ -> 16
 
 
 let display { kind = error; path; location } =

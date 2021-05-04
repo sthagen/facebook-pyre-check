@@ -207,7 +207,7 @@ let get_generic_parameters ~generic_index edges =
   List.find_map ~f:generic_parameters edges
 
 
-let least_common_successor ((module Handler : Handler) as order) ~successors left right =
+let least_common_successor order ~successors left right =
   raise_if_untracked order left;
   raise_if_untracked order right;
   if Type.Primitive.compare left right = 0 then
@@ -339,7 +339,6 @@ let instantiate_successors_parameters ((module Handler : Handler) as handler) ~s
                             (variadic, Type.Variable.Variadic.Tuple.any)
                     in
                     Type.Variable.zip_variables_with_parameters ~parameters variables
-                    >>| List.map ~f:(function { Type.Variable.variable_pair; _ } -> variable_pair)
                     |> Option.value ~default:(List.map ~f:to_any variables)
                     |> TypeConstraints.Solution.create
                   in

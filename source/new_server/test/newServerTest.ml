@@ -13,12 +13,12 @@ module Path = Pyre.Path
 module Client = struct
   type t = {
     context: test_ctxt;
-    server_state: ServerState.t ref;
+    server_state: ServerState.t;
     input_channel: Lwt_io.input_channel;
     output_channel: Lwt_io.output_channel;
   }
 
-  let current_server_state { server_state; _ } = !server_state
+  let current_server_state { server_state; _ } = server_state
 
   let send_raw_request { input_channel; output_channel; _ } raw_request =
     let open Lwt in
@@ -69,7 +69,10 @@ module ScratchProject = struct
     context: test_ctxt;
     server_configuration: ServerConfiguration.t;
     watchman: Watchman.Raw.t option;
+    build_system_initializer: BuildSystem.Initializer.t;
   }
+
+  let server_configuration_of { server_configuration; _ } = server_configuration
 
   let setup
       ~context
@@ -77,6 +80,7 @@ module ScratchProject = struct
       ?(include_typeshed_stubs = true)
       ?(include_helper_builtins = true)
       ?watchman
+      ?build_system_initializer
       sources
     =
     let add_source ~root (relative, content) =
@@ -86,9 +90,11 @@ module ScratchProject = struct
     in
     (* We assume that there's only one checked source directory that acts as the global root as
        well. *)
-    let source_root = bracket_tmpdir context |> Path.create_absolute in
+    let source_root = bracket_tmpdir context |> Path.create_absolute ~follow_symbolic_links:true in
     (* We assume that there's only one external source directory. *)
-    let external_root = bracket_tmpdir context |> Path.create_absolute in
+    let external_root =
+      bracket_tmpdir context |> Path.create_absolute ~follow_symbolic_links:true
+    in
     let external_sources =
       if include_typeshed_stubs then
         Test.typeshed_stubs ~include_helper_builtins () @ external_sources
@@ -129,14 +135,20 @@ module ScratchProject = struct
         memory_profiling_output = None;
       }
     in
-    { context; server_configuration; watchman }
+    {
+      context;
+      server_configuration;
+      watchman;
+      build_system_initializer =
+        Option.value build_system_initializer ~default:BuildSystem.Initializer.null;
+    }
 
 
   let test_server_with
       ?(expected_exit_status = Start.ExitStatus.Ok)
       ?on_server_socket_ready
       ~f
-      { context; server_configuration; watchman }
+      { context; server_configuration; watchman; build_system_initializer }
     =
     let open Lwt.Infix in
     Memory.reset_shared_memory ();
@@ -144,6 +156,7 @@ module ScratchProject = struct
     Start.start_server
       server_configuration
       ?watchman
+      ~build_system_initializer
       ?on_server_socket_ready
       ~on_exception:(function
         | OUnitTest.OUnit_failure _ as exn ->
@@ -154,8 +167,10 @@ module ScratchProject = struct
             Lwt.return Start.ExitStatus.Error)
       ~on_started:(fun server_state ->
         (* Open a connection to the started server and send some test messages. *)
+        ExclusiveLock.read server_state ~f:Lwt.return
+        >>= fun server_state ->
         let socket_address =
-          let { ServerState.socket_path; _ } = !server_state in
+          let { ServerState.socket_path; _ } = server_state in
           Lwt_unix.ADDR_UNIX (Pyre.Path.absolute socket_path)
         in
         let test_client (input_channel, output_channel) =

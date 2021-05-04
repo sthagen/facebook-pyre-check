@@ -90,6 +90,7 @@ let test_unresolved_select context =
                   meta: typing.Type[typing.List[int]] = ...
                   union: typing.Union[int, str] = ...
                   int_to_int_dictionary: typing.Dict[int, int] = ...
+                  union_list: typing.Union[typing.List[int], typing.List[str]] = ...
 
                   unknown: $unknown = ...
                   g: typing.Callable[[int], bool]
@@ -156,9 +157,19 @@ let test_unresolved_select context =
                (Resolution.global_resolution resolution)
           |> enforce_callable
         in
+        let resolved_arguments =
+          let create_argument argument =
+            let expression, kind = Ast.Expression.Call.Argument.unpack argument in
+            let resolved =
+              (Resolution.resolve_expression_to_type_with_locals resolution) ~locals:[] expression
+            in
+            { AttributeResolution.Argument.expression = Some expression; kind; resolved }
+          in
+          List.map arguments ~f:create_argument
+        in
         ( callable,
           GlobalResolution.signature_select
-            ~arguments:(Unresolved arguments)
+            ~arguments:resolved_arguments
             ~global_resolution
             ~callable
             ~self_argument:None
@@ -253,8 +264,18 @@ let test_unresolved_select context =
     let resolution = ScratchProject.setup ~context [] |> ScratchProject.build_resolution in
     let global_resolution = Resolution.global_resolution resolution in
     let signature =
+      let resolved_arguments =
+        let create_argument argument =
+          let expression, kind = Ast.Expression.Call.Argument.unpack argument in
+          let resolved =
+            (Resolution.resolve_expression_to_type_with_locals resolution) ~locals:[] expression
+          in
+          { AttributeResolution.Argument.expression = Some expression; kind; resolved }
+        in
+        List.map arguments ~f:create_argument
+      in
       GlobalResolution.signature_select
-        ~arguments:(Unresolved arguments)
+        ~arguments:resolved_arguments
         ~global_resolution
         ~callable
         ~self_argument:None
@@ -569,6 +590,11 @@ let test_unresolved_select context =
     "[[_T_bound_by_float_str_union], _T_bound_by_float_str_union]"
     "(union)"
     (`Found "typing.Union[int, str]");
+  (* T44393553 : typing.Union[typing.List[int], typing.List[str]] desired. *)
+  assert_select
+    "[[typing.Iterable[_T]], typing.List[_T]]"
+    "(union_list)"
+    (`Found "typing.List[typing.Union[int, str]]");
 
   let assert_marks_as_escaped_with_argument ~constraints =
     let variable, escaped_variable = make_normal_and_escaped_variable ~constraints "_S" in
@@ -766,7 +792,7 @@ let test_resolved_select context =
     let global_resolution = Resolution.global_resolution resolution in
     let signature =
       GlobalResolution.signature_select
-        ~arguments:(Resolved arguments)
+        ~arguments
         ~global_resolution
         ~callable
         ~self_argument:None

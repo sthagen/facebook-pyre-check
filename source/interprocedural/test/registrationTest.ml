@@ -20,29 +20,32 @@ module SimpleAnalysis = Interprocedural.Result.Make (struct
 
   let obscure_model = -1
 
-  let get_errors _ = []
-
   let join ~iteration:_ a b = a + b
 
   let widen ~iteration ~previous ~next = join ~iteration previous next
 
   let reached_fixpoint ~iteration:_ ~previous ~next = next <= previous
 
-  let externalize ~filename_lookup:_ _ _ _ = []
-
-  let metadata () = `Assoc ["foo", `String "bar"]
-
-  let statistics () = `Assoc ["foos", `Int 1]
-
   let strip_for_callsite model = model
 end)
 
 include SimpleAnalysis.Register (struct
-  let init ~configuration:_ ~scheduler:_ ~environment:_ ~functions:_ ~stubs:_ =
+  let init ~static_analysis_configuration:_ ~scheduler:_ ~environment:_ ~functions:_ ~stubs:_ =
     { Result.initial_models = Callable.Map.empty; skip_overrides = Ast.Reference.Set.empty }
 
 
   let analyze ~callable:_ ~environment:_ ~qualifier:_ ~define:_ ~existing:_ = "some result", 5
+
+  let report
+      ~scheduler:_
+      ~static_analysis_configuration:_
+      ~filename_lookup:_
+      ~callables:_
+      ~skipped_overrides:_
+      ~fixpoint_timer:_
+      ~fixpoint_iterations:_
+    =
+    []
 end)
 
 let test_simple_analysis _ =

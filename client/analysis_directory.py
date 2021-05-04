@@ -407,7 +407,7 @@ class SharedAnalysisDirectory(AnalysisDirectory):
         if is_start_message:
             message = (
                 "Pyre is rebuilding because a significant number of files were "
-                "changed. Your results may be outdated until this is finished."
+                + "changed. Your results may be outdated until this is finished."
             )
             short_message = "Rebuilding..."
             message_type = json_rpc.LanguageServerMessageType.WARNING.value
@@ -849,7 +849,7 @@ def resolve_analysis_directory(
         source_paths: List[
             SearchPathElement
         ] = configuration.get_existent_source_directories()
-        targets = list(configuration.targets)
+        targets = list(configuration.targets or [])
     else:
         source_paths: List[SearchPathElement] = [
             # TODO: support SubdirectorySearchPathElement here too?

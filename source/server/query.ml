@@ -345,8 +345,7 @@ let rec parse_request_exn query =
       | "is_compatible_with", [left; right] -> Request.IsCompatibleWith (access left, access right)
       | "less_or_equal", [left; right] -> Request.LessOrEqual (access left, access right)
       | "path_of_module", [module_access] -> Request.PathOfModule (reference module_access)
-      | "save_server_state", [path] ->
-          Request.SaveServerState (Path.create_absolute ~follow_symbolic_links:false (string path))
+      | "save_server_state", [path] -> Request.SaveServerState (Path.create_absolute (string path))
       | "superclasses", names -> Superclasses (List.map ~f:reference names)
       | "type", [argument] -> Type (expression argument)
       | "types", paths -> Request.TypesInFiles (List.map ~f:string paths)
@@ -664,7 +663,7 @@ let rec process_request ~environment ~configuration request =
             match path with
             | Some path ->
                 if String.is_prefix ~prefix:"/" path then
-                  [Path.create_absolute path]
+                  [Path.create_absolute ~follow_symbolic_links:true path]
                 else
                   let { Configuration.Analysis.local_root = root; _ } = configuration in
                   [Path.create_relative ~root ~relative:path]

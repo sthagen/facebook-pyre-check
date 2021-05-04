@@ -15,8 +15,13 @@
               "start": 47,
               "end": 53
             },
+            "tito": [ { "line": 41, "start": 24, "end": 27 } ],
             "leaves": [ { "kind": "GetAttr", "name": "getattr" } ],
-            "features": [ { "always-via": "obscure" } ]
+            "features": [
+              { "always-via": "tito-broadening" },
+              { "always-via": "broadening" },
+              { "always-via": "obscure" }
+            ]
           },
           {
             "call": {
@@ -33,6 +38,8 @@
             "tito": [ { "line": 42, "start": 42, "end": 45 } ],
             "leaves": [ { "kind": "GetAttr", "name": "getattr" } ],
             "features": [
+              { "always-via": "tito-broadening" },
+              { "always-via": "broadening" },
               { "always-via": "tito" },
               { "always-via": "object" },
               { "always-via": "obscure" }
@@ -52,6 +59,8 @@
             },
             "leaves": [ { "kind": "GetAttr", "name": "getattr" } ],
             "features": [
+              { "always-via": "tito-broadening" },
+              { "always-via": "broadening" },
               { "via": "tito" },
               { "via": "object" },
               { "always-via": "obscure" }
@@ -71,6 +80,8 @@
             },
             "leaves": [ { "kind": "GetAttr", "name": "getattr" } ],
             "features": [
+              { "always-via": "tito-broadening" },
+              { "always-via": "broadening" },
               { "via": "tito" },
               { "via": "object" },
               { "always-via": "obscure" }
@@ -90,6 +101,8 @@
             },
             "leaves": [ { "kind": "GetAttr", "name": "getattr" } ],
             "features": [
+              { "always-via": "tito-broadening" },
+              { "always-via": "broadening" },
               { "via": "tito" },
               { "via": "object" },
               { "always-via": "obscure" }
@@ -104,7 +117,11 @@
         "taint": [
           {
             "decl": null,
-            "tito": [ { "line": 49, "start": 59, "end": 71 } ],
+            "tito": [
+              { "line": 49, "start": 25, "end": 87 },
+              { "line": 49, "start": 42, "end": 85 },
+              { "line": 49, "start": 59, "end": 71 }
+            ],
             "leaves": [ { "kind": "LocalReturn", "name": "" } ],
             "features": [ { "via": "tito" }, { "always-via": "obscure" } ]
           }
@@ -115,7 +132,13 @@
         "taint": [
           {
             "decl": null,
-            "tito": [ { "line": 49, "start": 56, "end": 57 } ],
+            "tito": [
+              { "line": 49, "start": 15, "end": 24 },
+              { "line": 49, "start": 20, "end": 23 },
+              { "line": 49, "start": 25, "end": 87 },
+              { "line": 49, "start": 42, "end": 85 },
+              { "line": 49, "start": 56, "end": 57 }
+            ],
             "leaves": [ { "kind": "LocalReturn", "name": "" } ],
             "features": [ { "via": "tito" }, { "via": "obscure" } ]
           }
@@ -147,6 +170,8 @@
             },
             "leaves": [ { "kind": "GetAttr", "name": "getattr" } ],
             "features": [
+              { "always-via": "tito-broadening" },
+              { "always-via": "broadening" },
               { "via": "tito" },
               { "via": "object" },
               { "always-via": "obscure" }
@@ -207,6 +232,8 @@
             },
             "leaves": [ { "kind": "GetAttr", "name": "getattr" } ],
             "features": [
+              { "always-via": "tito-broadening" },
+              { "always-via": "broadening" },
               { "via": "tito" },
               { "via": "object" },
               { "always-via": "obscure" }
@@ -245,6 +272,7 @@
               "start": 21,
               "end": 36
             },
+            "tito": [ { "line": 79, "start": 21, "end": 36 } ],
             "leaves": [ { "kind": "Test", "name": "__test_source" } ],
             "features": [
               { "always-via": "special_source" },
@@ -261,6 +289,7 @@
         "taint": [
           {
             "decl": null,
+            "tito": [ { "line": 79, "start": 16, "end": 19 } ],
             "leaves": [ { "kind": "LocalReturn", "name": "" } ],
             "features": [ { "always-via": "obscure" } ]
           }

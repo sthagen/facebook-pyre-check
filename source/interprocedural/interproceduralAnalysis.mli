@@ -7,6 +7,27 @@
 
 module Kind = AnalysisKind
 
+type initialize_result = {
+  initial_models: InterproceduralResult.model_t Callable.Map.t;
+  skip_overrides: Ast.Reference.Set.t;
+}
+
+(* Calls init on all specified analyses to get initial models *)
+val initialize
+  :  Kind.abstract list ->
+  static_analysis_configuration:Configuration.StaticAnalysis.t ->
+  scheduler:Scheduler.t ->
+  environment:Analysis.TypeEnvironment.ReadOnly.t ->
+  functions:Callable.t list ->
+  stubs:Callable.t list ->
+  initialize_result
+
+val record_initial_models
+  :  functions:Callable.t list ->
+  stubs:Callable.t list ->
+  InterproceduralResult.model_t Callable.Map.t ->
+  unit
+
 type expensive_callable = {
   time_to_analyze_in_ms: int;
   callable: Callable.t;
@@ -36,41 +57,15 @@ val compute_fixpoint
   Fixpoint.Epoch.t ->
   int
 
-val externalize
-  :  filename_lookup:(Ast.Reference.t -> string option) ->
-  AnalysisKind.abstract ->
-  Callable.t ->
-  Yojson.Safe.json list
-
-val extract_errors : Scheduler.t -> Callable.t list -> InterproceduralError.t list
-
-val save_results
-  :  configuration:Configuration.StaticAnalysis.t ->
-  filename_lookup:(Ast.Reference.t -> string option) ->
-  analyses:AnalysisKind.abstract list ->
-  skipped_overrides:Ast.Reference.t list ->
-  Callable.t list ->
-  unit
-
-type initialize_result = {
-  initial_models: InterproceduralResult.model_t Callable.Map.t;
-  skip_overrides: Ast.Reference.Set.t;
-}
-
-(* Calls init on all specified analyses to get initial models *)
-val initialize
-  :  Kind.abstract list ->
-  configuration:Yojson.Safe.json ->
-  scheduler:Scheduler.t ->
-  environment:Analysis.TypeEnvironment.ReadOnly.t ->
-  functions:Callable.t list ->
-  stubs:Callable.t list ->
-  initialize_result
-
-val record_initial_models
-  :  functions:Callable.t list ->
-  stubs:Callable.t list ->
-  InterproceduralResult.model_t Callable.Map.t ->
-  unit
-
 val strip_for_callsite : InterproceduralResult.model_t -> InterproceduralResult.model_t
+
+val report_results
+  :  scheduler:Scheduler.t ->
+  static_analysis_configuration:Configuration.StaticAnalysis.t ->
+  filename_lookup:(Ast.Reference.t -> string option) ->
+  analyses:Kind.abstract list ->
+  callables:Callable.Set.t ->
+  skipped_overrides:Ast.Reference.t list ->
+  fixpoint_timer:Timer.t ->
+  fixpoint_iterations:int option ->
+  Yojson.Safe.json list

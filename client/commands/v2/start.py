@@ -10,6 +10,7 @@ import enum
 import json
 import logging
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -23,6 +24,7 @@ from typing import (
     Mapping,
     Optional,
     Sequence,
+    Set,
     Tuple,
     Union,
 )
@@ -39,11 +41,20 @@ from . import server_connection, server_event, stop, remote_logging
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
+ARTIFACT_ROOT_NAME: str = "link_trees"
 SERVER_LOG_FILE_FORMAT: str = "server.stderr.%Y_%m_%d_%H_%M_%S_%f"
+
+# NOTE(grievejia): This is a very restricted form of target specification used
+# for a hacky heuristic. We should consider moving away from it in the future.
+# Do NOT use it for general-purpose target parsing.
+BUCK_TARGET_PATTERN: str = (
+    r"[A-Za-z0-9._-]*//[A-Za-z0-9/._-]+((:[A-Za-z0-9_/.=,@~+-]+)|(/\.\.\.))"
+)
 
 
 class MatchPolicy(enum.Enum):
     BASE_NAME = "base_name"
+    EXTENSION = "extension"
     FULL_PATH = "full_path"
 
     def __str__(self) -> str:
@@ -97,7 +108,22 @@ class LoadSavedStateFromProject:
         )
 
 
-SavedStateAction = Union[LoadSavedStateFromFile, LoadSavedStateFromProject]
+@dataclasses.dataclass(frozen=True)
+class StoreSavedStateToFile:
+    shared_memory_path: str
+
+    def serialize(self) -> Tuple[str, Dict[str, str]]:
+        return (
+            "save_to_file",
+            {
+                "shared_memory_path": self.shared_memory_path,
+            },
+        )
+
+
+SavedStateAction = Union[
+    LoadSavedStateFromFile, LoadSavedStateFromProject, StoreSavedStateToFile
+]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -110,6 +136,73 @@ class RemoteLogging:
 
 
 @dataclasses.dataclass(frozen=True)
+class SimpleSourcePath:
+    elements: Sequence[configuration_module.SearchPathElement] = dataclasses.field(
+        default_factory=list
+    )
+
+    def serialize(self) -> Dict[str, object]:
+        return {
+            "kind": "simple",
+            "paths": [element.command_line_argument() for element in self.elements],
+        }
+
+    def get_checked_directory_allowlist(self) -> Set[str]:
+        return {element.path() for element in self.elements}
+
+
+def get_checked_directory_for_target(target: str) -> Optional[str]:
+    match = re.search(BUCK_TARGET_PATTERN, target)
+    if match is None:
+        return None
+
+    result = match[0]
+    root_index = result.find("//")
+    if root_index != -1:
+        result = result[root_index + 2 :]
+    result = result.replace("/...", "")
+    result = result.split(":")[0]
+    return result
+
+
+@dataclasses.dataclass(frozen=True)
+class BuckSourcePath:
+    source_root: Path
+    artifact_root: Path
+    targets: Sequence[str] = dataclasses.field(default_factory=list)
+    mode: Optional[str] = None
+    isolation_prefix: Optional[str] = None
+
+    def serialize(self) -> Dict[str, object]:
+        mode = self.mode
+        isolation_prefix = self.isolation_prefix
+        return {
+            "kind": "buck",
+            "targets": self.targets,
+            **({} if mode is None else {"mode": mode}),
+            **(
+                {}
+                if isolation_prefix is None
+                else {"isolation_prefix": isolation_prefix}
+            ),
+            "source_root": str(self.source_root),
+            "artifact_root": str(self.artifact_root),
+        }
+
+    def get_checked_directory_allowlist(self) -> Set[str]:
+        return {
+            str(self.source_root / directory)
+            for directory in (
+                get_checked_directory_for_target(target) for target in self.targets
+            )
+            if directory is not None
+        }
+
+
+SourcePath = Union[SimpleSourcePath, BuckSourcePath]
+
+
+@dataclasses.dataclass(frozen=True)
 class Arguments:
     """
     Data structure for configuration options the backend server can recognize.
@@ -118,6 +211,7 @@ class Arguments:
 
     log_path: str
     global_root: str
+    source_paths: SourcePath
 
     additional_logging_sections: Sequence[str] = dataclasses.field(default_factory=list)
     checked_directory_allowlist: Sequence[str] = dataclasses.field(default_factory=list)
@@ -131,15 +225,15 @@ class Arguments:
     number_of_workers: int = 1
     parallel: bool = True
     profiling_output: Optional[Path] = None
+    python_version: configuration_module.PythonVersion = (
+        configuration_module.PythonVersion(major=3)
+    )
     remote_logging: Optional[RemoteLogging] = None
     saved_state_action: Optional[SavedStateAction] = None
     search_paths: Sequence[configuration_module.SearchPathElement] = dataclasses.field(
         default_factory=list
     )
     show_error_traces: bool = False
-    source_paths: Sequence[configuration_module.SearchPathElement] = dataclasses.field(
-        default_factory=list
-    )
     store_type_check_resolution: bool = False
     strict: bool = False
     taint_models_path: Sequence[str] = dataclasses.field(default_factory=list)
@@ -154,9 +248,7 @@ class Arguments:
     def serialize(self) -> Dict[str, Any]:
         local_root = self.local_root
         return {
-            "source_paths": [
-                element.command_line_argument() for element in self.source_paths
-            ],
+            "source_paths": self.source_paths.serialize(),
             "search_paths": [
                 element.command_line_argument() for element in self.search_paths
             ],
@@ -175,6 +267,11 @@ class Arguments:
             "taint_model_paths": self.taint_models_path,
             "debug": self.debug,
             "strict": self.strict,
+            "python_version": {
+                "major": self.python_version.major,
+                "minor": self.python_version.minor,
+                "micro": self.python_version.micro,
+            },
             "show_error_traces": self.show_error_traces,
             "critical_files": [
                 critical_file.serialize() for critical_file in self.critical_files
@@ -253,11 +350,14 @@ def get_saved_state_action(
     start_arguments: command_arguments.StartArguments,
     relative_local_root: Optional[str] = None,
 ) -> Optional[SavedStateAction]:
-    # Loading states from file takes precedence
-    saved_state_file = start_arguments.load_initial_state_from
-    if saved_state_file is not None:
+    saved_state_output_path = start_arguments.save_initial_state_to
+    if saved_state_output_path is not None:
+        return StoreSavedStateToFile(shared_memory_path=saved_state_output_path)
+
+    saved_state_input_path = start_arguments.load_initial_state_from
+    if saved_state_input_path is not None:
         return LoadSavedStateFromFile(
-            shared_memory_path=saved_state_file,
+            shared_memory_path=saved_state_input_path,
             changed_files_path=start_arguments.changed_files_path,
         )
 
@@ -279,6 +379,60 @@ def find_watchman_root(base: Path) -> Optional[Path]:
     )
 
 
+def find_buck_root(base: Path) -> Optional[Path]:
+    return find_directories.find_parent_directory_containing_file(base, ".buckconfig")
+
+
+def get_source_path(configuration: configuration_module.Configuration) -> SourcePath:
+    source_directories = configuration.source_directories
+    targets = configuration.targets
+
+    if source_directories is not None and targets is None:
+        elements: Sequence[
+            configuration_module.SearchPathElement
+        ] = configuration.get_existent_source_directories()
+        if len(elements) == 0:
+            LOG.warning("Pyre did not find an existent source directory.")
+        return SimpleSourcePath(elements)
+
+    if targets is not None and source_directories is None:
+        if len(targets) == 0:
+            LOG.warning("Pyre did not find any targets to check.")
+
+        search_base = Path(configuration.project_root)
+        artifact_root = configuration.dot_pyre_directory / ARTIFACT_ROOT_NAME
+
+        relative_local_root = configuration.relative_local_root
+        if relative_local_root is not None:
+            search_base = search_base / relative_local_root
+            artifact_root = artifact_root / relative_local_root
+
+        source_root = find_buck_root(search_base)
+        if source_root is None:
+            raise configuration_module.InvalidConfiguration(
+                "Cannot find a buck root for the specified targets. "
+                + "Make sure the project is covered by a `.buckconfig` file."
+            )
+
+        return BuckSourcePath(
+            source_root=source_root,
+            artifact_root=artifact_root,
+            targets=targets,
+            mode=configuration.buck_mode,
+            isolation_prefix=configuration.isolation_prefix,
+        )
+
+    if source_directories is None and targets is not None:
+        raise configuration_module.InvalidConfiguration(
+            "`source_directory` and `targets` are mutually exclusive"
+        )
+
+    raise configuration_module.InvalidConfiguration(
+        "Cannot find any source files to analyze. "
+        + "Either `source_directory` or `targets` must be specified."
+    )
+
+
 def get_profiling_log_path(log_directory: Path) -> Path:
     return log_directory / "profiling.log"
 
@@ -295,13 +449,7 @@ def create_server_arguments(
     nonexistent directories. It is idempotent though, since it does not alter
     any filesystem state.
     """
-    source_directories: Sequence[
-        configuration_module.SearchPathElement
-    ] = configuration.get_existent_source_directories()
-    if len(source_directories) == 0:
-        raise configuration_module.InvalidConfiguration(
-            "New server does not have buck support yet."
-        )
+    source_paths = get_source_path(configuration)
 
     logging_sections = start_arguments.logging_sections
     additional_logging_sections = (
@@ -330,14 +478,14 @@ def create_server_arguments(
         else None
     )
 
-    check_directory_allowlist = [
-        search_path.path() for search_path in source_directories
-    ] + configuration.get_existent_do_not_ignore_errors_in_paths()
     return Arguments(
         log_path=configuration.log_directory,
         global_root=configuration.project_root,
         additional_logging_sections=additional_logging_sections,
-        checked_directory_allowlist=check_directory_allowlist,
+        checked_directory_allowlist=(
+            list(source_paths.get_checked_directory_allowlist())
+            + configuration.get_existent_do_not_ignore_errors_in_paths()
+        ),
         checked_directory_blocklist=(
             configuration.get_existent_ignore_all_errors_paths()
         ),
@@ -350,6 +498,7 @@ def create_server_arguments(
         number_of_workers=configuration.get_number_of_workers(),
         parallel=not start_arguments.sequential,
         profiling_output=profiling_output,
+        python_version=configuration.get_python_version(),
         remote_logging=remote_logging,
         saved_state_action=None
         if start_arguments.no_saved_state
@@ -358,7 +507,7 @@ def create_server_arguments(
         ),
         search_paths=configuration.get_existent_search_paths(),
         show_error_traces=start_arguments.show_error_traces,
-        source_paths=source_directories,
+        source_paths=source_paths,
         store_type_check_resolution=start_arguments.store_type_check_resolution,
         strict=configuration.strict,
         taint_models_path=configuration.taint_models_path,
@@ -503,8 +652,7 @@ def server_argument_file(server_arguments: Arguments) -> Iterator[Path]:
         yield Path(argument_file.name)
 
 
-@remote_logging.log_usage(command_name="start")
-def run(
+def run_start(
     configuration: configuration_module.Configuration,
     start_arguments: command_arguments.StartArguments,
 ) -> commands.ExitCode:
@@ -545,3 +693,11 @@ def run(
                     wait_on_initialization=start_arguments.wait_on_initialization
                 ),
             )
+
+
+@remote_logging.log_usage(command_name="start")
+def run(
+    configuration: configuration_module.Configuration,
+    start_arguments: command_arguments.StartArguments,
+) -> commands.ExitCode:
+    return run_start(configuration, start_arguments)

@@ -141,6 +141,7 @@
               "start": 8,
               "end": 23
             },
+            "tito": [ { "line": 59, "start": 13, "end": 14 } ],
             "leaves": [ { "kind": "Test", "name": "__test_source" } ],
             "features": [
               { "always-type": "scalar" },
@@ -203,6 +204,7 @@
               "port": "result",
               "length": 1
             },
+            "tito": [ { "line": 69, "start": 22, "end": 23 } ],
             "leaves": [ { "kind": "Test", "name": "__test_source" } ],
             "features": [
               { "always-type": "scalar" },
@@ -235,6 +237,116 @@
       { "always-via": "special_source" },
       { "always-via": "special_sink" },
       { "always-via": "obscure" }
+    ]
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "features.issue_via_in",
+    "callable_line": 102,
+    "code": 5002,
+    "line": 104,
+    "start": 16,
+    "end": 24,
+    "filename": "features.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "root": {
+              "filename": "features.py",
+              "line": 103,
+              "start": 8,
+              "end": 23
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_source" } ],
+            "features": [
+              { "always-type": "scalar" },
+              { "always-type": "bool" },
+              { "always-via": "special_source" }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "root": {
+              "filename": "features.py",
+              "line": 104,
+              "start": 16,
+              "end": 24
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      }
+    ],
+    "features": [
+      { "always-type": "scalar" },
+      { "always-type": "bool" },
+      { "always-via": "special_source" },
+      { "always-via": "special_sink" }
+    ]
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "features.issue_via_in",
+    "callable_line": 102,
+    "code": 5002,
+    "line": 105,
+    "start": 16,
+    "end": 24,
+    "filename": "features.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "root": {
+              "filename": "features.py",
+              "line": 103,
+              "start": 8,
+              "end": 23
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_source" } ],
+            "features": [
+              { "always-type": "scalar" },
+              { "always-type": "bool" },
+              { "always-via": "special_source" }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "root": {
+              "filename": "features.py",
+              "line": 105,
+              "start": 16,
+              "end": 24
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      }
+    ],
+    "features": [
+      { "always-type": "scalar" },
+      { "always-type": "bool" },
+      { "always-via": "special_source" },
+      { "always-via": "special_sink" }
     ]
   }
 }
@@ -460,6 +572,7 @@
         "taint": [
           {
             "decl": null,
+            "tito": [ { "line": 46, "start": 15, "end": 16 } ],
             "leaves": [ { "kind": "LocalReturn", "name": "" } ],
             "features": [
               { "always-type": "scalar" },

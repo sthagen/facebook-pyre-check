@@ -134,7 +134,7 @@ let test_harder_registrations context =
     import typing
 
     X = int
-    Y: typing.TypeAlias = "X"
+    Y: typing_extensions.TypeAlias = "X"
   |}
     "test.Y"
     ~expected_alias:(Some (Type.TypeAlias Type.integer));
@@ -257,6 +257,31 @@ let test_harder_registrations context =
                              Type.parametric "typing.Sequence" [Single (Type.Primitive "test.X")];
                            ]);
                   ]))));
+  assert_registers
+    {|
+    from typing import Generic, TypeVar
+    from pyre_extensions import TypeVarTuple
+    from typing_extensions import Literal as L
+
+    T = TypeVar("T")
+    Ts = TypeVarTuple("Ts")
+
+    class Tensor(Generic[T, *Ts]): ...
+
+    FloatTensor = Tensor[float, *Ts]
+  |}
+    "test.FloatTensor"
+    ~expected_alias:
+      (Some
+         (Type.TypeAlias
+            (Type.parametric
+               "test.Tensor"
+               [
+                 Single Type.float;
+                 Unpacked
+                   (Type.OrderedTypes.Concatenation.create_unpackable
+                      (Type.Variable.Variadic.Tuple.create "test.Ts"));
+               ])));
   ()
 
 

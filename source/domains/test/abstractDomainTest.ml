@@ -8,6 +8,10 @@
 open Core_kernel
 open OUnit2
 open AbstractDomain
+module MapPoly = Map.Poly
+module Fn = Core_kernel.Fn
+
+let ( = ) = Caml.( = )
 
 let string_list_printer elements = String.concat ~sep:"," elements
 
@@ -15,6 +19,10 @@ let int_list_printer elements = ListLabels.map ~f:Int.to_string elements |> Stri
 
 let string_pair_list_printer elements =
   List.map elements ~f:(fun (s1, s2) -> Format.sprintf "(%s,%s)" s1 s2) |> String.concat ~sep:", "
+
+
+let int_string_pair_list_printer elements =
+  List.map elements ~f:(fun (s1, s2) -> Format.sprintf "(%d,%s)" s1 s2) |> String.concat ~sep:", "
 
 
 let int_string_list_list_printer elements =
@@ -41,8 +49,6 @@ let rec list_equal a b ~equal =
   | _ -> false
 
 
-module MapPoly = Map.Poly
-
 module type AbstractDomainUnderTest = sig
   include AbstractDomain.S
 
@@ -63,6 +69,8 @@ module type AbstractDomainUnderTest = sig
   val test_create : test_ctxt -> unit
 
   val test_additional : test_ctxt -> unit
+
+  val test_context : test_ctxt -> unit
 end
 
 (* General functor that tests abstract domains. *)
@@ -143,10 +151,9 @@ module TestAbstractDomain (Domain : AbstractDomainUnderTest) = struct
       assert_bool
         (Format.sprintf "%s: difference is less or equal to original" title)
         (Domain.less_or_equal ~left:value ~right:from);
-      if not (Domain.is_bottom value) then
-        assert_bool
-          (Format.sprintf "%s: original is less or equal to reconstitued" title)
-          (Domain.less_or_equal ~left:from ~right:reconstituted)
+      assert_bool
+        (Format.sprintf "%s: original is less or equal to reconstitued" title)
+        (Domain.less_or_equal ~left:from ~right:reconstituted)
     in
     let v1_minus_v2 = Domain.subtract v2 ~from:v1 in
     check_difference ~title:"v1_minus_v2" v1_minus_v2 ~from:v1 ~removed:v2;
@@ -168,14 +175,24 @@ module TestAbstractDomain (Domain : AbstractDomainUnderTest) = struct
       if not (Domain.less_or_equal ~left:a ~right:b && Domain.less_or_equal ~left:b ~right:a) then
         assert_equal a b ~printer:Domain.show
     in
-    let ident = Domain.transform Domain.Self (Map transform) v in
-    let added = Domain.transform Domain.Self (Add v) Domain.bottom in
-    let filtered = Domain.transform Domain.Self (Filter (fun _ -> false)) v in
-    let kept = Domain.transform Domain.Self (Filter (fun _ -> true)) v in
+    let ident = Domain.transform Domain.Self Map ~f:transform v in
+    let added = Domain.transform Domain.Self Add ~f:v Domain.bottom in
+    let filtered = Domain.transform Domain.Self Filter ~f:(fun _ -> false) v in
+    let kept = Domain.transform Domain.Self Filter ~f:(fun _ -> true) v in
     assert_bool "v <> ident" (phys_equal v ident);
     assert_equivalent "v <> bottom |> add v" v added;
     assert_equivalent "bottom <> filtered v" Domain.bottom filtered;
     assert_equivalent "v <> kept v" v kept
+
+
+  let test_self_context v _ =
+    let check_id context value =
+      assert_bool "self context not equal to self" (phys_equal context value);
+      assert_bool "self context not equal to value" (phys_equal context v);
+      value
+    in
+    let r = Domain.transform Domain.Self (Context (Domain.Self, Map)) ~f:check_id v in
+    assert_bool "identity transform not physically equal" (phys_equal r v)
 
 
   (* The test suite created by this functor. *)
@@ -183,10 +200,12 @@ module TestAbstractDomain (Domain : AbstractDomainUnderTest) = struct
     let create_test value ~f = Domain.show value >:: f value in
     let test_basic_values = List.map values ~f:(create_test ~f:test_basic) in
     let test_self_values = List.map values ~f:(create_test ~f:test_self) in
+    let test_self_contexts = List.map values ~f:(create_test ~f:test_self_context) in
     let test_joins = test_cartesian ~title:"join" ~f:test_join_conformance values in
     let test_subtract = test_cartesian ~title:"subtract" ~f:test_subtract_conformance values in
     test_basic_values
     |> List.rev_append test_self_values
+    |> List.rev_append test_self_contexts
     |> List.rev_append ["test_bottom_top" >:: test_bottom_top]
     |> List.rev_append test_diff_unrelated
     |> List.rev_append test_joins
@@ -201,6 +220,7 @@ module TestAbstractDomain (Domain : AbstractDomainUnderTest) = struct
            "test_partition" >:: Domain.test_partition;
            "test_create" >:: Domain.test_create;
            "test_additional" >:: Domain.test_additional;
+           "test_context" >:: Domain.test_context;
          ]
 end
 
@@ -255,21 +275,21 @@ module StringSet = struct
     let test ~initial ~by ~f ~expected =
       let element_set = of_list initial in
       let actual =
-        transform by (Map f) element_set
+        transform by Map ~f element_set
         |> fold Element ~init:[] ~f:List.cons
         |> List.sort ~compare:String.compare
       in
       assert_equal expected actual ~printer:string_list_printer
     in
     test ~initial:["a"; "b"] ~by:Element ~f:(fun x -> "t." ^ x) ~expected:["t.a"; "t.b"];
-    test ~initial:["a"; "b"] ~by:Set ~f:(fun set -> "c" :: set) ~expected:["a"; "b"; "c"]
+    test ~initial:["a"; "b"] ~by:Self ~f:(fun set -> add "c" set) ~expected:["a"; "b"; "c"]
 
 
   let test_partition _ =
     let test ~initial ~f ~expected =
       let element_set = of_list initial in
       let actual =
-        partition Element ~f element_set
+        partition Element By ~f element_set
         |> MapPoly.fold ~init:[] ~f:(fun ~key ~data result ->
                let elements =
                  fold Element ~init:[] ~f:List.cons data |> List.sort ~compare:String.compare
@@ -281,12 +301,15 @@ module StringSet = struct
     in
     test
       ~initial:["abc"; "bef"; "g"]
-      ~f:(fun x -> Some (String.length x))
+      ~f:(fun x -> String.length x)
       ~expected:[1, ["g"]; 3, ["abc"; "bef"]]
 
 
   let test_create _ =
-    assert_equal (of_list ["a"; "b"; "c"]) (create [Part (Set, ["a"; "b"; "c"])]) ~printer:show;
+    assert_equal
+      (of_list ["a"; "b"; "c"])
+      (create [Part (Self, of_list ["a"; "b"; "c"])])
+      ~printer:show;
     assert_equal
       (of_list ["a"; "b"; "c"])
       (create [Part (Element, "a"); Part (Element, "b"); Part (Element, "c")])
@@ -298,6 +321,9 @@ module StringSet = struct
       assert_equal "Set(strings)" (introspect Structure |> String.concat ~sep:"\n") ~printer:Fn.id
     in
     ()
+
+
+  let test_context _ = ()
 end
 
 module TestStringSet = TestAbstractDomain (StringSet)
@@ -336,25 +362,21 @@ module InvertedStringSet = struct
     let test ~initial ~by ~f ~expected =
       let element_set = of_elements initial in
       let actual =
-        transform by (Map f) element_set
+        transform by Map ~f element_set
         |> fold Element ~init:[] ~f:List.cons
         |> List.sort ~compare:String.compare
       in
       assert_equal expected actual ~printer:string_list_printer
     in
     test ~initial:["a"; "b"] ~by:Element ~f:(fun x -> "t." ^ x) ~expected:["t.a"; "t.b"];
-    test
-      ~initial:["a"; "b"]
-      ~by:Set
-      ~f:(fun set -> { set with elements = "c" :: set.elements })
-      ~expected:["a"; "b"; "c"]
+    test ~initial:["a"; "b"] ~by:Self ~f:(fun set -> add "c" set) ~expected:["a"; "b"; "c"]
 
 
   let test_partition _ =
     let test ~initial ~f ~expected =
       let element_set = of_elements initial in
       let actual =
-        partition Element ~f element_set
+        partition Element By ~f element_set
         |> MapPoly.fold ~init:[] ~f:(fun ~key ~data result ->
                let elements =
                  fold Element ~init:[] ~f:List.cons data |> List.sort ~compare:String.compare
@@ -366,14 +388,14 @@ module InvertedStringSet = struct
     in
     test
       ~initial:["abc"; "bef"; "g"]
-      ~f:(fun x -> Some (String.length x))
+      ~f:(fun x -> String.length x)
       ~expected:[1, ["g"]; 3, ["abc"; "bef"]]
 
 
   let test_create _ =
     assert_equal
       (of_elements ["a"; "b"; "c"])
-      (create [Part (Set, { is_universe = false; elements = ["a"; "b"; "c"] })])
+      (create [Part (Self, of_elements ["a"; "b"; "c"])])
       ~printer:show;
     assert_equal
       (of_elements ["a"; "b"; "c"])
@@ -397,6 +419,9 @@ module InvertedStringSet = struct
     let b = of_elements ["b"; "c"; "d"] in
     let ajoinb = join a b in
     assert_equivalent (of_elements ["b"; "c"]) ajoinb
+
+
+  let test_context _ = ()
 end
 
 module TestInvertedStringSet = TestAbstractDomain (InvertedStringSet)
@@ -442,7 +467,7 @@ module ToppedStringSet = struct
     let test ~initial ~by ~f ~expected =
       let element_set = of_list initial in
       let actual =
-        transform by (Map f) element_set
+        transform by Map ~f element_set
         |> fold Element ~init:[] ~f:List.cons
         |> List.sort ~compare:String.compare
       in
@@ -451,17 +476,15 @@ module ToppedStringSet = struct
     test ~initial:["a"; "b"] ~by:Element ~f:(fun x -> "t." ^ x) ~expected:["t.a"; "t.b"];
     test
       ~initial:["a"]
-      ~by:Set
+      ~by:Self
       ~f:(function
-        | Top -> Top
-        | ASet set -> ASet ("b" :: set))
+        | existing -> add "b" existing)
       ~expected:["a"; "b"];
     test
       ~initial:["a"; "b"]
-      ~by:Set
+      ~by:Self
       ~f:(function
-        | Top -> Top
-        | ASet set -> ASet ("c" :: set))
+        | existing -> add "c" existing)
       ~expected:[]
 
 
@@ -470,12 +493,15 @@ module ToppedStringSet = struct
   let test_partition _ = ()
 
   let test_create _ =
-    assert_equal (of_list ["a"; "b"; "c"]) (create [Part (Set, ASet ["a"; "b"; "c"])]) ~printer:show;
+    assert_equal
+      (of_list ["a"; "b"; "c"])
+      (create [Part (Self, of_list ["a"; "b"; "c"])])
+      ~printer:show;
     assert_equal
       (of_list ["a"; "b"; "c"])
       (create [Part (Element, "a"); Part (Element, "b"); Part (Element, "c")])
       ~printer:show;
-    assert_equal (of_list ["a"; "b"]) (create [Part (Set, ASet ["a"; "b"])]) ~printer:show;
+    assert_equal (of_list ["a"; "b"]) (create [Part (Self, of_list ["a"; "b"])]) ~printer:show;
     assert_equal
       (of_list ["a"; "b"])
       (create [Part (Element, "a"); Part (Element, "b")])
@@ -490,6 +516,9 @@ module ToppedStringSet = struct
         ~printer:Fn.id
     in
     ()
+
+
+  let test_context _ = ()
 end
 
 module TestToppedStringSet = TestAbstractDomain (ToppedStringSet)
@@ -499,8 +528,6 @@ module IntToStringSet = struct
     AbstractMapDomain.Make
       (struct
         include Int
-
-        let show = Int.to_string
 
         let absence_implicitly_maps_to_bottom = true
       end)
@@ -580,7 +607,7 @@ module IntToStringSet = struct
     let test ~initial ~by:part ~f ~expected ~to_result =
       let map = build_map initial in
       let result =
-        transform part (Map f) map
+        transform part Map ~f map
         |> fold part ~f:(fun element list -> to_result element :: list) ~init:[]
       in
       assert_equal expected result ~printer:string_list_printer
@@ -625,7 +652,7 @@ module IntToStringSet = struct
           let elements = fold Key ~init:[] ~f:List.cons data |> List.sort ~compare:Int.compare in
           (key, elements) :: result
         in
-        partition part map ~f
+        partition part By ~f map
         |> MapPoly.fold ~init:[] ~f:extract_keys
         |> List.sort ~compare:Poly.compare
       in
@@ -634,18 +661,18 @@ module IntToStringSet = struct
     test
       ~initial:[0, ["a"; "b"]; 1, ["b"; "c"]; 2, ["c"; "d"]; 3, []]
       ~by:StringSet.Element
-      ~f:(fun x -> Some x)
+      ~f:Fn.id
       ~expected_keys:["a", [0]; "b", [0; 1]; "c", [1; 2]; "d", [2]];
     test
       ~initial:[0, ["a"; "b"]; 1, ["b"; "c"]; 2, ["c"; "d"]; 3, []]
       ~by:Map.Key
-      ~f:(fun key -> Bool.to_string (key <= 1) |> Option.some)
+      ~f:(fun key -> Bool.to_string (key <= 1))
       ~expected_keys:["false", [2]; "true", [0; 1]];
     test
       ~initial:[0, ["a"; "b"]; 1, ["b"; "c"; "d"]; 2, ["c"; "d"]; 3, []]
       ~by:Map.KeyValue
       ~f:(fun (key, set) ->
-        Format.sprintf "%b:%d" (key <= 1) (StringSet.elements set |> List.length) |> Option.some)
+        Format.sprintf "%b:%d" (key <= 1) (StringSet.elements set |> List.length))
       ~expected_keys:["false:2", [2]; "true:2", [0]; "true:3", [1]]
 
 
@@ -655,13 +682,13 @@ module IntToStringSet = struct
       (create
          [
            Part (Key, 0);
-           Part (StringSet.Set, ["a"; "b"]);
+           Part (StringSet.Self, StringSet.of_list ["a"; "b"]);
            Part (Key, 1);
-           Part (StringSet.Set, ["b"; "c"]);
+           Part (StringSet.Self, StringSet.of_list ["b"; "c"]);
            Part (Key, 2);
-           Part (StringSet.Set, ["c"; "d"]);
+           Part (StringSet.Self, StringSet.of_list ["c"; "d"]);
            Part (Key, 3);
-           Part (StringSet.Set, []);
+           Part (StringSet.Self, StringSet.of_list []);
          ])
       ~printer:show
 
@@ -679,19 +706,19 @@ module IntToStringSet = struct
         ~printer:Fn.id
     in
     let v = build_map [0, ["a"; "b"]; 1, ["b"; "c"]; 2, ["c"; "d"]; 3, []] in
-    let v1 = transform Key (Filter (fun i -> i <> 1)) v in
-    let v2 = transform KeyValue (Add (0, StringSet.of_list ["x"; "y"])) v1 in
+    let v1 = transform Key Filter ~f:(fun i -> i <> 1) v in
+    let v2 = transform KeyValue Add ~f:(0, StringSet.of_list ["x"; "y"]) v1 in
     let () =
       assert_equivalent
         v1
         (create
            [
              Part (Key, 0);
-             Part (StringSet.Set, ["a"; "b"]);
+             Part (StringSet.Self, StringSet.of_list ["a"; "b"]);
              Part (Key, 2);
-             Part (StringSet.Set, ["c"; "d"]);
+             Part (StringSet.Self, StringSet.of_list ["c"; "d"]);
              Part (Key, 3);
-             Part (StringSet.Set, []);
+             Part (StringSet.Self, StringSet.of_list []);
            ])
     in
     let () =
@@ -700,25 +727,80 @@ module IntToStringSet = struct
         (create
            [
              Part (Key, 0);
-             Part (StringSet.Set, ["a"; "b"; "x"; "y"]);
+             Part (StringSet.Self, StringSet.of_list ["a"; "b"; "x"; "y"]);
              Part (Key, 2);
-             Part (StringSet.Set, ["c"; "d"]);
+             Part (StringSet.Self, StringSet.of_list ["c"; "d"]);
              Part (Key, 3);
-             Part (StringSet.Set, []);
+             Part (StringSet.Self, StringSet.of_list []);
            ])
     in
-    ()
+    let assert_show ~expected map = assert_equal ~printer:Fn.id expected (show map) in
+    assert_show ~expected:"{}" (build_map []);
+    assert_show ~expected:"{0 -> [a]}" (build_map [0, ["a"]]);
+    assert_show ~expected:"{\n   0 -> [a]\n   1 -> [b]\n}" (build_map [0, ["a"]; 1, ["b"]]);
+    assert_show
+      ~expected:"{\n   0 -> [a]\n   1 -> [b]\n   2 -> [c]\n}"
+      (build_map [0, ["a"]; 1, ["b"]; 2, ["c"]]);
+    assert_bool
+      "of_list mapping to bottom removed in strict map"
+      (of_list [0, StringSet.bottom] = bottom)
+
+
+  let assert_equivalent a b =
+    if not (less_or_equal ~left:a ~right:b && less_or_equal ~left:b ~right:a) then
+      assert_equal a b ~printer:show
+
+
+  let test_context _ =
+    let v = build_map [0, ["a"; "b"]; 1, ["b"; "c"]; 2, ["c"; "d"]; 3, []] in
+    let key_values key value sofar = (key, value) :: sofar in
+    assert_equal
+      ~printer:int_string_pair_list_printer
+      (List.rev [0, "a"; 0, "b"; 1, "b"; 1, "c"; 2, "c"; 2, "d"])
+      (reduce StringSet.Element ~using:(Context (Key, Acc)) ~f:key_values ~init:[] v);
+    let filter key value = key = 1 && value = "b" in
+    let concat key value = Format.sprintf "%d:%s" key value in
+    assert_equivalent
+      (build_map [1, ["b"]])
+      (transform StringSet.Element (Context (Key, Filter)) ~f:(fun key -> filter key) v);
+    assert_equivalent
+      (build_map [1, ["1:b"]])
+      (transform
+         StringSet.Element
+         (Context (Key, Seq (Filter, Map)))
+         ~f:(fun key -> filter key, concat key)
+         v);
+    (* same, but inefficient as we traverse map twice *)
+    assert_equivalent
+      (build_map [1, ["1:b"]])
+      (transform
+         Self
+         (Seq
+            ( Context (Key, Nest (StringSet.Element, Filter)),
+              Context (Key, Nest (StringSet.Element, Map)) ))
+         ~f:(filter, concat)
+         v);
+    (* test multiple folds over different parts *)
+    let acc_ints i acc = Format.sprintf "%d %s" i acc in
+    let acc_strings s acc = Format.sprintf "%s %s" s acc in
+    assert_equal
+      ~printer:Fn.id
+      "d c c b b a 2 1 0 "
+      (reduce
+         Self
+         ~using:(Seq (Nest (Key, Acc), Nest (StringSet.Element, Acc)))
+         ~f:(acc_ints, acc_strings)
+         ~init:""
+         v)
 end
 
 module TestIntToStringSet = TestAbstractDomain (IntToStringSet)
 
-module StrictIntToStringSet = struct
+module NonStrictIntToStringSet = struct
   module Map =
     AbstractMapDomain.Make
       (struct
         include Int
-
-        let show = Int.to_string
 
         let absence_implicitly_maps_to_bottom = false
       end)
@@ -768,7 +850,7 @@ module StrictIntToStringSet = struct
     let test ~initial ~by:part ~f ~expected ~to_result =
       let map = build_map initial in
       let result =
-        transform part (Map f) map
+        transform part Map ~f map
         |> fold part ~f:(fun element list -> to_result element :: list) ~init:[]
       in
       assert_equal expected result ~printer:string_list_printer
@@ -791,7 +873,7 @@ module StrictIntToStringSet = struct
     let test ~initial ~by:part ~f ~expected_keys =
       let map = build_map initial in
       let partition =
-        partition part map ~f
+        partition part By ~f map
         |> MapPoly.fold ~init:[] ~f:(fun ~key ~data result ->
                let elements =
                  fold Key ~init:[] ~f:List.cons data |> List.sort ~compare:Int.compare
@@ -804,12 +886,12 @@ module StrictIntToStringSet = struct
     test
       ~initial:[0, ["a"; "b"]; 1, ["b"; "c"]; 2, ["c"; "d"]; 3, []]
       ~by:StringSet.Element
-      ~f:(fun x -> Some x)
+      ~f:Fn.id
       ~expected_keys:["a", [0]; "b", [0; 1]; "c", [1; 2]; "d", [2]];
     test
       ~initial:[0, ["a"; "b"]; 1, ["b"; "c"]; 2, ["c"; "d"]; 3, []]
       ~by:Map.Key
-      ~f:(fun key -> Bool.to_string (key <= 1) |> Option.some)
+      ~f:(fun key -> Bool.to_string (key <= 1))
       ~expected_keys:["false", [2; 3]; "true", [0; 1]]
 
 
@@ -819,13 +901,13 @@ module StrictIntToStringSet = struct
       (create
          [
            Part (Key, 0);
-           Part (StringSet.Set, ["a"; "b"]);
+           Part (StringSet.Self, StringSet.of_list ["a"; "b"]);
            Part (Key, 1);
-           Part (StringSet.Set, ["b"; "c"]);
+           Part (StringSet.Self, StringSet.of_list ["b"; "c"]);
            Part (Key, 2);
-           Part (StringSet.Set, ["c"; "d"]);
+           Part (StringSet.Self, StringSet.of_list ["c"; "d"]);
            Part (Key, 3);
-           Part (StringSet.Set, []);
+           Part (StringSet.Self, StringSet.of_list []);
          ])
       ~printer:show
 
@@ -838,9 +920,18 @@ module StrictIntToStringSet = struct
         ~printer:Fn.id
     in
     ()
+
+
+  let test_context _ =
+    let v = build_map [0, ["a"; "b"]; 1, ["b"; "c"]; 2, ["c"; "d"]; 3, []] in
+    let key_values key value acc = (key, value) :: acc in
+    assert_equal
+      ~printer:int_string_pair_list_printer
+      (List.rev [0, "a"; 0, "b"; 1, "b"; 1, "c"; 2, "c"; 2, "d"])
+      (reduce StringSet.Element ~using:(Context (Key, Acc)) ~f:key_values ~init:[] v)
 end
 
-module TestStrictIntToStringSet = TestAbstractDomain (StrictIntToStringSet)
+module TestNonStrictIntToStringSet = TestAbstractDomain (NonStrictIntToStringSet)
 
 module PairStringMapIntToString = struct
   module LeftStringSet = AbstractSetDomain.Make (String)
@@ -873,13 +964,13 @@ module PairStringMapIntToString = struct
 
   let left_element = LeftStringSet.Element
 
-  let left_set = LeftStringSet.Set
+  let left_set = LeftStringSet.Self
 
   let right_key = IntToStringSet.Key
 
   let right_element = StringSet.Element
 
-  let right_set = StringSet.Set
+  let right_set = StringSet.Self
 
   let unrelated =
     let fold_sets accumulator v1 =
@@ -934,7 +1025,7 @@ module PairStringMapIntToString = struct
     let test ~initial ~by:part ~f ~expected ~to_result =
       let map = build initial in
       let result =
-        transform part (Map f) map
+        transform part Map ~f map
         |> fold part ~f:(fun element list -> to_result element :: list) ~init:[]
       in
       assert_equal expected result ~printer:string_list_printer
@@ -963,7 +1054,7 @@ module PairStringMapIntToString = struct
     let test ~initial ~by:part ~f ~expected_keys =
       let map = build initial in
       let partition =
-        partition part map ~f
+        partition part By ~f map
         |> MapPoly.fold ~init:[] ~f:(fun ~key ~data result ->
                let elements =
                  fold right_key ~init:[] ~f:List.cons data |> List.sort ~compare:Int.compare
@@ -976,18 +1067,18 @@ module PairStringMapIntToString = struct
     test
       ~initial:[0, ["a"; "b"]; 1, ["b"; "c"]; 2, ["c"; "d"]]
       ~by:left_element
-      ~f:(fun x -> Some x) (* Pair right side distributed over left partition *)
+      ~f:Fn.id (* Pair right side distributed over left partition *)
       ~expected_keys:
         ["left.a", [0; 1; 2]; "left.b", [0; 1; 2]; "left.c", [0; 1; 2]; "left.d", [0; 1; 2]];
     test
       ~initial:[0, ["a"; "b"]; 1, ["b"; "c"]; 2, ["c"; "d"]]
       ~by:right_element
-      ~f:(fun x -> Some x)
+      ~f:Fn.id
       ~expected_keys:["a", [0]; "b", [0; 1]; "c", [1; 2]; "d", [2]];
     test
       ~initial:[0, ["a"; "b"]; 1, ["b"; "c"]; 2, ["c"; "d"]]
       ~by:right_key
-      ~f:(fun key -> Bool.to_string (key <= 1) |> Option.some)
+      ~f:(fun key -> Bool.to_string (key <= 1))
       ~expected_keys:["false", [2]; "true", [0; 1]]
 
 
@@ -998,13 +1089,13 @@ module PairStringMapIntToString = struct
       (build [0, ["a"; "b"]; 1, ["b"; "c"]; 2, ["c"; "d"]])
       (create
          [
-           Part (left_set, ["left.a"; "left.b"; "left.c"; "left.d"]);
+           Part (left_set, LeftStringSet.of_list ["left.a"; "left.b"; "left.c"; "left.d"]);
            Part (right_key, 0);
-           Part (right_set, ["a"; "b"]);
+           Part (right_set, StringSet.of_list ["a"; "b"]);
            Part (right_key, 1);
-           Part (right_set, ["b"; "c"]);
+           Part (right_set, StringSet.of_list ["b"; "c"]);
            Part (right_key, 2);
-           Part (right_set, ["c"; "d"]);
+           Part (right_set, StringSet.of_list ["c"; "d"]);
          ])
       ~cmp
       ~printer:show
@@ -1031,9 +1122,12 @@ module PairStringMapIntToString = struct
            (object
               method report : 'a. 'a part -> unit = gather
            end));
-      assert_equal 10 (List.length !parts) ~printer:Int.to_string
+      assert_equal 8 (List.length !parts) ~printer:Int.to_string
     in
     ()
+
+
+  let test_context _ = ()
 end
 
 module TestPair = TestAbstractDomain (PairStringMapIntToString)
@@ -1108,7 +1202,7 @@ module AbstractElementSet = struct
     let test ~initial ~over ~f ~expected =
       let element_set = of_list initial in
       let actual =
-        transform over (Map f) element_set
+        transform over Map ~f element_set
         |> fold Element ~init:[] ~f:accumulate_elements_as_strings
         |> List.sort ~compare:String.compare
       in
@@ -1132,9 +1226,9 @@ module AbstractElementSet = struct
       ~expected:["B"; "CSuper"];
     test
       ~initial:[A; C ("x", 5); C ("y", 5)]
-      ~over:Set
+      ~over:Self
       ~f:(function
-        | existing -> CSuper :: existing)
+        | existing -> add CSuper existing)
       ~expected:["A"; "CSuper"]
 
 
@@ -1142,7 +1236,7 @@ module AbstractElementSet = struct
     let test ~initial ~f ~expected =
       let element_set = of_list initial in
       let actual =
-        partition Element ~f element_set
+        partition Element By ~f element_set
         |> MapPoly.fold ~init:[] ~f:(fun ~key ~data result ->
                let elements =
                  fold Element ~init:[] ~f:accumulate_elements_as_strings data
@@ -1156,8 +1250,8 @@ module AbstractElementSet = struct
     test
       ~initial:[A; B; C ("x", 5); C ("y", 5)]
       ~f:(function
-        | C (_, i) -> Some i
-        | _ -> Some (-1))
+        | C (_, i) -> i
+        | _ -> -1)
       ~expected:[-1, ["A"; "B"]; 5, ["C(x,5)"; "C(y,5)"]]
 
 
@@ -1166,7 +1260,7 @@ module AbstractElementSet = struct
   let test_create _ =
     assert_equal
       (of_list [A; B; C ("x", 5); C ("y", 5)])
-      (create [Part (Set, [A; B; C ("x", 5); C ("y", 5)])])
+      (create [Part (Self, of_list [A; B; C ("x", 5); C ("y", 5)])])
       ~printer:show
       ~cmp:compare;
     assert_equal
@@ -1213,6 +1307,9 @@ module AbstractElementSet = struct
       ~msg:"widen"
       ~cmp
       ~printer:show
+
+
+  let test_context _ = ()
 end
 
 module TestAbstractElement = TestAbstractDomain (AbstractElementSet)
@@ -1231,9 +1328,9 @@ module AbstractBucketedElement = struct
     | _ -> Rest
 
 
-  let show_bucket = function
-    | CBucket -> "CBucket"
-    | Rest -> "Rest"
+  let pp_bucket formatter = function
+    | CBucket -> Format.fprintf formatter "CBucket"
+    | Rest -> Format.fprintf formatter "Rest"
 
 
   let compare_bucket = Poly.compare
@@ -1269,7 +1366,7 @@ module AbstractBucketedElementSet = struct
     let test ~initial ~over ~f ~expected =
       let element_set = of_list initial in
       let actual =
-        transform over (Map f) element_set
+        transform over Map ~f element_set
         |> fold Element ~init:[] ~f:accumulate_elements_as_strings
         |> List.sort ~compare:String.compare
       in
@@ -1293,9 +1390,9 @@ module AbstractBucketedElementSet = struct
       ~expected:["B"; "CSuper"];
     test
       ~initial:[A; C ("x", 5); C ("y", 5)]
-      ~over:Set
+      ~over:Self
       ~f:(function
-        | existing -> CSuper :: existing)
+        | existing -> add CSuper existing)
       ~expected:["A"; "CSuper"]
 
 
@@ -1303,7 +1400,7 @@ module AbstractBucketedElementSet = struct
     let test ~initial ~f ~expected =
       let element_set = of_list initial in
       let actual =
-        partition Element ~f element_set
+        partition Element ByFilter ~f element_set
         |> MapPoly.fold ~init:[] ~f:(fun ~key ~data result ->
                let elements =
                  fold Element ~init:[] ~f:accumulate_elements_as_strings data
@@ -1315,9 +1412,10 @@ module AbstractBucketedElementSet = struct
       assert_equal expected actual ~printer:int_string_list_list_printer
     in
     test
-      ~initial:[A; B; C ("x", 5); C ("y", 5)]
+      ~initial:[A; B; C ("x", 5); C ("y", 5); C ("z", 6)]
       ~f:(function
-        | C (_, i) -> Some i
+        | C (_, 5) -> Some 5
+        | C _ -> None
         | _ -> Some (-1))
       ~expected:[-1, ["A"; "B"]; 5, ["C(x,5)"; "C(y,5)"]]
 
@@ -1327,7 +1425,7 @@ module AbstractBucketedElementSet = struct
   let test_create _ =
     assert_equal
       (of_list [A; B; C ("x", 5); C ("y", 5)])
-      (create [Part (Set, [A; B; C ("x", 5); C ("y", 5)])])
+      (create [Part (Self, of_list [A; B; C ("x", 5); C ("y", 5)])])
       ~printer:show
       ~cmp:compare;
     assert_equal
@@ -1374,6 +1472,9 @@ module AbstractBucketedElementSet = struct
       ~msg:"widen"
       ~cmp
       ~printer:show
+
+
+  let test_context _ = ()
 end
 
 module TestAbstractBucketedElement = TestAbstractDomain (AbstractBucketedElementSet)
@@ -1435,7 +1536,7 @@ module PairStringString = struct
     let test ~initial:(left, right) ~by:part ~f ~expected ~to_result =
       let map = build left right in
       let result =
-        transform part (Map f) map
+        transform part Map ~f map
         |> fold part ~f:(fun element list -> to_result element :: list) ~init:[]
       in
       assert_equal expected result ~printer:string_list_printer
@@ -1458,7 +1559,7 @@ module PairStringString = struct
     let test ~initial:(left, right) ~by:part ~f ~expected =
       let map = build left right in
       let partition =
-        partition part map ~f
+        partition part By ~f map
         |> MapPoly.fold ~init:[] ~f:(fun ~key ~data result -> (key, show data) :: result)
         |> List.sort ~compare:Poly.compare
       in
@@ -1467,12 +1568,12 @@ module PairStringString = struct
     test
       ~initial:(["a"; "b"], ["b"; "c"])
       ~by:LeftStringSet.Element
-      ~f:(fun x -> Some x)
+      ~f:Fn.id
       ~expected:["a", "left: [a], right: [b, c]"; "b", "left: [b], right: [b, c]"];
     test
       ~initial:(["a"; "b"], ["b"; "c"])
       ~by:RightStringSet.Element
-      ~f:(fun x -> Some x)
+      ~f:Fn.id
       ~expected:["b", "left: [a, b], right: [b]"; "c", "left: [a, b], right: [c]"]
 
 
@@ -1481,7 +1582,11 @@ module PairStringString = struct
   let test_create _ =
     assert_equal
       (build ["a"; "b"] ["a"; "b"])
-      (create [Part (LeftStringSet.Set, ["a"; "b"]); Part (RightStringSet.Set, ["a"; "b"])])
+      (create
+         [
+           Part (LeftStringSet.Self, LeftStringSet.of_list ["a"; "b"]);
+           Part (RightStringSet.Self, RightStringSet.of_list ["a"; "b"]);
+         ])
       ~printer:show
       ~cmp:compare;
 
@@ -1506,7 +1611,15 @@ module PairStringString = struct
     assert_bool "product of bottoms is bottom" (is_bottom (build [] []));
     assert_bool
       "product of bottoms is less equal to bottom"
-      (less_or_equal ~left:(build [] []) ~right:bottom)
+      (less_or_equal ~left:(build [] []) ~right:bottom);
+    let a = build ["a"] ["b"; "c"] in
+    let b = build ["a"] ["b"; "c"; "d"] in
+    assert_bool
+      "subtraction of all slots leads to bottom"
+      (less_or_equal ~left:(subtract b ~from:a) ~right:bottom)
+
+
+  let test_context _ = ()
 end
 
 module TestPairStringString = TestAbstractDomain (PairStringString)
@@ -1591,7 +1704,7 @@ module ProductDomain = struct
     let test ~initial ~by:part ~f ~expected ~to_result =
       let map = build initial in
       let result =
-        transform part (Map f) map
+        transform part Map ~f map
         |> fold part ~f:(fun element list -> to_result element :: list) ~init:[]
       in
       assert_equal expected result ~printer:string_list_printer
@@ -1614,7 +1727,7 @@ module ProductDomain = struct
     let test ~initial ~by:part ~f ~expected =
       let map = build initial in
       let partition =
-        partition part map ~f
+        partition part By ~f map
         |> MapPoly.fold ~init:[] ~f:(fun ~key ~data result -> (key, show data) :: result)
         |> List.sort ~compare:Poly.compare
       in
@@ -1623,7 +1736,7 @@ module ProductDomain = struct
     test
       ~initial:(["Lausanne"; "Fribourg"], [280; 1157], ["Flon"; "Louve"; "Sarine"])
       ~by:CitySet.Element
-      ~f:(fun x -> Some x)
+      ~f:Fn.id
       ~expected:
         [
           "Fribourg", "Cities: [Fribourg], Years: [280, 1157], Rivers: [Flon, Louve, Sarine]";
@@ -1632,7 +1745,7 @@ module ProductDomain = struct
     test
       ~initial:(["Lausanne"; "Fribourg"], [280; 1157], ["Flon"; "Louve"; "Sarine"])
       ~by:YearSet.Element
-      ~f:(fun x -> Int.to_string x |> Option.some)
+      ~f:(fun x -> Int.to_string x)
       ~expected:
         [
           "1157", "Cities: [Fribourg, Lausanne], Years: [1157], Rivers: [Flon, Louve, Sarine]";
@@ -1641,7 +1754,7 @@ module ProductDomain = struct
     test
       ~initial:(["Lausanne"; "Fribourg"], [280; 1157], ["Flon"; "Louve"; "Sarine"])
       ~by:RiverSet.Element
-      ~f:(fun x -> Some x)
+      ~f:Fn.id
       ~expected:
         [
           "Flon", "Cities: [Fribourg, Lausanne], Years: [280, 1157], Rivers: [Flon]";
@@ -1657,9 +1770,9 @@ module ProductDomain = struct
       (build (["Lausanne"; "Fribourg"], [280; 1157], ["Flon"; "Louve"; "Sarine"]))
       (create
          [
-           Part (CitySet.Set, ["Lausanne"; "Fribourg"]);
-           Part (YearSet.Set, [280; 1157]);
-           Part (RiverSet.Set, ["Flon"; "Louve"; "Sarine"]);
+           Part (CitySet.Self, CitySet.of_list ["Lausanne"; "Fribourg"]);
+           Part (YearSet.Self, YearSet.of_list [280; 1157]);
+           Part (RiverSet.Self, RiverSet.of_list ["Flon"; "Louve"; "Sarine"]);
          ])
       ~printer:show
       ~cmp:compare
@@ -1682,10 +1795,10 @@ module ProductDomain = struct
     let () =
       let materialized_slot =
         transform
-          CitySet.Set
-          (Map
-             (function
-             | _ -> ["A"; "B"; "C"]))
+          CitySet.Self
+          Map
+          ~f:(function
+            | _ -> CitySet.of_list ["A"; "B"; "C"])
           bottom
       in
       let actual = fold CitySet.Element ~f:List.cons ~init:[] materialized_slot in
@@ -1695,16 +1808,19 @@ module ProductDomain = struct
       let unmaterialized_slot =
         (* due to strictness *)
         transform
-          YearSet.Set
-          (Map
-             (function
-             | _ -> [0; 1; 2; 3]))
+          YearSet.Self
+          Map
+          ~f:(function
+            | _ -> YearSet.of_list [0; 1; 2; 3])
           bottom
       in
       let actual = fold YearSet.Element ~f:List.cons ~init:[] unmaterialized_slot in
       assert_equal [] actual ~printer:int_list_printer
     in
     ()
+
+
+  let test_context _ = ()
 end
 
 module TestProductDomain = TestAbstractDomain (ProductDomain)
@@ -1793,7 +1909,7 @@ module PathDomain = struct
   let test_transform _ =
     let test ~initial ~f ~expected =
       let product = build initial in
-      let result = transform Self (Map f) product |> Element.show in
+      let result = transform Self Map ~f product |> Element.show in
       assert_equal expected result ~printer:Fn.id
     in
     test
@@ -1808,7 +1924,7 @@ module PathDomain = struct
     let test ~initial ~f ~expected =
       let product = build initial in
       let partition =
-        partition Self product ~f
+        partition Self ByFilter product ~f
         |> MapPoly.fold ~init:[] ~f:(fun ~key ~data result -> (key, show data) :: result)
         |> List.sort ~compare:Poly.compare
       in
@@ -1852,6 +1968,9 @@ module PathDomain = struct
     test_meet c a ~expected:a;
     test_meet b c ~expected:b;
     test_meet c b ~expected:b
+
+
+  let test_context _ = ()
 end
 
 module TestSimpleDomain = TestAbstractDomain (PathDomain)
@@ -1859,20 +1978,27 @@ module TestSimpleDomain = TestAbstractDomain (PathDomain)
 module TreeOfStringSets = struct
   include AbstractTreeDomain.Make
             (struct
-              let max_tree_depth_after_widening = 3
+              let max_tree_depth_after_widening () = 3
 
               let check_invariants = true
             end)
-            (StringSet)
+            (struct
+              include StringSet
+
+              let transform_on_widening_collapse = Fn.id
+            end)
             ()
 
   let parse_path path =
     let parse_element element =
-      match element with
-      | "$keys" -> AbstractTreeDomain.Label.DictionaryKeys
-      | _ -> AbstractTreeDomain.Label.create_name_field element
+      if String.sub element ~pos:0 ~len:1 = "$" then
+        AbstractTreeDomain.Label.Field element
+      else
+        AbstractTreeDomain.Label.create_name_index element
     in
-    String.split path ~on:'.' |> List.map ~f:parse_element
+    String.split path ~on:'.'
+    |> List.filter ~f:(fun s -> not (String.is_empty s))
+    |> List.map ~f:parse_element
 
 
   let parse_tree components =
@@ -1891,6 +2017,13 @@ module TreeOfStringSets = struct
           Part (Path, (parse_path "a.b", StringSet.of_list ["ab"]));
           Part (Path, (parse_path "c.d", StringSet.of_list ["cd"]));
         ];
+      create [Part (Path, (parse_path "$a", StringSet.of_list ["aa"]))];
+      create [Part (Path, (parse_path "$b", StringSet.of_list ["bb"]))];
+      create
+        [
+          Part (Path, (parse_path "$a.$b", StringSet.of_list ["ab"]));
+          Part (Path, (parse_path "$c.$d", StringSet.of_list ["cd"]));
+        ];
     ]
 
 
@@ -1898,17 +2031,15 @@ module TreeOfStringSets = struct
     [
       create [Part (Path, (parse_path "a.b", StringSet.of_list ["aa"]))];
       create [Part (Path, (parse_path "b.c", StringSet.of_list ["bb"]))];
+      create [Part (Path, (parse_path "$a.$b", StringSet.of_list ["aa"]))];
+      create [Part (Path, (parse_path "$b.$c", StringSet.of_list ["bb"]))];
       create [Part (Path, ([], StringSet.of_list ["ab"]))];
       create [Part (Path, ([], StringSet.of_list ["cd"]))];
     ]
 
 
-  let show_path_element { path; ancestors; tip } =
-    Format.sprintf
-      "path:%s; ancestors:%s; tip:%s"
-      (AbstractTreeDomain.Label.show_path path)
-      (StringSet.show ancestors)
-      (StringSet.show tip)
+  let show_path_element (path, tip) =
+    Format.sprintf "path:%s; tip:%s" (AbstractTreeDomain.Label.show_path path) (StringSet.show tip)
 
 
   let test_fold _ =
@@ -1933,17 +2064,17 @@ module TreeOfStringSets = struct
           Part (Path, (parse_path "a.b", StringSet.of_list ["aa"; "bb"]));
           Part (Path, (parse_path "a", StringSet.of_list ["a"]));
         ]
-      ~by:RawPath
+      ~by:Path
       ~f:show_path_element
-      ~expected:["path:[a][b]; ancestors:[a]; tip:[aa, bb]"; "path:[a]; ancestors:[]; tip:[a]"]
+      ~expected:["path:[a][b]; tip:[aa, bb]"; "path:[a]; tip:[a]"]
 
 
   let test_transform _ =
     let test ~initial ~by:part ~f ~expected ~to_result =
       let map = create initial in
       let result =
-        transform part (Map f) map
-        |> fold RawPath ~f:(fun element list -> to_result element :: list) ~init:[]
+        transform part Map ~f map
+        |> fold Path ~f:(fun element list -> to_result element :: list) ~init:[]
       in
       assert_equal expected result ~printer:string_list_printer
     in
@@ -1956,8 +2087,7 @@ module TreeOfStringSets = struct
       ~by:StringSet.Element
       ~f:(fun x -> "t." ^ x)
       ~to_result:show_path_element
-      ~expected:
-        ["path:[a][b]; ancestors:[t.a]; tip:[t.aa, t.bb]"; "path:[a]; ancestors:[]; tip:[t.a]"];
+      ~expected:["path:[a][b]; tip:[t.aa, t.bb]"; "path:[a]; tip:[t.a]"];
     test
       ~initial:
         [
@@ -1965,20 +2095,16 @@ module TreeOfStringSets = struct
           Part (Path, (parse_path "a", StringSet.of_list ["a"]));
         ]
       ~by:Path
-      ~f:(fun (path, element) -> AbstractTreeDomain.Label.Field "prefix" :: path, element)
+      ~f:(fun (path, element) -> AbstractTreeDomain.Label.Index "prefix" :: path, element)
       ~to_result:show_path_element
-      ~expected:
-        [
-          "path:[prefix][a][b]; ancestors:[a]; tip:[aa, bb]";
-          "path:[prefix][a]; ancestors:[]; tip:[a]";
-        ]
+      ~expected:["path:[prefix][a][b]; tip:[aa, bb]"; "path:[prefix][a]; tip:[a]"]
 
 
   let test_partition _ =
     let test ~initial ~by:part ~f ~expected =
       let map = create initial in
       let partition =
-        partition part map ~f
+        partition part By map ~f
         |> MapPoly.fold ~init:[] ~f:(fun ~key ~data result -> (key, show data) :: result)
         |> List.sort ~compare:Poly.compare
       in
@@ -1991,12 +2117,12 @@ module TreeOfStringSets = struct
           Part (Path, (parse_path "a", StringSet.of_list ["a"]));
         ]
       ~by:StringSet.Element
-      ~f:(fun x -> Some x)
+      ~f:Fn.id
       ~expected:
         [
-          "a", "[]\n  [a] -> [a]\n";
-          "aa", "[]\n  [a] -> []\n    [b] -> [aa]\n";
-          "bb", "[]\n  [a] -> []\n    [b] -> [bb]\n";
+          "a", "{\n   [a] -> [a]\n}";
+          "aa", "{\n   [a][b] -> [aa]\n}";
+          "bb", "{\n   [a][b] -> [bb]\n}";
         ];
     test
       ~initial:
@@ -2005,8 +2131,8 @@ module TreeOfStringSets = struct
           Part (Path, (parse_path "a", StringSet.of_list ["a"]));
         ]
       ~by:Path
-      ~f:(fun (path, _) -> List.take path 1 |> AbstractTreeDomain.Label.show_path |> Option.some)
-      ~expected:["[a]", "[]\n  [a] -> [a]\n    [b] -> [aa, bb]\n"]
+      ~f:(fun (path, _) -> List.take path 1 |> AbstractTreeDomain.Label.show_path)
+      ~expected:["[a]", "{\n   [a] -> [a]\n   [a][b] -> [aa, bb]\n}"]
 
 
   let compare left right = less_or_equal ~left ~right && less_or_equal ~left:right ~right:left
@@ -2028,9 +2154,9 @@ module TreeOfStringSets = struct
       ~cmp:compare;
     let () =
       let open AbstractTreeDomain.Label in
-      let path1 = [create_name_field "foo"; create_name_field "bar"] in
-      let path2 = [create_name_field "foo"; create_name_field "baz"] in
-      let common = [create_name_field "foo"] in
+      let path1 = [create_name_index "foo"; create_name_index "bar"] in
+      let path2 = [create_name_index "foo"; create_name_index "baz"] in
+      let common = [create_name_index "foo"] in
       let path3 = common_prefix path1 path2 in
       let path4 = common_prefix path1 path3 in
       let path5 = common_prefix path3 path2 in
@@ -2062,7 +2188,12 @@ module TreeOfStringSets = struct
             Part (Path, ([], StringSet.of_list ["q"]));
           ]
       in
-      assert_equal expected (shape tree ~mold) ~msg:"molded tree" ~printer:show ~cmp:compare
+      assert_equal
+        expected
+        (shape ~transform:Fn.id tree ~mold)
+        ~msg:"molded tree"
+        ~printer:show
+        ~cmp:compare
     in
     (* Test less or equal. *)
     assert_equal
@@ -2092,7 +2223,8 @@ module TreeOfStringSets = struct
       (less_or_equal
          ~left:(parse_tree ["$keys", ["a"]])
          ~right:
-           (create [Part (Path, ([AbstractTreeDomain.Label.Any], StringSet.of_list ["distinct"]))]));
+           (create
+              [Part (Path, ([AbstractTreeDomain.Label.AnyIndex], StringSet.of_list ["distinct"]))]));
     assert_equal
       true
       (less_or_equal ~left:(parse_tree ["a.$keys", ["val"]]) ~right:(parse_tree ["a", ["val"]]));
@@ -2116,9 +2248,22 @@ module TreeOfStringSets = struct
       (parse_tree ["$keys", ["a"]])
       ~expected:(create [Part (Path, ([], StringSet.of_list ["a"]))]);
     ();
+
+    let assert_show ~expected tree = assert_equal ~printer:Fn.id expected (show tree) in
+    assert_show ~expected:"[]" (parse_tree []);
+    assert_show ~expected:"[a]" (parse_tree ["", ["a"]]);
+    assert_show ~expected:"[a, b]" (parse_tree ["", ["a"; "b"]]);
+    assert_show ~expected:"{\n   [a] -> [a]\n}" (parse_tree ["a", ["a"]]);
+    assert_show
+      ~expected:"{\n   [a] -> [a]\n   [b] -> [b]\n}"
+      (parse_tree ["a", ["a"]; "b", ["b"]]);
+    assert_show
+      ~expected:"{\n   [a]\n   [b] -> [b]\n   [c][d] -> [c]\n}"
+      (parse_tree ["", ["a"]; "b", ["b"]; "c.d", ["c"]]);
+
     (* limit_to width. *)
     let assert_limit_to ~expected ~width tree =
-      assert_equal ~cmp:compare ~printer:show expected (limit_to ~width tree)
+      assert_equal ~cmp:compare ~printer:show expected (limit_to ~transform:Fn.id ~width tree)
     in
     assert_limit_to
       ~expected:(parse_tree ["a", ["a"]; "b", ["b"]])
@@ -2138,8 +2283,46 @@ module TreeOfStringSets = struct
       (assign
          ~weak:true
          ~tree:(parse_tree ["a", ["item"]])
-         [AbstractTreeDomain.Label.Field "b"]
-         ~subtree:bottom)
+         [AbstractTreeDomain.Label.Index "b"]
+         ~subtree:bottom);
+    (* collapse *)
+    let assert_collapse ~transform ~expected tree =
+      let actual =
+        collapse ~transform tree
+        |> StringSet.fold StringSet.Element ~init:[] ~f:List.cons
+        |> List.sort ~compare:String.compare
+      in
+      assert_equal ~printer:string_list_printer expected actual
+    in
+    let add_suffix = StringSet.transform StringSet.Element Map ~f:(fun s -> s ^ "#") in
+    assert_collapse ~transform:Fn.id ~expected:["a"; "b"] (parse_tree ["a", ["a"]; "b", ["b"]]);
+    assert_collapse
+      ~transform:add_suffix
+      ~expected:["a"; "b#"; "c#"; "de#"]
+      (parse_tree ["", ["a"]; "b", ["b"; "c"]; "d.e", ["de"]]);
+    (* labels *)
+    assert_equal
+      ["[b]"; "[a]"]
+      (labels (parse_tree ["a", ["x"]; "b", ["y"]]) |> List.map ~f:AbstractTreeDomain.Label.show)
+      ~printer:string_list_printer
+
+
+  let test_context _ =
+    let tree =
+      create
+        [
+          Part (Path, (parse_path "a.b", StringSet.of_list ["x"; "y"]));
+          Part (Path, (parse_path "c", StringSet.of_list ["z"]));
+          Part (Path, (parse_path "d", StringSet.of_list ["q"]));
+        ]
+    in
+    let path_value (path, _) value sofar =
+      (AbstractTreeDomain.Label.show_path path, value) :: sofar
+    in
+    assert_equal
+      ~printer:string_pair_list_printer
+      (List.rev ["[a][b]", "x"; "[a][b]", "y"; "[c]", "z"; "[d]", "q"])
+      (reduce StringSet.Element ~using:(Context (Path, Acc)) ~f:path_value ~init:[] tree)
 end
 
 module TestTreeDomain = TestAbstractDomain (TreeOfStringSets)
@@ -2199,17 +2382,22 @@ module OverUnderStringSet = struct
   let test_transform _ =
     let test_elements ~initial ~by ~f ~expected =
       let element_set = List.fold ~init:bottom ~f:add initial in
-      let actual = transform by (Map f) element_set |> gather_result_elements in
+      let actual = transform by Map ~f element_set |> gather_result_elements in
       assert_equal expected actual ~printer:string_list_printer
     in
-    let test ~initial ~by ~f ~expected =
+    let test ~initial ~by ~op ~f ~expected =
       let element_set = List.fold ~init:bottom ~f:add initial in
-      let actual = transform by (Map f) element_set |> gather_result_elements in
+      let actual = transform by op ~f element_set |> gather_result_elements in
       assert_equal expected actual ~printer:string_list_printer
     in
-    test ~initial:["a"; "b"] ~by:Element ~f:(fun element -> "t." ^ element) ~expected:["t.a"; "t.b"];
-    test ~initial:["a"; "b"] ~by:Set ~f:(fun set -> "c" :: set) ~expected:["a"; "b"; "c"];
-    test ~initial:[] ~by:Set ~f:(fun set -> "c" :: set) ~expected:["c"];
+    test
+      ~initial:["a"; "b"]
+      ~by:Element
+      ~op:Map
+      ~f:(fun element -> "t." ^ element)
+      ~expected:["t.a"; "t.b"];
+    test ~initial:["a"; "b"] ~by:Element ~op:Add ~f:"c" ~expected:["a"; "b"; "c"];
+    test ~initial:[] ~by:Self ~op:Map ~f:(fun set -> add set "c") ~expected:["c"];
     test_elements
       ~initial:["a"; "b"]
       ~by:ElementAndUnder
@@ -2217,13 +2405,13 @@ module OverUnderStringSet = struct
       ~expected:["t.a"; "t.b"];
     test_elements
       ~initial:["a"; "b"]
-      ~by:SetAndUnder
-      ~f:(fun set -> { element = "c"; in_under = false } :: set)
+      ~by:Self
+      ~f:(fun set -> add_set ~to_add:(of_approximation [{ element = "c"; in_under = false }]) set)
       ~expected:["a"; "b"; "c-"];
     test_elements
       ~initial:[]
-      ~by:SetAndUnder
-      ~f:(fun set -> { element = "c"; in_under = false } :: set)
+      ~by:Self
+      ~f:(fun set -> add_set ~to_add:(of_approximation [{ element = "c"; in_under = false }]) set)
       ~expected:["c-"]
 
 
@@ -2231,7 +2419,7 @@ module OverUnderStringSet = struct
     let test_elements ~initial ~f ~expected =
       let element_set = List.fold ~init:bottom ~f:add initial in
       let actual =
-        partition ElementAndUnder ~f element_set
+        partition ElementAndUnder By ~f element_set
         |> MapPoly.fold ~init:[] ~f:(fun ~key ~data result ->
                let elements = gather_result_elements data in
                (key, elements) :: result)
@@ -2242,7 +2430,7 @@ module OverUnderStringSet = struct
     let test ~initial ~f ~expected =
       let element_set = List.fold ~init:bottom ~f:add initial in
       let actual =
-        partition Element ~f element_set
+        partition Element By ~f element_set
         |> MapPoly.fold ~init:[] ~f:(fun ~key ~data result ->
                let elements = gather_result_elements data in
                (key, elements) :: result)
@@ -2252,11 +2440,11 @@ module OverUnderStringSet = struct
     in
     test
       ~initial:["abc"; "bef"; "g"]
-      ~f:(fun element -> Some (String.length element))
+      ~f:(fun element -> String.length element)
       ~expected:[1, ["g"]; 3, ["abc"; "bef"]];
     test_elements
       ~initial:["abc"; "bef"; "g"]
-      ~f:(fun { element; _ } -> Some (String.length element))
+      ~f:(fun { element; _ } -> String.length element)
       ~expected:[1, ["g"]; 3, ["abc"; "bef"]]
 
 
@@ -2273,12 +2461,13 @@ module OverUnderStringSet = struct
       (create
          [
            Part
-             ( SetAndUnder,
-               [
-                 { element = "a"; in_under = true };
-                 { element = "b"; in_under = true };
-                 { element = "c"; in_under = false };
-               ] );
+             ( Self,
+               of_approximation
+                 [
+                   { element = "a"; in_under = true };
+                   { element = "b"; in_under = true };
+                   { element = "c"; in_under = false };
+                 ] );
          ])
       ~printer:show;
     assert_equal
@@ -2295,7 +2484,10 @@ module OverUnderStringSet = struct
            Part (ElementAndUnder, { element = "c"; in_under = false });
          ])
       ~printer:show;
-    assert_equal (from ["a"; "b"; "c"]) (create [Part (Set, ["a"; "b"; "c"])]) ~printer:show;
+    assert_equal
+      (from ["a"; "b"; "c"])
+      (create [Part (Self, of_list ["a"; "b"; "c"])])
+      ~printer:show;
     assert_equal
       (from ["a"; "b"; "c"])
       (create [Part (Element, "a"); Part (Element, "b"); Part (Element, "c")])
@@ -2342,13 +2534,13 @@ module OverUnderStringSet = struct
     assert_equal set_a_over (join empty set_a) ~printer:show ~cmp:compare;
 
     (* Test that adding does not use join *)
-    assert_equal set_a (transform Element (Add "c") set_c) ~printer:show ~cmp:compare;
-    assert_equal set_a (transform Self (Add set_d) set_c) ~printer:show ~cmp:compare;
-    assert_equal set_c (transform Self (Add set_c) set_c) ~printer:show ~cmp:compare;
-    assert_equal empty (transform Element (Map (fun x -> x)) empty) ~printer:show ~cmp:compare;
+    assert_equal set_a (transform Element Add ~f:"c" set_c) ~printer:show ~cmp:compare;
+    assert_equal set_a (transform Self Add ~f:set_d set_c) ~printer:show ~cmp:compare;
+    assert_equal set_c (transform Self Add ~f:set_c set_c) ~printer:show ~cmp:compare;
+    assert_equal empty (transform Element Map ~f:Fn.id empty) ~printer:show ~cmp:compare;
     assert_equal
       (of_approximation [{ element = "a"; in_under = true }])
-      (transform Element (Map (fun _ -> "a")) set_c)
+      (transform Element Map ~f:(fun _ -> "a") set_c)
       ~printer:show
       ~cmp:compare;
 
@@ -2363,7 +2555,15 @@ module OverUnderStringSet = struct
       (of_approximation [{ element = "c"; in_under = false }])
       (subtract set_b ~from:set_a_over)
       ~printer:show
-      ~cmp:compare
+      ~cmp:compare;
+
+    (* Test empty *)
+    assert_bool "bottom is empty" (is_empty bottom);
+    assert_bool "empty is empty" (is_empty empty);
+    assert_bool "subtraction is empty" (is_empty (subtract set_a ~from:set_a_over))
+
+
+  let test_context _ = ()
 end
 
 module TestOverUnderStringSet = TestAbstractDomain (OverUnderStringSet)
@@ -2389,7 +2589,7 @@ module FlatString = struct
     let test ~initial ~by ~f ~expected =
       let element = make initial in
       let actual =
-        transform by (Map f) element
+        transform by Map ~f element
         |> fold Element ~init:[] ~f:List.cons
         |> List.sort ~compare:String.compare
       in
@@ -2402,7 +2602,7 @@ module FlatString = struct
     let test ~initial ~f ~expected =
       let element = make initial in
       let actual =
-        partition Element ~f element
+        partition Element By ~f element
         |> MapPoly.fold ~init:[] ~f:(fun ~key ~data result ->
                let elements =
                  fold Element ~init:[] ~f:List.cons data |> List.sort ~compare:String.compare
@@ -2412,7 +2612,7 @@ module FlatString = struct
       in
       assert_equal expected actual ~printer:int_string_list_list_printer
     in
-    test ~initial:"abc" ~f:(fun x -> Some (String.length x)) ~expected:[3, ["abc"]]
+    test ~initial:"abc" ~f:(fun x -> String.length x) ~expected:[3, ["abc"]]
 
 
   let test_create _ = assert_equal (make "a") (create [Part (Element, "a")]) ~printer:show
@@ -2422,6 +2622,9 @@ module FlatString = struct
       assert_equal "Flat(strings)" (introspect Structure |> String.concat ~sep:"\n") ~printer:Fn.id
     in
     ()
+
+
+  let test_context _ = ()
 end
 
 module TestFlatString = TestAbstractDomain (FlatString)
@@ -2433,7 +2636,7 @@ let () =
          "topped_string_set" >::: TestToppedStringSet.suite ();
          "inverted_string_set" >::: TestInvertedStringSet.suite ();
          "map_int_to_string_set" >::: TestIntToStringSet.suite ();
-         "strict_int_to_string_set" >::: TestStrictIntToStringSet.suite ();
+         "nonstrict_int_to_string_set" >::: TestNonStrictIntToStringSet.suite ();
          "string_x_maps_int_to_string_set" >::: TestPair.suite ();
          "dual_string" >::: TestPairStringString.suite ();
          "abstract_element" >::: TestAbstractElement.suite ();

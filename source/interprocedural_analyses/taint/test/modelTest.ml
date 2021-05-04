@@ -492,6 +492,112 @@ let test_sanitize context =
                })
           "test.taint";
       ]
+    ();
+  assert_model
+    ~model_source:"django.http.Request.GET: Sanitize = ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Object
+          ~analysis_mode:
+            (Mode.Sanitize
+               {
+                 Mode.sources = Some Mode.AllSources;
+                 Mode.sinks = Some Mode.AllSinks;
+                 Mode.tito = Some Mode.AllTito;
+               })
+          "django.http.Request.GET";
+      ]
+    ();
+  assert_model
+    ~model_source:"django.http.Request.GET: Sanitize[TaintSource] = ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Object
+          ~analysis_mode:
+            (Mode.Sanitize { Mode.sources = Some Mode.AllSources; sinks = None; tito = None })
+          "django.http.Request.GET";
+      ]
+    ();
+  assert_model
+    ~model_source:"django.http.Request.GET: Sanitize[TaintSink] = ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Object
+          ~analysis_mode:
+            (Mode.Sanitize { sources = None; Mode.sinks = Some Mode.AllSinks; tito = None })
+          "django.http.Request.GET";
+      ]
+    ();
+  assert_model
+    ~model_source:"django.http.Request.GET: Sanitize[TaintSource[Test]] = ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Object
+          ~analysis_mode:
+            (Mode.Sanitize
+               {
+                 Mode.sources = Some (Mode.SpecificSources [Sources.NamedSource "Test"]);
+                 sinks = None;
+                 tito = None;
+               })
+          "django.http.Request.GET";
+      ]
+    ();
+  assert_model
+    ~model_source:"django.http.Request.GET: Sanitize[TaintSink[Test]] = ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Object
+          ~analysis_mode:
+            (Mode.Sanitize
+               {
+                 sources = None;
+                 Mode.sinks = Some (Mode.SpecificSinks [Sinks.NamedSink "Test"]);
+                 tito = None;
+               })
+          "django.http.Request.GET";
+      ]
+    ();
+  assert_model
+    ~model_source:"django.http.Request.GET: Sanitize[TaintSource[Test, TestTest]] = ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Object
+          ~analysis_mode:
+            (Mode.Sanitize
+               {
+                 Mode.sources =
+                   Some
+                     (Mode.SpecificSources
+                        [Sources.NamedSource "TestTest"; Sources.NamedSource "Test"]);
+                 sinks = None;
+                 tito = None;
+               })
+          "django.http.Request.GET";
+      ]
+    ();
+  assert_model
+    ~model_source:"django.http.Request.GET: Sanitize[TaintSink[Test, TestSink]] = ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Object
+          ~analysis_mode:
+            (Mode.Sanitize
+               {
+                 sources = None;
+                 Mode.sinks =
+                   Some (Mode.SpecificSinks [Sinks.NamedSink "TestSink"; Sinks.NamedSink "Test"]);
+                 tito = None;
+               })
+          "django.http.Request.GET";
+      ]
     ()
 
 
@@ -1076,7 +1182,7 @@ let test_invalid_models context =
         }
     in
     let error_message =
-      let path = path >>| Path.create_absolute ~follow_symbolic_links:false in
+      let path = path >>| Path.create_absolute in
       Model.parse
         ~resolution
         ~configuration
@@ -1093,6 +1199,7 @@ let test_invalid_models context =
   let assert_valid_model ?source ~model_source () =
     assert_invalid_model ?source ~model_source ~expect:"no failure" ()
   in
+  assert_invalid_model ~model_source:"import foo" ~expect:"Unexpected statement" ();
   assert_invalid_model
     ~model_source:"def test.sink(parameter: TaintSink[X, Unsupported]) -> TaintSource[A]: ..."
     ~expect:
@@ -1151,17 +1258,153 @@ let test_invalid_models context =
     ~expect:"`PartialSink[X[b]]` is an invalid taint annotation: Unrecognized partial sink `X`."
     ();
 
-  assert_valid_model
-    ~model_source:"def test.partial_sink(x: PartialSink[Test[a]], y: PartialSink[Test[b]]): ..."
+  (* Test invalid model queries. *)
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        find = "attributes",
+        where = name.matches("foo"),
+        model = Returns(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      "`Returns` is not a valid model for model queries with find clause of kind `attributes`."
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        find = "attributes",
+        where = name.matches("foo"),
+        model = NamedParameter(name="x", taint = TaintSource[Test, Via[foo]])
+      )
+    |}
+    ~expect:
+      "`NamedParameter` is not a valid model for model queries with find clause of kind \
+       `attributes`."
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        find = "attributes",
+        where = name.matches("foo"),
+        model = AllParameters(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      "`AllParameters` is not a valid model for model queries with find clause of kind \
+       `attributes`."
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        find = "functions",
+        where = return_annotation.is_annotated_type(),
+        model = AttributeModel(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      "`AttributeModel` is not a valid model for model queries with find clause of kind \
+       `functions`."
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        find = "methods",
+        where = return_annotation.is_annotated_type(),
+        model = AttributeModel(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      "`AttributeModel` is not a valid model for model queries with find clause of kind `methods`."
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        find = "attributes",
+        where = any_parameter.annotation.is_annotated_type(),
+        model = AttributeModel(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      "`any_parameter.annotation.is_annotated_type` is not a valid constraint for model queries \
+       with find clause of kind `attributes`."
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        find = "attributes",
+        where = AnyOf(
+          parent.matches("foo"),
+          any_parameter.annotation.is_annotated_type()
+        ),
+        model = AttributeModel(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      "`any_parameter.annotation.is_annotated_type` is not a valid constraint for model queries \
+       with find clause of kind `attributes`."
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        find = "attributes",
+        where = any_decorator.name.matches("app.route"),
+        model = AttributeModel(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      "`any_decorator.name.matches` is not a valid constraint for model queries with find clause \
+       of kind `attributes`."
     ();
 
   assert_invalid_model
-    ~model_source:"def not_in_the_environment(parameter: InvalidTaintDirection[Test]): ..."
-    ~expect:"`not_in_the_environment` is not part of the environment!"
+    ~model_source:
+      {|
+      ModelQuery(
+        find = "methods",
+        where = parent.extends("foo", is_transitive=foobar),
+        model = ReturnModel(TaintSource[Test])
+      )
+    |}
+    ~expect:"The Extends is_transitive must be either True or False, got: `foobar`."
     ();
   assert_invalid_model
-    ~model_source:"def not_in_the_environment.derp(parameter: InvalidTaintDirection[Test]): ..."
-    ~expect:"`not_in_the_environment.derp` is not part of the environment!"
+    ~model_source:
+      {|
+      ModelQuery(
+        find = "methods",
+        where = parent.extends("foo", foobar),
+        model = ReturnModel(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      "Unsupported arguments for callee `parent.extends`: `{ Expression.Call.Argument.name = None; \
+       value = \"foo\" }, { Expression.Call.Argument.name = None; value = foobar }`."
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        find = "methods",
+        where = parent.matches("foo", is_transitive=foobar),
+        model = ReturnModel(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      "Unsupported arguments for callee `parent.matches`: `{ Expression.Call.Argument.name = None; \
+       value = \"foo\" }, { Expression.Call.Argument.name = (Some is_transitive); value = foobar \
+       }`."
+    ();
+  assert_valid_model
+    ~model_source:"def test.partial_sink(x: PartialSink[Test[a]], y: PartialSink[Test[b]]): ..."
     ();
 
   assert_valid_model ~model_source:"def test.sink(): ..." ();
@@ -1177,15 +1420,14 @@ let test_invalid_models context =
     ~expect:
       "Model signature parameters for `test.sink_with_optional` do not match implementation `def \
        sink_with_optional(parameter: unknown, firstOptional: unknown = ..., secondOptional: \
-       unknown = ...) -> None: ...`. Reason: unexpected named parameter: `thirdOptional`."
+       unknown = ...) -> None: ...`. Reason: unexpected positional parameter: `thirdOptional`."
     ();
   assert_invalid_model
     ~model_source:"def test.sink_with_optional(parameter, firstBad, secondBad): ..."
     ~expect:
       "Model signature parameters for `test.sink_with_optional` do not match implementation `def \
        sink_with_optional(parameter: unknown, firstOptional: unknown = ..., secondOptional: \
-       unknown = ...) -> None: ...`. Reasons: unexpected named parameter: `firstBad`; unexpected \
-       named parameter: `secondBad`."
+       unknown = ...) -> None: ...`. Reason: unexpected positional parameter: `secondBad`."
     ();
   assert_invalid_model
     ~model_source:"def test.sink_with_optional(parameter, *args): ..."
@@ -1208,19 +1450,37 @@ let test_invalid_models context =
        sink_with_optional(parameter: unknown, firstOptional: unknown = ..., secondOptional: \
        unknown = ...) -> None: ...`. Reason: unexpected positional only parameter: `__parameter`."
     ();
-  assert_valid_model
+  assert_invalid_model
     ~model_source:"def test.function_with_args(normal_arg, __random_name, named_arg, *args): ..."
+    ~expect:
+      "Model signature parameters for `test.function_with_args` do not match implementation `def \
+       function_with_args(normal_arg: unknown, unknown, *(unknown)) -> None: ...`. Reason: \
+       unexpected positional parameter: `named_arg`."
     ();
   assert_valid_model
     ~model_source:"def test.function_with_args(normal_arg, __random_name, *args): ..."
+    ();
+  assert_invalid_model
+    ~model_source:"def test.function_with_args(normal_arg, __random_name, *, named_arg, *args): ..."
+    ~expect:
+      "Model signature parameters for `test.function_with_args` do not match implementation `def \
+       function_with_args(normal_arg: unknown, unknown, *(unknown)) -> None: ...`. Reason: \
+       unexpected named parameter: `named_arg`."
     ();
   assert_valid_model
     ~model_source:
       "def test.function_with_args(normal_arg, __random_name, __random_name_2, *args): ..."
     ();
   assert_valid_model ~model_source:"def test.function_with_kwargs(normal_arg, **kwargs): ..." ();
-  assert_valid_model
+  assert_invalid_model
     ~model_source:"def test.function_with_kwargs(normal_arg, crazy_arg, **kwargs): ..."
+    ~expect:
+      "Model signature parameters for `test.function_with_kwargs` do not match implementation `def \
+       function_with_kwargs(normal_arg: unknown, **(unknown)) -> None: ...`. Reason: unexpected \
+       positional parameter: `crazy_arg`."
+    ();
+  assert_valid_model
+    ~model_source:"def test.function_with_kwargs(normal_arg, *, crazy_arg, **kwargs): ..."
     ();
   assert_valid_model ~model_source:"def test.anonymous_only(__a1, __a2, __a3): ..." ();
   assert_valid_model ~model_source:"def test.anonymous_with_optional(__a1, __a2): ..." ();
@@ -1263,6 +1523,15 @@ let test_invalid_models context =
   assert_invalid_model
     ~model_source:"test.C.missing: TaintSink[Test]"
     ~expect:"Class `test.C` has no attribute `missing`."
+    ();
+  assert_invalid_model
+    ~model_source:"test.C().unannotated_class_variable: TaintSink[Test]"
+    ~expect:
+      "Invalid identifier: `test.C().unannotated_class_variable`. Expected a fully-qualified name."
+    ();
+  assert_invalid_model
+    ~model_source:"test.C.unannotated_class_variable: Foo"
+    ~expect:"`Foo` is an invalid taint annotation: Unsupported annotation for attributes"
     ();
   assert_invalid_model
     ~model_source:
@@ -1342,7 +1611,7 @@ let test_invalid_models context =
     |}
     ~expect:
       "Model signature parameters for `test.C.foo` do not match implementation `(self: C) -> int`. \
-       Reason: unexpected named parameter: `value`."
+       Reason: unexpected positional parameter: `value`."
     ();
   assert_valid_model
     ~source:
@@ -1618,9 +1887,8 @@ let test_invalid_models context =
       def test.foo(x): ...
     |}
     ~expect:
-      {|Invalid model for `test.foo`: `ModelParser.T.Source {source = (Sources.T.NamedSource "A");
-  breadcrumbs = [(SimpleVia "featureA")]; path = []; leaf_names = [];
-  leaf_name_provided = false}` is not a supported taint annotation for sanitizers.|}
+      {|Invalid model for `test.foo`: `ModelParser.T.Source {source = A; breadcrumbs = [(SimpleVia "featureA")];
+  path = ; leaf_names = []; leaf_name_provided = false}` is not a supported taint annotation for sanitizers.|}
     ();
   assert_invalid_model
     ~model_source:
@@ -1678,6 +1946,70 @@ let test_invalid_models context =
       @Sanitize
       class test.C: ...
     |}
+    ();
+
+  (* Error on non-existenting callables. *)
+  assert_invalid_model
+    ~model_source:"def not_in_the_environment(parameter: InvalidTaintDirection[Test]): ..."
+    ~expect:"`not_in_the_environment` is not part of the environment!"
+    ();
+  assert_invalid_model
+    ~model_source:"def not_in_the_environment.derp(parameter: InvalidTaintDirection[Test]): ..."
+    ~expect:"`not_in_the_environment.derp` is not part of the environment!"
+    ();
+  assert_invalid_model
+    ~source:
+      {|
+      class Parent:
+        def foo(self) -> int: ...
+      class Child(Parent):
+        pass
+    |}
+    ~model_source:{|
+      def test.Child.foo(self) -> TaintSource[Test]: ...
+    |}
+    ~expect:
+      "The modelled function `test.Child.foo` is an imported function, please model \
+       `test.Parent.foo` directly."
+    ();
+  assert_invalid_model
+    ~source:
+      {|
+      class Parent:
+        @property
+        def foo(self) -> int: ...
+      class Child(Parent):
+        pass
+    |}
+    ~model_source:{|
+      @property
+      def test.Child.foo(self) -> TaintSource[Test]: ...
+    |}
+    ~expect:"`test.Child.foo` is not part of the environment!"
+    ();
+  assert_invalid_model
+    ~source:{|
+      class C:
+        x = ...
+      |}
+    ~model_source:{|
+      test.C.x: Sanitize[TaintInTaintOut[TaintSource[Test]]] = ...
+    |}
+    ~expect:
+      "`Sanitize[TaintInTaintOut[TaintSource[Test]]]` is an invalid taint annotation: \
+       TaintInTaintOut sanitizers cannot be modelled on attributes"
+    ();
+  assert_invalid_model
+    ~source:{|
+      class C:
+        x = ...
+      |}
+    ~model_source:{|
+      test.C.x: Sanitize[TaintInTaintOut[TaintSink[Test]]] = ...
+    |}
+    ~expect:
+      "`Sanitize[TaintInTaintOut[TaintSink[Test]]]` is an invalid taint annotation: \
+       TaintInTaintOut sanitizers cannot be modelled on attributes"
     ();
   ()
 
@@ -2342,7 +2674,7 @@ let test_query_parsing context =
       [
         {
           name = None;
-          query = [ParentConstraint (Extends "Foo")];
+          query = [ParentConstraint (Extends { class_name = "Foo"; is_transitive = false })];
           rule_kind = MethodModel;
           productions =
             [
@@ -2361,6 +2693,74 @@ let test_query_parsing context =
                     (Model.Sink
                        {
                          sink = Sinks.NamedSink "Test";
+                         breadcrumbs = [];
+                         path = [];
+                         leaf_names = [];
+                         leaf_name_provided = false;
+                       });
+                ];
+            ];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     find = "methods",
+     where = parent.extends("Foo", is_transitive=False),
+     model = [Returns([TaintSource[Test]])]
+    )
+  |}
+    ~expect:
+      [
+        {
+          name = None;
+          query = [ParentConstraint (Extends { class_name = "Foo"; is_transitive = false })];
+          rule_kind = MethodModel;
+          productions =
+            [
+              ReturnTaint
+                [
+                  TaintAnnotation
+                    (Model.Source
+                       {
+                         source = Sources.NamedSource "Test";
+                         breadcrumbs = [];
+                         path = [];
+                         leaf_names = [];
+                         leaf_name_provided = false;
+                       });
+                ];
+            ];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     find = "methods",
+     where = parent.extends("Foo", is_transitive=True),
+     model = [Returns([TaintSource[Test]])]
+    )
+  |}
+    ~expect:
+      [
+        {
+          name = None;
+          query = [ParentConstraint (Extends { class_name = "Foo"; is_transitive = true })];
+          rule_kind = MethodModel;
+          productions =
+            [
+              ReturnTaint
+                [
+                  TaintAnnotation
+                    (Model.Source
+                       {
+                         source = Sources.NamedSource "Test";
                          breadcrumbs = [];
                          path = [];
                          leaf_names = [];

@@ -76,7 +76,11 @@
               "end": 24
             },
             "leaves": [ { "kind": "Test", "name": "__test_source" } ],
-            "features": [ { "always-via": "special_source" } ]
+            "features": [
+              { "always-via": "issue-broadening" },
+              { "always-via": "broadening" },
+              { "always-via": "special_source" }
+            ]
           }
         ]
       },
@@ -97,6 +101,8 @@
       }
     ],
     "features": [
+      { "always-via": "issue-broadening" },
+      { "always-via": "broadening" },
       { "always-via": "special_source" },
       { "always-via": "special_sink" }
     ]
@@ -180,7 +186,11 @@
               "end": 54
             },
             "leaves": [ { "kind": "Test", "name": "__test_source" } ],
-            "features": [ { "always-via": "special_source" } ]
+            "features": [
+              { "always-via": "issue-broadening" },
+              { "always-via": "broadening" },
+              { "always-via": "special_source" }
+            ]
           }
         ]
       },
@@ -208,6 +218,8 @@
       }
     ],
     "features": [
+      { "always-via": "issue-broadening" },
+      { "always-via": "broadening" },
       { "always-via": "tito" },
       { "always-via": "special_source" }
     ]
@@ -443,7 +455,11 @@
               "end": 35
             },
             "leaves": [ { "kind": "Test", "name": "__test_source" } ],
-            "features": [ { "always-via": "special_source" } ]
+            "features": [
+              { "always-via": "issue-broadening" },
+              { "always-via": "broadening" },
+              { "always-via": "special_source" }
+            ]
           }
         ]
       },
@@ -464,6 +480,8 @@
       }
     ],
     "features": [
+      { "always-via": "issue-broadening" },
+      { "always-via": "broadening" },
       { "always-via": "special_source" },
       { "always-via": "special_sink" }
     ]
@@ -492,7 +510,11 @@
               "end": 58
             },
             "leaves": [ { "kind": "Test", "name": "__test_source" } ],
-            "features": [ { "always-via": "special_source" } ]
+            "features": [
+              { "always-via": "issue-broadening" },
+              { "always-via": "broadening" },
+              { "always-via": "special_source" }
+            ]
           }
         ]
       },
@@ -513,6 +535,8 @@
       }
     ],
     "features": [
+      { "always-via": "issue-broadening" },
+      { "always-via": "broadening" },
       { "always-via": "special_source" },
       { "always-via": "special_sink" }
     ]
@@ -704,6 +728,8 @@
             "tito": [ { "line": 64, "start": 30, "end": 52 } ],
             "leaves": [ { "kind": "Test", "name": "__test_source" } ],
             "features": [
+              { "always-via": "tito-broadening" },
+              { "always-via": "broadening" },
               { "always-via": "tito" },
               { "always-via": "special_source" }
             ]
@@ -728,6 +754,8 @@
       }
     ],
     "features": [
+      { "always-via": "tito-broadening" },
+      { "always-via": "broadening" },
       { "always-via": "tito" },
       { "always-via": "special_source" }
     ]
@@ -824,6 +852,7 @@
         "taint": [
           {
             "decl": null,
+            "tito": [ { "line": 203, "start": 30, "end": 33 } ],
             "leaves": [ { "kind": "LocalReturn", "name": "" } ],
             "features": [ { "via": "obscure" } ]
           }
@@ -924,7 +953,7 @@
                 "end": 41
               },
               "resolves_to": [ "dictionary.sink_dictionary_through_keys" ],
-              "port": "formal(d)[**keys]",
+              "port": "formal(d).**keys",
               "length": 1
             },
             "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
@@ -1148,7 +1177,7 @@
     "callable": "dictionary.forward_comprehension_key_source",
     "sources": [
       {
-        "port": "result[**keys]",
+        "port": "result.**keys",
         "taint": [
           {
             "root": {
@@ -1225,7 +1254,7 @@
     "sinks": [],
     "tito": [
       {
-        "port": "formal(d)[**keys]",
+        "port": "formal(d).**keys",
         "taint": [
           {
             "decl": null,
@@ -1287,7 +1316,7 @@
     "sources": [],
     "sinks": [
       {
-        "port": "formal(d)[**keys]",
+        "port": "formal(d).**keys",
         "taint": [
           {
             "root": {

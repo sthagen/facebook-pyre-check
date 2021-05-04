@@ -15,8 +15,6 @@ import traceback
 from pathlib import Path
 from typing import Union, Optional, AsyncIterator, Set, List, Sequence, Dict
 
-import async_generator
-
 from ... import (
     json_rpc,
     error,
@@ -25,7 +23,6 @@ from ... import (
     commands,
     configuration as configuration_module,
     statistics,
-    version,
 )
 from . import (
     language_server_protocol as lsp,
@@ -102,6 +99,7 @@ def process_initialize_request(
 class InitializationSuccess:
     client_capabilities: lsp.ClientCapabilities
     client_info: Optional[lsp.Info] = None
+    initialization_options: Optional[lsp.InitializationOptions] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -170,6 +168,7 @@ async def try_initialize(
         return InitializationSuccess(
             client_capabilities=initialize_parameters.capabilities,
             client_info=initialize_parameters.client_info,
+            initialization_options=initialize_parameters.initialization_options,
         )
     except json_rpc.JSONRPCException as json_rpc_error:
         await lsp.write_json_rpc(
@@ -184,7 +183,7 @@ async def try_initialize(
         return InitializationFailure(exception=json_rpc_error)
 
 
-@async_generator.asynccontextmanager
+@connection.asynccontextmanager
 async def _read_lsp_request(
     input_channel: connection.TextReader, output_channel: connection.TextWriter
 ) -> AsyncIterator[json_rpc.Request]:
@@ -235,7 +234,7 @@ class ServerState:
     )
 
 
-class Server:
+class PyreServer:
     # I/O Channels
     input_channel: connection.TextReader
     output_channel: connection.TextWriter
@@ -567,7 +566,7 @@ class PyreServerHandler(connection.BackgroundTask):
                     self.client_output_channel, path, diagnostics
                 )
 
-    @async_generator.asynccontextmanager
+    @connection.asynccontextmanager
     async def _read_server_response(
         self, server_input_channel: connection.TextReader
     ) -> AsyncIterator[str]:
@@ -771,7 +770,7 @@ async def run_persistent(
             client_capabilities = initialize_result.client_capabilities
             LOG.debug(f"Client capabilities: {client_capabilities}")
             initial_server_state = ServerState()
-            server = Server(
+            server = PyreServer(
                 input_channel=stdin,
                 output_channel=stdout,
                 client_capabilities=client_capabilities,

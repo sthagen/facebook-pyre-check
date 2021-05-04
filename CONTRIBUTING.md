@@ -70,15 +70,24 @@ On a high level, Pyre goes through the following steps to when "pyre" is called 
 
 4. Next, pyre will populate the global type environment with the project's sources as well as that of the dependencies. Note that we don't recursively analyze the imports of the project's files, but instead add all sources to the environment at once. This choice makes it easier to parallelize the building of the type environment, but comes at the cost of not being able to depend on a file's dependencies being analyzed when adding it to the type environment. The type environment can be thought of as a collection of hash tables, mapping function, class, global, etc. names into their implementations that can be accessed from shared memory. The type order, which is explained in more detail in a section below, is also built here.
 
-The modules that do the heavy lifting here can be found under `analysis/environment.ml` and `analysis/typeOrder.ml`.
+ The modules that do the heavy lifting here can be found under `analysis/environment.ml` and `analysis/typeOrder.ml`.
 
 5. Once the environment is built, pyre will start type checking all files under the source root in parallel. The key property here is that building the environment in the above step allows pyre to type check each function in parallel. The type checker will not go beyond function call boundaries, which is possible because we will have accumulated the parameter and return annotations of all functions before this step.
 
-During analysis, each function will be processed into a control flow graph to represent the flow of typing information (https://en.wikipedia.org/wiki/Control_flow_graph is a nice introduction to CFG's). The bird's eye view of the algorithm is that we initialize the analysis with the type information from the function's parameter, and follow the control flow of the function to annotate local variables that are encountered. When encountering an attribute access, call, etc., the propagated type information is checked against the already present signature, and an error is generated if the two aren't compatible. The `Abstract Interpretation` section provides a theoretical background for the analysis.
+ During analysis, each function will be processed into a control flow graph to represent the flow of typing information (https://en.wikipedia.org/wiki/Control_flow_graph is a nice introduction to CFG's). The bird's eye view of the algorithm is that we initialize the analysis with the type information from the function's parameter, and follow the control flow of the function to annotate local variables that are encountered. When encountering an attribute access, call, etc., the propagated type information is checked against the already present signature, and an error is generated if the two aren't compatible. The `Abstract Interpretation` section provides a theoretical background for the analysis.
+
+ The module that handles all of the type checking analysis is at `analysis/typeCheck.ml`. You can find the logic building the CFG and the fixpoint that runs the type checking analysis over the CFG at `analysis/cfg.ml` and `analysis/fixpoint.ml`, though the contents of these modules rarely change.
 
 6. TypeCheckService will collect all the errors and return them to the caller. In the case of `pyre check`, all errors will be reported to stdout.
 
 ## Development Tips and Tricks
+
+### Getting Started
+- Install `opam` and run `opam switch install "4.10.2"`
+- Run ` ./scripts/setup.sh`
+- After the setup script runs successfully, you should be able to `cd` into `source` and run `make` to build the Pyre binary
+
+Alternatively, you can also set up using [the Docker image](https://pyre-check.org/docs/installation/#building-from-docker) to build from source.
 
 ### How do I test my OCaml changes against real code?
 When you run pyre on the command line, what runs under the hood is a shim which finds and runs a suitable pyre binary. This works well for production use, but isn't great for testing out your own build of Pyre.
@@ -122,8 +131,12 @@ def foo(x: typing.Optional[int]) -> None:
 Assuming that the test you're interested in running is `analysis/test/integration/methodTest.ml`:
 
 ```bash
-dune exec analysis/test/integration/methodTest.exe
+OUNIT_SHARDS="1" dune exec analysis/test/integration/methodTest.exe
 ```
+
+If you see strange looking lookup errors, it may be because you forgot to set
+the shards to 1, which can mess up tests that rely on a scratch project in
+shared memory.
 
 ## License
 By contributing to Pyre, you agree that your contributions will be licensed

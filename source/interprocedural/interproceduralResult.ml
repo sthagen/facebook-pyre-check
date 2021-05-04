@@ -31,19 +31,6 @@ module type ANALYSIS_PROVIDED = sig
 
   val reached_fixpoint : iteration:int -> previous:call_model -> next:call_model -> bool
 
-  val get_errors : result -> InterproceduralError.t list
-
-  val externalize
-    :  filename_lookup:(Reference.t -> string option) ->
-    Callable.t ->
-    result option ->
-    call_model ->
-    Yojson.Safe.json list
-
-  val metadata : unit -> Yojson.Safe.json
-
-  val statistics : unit -> Yojson.Safe.json
-
   (* remove aspects from the model that are not needed at call sites. Just for optimization. *)
   val strip_for_callsite : call_model -> call_model
 end
@@ -105,12 +92,22 @@ module type ANALYZER = sig
 
   (* Called once on master before analysis of individual callables. *)
   val init
-    :  configuration:Yojson.Safe.json ->
+    :  static_analysis_configuration:Configuration.StaticAnalysis.t ->
     scheduler:Scheduler.t ->
     environment:Analysis.TypeEnvironment.ReadOnly.t ->
     functions:Callable.t list ->
     stubs:Callable.t list ->
     call_model initialize_result
+
+  val report
+    :  scheduler:Scheduler.t ->
+    static_analysis_configuration:Configuration.StaticAnalysis.t ->
+    filename_lookup:(Ast.Reference.t -> string option) ->
+    callables:Callable.Set.t ->
+    skipped_overrides:Ast.Reference.t list ->
+    fixpoint_timer:Timer.t ->
+    fixpoint_iterations:int option ->
+    Yojson.Safe.json list
 end
 
 module type ANALYSIS_RESULT = sig

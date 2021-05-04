@@ -11,6 +11,11 @@ open Pyre
 open Expression
 module PreviousEnvironment = EmptyStubEnvironment
 
+let preprocess_alias_value value =
+  Preprocessing.expand_strings_in_annotation_expression value
+  |> Preprocessing.expand_starred_variadic_in_annotation_expression
+
+
 module AliasValue = struct
   type t = Type.alias option
 
@@ -210,7 +215,7 @@ let extract_alias unannotated_global_environment name ~dependency =
                   Name
                     (Name.Attribute
                       {
-                        base = { Node.value = Name (Name.Identifier "typing"); _ };
+                        base = { Node.value = Name (Name.Identifier "typing_extensions"); _ };
                         attribute = "TypeAlias";
                         _;
                       });
@@ -220,9 +225,7 @@ let extract_alias unannotated_global_environment name ~dependency =
             match Type.Variable.parse_declaration (delocalize value) ~target:name with
             | Some variable -> Some (VariableAlias variable)
             | _ ->
-                let value =
-                  Preprocessing.expand_strings_in_annotation_expression value |> delocalize
-                in
+                let value = preprocess_alias_value value |> delocalize in
                 let value_annotation = Type.create ~aliases:Type.empty_aliases value in
                 if
                   not
@@ -266,7 +269,7 @@ let extract_alias unannotated_global_environment name ~dependency =
 let produce_alias empty_stub_environment global_name ~dependency =
   let maybe_convert_to_recursive_alias alias_reference = function
     | Type.TypeAlias annotation
-      when (not (Identifier.equal (Reference.show alias_reference) "typing"))
+      when (not (Identifier.equal (Reference.show alias_reference) "typing_extensions"))
            && Type.RecursiveType.is_recursive_alias_reference
                 ~alias_name:(Reference.show alias_reference)
                 annotation ->
@@ -392,9 +395,7 @@ module ReadOnly = struct
       Option.value modify_aliases ~default:(fun ?replace_unbound_parameters_with_any:_ name -> name)
     in
     let parsed =
-      let expression =
-        Preprocessing.expand_strings_in_annotation_expression expression |> delocalize
-      in
+      let expression = preprocess_alias_value expression |> delocalize in
       let aliases ?replace_unbound_parameters_with_any name =
         get_alias environment ?dependency name
         >>| modify_aliases ?replace_unbound_parameters_with_any
@@ -440,6 +441,7 @@ module ReadOnly = struct
       delocalize variable_parameter_annotation, delocalize keywords_parameter_annotation
     in
     Type.Variable.Variadic.Parameters.parse_instance_annotation
+      ~create_type:Type.create
       ~aliases:(fun ?replace_unbound_parameters_with_any:_ name ->
         get_alias environment ?dependency name)
       ~variable_parameter_annotation

@@ -40,10 +40,7 @@ type callable_parameter_interval =
    upper bound.
 
    In other words, the type lattice is just Top, Bottom, and individual tuples. The `join` of
-   unequal types is Top and the `meet` of unequal types is Bottom.
-
-   TODO(T84854853): Support unbounded tuples as well. The Top and Bottom should ideally be
-   Tuple[Any, ...]. *)
+   unequal types is Top and the `meet` of unequal types is Bottom. *)
 type tuple_interval =
   | TopTuple
   | BottomTuple
@@ -134,7 +131,7 @@ let exists_in_bounds { unaries; callable_parameters; tuple_variadics; _ } ~varia
     | _ -> false
   in
   let exists_in_tuple_interval_bound = function
-    | SingletonTuple ordered_type -> Type.Tuple (Bounded ordered_type) |> contains_variable
+    | SingletonTuple ordered_type -> Type.Tuple ordered_type |> contains_variable
     | _ -> false
   in
   UnaryVariable.Map.exists unaries ~f:exists_in_interval_bounds
@@ -227,8 +224,8 @@ module Solution = struct
 
 
   let instantiate_ordered_types solution ordered_type =
-    match instantiate solution (Type.Tuple (Bounded ordered_type)) with
-    | Type.Tuple (Bounded instantiated_ordered_type) -> instantiated_ordered_type
+    match instantiate solution (Type.Tuple ordered_type) with
+    | Type.Tuple instantiated_ordered_type -> instantiated_ordered_type
     | _ -> failwith "expected Tuple"
 
 
@@ -545,7 +542,7 @@ module OrderedConstraints (Order : OrderType) = struct
       | _ -> TopTuple
 
 
-    let intersection left right ~order:_ =
+    let intersection left right ~order =
       match left, right with
       | TopTuple, _
       | _, TopTuple ->
@@ -553,10 +550,14 @@ module OrderedConstraints (Order : OrderType) = struct
       | other, BottomTuple
       | BottomTuple, other ->
           Some other
-      | SingletonTuple left, SingletonTuple right
-        when Type.OrderedTypes.equal_record Type.equal left right ->
-          Some (SingletonTuple left)
-      | _, _ -> Some TopTuple
+      | SingletonTuple left, SingletonTuple right ->
+          if Order.always_less_or_equal order ~left:(Type.Tuple left) ~right:(Type.Tuple right) then
+            Some (SingletonTuple right)
+          else if Order.always_less_or_equal order ~left:(Type.Tuple right) ~right:(Type.Tuple left)
+          then
+            Some (SingletonTuple left)
+          else
+            None
 
 
     let narrowest_valid_value interval ~order:_ ~variable:_ =
@@ -573,9 +574,8 @@ module OrderedConstraints (Order : OrderType) = struct
       | BottomTuple ->
           target
       | SingletonTuple ordered_type -> (
-          match Solution.instantiate solution (Type.Tuple (Bounded ordered_type)) with
-          | Type.Tuple (Bounded instantiated_ordered_type) ->
-              SingletonTuple instantiated_ordered_type
+          match Solution.instantiate solution (Type.Tuple ordered_type) with
+          | Type.Tuple instantiated_ordered_type -> SingletonTuple instantiated_ordered_type
           | _ -> failwith "impossible" )
 
 
@@ -592,8 +592,7 @@ module OrderedConstraints (Order : OrderType) = struct
       | TopTuple
       | BottomTuple ->
           []
-      | SingletonTuple ordered_type ->
-          Type.Variable.all_free_variables (Type.Tuple (Bounded ordered_type))
+      | SingletonTuple ordered_type -> Type.Variable.all_free_variables (Type.Tuple ordered_type)
   end
 
   module CallableParametersIntervalContainer = IntervalContainer.Make (CallableParametersInterval)

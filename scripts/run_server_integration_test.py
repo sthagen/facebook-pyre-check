@@ -19,7 +19,7 @@ import tempfile
 from argparse import Namespace
 from contextlib import contextmanager
 from logging import Logger
-from typing import Generator, Optional
+from typing import Tuple, Generator, Optional
 from zipfile import ZipFile
 
 
@@ -45,7 +45,7 @@ def extract_typeshed(typeshed_zip_path: str, base_directory: str) -> str:
     assert_readable_directory(typeshed)
     # Prune all non-essential directories.
     for entry in os.listdir(typeshed):
-        if entry in ["stdlib", "third_party"]:
+        if entry in ["stdlib", "third_party", "stubs"]:
             continue
         full_path = os.path.join(typeshed, entry)
         if os.path.isfile(full_path):
@@ -161,7 +161,7 @@ class Repository:
     def get_repository_directory(self) -> str:
         return self._pyre_directory
 
-    def __iter__(self):
+    def __iter__(self) -> "Repository":
         return self
 
     def __next__(self):
@@ -187,7 +187,7 @@ class Repository:
         # generate the right notifications. Hence, this.
         poor_mans_rsync(original_path, destination_path)
 
-    def get_pyre_errors(self):
+    def get_pyre_errors(self) -> Tuple[str, str]:
         # Run the full check first so that watchman updates have time to propagate.
         check_errors = self.run_pyre("check")
         incremental_errors = self.run_pyre("incremental", "--no-start")

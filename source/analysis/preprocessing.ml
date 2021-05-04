@@ -56,12 +56,28 @@ let transform_string_annotation_expression ~relative =
               { Node.value = Name (Name.Attribute { base; attribute = "__getitem__"; _ }); _ } as
               callee;
             arguments;
+          } -> (
+          match base with
+          | {
+           Node.value =
+             Expression.Name
+               (Name.Attribute
+                 {
+                   base =
+                     {
+                       Node.value =
+                         Expression.Name
+                           (Name.Identifier "typing" | Name.Identifier "typing_extensions");
+                       _;
+                     };
+                   attribute = "Literal";
+                   _;
+                 });
+           _;
           } ->
-          if name_is ~name:"typing_extensions.Literal" base then
-            (* Don't transform arguments in Literals. *)
-            value
-          else
-            Call { callee; arguments = List.map ~f:transform_argument arguments }
+              (* Don't transform arguments in Literals. *)
+              value
+          | _ -> Call { callee; arguments = List.map ~f:transform_argument arguments } )
       | Expression.Call { callee; arguments = variable_name :: remaining_arguments }
         when name_is ~name:"typing.TypeVar" callee
              || name_is ~name:"$local_typing$TypeVar" callee
@@ -622,7 +638,7 @@ let qualify
         let qualified_value =
           let is_potential_alias =
             match qualified_annotation >>| Expression.show with
-            | Some "typing.TypeAlias"
+            | Some "typing_extensions.TypeAlias"
             | None ->
                 is_top_level
             | _ -> false
@@ -938,13 +954,14 @@ let qualify
           scope, value
     in
     scope, { statement with Node.value }
-  and qualify_target ~scope target =
+  and qualify_target ?(in_comprehension = false) ~scope target =
     let rec renamed_scope ({ locals; _ } as scope) target =
+      let has_local name = (not in_comprehension) && Set.mem locals (Reference.create name) in
       match target with
       | { Node.value = Expression.Tuple elements; _ } ->
           List.fold elements ~init:scope ~f:renamed_scope
       | { Node.value = Name (Name.Identifier name); _ } ->
-          if Set.mem locals (Reference.create name) || is_qualified name then
+          if has_local name || is_qualified name then
             scope
           else
             let scope, _, _ = prefix_identifier ~scope ~prefix:"target" name in
@@ -1006,7 +1023,7 @@ let qualify
             (scope, reversed_generators)
             ({ Comprehension.Generator.target; iterator; conditions; _ } as generator)
           =
-          let renamed_scope, target = qualify_target ~scope target in
+          let renamed_scope, target = qualify_target ~in_comprehension:true ~scope target in
           ( renamed_scope,
             {
               generator with
@@ -1050,7 +1067,10 @@ let qualify
                 :: List.map ~f:(qualify_argument ~qualify_strings:true ~scope) remaining_arguments
             | arguments ->
                 let qualify_strings =
-                  if name_is ~name:"typing_extensions.Literal.__getitem__" callee then
+                  if
+                    name_is ~name:"typing_extensions.Literal.__getitem__" callee
+                    || name_is ~name:"typing.Literal.__getitem__" callee
+                  then
                     false
                   else
                     match callee with
@@ -1294,6 +1314,34 @@ let replace_version_specific_code ~major_version ~minor_version ~micro_version s
                 true
             | _ -> false
           in
+          let is_system_version_attribute_access_expression ~attribute = function
+            | {
+                Node.value =
+                  Expression.Name
+                    (Name.Attribute
+                      {
+                        base =
+                          {
+                            Node.value =
+                              Expression.Name
+                                (Name.Attribute
+                                  {
+                                    base =
+                                      { Node.value = Expression.Name (Name.Identifier "sys"); _ };
+                                    attribute = "version_info";
+                                    _;
+                                  });
+                            _;
+                          };
+                        attribute = version_attribute;
+                        _;
+                      });
+                _;
+              }
+              when String.equal attribute version_attribute ->
+                true
+            | _ -> false
+          in
           let is_system_version_tuple_access_expression ?index = function
             | {
                 Node.value =
@@ -1396,6 +1444,15 @@ let replace_version_specific_code ~major_version ~minor_version ~micro_version s
           | Some (operator, left, { Node.value = Expression.Integer given_micro_version; _ })
             when is_system_version_tuple_access_expression ~index:2 left ->
               evaluate_one_version ~operator micro_version given_micro_version |> do_replace
+          | Some (operator, left, { Node.value = Expression.Integer given_major_version; _ })
+            when is_system_version_attribute_access_expression ~attribute:"major" left ->
+              evaluate_one_version ~operator major_version given_major_version |> do_replace
+          | Some (operator, left, { Node.value = Expression.Integer given_minor_version; _ })
+            when is_system_version_attribute_access_expression ~attribute:"minor" left ->
+              evaluate_one_version ~operator minor_version given_minor_version |> do_replace
+          | Some (operator, left, { Node.value = Expression.Integer given_micro_version; _ })
+            when is_system_version_attribute_access_expression ~attribute:"micro" left ->
+              evaluate_one_version ~operator micro_version given_micro_version |> do_replace
           | Some
               ( operator,
                 {
@@ -1460,6 +1517,27 @@ let replace_version_specific_code ~major_version ~minor_version ~micro_version s
               |> do_replace
           | Some (operator, { Node.value = Expression.Integer given_micro_version; _ }, right)
             when is_system_version_tuple_access_expression ~index:2 right ->
+              evaluate_one_version
+                ~operator:(Comparison.inverse operator)
+                micro_version
+                given_micro_version
+              |> do_replace
+          | Some (operator, { Node.value = Expression.Integer given_major_version; _ }, right)
+            when is_system_version_attribute_access_expression ~attribute:"major" right ->
+              evaluate_one_version
+                ~operator:(Comparison.inverse operator)
+                major_version
+                given_major_version
+              |> do_replace
+          | Some (operator, { Node.value = Expression.Integer given_minor_version; _ }, right)
+            when is_system_version_attribute_access_expression ~attribute:"minor" right ->
+              evaluate_one_version
+                ~operator:(Comparison.inverse operator)
+                minor_version
+                given_minor_version
+              |> do_replace
+          | Some (operator, { Node.value = Expression.Integer given_micro_version; _ }, right)
+            when is_system_version_attribute_access_expression ~attribute:"micro" right ->
               evaluate_one_version
                 ~operator:(Comparison.inverse operator)
                 micro_version
@@ -3517,115 +3595,218 @@ let inline_six_metaclass ({ Source.statements; _ } as source) =
   { source with Source.statements = List.map ~f:inline_six_metaclass statements }
 
 
-let expand_starred_type_variable_tuple source =
-  let rec transform_annotation_expression ({ Node.value; _ } as expression) =
-    let transform_argument ({ Call.Argument.value; _ } as argument) =
-      { argument with Call.Argument.value = transform_annotation_expression value }
-    in
-    let value =
-      match value with
-      | Call
+let rec expand_starred_variadic_in_annotation_expression ({ Node.value; _ } as expression) =
+  let transform_argument ({ Call.Argument.value; _ } as argument) =
+    { argument with Call.Argument.value = expand_starred_variadic_in_annotation_expression value }
+  in
+  let value =
+    match value with
+    | Call
+        {
+          callee =
+            {
+              Node.value =
+                Name
+                  (Name.Attribute
+                    {
+                      base =
+                        {
+                          Node.value =
+                            Name
+                              (Name.Attribute
+                                {
+                                  base =
+                                    {
+                                      Node.value =
+                                        Name
+                                          ( Name.Identifier "typing_extensions"
+                                          | Name.Identifier "typing" );
+                                      _;
+                                    };
+                                  attribute = "Literal";
+                                  _;
+                                });
+                          _;
+                        };
+                      attribute = "__getitem__";
+                      _;
+                    });
+              _;
+            };
+          _;
+        } ->
+        (* Don't transform arguments in Literals. *)
+        value
+    | Call
+        {
+          callee =
+            { Node.value = Name (Name.Attribute { attribute = "__getitem__"; _ }); _ } as callee;
+          arguments;
+        } ->
+        Call { callee; arguments = List.map ~f:transform_argument arguments }
+    | Expression.Call { callee; arguments = variable_name :: remaining_arguments }
+      when name_is ~name:"typing.TypeVar" callee
+           || name_is ~name:"$local_typing$TypeVar" callee
+           || name_is ~name:"typing_extensions.IntVar" callee ->
+        Expression.Call
+          {
+            callee;
+            arguments = variable_name :: List.map ~f:transform_argument remaining_arguments;
+          }
+    | Starred
+        (Once
+          {
+            Node.value =
+              ( Name (Name.Identifier _)
+              | Call
+                  {
+                    callee =
+                      { Node.value = Name (Name.Attribute { attribute = "__getitem__"; _ }); _ };
+                    _;
+                  } ) as starred_value;
+            location;
+          }) ->
+        Expression.Call
           {
             callee =
               {
-                Node.value =
-                  Name
-                    (Name.Attribute
-                      {
-                        base =
-                          {
-                            Node.value =
-                              Name
-                                (Name.Attribute
-                                  {
-                                    base =
-                                      { Node.value = Name (Name.Identifier "typing_extensions"); _ };
-                                    attribute = "Literal";
-                                    _;
-                                  });
-                            _;
-                          };
-                        attribute = "__getitem__";
-                        _;
-                      });
-                _;
+                Node.location;
+                value =
+                  Expression.Name
+                    (Attribute
+                       {
+                         base =
+                           {
+                             Node.location;
+                             value =
+                               Name
+                                 (Name.Attribute
+                                    {
+                                      base =
+                                        {
+                                          Node.location;
+                                          value = Name (Identifier "pyre_extensions");
+                                        };
+                                      attribute = "Unpack";
+                                      special = false;
+                                    });
+                           };
+                         attribute = "__getitem__";
+                         special = true;
+                       });
               };
-            _;
-          } ->
-          (* Don't transform arguments in Literals. *)
-          value
-      | Call
-          {
-            callee =
-              { Node.value = Name (Name.Attribute { attribute = "__getitem__"; _ }); _ } as callee;
-            arguments;
-          } ->
-          Call { callee; arguments = List.map ~f:transform_argument arguments }
-      | Expression.Call { callee; arguments = variable_name :: remaining_arguments }
-        when name_is ~name:"typing.TypeVar" callee
-             || name_is ~name:"$local_typing$TypeVar" callee
-             || name_is ~name:"typing_extensions.IntVar" callee ->
-          Expression.Call
-            {
-              callee;
-              arguments = variable_name :: List.map ~f:transform_argument remaining_arguments;
-            }
-      | Starred
-          (Once
+            arguments =
+              [
+                {
+                  name = None;
+                  value =
+                    expand_starred_variadic_in_annotation_expression
+                      { Node.location; value = starred_value };
+                };
+              ];
+          }
+    | Tuple elements ->
+        Tuple (List.map elements ~f:expand_starred_variadic_in_annotation_expression)
+    | List elements -> List (List.map elements ~f:expand_starred_variadic_in_annotation_expression)
+    | _ -> value
+  in
+  { expression with Node.value }
+
+
+let expand_starred_type_variable_tuple source =
+  transform_annotations
+    ~transform_annotation_expression:expand_starred_variadic_in_annotation_expression
+    source
+
+
+(* Special syntax added to support configerator. *)
+let expand_import_python_calls ({ Source.source_path = { SourcePath.qualifier; _ }; _ } as source) =
+  let module Transform = Transform.MakeStatementTransformer (struct
+    type t = Reference.t
+
+    let statement qualifier { Node.location; value } =
+      let value =
+        match value with
+        | Statement.Expression
             {
               Node.value =
-                ( Name (Name.Identifier _)
-                | Call
-                    {
-                      callee =
-                        { Node.value = Name (Name.Attribute { attribute = "__getitem__"; _ }); _ };
-                      _;
-                    } ) as starred_value;
-              location;
-            }) ->
-          Expression.Call
-            {
-              callee =
-                {
-                  Node.location;
-                  value =
-                    Expression.Name
-                      (Attribute
-                         {
-                           base =
-                             {
-                               Node.location;
-                               value =
-                                 Name
-                                   (Name.Attribute
-                                      {
-                                        base =
-                                          {
-                                            Node.location;
-                                            value = Name (Identifier "pyre_extensions");
-                                          };
-                                        attribute = "Unpack";
-                                        special = false;
-                                      });
-                             };
-                           attribute = "__getitem__";
-                           special = true;
-                         });
-                };
-              arguments =
-                [
+                Call
                   {
-                    name = None;
-                    value = transform_annotation_expression { Node.location; value = starred_value };
+                    callee =
+                      { Node.value = Name (Name.Identifier ("import_python" | "import_thrift")); _ };
+                    arguments =
+                      [
+                        {
+                          Call.Argument.value =
+                            { Node.value = Expression.String { value = from_name; _ }; _ };
+                          _;
+                        };
+                      ];
                   };
-                ];
-            }
-      | Tuple elements -> Tuple (List.map elements ~f:transform_annotation_expression)
-      | _ -> value
-    in
-    { expression with Node.value }
+              location;
+            } ->
+            Statement.Import
+              {
+                Import.from = None;
+                imports =
+                  [
+                    {
+                      Import.alias = None;
+                      name =
+                        {
+                          Node.value =
+                            Reference.create
+                              (String.substr_replace_all ~pattern:"/" ~with_:"." from_name);
+                          location;
+                        };
+                    };
+                  ];
+              }
+        | Statement.Expression
+            {
+              Node.value =
+                Call
+                  {
+                    callee =
+                      { Node.value = Name (Name.Identifier ("import_python" | "import_thrift")); _ };
+                    arguments =
+                      {
+                        Call.Argument.value =
+                          { Node.value = Expression.String { value = from_name; _ }; _ };
+                        _;
+                      }
+                      :: imports;
+                  };
+              location;
+            } ->
+            let create_import from_name =
+              let imports =
+                List.filter_map imports ~f:(fun { Call.Argument.value; _ } ->
+                    match Node.value value with
+                    | Expression.String { value = name; _ } ->
+                        Some
+                          {
+                            Import.alias = None;
+                            name =
+                              { Node.value = Reference.create name; location = Node.location value };
+                          }
+                    | _ -> None)
+              in
+              let formatted_from_name =
+                String.substr_replace_all ~pattern:"/" ~with_:"." from_name
+              in
+              {
+                Import.from = Some { Node.value = Reference.create formatted_from_name; location };
+                imports;
+              }
+            in
+            Statement.Import (create_import from_name)
+        | _ -> value
+      in
+      qualifier, [{ Node.location; value }]
+  end)
   in
-  transform_annotations ~transform_annotation_expression source
+  Transform.transform qualifier source |> Transform.source
 
 
 let preprocess_phase0 source =
@@ -3635,6 +3816,7 @@ let preprocess_phase0 source =
   |> expand_type_checking_imports
   |> expand_format_string
   |> expand_implicit_returns
+  |> expand_import_python_calls
 
 
 let preprocess_phase1 source =

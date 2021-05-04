@@ -470,6 +470,15 @@ let test_qualify _ =
   assert_qualify_statement
     "b = 1\nfor b in []: pass"
     "$local_qualifier$b = 1\nfor $local_qualifier$b in []: pass";
+  assert_qualify_statement
+    "b = 1\n[b for b in []]"
+    "$local_qualifier$b = 1\n[$target$b for $target$b in []]";
+  assert_qualify_statement
+    "b = 1\n[b for a in []]"
+    "$local_qualifier$b = 1\n[$local_qualifier$b for $target$a in []]";
+  assert_qualify_statement
+    "b = 1\n[b for b in []]"
+    "$local_qualifier$b = 1\n[$target$b for $target$b in []]";
   assert_qualify_statement "\nif b:\n\tb\nelse:\n\tb" "\nif a:\n\ta\nelse:\n\ta";
   assert_qualify_statement "raise b" "raise a";
   assert_qualify_statement "return b" "return a";
@@ -749,16 +758,16 @@ let test_qualify _ =
     |};
   assert_qualify
     {|
-      from typing import TypeAlias
+      from typing_extensions import TypeAlias
 
       class C: ...
       my_alias: TypeAlias = "C"
     |}
     {|
-      from typing import TypeAlias
+      from typing_extensions import TypeAlias
 
       class qualifier.C: ...
-      $local_qualifier$my_alias: typing.TypeAlias = "qualifier.C"
+      $local_qualifier$my_alias: typing_extensions.TypeAlias = "qualifier.C"
     |};
   (* Don't qualify the TypeVar name argument. *)
   assert_qualify
@@ -1700,10 +1709,10 @@ let test_qualify _ =
     |};
   assert_qualify
     {|
-      def foo(*args, **kwargs): ...
+      def foo( *args, **kwargs): ...
     |}
     {|
-      def qualifier.foo(*$parameter$args, **$parameter$kwargs): ...
+      def qualifier.foo( *$parameter$args, **$parameter$kwargs): ...
     |};
   (* Class with the same name as the module. *)
   assert_qualify {|
@@ -2118,6 +2127,84 @@ let test_replace_version_specific_code _ =
     |}
     {|
       a = 2
+    |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
+    {|
+      if sys.version_info.major == 3:
+        a = 1
+      else:
+        a = 2
+    |}
+    {|
+      a = 1
+    |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
+    {|
+      if sys.version_info.minor == 4:
+        a = 1
+      else:
+        a = 2
+    |}
+    {|
+      a = 1
+    |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
+    {|
+      if sys.version_info.micro == 10:
+        a = 1
+      else:
+        a = 2
+    |}
+    {|
+      a = 1
+    |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
+    {|
+      if 3 == sys.version_info.major:
+        a = 1
+      else:
+        a = 2
+    |}
+    {|
+      a = 1
+    |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
+    {|
+      if 4 == sys.version_info.minor:
+        a = 1
+      else:
+        a = 2
+    |}
+    {|
+      a = 1
+    |};
+  assert_preprocessed
+    ~major_version:3
+    ~minor_version:4
+    ~micro_version:10
+    {|
+      if 10 == sys.version_info.micro:
+        a = 1
+      else:
+        a = 2
+    |}
+    {|
+      a = 1
     |};
   ()
 
@@ -5480,6 +5567,70 @@ let test_expand_starred_type_variable_tuples _ =
       pyre_extensions.Unpack[Tuple[pyre_extensions.Unpack[Ts], pyre_extensions.Unpack[Ts]]]
     ]: ...
   |};
+  assert_expand
+    {|
+    f: typing.Callable[[int, *Ts, str], Tuple[int, *Ts, str]]
+  |}
+    {|
+    f: typing.Callable[
+        [int, pyre_extensions.Unpack[Ts], str], Tuple[int, pyre_extensions.Unpack[Ts], str]
+    ]
+  |};
+  assert_expand
+    {|
+    f: typing.Callable[
+        [typing.Callable[[int, *Ts, str], Tuple[int, *Ts, str]]],
+        typing.Callable[[int, *Ts, *Ts2], bool],
+    ]
+  |}
+    {|
+    f: typing.Callable[
+        [
+            typing.Callable[
+                [int, pyre_extensions.Unpack[Ts], str],
+                Tuple[int, pyre_extensions.Unpack[Ts], str],
+            ]
+        ],
+        typing.Callable[
+            [int, pyre_extensions.Unpack[Ts], pyre_extensions.Unpack[Ts2]], bool
+        ],
+    ]
+  |};
+  ()
+
+
+let test_expand_import_python_calls _ =
+  let assert_expand ?(handle = "test.py") source expected =
+    let expected = parse ~handle ~coerce_special_methods:true expected in
+    let actual = parse ~handle source |> Preprocessing.expand_import_python_calls in
+    assert_source_equal ~location_insensitive:true expected actual
+  in
+  assert_expand {|
+     import_python("a", "*")
+  |} {|
+    from a import *
+  |};
+  assert_expand
+    {|
+      import_python("cubism/shared.cinc", "*")
+    |}
+    {|
+      from cubism.shared.cinc import *
+    |};
+  assert_expand
+    {|
+      import_python("cubism/shared.cinc")
+    |}
+    {|
+      import cubism.shared.cinc
+    |};
+  assert_expand
+    {|
+      import_thrift("cubism/shared.thrift")
+    |}
+    {|
+      import cubism.shared.thrift
+    |};
   ()
 
 
@@ -5509,5 +5660,6 @@ let () =
          "union_shorthand" >:: test_union_shorthand;
          "six_metaclass_decorator" >:: test_six_metaclass_decorator;
          "expand_starred_type_variable_tuples" >:: test_expand_starred_type_variable_tuples;
+         "expand_import_python_calls" >:: test_expand_import_python_calls;
        ]
   |> Test.run

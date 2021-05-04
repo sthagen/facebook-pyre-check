@@ -18,7 +18,7 @@ let test_partition_call_map _ =
       Location.WithModule.any
       ~callees:[]
       ~port:AccessPath.Root.LocalResult
-      ~path:[Abstract.TreeDomain.Label.create_name_field "a"]
+      ~path:[Abstract.TreeDomain.Label.create_name_index "a"]
       ~element:taint
   in
   let call_taint2 =
@@ -46,7 +46,8 @@ let test_partition_call_map _ =
   let matches, does_not_match =
     ForwardTaint.partition
       ForwardTaint.leaf
-      ~f:(fun leaf -> Some (Sources.equal leaf (Sources.NamedSource "UserControlled")))
+      By
+      ~f:(fun leaf -> Sources.equal leaf (Sources.NamedSource "UserControlled"))
       joined
     |> split
   in
@@ -74,29 +75,28 @@ let test_approximate_complex_access_paths _ =
   in
   let create ~features =
     ForwardState.Tree.create_leaf (ForwardTaint.singleton (Sources.NamedSource "Demo"))
-    |> ForwardState.Tree.transform
-         ForwardTaint.complex_feature_set
-         (Abstract.Domain.Map (fun _ -> features))
+    |> ForwardState.Tree.transform ForwardTaint.complex_feature_set Map ~f:(fun _ ->
+           Features.ComplexSet.of_list features)
   in
   assert_approximate_complex_access_paths
     ~expected:
-      (create ~features:[Features.Complex.ReturnAccessPath [Abstract.TreeDomain.Label.Field "a"]])
+      (create ~features:[Features.Complex.ReturnAccessPath [Abstract.TreeDomain.Label.Index "a"]])
     ~cutoff_at:2
-    (create ~features:[Features.Complex.ReturnAccessPath [Abstract.TreeDomain.Label.Field "a"]]);
+    (create ~features:[Features.Complex.ReturnAccessPath [Abstract.TreeDomain.Label.Index "a"]]);
   assert_approximate_complex_access_paths
     ~expected:
       (create
          ~features:
            [
-             Features.Complex.ReturnAccessPath [Abstract.TreeDomain.Label.Field "a"];
-             Features.Complex.ReturnAccessPath [Abstract.TreeDomain.Label.Field "b"];
+             Features.Complex.ReturnAccessPath [Abstract.TreeDomain.Label.Index "a"];
+             Features.Complex.ReturnAccessPath [Abstract.TreeDomain.Label.Index "b"];
            ])
     ~cutoff_at:2
     (create
        ~features:
          [
-           Features.Complex.ReturnAccessPath [Abstract.TreeDomain.Label.Field "a"];
-           Features.Complex.ReturnAccessPath [Abstract.TreeDomain.Label.Field "b"];
+           Features.Complex.ReturnAccessPath [Abstract.TreeDomain.Label.Index "a"];
+           Features.Complex.ReturnAccessPath [Abstract.TreeDomain.Label.Index "b"];
          ]);
   assert_approximate_complex_access_paths
     ~expected:(create ~features:[Features.Complex.ReturnAccessPath []])
@@ -104,9 +104,9 @@ let test_approximate_complex_access_paths _ =
     (create
        ~features:
          [
-           Features.Complex.ReturnAccessPath [Abstract.TreeDomain.Label.Field "a"];
-           Features.Complex.ReturnAccessPath [Abstract.TreeDomain.Label.Field "b"];
-           Features.Complex.ReturnAccessPath [Abstract.TreeDomain.Label.Field "c"];
+           Features.Complex.ReturnAccessPath [Abstract.TreeDomain.Label.Index "a"];
+           Features.Complex.ReturnAccessPath [Abstract.TreeDomain.Label.Index "b"];
+           Features.Complex.ReturnAccessPath [Abstract.TreeDomain.Label.Index "c"];
          ])
 
 

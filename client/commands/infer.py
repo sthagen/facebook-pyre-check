@@ -8,15 +8,17 @@
 import functools
 import json
 import logging
+import multiprocessing
 import os
 import re
 import shutil
 import subprocess
 import sys
 from collections import defaultdict
+from dataclasses import dataclass
 from logging import Logger
 from pathlib import Path
-from typing import IO, Any, Dict, List, Optional, Sequence, Set, Union
+from typing import IO, Dict, List, Optional, Sequence, Set, Union
 
 import libcst
 from libcst.codemod import CodemodContext
@@ -129,7 +131,7 @@ class FunctionStub:
     def _get_decorator_string(self) -> str:
         decorator_string = ""
         for decorator in self.decorators:
-            decorator_string += "@{}\n".format(decorator)
+            decorator_string += f"@{decorator}\n"
         return decorator_string
 
     def _get_async_string(self) -> str:
@@ -145,6 +147,7 @@ class FunctionStub:
         return True
 
     def to_string(self) -> str:
+        # lint-fixme: UseFstringRule
         return "{}{}def {}({}){}: ...".format(
             self._get_decorator_string(),
             self._get_async_string(),
@@ -187,9 +190,7 @@ class FieldStub:
         return self.name.split(".")[-1] if self.name.split(".") else ""
 
     def to_string(self) -> str:
-        return "{}: {} = ...".format(
-            self._get_name(), dequalify_and_fix_pathlike(self.actual)
-        )
+        return f"{self._get_name()}: {dequalify_and_fix_pathlike(self.actual)} = ..."  # noqa
 
     @functools.lru_cache(maxsize=1)
     def get_typing_imports(self) -> Set[str]:
@@ -302,29 +303,28 @@ class StubFile:
             contents += stub.to_string() + "\n"
 
         for parent, stubs in classes.items():
-            contents += "\nclass {}:\n".format(parent)
+            contents += f"\nclass {parent}:\n"
             for stub in stubs:
                 stubs_in_file.append(stub)
-                contents += "    {}\n".format(stub.to_string().replace("\n", "\n    "))
+                tabbed_stub = stub.to_string().replace("\n", "\n    ")
+                contents += f"    {tabbed_stub}\n"
 
         for stub in stubs_in_file:
             typing_imports.update(stub.get_typing_imports())
             alphabetical_imports = sorted(typing_imports)
 
         if alphabetical_imports and contents != "":
-            contents = (
-                "from typing import {}\n\n".format(
-                    ", ".join(str(type_import) for type_import in alphabetical_imports)
-                )
-                + contents
+            typing_imports = ", ".join(
+                str(type_import) for type_import in alphabetical_imports
             )
+            contents = f"from typing import {typing_imports}\n\n{contents}"
         return contents
 
     def is_empty(self) -> bool:
         return self._stubs == []
 
     def path(self, directory) -> Path:
-        return directory / Path("{}i".format(self._path))
+        return directory / Path(f"{self._path}i")
 
     def output_to_file(self, path) -> None:
         contents = self.to_string()
@@ -355,11 +355,11 @@ def write_stubs_to_disk(
     type_directory: Path,
 ) -> None:
     if type_directory.exists():
-        LOG.log(log.SUCCESS, "Deleting {}".format(type_directory))
+        LOG.log(log.SUCCESS, f"Deleting {type_directory}")
         shutil.rmtree(type_directory)
     type_directory.mkdir(parents=True, exist_ok=True)
 
-    LOG.log(log.SUCCESS, "Outputting inferred stubs to {}".format(type_directory))
+    LOG.log(log.SUCCESS, f"Outputting inferred stubs to {type_directory}")
     for stub in stubs:
         stub.output_to_file(stub.path(type_directory))
 
@@ -373,7 +373,7 @@ def filter_paths(
         if all(not str(stub.path(Path(""))).startswith(str(path)) for stub in stubs)
     ]
     for path in unused_annotates:
-        LOG.log(log.SUCCESS, "No annotations for {}".format(path))
+        LOG.log(log.SUCCESS, f"No annotations for {path}")
 
     return [
         stub
@@ -402,58 +402,22 @@ def annotate_path(stub_path: str, file_path: str, debug_infer: bool) -> None:
         annotated_content = apply_stub_annotations(stub_path, file_path)
         with open(file_path, "w") as source_file:
             source_file.write(annotated_content)
-        LOG.info("Annotated {}".format(file_path))
+        LOG.info(f"Annotated {file_path}")
     except Exception as error:
-        LOG.warning("Failed to annotate {}".format(file_path))
+        LOG.warning(f"Failed to annotate {file_path}")
         if debug_infer:
-            LOG.warning("\tError: {}".format(error))
+            LOG.warning(f"\tError: {error}")
 
 
-def annotate_paths(
-    root,
-    formatter: Optional[str],
-    stubs: Sequence[StubFile],
-    type_directory: Path,
-    in_place: Sequence[str],
-    debug_infer: bool,
-) -> None:
-    if in_place != []:
-        stubs = filter_paths(stubs, type_directory, in_place)
-
-    for stub in stubs:
-        stub_path = stub.path(type_directory)
-        if not stub._path.resolve().exists():
-            file_path = (root / stub._path).resolve()
-        else:
-            file_path = stub._path.resolve()
-        annotate_path(str(stub_path), file_path, debug_infer)
-    if formatter:
-        subprocess.call(formatter, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+@dataclass
+class AnnotatePathArguments:
+    stub_path: str
+    file_path: str
+    debug_infer: bool
 
 
-def annotate_from_existing_stubs(
-    root: Path,
-    formatter: Optional[str],
-    type_directory: Path,
-    in_place: Sequence[str],
-    debug_infer: bool,
-) -> None:
-    in_place_paths = [Path(path) for path in in_place]
-    for stub_path in type_directory.rglob("*.pyi"):
-        relative_source_path_for_stub = stub_path.relative_to(
-            type_directory
-        ).with_suffix(".py")
-
-        if in_place_paths == [] or any(
-            path
-            in (relative_source_path_for_stub, *relative_source_path_for_stub.parents)
-            for path in in_place_paths
-        ):
-            annotate_path(
-                str(stub_path), str(root / relative_source_path_for_stub), debug_infer
-            )
-    if formatter:
-        subprocess.call(formatter, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def annotate_path_from_arguments(arguments: AnnotatePathArguments) -> None:
+    annotate_path(arguments.stub_path, arguments.file_path, arguments.debug_infer)
 
 
 def _existing_annotations_as_errors(
@@ -533,7 +497,7 @@ class Infer(Reporting):
             type_directory = Path(
                 os.path.join(self._configuration.log_directory, "types")
             )
-            annotate_from_existing_stubs(
+            self._annotate_from_stubs(
                 Path(self._original_directory),
                 self._configuration.formatter,
                 type_directory,
@@ -574,7 +538,7 @@ class Infer(Reporting):
             write_stubs_to_disk(stubs, type_directory)
             if self._in_place is not None:
                 LOG.info("Annotating files")
-                annotate_paths(
+                self._annotate_paths(
                     self._configuration.local_root,
                     self._configuration.formatter,
                     stubs,
@@ -601,6 +565,10 @@ class Infer(Reporting):
         if search_path:
             flags.extend(["-search-path", ",".join(search_path)])
 
+        excludes = self._configuration.excludes
+        for exclude in excludes:
+            flags.extend(["-exclude", exclude])
+
         if len(self._ignore_infer) > 0:
             flags.extend(["-ignore-infer", ";".join(self._ignore_infer)])
         return flags
@@ -620,3 +588,74 @@ class Infer(Reporting):
     def _get_errors_from_stdin(self) -> Result:
         input = sys.stdin.read()
         return Result(0, json.dumps({"errors": json.loads(input)}))
+
+    def _clean_errors(self) -> None:
+        result = self._call_client(command="check")
+        errors = self._get_errors(result)
+        error_json = json.dumps([error.to_json() for error in errors])
+        subprocess.run("pyre-upgrade fixme", input=error_json)
+
+    def _annotate_paths(
+        self,
+        root,
+        formatter: Optional[str],
+        stubs: Sequence[StubFile],
+        type_directory: Path,
+        in_place: Sequence[str],
+        debug_infer: bool,
+    ) -> None:
+        if in_place != []:
+            stubs = filter_paths(stubs, type_directory, in_place)
+
+        tasks = []
+        for stub in stubs:
+            stub_path = stub.path(type_directory)
+            if not stub._path.resolve().exists():
+                file_path = (root / stub._path).resolve()
+            else:
+                file_path = stub._path.resolve()
+            tasks.append(AnnotatePathArguments(str(stub_path), file_path, debug_infer))
+
+        number_workers = self._configuration.get_number_of_workers()
+        with multiprocessing.Pool(number_workers) as pool:
+            for _ in pool.imap_unordered(annotate_path_from_arguments, tasks):
+                pass
+
+        if formatter:
+            subprocess.call(
+                formatter, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            self._clean_errors()
+
+    def _annotate_from_stubs(
+        self,
+        root: Path,
+        formatter: Optional[str],
+        type_directory: Path,
+        in_place: Sequence[str],
+        debug_infer: bool,
+    ) -> None:
+        in_place_paths = [Path(path) for path in in_place]
+        for stub_path in type_directory.rglob("*.pyi"):
+            relative_source_path_for_stub = stub_path.relative_to(
+                type_directory
+            ).with_suffix(".py")
+
+            if in_place_paths == [] or any(
+                path
+                in (
+                    relative_source_path_for_stub,
+                    *relative_source_path_for_stub.parents,
+                )
+                for path in in_place_paths
+            ):
+                annotate_path(
+                    str(stub_path),
+                    str(root / relative_source_path_for_stub),
+                    debug_infer,
+                )
+        if formatter:
+            subprocess.call(
+                formatter, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            self._clean_errors()

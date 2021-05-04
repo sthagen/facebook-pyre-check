@@ -297,7 +297,7 @@ let test_due_to_analysis_limitations _ =
          callee = Some !&"callee";
          mismatch =
            {
-             Error.actual = Type.Primitive "typing.TypeAlias";
+             Error.actual = Type.Primitive "typing_extensions.TypeAlias";
              expected = Type.Top;
              due_to_invariance = false;
            };
@@ -779,6 +779,28 @@ let test_suppress _ =
   assert_not_suppressed Source.Strict (missing_return Type.Any);
   assert_not_suppressed Source.Strict (Error.AnalysisFailure "int");
   assert_suppressed Source.Unsafe (missing_return Type.Top);
+  assert_not_suppressed
+    Source.Strict
+    (Error.InvalidDecoration
+       {
+         decorator =
+           {
+             Decorator.name = Reference.create "test" |> Node.create_with_default_location;
+             arguments = None;
+           };
+         reason = CouldNotResolve;
+       });
+  assert_suppressed
+    Source.Unsafe
+    (Error.InvalidDecoration
+       {
+         decorator =
+           {
+             Decorator.name = Reference.create "test" |> Node.create_with_default_location;
+             arguments = None;
+           };
+         reason = CouldNotResolve;
+       });
 
   (* Should not be made *)
   assert_not_suppressed Source.Unsafe (incompatible_return_type Type.integer Type.Any);

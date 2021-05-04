@@ -4,7 +4,7 @@
     ".*/generate_taint_models/.*",
     ".*/scripts/.*",
     ".*/source/.*",
-    ".*/stubs/.*"
+    ".*/pyre-check/stubs/.*"
   ],
   "ignore_all_errors": [
     "client/tests/configuration_test.py",
@@ -50,5 +50,5 @@
     "."
   ],
   "strict": true,
-  "version": "0.0.101614082229"
+  "version": "0.0.101619521806"
 }

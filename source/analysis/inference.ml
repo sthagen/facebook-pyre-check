@@ -659,7 +659,7 @@ module State (Context : Context) = struct
                     |> Option.value ~default:resolution
                 | Tuple arguments -> (
                     match parameter_annotation with
-                    | Type.Tuple (Type.Bounded (Concrete parameter_annotations))
+                    | Type.Tuple (Concrete parameter_annotations)
                       when List.length arguments = List.length parameter_annotations ->
                         List.fold2_exn
                           ~init:resolution
@@ -728,8 +728,12 @@ module State (Context : Context) = struct
             | Tuple values ->
                 let parameters =
                   match target_annotation with
-                  | Type.Tuple (Type.Bounded (Concrete parameters)) -> parameters
-                  | Type.Tuple (Type.Unbounded parameter) -> List.map values ~f:(fun _ -> parameter)
+                  | Type.Tuple (Concrete parameters) -> parameters
+                  | Type.Tuple (Concatenation concatenation) ->
+                      Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation
+                        concatenation
+                      >>| (fun annotation -> List.map values ~f:(fun _ -> annotation))
+                      |> Option.value ~default:[]
                   | _ -> []
                 in
                 if List.length values = List.length parameters then
@@ -765,7 +769,7 @@ module State (Context : Context) = struct
             |> Annotation.annotation
           in
           match return_annotation with
-          | Tuple (Bounded (Concrete parameters))
+          | Tuple (Concrete parameters)
             when Int.equal (List.length parameters) (List.length expressions) ->
               List.fold2_exn
                 parameters
@@ -784,119 +788,207 @@ end
 
 let name = "Inference"
 
-let run
+(* Perform a local type analysis to infer parameter and return type annotations. *)
+let infer_local
     ~configuration
     ~global_resolution
-    ~source:
-      ( {
-          Source.source_path = { SourcePath.qualifier; relative; is_stub; _ };
-          metadata = { local_mode; ignore_codes; _ };
-          _;
-        } as source )
-  =
-  Log.debug "Checking %s..." relative;
-  let dequalify_map = Preprocessing.dequalify_map source in
-  let check
+    ~source:{ Source.source_path = { SourcePath.qualifier; relative; _ }; _ }
+    ~define:
       ( {
           Node.location;
           value = { Define.signature = { name = { Node.value = name; _ }; _ }; _ } as define;
         } as define_node )
-    =
-    let module State = State (struct
-      let configuration = configuration
+  =
+  let module State = State (struct
+    let configuration = configuration
 
-      let qualifier = qualifier
+    let qualifier = qualifier
 
-      let define = Node.create ~location define
-    end)
-    in
-    let resolution = TypeCheck.resolution global_resolution (module State.TypeCheckContext) in
+    let define = Node.create ~location define
+  end)
+  in
+  let resolution = TypeCheck.resolution global_resolution (module State.TypeCheckContext) in
 
-    let module Fixpoint = Fixpoint.Make (State) in
-    Log.log ~section:`Check "Checking %a" Reference.pp name;
-    let dump = Define.dump define in
-    if dump then (
-      Log.dump "Checking `%s`..." (Log.Color.yellow (Reference.show name));
-      Log.dump "AST:\n%s" (AnnotatedDefine.create define_node |> AnnotatedDefine.show) );
-    let print_state name state =
-      if dump then
-        Log.dump "%s state:\n%a" name State.pp state;
-      state
-    in
-    try
-      let cfg = Cfg.create define in
-      let backward_fixpoint ~initial_forward ~initialize_backward =
-        let rec fixpoint iteration ~initial_forward ~initialize_backward =
-          let invariants =
-            Fixpoint.forward ~cfg ~initial:initial_forward
-            |> Fixpoint.exit
-            >>| (fun forward_state -> initialize_backward ~forward:forward_state)
-            |> Option.value ~default:initial_forward
-            |> fun initial -> Fixpoint.backward ~cfg ~initial
-          in
-          let entry =
-            invariants
-            |> Fixpoint.entry
-            >>| State.update_only_existing_annotations initial_forward
-            >>| (fun post -> State.widen ~previous:initial_forward ~next:post ~iteration)
-            |> Option.value ~default:initial_forward
-          in
-          if State.less_or_equal ~left:entry ~right:initial_forward then
-            invariants
-          else
-            fixpoint (iteration + 1) ~initial_forward:entry ~initialize_backward
+  let module Fixpoint = Fixpoint.Make (State) in
+  Log.log ~section:`Check "Checking %a" Reference.pp name;
+  let dump = Define.dump define in
+  if dump then (
+    Log.dump "Checking `%s`..." (Log.Color.yellow (Reference.show name));
+    Log.dump "AST:\n%s" (AnnotatedDefine.create define_node |> AnnotatedDefine.show) );
+  let print_state name state =
+    if dump then
+      Log.dump "%s state:\n%a" name State.pp state;
+    state
+  in
+  try
+    let cfg = Cfg.create define in
+    let backward_fixpoint ~initial_forward ~initialize_backward =
+      let rec fixpoint iteration ~initial_forward ~initialize_backward =
+        let invariants =
+          Fixpoint.forward ~cfg ~initial:initial_forward
+          |> Fixpoint.exit
+          >>| (fun forward_state -> initialize_backward ~forward:forward_state)
+          |> Option.value ~default:initial_forward
+          |> fun initial -> Fixpoint.backward ~cfg ~initial
         in
-        fixpoint 0 ~initial_forward ~initialize_backward
-      in
-      let exit =
-        backward_fixpoint
-          ~initial_forward:(State.initial_forward ~resolution)
-          ~initialize_backward:State.initial_backward
-        |> Fixpoint.entry
-        >>| print_state "Entry"
-        >>| State.check_entry
-      in
-      let errors =
-        let errors = exit >>| State.errors |> Option.value ~default:[] in
-        if configuration.debug then
-          errors
+        let entry =
+          invariants
+          |> Fixpoint.entry
+          >>| State.update_only_existing_annotations initial_forward
+          >>| (fun post -> State.widen ~previous:initial_forward ~next:post ~iteration)
+          |> Option.value ~default:initial_forward
+        in
+        if State.less_or_equal ~left:entry ~right:initial_forward then
+          invariants
         else
-          let keep_error error =
-            let mode = Source.mode ~configuration ~local_mode in
-            not (Error.suppress ~mode ~ignore_codes error)
+          fixpoint (iteration + 1) ~initial_forward:entry ~initialize_backward
+      in
+      fixpoint 0 ~initial_forward ~initialize_backward
+    in
+    let exit =
+      backward_fixpoint
+        ~initial_forward:(State.initial_forward ~resolution)
+        ~initialize_backward:State.initial_backward
+      |> Fixpoint.entry
+      >>| print_state "Entry"
+      >>| State.check_entry
+    in
+    exit >>| State.errors |> Option.value ~default:[]
+  with
+  | ClassHierarchy.Untracked annotation ->
+      Statistics.event
+        ~name:"undefined type"
+        ~integers:[]
+        ~normals:["handle", relative; "define", Reference.show name; "type", annotation]
+        ();
+      if configuration.debug then
+        [
+          Error.create
+            ~location:(Location.with_module ~qualifier location)
+            ~kind:(Error.AnalysisFailure annotation)
+            ~define:define_node;
+        ]
+      else
+        []
+
+
+(* Infer parameter types of an overriding method when the base method is annotated. *)
+let infer_parameters_from_parent
+    ~global_resolution
+    ~source:{ Source.source_path = { SourcePath.qualifier; _ }; _ }
+    ~define:({ Node.value = { Define.signature = { parent; parameters; _ }; _ }; _ } as define)
+  =
+  let overridden_callable =
+    parent
+    >>| Reference.show
+    >>= GlobalResolution.overrides
+          ~resolution:global_resolution
+          ~name:(Define.unqualified_name (Node.value define))
+  in
+  let missing_parameter_errors overridden_attribute =
+    match Annotation.annotation (AnnotatedAttribute.annotation overridden_attribute) with
+    | Type.Parametric
+        {
+          name = "BoundMethod";
+          parameters =
+            [
+              Single
+                (Type.Callable
+                  { implementation = { parameters = Defined overridden_parameters; _ }; _ });
+              _;
+            ];
+        }
+    | Type.Callable
+        { Type.Callable.implementation = { parameters = Defined overridden_parameters; _ }; _ } ->
+        let should_annotate name =
+          match Identifier.sanitized name with
+          | "self"
+          | "cls" ->
+              false
+          | _ -> true
+        in
+        let missing_parameter_error = function
+          | `Both (overridden_parameter, overriding_parameter) -> (
+              match
+                ( Type.Callable.RecordParameter.annotation overridden_parameter,
+                  Type.Callable.RecordParameter.annotation overriding_parameter )
+              with
+              | ( Some overridden_annotation,
+                  Some { Node.value = { Parameter.name; annotation = None; _ }; location } )
+                when (not (Type.is_any overridden_annotation))
+                     && (not (Type.contains_variable overridden_annotation))
+                     && should_annotate name ->
+                  Some
+                    (Error.create
+                       ~location:(Location.with_module ~qualifier location)
+                       ~kind:
+                         (Error.MissingParameterAnnotation
+                            {
+                              name = Reference.create name;
+                              annotation = Some overridden_annotation;
+                              given_annotation = None;
+                              evidence_locations = [];
+                              thrown_at_source = true;
+                            })
+                       ~define)
+              | _ -> None )
+          | `Left _ -> None
+          | `Right _ -> None
+        in
+        let overriding_parameters =
+          let to_type_parameter ({ Node.value = { Parameter.name; _ }; _ } as parameter) =
+            { Type.Callable.RecordParameter.name; annotation = parameter; default = false }
           in
-          List.filter ~f:keep_error errors
-      in
-      errors
-    with
-    | ClassHierarchy.Untracked annotation ->
-        Statistics.event
-          ~name:"undefined type"
-          ~integers:[]
-          ~normals:["handle", relative; "define", Reference.show name; "type", annotation]
-          ();
-        if configuration.debug then
-          [
-            Error.create
-              ~location:(Location.with_module ~qualifier location)
-              ~kind:(Error.AnalysisFailure annotation)
-              ~define:define_node;
-          ]
-        else
-          []
+          List.map parameters ~f:to_type_parameter |> Type.Callable.Parameter.create
+        in
+        Type.Callable.Parameter.zip overridden_parameters overriding_parameters
+        |> List.filter_map ~f:missing_parameter_error
+    | _ -> []
   in
-  let format_errors errors =
+  overridden_callable >>| missing_parameter_errors |> Option.value ~default:[]
+
+
+let merge_errors
+    ~configuration:({ Configuration.Analysis.debug; _ } as configuration)
+    ~global_resolution
+    ~source:({ Source.metadata = { local_mode; ignore_codes; _ }; _ } as source)
     errors
-    |> List.map ~f:(Error.dequalify dequalify_map ~resolution:global_resolution)
-    |> List.map ~f:(fun ({ Error.kind; _ } as error) ->
-           { error with kind = Error.weaken_literals kind })
-    |> List.sort ~compare:Error.compare
+  =
+  let errors =
+    if debug then
+      errors
+    else
+      let mode = Source.mode ~configuration ~local_mode in
+      let keep_error error = not (Error.suppress ~mode ~ignore_codes error) in
+      List.filter ~f:keep_error errors
   in
+  let dequalify_map = Preprocessing.dequalify_map source in
+  errors
+  |> List.map ~f:(Error.dequalify dequalify_map ~resolution:global_resolution)
+  |> List.map ~f:(fun ({ Error.kind; _ } as error) ->
+         { error with kind = Error.weaken_literals kind })
+  |> Error.join_at_source ~resolution:global_resolution
+  |> List.sort ~compare:Error.compare
+
+
+let infer_for_define ~configuration ~global_resolution ~source ~define =
+  let local_errors = infer_local ~configuration ~global_resolution ~source ~define in
+  let global_errors = infer_parameters_from_parent ~global_resolution ~source ~define in
+  let errors = List.rev_append global_errors local_errors in
+  merge_errors ~configuration ~global_resolution ~source errors
+
+
+let run
+    ~configuration
+    ~global_resolution
+    ~source:({ Source.source_path = { relative; is_stub; _ }; _ } as source)
+  =
+  Log.debug "Checking %s..." relative;
+  let check define = infer_for_define ~configuration ~global_resolution ~source ~define in
   if is_stub then
     []
   else
     let results = source |> Preprocessing.defines ~include_toplevels:true |> List.map ~f:check in
-    let errors =
-      List.concat results |> Error.join_at_source ~resolution:global_resolution |> format_errors
-    in
-    errors
+    List.concat results
+    |> Error.join_at_source ~resolution:global_resolution
+    |> List.sort ~compare:Error.compare

@@ -175,11 +175,11 @@ let rec weaken_mutable_literals
     when comparator ~left:actual ~right:expected_parameter ->
       make_weakened_type expected
   | ( Some { Node.value = Expression.Tuple items; _ },
-      Type.Tuple (Bounded (Concrete actual_item_types)),
-      Type.Tuple (Bounded (Concrete expected_item_types)) )
-    when List.length actual_item_types = List.length expected_item_types ->
+      Type.Tuple (Concrete actual_item_types),
+      Type.Tuple (Concrete expected_item_types) )
+    when List.length actual_item_types = List.length expected_item_types -> (
       let weakened_item_types =
-        List.map3_exn
+        List.map3
           ~f:(fun item actual_item_type expected_item_type ->
             weaken_mutable_literals
               ~get_typed_dictionary
@@ -193,40 +193,53 @@ let rec weaken_mutable_literals
           actual_item_types
           expected_item_types
       in
-      let resolved_types = List.map weakened_item_types ~f:resolved_type in
-      let weakened_type = Type.Tuple (Bounded (Concrete resolved_types)) in
-      make_weakened_type
-        ~typed_dictionary_errors:(List.concat_map weakened_item_types ~f:typed_dictionary_errors)
-        ( if comparator ~left:weakened_type ~right:expected then
-            expected
-        else
-          weakened_type )
+      match weakened_item_types with
+      | Ok weakened_item_types ->
+          let resolved_types = List.map weakened_item_types ~f:resolved_type in
+          let weakened_type = Type.Tuple (Concrete resolved_types) in
+          make_weakened_type
+            ~typed_dictionary_errors:
+              (List.concat_map weakened_item_types ~f:typed_dictionary_errors)
+            ( if comparator ~left:weakened_type ~right:expected then
+                expected
+            else
+              weakened_type )
+      | Unequal_lengths -> make_weakened_type resolved )
   | ( Some { Node.value = Expression.Tuple items; _ },
-      Type.Tuple (Bounded (Concrete actual_item_types)),
-      Type.Tuple (Unbounded expected_item_type) ) ->
-      let weakened_item_types =
-        List.map2_exn
-          ~f:(fun item actual_item_type ->
-            weaken_mutable_literals
-              ~get_typed_dictionary
-              resolve
-              ~expression:(Some item)
-              ~resolved:actual_item_type
-              ~expected:expected_item_type
-              ~resolve_items_individually
-              ~comparator:comparator_without_override)
-          items
-          actual_item_types
+      Type.Tuple (Concrete actual_item_types),
+      Type.Tuple (Concatenation concatenation) ) ->
+      let weakened_tuple expected_item_type =
+        let weakened_item_types =
+          List.map2
+            ~f:(fun item actual_item_type ->
+              weaken_mutable_literals
+                ~get_typed_dictionary
+                resolve
+                ~expression:(Some item)
+                ~resolved:actual_item_type
+                ~expected:expected_item_type
+                ~resolve_items_individually
+                ~comparator:comparator_without_override)
+            items
+            actual_item_types
+        in
+        match weakened_item_types with
+        | Ok weakened_item_types ->
+            let { resolved = weakened_item_type; typed_dictionary_errors } =
+              combine_weakened_types weakened_item_types
+            in
+            Some
+              (make_weakened_type
+                 ~typed_dictionary_errors
+                 ( if comparator ~left:weakened_item_type ~right:expected_item_type then
+                     expected
+                 else
+                   resolved ))
+        | Unequal_lengths -> None
       in
-      let { resolved = weakened_item_type; typed_dictionary_errors } =
-        combine_weakened_types weakened_item_types
-      in
-      make_weakened_type
-        ~typed_dictionary_errors
-        ( if comparator ~left:weakened_item_type ~right:expected_item_type then
-            expected
-        else
-          resolved )
+      Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation concatenation
+      >>= weakened_tuple
+      |> Option.value ~default:(make_weakened_type resolved)
   | ( Some { Node.value = Expression.Dictionary { entries; keywords = [] }; location },
       _,
       Type.Primitive _ ) -> (
@@ -243,7 +256,7 @@ let rec weaken_mutable_literals
           let resolve_entry { Dictionary.Entry.key; value } =
             let key = resolve key in
             match key with
-            | Type.Literal (Type.String name) ->
+            | Type.Literal (Type.String (Type.LiteralValue name)) ->
                 let annotation, required =
                   let resolved = resolve value in
                   let relax { annotation; _ } =

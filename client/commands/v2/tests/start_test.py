@@ -16,15 +16,22 @@ from ..start import (
     CriticalFile,
     LoadSavedStateFromFile,
     LoadSavedStateFromProject,
+    StoreSavedStateToFile,
     RemoteLogging,
     MatchPolicy,
+    SimpleSourcePath,
+    BuckSourcePath,
     create_server_arguments,
     find_watchman_root,
+    find_buck_root,
     get_critical_files,
     get_saved_state_action,
     get_server_identifier,
     get_profiling_log_path,
+    get_source_path,
+    get_checked_directory_for_target,
     background_server_log_file,
+    ARTIFACT_ROOT_NAME,
 )
 
 
@@ -33,6 +40,10 @@ class ArgumentTest(testslide.TestCase):
         self.assertDictEqual(
             CriticalFile(policy=MatchPolicy.BASE_NAME, path="foo").serialize(),
             {"base_name": "foo"},
+        )
+        self.assertDictEqual(
+            CriticalFile(policy=MatchPolicy.EXTENSION, path="foo").serialize(),
+            {"extension": "foo"},
         )
         self.assertDictEqual(
             CriticalFile(policy=MatchPolicy.FULL_PATH, path="/foo/bar").serialize(),
@@ -66,6 +77,10 @@ class ArgumentTest(testslide.TestCase):
                 {"project_name": "my_project", "project_metadata": "my_metadata"},
             ),
         )
+        self.assertTupleEqual(
+            StoreSavedStateToFile(shared_memory_path="/foo/bar").serialize(),
+            ("save_to_file", {"shared_memory_path": "/foo/bar"}),
+        )
 
     def test_serialize_remote_logging(self) -> None:
         self.assertDictEqual(
@@ -75,6 +90,47 @@ class ArgumentTest(testslide.TestCase):
         self.assertDictEqual(
             RemoteLogging(logger="/bin/logger", identifier="foo").serialize(),
             {"logger": "/bin/logger", "identifier": "foo"},
+        )
+
+    def test_serialize_source_paths(self) -> None:
+        self.assertDictEqual(
+            SimpleSourcePath(
+                [
+                    configuration.SimpleSearchPathElement("/source0"),
+                    configuration.SimpleSearchPathElement("/source1"),
+                ]
+            ).serialize(),
+            {"kind": "simple", "paths": ["/source0", "/source1"]},
+        )
+        self.assertDictEqual(
+            BuckSourcePath(
+                source_root=Path("/source"),
+                artifact_root=Path("/artifact"),
+                targets=["//foo:bar", "//foo:baz"],
+            ).serialize(),
+            {
+                "kind": "buck",
+                "source_root": "/source",
+                "artifact_root": "/artifact",
+                "targets": ["//foo:bar", "//foo:baz"],
+            },
+        )
+        self.assertDictEqual(
+            BuckSourcePath(
+                source_root=Path("/source"),
+                artifact_root=Path("/artifact"),
+                targets=["//foo:bar"],
+                mode="opt",
+                isolation_prefix=".lsp",
+            ).serialize(),
+            {
+                "kind": "buck",
+                "source_root": "/source",
+                "artifact_root": "/artifact",
+                "targets": ["//foo:bar"],
+                "mode": "opt",
+                "isolation_prefix": ".lsp",
+            },
         )
 
     def test_serialize_arguments(self) -> None:
@@ -92,18 +148,21 @@ class ArgumentTest(testslide.TestCase):
             Arguments(
                 log_path="foo",
                 global_root="bar",
-                source_paths=[configuration.SimpleSearchPathElement("source")],
+                source_paths=SimpleSourcePath(
+                    [configuration.SimpleSearchPathElement("source")]
+                ),
             ),
             [
                 ("log_path", "foo"),
                 ("global_root", "bar"),
-                ("source_paths", ["source"]),
+                ("source_paths", {"kind": "simple", "paths": ["source"]}),
             ],
         )
         assert_serialized(
             Arguments(
                 log_path="/log",
                 global_root="/project",
+                source_paths=SimpleSourcePath(),
                 excludes=["/excludes"],
                 checked_directory_allowlist=["/allows"],
                 checked_directory_blocklist=["/blocks"],
@@ -122,12 +181,14 @@ class ArgumentTest(testslide.TestCase):
             Arguments(
                 log_path="/log",
                 global_root="/project",
+                source_paths=SimpleSourcePath(),
                 debug=True,
                 strict=True,
                 show_error_traces=True,
                 store_type_check_resolution=True,
                 critical_files=[
                     CriticalFile(policy=MatchPolicy.BASE_NAME, path="foo.py"),
+                    CriticalFile(policy=MatchPolicy.EXTENSION, path="txt"),
                     CriticalFile(policy=MatchPolicy.FULL_PATH, path="/home/bar.txt"),
                 ],
             ),
@@ -138,7 +199,11 @@ class ArgumentTest(testslide.TestCase):
                 ("store_type_check_resolution", True),
                 (
                     "critical_files",
-                    [{"base_name": "foo.py"}, {"full_path": "/home/bar.txt"}],
+                    [
+                        {"base_name": "foo.py"},
+                        {"extension": "txt"},
+                        {"full_path": "/home/bar.txt"},
+                    ],
                 ),
             ],
         )
@@ -146,6 +211,7 @@ class ArgumentTest(testslide.TestCase):
             Arguments(
                 log_path="/log",
                 global_root="/project",
+                source_paths=SimpleSourcePath(),
                 parallel=True,
                 number_of_workers=20,
             ),
@@ -155,6 +221,7 @@ class ArgumentTest(testslide.TestCase):
             Arguments(
                 log_path="/log",
                 global_root="/project",
+                source_paths=SimpleSourcePath(),
                 relative_local_root="local",
                 watchman_root=Path("/project"),
             ),
@@ -164,6 +231,7 @@ class ArgumentTest(testslide.TestCase):
             Arguments(
                 log_path="/log",
                 global_root="/project",
+                source_paths=SimpleSourcePath(),
                 saved_state_action=LoadSavedStateFromProject(
                     project_name="my_project", project_metadata="my_metadata"
                 ),
@@ -186,6 +254,7 @@ class ArgumentTest(testslide.TestCase):
             Arguments(
                 log_path="/log",
                 global_root="/project",
+                source_paths=SimpleSourcePath(),
                 additional_logging_sections=["foo", "bar"],
                 remote_logging=RemoteLogging(logger="/logger", identifier="baz"),
                 profiling_output=Path("/derp"),
@@ -310,6 +379,12 @@ class StartTest(testslide.TestCase):
             ),
             LoadSavedStateFromFile(shared_memory_path="foo", changed_files_path="bar"),
         )
+        self.assertEqual(
+            get_saved_state_action(
+                command_arguments.StartArguments(save_initial_state_to="/foo")
+            ),
+            StoreSavedStateToFile(shared_memory_path="/foo"),
+        )
 
     def test_find_watchman_root(self) -> None:
         with tempfile.TemporaryDirectory() as root:
@@ -328,6 +403,204 @@ class StartTest(testslide.TestCase):
             self.assertIsNone(find_watchman_root(root_path / "foo/qux"))
             self.assertIsNone(find_watchman_root(root_path / "foo"))
             self.assertIsNone(find_watchman_root(root_path))
+
+    def test_find_buck_root(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()
+            setup.ensure_files_exist(
+                root_path,
+                ["foo/qux/derp", "foo/bar/.buckconfig", "foo/bar/baz/derp"],
+            )
+
+            expected_root = root_path / "foo/bar"
+            self.assertEqual(find_buck_root(root_path / "foo/bar/baz"), expected_root)
+            self.assertEqual(find_buck_root(root_path / "foo/bar"), expected_root)
+
+            self.assertIsNone(find_buck_root(root_path / "foo/qux"))
+            self.assertIsNone(find_buck_root(root_path / "foo"))
+            self.assertIsNone(find_buck_root(root_path))
+
+    def test_get_simple_source_path__exists(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()
+            setup.ensure_directories_exists(root_path, [".pyre", "src"])
+            element = configuration.SimpleSearchPathElement(str(root_path / "src"))
+            self.assertEqual(
+                get_source_path(
+                    configuration.Configuration(
+                        project_root=str(root_path / "project"),
+                        dot_pyre_directory=(root_path / ".pyre"),
+                        source_directories=[element],
+                    )
+                ),
+                SimpleSourcePath([element]),
+            )
+
+    def test_get_simple_source_path__nonexists(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()
+            setup.ensure_directories_exists(root_path, [".pyre"])
+            element = configuration.SimpleSearchPathElement(str(root_path / "src"))
+            self.assertEqual(
+                get_source_path(
+                    configuration.Configuration(
+                        project_root=str(root_path / "project"),
+                        dot_pyre_directory=(root_path / ".pyre"),
+                        source_directories=[element],
+                    )
+                ),
+                SimpleSourcePath([]),
+            )
+
+    def test_get_buck_source_path__global(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()
+            setup.ensure_directories_exists(root_path, [".pyre", "buck_root"])
+            setup.ensure_files_exist(root_path, ["buck_root/.buckconfig"])
+            setup.write_configuration_file(
+                root_path / "buck_root",
+                {
+                    "targets": ["//ct:marle", "//ct:lucca"],
+                    "buck_mode": "opt",
+                    "isolation_prefix": ".lsp",
+                },
+            )
+            self.assertEqual(
+                get_source_path(
+                    configuration.create_configuration(
+                        command_arguments.CommandArguments(
+                            dot_pyre_directory=root_path / ".pyre",
+                        ),
+                        root_path / "buck_root",
+                    )
+                ),
+                BuckSourcePath(
+                    source_root=root_path / "buck_root",
+                    artifact_root=root_path / ".pyre" / ARTIFACT_ROOT_NAME,
+                    targets=["//ct:marle", "//ct:lucca"],
+                    mode="opt",
+                    isolation_prefix=".lsp",
+                ),
+            )
+
+    def test_get_buck_source_path__local(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()
+            setup.ensure_directories_exists(root_path, [".pyre", "project/local"])
+            setup.ensure_files_exist(root_path, ["project/local/.buckconfig"])
+            setup.write_configuration_file(
+                root_path / "project",
+                {
+                    "buck_mode": "opt",
+                    "isolation_prefix": ".lsp",
+                },
+            )
+            setup.write_configuration_file(
+                root_path / "project",
+                {"targets": ["//ct:chrono"]},
+                relative="local",
+            )
+            self.assertEqual(
+                get_source_path(
+                    configuration.create_configuration(
+                        command_arguments.CommandArguments(
+                            local_configuration="local",
+                            dot_pyre_directory=root_path / ".pyre",
+                        ),
+                        root_path / "project",
+                    )
+                ),
+                BuckSourcePath(
+                    source_root=root_path / "project/local",
+                    artifact_root=root_path / ".pyre" / ARTIFACT_ROOT_NAME / "local",
+                    targets=["//ct:chrono"],
+                    mode="opt",
+                    isolation_prefix=".lsp",
+                ),
+            )
+
+    def test_get_buck_source_path__no_buck_root(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()
+            setup.ensure_directories_exists(root_path, [".pyre", "project"])
+            with self.assertRaises(configuration.InvalidConfiguration):
+                get_source_path(
+                    configuration.Configuration(
+                        project_root=str(root_path / "project"),
+                        dot_pyre_directory=(root_path / ".pyre"),
+                        targets=["//ct:frog"],
+                    )
+                )
+
+    def test_get_source_path__no_source_specified(self) -> None:
+        with self.assertRaises(configuration.InvalidConfiguration):
+            get_source_path(
+                configuration.Configuration(
+                    project_root="project",
+                    dot_pyre_directory=Path(".pyre"),
+                    source_directories=None,
+                    targets=None,
+                )
+            )
+
+    def test_get_source_path__confliciting_source_specified(self) -> None:
+        with self.assertRaises(configuration.InvalidConfiguration):
+            get_source_path(
+                configuration.Configuration(
+                    project_root="project",
+                    dot_pyre_directory=Path(".pyre"),
+                    source_directories=[configuration.SimpleSearchPathElement("src")],
+                    targets=["//ct:ayla"],
+                )
+            )
+
+    def test_get_checked_directory_for_target(self) -> None:
+        self.assertEqual(
+            get_checked_directory_for_target(
+                "'//foo/...' - set('//foo/bar/...' '//foo/baz/...')"
+            ),
+            "foo",
+        )
+        self.assertEqual(
+            get_checked_directory_for_target("//path/directory/..."), "path/directory"
+        )
+        self.assertEqual(
+            get_checked_directory_for_target("/path/directory:target"), None
+        )
+        self.assertEqual(
+            get_checked_directory_for_target("prefix//path/directory/..."),
+            "path/directory",
+        )
+        self.assertEqual(
+            get_checked_directory_for_target("prefix//path/directory:target"),
+            "path/directory",
+        )
+
+    def test_get_checked_directory_for_simple_source_path(self) -> None:
+        element0 = configuration.SimpleSearchPathElement("ozzie")
+        element1 = configuration.SubdirectorySearchPathElement("diva", "flea")
+        element2 = configuration.SitePackageSearchPathElement("super", "slash")
+        self.assertCountEqual(
+            SimpleSourcePath(
+                [element0, element1, element2, element0]
+            ).get_checked_directory_allowlist(),
+            [element0.path(), element1.path(), element2.path()],
+        )
+
+    def test_get_checked_directory_for_buck_source_path(self) -> None:
+        self.assertCountEqual(
+            BuckSourcePath(
+                source_root=Path("/source"),
+                artifact_root=Path("/artifact"),
+                targets=[
+                    "//ct:robo",
+                    "//ct:magus",
+                    "future//ct/guardia/...",
+                    "//ct/guardia:schala",
+                ],
+            ).get_checked_directory_allowlist(),
+            ["/source/ct", "/source/ct/guardia"],
+        )
 
     def test_create_server_arguments(self) -> None:
         with tempfile.TemporaryDirectory() as root:
@@ -354,15 +627,16 @@ class StartTest(testslide.TestCase):
                 root_path, {"source_directories": ["src"]}, relative="local"
             )
 
+            server_configuration = configuration.create_configuration(
+                command_arguments.CommandArguments(
+                    local_configuration="local",
+                    dot_pyre_directory=root_path / ".pyre",
+                ),
+                root_path,
+            )
             self.assertEqual(
                 create_server_arguments(
-                    configuration.create_configuration(
-                        command_arguments.CommandArguments(
-                            local_configuration="local",
-                            dot_pyre_directory=root_path / ".pyre",
-                        ),
-                        root_path,
-                    ),
+                    server_configuration,
                     command_arguments.StartArguments(
                         debug=True,
                         no_watchman=False,
@@ -400,6 +674,7 @@ class StartTest(testslide.TestCase):
                     relative_local_root="local",
                     number_of_workers=42,
                     parallel=True,
+                    python_version=server_configuration.get_python_version(),
                     saved_state_action=LoadSavedStateFromProject(
                         project_name="project", project_metadata="local"
                     ),
@@ -407,11 +682,13 @@ class StartTest(testslide.TestCase):
                         configuration.SimpleSearchPathElement(str(root_path / "search"))
                     ],
                     show_error_traces=True,
-                    source_paths=[
-                        configuration.SimpleSearchPathElement(
-                            str(root_path / "local/src")
-                        )
-                    ],
+                    source_paths=SimpleSourcePath(
+                        [
+                            configuration.SimpleSearchPathElement(
+                                str(root_path / "local/src")
+                            )
+                        ]
+                    ),
                     store_type_check_resolution=True,
                     strict=True,
                     taint_models_path=[str(root_path / "taint")],

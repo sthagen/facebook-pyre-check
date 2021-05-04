@@ -67,23 +67,45 @@ module Record : sig
 
       type 'annotation t [@@deriving compare, eq, sexp, show, hash]
 
+      val unpack_public_name : string
+
+      val pp_unpackable
+        :  pp_type:(Format.formatter -> 'annotation -> unit) ->
+        Format.formatter ->
+        'annotation record_unpackable ->
+        unit
+
+      val create_unpackable
+        :  'annotation Variable.RecordVariadic.Tuple.record ->
+        'annotation record_unpackable
+
+      val create_unbounded_unpackable : 'annotation -> 'annotation record_unpackable
+
+      val extract_sole_variadic
+        :  'annotation t ->
+        'annotation Variable.RecordVariadic.Tuple.record option
+
+      val extract_sole_unbounded_annotation : 'annotation t -> 'annotation option
+
+      val is_fully_unbounded : 'annotation t -> bool
+
+      val create_from_unpackable
+        :  ?prefix:'annotation list ->
+        ?suffix:'annotation list ->
+        'annotation record_unpackable ->
+        'annotation t
+
       val create
         :  ?prefix:'annotation list ->
         ?suffix:'annotation list ->
         'annotation Variable.RecordVariadic.Tuple.record ->
         'annotation t
 
-      val pp_unpackable : Format.formatter -> 'annotation record_unpackable -> unit
-
-      val create_unpackable
-        :  'annotation Variable.RecordVariadic.Tuple.record ->
-        'annotation record_unpackable
-
-      val extract_sole_variadic
-        :  'annotation t ->
-        'annotation Variable.RecordVariadic.Tuple.record option
-
-      val create_from_unpackable : 'annotation record_unpackable -> 'annotation t
+      val create_from_unbounded_element
+        :  ?prefix:'annotation list ->
+        ?suffix:'annotation list ->
+        'annotation ->
+        'annotation t
     end
 
     type 'annotation record =
@@ -97,6 +119,8 @@ module Record : sig
       suffix_pairs: ('annotation * 'annotation) list;
     }
     [@@deriving compare, eq, sexp, show, hash]
+
+    val create_unbounded_concatenation : 'annotation -> 'annotation record
 
     val pp_concise
       :  Format.formatter ->
@@ -118,7 +142,10 @@ module Record : sig
         default: bool;
       }
 
-      and 'annotation variable = Concrete of 'annotation
+      and 'annotation variable =
+        | Concrete of 'annotation
+        | Concatenation of 'annotation OrderedTypes.Concatenation.t
+      [@@deriving compare, eq, sexp, show, hash]
 
       and 'annotation t =
         | PositionalOnly of {
@@ -243,19 +270,19 @@ module Primitive : sig
   val is_unit_test : t -> bool
 end
 
-type literal =
+type literal_string =
+  | LiteralValue of string
+  | AnyLiteral
+
+and literal =
   | Boolean of bool
   | Integer of int
-  | String of string
+  | String of literal_string
   | Bytes of string
   | EnumerationMember of {
       enumeration_type: t;
       member_name: Identifier.t;
     }
-
-and tuple =
-  | Bounded of t Record.OrderedTypes.record
-  | Unbounded of t
 
 and t =
   | Annotated of t
@@ -272,7 +299,7 @@ and t =
   | Primitive of Primitive.t
   | RecursiveType of t Record.RecursiveType.record
   | Top
-  | Tuple of tuple
+  | Tuple of t Record.OrderedTypes.record
   | Union of t list
   | Variable of t Record.Variable.RecordUnary.record
   | IntExpression of t Polynomial.t
@@ -448,6 +475,11 @@ module Callable : sig
     val default : parameter -> bool
 
     val names_compatible : parameter -> parameter -> bool
+
+    val zip
+      :  'a t list ->
+      'b t list ->
+      [ `Both of 'a t * 'b t | `Left of 'a t | `Right of 'b t ] list
   end
 
   include module type of struct
@@ -493,6 +525,11 @@ module Callable : sig
     :  head:type_t list ->
     tail:type_t Parameter.t list ->
     type_t Parameter.t list
+
+  val resolve_getitem_callee
+    :  resolve_aliases:(type_t -> type_t) ->
+    Expression.expression ->
+    Expression.expression
 end
 
 type alias =
@@ -653,6 +690,16 @@ module OrderedTypes : sig
   val concatenate : left:t -> right:t -> t option
 
   val to_parameters : t -> Parameter.t list
+
+  val to_starred_annotation_expression
+    :  expression:(type_t -> Expression.t) ->
+    type_t Concatenation.t ->
+    Expression.t
+
+  val concatenation_from_unpack_expression
+    :  parse_annotation:(Expression.t -> type_t) ->
+    Expression.t ->
+    type_t Concatenation.t option
 end
 
 val split : t -> t * Parameter.t list
@@ -771,7 +818,11 @@ module Variable : sig
       val create : ?variance:Record.Variable.variance -> string -> t
 
       val parse_instance_annotation
-        :  variable_parameter_annotation:Expression.t ->
+        :  create_type:
+             (aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> alias option) ->
+             Expression.t ->
+             type_t) ->
+        variable_parameter_annotation:Expression.t ->
         keywords_parameter_annotation:Expression.t ->
         aliases:(?replace_unbound_parameters_with_any:bool -> Primitive.t -> alias option) ->
         t option
@@ -865,7 +916,9 @@ module Variable : sig
 
   val convert_all_escaped_free_variables_to_anys : type_t -> type_t
 
-  val zip_variables_with_parameters
+  val zip_variables_with_parameters : parameters:Parameter.t list -> t list -> pair list option
+
+  val zip_variables_with_parameters_including_mismatches
     :  parameters:Parameter.t list ->
     t list ->
     variable_zip_result list option
@@ -874,7 +927,7 @@ module Variable : sig
     :  left_parameters:Parameter.t list ->
     right_parameters:Parameter.t list ->
     t list ->
-    (variable_zip_result * variable_zip_result) list option
+    (pair * pair) list option
 
   val all_unary : t list -> Unary.t list option
 

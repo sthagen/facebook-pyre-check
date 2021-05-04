@@ -45,7 +45,7 @@ module TitoPosition = struct
 
   type t = Location.t [@@deriving show, compare]
 
-  let max_count () = Configuration.maximum_tito_positions
+  let max_count () = TaintConfiguration.maximum_tito_positions
 end
 
 module TitoPositionSet = Abstract.ToppedSetDomain.Make (TitoPosition)
@@ -57,13 +57,15 @@ module LeafName = struct
     leaf: string;
     port: string option;
   }
-  [@@deriving show, compare]
+  [@@deriving compare]
 
   let pp formatter { leaf; port } =
     match port with
     | None -> Format.fprintf formatter "LeafName(%s)" leaf
     | Some port -> Format.fprintf formatter "LeafName(%s, port=%s)" leaf port
 
+
+  let show = Format.asprintf "%a" pp
 
   let to_json ~leaf_kind_json { leaf; port } =
     let port_assoc =
@@ -94,6 +96,10 @@ module Breadcrumb = struct
     (* Via inferred from ViaTypeOf. *)
     | Tito
     | Type of string (* Type constraint *)
+    | Broadening (* Taint tree was collapsed for various reasons *)
+    | WidenBroadening (* Taint tree was collapsed during widening *)
+    | TitoBroadening (* Taint tree was collapsed when applying tito *)
+    | IssueBroadening (* Taint tree was collapsed when matching sources and sinks *)
   [@@deriving show { with_path = false }, compare]
 
   let to_json ~on_all_paths breadcrumb =
@@ -112,6 +118,10 @@ module Breadcrumb = struct
     | ViaType { tag; value } -> via_value_or_type_annotation ~via_kind:"type" ~tag ~value
     | Tito -> `Assoc [prefix ^ "via", `String "tito"]
     | Type name -> `Assoc [prefix ^ "type", `String name]
+    | Broadening -> `Assoc [prefix ^ "via", `String "broadening"]
+    | WidenBroadening -> `Assoc [prefix ^ "via", `String "widen-broadening"]
+    | TitoBroadening -> `Assoc [prefix ^ "via", `String "tito-broadening"]
+    | IssueBroadening -> `Assoc [prefix ^ "via", `String "issue-broadening"]
 
 
   let simple_via ~allowed name =
@@ -146,9 +156,11 @@ module Simple = struct
 
   let via_value_of_breadcrumb ?tag ~argument =
     let feature =
-      argument
-      >>= Interprocedural.CallResolution.extract_constant_name
-      |> Option.value ~default:"<unknown>"
+      match argument with
+      | None -> "<missing>"
+      | Some argument ->
+          Interprocedural.CallResolution.extract_constant_name argument
+          |> Option.value ~default:"<unknown>"
     in
     Breadcrumb (Breadcrumb.ViaValue { value = feature; tag })
 
@@ -172,7 +184,8 @@ module SimpleSet = Abstract.OverUnderSetDomain.Make (Simple)
 module Complex = struct
   let name = "complex features"
 
-  type t = ReturnAccessPath of Abstract.TreeDomain.Label.path [@@deriving show, compare]
+  type t = ReturnAccessPath of Abstract.TreeDomain.Label.path
+  [@@deriving show { with_path = false }, compare]
 
   let less_or_equal ~left ~right =
     match left, right with
@@ -182,11 +195,12 @@ module Complex = struct
 
   let widen set =
     let truncate = function
-      | ReturnAccessPath p when List.length p > Configuration.maximum_return_access_path_depth ->
-          ReturnAccessPath (List.take p Configuration.maximum_return_access_path_depth)
+      | ReturnAccessPath p when List.length p > TaintConfiguration.maximum_return_access_path_depth
+        ->
+          ReturnAccessPath (List.take p TaintConfiguration.maximum_return_access_path_depth)
       | x -> x
     in
-    if List.length set > Configuration.maximum_return_access_path_width then
+    if List.length set > TaintConfiguration.maximum_return_access_path_width then
       [ReturnAccessPath []]
     else
       List.map ~f:truncate set
@@ -198,7 +212,43 @@ let obscure = Simple.Breadcrumb Breadcrumb.Obscure
 
 let lambda = Simple.Breadcrumb Breadcrumb.Lambda
 
-let add_type_breadcrumb ~resolution annotation =
+let tito = Simple.Breadcrumb Breadcrumb.Tito
+
+let format_string = Simple.Breadcrumb Breadcrumb.FormatString
+
+let widen_broadening =
+  SimpleSet.create
+    [
+      Part (SimpleSet.Element, Simple.Breadcrumb Breadcrumb.Broadening);
+      Part (SimpleSet.Element, Simple.Breadcrumb Breadcrumb.WidenBroadening);
+    ]
+
+
+let tito_broadening =
+  SimpleSet.create
+    [
+      Part (SimpleSet.Element, Simple.Breadcrumb Breadcrumb.Broadening);
+      Part (SimpleSet.Element, Simple.Breadcrumb Breadcrumb.TitoBroadening);
+    ]
+
+
+let issue_broadening =
+  SimpleSet.create
+    [
+      Part (SimpleSet.Element, Simple.Breadcrumb Breadcrumb.Broadening);
+      Part (SimpleSet.Element, Simple.Breadcrumb Breadcrumb.IssueBroadening);
+    ]
+
+
+let type_bool =
+  SimpleSet.create
+    [
+      Part (SimpleSet.Element, Simple.Breadcrumb (Breadcrumb.Type "scalar"));
+      Part (SimpleSet.Element, Simple.Breadcrumb (Breadcrumb.Type "bool"));
+    ]
+
+
+let type_breadcrumbs ~resolution annotation =
   let matches_at_leaves ~f annotation =
     let rec matches_at_leaves ~f annotation =
       match annotation with
@@ -209,8 +259,11 @@ let add_type_breadcrumb ~resolution annotation =
       | Type.Union [annotation; Type.NoneType]
       | Type.Parametric { name = "typing.Awaitable"; parameters = [Single annotation] } ->
           matches_at_leaves ~f annotation
-      | Type.Tuple (Type.Unbounded annotation) -> matches_at_leaves ~f annotation
-      | Type.Tuple (Type.Bounded (Type.OrderedTypes.Concrete annotations)) ->
+      | Type.Tuple (Concatenation concatenation) ->
+          Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation concatenation
+          >>| (fun element -> matches_at_leaves ~f element)
+          |> Option.value ~default:(f annotation)
+      | Type.Tuple (Type.OrderedTypes.Concrete annotations) ->
           List.for_all annotations ~f:(matches_at_leaves ~f)
       | annotation -> f annotation
     in
@@ -227,16 +280,13 @@ let add_type_breadcrumb ~resolution annotation =
     matches_at_leaves annotation ~f:(fun left ->
         GlobalResolution.less_or_equal resolution ~left ~right:Type.bool)
   in
-  let add feature_set =
-    let add_if cond type_name feature_set =
-      if cond then
-        SimpleSet.inject (Simple.Breadcrumb (Breadcrumb.Type type_name)) :: feature_set
-      else
-        feature_set
-    in
-    feature_set |> add_if (is_scalar || is_boolean) "scalar" |> add_if is_boolean "bool"
+  let add_if cond type_name features =
+    if cond then
+      SimpleSet.add (Simple.Breadcrumb (Breadcrumb.Type type_name)) features
+    else
+      features
   in
-  add
+  SimpleSet.bottom |> add_if (is_scalar || is_boolean) "scalar" |> add_if is_boolean "bool"
 
 
 let simple_via ~allowed name =
@@ -244,10 +294,17 @@ let simple_via ~allowed name =
   Breadcrumb.simple_via ~allowed name >>| fun breadcrumb -> Simple.Breadcrumb breadcrumb
 
 
-let gather_breadcrumbs feature breadcrumbs =
-  match feature.Abstract.OverUnderSetDomain.element with
-  | Simple.Breadcrumb _ -> feature :: breadcrumbs
-  | _ -> breadcrumbs
+let gather_breadcrumbs features breadcrumbs =
+  let to_add =
+    SimpleSet.transform
+      SimpleSet.Element
+      Abstract.Domain.Filter
+      ~f:(function
+        | Simple.Breadcrumb _ -> true
+        | _ -> false)
+      features
+  in
+  SimpleSet.add_set breadcrumbs ~to_add
 
 
 let is_breadcrumb = function
@@ -261,7 +318,7 @@ let is_numeric name = Str.string_match number_regexp name 0
 
 let to_first_name label =
   match label with
-  | Abstract.TreeDomain.Label.Field name when is_numeric name -> Some "<numeric>"
-  | Field name -> Some name
-  | DictionaryKeys -> None
-  | Any -> Some "<unknown>"
+  | Abstract.TreeDomain.Label.Index name when is_numeric name -> Some "<numeric>"
+  | Index name -> Some name
+  | Field _ -> None
+  | AnyIndex -> Some "<unknown>"

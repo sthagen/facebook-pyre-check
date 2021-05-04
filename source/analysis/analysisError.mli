@@ -90,6 +90,10 @@ and invalid_argument =
       expression: Expression.t option;
       annotation: Type.t;
     }
+  | TupleVariadicVariable of {
+      variable: Type.OrderedTypes.t;
+      mismatch: SignatureSelectionTypes.mismatch_with_tuple_variadic_type_variable;
+    }
 
 and precondition_mismatch =
   | Found of mismatch
@@ -204,6 +208,10 @@ and unsupported_operand_kind =
 and illegal_annotation_target_kind =
   | InvalidExpression
   | Reassignment
+
+and tuple_concatenation_problem =
+  | MultipleVariadics of { variadic_expressions: Expression.t list }
+  | UnpackingNonIterable of { annotation: Type.t }
 [@@deriving compare, eq, sexp, show, hash]
 
 type invalid_decoration_reason =
@@ -384,6 +392,7 @@ and kind =
       variable: Type.Variable.t;
       base: polymorphism_base_class;
     }
+  | TupleConcatenationError of tuple_concatenation_problem
   (* Additional errors. *)
   | DeadStore of Identifier.t
   | Deobfuscation of Source.t

@@ -68,10 +68,6 @@ module Argument = struct
   end
 end
 
-type arguments =
-  | Resolved of Argument.t list
-  | Unresolved of Ast.Expression.Call.Argument.t list
-
 type argument =
   | Argument of Argument.WithPosition.t
   | Default
@@ -864,7 +860,11 @@ class base class_metadata_environment dependency =
             in
             let invalid_type_parameters ~name ~given =
               let generics = generics_for_name name in
-              match Type.Variable.zip_variables_with_parameters ~parameters:given generics with
+              match
+                Type.Variable.zip_variables_with_parameters_including_mismatches
+                  ~parameters:given
+                  generics
+              with
               | Some [] -> Type.Primitive name, sofar
               | Some paired ->
                   let check_parameter { Type.Variable.variable_pair; received_parameter } =
@@ -893,7 +893,7 @@ class base class_metadata_environment dependency =
                     | ParameterVariadicPair (_, given), CallableParameters _ ->
                         (* TODO(T47346673): accept w/ new kind of validation *)
                         [CallableParameters given], None
-                    | TupleVariadicPair (_, given), Single (Tuple (Bounded _)) ->
+                    | TupleVariadicPair (_, given), Single (Tuple _) ->
                         Type.OrderedTypes.to_parameters given, None
                     | Type.Variable.UnaryPair (unary, given), _ ->
                         ( [Single given],
@@ -944,7 +944,10 @@ class base class_metadata_environment dependency =
                     match name with
                     | "typing.Callable" ->
                         Type.Callable.create ~annotation:Type.Any (), List.length generics, false
-                    | "tuple" -> Type.Tuple (Type.Unbounded Type.Any), List.length generics, true
+                    | "tuple" ->
+                        ( Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation Type.Any),
+                          List.length generics,
+                          true )
                     | _ ->
                         let is_tuple_variadic = function
                           | Type.Variable.TupleVariadic _ -> true
@@ -1720,7 +1723,7 @@ class base class_metadata_environment dependency =
             Type.Callable.Parameter.Named { name = "self"; annotation = Type.Top; default = false }
           in
           match instantiated, attribute_name, class_name with
-          | Type.Tuple (Bounded (Concrete members)), "__getitem__", _ ->
+          | Type.Tuple (Concrete members), "__getitem__", _ ->
               let { Type.Callable.overloads; _ } = callable in
               let overload index member =
                 {
@@ -1759,6 +1762,7 @@ class base class_metadata_environment dependency =
                 (* This can't be expressed without IntVars, StrVars, and corresponding ListVariadic
                    variants of them *)
                 | "typing_extensions.Literal"
+                | "typing.Literal"
                 (* TODO:(T60535947) We can't do the Map[Ts, type] -> X[Ts] trick here because we
                    don't yet support Union[Ts] *)
                 | "typing.Union" ->
@@ -1772,7 +1776,7 @@ class base class_metadata_environment dependency =
                             [
                               self_parameter;
                               create_parameter
-                                (Type.Tuple (Bounded (Concrete [Type.Any; Type.meta synthetic])));
+                                (Type.Tuple (Concrete [Type.Any; Type.meta synthetic]));
                             ];
                       },
                       [] )
@@ -1896,21 +1900,19 @@ class base class_metadata_environment dependency =
                     self#signature_select
                       ~assumptions
                       ~arguments:
-                        (Resolved
-                           [
-                             { kind = Positional; expression = None; resolved = descriptor };
-                             {
-                               kind = Positional;
-                               expression = None;
-                               resolved =
-                                 (if accessed_through_class then Type.none else instantiated);
-                             };
-                             {
-                               kind = Positional;
-                               expression = None;
-                               resolved = Type.meta instantiated;
-                             };
-                           ])
+                        [
+                          { Argument.kind = Positional; expression = None; resolved = descriptor };
+                          {
+                            Argument.kind = Positional;
+                            expression = None;
+                            resolved = (if accessed_through_class then Type.none else instantiated);
+                          };
+                          {
+                            Argument.kind = Positional;
+                            expression = None;
+                            resolved = Type.meta instantiated;
+                          };
+                        ]
                       ~resolve_with_locals:(fun ~locals:_ _ -> Type.object_primitive)
                       ~callable
                       ~self_argument:None
@@ -2775,7 +2777,7 @@ class base class_metadata_environment dependency =
                   self#signature_select
                     ~assumptions
                     ~resolve_with_locals:(fun ~locals:_ _ -> Type.Top)
-                    ~arguments:(Resolved arguments)
+                    ~arguments
                     ~callable:factory_callable
                     ~self_argument:None
                     ~skip_marking_escapees:false
@@ -2813,9 +2815,7 @@ class base class_metadata_environment dependency =
                         self#signature_select
                           ~assumptions
                           ~resolve_with_locals:(fun ~locals:_ _ -> Type.object_primitive)
-                          ~arguments:
-                            (Resolved
-                               [{ kind = Positional; expression = None; resolved = argument }])
+                          ~arguments:[{ kind = Positional; expression = None; resolved = argument }]
                           ~callable
                           ~self_argument:None
                           ~skip_marking_escapees:false
@@ -3178,7 +3178,77 @@ class base class_metadata_environment dependency =
           | _ -> None
         in
         let update ~key ~data ({ reasons = { arity; _ } as reasons; _ } as signature_match) =
+          let bind_arguments_to_variadic ~expected ~arguments =
+            let extract_ordered_types arguments =
+              let extracted, errors =
+                let arguments =
+                  List.map arguments ~f:(function
+                      | Argument argument -> argument
+                      | Default -> failwith "Variable parameters do not have defaults")
+                in
+                let extract { Argument.WithPosition.kind; resolved; expression; _ } =
+                  match kind with
+                  | SingleStar -> (
+                      match resolved with
+                      | Type.Tuple ordered_types -> Either.First ordered_types
+                      (* We don't support unpacking unbounded tuples yet. *)
+                      | annotation -> Either.Second { expression; annotation } )
+                  | _ -> Either.First (Type.OrderedTypes.Concrete [resolved])
+                in
+                List.rev arguments |> List.partition_map ~f:extract
+              in
+              match errors with
+              | [] -> Ok extracted
+              | not_bounded_tuple :: _ ->
+                  Error
+                    (MismatchWithTupleVariadicTypeVariable
+                       { variable = expected; mismatch = NotBoundedTuple not_bounded_tuple })
+            in
+            let concatenate extracted =
+              let concatenated =
+                match extracted with
+                | [] -> Some (Type.OrderedTypes.Concrete [])
+                | head :: tail ->
+                    let concatenate sofar next =
+                      sofar >>= fun left -> Type.OrderedTypes.concatenate ~left ~right:next
+                    in
+                    List.fold tail ~f:concatenate ~init:(Some head)
+              in
+              match concatenated with
+              | Some concatenated -> Ok concatenated
+              | None ->
+                  Error
+                    (MismatchWithTupleVariadicTypeVariable
+                       { variable = expected; mismatch = CannotConcatenate extracted })
+            in
+            let solve concatenated =
+              let updated_constraints_set =
+                TypeOrder.OrderedConstraintsSet.add
+                  signature_match.constraints_set
+                  ~new_constraint:
+                    (OrderedTypesLessOrEqual { left = concatenated; right = expected })
+                  ~order
+              in
+              if ConstraintsSet.potentially_satisfiable updated_constraints_set then
+                Ok updated_constraints_set
+              else
+                Error
+                  (MismatchWithTupleVariadicTypeVariable
+                     { variable = expected; mismatch = ConstraintFailure concatenated })
+            in
+            let make_signature_match = function
+              | Ok constraints_set -> { signature_match with constraints_set }
+              | Error error ->
+                  { signature_match with reasons = { reasons with arity = error :: arity } }
+            in
+            let open Result in
+            extract_ordered_types arguments >>= concatenate >>= solve |> make_signature_match
+          in
           match key, data with
+          | Parameter.Variable (Concatenation concatenation), arguments ->
+              bind_arguments_to_variadic
+                ~expected:(Type.OrderedTypes.Concatenation concatenation)
+                ~arguments
           | Parameter.Variable _, []
           | Parameter.Keywords _, [] ->
               (* Parameter was not matched, but empty is acceptable for variable arguments and
@@ -3548,6 +3618,7 @@ class base class_metadata_environment dependency =
                 | InvalidVariableArgument _ -> 0
                 | Mismatch { Node.value = { position; _ }; _ } -> 0 - position
                 | MissingArgument _ -> 1
+                | MismatchWithTupleVariadicTypeVariable _ -> 1
                 | MutuallyRecursiveTypeVariables -> 1
                 | ProtocolInstantiation _ -> 1
                 | TooManyArguments _ -> 1
@@ -3680,29 +3751,15 @@ class base class_metadata_environment dependency =
       let get_match signatures =
         let arguments =
           let arguments =
-            match arguments with
-            | Resolved resolved ->
-                let add_index index { Argument.expression; kind; resolved } =
-                  { Argument.WithPosition.position = index + 1; expression; kind; resolved }
-                in
-                List.mapi resolved ~f:add_index
-            | Unresolved unresolved ->
-                let create_argument index argument =
-                  let expression, kind = Ast.Expression.Call.Argument.unpack argument in
-                  let resolved = resolve_with_locals ~locals:[] expression in
-                  {
-                    Argument.WithPosition.position = index + 1;
-                    expression = Some expression;
-                    kind;
-                    resolved;
-                  }
-                in
-                List.mapi unresolved ~f:create_argument
+            let add_index index { Argument.expression; kind; resolved } =
+              { Argument.WithPosition.position = index + 1; expression; kind; resolved }
+            in
+            List.mapi arguments ~f:add_index
           in
           let unpack sofar argument =
             match argument with
             | {
-             Argument.WithPosition.resolved = Tuple (Bounded (Concrete tuple_parameters));
+             Argument.WithPosition.resolved = Tuple (Concrete tuple_parameters);
              kind = SingleStar;
              position;
              expression;
@@ -3789,8 +3846,9 @@ class base class_metadata_environment dependency =
         (* Tuples are special. *)
         if String.equal class_name "tuple" then
           match generics with
-          | [Single tuple_variable] -> Type.Tuple (Type.Unbounded tuple_variable)
-          | _ -> Type.Tuple (Type.Unbounded Type.Any)
+          | [Single tuple_variable] ->
+              Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation tuple_variable)
+          | _ -> Type.Tuple (Type.OrderedTypes.create_unbounded_concatenation Type.Any)
         else
           let backup = Type.parametric class_name generics in
           match instantiated, generics with
@@ -3957,12 +4015,13 @@ class base class_metadata_environment dependency =
         | TupleAssign { value; index; total_length; _ } ->
             let extracted =
               match self#resolve_literal ~assumptions value with
-              | Type.Tuple (Type.Bounded (Concrete parameters))
-                when List.length parameters = total_length ->
+              | Type.Tuple (Concrete parameters) when List.length parameters = total_length ->
                   List.nth parameters index
                   (* This should always be Some, but I don't think its worth being fragile here *)
                   |> Option.value ~default:Type.Top
-              | Type.Tuple (Type.Unbounded parameter) -> parameter
+              | Type.Tuple (Concatenation concatenation) ->
+                  Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation concatenation
+                  |> Option.value ~default:Type.Top
               | _ -> Type.Top
             in
             produce_assignment_global ~is_explicit:false extracted
