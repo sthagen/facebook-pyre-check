@@ -92,17 +92,22 @@ module type ANALYZER = sig
   type call_model
 
   val analyze
-    :  callable:Callable.real_target ->
-    environment:Analysis.TypeEnvironment.ReadOnly.t ->
+    :  environment:Analysis.TypeEnvironment.ReadOnly.t ->
+    callable:Callable.real_target ->
     qualifier:Reference.t ->
     define:Statement.Define.t Node.t ->
     existing:call_model option ->
     result * call_model
 
-  (* Called once on master before analysis of individual callables. *)
-  val init
+  (* Called prior to typechecking, so we can fail fast on bad config *)
+  val initialize_configuration
     :  static_analysis_configuration:Configuration.StaticAnalysis.t ->
-    scheduler:Scheduler.t ->
+    unit
+
+  (* Called once on master before analysis of individual callables. *)
+  val initialize_models
+    :  scheduler:Scheduler.t ->
+    static_analysis_configuration:Configuration.StaticAnalysis.t ->
     environment:Analysis.TypeEnvironment.ReadOnly.t ->
     functions:Callable.t list ->
     stubs:Callable.t list ->
@@ -111,6 +116,7 @@ module type ANALYZER = sig
   val report
     :  scheduler:Scheduler.t ->
     static_analysis_configuration:Configuration.StaticAnalysis.t ->
+    environment:Analysis.TypeEnvironment.ReadOnly.t ->
     filename_lookup:(Ast.Reference.t -> string option) ->
     callables:Callable.Set.t ->
     skipped_overrides:Ast.Reference.t list ->

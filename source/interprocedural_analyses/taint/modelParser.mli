@@ -57,17 +57,21 @@ module T : sig
     type parameter_constraint = AnnotationConstraint of annotation_constraint
     [@@deriving compare, show]
 
-    type class_constraint =
+    type name_constraint =
       | Equals of string
+      | Matches of Re2.t
+    [@@deriving compare, show]
+
+    type class_constraint =
+      | NameSatisfies of name_constraint
       | Extends of {
           class_name: string;
           is_transitive: bool;
         }
-      | Matches of Re2.t
     [@@deriving compare, show]
 
     type model_constraint =
-      | NameConstraint of string
+      | NameConstraint of name_constraint
       | ReturnConstraint of annotation_constraint
       | AnyParameterConstraint of parameter_constraint
       | AnyOf of model_constraint list

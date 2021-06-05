@@ -5,10 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-open Analysis
-
 module ResultArgument = struct
-  type result = AnalysisError.Instantiated.t list
+  type result = TypeInferenceData.LocalResult.t
 
   type call_model = TypeInferenceDomain.t [@@deriving show]
 
@@ -29,4 +27,5 @@ module ResultArgument = struct
   let strip_for_callsite model = model
 end
 
+include ResultArgument
 include Interprocedural.Result.Make (ResultArgument)

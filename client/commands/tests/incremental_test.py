@@ -43,8 +43,6 @@ class IncrementalTest(unittest.TestCase):
     @patch.object(os.path, "exists", side_effect=lambda path: True)
     @patch.object(commands.Command, "_state")
     @patch.object(incremental, "Start")
-    # pyre-fixme[56]: Argument `tools.pyre.client.commands.stop` to decorator
-    #  factory `unittest.mock.patch.object` could not be resolved in a global scope.
     @patch.object(stop, "Stop")
     def test_incremental(
         self,
@@ -106,6 +104,8 @@ class IncrementalTest(unittest.TestCase):
                     "6",
                     "-python-micro-version",
                     "0",
+                    "-shared-memory-heap-size",
+                    "1073741824",
                     "-expected-binary-version",
                     "hash",
                 ],
@@ -149,6 +149,8 @@ class IncrementalTest(unittest.TestCase):
                     "6",
                     "-python-micro-version",
                     "0",
+                    "-shared-memory-heap-size",
+                    "1073741824",
                     "-expected-binary-version",
                     "hash",
                     "-nonblocking",
@@ -187,6 +189,8 @@ class IncrementalTest(unittest.TestCase):
                     "6",
                     "-python-micro-version",
                     "0",
+                    "-shared-memory-heap-size",
+                    "1073741824",
                     "-expected-binary-version",
                     "hash",
                 ],
@@ -233,6 +237,8 @@ class IncrementalTest(unittest.TestCase):
                     "6",
                     "-python-micro-version",
                     "0",
+                    "-shared-memory-heap-size",
+                    "1073741824",
                     "-expected-binary-version",
                     "hash",
                 ],
@@ -275,6 +281,8 @@ class IncrementalTest(unittest.TestCase):
                     "6",
                     "-python-micro-version",
                     "0",
+                    "-shared-memory-heap-size",
+                    "1073741824",
                     "-expected-binary-version",
                     "hash",
                 ],
@@ -348,6 +356,8 @@ class IncrementalTest(unittest.TestCase):
                     "6",
                     "-python-micro-version",
                     "0",
+                    "-shared-memory-heap-size",
+                    "1073741824",
                     "-expected-binary-version",
                     "hash",
                 ],
@@ -376,8 +386,6 @@ class IncrementalTest(unittest.TestCase):
 
     @patch.object(incremental.Incremental, "_send_and_handle_socket_request")
     @patch.object(commands.Command, "_state")
-    # pyre-fixme[56]: Argument `tools.pyre.client.commands.incremental` to decorator
-    #  factory `unittest.mock.patch.object` could not be resolved in a global scope.
     @patch.object(incremental, "Start")
     def test_run_passes_no_watchman_flag(
         self,
@@ -403,8 +411,6 @@ class IncrementalTest(unittest.TestCase):
 
     @patch.object(incremental.Incremental, "_send_and_handle_socket_request")
     @patch.object(commands.Command, "_state")
-    # pyre-fixme[56]: Argument `tools.pyre.client.commands.incremental` to decorator
-    #  factory `unittest.mock.patch.object` could not be resolved in a global scope.
     @patch.object(incremental, "Start")
     def test_run_passes_false_no_watchman_flag(
         self,

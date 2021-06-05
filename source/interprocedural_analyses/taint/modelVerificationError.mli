@@ -46,6 +46,7 @@ module T : sig
         callee: Expression.t;
         arguments: Expression.Call.Argument.t list;
       }
+    | InvalidNameClause of Expression.t
     | InvalidTaintAnnotation of {
         taint_annotation: Expression.t;
         reason: string;
@@ -55,6 +56,11 @@ module T : sig
         attribute_name: string;
       }
     | ModelingClassAsDefine of string
+    | ModelingModuleAsDefine of string
+    | ModelingAttributeAsDefine of string
+    | ModelingClassAsAttribute of string
+    | ModelingModuleAsAttribute of string
+    | ModelingCallableAsAttribute of string
     | NotInEnvironment of string
     | UnexpectedDecorators of {
         name: Reference.t;
@@ -62,6 +68,8 @@ module T : sig
       }
     | InvalidIdentifier of Expression.t
     | UnexpectedStatement of Statement.t
+    | ClassBodyNotEllipsis of string
+    | DefineBodyNotEllipsis of string
     | UnclassifiedError of {
         model_name: string;
         message: string;

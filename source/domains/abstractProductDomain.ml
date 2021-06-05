@@ -214,34 +214,61 @@ module Make (Config : PRODUCT_CONFIG) = struct
         | Strict -> bottom
 
 
+    type strict_subtract =
+      | SingleStrict : 'a Config.slot * 'a -> strict_subtract
+      | AllBottom
+
     let subtract to_remove ~from =
       if to_remove == from then
         bottom
-      else if is_bottom to_remove || is_bottom from then
+      else if is_bottom to_remove then
         from
-      else
+      else if less_or_equal ~left:from ~right:to_remove then
+        bottom
+      else if
+        (* Handle cases depending on strictness of slots. If all slots are non-strict, then
+           subtraction is pointwise. *)
+        Array.length strict_slots = 0
+      then (* point-wise *)
         let nonbottom_slots = ref (Array.length from) in
         let sub (Slot slot) =
           let module D = (val Config.slot_domain slot) in
           let to_remove = get slot to_remove in
           let from = get slot from in
           let result = D.subtract to_remove ~from in
-          if D.is_bottom result then begin
-            decr nonbottom_slots;
-            if Config.strict slot then
-              (* Cannot collapse or subtraction isn't a proper overapproximation *)
-              Element from
-            else
-              Element result
-          end
-          else
-            Element result
+          if D.is_bottom result then decr nonbottom_slots;
+          Element result
         in
         let result = Array.map sub slots in
         if !nonbottom_slots = 0 then
           bottom
         else
           result
+      else
+        (* If pointwise subtraction results in bottom in all but one strict slot, then we can keep
+           that strict slot's subtraction and leave all other slots unchanged. *)
+        let find_single_strict_slot so_far (Slot slot) =
+          let module D = (val Config.slot_domain slot) in
+          let to_remove = get slot to_remove in
+          let from = get slot from in
+          let result = D.subtract to_remove ~from in
+          if D.is_bottom result then
+            so_far
+          else if Config.strict slot then
+            match so_far with
+            | AllBottom -> SingleStrict (slot, result)
+            | _ ->
+                (* multiple slots are non-bottom *)
+                raise Exit
+          else (* non-strict slot non-bottom *)
+            raise Exit
+        in
+        try
+          match Array.fold_left find_single_strict_slot AllBottom slots with
+          | SingleStrict (slot, new_value) -> update slot new_value from
+          | AllBottom -> bottom
+        with
+        | Exit -> from
 
 
     let show product =
@@ -265,7 +292,7 @@ module Make (Config : PRODUCT_CONFIG) = struct
 
     let pp formatter map = Format.fprintf formatter "%s" (show map)
 
-    let transform : type a f. a part -> ([ `Transform ], a, f, t, t) operation -> f:f -> t -> t =
+    let transform : type a f. a part -> ([ `Transform ], a, f, _) operation -> f:f -> t -> t =
      fun part op ~f product ->
       match part with
       | Self -> Base.transform part op ~f product
@@ -273,7 +300,7 @@ module Make (Config : PRODUCT_CONFIG) = struct
           let transform (Slot slot) =
             let value = get slot product in
             let module D = (val Config.slot_domain slot) in
-            let new_value = D.transform part (Base.freshen_transform op) ~f value in
+            let new_value = D.transform part op ~f value in
             update slot new_value product
           in
           let route = get_route part in
@@ -281,7 +308,7 @@ module Make (Config : PRODUCT_CONFIG) = struct
 
 
     let reduce
-        : type a f b. a part -> using:([ `Reduce ], a, f, t, b) operation -> f:f -> init:b -> t -> b
+        : type a f b. a part -> using:([ `Reduce ], a, f, b) operation -> f:f -> init:b -> t -> b
       =
      fun part ~using:op ~f ~init product ->
       match part with
@@ -290,7 +317,7 @@ module Make (Config : PRODUCT_CONFIG) = struct
           let fold (Slot slot) =
             let value = get slot product in
             let module D = (val Config.slot_domain slot) in
-            D.reduce part ~using:(Base.freshen_reduce op) ~f ~init value
+            D.reduce part ~using:op ~f ~init value
           in
           let route = get_route part in
           fold slots.(route)
@@ -298,11 +325,7 @@ module Make (Config : PRODUCT_CONFIG) = struct
 
     let partition
         : type a f b.
-          a part ->
-          ([ `Partition ], a, f, t, b) operation ->
-          f:f ->
-          t ->
-          (b, t) Core_kernel.Map.Poly.t
+          a part -> ([ `Partition ], a, f, b) operation -> f:f -> t -> (b, t) Core_kernel.Map.Poly.t
       =
      fun part op ~f product ->
       match part with
@@ -311,7 +334,7 @@ module Make (Config : PRODUCT_CONFIG) = struct
           let partition (Slot slot) : (b, t) Core_kernel.Map.Poly.t =
             let value = get slot product in
             let module D = (val Config.slot_domain slot) in
-            D.partition part (Base.freshen_partition op) ~f value
+            D.partition part op ~f value
             |> Core_kernel.Map.Poly.map ~f:(fun value -> update slot value product)
           in
           let route = get_route part in

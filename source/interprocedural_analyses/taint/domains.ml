@@ -252,6 +252,17 @@ module FlowDetails = struct
   let pp formatter = Format.fprintf formatter "FlowDetails(%a)" product_pp
 
   let show = Format.asprintf "%a" pp
+
+  let subtract to_remove ~from =
+    (* Do not partially subtract slots, since this is unsound. *)
+    if to_remove == from then
+      bottom
+    else if is_bottom to_remove then
+      from
+    else if less_or_equal ~left:from ~right:to_remove then
+      bottom
+    else
+      from
 end
 
 module type TAINT_DOMAIN = sig
@@ -287,6 +298,8 @@ module type TAINT_DOMAIN = sig
   val add_features : Features.SimpleSet.t -> t -> t
 
   val transform_on_widening_collapse : t -> t
+
+  val prune_maximum_length : TraceLength.t -> t -> t
 
   (* Add trace info at call-site *)
   val apply_call
@@ -402,7 +415,8 @@ end = struct
           match feature with
           | Features.Complex.ReturnAccessPath path ->
               let path_name = Abstract.TreeDomain.Label.show_path path in
-              `Assoc ["kind", leaf_kind_json; "name", `String path_name] :: leaves
+              `Assoc ["kind", leaf_kind_json; "name", `String path_name; "depth", `Int trace_length]
+              :: leaves
         in
         let breadcrumbs =
           FlowDetails.(fold simple_feature_element ~f:gather_json ~init:[] features)
@@ -481,6 +495,14 @@ end = struct
         ]
     in
     add_features broadening
+
+
+  let prune_maximum_length maximum_length =
+    let filter_flow (_, flow_details) =
+      let length = FlowDetails.get FlowDetails.Slots.TraceLength flow_details in
+      TraceLength.is_bottom length || TraceLength.less_or_equal ~left:maximum_length ~right:length
+    in
+    transform LeafDomain.KeyValue Filter ~f:filter_flow
 
 
   let apply_call location ~callees ~port ~path ~element:taint =
@@ -600,6 +622,10 @@ module MakeTaintTree (Taint : TAINT_DOMAIN) () = struct
     transform Taint.complex_feature_set Map ~f:cut_off tree
 
 
+  let prune_maximum_length maximum_length =
+    transform Taint.Self Map ~f:(Taint.prune_maximum_length maximum_length)
+
+
   let filter_by_leaf ~leaf taint_tree =
     collapse ~transform:Fn.id taint_tree
     |> Taint.partition Taint.leaf ByFilter ~f:(fun candidate ->
@@ -715,6 +741,7 @@ let local_return_taint =
     [
       Part (BackwardTaint.trace_info, TraceInfo.Declaration { leaf_name_provided = false });
       Part (BackwardTaint.leaf, Sinks.LocalReturn);
+      Part (TraceLength.Self, 0);
       Part (BackwardTaint.complex_feature, Features.Complex.ReturnAccessPath []);
       Part (Features.SimpleSet.Self, Features.SimpleSet.empty);
     ]

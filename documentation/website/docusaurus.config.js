@@ -76,10 +76,7 @@ module.exports = {
           items: [
             {
               label: 'Type Checking (Pyre)',
-              to: fbContent({
-                internal: 'docs/fb/getting-started',
-                external: 'docs/getting-started',
-              }),
+              to: 'docs/getting-started',
             },
             {
               label: 'Static Analysis (Pysa)',
@@ -131,5 +128,8 @@ module.exports = {
       copyright: `Copyright &#169; ${new Date().getFullYear()} Facebook, Inc.`,
     },
     image: 'img/docusaurus.png',
+    gtag: {
+      trackingID: 'G-8CK1L365DB',
+    },
   },
 };

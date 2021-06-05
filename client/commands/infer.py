@@ -104,7 +104,7 @@ class FunctionStub:
         return all(field in stub.keys() for field in required_fields)
 
     def _get_name(self) -> str:
-        """ The last part of the access path is the function name """
+        """The last part of the access path is the function name"""
         return self.name.split(".")[-1] if self.name.split(".") else ""
 
     def _get_annotation(self) -> str:
@@ -138,7 +138,7 @@ class FunctionStub:
         return "async " if self.is_async else ""
 
     def is_complete(self) -> bool:
-        """ Determines if a stub completely types a function """
+        """Determines if a stub completely types a function"""
         if not self.actual:
             return False
         for parameter in self.parameters:
@@ -186,7 +186,7 @@ class FieldStub:
         return all(field in stub.keys() for field in required_fields)
 
     def _get_name(self) -> str:
-        """ The last part of the access path is the function name """
+        """The last part of the access path is the function name"""
         return self.name.split(".")[-1] if self.name.split(".") else ""
 
     def to_string(self) -> str:
@@ -560,7 +560,9 @@ class Infer(Reporting):
 
         search_path = [
             search_path.command_line_argument()
-            for search_path in self._configuration.get_existent_search_paths()
+            for search_path in (
+                self._configuration.expand_and_get_existent_search_paths()
+            )
         ]
         if search_path:
             flags.extend(["-search-path", ",".join(search_path)])

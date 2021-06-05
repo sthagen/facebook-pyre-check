@@ -210,7 +210,10 @@
               "length": 1
             },
             "leaves": [
-              { "kind": "Test", "name": "dictionary.tainted_dictionary" }
+              {
+                "kind": "Test",
+                "name": "Obj{dictionary.tainted_dictionary}"
+              }
             ],
             "features": [ { "always-via": "tito" } ]
           }
@@ -747,7 +750,10 @@
               "end": 22
             },
             "leaves": [
-              { "kind": "Test", "name": "dictionary.tainted_dictionary" }
+              {
+                "kind": "Test",
+                "name": "Obj{dictionary.tainted_dictionary}"
+              }
             ]
           }
         ]
@@ -759,6 +765,20 @@
       { "always-via": "tito" },
       { "always-via": "special_source" }
     ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "Obj{dictionary.tainted_dictionary}",
+    "sources": [],
+    "sinks": [
+      {
+        "port": "formal($global)",
+        "taint": [ { "decl": null, "leaves": [ { "kind": "Test" } ] } ]
+      }
+    ],
+    "tito": []
   }
 }
 {
@@ -814,6 +834,22 @@
 {
   "kind": "model",
   "data": {
+    "callable": "dict.update",
+    "sources": [],
+    "sinks": [],
+    "tito": [
+      {
+        "port": "formal(__m)",
+        "taint": [
+          { "decl": null, "leaves": [ { "kind": "ParameterUpdate0" } ] }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
     "callable": "dictionary.Service.async_get_dict",
     "sources": [],
     "sinks": [],
@@ -827,7 +863,7 @@
               { "line": 206, "start": 16, "end": 58 },
               { "line": 206, "start": 52, "end": 57 }
             ],
-            "leaves": [ { "kind": "LocalReturn", "name": "" } ],
+            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 1 } ],
             "features": [
               { "has": "first-index" },
               { "first-index": "<unknown>" },
@@ -853,7 +889,7 @@
           {
             "decl": null,
             "tito": [ { "line": 203, "start": 30, "end": 33 } ],
-            "leaves": [ { "kind": "LocalReturn", "name": "" } ],
+            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ],
             "features": [ { "via": "obscure" } ]
           }
         ]
@@ -878,7 +914,7 @@
               { "line": 209, "start": 22, "end": 64 },
               { "line": 209, "start": 58, "end": 63 }
             ],
-            "leaves": [ { "kind": "LocalReturn", "name": "" } ],
+            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 1 } ],
             "features": [
               { "has": "first-index" },
               { "first-index": "<unknown>" },
@@ -928,7 +964,9 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "[index]" } ]
+            "leaves": [
+              { "kind": "LocalReturn", "name": "[index]", "depth": 0 }
+            ]
           }
         ]
       }
@@ -1139,7 +1177,9 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "[a]" } ]
+            "leaves": [
+              { "kind": "LocalReturn", "name": "[a]", "depth": 0 }
+            ]
           }
         ]
       }
@@ -1258,7 +1298,7 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "" } ]
+            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
           }
         ]
       }
@@ -1302,7 +1342,9 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "[index]" } ]
+            "leaves": [
+              { "kind": "LocalReturn", "name": "[index]", "depth": 0 }
+            ]
           }
         ]
       }
@@ -1346,7 +1388,7 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "" } ]
+            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
           }
         ]
       }
@@ -1494,7 +1536,7 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "" } ],
+            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ],
             "features": [ { "has": "first-index" }, { "first-index": "a" } ]
           }
         ]
@@ -1514,7 +1556,7 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "" } ]
+            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
           }
         ]
       }
@@ -1539,7 +1581,10 @@
             },
             "tito": [ { "line": 68, "start": 30, "end": 33 } ],
             "leaves": [
-              { "kind": "Test", "name": "dictionary.tainted_dictionary" }
+              {
+                "kind": "Test",
+                "name": "Obj{dictionary.tainted_dictionary}"
+              }
             ],
             "features": [ { "always-via": "tito" } ]
           }
@@ -1547,5 +1592,24 @@
       }
     ],
     "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "typing.Mapping.get",
+    "sources": [],
+    "sinks": [],
+    "tito": [
+      {
+        "port": "formal(self)",
+        "taint": [
+          {
+            "decl": null,
+            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
+          }
+        ]
+      }
+    ]
   }
 }

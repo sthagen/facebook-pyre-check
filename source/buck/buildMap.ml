@@ -41,6 +41,20 @@ module Partial = struct
 
   let of_alist_exn items = of_alist_implementation items ~add:Hashtbl.add_exn
 
+  exception DuplicatedKey of string
+
+  let of_alist items =
+    try
+      let add table ~key ~data =
+        match Hashtbl.add table ~key ~data with
+        | `Duplicate -> raise (DuplicatedKey key)
+        | `Ok -> ()
+      in
+      `Ok (of_alist_implementation items ~add)
+    with
+    | DuplicatedKey key -> `Duplicate_key key
+
+
   let of_alist_ignoring_duplicates items =
     let add table ~key ~data =
       (* First entry wins. *)
@@ -110,6 +124,21 @@ module Difference = struct
   let of_alist_exn items = Hashtbl.of_alist_exn (module String) items
 
   let to_alist = Hashtbl.to_alist
+
+  exception DuplicatedKey of string
+
+  let merge left right =
+    try
+      let f ~key = function
+        | `Left value
+        | `Right value ->
+            Some value
+        | `Both (left, right) when [%compare.equal: Kind.t] left right -> Some left
+        | `Both _ -> raise (DuplicatedKey key)
+      in
+      Result.Ok (Hashtbl.merge left right ~f)
+    with
+    | DuplicatedKey key -> Result.Error key
 end
 
 type t = { artifact_to_source: Partial.t }
@@ -140,6 +169,8 @@ let index { artifact_to_source } =
   { Indexed.lookup_source; lookup_artifact }
 
 
+let artifact_count { artifact_to_source } = Hashtbl.length artifact_to_source
+
 let to_alist { artifact_to_source } = Hashtbl.to_alist artifact_to_source
 
 let difference ~original:{ artifact_to_source = original } { artifact_to_source = current } =
@@ -167,3 +198,35 @@ let difference ~original:{ artifact_to_source = original } { artifact_to_source 
   Hashtbl.iteri original ~f:scan_original_item;
   Hashtbl.iteri current ~f:scan_current_item;
   result
+
+
+exception CannotApplyDifference of string
+
+let strict_apply_difference ~difference { artifact_to_source = original } =
+  try
+    let artifact_to_source = Hashtbl.copy original in
+    let apply_difference ~key:artifact ~data:kind =
+      let f key =
+        match kind, key with
+        | Difference.Kind.Deleted, Some _ ->
+            (* Remove an existing artifact. *)
+            None
+        | Difference.Kind.Deleted, None ->
+            (* Remove a nonexistent artifact. *)
+            raise (CannotApplyDifference artifact)
+        | Difference.Kind.(New value | Changed value), None ->
+            (* Add a new artifact. *)
+            Some value
+        | Difference.Kind.(New value | Changed value), Some key when String.equal value key ->
+            (* Add the same source. *)
+            Some value
+        | Difference.Kind.(New _ | Changed _), Some _ ->
+            (* Redirect an existing artifact. *)
+            raise (CannotApplyDifference artifact)
+      in
+      Hashtbl.change artifact_to_source artifact ~f
+    in
+    Hashtbl.iteri difference ~f:apply_difference;
+    Result.Ok { artifact_to_source }
+  with
+  | CannotApplyDifference artifact -> Result.Error artifact

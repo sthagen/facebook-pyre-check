@@ -1147,7 +1147,7 @@ let test_partial_sinks context =
 
 
 let test_invalid_models context =
-  let assert_invalid_model ?path ?source ~model_source ~expect () =
+  let assert_invalid_model ?path ?source ?(sources = []) ~model_source ~expect () =
     let source =
       match source with
       | Some source -> source
@@ -1166,9 +1166,8 @@ let test_invalid_models context =
                 unannotated_class_variable = source()
             |}
     in
-    let resolution =
-      ScratchProject.setup ~context ["test.py", source] |> ScratchProject.build_resolution
-    in
+    let sources = ("test.py", source) :: sources in
+    let resolution = ScratchProject.setup ~context sources |> ScratchProject.build_resolution in
     let configuration =
       TaintConfiguration.
         {
@@ -1196,8 +1195,8 @@ let test_invalid_models context =
     in
     assert_equal ~printer:ident expect error_message
   in
-  let assert_valid_model ?source ~model_source () =
-    assert_invalid_model ?source ~model_source ~expect:"no failure" ()
+  let assert_valid_model ?source ?sources ~model_source () =
+    assert_invalid_model ?source ?sources ~model_source ~expect:"no failure" ()
   in
   assert_invalid_model ~model_source:"import foo" ~expect:"Unexpected statement" ();
   assert_invalid_model
@@ -1403,10 +1402,49 @@ let test_invalid_models context =
        value = \"foo\" }, { Expression.Call.Argument.name = (Some is_transitive); value = foobar \
        }`."
     ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        find = "methods",
+        where = name.foo("foo"),
+        model = ReturnModel(TaintSource[Test])
+      )
+    |}
+    ~expect:"`name.foo(\"foo\")` is not a valid name clause."
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        find = "methods",
+        where = name.matches(foobar, 1, 2),
+        model = ReturnModel(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      "Unsupported arguments for callee `name.matches`: `{ Expression.Call.Argument.name = None; \
+       value = foobar }, { Expression.Call.Argument.name = None; value = 1 }, { \
+       Expression.Call.Argument.name = None; value = 2 }`."
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        find = "methods",
+        where = name.equals(foobar, 1, 2),
+        model = ReturnModel(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      "Unsupported arguments for callee `name.equals`: `{ Expression.Call.Argument.name = None; \
+       value = foobar }, { Expression.Call.Argument.name = None; value = 1 }, { \
+       Expression.Call.Argument.name = None; value = 2 }`."
+    ();
+
   assert_valid_model
     ~model_source:"def test.partial_sink(x: PartialSink[Test[a]], y: PartialSink[Test[b]]): ..."
     ();
-
   assert_valid_model ~model_source:"def test.sink(): ..." ();
   assert_valid_model ~model_source:"def test.sink_with_optional(): ..." ();
   assert_valid_model ~model_source:"def test.sink_with_optional(parameter): ..." ();
@@ -1539,7 +1577,13 @@ let test_invalid_models context =
       class test.ClassSinkWithMethod(TaintSink[TestSink]):
           def method(self): ...
       |}
-    ~expect:"Invalid model for `test.ClassSinkWithMethod`: Class model must have a body of `...`."
+    ~expect:"Class model for `test.ClassSinkWithMethod` must have a body of `...`."
+    ();
+  assert_invalid_model
+    ~model_source:{|
+      def foo(): TaintSource[A]
+    |}
+    ~expect:"Callable model for `foo` must have a body of `...`."
     ();
   (* Attach syntax. *)
   assert_invalid_model
@@ -1782,7 +1826,9 @@ let test_invalid_models context =
         def foo(self) -> int: ...
     |}
     ~model_source:"test.C.foo: TaintSource[A] = ..."
-    ~expect:"Class `test.C` has no attribute `foo`."
+    ~expect:
+      "The function, method or property `test.C.foo` is not a valid attribute - did you mean to \
+       use `def test.C.foo(): ...`?"
     ();
   assert_invalid_model
     ~source:{|
@@ -1935,6 +1981,17 @@ let test_invalid_models context =
     |}
     ~expect:"The class `test.C` is not a valid define - did you mean to model `test.C.__init__()`?"
     ();
+  assert_invalid_model
+    ~source:{|
+      class C:
+        pass
+    |}
+    ~model_source:{|
+      test.C: Sanitize
+    |}
+    ~expect:
+      "The class `test.C` is not a valid attribute - did you mean to model `test.C.__init__()`?"
+    ();
   (* Class models don't error. *)
   assert_valid_model
     ~source:{|
@@ -1956,6 +2013,130 @@ let test_invalid_models context =
   assert_invalid_model
     ~model_source:"def not_in_the_environment.derp(parameter: InvalidTaintDirection[Test]): ..."
     ~expect:"`not_in_the_environment.derp` is not part of the environment!"
+    ();
+  assert_invalid_model
+    ~model_source:"def test(parameter: InvalidTaintDirection[Test]): ..."
+    ~expect:"The module `test` is not a valid define."
+    ();
+  assert_invalid_model
+    ~model_source:"test: Sanitize"
+    ~expect:"The module `test` is not a valid attribute."
+    ();
+  assert_invalid_model
+    ~source:{|
+      class Foo:
+        x: int = 1
+    |}
+    ~model_source:{|
+      def test.Foo.x(self) -> TaintSource[Test]: ...
+    |}
+    ~expect:
+      "The attribute `test.Foo.x` is not a valid define - did you mean to use `test.Foo.x: ...`?"
+    ();
+  assert_invalid_model
+    ~source:{|
+      def foo():
+        return
+    |}
+    ~model_source:{|
+      test.foo: TaintSource[Test]
+    |}
+    ~expect:
+      "The function, method or property `test.foo` is not a valid attribute - did you mean to use \
+       `def test.foo(): ...`?"
+    ();
+  (* Decorators. *)
+  assert_valid_model
+    ~source:
+      {|
+        class Foo:
+          @unknown_decorator
+          def bar(self):
+            pass
+      |}
+    ~model_source:{|
+      def test.Foo.bar() -> TaintSource[A]: ...
+    |}
+    ();
+  assert_invalid_model
+    ~source:
+      {|
+        class Foo:
+          @unknown_decorator
+          def bar(self):
+            pass
+      |}
+    ~model_source:{|
+      test.Foo.bar: TaintSource[A]
+    |}
+    ~expect:
+      "The function, method or property `test.Foo.bar` is not a valid attribute - did you mean to \
+       use `def test.Foo.bar(): ...`?"
+    ();
+  (* Accept callable models for Any or Top because of type error. *)
+  assert_valid_model
+    ~source:
+      {|
+        class Foo:
+          def bar(self):
+            pass
+          baz = bar
+      |}
+    ~model_source:{|
+      def test.Foo.baz() -> TaintSource[A]: ...
+    |}
+    ();
+  assert_valid_model
+    ~source:
+      {|
+        class Foo:
+          def bar(self):
+            pass
+          baz = bar
+      |}
+    ~model_source:{|
+      test.Foo.baz: TaintSource[A]
+    |}
+    ();
+  (* Overloads *)
+  assert_valid_model
+    ~sources:
+      [
+        ( "test.pyi",
+          {|
+            from typing import overload
+            class Foo:
+              @overload
+              def bar(self, x: int) -> str: ...
+              @overload
+              def bar(self, x: str) -> int: ...
+          |}
+        );
+      ]
+    ~model_source:{|
+      def test.Foo.bar(self, x: TaintSink[Test]): ...
+    |}
+    ();
+  assert_invalid_model
+    ~sources:
+      [
+        ( "test.pyi",
+          {|
+            from typing import overload
+            class Foo:
+              @overload
+              def bar(self, x: int) -> str: ...
+              @overload
+              def bar(self, x: str) -> int: ...
+          |}
+        );
+      ]
+    ~model_source:{|
+      test.Foo.bar: TaintSink[Test]
+    |}
+    ~expect:
+      "The function, method or property `test.Foo.bar` is not a valid attribute - did you mean to \
+       use `def test.Foo.bar(): ...`?"
     ();
   assert_invalid_model
     ~source:
@@ -2138,7 +2319,7 @@ let test_query_parsing context =
       [
         {
           name = None;
-          query = [NameConstraint "foo"];
+          query = [NameConstraint (Matches (Re2.create_exn "foo"))];
           rule_kind = FunctionModel;
           productions =
             [
@@ -2172,7 +2353,7 @@ let test_query_parsing context =
       [
         {
           name = None;
-          query = [NameConstraint "foo"];
+          query = [NameConstraint (Matches (Re2.create_exn "foo"))];
           rule_kind = FunctionModel;
           productions =
             [
@@ -2206,7 +2387,11 @@ let test_query_parsing context =
       [
         {
           name = None;
-          query = [NameConstraint "foo"; NameConstraint "bar"];
+          query =
+            [
+              NameConstraint (Matches (Re2.create_exn "foo"));
+              NameConstraint (Matches (Re2.create_exn "bar"));
+            ];
           rule_kind = FunctionModel;
           productions =
             [
@@ -2240,7 +2425,50 @@ let test_query_parsing context =
       [
         {
           name = None;
-          query = [NameConstraint "foo"];
+          query = [NameConstraint (Matches (Re2.create_exn "foo"))];
+          rule_kind = FunctionModel;
+          productions =
+            [
+              ReturnTaint
+                [
+                  TaintAnnotation
+                    (Model.Source
+                       {
+                         source = Sources.NamedSource "Test";
+                         breadcrumbs = [];
+                         path = [];
+                         leaf_names = [];
+                         leaf_name_provided = false;
+                       });
+                  TaintAnnotation
+                    (Model.Sink
+                       {
+                         sink = Sinks.NamedSink "Test";
+                         breadcrumbs = [];
+                         path = [];
+                         leaf_names = [];
+                         leaf_name_provided = false;
+                       });
+                ];
+            ];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     find = "functions",
+     where = name.equals("test.foo"),
+     model = [Returns([TaintSource[Test], TaintSink[Test]])]
+    )
+  |}
+    ~expect:
+      [
+        {
+          name = None;
+          query = [NameConstraint (Equals "test.foo")];
           rule_kind = FunctionModel;
           productions =
             [
@@ -2284,7 +2512,7 @@ let test_query_parsing context =
       [
         {
           name = Some "foo_finders";
-          query = [NameConstraint "foo"];
+          query = [NameConstraint (Matches (Re2.create_exn "foo"))];
           rule_kind = FunctionModel;
           productions =
             [
@@ -2444,7 +2672,7 @@ let test_query_parsing context =
       [
         {
           name = Some "foo_finders";
-          query = [NameConstraint "foo"];
+          query = [NameConstraint (Matches (Re2.create_exn "foo"))];
           rule_kind = FunctionModel;
           productions =
             [
@@ -2483,7 +2711,7 @@ let test_query_parsing context =
       [
         {
           name = Some "foo_finders";
-          query = [NameConstraint "foo"];
+          query = [NameConstraint (Matches (Re2.create_exn "foo"))];
           rule_kind = FunctionModel;
           productions =
             [
@@ -2522,7 +2750,7 @@ let test_query_parsing context =
       [
         {
           name = Some "foo_finders";
-          query = [NameConstraint "foo"];
+          query = [NameConstraint (Matches (Re2.create_exn "foo"))];
           rule_kind = FunctionModel;
           productions =
             [
@@ -2631,7 +2859,7 @@ let test_query_parsing context =
       [
         {
           name = None;
-          query = [ParentConstraint (Equals "Foo")];
+          query = [ParentConstraint (NameSatisfies (Equals "Foo"))];
           rule_kind = MethodModel;
           productions =
             [
@@ -2785,7 +3013,7 @@ let test_query_parsing context =
       [
         {
           name = None;
-          query = [ParentConstraint (Matches (Re2.create_exn "Foo.*"))];
+          query = [ParentConstraint (NameSatisfies (Matches (Re2.create_exn "Foo.*")))];
           rule_kind = MethodModel;
           productions =
             [

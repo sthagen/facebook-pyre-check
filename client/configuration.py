@@ -119,6 +119,10 @@ class SearchPathElement(abc.ABC):
     def expand_relative_root(self, relative_root: str) -> "SearchPathElement":
         raise NotImplementedError
 
+    @abc.abstractmethod
+    def expand_glob(self) -> List["SearchPathElement"]:
+        raise NotImplementedError
+
 
 @dataclasses.dataclass(frozen=True)
 class SimpleSearchPathElement(SearchPathElement):
@@ -142,6 +146,14 @@ class SimpleSearchPathElement(SearchPathElement):
         return SimpleSearchPathElement(
             _expand_relative_root(self.root, relative_root=relative_root)
         )
+
+    def expand_glob(self) -> List[SearchPathElement]:
+        expanded = sorted(glob.glob(self.get_root()))
+        if expanded:
+            return [SimpleSearchPathElement(path) for path in expanded]
+        else:
+            LOG.warning(f"'{self.path()}' does not match any paths.")
+            return []
 
 
 @dataclasses.dataclass(frozen=True)
@@ -170,6 +182,9 @@ class SubdirectorySearchPathElement(SearchPathElement):
             subdirectory=self.subdirectory,
         )
 
+    def expand_glob(self) -> List["SearchPathElement"]:
+        return [self]
+
 
 @dataclasses.dataclass(frozen=True)
 class SitePackageSearchPathElement(SearchPathElement):
@@ -192,6 +207,9 @@ class SitePackageSearchPathElement(SearchPathElement):
     def expand_relative_root(self, relative_root: str) -> SearchPathElement:
         # Site package does not participate in root expansion.
         return self
+
+    def expand_glob(self) -> List["SearchPathElement"]:
+        return [self]
 
 
 @dataclasses.dataclass
@@ -288,6 +306,24 @@ def _in_virtual_environment(override: Optional[bool] = None) -> bool:
     return sys.prefix != sys.base_prefix
 
 
+def _expand_and_get_existent_paths(
+    paths: Sequence[SearchPathElement],
+) -> List[SearchPathElement]:
+    expanded_search_paths = [
+        expanded_path
+        for search_path_element in paths
+        for expanded_path in search_path_element.expand_glob()
+    ]
+    existent_paths = []
+    for search_path_element in expanded_search_paths:
+        search_path = search_path_element.path()
+        if os.path.exists(search_path):
+            existent_paths.append(search_path_element)
+        else:
+            LOG.warning(f"Path does not exist: {search_path}")
+    return existent_paths
+
+
 @dataclass(frozen=True)
 class PythonVersion:
     major: int
@@ -318,6 +354,31 @@ class PythonVersion:
 
 
 @dataclass(frozen=True)
+class SharedMemory:
+    heap_size: Optional[int] = None
+    dependency_table_power: Optional[int] = None
+    hash_table_power: Optional[int] = None
+
+    def to_json(self) -> Dict[str, int]:
+        heap_size = self.heap_size
+        dependency_table_power = self.dependency_table_power
+        hash_table_power = self.hash_table_power
+        return {
+            **({"heap_size": heap_size} if heap_size is not None else {}),
+            **(
+                {"dependency_table_power": dependency_table_power}
+                if dependency_table_power is not None
+                else {}
+            ),
+            **(
+                {"hash_table_power": hash_table_power}
+                if hash_table_power is not None
+                else {}
+            ),
+        }
+
+
+@dataclass(frozen=True)
 class PartialConfiguration:
     autocomplete: Optional[bool] = None
     binary: Optional[str] = None
@@ -338,6 +399,7 @@ class PartialConfiguration:
     oncall: Optional[str] = None
     other_critical_files: Sequence[str] = field(default_factory=list)
     python_version: Optional[PythonVersion] = None
+    shared_memory: SharedMemory = SharedMemory()
     search_path: Sequence[SearchPathElement] = field(default_factory=list)
     source_directories: Optional[Sequence[SearchPathElement]] = None
     strict: Optional[bool] = None
@@ -400,6 +462,11 @@ class PartialConfiguration:
                 PythonVersion.from_string(python_version_string)
                 if python_version_string is not None
                 else None
+            ),
+            shared_memory=SharedMemory(
+                heap_size=arguments.shared_memory_heap_size,
+                dependency_table_power=arguments.shared_memory_dependency_table_power,
+                hash_table_power=arguments.shared_memory_hash_table_power,
             ),
             search_path=[
                 SimpleSearchPathElement(element) for element in arguments.search_path
@@ -506,6 +573,24 @@ class PartialConfiguration:
                     + f"'{python_version_json}'"
                 )
 
+            shared_memory_json = ensure_option_type(
+                configuration_json, "shared_memory", dict
+            )
+            if shared_memory_json is None:
+                shared_memory = SharedMemory()
+            else:
+                shared_memory = SharedMemory(
+                    heap_size=ensure_option_type(shared_memory_json, "heap_size", int),
+                    dependency_table_power=ensure_option_type(
+                        shared_memory_json, "dependency_table_power", int
+                    ),
+                    hash_table_power=ensure_option_type(
+                        shared_memory_json, "hash_table_power", int
+                    ),
+                )
+                for unrecognized_key in shared_memory_json:
+                    LOG.warning(f"Unrecognized configuration item: {unrecognized_key}")
+
             source_directories_json = ensure_option_type(
                 configuration_json, "source_directories", list
             )
@@ -561,6 +646,7 @@ class PartialConfiguration:
                     configuration_json, "critical_files"
                 ),
                 python_version=python_version,
+                shared_memory=shared_memory,
                 search_path=search_path,
                 source_directories=source_directories,
                 strict=ensure_option_type(configuration_json, "strict", bool),
@@ -659,6 +745,7 @@ class PartialConfiguration:
                 expand_relative_path(root, path) for path in self.other_critical_files
             ],
             python_version=self.python_version,
+            shared_memory=self.shared_memory,
             search_path=[path.expand_relative_root(root) for path in self.search_path],
             source_directories=source_directories,
             strict=self.strict,
@@ -672,24 +759,6 @@ class PartialConfiguration:
             use_command_v2=self.use_command_v2,
             version_hash=self.version_hash,
         )
-
-    def warn_on_nonexistent_paths(self) -> None:
-        source_directories = self.source_directories
-        if not source_directories:
-            return
-        for source_directory in source_directories:
-            if not os.path.exists(source_directory.path()):
-                relative_path_warning = ""
-                if isinstance(source_directory, SubdirectorySearchPathElement):
-                    relative_path_warning = (
-                        "Be sure the `source` path is relative to the "
-                        + "`import_root`."
-                    )
-                LOG.warning(
-                    f"Source directory `{source_directory.path()}` does not "
-                    + "exist. "
-                    + relative_path_warning
-                )
 
 
 def merge_partial_configurations(
@@ -747,6 +816,19 @@ def merge_partial_configurations(
             base.other_critical_files, override.other_critical_files
         ),
         python_version=overwrite_base(base.python_version, override.python_version),
+        shared_memory=SharedMemory(
+            heap_size=overwrite_base(
+                base.shared_memory.heap_size, override.shared_memory.heap_size
+            ),
+            dependency_table_power=overwrite_base(
+                base.shared_memory.dependency_table_power,
+                override.shared_memory.dependency_table_power,
+            ),
+            hash_table_power=overwrite_base(
+                base.shared_memory.hash_table_power,
+                override.shared_memory.hash_table_power,
+            ),
+        ),
         search_path=prepend_base(base.search_path, override.search_path),
         source_directories=raise_when_overridden(
             base.source_directories,
@@ -793,6 +875,7 @@ class Configuration:
     oncall: Optional[str] = None
     other_critical_files: Sequence[str] = field(default_factory=list)
     python_version: Optional[PythonVersion] = None
+    shared_memory: SharedMemory = SharedMemory()
     relative_local_root: Optional[str] = None
     search_path: Sequence[SearchPathElement] = field(default_factory=list)
     source_directories: Optional[Sequence[SearchPathElement]] = None
@@ -842,6 +925,7 @@ class Configuration:
             oncall=partial_configuration.oncall,
             other_critical_files=partial_configuration.other_critical_files,
             python_version=partial_configuration.python_version,
+            shared_memory=partial_configuration.shared_memory,
             relative_local_root=relative_local_root,
             search_path=[
                 path.expand_global_root(str(project_root)) for path in search_path
@@ -927,6 +1011,11 @@ class Configuration:
                 else {}
             ),
             **(
+                {"shared_memory": self.shared_memory.to_json()}
+                if self.shared_memory != SharedMemory()
+                else {}
+            ),
+            **(
                 {"relative_local_root": relative_local_root}
                 if relative_local_root is not None
                 else {}
@@ -947,11 +1036,13 @@ class Configuration:
             **({"version_hash": version_hash} if version_hash is not None else {}),
         }
 
-    def get_existent_source_directories(self) -> List[SearchPathElement]:
-        return self._get_existent_paths(self.source_directories or [])
+    def get_source_directories(self) -> List[SearchPathElement]:
+        return list(self.source_directories or [])
 
-    def get_existent_search_paths(self) -> List[SearchPathElement]:
-        existent_paths = self._get_existent_paths(self.search_path)
+    # Expansion and validation of search paths cannot happen at Configuration creation
+    # because link trees need to be built first.
+    def expand_and_get_existent_search_paths(self) -> List[SearchPathElement]:
+        existent_paths = _expand_and_get_existent_paths(self.search_path)
 
         typeshed_root = self.get_typeshed_respecting_override()
         typeshed_paths = (
@@ -970,17 +1061,45 @@ class Configuration:
         # List[SimpleSearchPathElement]]`
         return existent_paths + typeshed_paths
 
-    def _get_existent_paths(
-        self, paths: Sequence[SearchPathElement]
-    ) -> List[SearchPathElement]:
-        existent_paths = []
-        for search_path_element in paths:
-            search_path = search_path_element.path()
-            if os.path.exists(search_path):
-                existent_paths.append(search_path_element)
-            else:
-                LOG.debug(f"Filtering out nonexistent search path: {search_path}")
-        return existent_paths
+    def expand_and_filter_nonexistent_paths(self) -> "Configuration":
+        source_directories = self.source_directories
+
+        return Configuration(
+            project_root=self.project_root,
+            dot_pyre_directory=self.dot_pyre_directory,
+            autocomplete=self.autocomplete,
+            binary=self.binary,
+            buck_builder_binary=self.buck_builder_binary,
+            buck_mode=self.buck_mode,
+            disabled=self.disabled,
+            do_not_ignore_all_errors_in=self.do_not_ignore_all_errors_in,
+            excludes=self.excludes,
+            extensions=self.extensions,
+            file_hash=self.file_hash,
+            formatter=self.formatter,
+            ignore_all_errors=self.ignore_all_errors,
+            ignore_infer=self.ignore_infer,
+            isolation_prefix=self.isolation_prefix,
+            logger=self.logger,
+            number_of_workers=self.number_of_workers,
+            oncall=self.oncall,
+            other_critical_files=self.other_critical_files,
+            python_version=self.python_version,
+            shared_memory=self.shared_memory,
+            relative_local_root=self.relative_local_root,
+            search_path=self.search_path,
+            source_directories=_expand_and_get_existent_paths(source_directories)
+            if source_directories
+            else None,
+            strict=self.strict,
+            taint_models_path=self.taint_models_path,
+            targets=self.targets,
+            typeshed=self.typeshed,
+            use_buck_builder=self.use_buck_builder,
+            use_buck_source_database=self.use_buck_source_database,
+            use_command_v2=self.use_command_v2,
+            version_hash=self.version_hash,
+        )
 
     def get_existent_ignore_infer_paths(self) -> List[str]:
         existent_paths = []
@@ -1173,11 +1292,11 @@ def create_configuration(
         partial_configuration = merge_partial_configurations(
             base=partial_configuration, override=command_argument_configuration
         )
-        partial_configuration.warn_on_nonexistent_paths()
 
-    return Configuration.from_partial_configuration(
+    configuration = Configuration.from_partial_configuration(
         project_root, relative_local_root, partial_configuration
     )
+    return configuration.expand_and_filter_nonexistent_paths()
 
 
 def check_nested_local_configuration(configuration: Configuration) -> None:

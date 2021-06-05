@@ -7,11 +7,55 @@
 
 open Pyre
 
-val default_python_major_version : int
+module Buck : sig
+  type t = {
+    mode: string option;
+    isolation_prefix: string option;
+    targets: string list;
+    (* This is the buck root of the source directory, i.e. output of `buck root`. *)
+    source_root: Path.t;
+    (* This is the root of directory where built artifacts will be placed. *)
+    artifact_root: Path.t;
+  }
+  [@@deriving sexp, compare, hash, yojson]
+end
 
-val default_python_minor_version : int
+module SourcePaths : sig
+  type t =
+    | Simple of SearchPath.t list
+    | Buck of Buck.t
+  [@@deriving sexp, compare, hash, yojson]
+end
 
-val default_python_micro_version : int
+module RemoteLogging : sig
+  type t = {
+    logger: string;
+    identifier: string;
+  }
+  [@@deriving sexp, compare, hash, yojson]
+end
+
+module PythonVersion : sig
+  type t = {
+    major: int;
+    minor: int;
+    micro: int;
+  }
+  [@@deriving sexp, compare, hash, yojson]
+
+  val default : t
+end
+
+module SharedMemory : sig
+  type t = {
+    heap_size: int;
+    dependency_table_power: int;
+    hash_table_power: int;
+  }
+  [@@deriving sexp, compare, hash, yojson]
+
+  val default : t
+end
 
 module Features : sig
   type t = {
@@ -44,6 +88,13 @@ module Analysis : sig
     | FineGrained
   [@@deriving show]
 
+  type shared_memory = {
+    heap_size: int;
+    dependency_table_power: int;
+    hash_table_power: int;
+  }
+  [@@deriving show]
+
   type t = {
     infer: bool;
     configuration_file_hash: string option;
@@ -73,6 +124,7 @@ module Analysis : sig
     python_major_version: int;
     python_minor_version: int;
     python_micro_version: int;
+    shared_memory: shared_memory;
   }
   [@@deriving show, eq]
 
@@ -104,6 +156,9 @@ module Analysis : sig
     ?python_major_version:int ->
     ?python_minor_version:int ->
     ?python_micro_version:int ->
+    ?shared_memory_heap_size:int ->
+    ?shared_memory_dependency_table_power:int ->
+    ?shared_memory_hash_table_power:int ->
     source_path:SearchPath.t list ->
     unit ->
     t
@@ -173,7 +228,9 @@ module StaticAnalysis : sig
     find_missing_flows: string option;
     dump_model_query_results: bool;
     use_cache: bool;
+    maximum_trace_length: int option;
+    maximum_tito_depth: int option;
   }
 
-  val to_json : t -> Yojson.Safe.json
+  val dump_model_query_results_path : t -> Path.t option
 end

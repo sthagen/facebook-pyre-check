@@ -47,7 +47,10 @@ let create ?mode ?isolation_prefix ~source_root ~artifact_root raw =
   { buck_options = { BuckOptions.raw; mode; isolation_prefix }; source_root; artifact_root }
 
 
-let query_buck_for_targets { BuckOptions.raw; mode; isolation_prefix } target_specifications =
+let query_buck_for_normalized_targets
+    { BuckOptions.raw; mode; isolation_prefix }
+    target_specifications
+  =
   match target_specifications with
   | [] -> Lwt.return "{}"
   | _ ->
@@ -57,8 +60,6 @@ let query_buck_for_targets { BuckOptions.raw; mode; isolation_prefix } target_sp
           ["--json"];
           (* Mark the query as coming from `pyre` for `buck`, to make troubleshooting easier. *)
           ["--config"; "client.id=pyre"];
-          Option.value_map isolation_prefix ~default:[] ~f:(fun isolation_prefix ->
-              ["--isolation_prefix"; isolation_prefix]);
           Option.value_map mode ~default:[] ~f:(fun mode -> ["@mode/" ^ mode]);
           [
             "kind(\"python_binary|python_library|python_test\", %s)"
@@ -73,7 +74,33 @@ let query_buck_for_targets { BuckOptions.raw; mode; isolation_prefix } target_sp
           ];
           target_specifications;
         ]
-      |> Raw.query raw
+      |> Raw.query ?isolation_prefix raw
+
+
+let query_buck_for_changed_targets ~targets { BuckOptions.raw; mode; isolation_prefix } source_paths
+  =
+  match targets with
+  | [] -> Lwt.return "{}"
+  | targets -> (
+      match source_paths with
+      | [] -> Lwt.return "{}"
+      | source_paths ->
+          let target_string = List.map targets ~f:Target.show |> String.concat ~sep:" " in
+          List.concat
+            [
+              ["--json"];
+              ["--config"; "client.id=pyre"];
+              Option.value_map mode ~default:[] ~f:(fun mode -> ["@mode/" ^ mode]);
+              [
+                (* This will get only those owner targets that are beneath our targets or the
+                   dependencies of our targets. *)
+                Format.sprintf "owner(%%s) ^ deps(set(%s))" target_string;
+              ];
+              List.map source_paths ~f:Path.show;
+              (* These attributes are all we need to locate the source and artifact relative paths. *)
+              ["--output-attributes"; "srcs"; "buck.base_path"; "buck.base_module"; "base_module"];
+            ]
+          |> Raw.query ?isolation_prefix raw )
 
 
 let run_buck_build_for_targets { BuckOptions.raw; mode; isolation_prefix } targets =
@@ -86,16 +113,14 @@ let run_buck_build_for_targets { BuckOptions.raw; mode; isolation_prefix } targe
           ["--show-full-json-output"];
           (* Mark the query as coming from `pyre` for `buck`, to make troubleshooting easier. *)
           ["--config"; "client.id=pyre"];
-          Option.value_map isolation_prefix ~default:[] ~f:(fun isolation_prefix ->
-              ["--isolation_prefix"; isolation_prefix]);
           Option.value_map mode ~default:[] ~f:(fun mode -> ["@mode/" ^ mode]);
           List.map targets ~f:(fun target ->
               Format.sprintf "%s%s" (Target.show target) source_database_suffix);
         ]
-      |> Raw.build raw
+      |> Raw.build ?isolation_prefix raw
 
 
-let parse_buck_query_output query_output =
+let parse_buck_normalized_targets_query_output query_output =
   let is_ignored_target target =
     (* We should probably tag these targets as `no_pyre` in the long run. *)
     String.is_suffix target ~suffix:"-mypy_ini"
@@ -164,9 +189,11 @@ let load_partial_build_map path =
 let normalize_targets buck_options target_specifications =
   let open Lwt.Infix in
   Log.info "Collecting buck targets to build...";
-  query_buck_for_targets buck_options target_specifications
+  query_buck_for_normalized_targets buck_options target_specifications
   >>= fun query_output ->
-  let targets = parse_buck_query_output query_output |> List.map ~f:Target.of_string in
+  let targets =
+    parse_buck_normalized_targets_query_output query_output |> List.map ~f:Target.of_string
+  in
   Log.info "Collected %d targets" (List.length targets);
   Lwt.return targets
 
@@ -212,10 +239,10 @@ let merge_build_maps target_and_build_maps =
     let open BuildMap.Partial in
     match merge build_map_sofar next_build_map with
     | MergeResult.Incompatible { MergeResult.IncompatibleItem.key; left_value; right_value } ->
-        Log.warning
-          "Cannot include target %s for type checking: file `%s` has already been mapped to `%s` \
-           but the target maps it to `%s` instead. "
-          (Target.show next_target)
+        Log.warning "Cannot include target for type checking: %s" (Target.show next_target);
+        Log.log
+          ~section:`Server
+          "... file `%s` has already been mapped to `%s` but the target maps it to `%s` instead. "
           key
           left_value
           right_value;
@@ -225,6 +252,10 @@ let merge_build_maps target_and_build_maps =
   let reversed_targets, merged_build_map =
     List.fold target_and_build_maps ~init:([], BuildMap.Partial.empty) ~f:merge
   in
+  if List.length reversed_targets < List.length target_and_build_maps then
+    Log.warning
+      "One or more targets get dropped by Pyre due to potential conflicts. For more details, see \
+       https://fburl.com/pyre-target-conflict";
   List.rev reversed_targets, BuildMap.create merged_build_map
 
 
@@ -272,10 +303,8 @@ let restore ~build_map { source_root; artifact_root; _ } =
   | Result.Ok () -> Lwt.return_unit
 
 
-let do_incremental_build ~source_root ~artifact_root ~old_build_map ~new_build_map () =
+let update_artifacts ~source_root ~artifact_root difference =
   let open Lwt.Infix in
-  Log.info "Calculating the scope of the re-build...";
-  let difference = BuildMap.difference ~original:old_build_map new_build_map in
   Log.info "Incrementally updating Python link-tree for type checking...";
   Artifacts.update ~source_root ~artifact_root difference
   >>= function
@@ -283,6 +312,14 @@ let do_incremental_build ~source_root ~artifact_root ~old_build_map ~new_build_m
   | Result.Ok () ->
       let to_artifact_path (relative, _) = Path.create_relative ~root:artifact_root ~relative in
       BuildMap.Difference.to_alist difference |> List.map ~f:to_artifact_path |> Lwt.return
+
+
+let do_incremental_build ~source_root ~artifact_root ~old_build_map ~new_build_map () =
+  let difference =
+    Log.info "Calculating the scope of the re-build...";
+    BuildMap.difference ~original:old_build_map new_build_map
+  in
+  update_artifacts ~source_root ~artifact_root difference
 
 
 let full_incremental_build ~old_build_map ~targets { buck_options; source_root; artifact_root } =
@@ -309,8 +346,206 @@ let incremental_build_with_normalized_targets
   Lwt.return { IncrementalBuildResult.targets; build_map; changed_artifacts }
 
 
+module BuckChangedTargetsQueryOutput = struct
+  type t = {
+    source_base_path: string;
+    artifact_base_path: string;
+    artifacts_to_sources: (string * string) list;
+  }
+  [@@deriving sexp, compare]
+
+  let to_partial_build_map { source_base_path; artifact_base_path; artifacts_to_sources } =
+    let to_build_mapping (artifact, source) =
+      Filename.concat artifact_base_path artifact, Filename.concat source_base_path source
+    in
+    match BuildMap.Partial.of_alist (List.map artifacts_to_sources ~f:to_build_mapping) with
+    | `Duplicate_key artifact ->
+        let message = Format.sprintf "Overlapping artifact file detected: %s" artifact in
+        Result.Error message
+    | `Ok partial_build_map -> Result.Ok partial_build_map
+
+
+  let to_build_map_batch outputs =
+    let rec merge ~sofar = function
+      | [] -> Result.Ok (BuildMap.create sofar)
+      | output :: rest -> (
+          match to_partial_build_map output with
+          | Result.Error _ as error -> error
+          | Result.Ok next_build_map -> (
+              match BuildMap.Partial.merge sofar next_build_map with
+              | BuildMap.Partial.MergeResult.Incompatible
+                  { BuildMap.Partial.MergeResult.IncompatibleItem.key; _ } ->
+                  let message = Format.sprintf "Overlapping artifact file detected: %s" key in
+                  Result.Error message
+              | BuildMap.Partial.MergeResult.Ok sofar -> merge ~sofar rest ) )
+    in
+    merge ~sofar:BuildMap.Partial.empty outputs
+end
+
+let parse_buck_changed_targets_query_output query_output =
+  let open Yojson.Safe in
+  try
+    let parse_target_json target_json =
+      let source_base_path = Util.member "buck.base_path" target_json |> Util.to_string in
+      let artifact_base_path =
+        match Util.member "buck.base_module" target_json with
+        | `String base_module -> String.tr ~target:'.' ~replacement:'/' base_module
+        | _ -> source_base_path
+      in
+      let artifact_base_path =
+        match Util.member "base_module" target_json with
+        | `String base_module -> String.tr ~target:'.' ~replacement:'/' base_module
+        | _ -> artifact_base_path
+      in
+      let artifacts_to_sources =
+        match Util.member "srcs" target_json with
+        | `Assoc targets_to_sources ->
+            List.map targets_to_sources ~f:(fun (target, source_json) ->
+                target, Util.to_string source_json)
+            |> List.filter ~f:(function
+                   | _, source when String.is_prefix ~prefix:"//" source ->
+                       (* This can happen for custom rules. *)
+                       false
+                   | _ -> true)
+        | _ -> []
+      in
+      { BuckChangedTargetsQueryOutput.source_base_path; artifact_base_path; artifacts_to_sources }
+    in
+    from_string ~fname:"buck changed paths query output" query_output
+    |> Util.to_assoc
+    |> List.map ~f:(fun (_, target_json) -> parse_target_json target_json)
+  with
+  | Yojson.Json_error message
+  | Util.Type_error (message, _) ->
+      raise (JsonError message)
+
+
+let to_relative_path ~root path = Path.get_relative_to_root ~root ~path
+
+let to_relative_paths ~root paths = List.filter_map paths ~f:(to_relative_path ~root)
+
+let compute_difference_from_removed_relative_paths ~build_map_index removed_paths =
+  List.concat_map removed_paths ~f:(BuildMap.Indexed.lookup_artifact build_map_index)
+  |> List.map ~f:(fun artifact -> artifact, BuildMap.Difference.Kind.Deleted)
+  (* This `of_alist_exn` won't raise because build map never hold duplicated artifact paths. *)
+  |> BuildMap.Difference.of_alist_exn
+
+
+let compute_difference_from_removed_paths ~source_root ~build_map_index removed_paths =
+  to_relative_paths ~root:source_root removed_paths
+  |> compute_difference_from_removed_relative_paths ~build_map_index
+
+
+let compute_difference_from_changed_relative_paths ~build_map_index changed_paths =
+  List.concat_map changed_paths ~f:(fun source_path ->
+      BuildMap.Indexed.lookup_artifact build_map_index source_path
+      |> List.map ~f:(fun artifact_path ->
+             artifact_path, BuildMap.Difference.Kind.Changed source_path))
+  (* This `of_alist_exn` won't raise because build map never hold duplicated artifact paths. *)
+  |> BuildMap.Difference.of_alist_exn
+
+
+let compute_difference_from_changed_paths ~source_root ~buck_options ~targets changed_paths =
+  let open Lwt.Infix in
+  try
+    Log.info "Running `buck query`...";
+    query_buck_for_changed_targets ~targets buck_options changed_paths
+    >>= fun query_output ->
+    let changed_targets = parse_buck_changed_targets_query_output query_output in
+    Log.info "Constructing local build map for changed files...";
+    match BuckChangedTargetsQueryOutput.to_build_map_batch changed_targets with
+    | Result.Error _ as error -> Lwt.return error
+    | Result.Ok build_map ->
+        to_relative_paths ~root:source_root changed_paths
+        |> compute_difference_from_changed_relative_paths
+             ~build_map_index:(BuildMap.index build_map)
+        |> Lwt.return_ok
+  with
+  | JsonError message -> Lwt.return_error message
+
+
+let build_map_and_difference_from_paths
+    ~old_build_map
+    ~old_build_map_index
+    ~targets
+    ~changed_paths
+    ~removed_paths
+    { buck_options; source_root; _ }
+  =
+  let open Lwt.Infix in
+  Log.info "Computing build map deltas from changed paths...";
+  compute_difference_from_changed_paths ~source_root ~buck_options ~targets changed_paths
+  >>= function
+  | Result.Error _ as error -> Lwt.return error
+  | Result.Ok difference_from_changed_paths -> (
+      Log.info "Computing build map deltas from removed paths...";
+      let difference_from_removed_paths =
+        compute_difference_from_removed_paths
+          ~source_root
+          ~build_map_index:old_build_map_index
+          removed_paths
+      in
+      Log.info "Merging build map deltas...";
+      match
+        BuildMap.Difference.merge difference_from_changed_paths difference_from_removed_paths
+      with
+      | Result.Error artifact_path ->
+          Format.sprintf "Conflicting source updates on artifact `%s`" artifact_path
+          |> Lwt.return_error
+      | Result.Ok difference -> (
+          Log.info "Updating old build map...";
+          match BuildMap.strict_apply_difference ~difference old_build_map with
+          | Result.Ok build_map -> Lwt.return_ok (build_map, difference)
+          | Result.Error artifact_path ->
+              Format.sprintf "Cannot determine source path for artifact `%s`" artifact_path
+              |> Lwt.return_error ) )
+
+
+let fast_incremental_build_with_normalized_targets
+    ~old_build_map
+    ~old_build_map_index
+    ~targets
+    ~changed_paths
+    ~removed_paths
+    ({ source_root; artifact_root; _ } as builder)
+  =
+  let open Lwt.Infix in
+  Log.info "Attempting to perform fast incremental rebuild...";
+  build_map_and_difference_from_paths
+    ~old_build_map
+    ~old_build_map_index
+    ~targets
+    ~changed_paths
+    ~removed_paths
+    builder
+  >>= function
+  | Result.Error message ->
+      Log.info "Fast incremental rebuild failed: %s. Falling back to the slow path..." message;
+      incremental_build_with_normalized_targets ~old_build_map ~targets builder
+  | Result.Ok (build_map, difference) ->
+      let open Lwt.Infix in
+      update_artifacts ~source_root ~artifact_root difference
+      >>= fun changed_artifacts ->
+      Lwt.return { IncrementalBuildResult.targets; build_map; changed_artifacts }
+
+
+let incremental_build_with_unchanged_build_map
+    ~build_map
+    ~build_map_index
+    ~targets
+    ~changed_sources
+    { source_root; artifact_root; _ }
+  =
+  let changed_artifacts =
+    to_relative_paths ~root:source_root changed_sources
+    |> List.concat_map ~f:(BuildMap.Indexed.lookup_artifact build_map_index)
+    |> List.map ~f:(fun relative -> Path.create_relative ~root:artifact_root ~relative)
+  in
+  Lwt.return { IncrementalBuildResult.targets; build_map; changed_artifacts }
+
+
 let do_lookup_source ~index ~source_root ~artifact_root path =
-  match Path.get_relative_to_root ~root:artifact_root ~path with
+  match to_relative_path ~root:artifact_root path with
   | None -> None
   | Some relative_artifact_path ->
       BuildMap.Indexed.lookup_source index relative_artifact_path
@@ -322,7 +557,7 @@ let lookup_source ~index ~builder:{ source_root; artifact_root; _ } path =
 
 
 let do_lookup_artifact ~index ~source_root ~artifact_root path =
-  match Path.get_relative_to_root ~root:source_root ~path with
+  match to_relative_path ~root:source_root path with
   | None -> []
   | Some relative_source_path ->
       BuildMap.Indexed.lookup_artifact index relative_source_path

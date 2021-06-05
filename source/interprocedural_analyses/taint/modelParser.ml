@@ -66,28 +66,40 @@ module T = struct
     type parameter_constraint = AnnotationConstraint of annotation_constraint
     [@@deriving compare, show]
 
-    type class_constraint =
+    type name_constraint =
       | Equals of string
+      | Matches of Re2.t
+    [@@deriving compare]
+
+    let pp_name_constraint formatter name_constraint =
+      match name_constraint with
+      | Equals equals -> Format.fprintf formatter "Equals(%s)" equals
+      | Matches regular_expression ->
+          Format.fprintf formatter "Matches(%s)" (Re2.to_string regular_expression)
+
+
+    let show_name_constraint = Format.asprintf "%a" pp_name_constraint
+
+    type class_constraint =
+      | NameSatisfies of name_constraint
       | Extends of {
           class_name: string;
           is_transitive: bool;
         }
-      | Matches of Re2.t
     [@@deriving compare]
 
     let pp_class_constraint formatter class_constraint =
       match class_constraint with
-      | Equals equals -> Format.fprintf formatter "Equals(%s)" equals
+      | NameSatisfies name_constraint ->
+          Format.fprintf formatter "NameSatisfies(%s)" (show_name_constraint name_constraint)
       | Extends { class_name; is_transitive } ->
           Format.fprintf formatter "Extends(%s, is_transitive=%b)" class_name is_transitive
-      | Matches regular_expression ->
-          Format.fprintf formatter "Matches(%s)" (Re2.to_string regular_expression)
 
 
     let show_class_constraint = Format.asprintf "%a" pp_class_constraint
 
     type model_constraint =
-      | NameConstraint of string
+      | NameConstraint of name_constraint
       | ReturnConstraint of annotation_constraint
       | AnyParameterConstraint of parameter_constraint
       | AnyOf of model_constraint list
@@ -155,61 +167,10 @@ let model_verification_error ~path ~location kind =
 
 
 let invalid_model_error ~path ~location ~name message =
-  model_verification_error
-    ~path
-    ~location
-    (ModelVerificationError.T.UnclassifiedError { model_name = name; message })
+  model_verification_error ~path ~location (UnclassifiedError { model_name = name; message })
 
 
-module DefinitionsCache (Type : sig
-  type t
-end) =
-struct
-  let cache : Type.t Reference.Table.t = Reference.Table.create ()
-
-  let set key value = Hashtbl.set cache ~key ~data:value
-
-  let get = Hashtbl.find cache
-
-  let invalidate () = Hashtbl.clear cache
-end
-
-module ClassDefinitionsCache = DefinitionsCache (struct
-  type t = Class.t Node.t list option
-end)
-
-let containing_source resolution reference =
-  let ast_environment = GlobalResolution.ast_environment resolution in
-  let rec qualifier ~lead ~tail =
-    match tail with
-    | head :: (_ :: _ as tail) ->
-        let new_lead = Reference.create ~prefix:lead head in
-        if not (GlobalResolution.module_exists resolution new_lead) then
-          lead
-        else
-          qualifier ~lead:new_lead ~tail
-    | _ -> lead
-  in
-  qualifier ~lead:Reference.empty ~tail:(Reference.as_list reference)
-  |> AstEnvironment.ReadOnly.get_processed_source ast_environment
-
-
-let class_definitions resolution reference =
-  match ClassDefinitionsCache.get reference with
-  | Some result -> result
-  | None ->
-      let open Option in
-      let result =
-        containing_source resolution reference
-        >>| Preprocessing.classes
-        >>| List.filter ~f:(fun { Node.value = { Class.name; _ }; _ } ->
-                Reference.equal reference (Node.value name))
-        (* Prefer earlier definitions. *)
-        >>| List.rev
-      in
-      ClassDefinitionsCache.set reference result;
-      result
-
+module ClassDefinitionsCache = ModelVerifier.ClassDefinitionsCache
 
 (* Don't propagate inferred model of methods with Sanitize *)
 
@@ -247,7 +208,7 @@ let rec parse_annotations
     model_verification_error
       ~path
       ~location
-      (ModelVerificationError.T.InvalidTaintAnnotation { taint_annotation = annotation; reason })
+      (InvalidTaintAnnotation { taint_annotation = annotation; reason })
   in
   let get_parameter_position name =
     let callable_parameter_names_to_positions =
@@ -914,13 +875,10 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
   let open Core.Result in
   let find_clause_kind = get_find_clause_kind find_clause in
   let invalid_model_query_where_clause ~path ~location callee =
-    {
-      ModelVerificationError.T.kind =
-        ModelVerificationError.T.InvalidModelQueryWhereClause
-          { expression = callee; find_clause_kind };
-      path;
-      location;
-    }
+    model_verification_error
+      ~path
+      ~location
+      (InvalidModelQueryWhereClause { expression = callee; find_clause_kind })
   in
   let parse_annotation_constraint ~name ~arguments =
     match name, arguments with
@@ -957,7 +915,7 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
                 "Unsupported constraint kind for parameters: `%s`"
                 parameter_constraint_kind))
   in
-  let rec parse_constraint ({ Node.value; _ } as constraint_expression) =
+  let parse_name_constraint ({ Node.value; _ } as constraint_expression) =
     match value with
     | Expression.Call
         {
@@ -968,21 +926,49 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
                   (Name.Attribute
                     {
                       base = { Node.value = Name (Name.Identifier "name"); _ };
-                      attribute = "matches";
+                      attribute = ("matches" | "equals") as attribute;
                       _;
                     });
               _;
+            } as callee;
+          arguments;
+        } -> (
+        match arguments with
+        | [
+         {
+           Call.Argument.value =
+             { Node.value = Expression.String { StringLiteral.value = name_constraint; _ }; _ };
+           _;
+         };
+        ] -> (
+            match attribute with
+            | "matches" -> Ok (ModelQuery.Matches (Re2.create_exn name_constraint))
+            | "equals" -> Ok (ModelQuery.Equals name_constraint)
+            | _ -> failwith "impossible case" )
+        | _ ->
+            Error
+              (model_verification_error
+                 ~path
+                 ~location
+                 (InvalidModelQueryClauseArguments { callee; arguments })) )
+    | _ ->
+        Error (model_verification_error ~path ~location (InvalidNameClause constraint_expression))
+  in
+  let rec parse_constraint ({ Node.value; _ } as constraint_expression) =
+    match value with
+    | Expression.Call
+        {
+          Call.callee =
+            {
+              Node.value =
+                Expression.Name
+                  (Name.Attribute { base = { Node.value = Name (Name.Identifier "name"); _ }; _ });
+              _;
             };
-          arguments =
-            [
-              {
-                Call.Argument.value =
-                  { Node.value = Expression.String { StringLiteral.value = name_constraint; _ }; _ };
-                _;
-              };
-            ];
+          _;
         } ->
-        Ok (ModelQuery.NameConstraint name_constraint)
+        parse_name_constraint constraint_expression
+        >>= fun name_constraint -> Ok (ModelQuery.NameConstraint name_constraint)
     | Expression.Call
         {
           Call.callee =
@@ -1118,21 +1104,19 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
            _;
          };
         ] ->
-            let constraint_type =
+            let name_constraint =
               match attribute with
               | "equals" -> ModelQuery.Equals class_name
-              | "matches" -> Matches (Re2.create_exn class_name)
+              | "matches" -> ModelQuery.Matches (Re2.create_exn class_name)
               | _ -> failwith "impossible case"
             in
-            Ok (ModelQuery.ParentConstraint constraint_type)
+            Ok (ModelQuery.ParentConstraint (ModelQuery.NameSatisfies name_constraint))
         | _ ->
             Error
-              {
-                ModelVerificationError.T.kind =
-                  ModelVerificationError.T.InvalidModelQueryClauseArguments { callee; arguments };
-                path;
-                location;
-              } )
+              (model_verification_error
+                 ~path
+                 ~location
+                 (InvalidModelQueryClauseArguments { callee; arguments })) )
     | Expression.Call
         {
           Call.callee =
@@ -1174,22 +1158,18 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
             | Expression.False -> Ok false
             | _ ->
                 Error
-                  {
-                    ModelVerificationError.T.kind =
-                      ModelVerificationError.T.InvalidExtendsIsTransitive is_transitive_expression;
-                    path;
-                    location;
-                  } )
+                  (model_verification_error
+                     ~path
+                     ~location
+                     (InvalidExtendsIsTransitive is_transitive_expression)) )
             >>= fun is_transitive ->
             Ok (ModelQuery.ParentConstraint (Extends { class_name; is_transitive }))
         | _ ->
             Error
-              {
-                ModelVerificationError.T.kind =
-                  ModelVerificationError.T.InvalidModelQueryClauseArguments { callee; arguments };
-                path;
-                location;
-              } )
+              (model_verification_error
+                 ~path
+                 ~location
+                 (InvalidModelQueryClauseArguments { callee; arguments })) )
     | Expression.Call { Call.callee; arguments = _ } ->
         Error
           (invalid_model_error
@@ -1214,13 +1194,10 @@ let parse_model_clause ~path ~configuration ~find_clause ({ Node.value; location
   let open Core.Result in
   let find_clause_kind = get_find_clause_kind find_clause in
   let invalid_model_query_model_clause ~path ~location callee =
-    {
-      ModelVerificationError.T.kind =
-        ModelVerificationError.T.InvalidModelQueryModelClause
-          { expression = callee; find_clause_kind };
-      path;
-      location;
-    }
+    model_verification_error
+      ~path
+      ~location
+      (InvalidModelQueryModelClause { expression = callee; find_clause_kind })
   in
   let parse_model ({ Node.value; _ } as model_expression) =
     let parse_taint taint_expression =
@@ -1355,13 +1332,7 @@ let parse_model_clause ~path ~configuration ~find_clause ({ Node.value; location
               match value with
               | Expression.String { StringLiteral.value; _ } -> Core.Result.Ok value
               | _ ->
-                  Error
-                    {
-                      ModelVerificationError.T.kind =
-                        ModelVerificationError.T.InvalidParameterExclude exclude;
-                      path;
-                      location;
-                    }
+                  Error (model_verification_error ~path ~location (InvalidParameterExclude exclude))
             in
             match Node.value excludes with
             | Expression.List exclude_strings ->
@@ -1406,6 +1377,7 @@ let add_signature_based_breadcrumbs ~resolution root ~callable_annotation =
           {
             Type.Callable.implementation =
               { Type.Callable.parameters = Type.Callable.Defined implementation_parameters; _ };
+            overloads = [];
             _;
           } ) ->
         let parameter_annotation =
@@ -1417,6 +1389,7 @@ let add_signature_based_breadcrumbs ~resolution root ~callable_annotation =
           {
             Type.Callable.implementation =
               { Type.Callable.parameters = Type.Callable.Defined implementation_parameters; _ };
+            overloads = [];
             _;
           } ) ->
         let parameter_annotation = find_named_parameter_annotation name implementation_parameters in
@@ -1590,7 +1563,7 @@ type model_or_query =
   | Model of (Model.t * Reference.t option)
   | Query of ModelQuery.rule
 
-let callable_annotation
+let resolve_global_callable
     ~path
     ~location
     ~verify_decorators
@@ -1598,58 +1571,20 @@ let callable_annotation
     ({ Define.Signature.name = { Node.value = name; _ }; decorators; _ } as define)
   =
   (* Since properties and setters share the same undecorated name, we need to special-case them. *)
-  let global_resolution = Resolution.global_resolution resolution in
-  let global_type () =
-    match GlobalResolution.global global_resolution name with
-    | Some { AttributeResolution.Global.undecorated_signature; annotation; _ } -> (
-        match undecorated_signature with
-        | Some signature -> Type.Callable signature |> Annotation.create
-        | None -> annotation )
-    | None ->
-        (* Fallback for fields, which are not globals. *)
-        from_reference name ~location:Location.any
-        |> Resolution.resolve_expression_to_annotation resolution
-  in
-  let parent = Option.value_exn (Reference.prefix name) in
-  let get_matching_method ~predicate =
-    let get_matching_define = function
-      | { Node.value = Statement.Define ({ signature; _ } as define); _ } ->
-          if
-            predicate define
-            && Reference.equal (Node.value define.Define.signature.Define.Signature.name) name
-          then
-            let parser = GlobalResolution.annotation_parser global_resolution in
-            let variables = GlobalResolution.variables global_resolution in
-            Annotated.Define.Callable.create_overload_without_applying_decorators
-              ~parser
-              ~variables
-              signature
-            |> Type.Callable.create_from_implementation
-            |> Option.some
-          else
-            None
-      | _ -> None
-    in
-    let open Option in
-    class_definitions global_resolution parent
-    >>= List.hd
-    >>| (fun definition -> definition.Node.value.Class.body)
-    >>= List.find_map ~f:get_matching_define
-    >>| Annotation.create
-    |> function
-    | Some annotation -> Ok annotation
-    | None ->
-        Error
-          (model_verification_error
-             ~path
-             ~location
-             (ModelVerificationError.T.NotInEnvironment (Reference.show name)))
-  in
+  let open ModelVerifier in
   if signature_is_property define then
-    get_matching_method ~predicate:is_property
+    find_method_definitions ~resolution ~predicate:is_property name
+    |> List.hd
+    >>| Type.Callable.create_from_implementation
+    >>| (fun callable -> Global.Attribute callable)
+    |> Core.Result.return
   else if Define.Signature.is_property_setter define then
-    get_matching_method ~predicate:Define.is_property_setter
-  else if (not (List.is_empty decorators)) && verify_decorators then
+    find_method_definitions ~resolution ~predicate:Define.is_property_setter name
+    |> List.hd
+    >>| Type.Callable.create_from_implementation
+    >>| (fun callable -> Global.Attribute callable)
+    |> Core.Result.return
+  else if verify_decorators && not (List.is_empty decorators) then
     (* Ensure that models don't declare decorators that our taint analyses doesn't understand. We
        check for the verify_decorators flag, as defines originating from
        `create_model_from_annotation` are not user-specified models that we're parsing. *)
@@ -1657,9 +1592,9 @@ let callable_annotation
       (model_verification_error
          ~path
          ~location
-         (ModelVerificationError.T.UnexpectedDecorators { name; unexpected_decorators = decorators }))
+         (UnexpectedDecorators { name; unexpected_decorators = decorators }))
   else
-    Ok (global_type ())
+    Ok (resolve_global ~resolution name)
 
 
 let adjust_mode_and_skipped_overrides
@@ -1860,7 +1795,12 @@ let parse_statement ~resolution ~path ~configuration statement =
   match statement with
   | {
    Node.value =
-     Statement.Define { signature = { name = { Node.value = name; _ }; _ } as signature; _ };
+     Statement.Define
+       {
+         signature = { name = { Node.value = name; _ }; _ } as signature;
+         body = [{ value = Statement.Expression { value = Expression.Ellipsis; _ }; _ }];
+         _;
+       };
    location;
   } ->
       let class_candidate =
@@ -1876,6 +1816,11 @@ let parse_statement ~resolution ~path ~configuration statement =
         | None -> Callable.create_function name
       in
       Ok [ParsedSignature { signature; location; call_target }]
+  | {
+   Node.value = Statement.Define { signature = { name = { Node.value = name; _ }; _ }; _ };
+   location;
+  } ->
+      Error (model_verification_error ~path ~location (DefineBodyNotEllipsis (Reference.show name)))
   | {
    Node.value =
      Class
@@ -1925,7 +1870,7 @@ let parse_statement ~resolution ~path ~configuration statement =
         || (not (List.is_empty source_annotations))
         || not (List.is_empty extra_decorators)
       then
-        class_definitions global_resolution name
+        ModelVerifier.class_definitions ~resolution name
         |> Option.bind ~f:List.hd
         |> Option.map ~f:(fun { Node.value = { Class.body; _ }; _ } ->
                let signature { Node.value; location } =
@@ -2010,12 +1955,7 @@ let parse_statement ~resolution ~path ~configuration statement =
       else
         Ok []
   | { Node.value = Class { Class.name = { Node.value = name; _ }; _ }; location } ->
-      Error
-        (invalid_model_error
-           ~path
-           ~location
-           ~name:(Reference.show name)
-           "Class model must have a body of `...`.")
+      Error (model_verification_error ~path ~location (ClassBodyNotEllipsis (Reference.show name)))
   | {
    Node.value =
      Assign
@@ -2023,18 +1963,14 @@ let parse_statement ~resolution ~path ~configuration statement =
    location;
   } ->
       if not (is_simple_name name) then
-        Error
-          (model_verification_error
-             ~path
-             ~location
-             (ModelVerificationError.T.InvalidIdentifier target))
+        Error (model_verification_error ~path ~location (InvalidIdentifier target))
       else if Expression.show annotation |> String.is_prefix ~prefix:"Sanitize[TaintInTaintOut["
       then
         Error
           (model_verification_error
              ~path
              ~location
-             (ModelVerificationError.T.InvalidTaintAnnotation
+             (InvalidTaintAnnotation
                 {
                   taint_annotation = annotation;
                   reason = "TaintInTaintOut sanitizers cannot be modelled on attributes";
@@ -2104,7 +2040,7 @@ let parse_statement ~resolution ~path ~configuration statement =
           (model_verification_error
              ~path
              ~location
-             (ModelVerificationError.T.InvalidTaintAnnotation
+             (InvalidTaintAnnotation
                 { taint_annotation = annotation; reason = "Unsupported annotation for attributes" }))
   | {
    Node.value =
@@ -2150,12 +2086,7 @@ let parse_statement ~resolution ~path ~configuration statement =
                 parse_where_clause ~path ~find_clause:parsed_find_clause where_clause,
                 parse_model_clause ~path ~configuration ~find_clause:parsed_find_clause model_clause
               )
-        | _ ->
-            Error
-              (model_verification_error
-                 ~path
-                 ~location
-                 (ModelVerificationError.T.InvalidModelQueryClauses arguments))
+        | _ -> Error (model_verification_error ~path ~location (InvalidModelQueryClauses arguments))
       in
 
       clauses
@@ -2167,11 +2098,7 @@ let parse_statement ~resolution ~path ~configuration statement =
       model_clause
       >>| fun productions -> [ParsedQuery { ModelQuery.rule_kind; query; productions; name }]
   | { Node.location; _ } ->
-      Error
-        (model_verification_error
-           ~path
-           ~location
-           (ModelVerificationError.T.UnexpectedStatement statement))
+      Error (model_verification_error ~path ~location (UnexpectedStatement statement))
 
 
 let create_model_from_signature
@@ -2194,6 +2121,8 @@ let create_model_from_signature
     }
   =
   let open Core.Result in
+  let open ModelVerifier in
+  let call_target = (call_target :> Callable.t) in
   (* Strip off the decorators only used for taint annotations. *)
   let top_level_decorators, define =
     let is_taint_decorator decorator =
@@ -2218,49 +2147,27 @@ let create_model_from_signature
     { location with start }
   in
   (* Make sure we know about what we model. *)
+  let model_verification_error kind = Error { ModelVerificationError.T.kind; path; location } in
   let callable_annotation =
-    callable_annotation ~path ~location ~verify_decorators:true ~resolution define
-  in
-  let call_target = (call_target :> Callable.t) in
-  let callable_annotation =
-    callable_annotation
-    >>= fun callable_annotation ->
-    if
-      Type.is_top (Annotation.annotation callable_annotation)
-      (* FIXME: We are relying on the fact that nonexistent functions&attributes resolve to mutable
-         callable annotation, while existing ones resolve to immutable callable annotation. This is
-         fragile! *)
-      && not (Annotation.is_immutable callable_annotation)
-    then
-      Error
-        {
-          ModelVerificationError.T.kind =
-            ModelVerificationError.T.NotInEnvironment (Reference.show callable_name);
-          path;
-          location;
-        }
-    else if Type.is_meta (Annotation.annotation callable_annotation) then
-      Error
-        {
-          ModelVerificationError.T.kind =
-            ModelVerificationError.T.ModelingClassAsDefine (Reference.show callable_name);
-          path;
-          location;
-        }
-    else
-      Ok callable_annotation
+    resolve_global_callable ~path ~location ~verify_decorators:true ~resolution define
+    >>= function
+    | None -> model_verification_error (NotInEnvironment (Reference.show callable_name))
+    | Some Global.Class ->
+        model_verification_error (ModelingClassAsDefine (Reference.show callable_name))
+    | Some Global.Module ->
+        model_verification_error (ModelingModuleAsDefine (Reference.show callable_name))
+    | Some (Global.Attribute (Type.Callable t))
+    | Some
+        (Global.Attribute
+          (Type.Parametric
+            { name = "BoundMethod"; parameters = [Type.Parameter.Single (Type.Callable t); _] })) ->
+        Ok (Some t)
+    | Some (Global.Attribute Type.Any) -> Ok None
+    | Some (Global.Attribute Type.Top) -> Ok None
+    | Some (Global.Attribute _) ->
+        model_verification_error (ModelingAttributeAsDefine (Reference.show callable_name))
   in
   (* Check model matches callables primary signature. *)
-  let callable_annotation =
-    callable_annotation
-    >>| Annotation.annotation
-    >>| function
-    | Type.Callable t -> Some t
-    | Type.Parametric
-        { name = "BoundMethod"; parameters = [Type.Parameter.Single (Type.Callable t); _] } ->
-        Some t
-    | _ -> None
-  in
   let callable_parameter_names_to_positions =
     match callable_annotation with
     | Ok
@@ -2268,6 +2175,7 @@ let create_model_from_signature
           {
             Type.Callable.implementation =
               { Type.Callable.parameters = Type.Callable.Defined parameters; _ };
+            overloads = [];
             _;
           }) ->
         let add_parameter_to_position position map parameter =
@@ -2306,7 +2214,7 @@ let create_model_from_signature
                           {
                             name = Reference.show callable_name;
                             callable_type =
-                              Option.value_exn (Caml.Result.value callable_annotation ~default:None);
+                              Option.value_exn (Caml.Result.get_ok callable_annotation);
                             reasons = [UnexpectedPositionalParameter name];
                           };
                       path;
@@ -2548,6 +2456,7 @@ let create_callable_model_from_annotations
     annotations
   =
   let open Core.Result in
+  let open ModelVerifier in
   let global_resolution = Resolution.global_resolution resolution in
   match
     Interprocedural.Callable.get_module_and_definition ~resolution:global_resolution callable
@@ -2557,22 +2466,23 @@ let create_callable_model_from_annotations
         (invalid_model_query_error
            (Format.sprintf "No callable corresponding to `%s` found." (Callable.show callable)))
   | Some (_, { Node.value = { Define.signature = define; _ }; _ }) ->
-      let callable_annotation =
-        callable_annotation
-          ~path:None
-          ~location:Location.any
-          ~resolution
-          ~verify_decorators:false
-          define
-        >>| Annotation.annotation
-        >>| function
-        | Type.Callable t -> Some t
-        | Type.Parametric
-            { name = "BoundMethod"; parameters = [Type.Parameter.Single (Type.Callable t); _] } ->
-            Some t
-        | _ -> None
-      in
-      callable_annotation
+      resolve_global_callable
+        ~path:None
+        ~location:Location.any
+        ~resolution
+        ~verify_decorators:false
+        define
+      >>| (function
+            | Some (Global.Attribute (Type.Callable t))
+            | Some
+                (Global.Attribute
+                  (Type.Parametric
+                    {
+                      name = "BoundMethod";
+                      parameters = [Type.Parameter.Single (Type.Callable t); _];
+                    })) ->
+                Some t
+            | _ -> None)
       >>= fun callable_annotation ->
       List.fold
         annotations

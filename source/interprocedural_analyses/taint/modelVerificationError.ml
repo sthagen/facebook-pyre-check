@@ -48,6 +48,7 @@ module T = struct
         callee: Expression.t;
         arguments: Expression.Call.Argument.t list;
       }
+    | InvalidNameClause of Expression.t
     | InvalidTaintAnnotation of {
         taint_annotation: Expression.t;
         reason: string;
@@ -57,6 +58,11 @@ module T = struct
         attribute_name: string;
       }
     | ModelingClassAsDefine of string
+    | ModelingModuleAsDefine of string
+    | ModelingAttributeAsDefine of string
+    | ModelingClassAsAttribute of string
+    | ModelingModuleAsAttribute of string
+    | ModelingCallableAsAttribute of string
     | NotInEnvironment of string
     | UnexpectedDecorators of {
         name: Reference.t;
@@ -64,6 +70,8 @@ module T = struct
       }
     | InvalidIdentifier of Expression.t
     | UnexpectedStatement of Statement.t
+    | ClassBodyNotEllipsis of string
+    | DefineBodyNotEllipsis of string
     (* TODO(T81363867): Remove this variant. *)
     | UnclassifiedError of {
         model_name: string;
@@ -128,6 +136,8 @@ let description error =
         "`%s` is not a valid model for model queries with find clause of kind `%s`."
         (Expression.show expression)
         find_clause_kind
+  | InvalidNameClause expression ->
+      Format.asprintf "`%s` is not a valid name clause." (Expression.show expression)
   | InvalidParameterExclude expression ->
       Format.asprintf
         "The AllParameters exclude must be either a string or a list of strings, got: `%s`."
@@ -168,6 +178,10 @@ let description error =
         "Invalid identifier: `%s`. Expected a fully-qualified name."
         (Expression.show expression)
   | UnexpectedStatement _ -> "Unexpected statement"
+  | ClassBodyNotEllipsis class_name ->
+      Format.sprintf "Class model for `%s` must have a body of `...`." class_name
+  | DefineBodyNotEllipsis model_name ->
+      Format.sprintf "Callable model for `%s` must have a body of `...`." model_name
   | UnclassifiedError { model_name; message } ->
       Format.sprintf "Invalid model for `%s`: %s" model_name message
   | MissingAttribute { class_name; attribute_name } ->
@@ -177,6 +191,26 @@ let description error =
         "The class `%s` is not a valid define - did you mean to model `%s.__init__()`?"
         class_name
         class_name
+  | ModelingModuleAsDefine module_name ->
+      Format.sprintf "The module `%s` is not a valid define." module_name
+  | ModelingAttributeAsDefine attribute_name ->
+      Format.sprintf
+        "The attribute `%s` is not a valid define - did you mean to use `%s: ...`?"
+        attribute_name
+        attribute_name
+  | ModelingClassAsAttribute class_name ->
+      Format.sprintf
+        "The class `%s` is not a valid attribute - did you mean to model `%s.__init__()`?"
+        class_name
+        class_name
+  | ModelingModuleAsAttribute module_name ->
+      Format.sprintf "The module `%s` is not a valid attribute." module_name
+  | ModelingCallableAsAttribute callable_name ->
+      Format.sprintf
+        "The function, method or property `%s` is not a valid attribute - did you mean to use `def \
+         %s(): ...`?"
+        callable_name
+        callable_name
   | NotInEnvironment name -> Format.sprintf "`%s` is not part of the environment!" name
 
 
@@ -199,6 +233,14 @@ let code { kind; _ } =
   | InvalidModelQueryClauseArguments _ -> 14
   | InvalidIdentifier _ -> 15
   | UnexpectedStatement _ -> 16
+  | ModelingModuleAsDefine _ -> 17
+  | ModelingAttributeAsDefine _ -> 18
+  | ModelingClassAsAttribute _ -> 19
+  | ModelingModuleAsAttribute _ -> 20
+  | ModelingCallableAsAttribute _ -> 21
+  | ClassBodyNotEllipsis _ -> 22
+  | DefineBodyNotEllipsis _ -> 23
+  | InvalidNameClause _ -> 24
 
 
 let display { kind = error; path; location } =

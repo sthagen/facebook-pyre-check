@@ -44,13 +44,6 @@ LOG: logging.Logger = logging.getLogger(__name__)
 ARTIFACT_ROOT_NAME: str = "link_trees"
 SERVER_LOG_FILE_FORMAT: str = "server.stderr.%Y_%m_%d_%H_%M_%S_%f"
 
-# NOTE(grievejia): This is a very restricted form of target specification used
-# for a hacky heuristic. We should consider moving away from it in the future.
-# Do NOT use it for general-purpose target parsing.
-BUCK_TARGET_PATTERN: str = (
-    r"[A-Za-z0-9._-]*//[A-Za-z0-9/._-]+((:[A-Za-z0-9_/.=,@~+-]+)|(/\.\.\.))"
-)
-
 
 class MatchPolicy(enum.Enum):
     BASE_NAME = "base_name"
@@ -151,24 +144,11 @@ class SimpleSourcePath:
         return {element.path() for element in self.elements}
 
 
-def get_checked_directory_for_target(target: str) -> Optional[str]:
-    match = re.search(BUCK_TARGET_PATTERN, target)
-    if match is None:
-        return None
-
-    result = match[0]
-    root_index = result.find("//")
-    if root_index != -1:
-        result = result[root_index + 2 :]
-    result = result.replace("/...", "")
-    result = result.split(":")[0]
-    return result
-
-
 @dataclasses.dataclass(frozen=True)
 class BuckSourcePath:
     source_root: Path
     artifact_root: Path
+    checked_directory: Path
     targets: Sequence[str] = dataclasses.field(default_factory=list)
     mode: Optional[str] = None
     isolation_prefix: Optional[str] = None
@@ -190,13 +170,7 @@ class BuckSourcePath:
         }
 
     def get_checked_directory_allowlist(self) -> Set[str]:
-        return {
-            str(self.source_root / directory)
-            for directory in (
-                get_checked_directory_for_target(target) for target in self.targets
-            )
-            if directory is not None
-        }
+        return {str(self.checked_directory)}
 
 
 SourcePath = Union[SimpleSourcePath, BuckSourcePath]
@@ -227,6 +201,9 @@ class Arguments:
     profiling_output: Optional[Path] = None
     python_version: configuration_module.PythonVersion = (
         configuration_module.PythonVersion(major=3)
+    )
+    shared_memory: configuration_module.SharedMemory = (
+        configuration_module.SharedMemory()
     )
     remote_logging: Optional[RemoteLogging] = None
     saved_state_action: Optional[SavedStateAction] = None
@@ -272,6 +249,7 @@ class Arguments:
                 "minor": self.python_version.minor,
                 "micro": self.python_version.micro,
             },
+            "shared_memory": self.shared_memory.to_json(),
             "show_error_traces": self.show_error_traces,
             "critical_files": [
                 critical_file.serialize() for critical_file in self.critical_files
@@ -335,6 +313,13 @@ def get_critical_files(
             ]
         ),
         *(
+            # TODO(T92070475): This is a temporary hack until generated code can be
+            # fully supported.
+            []
+            if configuration.targets is None
+            else [CriticalFile(policy=MatchPolicy.EXTENSION, path="thrift")]
+        ),
+        *(
             [
                 CriticalFile(
                     policy=MatchPolicy.FULL_PATH,
@@ -390,7 +375,7 @@ def get_source_path(configuration: configuration_module.Configuration) -> Source
     if source_directories is not None and targets is None:
         elements: Sequence[
             configuration_module.SearchPathElement
-        ] = configuration.get_existent_source_directories()
+        ] = configuration.get_source_directories()
         if len(elements) == 0:
             LOG.warning("Pyre did not find an existent source directory.")
         return SimpleSourcePath(elements)
@@ -417,6 +402,7 @@ def get_source_path(configuration: configuration_module.Configuration) -> Source
         return BuckSourcePath(
             source_root=source_root,
             artifact_root=artifact_root,
+            checked_directory=search_base,
             targets=targets,
             mode=configuration.buck_mode,
             isolation_prefix=configuration.isolation_prefix,
@@ -499,13 +485,14 @@ def create_server_arguments(
         parallel=not start_arguments.sequential,
         profiling_output=profiling_output,
         python_version=configuration.get_python_version(),
+        shared_memory=configuration.shared_memory,
         remote_logging=remote_logging,
         saved_state_action=None
         if start_arguments.no_saved_state
         else get_saved_state_action(
             start_arguments, relative_local_root=configuration.relative_local_root
         ),
-        search_paths=configuration.get_existent_search_paths(),
+        search_paths=configuration.expand_and_get_existent_search_paths(),
         show_error_traces=start_arguments.show_error_traces,
         source_paths=source_paths,
         store_type_check_resolution=start_arguments.store_type_check_resolution,

@@ -66,6 +66,8 @@ let run_analysis
     dump_model_query_results
     use_cache
     inline_decorators
+    maximum_trace_length
+    maximum_tito_depth
     _verbose
     expected_version
     sections
@@ -90,6 +92,9 @@ let run_analysis
     python_major_version
     python_minor_version
     python_micro_version
+    shared_memory_heap_size
+    shared_memory_dependency_table_power
+    shared_memory_hash_table_power
     local_root
     ()
   =
@@ -137,29 +142,42 @@ let run_analysis
         ?python_major_version
         ?python_minor_version
         ?python_micro_version
+        ?shared_memory_heap_size
+        ?shared_memory_dependency_table_power
+        ?shared_memory_hash_table_power
         ~local_root
         ~source_path:(List.map source_path ~f:SearchPath.create_normalized)
         ()
     in
-    let result_json_path = result_json_path >>| Path.create_absolute in
-    let () =
-      match result_json_path with
-      | Some path when not (Path.is_directory path) ->
-          Log.error "--save-results-to path must be a directory.";
-          failwith "bad argument"
-      | _ -> ()
+    let static_analysis_configuration =
+      let result_json_path = result_json_path >>| Path.create_absolute in
+      let () =
+        match result_json_path with
+        | Some path when not (Path.is_directory path) ->
+            Log.error "--save-results-to path must be a directory.";
+            failwith "bad argument"
+        | _ -> ()
+      in
+      {
+        Configuration.StaticAnalysis.configuration;
+        result_json_path;
+        dump_call_graph;
+        verify_models = not no_verify;
+        rule_filter;
+        find_missing_flows;
+        dump_model_query_results;
+        use_cache;
+        maximum_trace_length;
+        maximum_tito_depth;
+      }
     in
+    let analysis_kind = get_analysis_kind analysis in
     (fun () ->
       let timer = Timer.start () in
-      (* In order to save time, sanity check models before starting the analysis. *)
-      Log.info "Verifying model syntax and configuration.";
-      Taint.Model.get_model_sources ~paths:configuration.Configuration.Analysis.taint_model_paths
-      |> List.iter ~f:(fun (path, source) -> Taint.Model.verify_model_syntax ~path ~source);
-      Taint.TaintConfiguration.create
-        ~rule_filter:None
-        ~paths:configuration.Configuration.Analysis.taint_model_paths
-      |> ignore;
       Scheduler.with_scheduler ~configuration ~f:(fun scheduler ->
+          Interprocedural.Analysis.initialize_configuration
+            ~static_analysis_configuration
+            [analysis_kind];
           let cached_environment =
             if use_cache then Service.StaticAnalysis.Cache.load_environment ~configuration else None
           in
@@ -216,18 +234,8 @@ let run_analysis
           in
           Service.StaticAnalysis.analyze
             ~scheduler
-            ~analysis_kind:(get_analysis_kind analysis)
-            ~static_analysis_configuration:
-              {
-                Configuration.StaticAnalysis.configuration;
-                result_json_path;
-                dump_call_graph;
-                verify_models = not no_verify;
-                rule_filter;
-                find_missing_flows;
-                dump_model_query_results;
-                use_cache;
-              }
+            ~analysis_kind
+            ~static_analysis_configuration
             ~filename_lookup
             ~environment:(Analysis.TypeEnvironment.read_only environment)
             ~qualifiers
@@ -283,5 +291,10 @@ let command =
            "-inline-decorators"
            no_arg
            ~doc:"Inline decorators at use sites to catch flows through the decorators."
+      +> flag "-maximum-trace-length" (optional int) ~doc:"Limit the trace length of taint flows."
+      +> flag
+           "-maximum-tito-depth"
+           (optional int)
+           ~doc:"Limit the depth of inferred taint-in-taint-out in taint flows."
       ++ Specification.base_command_line_arguments)
     run_analysis

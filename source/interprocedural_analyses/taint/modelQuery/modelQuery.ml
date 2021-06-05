@@ -52,6 +52,12 @@ let is_ancestor ~resolution ~is_transitive ancestor_class child_class =
     List.mem (child_class :: parents) ancestor_class ~equal:String.equal
 
 
+let matches_name_constraint ~name_constraint =
+  match name_constraint with
+  | ModelQuery.Equals string -> String.equal string
+  | ModelQuery.Matches pattern -> Re2.matches pattern
+
+
 let rec callable_matches_constraint query_constraint ~resolution ~callable =
   let get_callable_type =
     Memo.unit (fun () ->
@@ -86,8 +92,8 @@ let rec callable_matches_constraint query_constraint ~resolution ~callable =
           in
           List.exists decorators ~f:decorator_name_matches
       | _ -> false )
-  | ModelQuery.NameConstraint pattern ->
-      matches_pattern ~pattern (Callable.external_target_name callable)
+  | ModelQuery.NameConstraint name_constraint ->
+      matches_name_constraint ~name_constraint (Callable.external_target_name callable)
   | ModelQuery.ReturnConstraint annotation_constraint -> (
       let callable_type = get_callable_type () in
       match callable_type with
@@ -128,14 +134,14 @@ let rec callable_matches_constraint query_constraint ~resolution ~callable =
       List.exists constraints ~f:(callable_matches_constraint ~resolution ~callable)
   | ModelQuery.Not query_constraint ->
       not (callable_matches_constraint ~resolution ~callable query_constraint)
-  | ModelQuery.ParentConstraint (Equals class_name) ->
-      Callable.class_name callable >>| String.equal class_name |> Option.value ~default:false
+  | ModelQuery.ParentConstraint (NameSatisfies name_constraint) ->
+      Callable.class_name callable
+      >>| matches_name_constraint ~name_constraint
+      |> Option.value ~default:false
   | ModelQuery.ParentConstraint (Extends { class_name; is_transitive }) ->
       Callable.class_name callable
       >>| is_ancestor ~resolution ~is_transitive class_name
       |> Option.value ~default:false
-  | ModelQuery.ParentConstraint (Matches class_pattern) ->
-      Callable.class_name callable >>| Re2.matches class_pattern |> Option.value ~default:false
 
 
 let apply_callable_productions ~resolution ~productions ~callable =
@@ -319,19 +325,20 @@ let apply_callable_query_rule
 let rec attribute_matches_constraint query_constraint ~resolution ~attribute =
   let attribute_class_name = Reference.prefix attribute >>| Reference.show in
   match query_constraint with
-  | ModelQuery.NameConstraint pattern -> matches_pattern ~pattern (Reference.show attribute)
+  | ModelQuery.NameConstraint name_constraint ->
+      matches_name_constraint ~name_constraint (Reference.show attribute)
   | ModelQuery.AnyOf constraints ->
       List.exists constraints ~f:(attribute_matches_constraint ~resolution ~attribute)
   | ModelQuery.Not query_constraint ->
       not (attribute_matches_constraint ~resolution ~attribute query_constraint)
-  | ModelQuery.ParentConstraint (Equals class_name) ->
-      attribute_class_name >>| String.equal class_name |> Option.value ~default:false
+  | ModelQuery.ParentConstraint (NameSatisfies name_constraint) ->
+      attribute_class_name
+      >>| matches_name_constraint ~name_constraint
+      |> Option.value ~default:false
   | ModelQuery.ParentConstraint (Extends { class_name; is_transitive }) ->
       attribute_class_name
       >>| is_ancestor ~resolution ~is_transitive class_name
       |> Option.value ~default:false
-  | ModelQuery.ParentConstraint (Matches class_pattern) ->
-      attribute_class_name >>| Re2.matches class_pattern |> Option.value ~default:false
   | _ -> failwith "impossible case"
 
 
@@ -378,10 +385,10 @@ let get_class_attributes ~global_resolution ~class_name =
   in
   match class_summary with
   | None -> []
-  | Some { ClassSummary.attribute_components; name = class_name_reference; _ } ->
+  | Some ({ name = class_name_reference; _ } as class_summary) ->
       let attributes, constructor_attributes =
-        ( Statement.Class.attributes ~include_generated_attributes:false attribute_components,
-          Statement.Class.constructor_attributes attribute_components )
+        ( ClassSummary.attributes ~include_generated_attributes:false class_summary,
+          ClassSummary.constructor_attributes class_summary )
       in
       let all_attributes =
         Identifier.SerializableMap.union (fun _ x _ -> Some x) attributes constructor_attributes

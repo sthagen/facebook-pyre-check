@@ -39,7 +39,7 @@
               },
               "resolves_to": [ "decorator.Foo.bar" ],
               "port": "formal(x)",
-              "length": 4
+              "length": 3
             },
             "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
             "features": [ { "always-via": "special_sink" } ]
@@ -375,7 +375,7 @@
               },
               "resolves_to": [ "decorator.Foo.self_has_generic_type" ],
               "port": "formal(x)",
-              "length": 7
+              "length": 6
             },
             "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
             "features": [ { "always-via": "special_sink" } ]
@@ -671,7 +671,382 @@
   "kind": "model",
   "data": {
     "callable":
-      "decorator.foo_with_shady_decorators.__original_function.inner",
+      "decorator.Foo.bar.__inlined_with_logging_args_kwargs_no_sink2",
+    "sources": [],
+    "sinks": [
+      {
+        "port": "formal(x)",
+        "taint": [
+          {
+            "call": {
+              "position": {
+                "filename": "decorator.py",
+                "line": 75,
+                "start": 8,
+                "end": 9
+              },
+              "resolves_to": [
+                "decorator.Foo.bar.__inlined_with_logging_args_kwargs"
+              ],
+              "port": "formal(x)",
+              "length": 1
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      },
+      {
+        "port": "formal(self)",
+        "taint": [
+          {
+            "call": {
+              "position": {
+                "filename": "decorator.py",
+                "line": 75,
+                "start": 8,
+                "end": 9
+              },
+              "resolves_to": [
+                "decorator.Foo.bar.__inlined_with_logging_args_kwargs"
+              ],
+              "port": "formal(self)",
+              "length": 1
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      }
+    ],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable":
+      "decorator.Foo.foo.__inlined_with_logging_args_kwargs_no_sink",
+    "sources": [],
+    "sinks": [
+      {
+        "port": "formal(x)",
+        "taint": [
+          {
+            "call": {
+              "position": {
+                "filename": "decorator.py",
+                "line": 75,
+                "start": 8,
+                "end": 9
+              },
+              "resolves_to": [ "decorator.Foo.foo.__original_function" ],
+              "port": "formal(x)",
+              "length": 2
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      }
+    ],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable":
+      "decorator.Foo.self_has_generic_type.__inlined_with_logging_args_kwargs_no_sink",
+    "sources": [],
+    "sinks": [
+      {
+        "port": "formal(x)",
+        "taint": [
+          {
+            "call": {
+              "position": {
+                "filename": "decorator.py",
+                "line": 75,
+                "start": 8,
+                "end": 9
+              },
+              "resolves_to": [
+                "decorator.Foo.self_has_generic_type.__original_function"
+              ],
+              "port": "formal(x)",
+              "length": 4
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      },
+      {
+        "port": "formal(other)",
+        "taint": [
+          {
+            "call": {
+              "position": {
+                "filename": "decorator.py",
+                "line": 75,
+                "start": 8,
+                "end": 9
+              },
+              "resolves_to": [
+                "decorator.Foo.self_has_generic_type.__original_function"
+              ],
+              "port": "formal(other)",
+              "length": 4
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      }
+    ],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable":
+      "decorator.Foo.some_class_method.__inlined_with_logging_args_kwargs_no_sink",
+    "sources": [],
+    "sinks": [
+      {
+        "port": "formal(x)",
+        "taint": [
+          {
+            "call": {
+              "position": {
+                "filename": "decorator.py",
+                "line": 75,
+                "start": 8,
+                "end": 9
+              },
+              "resolves_to": [
+                "decorator.Foo.some_class_method.__original_function"
+              ],
+              "port": "formal(x)",
+              "length": 2
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      }
+    ],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable":
+      "decorator.foo_args_kwargs.__inlined_with_logging_args_kwargs",
+    "sources": [],
+    "sinks": [
+      {
+        "port": "formal(x)",
+        "taint": [
+          {
+            "root": {
+              "filename": "decorator.py",
+              "line": 62,
+              "start": 20,
+              "end": 26
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      }
+    ],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable":
+      "decorator.foo_args_kwargs_with_sink.__inlined_with_logging_args_kwargs_no_sink",
+    "sources": [],
+    "sinks": [
+      {
+        "port": "formal(y)",
+        "taint": [
+          {
+            "call": {
+              "position": {
+                "filename": "decorator.py",
+                "line": 75,
+                "start": 8,
+                "end": 9
+              },
+              "resolves_to": [
+                "decorator.foo_args_kwargs_with_sink.__original_function"
+              ],
+              "port": "formal(y)",
+              "length": 1
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
+            "features": [
+              { "always-type": "scalar" },
+              { "always-via": "special_sink" }
+            ]
+          }
+        ]
+      }
+    ],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable":
+      "decorator.foo_log_first_parameter.__inlined_with_logging_first_parameter",
+    "sources": [],
+    "sinks": [
+      {
+        "port": "formal(x)",
+        "taint": [
+          {
+            "root": {
+              "filename": "decorator.py",
+              "line": 135,
+              "start": 24,
+              "end": 39
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
+            "features": [
+              { "always-type": "scalar" },
+              { "always-via": "special_sink" }
+            ]
+          }
+        ]
+      }
+    ],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable":
+      "decorator.foo_using_decorator_factory.__inlined_with_named_logger",
+    "sources": [],
+    "sinks": [
+      {
+        "port": "formal(x)",
+        "taint": [
+          {
+            "root": {
+              "filename": "decorator.py",
+              "line": 117,
+              "start": 24,
+              "end": 28
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      }
+    ],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable":
+      "decorator.foo_with_helper_function.__inlined_with_logging_helper_functions",
+    "sources": [],
+    "sinks": [
+      {
+        "port": "formal(y)",
+        "taint": [
+          {
+            "call": {
+              "position": {
+                "filename": "decorator.py",
+                "line": 155,
+                "start": 18,
+                "end": 23
+              },
+              "resolves_to": [
+                "decorator.foo_with_helper_function.__inlined_with_logging_helper_functions.after"
+              ],
+              "port": "formal(*rest0)",
+              "length": 1
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      },
+      {
+        "port": "formal(x)",
+        "taint": [
+          {
+            "call": {
+              "position": {
+                "filename": "decorator.py",
+                "line": 155,
+                "start": 18,
+                "end": 23
+              },
+              "resolves_to": [
+                "decorator.foo_with_helper_function.__inlined_with_logging_helper_functions.after"
+              ],
+              "port": "formal(*rest0)",
+              "length": 1
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
+            "features": [
+              { "always-type": "scalar" },
+              { "always-via": "special_sink" }
+            ]
+          }
+        ]
+      }
+    ],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable":
+      "decorator.foo_with_helper_function.__inlined_with_logging_helper_functions.after",
+    "sources": [],
+    "sinks": [
+      {
+        "port": "formal(*rest0)",
+        "taint": [
+          {
+            "root": {
+              "filename": "decorator.py",
+              "line": 164,
+              "start": 20,
+              "end": 24
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      }
+    ],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable":
+      "decorator.foo_with_shady_decorators.__inlined_with_logging_sink",
     "sources": [],
     "sinks": [
       {
@@ -696,6 +1071,108 @@
 {
   "kind": "model",
   "data": {
+    "callable":
+      "decorator.foo_with_shady_decorators.__inlined_with_logging_source",
+    "sources": [],
+    "sinks": [
+      {
+        "port": "formal(y)",
+        "taint": [
+          {
+            "call": {
+              "position": {
+                "filename": "decorator.py",
+                "line": 95,
+                "start": 17,
+                "end": 36
+              },
+              "resolves_to": [
+                "decorator.foo_with_shady_decorators.__inlined_with_logging_sink"
+              ],
+              "port": "formal(y)",
+              "length": 1
+            },
+            "tito": [ { "line": 95, "start": 17, "end": 18 } ],
+            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
+            "features": [
+              { "always-via": "tito" },
+              { "always-via": "string_concat_lhs" },
+              { "always-via": "special_sink" }
+            ]
+          }
+        ]
+      }
+    ],
+    "tito": []
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable":
+      "decorator.foo_with_shady_decorators.__inlined_with_logging_source",
+    "callable_line": 109,
+    "code": 5002,
+    "line": 95,
+    "start": 17,
+    "end": 36,
+    "filename": "decorator.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "root": {
+              "filename": "decorator.py",
+              "line": 95,
+              "start": 21,
+              "end": 36
+            },
+            "tito": [ { "line": 95, "start": 21, "end": 36 } ],
+            "leaves": [ { "kind": "Test", "name": "__test_source" } ],
+            "features": [
+              { "always-via": "tito" },
+              { "always-via": "string_concat_rhs" },
+              { "always-via": "special_source" }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "call": {
+              "position": {
+                "filename": "decorator.py",
+                "line": 95,
+                "start": 17,
+                "end": 36
+              },
+              "resolves_to": [
+                "decorator.foo_with_shady_decorators.__inlined_with_logging_sink"
+              ],
+              "port": "formal(y)",
+              "length": 1
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
+            "features": [ { "always-via": "special_sink" } ]
+          }
+        ]
+      }
+    ],
+    "features": [
+      { "always-via": "tito" },
+      { "always-via": "string_concat_rhs" },
+      { "always-via": "special_source" },
+      { "always-via": "special_sink" }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
     "callable": "decorator.Foo.bar",
     "sources": [],
     "sinks": [
@@ -710,9 +1187,11 @@
                 "start": 5,
                 "end": 37
               },
-              "resolves_to": [ "decorator.Foo.bar.inner" ],
+              "resolves_to": [
+                "decorator.Foo.bar.__inlined_with_logging_args_kwargs_no_sink2"
+              ],
               "port": "formal(x)",
-              "length": 3
+              "length": 2
             },
             "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
             "features": [ { "always-via": "special_sink" } ]
@@ -730,9 +1209,11 @@
                 "start": 5,
                 "end": 37
               },
-              "resolves_to": [ "decorator.Foo.bar.inner" ],
+              "resolves_to": [
+                "decorator.Foo.bar.__inlined_with_logging_args_kwargs_no_sink2"
+              ],
               "port": "formal(self)",
-              "length": 3
+              "length": 2
             },
             "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
             "features": [ { "always-via": "special_sink" } ]
@@ -746,61 +1227,7 @@
 {
   "kind": "model",
   "data": {
-    "callable": "decorator.Foo.bar.__original_function",
-    "sources": [],
-    "sinks": [
-      {
-        "port": "formal(x)",
-        "taint": [
-          {
-            "call": {
-              "position": {
-                "filename": "decorator.py",
-                "line": 187,
-                "start": 5,
-                "end": 29
-              },
-              "resolves_to": [
-                "decorator.Foo.bar.__original_function.inner"
-              ],
-              "port": "formal(x)",
-              "length": 1
-            },
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
-          }
-        ]
-      },
-      {
-        "port": "formal(self)",
-        "taint": [
-          {
-            "call": {
-              "position": {
-                "filename": "decorator.py",
-                "line": 187,
-                "start": 5,
-                "end": 29
-              },
-              "resolves_to": [
-                "decorator.Foo.bar.__original_function.inner"
-              ],
-              "port": "formal(self)",
-              "length": 1
-            },
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
-          }
-        ]
-      }
-    ],
-    "tito": []
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "decorator.Foo.bar.__original_function.inner",
+    "callable": "decorator.Foo.bar.__inlined_with_logging_args_kwargs",
     "sources": [],
     "sinks": [
       {
@@ -827,56 +1254,6 @@
               "line": 62,
               "start": 20,
               "end": 26
-            },
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
-          }
-        ]
-      }
-    ],
-    "tito": []
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "decorator.Foo.bar.inner",
-    "sources": [],
-    "sinks": [
-      {
-        "port": "formal(x)",
-        "taint": [
-          {
-            "call": {
-              "position": {
-                "filename": "decorator.py",
-                "line": 75,
-                "start": 8,
-                "end": 9
-              },
-              "resolves_to": [ "decorator.Foo.bar.__original_function" ],
-              "port": "formal(x)",
-              "length": 2
-            },
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
-          }
-        ]
-      },
-      {
-        "port": "formal(self)",
-        "taint": [
-          {
-            "call": {
-              "position": {
-                "filename": "decorator.py",
-                "line": 75,
-                "start": 8,
-                "end": 9
-              },
-              "resolves_to": [ "decorator.Foo.bar.__original_function" ],
-              "port": "formal(self)",
-              "length": 2
             },
             "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
             "features": [ { "always-via": "special_sink" } ]
@@ -904,7 +1281,9 @@
                 "start": 5,
                 "end": 37
               },
-              "resolves_to": [ "decorator.Foo.foo.inner" ],
+              "resolves_to": [
+                "decorator.Foo.foo.__inlined_with_logging_args_kwargs_no_sink"
+              ],
               "port": "formal(x)",
               "length": 3
             },
@@ -950,36 +1329,6 @@
 {
   "kind": "model",
   "data": {
-    "callable": "decorator.Foo.foo.inner",
-    "sources": [],
-    "sinks": [
-      {
-        "port": "formal(x)",
-        "taint": [
-          {
-            "call": {
-              "position": {
-                "filename": "decorator.py",
-                "line": 75,
-                "start": 8,
-                "end": 9
-              },
-              "resolves_to": [ "decorator.Foo.foo.__original_function" ],
-              "port": "formal(x)",
-              "length": 2
-            },
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
-          }
-        ]
-      }
-    ],
-    "tito": []
-  }
-}
-{
-  "kind": "model",
-  "data": {
     "callable": "decorator.Foo.self_has_generic_type",
     "sources": [],
     "sinks": [
@@ -994,9 +1343,11 @@
                 "start": 5,
                 "end": 37
               },
-              "resolves_to": [ "decorator.Foo.self_has_generic_type.inner" ],
+              "resolves_to": [
+                "decorator.Foo.self_has_generic_type.__inlined_with_logging_args_kwargs_no_sink"
+              ],
               "port": "formal(x)",
-              "length": 6
+              "length": 5
             },
             "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
             "features": [ { "always-via": "special_sink" } ]
@@ -1014,9 +1365,11 @@
                 "start": 5,
                 "end": 37
               },
-              "resolves_to": [ "decorator.Foo.self_has_generic_type.inner" ],
+              "resolves_to": [
+                "decorator.Foo.self_has_generic_type.__inlined_with_logging_args_kwargs_no_sink"
+              ],
               "port": "formal(other)",
-              "length": 6
+              "length": 5
             },
             "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
             "features": [ { "always-via": "special_sink" } ]
@@ -1046,7 +1399,7 @@
               },
               "resolves_to": [ "decorator.Foo.bar" ],
               "port": "formal(x)",
-              "length": 4
+              "length": 3
             },
             "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
             "features": [ { "always-via": "special_sink" } ]
@@ -1066,61 +1419,7 @@
               },
               "resolves_to": [ "decorator.Foo.bar" ],
               "port": "formal(self)",
-              "length": 4
-            },
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
-          }
-        ]
-      }
-    ],
-    "tito": []
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "decorator.Foo.self_has_generic_type.inner",
-    "sources": [],
-    "sinks": [
-      {
-        "port": "formal(x)",
-        "taint": [
-          {
-            "call": {
-              "position": {
-                "filename": "decorator.py",
-                "line": 75,
-                "start": 8,
-                "end": 9
-              },
-              "resolves_to": [
-                "decorator.Foo.self_has_generic_type.__original_function"
-              ],
-              "port": "formal(x)",
-              "length": 5
-            },
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
-          }
-        ]
-      },
-      {
-        "port": "formal(other)",
-        "taint": [
-          {
-            "call": {
-              "position": {
-                "filename": "decorator.py",
-                "line": 75,
-                "start": 8,
-                "end": 9
-              },
-              "resolves_to": [
-                "decorator.Foo.self_has_generic_type.__original_function"
-              ],
-              "port": "formal(other)",
-              "length": 5
+              "length": 3
             },
             "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
             "features": [ { "always-via": "special_sink" } ]
@@ -1173,7 +1472,9 @@
                 "start": 5,
                 "end": 37
               },
-              "resolves_to": [ "decorator.Foo.some_class_method.inner" ],
+              "resolves_to": [
+                "decorator.Foo.some_class_method.__inlined_with_logging_args_kwargs_no_sink"
+              ],
               "port": "formal(x)",
               "length": 3
             },
@@ -1219,38 +1520,6 @@
 {
   "kind": "model",
   "data": {
-    "callable": "decorator.Foo.some_class_method.inner",
-    "sources": [],
-    "sinks": [
-      {
-        "port": "formal(x)",
-        "taint": [
-          {
-            "call": {
-              "position": {
-                "filename": "decorator.py",
-                "line": 75,
-                "start": 8,
-                "end": 9
-              },
-              "resolves_to": [
-                "decorator.Foo.some_class_method.__original_function"
-              ],
-              "port": "formal(x)",
-              "length": 2
-            },
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
-          }
-        ]
-      }
-    ],
-    "tito": []
-  }
-}
-{
-  "kind": "model",
-  "data": {
     "callable": "decorator.fails_to_apply",
     "sources": [],
     "sinks": [],
@@ -1260,7 +1529,7 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "" } ]
+            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
           }
         ]
       }
@@ -1284,7 +1553,7 @@
                 "start": 1,
                 "end": 13
               },
-              "resolves_to": [ "decorator.foo.inner" ],
+              "resolves_to": [ "decorator.foo.__inlined_with_logging" ],
               "port": "formal(x)",
               "length": 1
             },
@@ -1303,7 +1572,7 @@
 {
   "kind": "model",
   "data": {
-    "callable": "decorator.foo.inner",
+    "callable": "decorator.foo.__inlined_with_logging",
     "sources": [],
     "sinks": [
       {
@@ -1345,34 +1614,11 @@
                 "start": 1,
                 "end": 25
               },
-              "resolves_to": [ "decorator.foo_args_kwargs.inner" ],
+              "resolves_to": [
+                "decorator.foo_args_kwargs.__inlined_with_logging_args_kwargs"
+              ],
               "port": "formal(x)",
               "length": 1
-            },
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
-          }
-        ]
-      }
-    ],
-    "tito": []
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "decorator.foo_args_kwargs.inner",
-    "sources": [],
-    "sinks": [
-      {
-        "port": "formal(x)",
-        "taint": [
-          {
-            "root": {
-              "filename": "decorator.py",
-              "line": 62,
-              "start": 20,
-              "end": 26
             },
             "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
             "features": [ { "always-via": "special_sink" } ]
@@ -1400,7 +1646,9 @@
                 "start": 1,
                 "end": 33
               },
-              "resolves_to": [ "decorator.foo_args_kwargs_with_sink.inner" ],
+              "resolves_to": [
+                "decorator.foo_args_kwargs_with_sink.__inlined_with_logging_args_kwargs_no_sink"
+              ],
               "port": "formal(y)",
               "length": 2
             },
@@ -1447,41 +1695,6 @@
 {
   "kind": "model",
   "data": {
-    "callable": "decorator.foo_args_kwargs_with_sink.inner",
-    "sources": [],
-    "sinks": [
-      {
-        "port": "formal(y)",
-        "taint": [
-          {
-            "call": {
-              "position": {
-                "filename": "decorator.py",
-                "line": 75,
-                "start": 8,
-                "end": 9
-              },
-              "resolves_to": [
-                "decorator.foo_args_kwargs_with_sink.__original_function"
-              ],
-              "port": "formal(y)",
-              "length": 1
-            },
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-via": "special_sink" }
-            ]
-          }
-        ]
-      }
-    ],
-    "tito": []
-  }
-}
-{
-  "kind": "model",
-  "data": {
     "callable": "decorator.foo_async",
     "sources": [],
     "sinks": [
@@ -1496,7 +1709,9 @@
                 "start": 1,
                 "end": 19
               },
-              "resolves_to": [ "decorator.foo_async.inner" ],
+              "resolves_to": [
+                "decorator.foo_async.__inlined_with_logging_async"
+              ],
               "port": "formal(y)",
               "length": 1
             },
@@ -1512,7 +1727,7 @@
 {
   "kind": "model",
   "data": {
-    "callable": "decorator.foo_async.inner",
+    "callable": "decorator.foo_async.__inlined_with_logging_async",
     "sources": [],
     "sinks": [
       {
@@ -1551,37 +1766,11 @@
                 "start": 1,
                 "end": 29
               },
-              "resolves_to": [ "decorator.foo_log_first_parameter.inner" ],
+              "resolves_to": [
+                "decorator.foo_log_first_parameter.__inlined_with_logging_first_parameter"
+              ],
               "port": "formal(x)",
               "length": 1
-            },
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-via": "special_sink" }
-            ]
-          }
-        ]
-      }
-    ],
-    "tito": []
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "decorator.foo_log_first_parameter.inner",
-    "sources": [],
-    "sinks": [
-      {
-        "port": "formal(x)",
-        "taint": [
-          {
-            "root": {
-              "filename": "decorator.py",
-              "line": 135,
-              "start": 24,
-              "end": 39
             },
             "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
             "features": [
@@ -1613,35 +1802,10 @@
                 "end": 18
               },
               "resolves_to": [
-                "decorator.foo_using_decorator_factory.inner"
+                "decorator.foo_using_decorator_factory.__inlined_with_named_logger"
               ],
               "port": "formal(x)",
               "length": 1
-            },
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
-          }
-        ]
-      }
-    ],
-    "tito": []
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "decorator.foo_using_decorator_factory.inner",
-    "sources": [],
-    "sinks": [
-      {
-        "port": "formal(x)",
-        "taint": [
-          {
-            "root": {
-              "filename": "decorator.py",
-              "line": 117,
-              "start": 24,
-              "end": 28
             },
             "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
             "features": [ { "always-via": "special_sink" } ]
@@ -1669,7 +1833,9 @@
                 "start": 1,
                 "end": 30
               },
-              "resolves_to": [ "decorator.foo_with_helper_function.inner" ],
+              "resolves_to": [
+                "decorator.foo_with_helper_function.__inlined_with_logging_helper_functions"
+              ],
               "port": "formal(y)",
               "length": 2
             },
@@ -1689,87 +1855,11 @@
                 "start": 1,
                 "end": 30
               },
-              "resolves_to": [ "decorator.foo_with_helper_function.inner" ],
+              "resolves_to": [
+                "decorator.foo_with_helper_function.__inlined_with_logging_helper_functions"
+              ],
               "port": "formal(x)",
               "length": 2
-            },
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-via": "special_sink" }
-            ]
-          }
-        ]
-      }
-    ],
-    "tito": []
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "decorator.foo_with_helper_function.after",
-    "sources": [],
-    "sinks": [
-      {
-        "port": "formal(*rest0)",
-        "taint": [
-          {
-            "root": {
-              "filename": "decorator.py",
-              "line": 164,
-              "start": 20,
-              "end": 24
-            },
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
-          }
-        ]
-      }
-    ],
-    "tito": []
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "decorator.foo_with_helper_function.inner",
-    "sources": [],
-    "sinks": [
-      {
-        "port": "formal(y)",
-        "taint": [
-          {
-            "call": {
-              "position": {
-                "filename": "decorator.py",
-                "line": 155,
-                "start": 18,
-                "end": 23
-              },
-              "resolves_to": [ "decorator.foo_with_helper_function.after" ],
-              "port": "formal(*rest0)",
-              "length": 1
-            },
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
-          }
-        ]
-      },
-      {
-        "port": "formal(x)",
-        "taint": [
-          {
-            "call": {
-              "position": {
-                "filename": "decorator.py",
-                "line": 155,
-                "start": 18,
-                "end": 23
-              },
-              "resolves_to": [ "decorator.foo_with_helper_function.after" ],
-              "port": "formal(*rest0)",
-              "length": 1
             },
             "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
             "features": [
@@ -1800,9 +1890,11 @@
                 "start": 1,
                 "end": 20
               },
-              "resolves_to": [ "decorator.foo_with_shady_decorators.inner" ],
+              "resolves_to": [
+                "decorator.foo_with_shady_decorators.__inlined_with_logging_source"
+              ],
               "port": "formal(y)",
-              "length": 3
+              "length": 2
             },
             "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
             "features": [
@@ -1815,138 +1907,6 @@
       }
     ],
     "tito": []
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "decorator.foo_with_shady_decorators.__original_function",
-    "sources": [],
-    "sinks": [
-      {
-        "port": "formal(y)",
-        "taint": [
-          {
-            "call": {
-              "position": {
-                "filename": "decorator.py",
-                "line": 107,
-                "start": 1,
-                "end": 18
-              },
-              "resolves_to": [
-                "decorator.foo_with_shady_decorators.__original_function.inner"
-              ],
-              "port": "formal(y)",
-              "length": 1
-            },
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
-          }
-        ]
-      }
-    ],
-    "tito": []
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "decorator.foo_with_shady_decorators.inner",
-    "sources": [],
-    "sinks": [
-      {
-        "port": "formal(y)",
-        "taint": [
-          {
-            "call": {
-              "position": {
-                "filename": "decorator.py",
-                "line": 95,
-                "start": 17,
-                "end": 36
-              },
-              "resolves_to": [
-                "decorator.foo_with_shady_decorators.__original_function"
-              ],
-              "port": "formal(y)",
-              "length": 2
-            },
-            "tito": [ { "line": 95, "start": 17, "end": 18 } ],
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [
-              { "always-via": "tito" },
-              { "always-via": "string_concat_lhs" },
-              { "always-via": "special_sink" }
-            ]
-          }
-        ]
-      }
-    ],
-    "tito": []
-  }
-}
-{
-  "kind": "issue",
-  "data": {
-    "callable": "decorator.foo_with_shady_decorators.inner",
-    "callable_line": 109,
-    "code": 5002,
-    "line": 95,
-    "start": 17,
-    "end": 36,
-    "filename": "decorator.py",
-    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
-    "traces": [
-      {
-        "name": "forward",
-        "roots": [
-          {
-            "root": {
-              "filename": "decorator.py",
-              "line": 95,
-              "start": 21,
-              "end": 36
-            },
-            "tito": [ { "line": 95, "start": 21, "end": 36 } ],
-            "leaves": [ { "kind": "Test", "name": "__test_source" } ],
-            "features": [
-              { "always-via": "tito" },
-              { "always-via": "string_concat_rhs" },
-              { "always-via": "special_source" }
-            ]
-          }
-        ]
-      },
-      {
-        "name": "backward",
-        "roots": [
-          {
-            "call": {
-              "position": {
-                "filename": "decorator.py",
-                "line": 95,
-                "start": 17,
-                "end": 36
-              },
-              "resolves_to": [
-                "decorator.foo_with_shady_decorators.__original_function"
-              ],
-              "port": "formal(y)",
-              "length": 2
-            },
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
-          }
-        ]
-      }
-    ],
-    "features": [
-      { "always-via": "tito" },
-      { "always-via": "string_concat_rhs" },
-      { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ]
   }
 }
 {
@@ -1966,9 +1926,46 @@
                 "start": 1,
                 "end": 21
               },
-              "resolves_to": [ "decorator.foo_with_sink.inner" ],
+              "resolves_to": [
+                "decorator.foo_with_sink.__inlined_with_logging_no_sink"
+              ],
               "port": "formal(x)",
               "length": 2
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
+            "features": [
+              { "always-type": "scalar" },
+              { "always-via": "special_sink" }
+            ]
+          }
+        ]
+      }
+    ],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "decorator.foo_with_sink.__inlined_with_logging_no_sink",
+    "sources": [],
+    "sinks": [
+      {
+        "port": "formal(x)",
+        "taint": [
+          {
+            "call": {
+              "position": {
+                "filename": "decorator.py",
+                "line": 32,
+                "start": 10,
+                "end": 11
+              },
+              "resolves_to": [
+                "decorator.foo_with_sink.__original_function"
+              ],
+              "port": "formal(x)",
+              "length": 1
             },
             "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
             "features": [
@@ -1997,41 +1994,6 @@
               "line": 39,
               "start": 16,
               "end": 17
-            },
-            "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-via": "special_sink" }
-            ]
-          }
-        ]
-      }
-    ],
-    "tito": []
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "decorator.foo_with_sink.inner",
-    "sources": [],
-    "sinks": [
-      {
-        "port": "formal(x)",
-        "taint": [
-          {
-            "call": {
-              "position": {
-                "filename": "decorator.py",
-                "line": 32,
-                "start": 10,
-                "end": 11
-              },
-              "resolves_to": [
-                "decorator.foo_with_sink.__original_function"
-              ],
-              "port": "formal(x)",
-              "length": 1
             },
             "leaves": [ { "kind": "Test", "name": "__test_sink" } ],
             "features": [

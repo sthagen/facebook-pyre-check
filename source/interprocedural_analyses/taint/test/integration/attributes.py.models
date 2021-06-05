@@ -2,6 +2,100 @@
 {
   "kind": "issue",
   "data": {
+    "callable": "attributes.test_attribute_union_sink",
+    "callable_line": 89,
+    "code": 5002,
+    "line": 92,
+    "start": 8,
+    "end": 15,
+    "filename": "attributes.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "root": {
+              "filename": "attributes.py",
+              "line": 92,
+              "start": 18,
+              "end": 33
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_source" } ],
+            "features": [ { "always-via": "special_source" } ]
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "root": {
+              "filename": "attributes.py",
+              "line": 92,
+              "start": 8,
+              "end": 15
+            },
+            "leaves": [
+              { "kind": "Test", "name": "Obj{attributes.Sink.token}" }
+            ]
+          }
+        ]
+      }
+    ],
+    "features": [ { "always-via": "special_source" } ]
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "attributes.test_attribute_union_sink",
+    "callable_line": 89,
+    "code": 5002,
+    "line": 90,
+    "start": 4,
+    "end": 11,
+    "filename": "attributes.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "root": {
+              "filename": "attributes.py",
+              "line": 90,
+              "start": 14,
+              "end": 29
+            },
+            "leaves": [ { "kind": "Test", "name": "__test_source" } ],
+            "features": [ { "always-via": "special_source" } ]
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "root": {
+              "filename": "attributes.py",
+              "line": 90,
+              "start": 4,
+              "end": 11
+            },
+            "leaves": [
+              { "kind": "Test", "name": "Obj{attributes.Sink.token}" }
+            ]
+          }
+        ]
+      }
+    ],
+    "features": [ { "always-via": "special_source" } ]
+  }
+}
+{
+  "kind": "issue",
+  "data": {
     "callable": "attributes.test_attribute_via_dunder_dict",
     "callable_line": 65,
     "code": 5002,
@@ -116,6 +210,116 @@
   }
 }
 {
+  "kind": "issue",
+  "data": {
+    "callable": "attributes.test_issue_with_update_to_self_attribute",
+    "callable_line": 113,
+    "code": 5002,
+    "line": 114,
+    "start": 4,
+    "end": 12,
+    "filename": "attributes.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "root": {
+              "filename": "attributes.py",
+              "line": 114,
+              "start": 20,
+              "end": 35
+            },
+            "tito": [ { "line": 114, "start": 20, "end": 35 } ],
+            "leaves": [ { "kind": "Test", "name": "__test_source" } ],
+            "features": [
+              { "always-via": "tito" },
+              { "always-via": "special_source" }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "root": {
+              "filename": "attributes.py",
+              "line": 114,
+              "start": 4,
+              "end": 12
+            },
+            "leaves": [
+              { "kind": "Test", "name": "Obj{attributes.D.buffer}" }
+            ]
+          }
+        ]
+      }
+    ],
+    "features": [
+      { "always-via": "tito" },
+      { "always-via": "special_source" }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "Obj{attributes.C.dictionary}",
+    "sources": [
+      {
+        "port": "result[text]",
+        "taint": [ { "decl": null, "leaves": [ { "kind": "Test" } ] } ]
+      }
+    ],
+    "sinks": [],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "Obj{attributes.D.buffer}",
+    "sources": [],
+    "sinks": [
+      {
+        "port": "formal($global)",
+        "taint": [ { "decl": null, "leaves": [ { "kind": "Test" } ] } ]
+      }
+    ],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "Obj{attributes.Sink.token}",
+    "sources": [],
+    "sinks": [
+      {
+        "port": "formal($global)",
+        "taint": [ { "decl": null, "leaves": [ { "kind": "Test" } ] } ]
+      }
+    ],
+    "tito": []
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "Obj{attributes.Token.token}",
+    "sources": [
+      {
+        "port": "result",
+        "taint": [ { "decl": null, "leaves": [ { "kind": "Test" } ] } ]
+      }
+    ],
+    "sinks": [],
+    "tito": []
+  }
+}
+{
   "kind": "model",
   "data": {
     "callable": "Ovr{attributes.UseViaDict::__init__}",
@@ -127,7 +331,9 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "[b]" } ]
+            "leaves": [
+              { "kind": "LocalReturn", "name": "[b]", "depth": 0 }
+            ]
           }
         ]
       },
@@ -136,7 +342,9 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "[a]" } ]
+            "leaves": [
+              { "kind": "LocalReturn", "name": "[a]", "depth": 0 }
+            ]
           }
         ]
       },
@@ -145,7 +353,7 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "" } ]
+            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
           }
         ]
       }
@@ -164,7 +372,9 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "[b]" } ]
+            "leaves": [
+              { "kind": "LocalReturn", "name": "[b]", "depth": 0 }
+            ]
           }
         ]
       },
@@ -173,7 +383,9 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "[a]" } ]
+            "leaves": [
+              { "kind": "LocalReturn", "name": "[a]", "depth": 0 }
+            ]
           }
         ]
       },
@@ -182,7 +394,7 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "" } ]
+            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
           }
         ]
       }
@@ -201,7 +413,9 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "[b]" } ]
+            "leaves": [
+              { "kind": "LocalReturn", "name": "[b]", "depth": 0 }
+            ]
           }
         ]
       },
@@ -210,7 +424,9 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "[a]" } ]
+            "leaves": [
+              { "kind": "LocalReturn", "name": "[a]", "depth": 0 }
+            ]
           }
         ]
       },
@@ -219,7 +435,7 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "" } ]
+            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
           }
         ]
       }
@@ -255,7 +471,7 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "" } ]
+            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
           }
         ]
       }
@@ -265,7 +481,7 @@
 {
   "kind": "model",
   "data": {
-    "callable": "attributes.test_attribute_union",
+    "callable": "attributes.test_attribute_union_source",
     "sources": [],
     "sinks": [
       {
@@ -310,7 +526,7 @@
 {
   "kind": "issue",
   "data": {
-    "callable": "attributes.test_attribute_union",
+    "callable": "attributes.test_attribute_union_source",
     "callable_line": 77,
     "code": 5002,
     "line": 78,
@@ -357,7 +573,7 @@
 {
   "kind": "issue",
   "data": {
-    "callable": "attributes.test_attribute_union",
+    "callable": "attributes.test_attribute_union_source",
     "callable_line": 77,
     "code": 5002,
     "line": 80,
@@ -479,7 +695,7 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "" } ]
+            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
           }
         ]
       }
@@ -515,7 +731,7 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "" } ]
+            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
           }
         ]
       }
@@ -534,7 +750,7 @@
           {
             "root": {
               "filename": "attributes.py",
-              "line": 90,
+              "line": 102,
               "start": 16,
               "end": 36
             },
@@ -555,9 +771,9 @@
   "kind": "issue",
   "data": {
     "callable": "attributes.test_issue_with_text_key_of_dictionary",
-    "callable_line": 89,
+    "callable_line": 101,
     "code": 5002,
-    "line": 90,
+    "line": 102,
     "start": 16,
     "end": 36,
     "filename": "attributes.py",
@@ -569,7 +785,7 @@
           {
             "root": {
               "filename": "attributes.py",
-              "line": 90,
+              "line": 102,
               "start": 16,
               "end": 28
             },
@@ -589,7 +805,7 @@
           {
             "root": {
               "filename": "attributes.py",
-              "line": 90,
+              "line": 102,
               "start": 16,
               "end": 36
             },
@@ -618,7 +834,7 @@
           {
             "root": {
               "filename": "attributes.py",
-              "line": 94,
+              "line": 106,
               "start": 16,
               "end": 37
             },
@@ -664,7 +880,7 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "" } ]
+            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
           }
         ]
       }
@@ -700,8 +916,24 @@
         "taint": [
           {
             "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "" } ]
+            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
           }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "list.append",
+    "sources": [],
+    "sinks": [],
+    "tito": [
+      {
+        "port": "formal(element)",
+        "taint": [
+          { "decl": null, "leaves": [ { "kind": "ParameterUpdate0" } ] }
         ]
       }
     ]

@@ -32,6 +32,8 @@ let static_analysis_configuration { ScratchProject.configuration; _ } =
     find_missing_flows = None;
     dump_model_query_results = false;
     use_cache = false;
+    maximum_trace_length = None;
+    maximum_tito_depth = None;
   }
 
 
@@ -56,15 +58,24 @@ module ResultA = Interprocedural.Result.Make (struct
 end)
 
 module AnalysisA = ResultA.Register (struct
-  let init ~static_analysis_configuration:_ ~scheduler:_ ~environment:_ ~functions:_ ~stubs:_ =
+  let initialize_configuration ~static_analysis_configuration:_ = ()
+
+  let initialize_models
+      ~scheduler:_
+      ~static_analysis_configuration:_
+      ~environment:_
+      ~functions:_
+      ~stubs:_
+    =
     { Result.initial_models = Callable.Map.empty; skip_overrides = Ast.Reference.Set.empty }
 
 
-  let analyze ~callable:_ ~environment:_ ~qualifier:_ ~define:_ ~existing:_ = "A", 5
+  let analyze ~environment:_ ~callable:_ ~qualifier:_ ~define:_ ~existing:_ = "A", 5
 
   let report
       ~scheduler:_
       ~static_analysis_configuration:_
+      ~environment:_
       ~filename_lookup:_
       ~callables
       ~skipped_overrides:_
@@ -116,15 +127,24 @@ module ResultB = Interprocedural.Result.Make (struct
 end)
 
 module AnalysisB = ResultB.Register (struct
-  let init ~static_analysis_configuration:_ ~scheduler:_ ~environment:_ ~functions:_ ~stubs:_ =
+  let initialize_configuration ~static_analysis_configuration:_ = ()
+
+  let initialize_models
+      ~scheduler:_
+      ~static_analysis_configuration:_
+      ~environment:_
+      ~functions:_
+      ~stubs:_
+    =
     { Result.initial_models = Callable.Map.empty; skip_overrides = Reference.Set.empty }
 
 
-  let analyze ~callable:_ ~environment:_ ~qualifier:_ ~define:_ ~existing:_ = 7, "B"
+  let analyze ~environment:_ ~callable:_ ~qualifier:_ ~define:_ ~existing:_ = 7, "B"
 
   let report
       ~scheduler:_
       ~static_analysis_configuration:_
+      ~environment:_
       ~filename_lookup:_
       ~callables
       ~skipped_overrides:_
@@ -194,6 +214,7 @@ let test_unknown_function_analysis context =
     Analysis.report_results
       ~scheduler:(Test.mock_scheduler ())
       ~static_analysis_configuration
+      ~environment
       ~analyses
       ~filename_lookup:(fun _ -> None)
       ~callables:(targets |> Callable.Set.of_list)
