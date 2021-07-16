@@ -182,17 +182,45 @@ print("a" + f())
 The best way to silence this error is to add non-`Any` return annotation to every function.
 
 ### 4: Missing Attribute Annotation
+
 In strict mode, Pyre will error when an attribute does not have an annotation.
 
 ```python
 class A:
     b = foo() # Missing attribute annotation
 ```
-Adding a type annotation will resolve this error.
 
+Adding a type annotation will resolve this error:
 ```python
 class A:
-  b: int = foo()
+    b: int = foo()
+```
+
+
+This error can also occur when pyre is inferring attribute types from constructors.
+For example, here we know that `b` is an int based on the parameter annotation in `__init__`:
+```python
+class A:
+    def __init__(self, b: int) -> None:
+        self.b = b
+```
+
+But here we need a annotations because we can't just propagate an argument annotation:
+```python
+class A:
+    def __init__(self, arg: int) -> None:
+        self.a = arg + 5
+        self.b = arg + 5
+```
+
+We can fix this by making the annotation explicit, either in the class body or
+in `__init__`:
+```python
+class A:
+    a: int
+    def __init__(self, arg: int) -> None:
+        self.a = arg + 5
+        self.b: int = arg + 5
 ```
 
 ### 5: Missing Global Annotation
@@ -218,6 +246,7 @@ Pyre will error if an argument passed into a function call does not match the ex
 ```python
 def takes_int(x: int) -> None:
   pass
+
 def f(x: Optional[int]) -> None:
   takes_int(x) # Incompatible parameter type error
 ```
@@ -264,6 +293,8 @@ incompatible type later on in the same function.
 If you are constructing an object that is generic over an invariant type, you may run into an error:
 
 ```python
+from typing import TypeVar
+
 _T = TypeVar('_T')
 
 class Foo(Generic[_T]):
@@ -325,6 +356,9 @@ INT_OR_STR: TypeAlias = Union[int, str]
 If you use a name as an annotation that is not a valid type or valid alias, you will see this error:
 
 ```python
+from typing import Callable, List
+from typing_extensions import Final, Literal
+
 GLOBAL_VALUE = "string"
 
 def f0() -> GLOBAL_VALUE: ... # Error! `GLOBAL_VALUE` is a value, not a type.
@@ -335,15 +369,12 @@ def f2() -> [int]: ...  # Error! `[int]` is not a valid type. If you mean a list
 
 def f3() -> (int, str): ...  # Error! `(int, str)` is not a valid type. If you mean a pair of int and str, use `typing.Tuple[int, str]`.
 
-from typing import Callable
 def f4() -> Callable[[int]]: ...  # Error! `Callable[[int]]` is not a valid type because the return type of the callable is missing. Good example: `Callable[[int], int]`.
 
 def f5() -> Callable[int, int]: ...  # Error! `Callable[int, int]` is not a valid type. The parameter types of the callable must be enclosed in square brackets. Good example: `Callable[[int], int]`.
 
-from typing_extensions import Final
 def f6() -> List[Final[int]]: ...  # Error! `Final` may only be used as the outermost type in annotations. See PEP 591.
 
-from typing_extensions import Literal
 def f7() -> Literal[GLOBAL_VALUE]: ...  # Error! Only literals are allowed as parameters for `Literal`. See PEP586. Good example: `Literal[42]` or `Literal["string"]`.
 ```
 
@@ -467,6 +498,7 @@ The above code fails at runtime with `TypeError: can't convert complex to int`. 
   ```python
   class Base:
       a: int = 0
+
   class Child(Base):
       a: str = ""
 
@@ -659,18 +691,20 @@ Type parameters are only meaningful if the container type is generic. Passing in
 
 ```python
 class Container:
-  def add(element: int) -> None: ...
-  def get_element() -> int: ...
+    def add(element: int) -> None: ...
+    def get_element() -> int: ...
 
 x: Container[int] = Container() # Invalid type parameter error
 ```
 
 ```python
+from typing import TypeVar
+
 T = TypeVar('T')
 
 class Container(Generic[T]):
-  def add(element: T) -> None: ...
-  def get_element() -> T: ...
+    def add(element: T) -> None: ...
+    def get_element() -> T: ...
 
 x: Container[int] = Container()
 x.get_element() # returns int
@@ -684,11 +718,13 @@ y.get_element() # returns str
 If a container class is generic over a type variable with given type bounds, any type parameter used must comply with those type bounds. For example,
 
 ```python
+from typing import TypeVar
+
 T = TypeVar('T', bound=Union[int, bool])
 
 class Container(Generic[T]):
-  def add(element: T) -> None: ...
-  def get_element() -> T: ...
+    def add(element: T) -> None: ...
+    def get_element() -> T: ...
 
 x: Container[int] = Container() # No error
 
@@ -710,7 +746,7 @@ shape: Shape = {"sides": 4, "color": "blue"}
 print(shape["sides"])  # this is fine because "sides" is a literal
 
 for key in ["sides", "color"]:
-    print(key, shapes[key]) . # pyre will complain here because it can't prove `key` is valid
+    print(key, shapes[key])  # pyre will complain here because it can't prove `key` is valid
 ```
 
 The example above shows a situation where you might hit this error: when you want to iterate over the fields of a typed dict. A suggested fix is to use type-safe operations like `dictionary.items` instead. For example the following code produces the same results but typechecks:
@@ -783,17 +819,13 @@ P = ParameterSpecification("P")
 
 def decorator(f: Callable[P, int]) -> Callable[P, None]:
 
-  def foo(*args: P.args, **kwargs: P.kwargs) -> None:
+    def foo(*args: P.args, **kwargs: P.kwargs) -> None:
+        f(*args, **kwargs)    # Accepted, should resolve to int
+        f(*args)              # Rejected
+        f(*kwargs, **args)    # Rejected
+        f(1, *args, **kwargs) # Rejected
 
-    f(*args, **kwargs)    # Accepted, should resolve to int
-
-    f(*args)              # Rejected
-
-    f(*kwargs, **args)    # Rejected
-
-    f(1, *args, **kwargs) # Rejected
-
-  return foo
+    return foo
 ```
 
 ### 30, 36: Terminating Analysis, Mutually Recursive Type Variables
@@ -840,11 +872,11 @@ print(*x)   # invalid use of x, which is not iterable
 ```
 or using an invalid keyword parameter (informally a "double-splat"):
 ```python
-import typing
+from typing import Dict
 
 x: int = 5
 
-d: typing.Dict[int, int] = {**x}  # invalid use of x, which is not a mapping
+d: Dict[int, int] = {**x}  # invalid use of x, which is not a mapping
 
 dict(**d)  # invalid use of d; function kwargs must be a mapping with string keys
 ```
@@ -856,9 +888,20 @@ Pyre will warn on any usage of `typing.Any` when run in [strict mode](gradual_ty
 
 ### 34: Invalid Type Variable
 
-Example:
+
+Type variables can only be used as types when they have already been placed "in scope".
+A type variable can be placed into scope via:
+
+* Generic class declarations
+  * for example, `class C(Generic[T]):` puts `T` into scope for the body of the class
+* The **parameter** types of a generic function
+  * for example, `def foo(x: T)` puts `T` into scope for the body and return type annotation of the function
+
+For example:
 
 ```python
+from typing import List
+
 class Base:
     foo: List[T] = []
 
@@ -874,18 +917,11 @@ def foo(x: int) -> List[T]:
 $ pyre
 Invalid type variable [34]: The type variable `Variable[T]` isn't present in the function's parameters.
 ```
-
-Type variables can only be used as types when they have already been placed "in scope".
-A type variable can be placed into scope via:
-
-* Generic class declarations
-  * for example, `class C(Generic[T]):` puts `T` into scope for the body of the class
-* The **parameter** types of a generic function
-  * for example, `def foo(x: T)` puts `T` into scope for the body and return type annotation of the function
-
 Suggested fix:
 
 ```python
+from typing import Generic, List
+
 class Base(Generic[T]):
     foo: List[T] = []
 
@@ -980,16 +1016,16 @@ Pyre will error when a type annotation is applied to something that can't be ann
 
 ```python
 def transformation(p: int) -> str:
-  return str(p + 1)
+    return str(p + 1)
 
 def foo(x: int) -> None:
-  y: int = x + 2
-  z = x + 3
+    y: int = x + 2
+    z = x + 3
 
-  # Each of the following will produce an error
-  x: str = transformation(x)
-  y: str = transformation(y)
-  z: int = 4
+    # Each of the following will produce an error
+    x: str = transformation(x)
+    y: str = transformation(y)
+    z: int = 4
 ```
 An easy fix for the first two errors is to use a new variable rather than re-annotating the old variable so it can hold a new type. For the third error, `z` should have been annotated at first declaration.
 
@@ -997,14 +1033,14 @@ An easy fix for the first two errors is to use a new variable rather than re-ann
 
 ```python
 class Foo:
-  attribute: int = 1
+    attribute: int = 1
 
 class Bar:
-  def __init__(self):
-    Foo.attribute: str = "hello"
+    def __init__(self):
+        Foo.attribute: str = "hello"
 
 def some_method() -> None:
-  Foo.attribute: int = 5
+    Foo.attribute: int = 5
 ```
 
 This is not allowed as Pyre needs to be able to statically determine the type of globally accessible values, including class attributes. Even if Pyre followed control flow across functions to determine class attribute annotations, such re-annotations imply very dynamic behavior that makes the code difficult to work with.
@@ -1016,22 +1052,23 @@ When defining a new class, Pyre will error if the base class given is not a vali
 
 1. The parent class is marked as final which means it explicitly is annotated as not supporting child classes.
 
-```python
-@final
-class Base:
-  ...
+  ```python
+  @final
+  class Base:
+      ...
 
-class Derived(Base): # Invalid inheritance error
-  ...
-```
+  class Derived(Base): # Invalid inheritance error
+      ...
+  ```
 
 2. The expression given in the base class field is not a class at all.
 
-```python
-MY_GLOBAL: str = "string"
-class Foo(MY_GLOBAL): # Invalid inheritance error
-  ...
-```
+  ```python
+  MY_GLOBAL: str = "string"
+
+  class Foo(MY_GLOBAL): # Invalid inheritance error
+      ...
+  ```
 
 Pyre does not support dynamic expressions as base classes, even if they may evaluate to a valid class at runtime. This is because the type checker relies on building up a valid class hierarchy before it can resolve types in the Python it is analyzing. On the other hand, type aliases are equivalent to types and are acceptable as base classes.
 
@@ -1039,18 +1076,20 @@ Pyre does not support dynamic expressions as base classes, even if they may eval
 3. You are defining a typed dictionary that does not inherit from another typed dictionary.
 
 ```python
+from typing import TypedDict
+
 class NonTypedDict:
-  ...
+    ...
 
 class Movie(TypedDict):
-  name: str
-  year: int
+    name: str
+    year: int
 
 class BookBasedMovie(Movie): # No error
-  based_on: str
+    based_on: str
 
 class BookBasedMovie(NonTypedDict): # Invalid inheritance error
-  based_on: str
+    based_on: str
 ```
 
 If inheriting from another typed dictionary, fields need to have a consistent type between child and parent, in order for subclassing to be sound. Similarly, a required field in the child must also be required for the parent.
@@ -1062,7 +1101,7 @@ Static methods cannot be overwritten by non-static methods, and final methods ca
 ```python
 class A:
     @staticmethod
-    def foo(self) -> int:
+    def foo() -> int:
         pass
 
 class B(A):
@@ -1073,21 +1112,24 @@ class B(A):
 
 
 ```python
-  from typing import final
-  class Foo:
+from typing import final
+
+class Foo:
     @final
     def bar(self) -> None:
-      pass
+        pass
 
-  class Bar(Foo):
-    def bar(self) -> None: # Invalid override [40]: `Bar.bar` cannot override final method defined in `Foo`.
-      pass
+class Bar(Foo):
+    def bar(self) -> None: # Invalid override, because Foo.bar is final
+        pass
 ```
 
 ### 41: Invalid Assignment
 Pyre will error on assignments to final attributes, read-only properties, and class variables from a class instance. For example,
 
 ```python
+from typing import Final, Optional
+
 class Foo:
   field: Final[Optional[int]] = 1
 
@@ -1110,7 +1152,7 @@ To fix this error, change the definition of this attribute to something that is 
 
 Pyre will throw this error if a source module specifies one or more overloads via [`typing.overload`](https://fburl.com/d7b8cd2h) but fails to provide an implementation, for example:
 ```python
-import typing overload
+from typing import overload
 
 @overload
 def f(x: int) -> float:
@@ -1124,7 +1166,7 @@ Missing implementations are allowed in `.pyi` stub files.
 
 To fix it, provide exactly one implementation (a function of the same name without the `typing.overload` decorator). For example above we could implement `f` as follows:
 ```python
-import typing overload, Union
+from typing import overload, Union
 
 @overload
 def f(x: int) -> float:
@@ -1244,9 +1286,11 @@ For example (note: int is a subclass of float in the type system and in these ex
 Writes taking covariants:
 
 ```python
-_T_co = typing.TypeVar("_T_co", covariant=True)
+from typing import TypeVar, Generic
 
-class MyList(typing.Generic[_T_co]):
+_T_co = TypeVar("_T_co", covariant=True)
+
+class MyList(Generic[_T_co]):
     def write(self, element: _T_co) -> None:
         ... # adds element to list
 
@@ -1261,14 +1305,16 @@ takes_float_list(int_list)  # this call is OK because MyList is covariant: MyLis
 Reads returning contravariants:
 
 ```python
-_T_cont = typing.TypeVar("_T_cont", contravariant=True)
+from typing import TypeVar, Generic
 
-class MyList(typing.Generic[_T_cont]):
+_T_cont = TypeVar("_T_cont", contravariant=True)
+
+class MyList(Generic[_T_cont]):
     def read(self) -> _T_cont:
         ... # returns first element from list
 
 def takes_int_list(int_list: MyList[int]) -> int:
-   return int_list.read()
+    return int_list.read()
 
 float_list: MyList[float] = ...
 takes_int_list(float_list)  # this call is OK because MyList is contravariant: MyList[float] < MyList[int]
@@ -1283,19 +1329,21 @@ Often times, the method may not need a `self` or `cls` and should be decorated w
 
 ```python
 class Foo:
-  def foo() -> None: ...  # type error
+    def foo() -> None: ...  # type error
 
 class Foo:
-  @staticmethod
-  def foo() -> None: ... # no type error
+    @staticmethod
+    def foo() -> None: ... # no type error
 
 class Foo:
-  def foo(self) -> None: ... # no type error
+    def foo(self) -> None: ... # no type error
 ```
 
 Only type variables with compatible bounds can be used to annotate the `self` or `cls` parameter. For example,
 
 ```python
+from typing import TypeVar
+
 P = TypeVar("T", bound="Parent")
 A = TypeVar("S", bound="ChildA")
 B = TypeVar("S", bound="ChildB")
@@ -1303,13 +1351,13 @@ B = TypeVar("S", bound="ChildB")
 class Parent: ...
 
 class ChildA(Parent):
-  @classmethod
-  def foo(cls: Type[A]) -> A: ...  # no type error
+    @classmethod
+    def foo(cls: Type[A]) -> A: ...  # no type error
 
 class ChildB(Parent):
-  def foo(self: A) -> A: ...  # type error
-  def bar(self: B) -> B: ...  # no type error
-  def baz(self: P) -> P: ...  # no type error
+    def foo(self: A) -> A: ...  # type error
+    def bar(self: B) -> B: ...  # no type error
+    def baz(self: P) -> P: ...  # no type error
 ```
 
 
@@ -1330,9 +1378,11 @@ def f(x: int) -> None:
 ```
 
 ### 49: Unsafe Cast
-Pyre supports `typing.cast` to force the type checker to accept a given type for your expression, no matter what it would otherwise infer that type to be. This is a good escape hatch but can also hide type inconsistencies and introduce unsoundness. For example:
+Pyre supports `cast` to force the type checker to accept a given type for your expression, no matter what it would otherwise infer that type to be. This is a good escape hatch but can also hide type inconsistencies and introduce unsoundness. For example:
 
 ```python
+from typing import cast
+
 def foo(x: int) -> str:
     y = cast(str, x)
     return y # No type error, even though this is unsound.
@@ -1341,6 +1391,8 @@ def foo(x: int) -> str:
 It is safe to broaden the inferred type of a variable. In other words, casting an expression to a more general type than the type checker thinks it has is sound. If you wish to broaden the inferred type without running the risk of introducing type inconsistencies, you can use `pyre_extensions.safe_cast`. This will warn if the type you are casting to is not greater than or equal to the inferred type of the expression.
 
 ```python
+from pyre_extensions import safe_cast
+
 def foo(x: int) -> str:
     y = safe_cast(str, x) # Unsafe cast error
     z = safe_cast(Union[int, str], x) # No error
@@ -1485,21 +1537,24 @@ We support resolving literals and simple globals as arguments, but using anythin
 To work around this, you can statically type your arguments to the decorator factory as separate globals, which can be validated later in the type-checking pipeline.
 
 ```python
+from typing import TypeVar
+
 T = TypeVar("T")
+
 def decorator_factory(x: T) -> Callable[[Callable[[int], str]], Callable[[str], T]]:
-  ...
+    ...
+
 # pyre-fixme[56]: Pyre was not able to infer the type of argument
 #  `complex_expression()` to decorator factory `decorator_factory`.
 @decorator_factory(complex_expression())
 def foo(x: int) -> str:
-  ...
-
+    ...
 
 argument: float = complex_expression()
 
 @decorator_factory(argument) # Accepted!  bar resolves to Callable[[str], float]
 def bar(x: int) -> str:
-  ...
+    ...
 ```
 
 #### "Decorator factory \`X\` could not be called"
@@ -1513,7 +1568,7 @@ not_a_factory: int = 5
 # type `int` is not callable
 @not_a_factory(1)
 def bar() -> None:
-  pass
+    pass
 ```
 
 #### "Decorator \`X\` could not be called"
@@ -1523,13 +1578,13 @@ Similarly, these errors correspond to when the entire decorator expression (pote
 
 ```python
 def foo() -> int:
-  return 42
+    return 42
 
 # pyre-fixme[56]: Decorator `foo()` could not be called, because its
 # type `int` is not callable
 @foo()
 def bar() -> None:
-  pass
+    pass
 ```
 
 #### "While applying decorator factory ..."
@@ -1537,14 +1592,16 @@ def bar() -> None:
 These errors are emitted from attempting to pass the resolved factory arguments to the factory, as with any other function call.
 
 ```python
+from typing import Callable
+
 def factory(x: str) -> Callable[[object], object]:
-  ...
+    ...
 
 # pyre-fixme[56]: While applying decorator factory `factory`:
 # Expected `str` for 1st param but got `int`.
 @factory(1)
 def foo() -> None:
-  pass
+    pass
 ```
 
 #### "While applying decorator ..."
@@ -1552,14 +1609,16 @@ def foo() -> None:
 Correspondingly, these errors are emitted from trying to pass the decorated function as an argument to the resolved decorator type.
 
 ```python
+from typing import Callable
+
 def decorator(f: Callable[[int], str]) -> int:
-  ...
+    ...
 
 # pyre-fixme[56]: While applying decorator `decorator`:
 # Expected `Callable[[int], str]` for 1st param but got `Callable[[str], int]`.
 @decorator
 def foo(x: str) -> int:
-  return 5
+    return 5
 ```
 
 ### 57: Incompatible Async Generator Return Type
@@ -1567,13 +1626,14 @@ def foo(x: str) -> int:
 An async generator function is an `async` function that contains at least one `yield` statement. The Python runtime ensures that all async generator would return an async generator object. Therefore, the return type of async generator functions should always be `typing.AsyncGenerator` or one of its supertypes.
 
 ```python
-async def f() -> int:  # Error
-  yield 0
-
 from typing import AsyncGenerator
+
+async def f() -> int:  # Error
+    yield 0
+
 async def g() -> AsyncGenerator[int, None]:  # OK
-  if False:
-    yield 1
+    if False:
+        yield 1
 ```
 
 ### 58: Unsupported Operand
@@ -1585,13 +1645,15 @@ In Python, an infix operator is converted to a method call on either of the oper
 For example,
 
 ```python
+from typing import Optional
+
 def foo(x: Optional[int]) -> bool:
-  return x < 0  # type error: Optional[int] is not a supported operand
+    return x < 0  # type error: Optional[int] is not a supported operand
 
 def bar(x: Optional[int]) -> bool:
-  if x:
-    return x < 0  # no type error
-  return False
+    if x:
+        return x < 0  # no type error
+    return False
 ```
 
 
@@ -1602,12 +1664,14 @@ This occurs when the same type variable is provided more than once to a `Generic
 ```python
 from typing import TypeVar, Generic
 
-T = TypeVar("T")
-S = TypeVar("S")
-class A(Generic[T, S, T]):  # Error
+T0 = TypeVar("T0")
+T1 = TypeVar("T1")
+T2 = TypeVar("T2")
+
+class A(Generic[T0, T1, T0]):  # Error
     pass
 
-class B(Generic[T, S]):  # OK
+class B(Generic[T0, T1, T2]):  # OK
     pass
 ```
 
@@ -1619,9 +1683,9 @@ This can occur if during concatenation of a tuple one tries to unpack a non-iter
 
 ```python
 def foo(x: int, not_iterable: int, iterable: list[int]) -> None:
-  y = (x, *not_iterable)  # Error
-  z = (x, not_iterable) # OK
-  w = (x, *iterable)  # OK
+    y = (x, *not_iterable)  # Error
+    z = (x, not_iterable) # OK
+    w = (x, *iterable)  # OK
 ```
 
 #### "Concatenation not yet supported for multiple variadic tuples ..."
@@ -1635,9 +1699,95 @@ from pyre_extensions import TypeVarTuple
 Ts = TypeVarTuple("Ts")
 
 def foo(xs: Tuple[*Ts]) -> None:
-  y = (*xs, *xs)  # Error
+    y = (*xs, *xs)  # Error
 ```
 
+### 61: Uninitialized Local
+
+This indicates that there are code paths along which a local variable may not be initialized. Below are some common code patterns that may cause this error:
+
+#### Not initialized in all branches of condition
+
+```python
+def f(x: int) -> None:
+    z = None
+    if x > 5:
+        y = 2
+        z = 2
+    print(y)  # Error
+    print(z)  # OK
+```
+`y` is not defined when the `if` condition is not met. For instance, `f(4)` will result in a runtime error. Possible ways to address this:
+
+- initialize `y` to a default value, outside the conditional or in the `else` branch
+- refactor so that initialization and access are in the same conditional
+
+Pyre static analysis does not reason about runtime values or potential side effects of interleaving calls, so for instance, in the example below we cannot guarantee that the two if statements will always be consistent and, hence, throw the same error:
+```python
+def f(x: int) -> None:
+    if x > 5:
+        y = 2
+    # ...some operations...
+    if x > 5:
+        print(y)    # Error
+```
+
+#### Initialized only inside a `for` loop
+```python
+def f(xs: List[int]) -> None
+    for x in xs:
+        y = "yes"
+    print("Last element is: ", x)  # Error
+    print("Did we enter the loop?", y)  # Error
+```
+Here, if one calls `f([])`, it will result in errors.
+
+One way to remediate is to initialize outside the loop. For instance,
+```python
+def f(xs: List[int]) -> None:
+    x = None
+    y = "no"
+    for x in xs:
+        y = "yes"
+    print("Last element is: ", x)  # OK
+    print("Did we enter the loop?", y)  # OK
+```
+
+#### Initialized in `try` block
+```python
+def f(divisor: int) -> None:
+    answer_good = None
+    try:
+        answer_bad = 5 / divisor
+        answer_good = 5 / divisor
+        answer_also_good = 5 / divisor
+        print(f"5 divided by {divisor} is {answer_also_good}")   # OK
+    except ZeroDivisionError:
+        pass
+    print(f"5 divided by {divisor} is {answer_bad}")  # Error
+    print(f"5 divided by {divisor} is {answer_good}")  # OK
+```
+Here, `f(0)` leads to an error on access of `answer_bad`. Suggested approaches to address this:
+
+- Initialize any variables needed after the `try` block to a default value before entering the `try` block.
+- Keep the access to variables initialized inside the `try` block within the `try` block.
+- Consider if pulling the initialization as-is before the `try` block is possible. It is generally considered a good practice to minimize the code inside a try block, and keep it to exception throwing code. This also helps with Pyre, as it does not reason about which operations might throw exceptions.
+
+```python
+def bad(divisor: int) -> Optional[int]:
+    try:
+        dividend = 5
+        return dividend // divisor
+    except ZeroDivisionError:
+        print(f"Cannot divide {dividend} by 0")  # Error (according to Pyre)
+
+def good(divisor: int) -> Optional[int]:
+    dividend = 5
+    try:
+        return dividend // divisor
+    except ZeroDivisionError:
+        print(f"Cannot divide {dividend} by 0")  # OK
+```
 ## Suppression
 It is not always possible to address all errors immediately – some code is too dynamic and should be refactored, other times it's *just not the right time* to deal with a type error. We do encourage people to keep their type check results clean at all times and provide mechanisms to suppress errors that cannot be immediately fixed.
 
@@ -1669,5 +1819,5 @@ Furthermore Pyre supports suppressing all errors in an individual file if you ad
 # pyre-ignore-all-errors[7]
 
 def foo(x: int) -> str:
-  return x  # pyre will not error here
+    return x  # pyre will not error here
 ```

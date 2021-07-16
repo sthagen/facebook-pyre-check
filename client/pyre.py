@@ -92,6 +92,12 @@ def _show_pyre_version(arguments: command_arguments.CommandArguments) -> None:
         _show_pyre_version_as_text(binary_version, client_version)
 
 
+def _start_logging_to_directory(log_directory: str) -> None:
+    log_directory_path = Path(log_directory)
+    log_directory_path.mkdir(parents=True, exist_ok=True)
+    log.enable_file_logging(log_directory_path / "pyre.stderr")
+
+
 def run_pyre_command(
     command: Command,
     configuration: configuration_module.Configuration,
@@ -105,7 +111,7 @@ def run_pyre_command(
     exit_code = ExitCode.FAILURE
     try:
         _check_configuration(configuration)
-        log.start_logging_to_directory(noninteractive, configuration.log_directory)
+        _start_logging_to_directory(configuration.log_directory)
         LOG.debug(f"Running cli command `{' '.join(sys.argv)}`...")
         exit_code = command.run().exit_code()
     except (buck.BuckException, EnvironmentException) as error:
@@ -146,13 +152,29 @@ def run_pyre_command(
 
 def _run_check_command(arguments: command_arguments.CommandArguments) -> ExitCode:
     configuration = _create_configuration_with_retry(arguments, Path("."))
-    return run_pyre_command(
-        commands.Check(
-            arguments, original_directory=os.getcwd(), configuration=configuration
-        ),
-        configuration,
-        arguments.noninteractive,
-    )
+    if configuration.use_command_v2:
+        _check_configuration(configuration)
+        _start_logging_to_directory(configuration.log_directory)
+        check_arguments = command_arguments.CheckArguments(
+            debug=arguments.debug,
+            enable_memory_profiling=arguments.enable_memory_profiling,
+            enable_profiling=arguments.enable_profiling,
+            log_identifier=arguments.log_identifier,
+            logging_sections=arguments.logging_sections,
+            noninteractive=arguments.noninteractive,
+            output=arguments.output,
+            sequential=arguments.sequential,
+            show_error_traces=arguments.show_error_traces,
+        )
+        return v2.check.run(configuration, check_arguments)
+    else:
+        return run_pyre_command(
+            commands.Check(
+                arguments, original_directory=os.getcwd(), configuration=configuration
+            ),
+            configuration,
+            arguments.noninteractive,
+        )
 
 
 def _run_incremental_command(
@@ -165,9 +187,7 @@ def _run_incremental_command(
     configuration = _create_configuration_with_retry(arguments, Path("."))
     if configuration.use_command_v2:
         _check_configuration(configuration)
-        log.start_logging_to_directory(
-            arguments.noninteractive, configuration.log_directory
-        )
+        _start_logging_to_directory(configuration.log_directory)
         start_arguments = command_arguments.StartArguments(
             changed_files_path=arguments.changed_files_path,
             debug=arguments.debug,
@@ -575,6 +595,8 @@ def pyre(
     help="Directory to write analysis results to.",
 )
 @click.option("--dump-call-graph", is_flag=True, default=False, hidden=True)
+# pyre-fixme[56]: Pyre was not able to infer the type of argument `os.path.abspath`
+#  to decorator factory `click.option`.
 @click.option("--repository-root", type=os.path.abspath)
 @click.option(
     "--rule",
@@ -667,41 +689,6 @@ def analyze(
 
 
 @pyre.command()
-@click.option("--dump-call-graph", is_flag=True, default=False, hidden=True)
-@click.option("--repository-root", type=os.path.abspath)
-@click.option(
-    "--use-cache",
-    is_flag=True,
-    default=False,
-    help="Store information in .pyre/pysa.cache for faster runs.",
-)
-@click.pass_context
-def infer_v2(
-    context: click.Context,
-    dump_call_graph: bool,
-    repository_root: str | None,
-    use_cache: bool,
-) -> int:
-    """
-    Run the (under construction) interprocedural version of pyre infer.
-    """
-    command_argument: command_arguments.CommandArguments = context.obj["arguments"]
-    configuration = _create_configuration_with_retry(command_argument, Path("."))
-    return run_pyre_command(
-        commands.infer_v2.Infer(
-            command_argument,
-            original_directory=os.getcwd(),
-            configuration=configuration,
-            dump_call_graph=dump_call_graph,
-            repository_root=repository_root,
-            use_cache=use_cache,
-        ),
-        configuration,
-        command_argument.noninteractive,
-    )
-
-
-@pyre.command()
 @click.pass_context
 def check(context: click.Context) -> int:
     """
@@ -764,30 +751,20 @@ def incremental(
 
 
 @pyre.command()
-@click.argument("modify_paths", type=filesystem.file_or_directory_exists, nargs=-1)
+@click.argument(
+    "paths_to_modify",
+    type=filesystem.file_or_directory_exists,
+    nargs=-1,
+)
 @click.option(
     "-p",
     "--print-only",
     is_flag=True,
     default=False,
     help=(
-        "Print raw JSON errors to standard output, without converting to stubs "
-        "or annnotating."
+        "Print raw JSON inference data to standard output, without "
+        "converting to stubs or annnotating."
     ),
-)
-@click.option(
-    "-f",
-    "--full-only",
-    is_flag=True,
-    default=False,
-    help="Only output fully annotated functions.",
-)
-@click.option(
-    "-r",
-    "--recursive",
-    is_flag=True,
-    default=False,
-    help="Recursively run infer until no new annotations are generated.",
 )
 @click.option(
     "-i",
@@ -795,12 +772,6 @@ def incremental(
     is_flag=True,
     default=False,
     help="Modifies original files and add inferred annotations to all functions.",
-)
-@click.option(
-    "--json",
-    is_flag=True,
-    default=False,
-    help="Accept JSON input instead of running full check.",
 )
 @click.option(
     "--annotate-from-existing-stubs",
@@ -815,29 +786,53 @@ def incremental(
     help="Print error message when file fails to annotate.",
 )
 @click.option(
-    "--full-stubs",
+    "--read-stdin",
     is_flag=True,
     default=False,
-    help="Include pre-existing annotations in the generated stubs.",
+    help="Read input from stdin instead of running a full infer.",
+)
+@click.option(
+    "--dequalify",
+    is_flag=True,
+    default=False,
+    help=(
+        "Dequalify all annotations? This is a temporary flag, used to "
+        "force fully-qualified names (e.g. sqlalchemy.sql.schema.Column) "
+        "to be dqualified (e.g. Column). It is needed now because pyre "
+        "infer doesn't yet know how to handle imports and qualified names "
+        "in a principled way."
+    ),
+)
+@click.option(
+    "--interprocedural",
+    is_flag=True,
+    default=False,
+    help=(
+        "Use (experimental) interprocedural inference. "
+        "Will be slower, but may give better results."
+    ),
 )
 @click.pass_context
 def infer(
     context: click.Context,
-    modify_paths: Iterable[str],
+    paths_to_modify: Iterable[str],
     print_only: bool,
-    full_only: bool,
-    recursive: bool,
     in_place: bool,
-    json: bool,
     annotate_from_existing_stubs: bool,
     debug_infer: bool,
-    full_stubs: bool,
+    read_stdin: bool,
+    dequalify: bool,
+    interprocedural: bool,
 ) -> int:
     """
-    Try adding type annotations to untyped codebase.
+    Run pyre infer.
+
+    The optional PATHS_TO_MODIFY argument is a list of directory or file
+    paths to include when annotating in-place.
+
+    If empty, then we'll annotate all relevant modules in-place, and it is
+    ignored unless the `--in-place` flag is set.
     """
-    in_place_paths = list(modify_paths) if in_place else None
-    full_stub_paths = list(modify_paths) if full_stubs else None
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
     return run_pyre_command(
@@ -845,14 +840,118 @@ def infer(
             command_argument,
             original_directory=os.getcwd(),
             configuration=configuration,
-            print_errors=print_only,
-            full_only=full_only,
-            recursive=recursive,
-            in_place=in_place_paths,
-            errors_from_stdin=json,
+            print_only=print_only,
+            in_place=in_place,
+            paths_to_modify={Path(path) for path in paths_to_modify},
             annotate_from_existing_stubs=annotate_from_existing_stubs,
             debug_infer=debug_infer,
-            full_stub_paths=full_stub_paths,
+            read_stdin=read_stdin,
+            dequalify=dequalify,
+            interprocedural=interprocedural,
+        ),
+        configuration,
+        command_argument.noninteractive,
+    )
+
+
+@pyre.command()
+@click.argument(
+    "paths_to_modify",
+    type=filesystem.file_or_directory_exists,
+    nargs=-1,
+)
+@click.option(
+    "-p",
+    "--print-only",
+    is_flag=True,
+    default=False,
+    help=(
+        "Print raw JSON inference data to standard output, without "
+        "converting to stubs or annnotating."
+    ),
+)
+@click.option(
+    "-i",
+    "--in-place",
+    is_flag=True,
+    default=False,
+    help="Modifies original files and add inferred annotations to all functions.",
+)
+@click.option(
+    "--annotate-from-existing-stubs",
+    is_flag=True,
+    default=False,
+    help="Add annotations from existing stubs.",
+)
+@click.option(
+    "--debug-infer",
+    is_flag=True,
+    default=False,
+    help="Print error message when file fails to annotate.",
+)
+@click.option(
+    "--read-stdin",
+    is_flag=True,
+    default=False,
+    help="Read input from stdin instead of running a full infer.",
+)
+@click.option(
+    "--dequalify",
+    is_flag=True,
+    default=False,
+    help=(
+        "Dequalify all annotations? This is a temporary flag, used to "
+        "force fully-qualified names (e.g. sqlalchemy.sql.schema.Column) "
+        "to be dqualified (e.g. Column). It is needed now because pyre "
+        "infer doesn't yet know how to handle imports and qualified names "
+        "in a principled way."
+    ),
+)
+@click.option(
+    "--interprocedural",
+    is_flag=True,
+    default=False,
+    help=(
+        "Use (experimental) interprocedural inference. "
+        "Will be slower, but may give better results."
+    ),
+)
+@click.pass_context
+def infer_v2(
+    context: click.Context,
+    paths_to_modify: Iterable[str],
+    print_only: bool,
+    in_place: bool,
+    annotate_from_existing_stubs: bool,
+    debug_infer: bool,
+    read_stdin: bool,
+    dequalify: bool,
+    interprocedural: bool,
+) -> int:
+    """
+    Run the (under construction) interprocedural version of pyre infer.
+
+    The optional PATHS_TO_MODIFY argument is a list of directory or file
+    paths to include when annotating in-place.
+
+    If empty, then we'll annotate all relevant modules in-place, and it is
+    ignored unless the `--in-place` flag is set.
+    """
+    command_argument: command_arguments.CommandArguments = context.obj["arguments"]
+    configuration = _create_configuration_with_retry(command_argument, Path("."))
+    return run_pyre_command(
+        commands.Infer(
+            command_argument,
+            original_directory=os.getcwd(),
+            configuration=configuration,
+            print_only=print_only,
+            in_place=in_place,
+            paths_to_modify={Path(path) for path in paths_to_modify},
+            annotate_from_existing_stubs=annotate_from_existing_stubs,
+            debug_infer=debug_infer,
+            read_stdin=read_stdin,
+            dequalify=dequalify,
+            interprocedural=interprocedural,
         ),
         configuration,
         command_argument.noninteractive,
@@ -912,35 +1011,21 @@ def persistent(context: click.Context, no_watchman: bool) -> int:
     and responses from the Pyre server to stdout.
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
+    base_directory = Path(".")
     configuration = configuration_module.create_configuration(
-        command_argument, Path(".")
+        command_argument, base_directory
     )
     if configuration.use_command_v2:
-        log.start_logging_to_directory(
-            # Always log to file regardless of whether `-n` is given
-            noninteractive=False,
-            log_directory=configuration.log_directory,
+        _start_logging_to_directory(
+            configuration.log_directory,
         )
+        # NOTE(grievejia): `--no-watchman` has no effect here. We might want to
+        # either respect it or deprecate it at some point.
         return v2.persistent.run(
-            configuration,
-            command_arguments.StartArguments(
-                changed_files_path=command_argument.changed_files_path,
-                debug=command_argument.debug,
-                enable_memory_profiling=command_argument.enable_memory_profiling,
-                enable_profiling=command_argument.enable_profiling,
-                load_initial_state_from=command_argument.load_initial_state_from,
-                log_identifier=command_argument.log_identifier,
-                logging_sections=command_argument.logging_sections,
-                no_saved_state=command_argument.no_saved_state,
-                no_watchman=no_watchman,
-                noninteractive=command_argument.noninteractive,
-                save_initial_state_to=command_argument.save_initial_state_to,
-                saved_state_project=command_argument.saved_state_project,
-                sequential=command_argument.sequential,
-                show_error_traces=command_argument.show_error_traces,
-                store_type_check_resolution=False,
-                terminal=False,
-                wait_on_initialization=True,
+            command_argument,
+            base_directory,
+            v2.backend_arguments.RemoteLogging.create(
+                configuration.logger, command_argument.log_identifier
             ),
         )
     else:
@@ -969,10 +1054,8 @@ def pysa_language_server(context: click.Context, no_watchman: bool) -> int:
     configuration = configuration_module.create_configuration(
         command_argument, Path(".")
     )
-    log.start_logging_to_directory(
-        # Always log to file regardless of whether `-n` is given
-        noninteractive=False,
-        log_directory=configuration.log_directory,
+    _start_logging_to_directory(
+        configuration.log_directory,
     )
     return v2.pysa_server.run(
         configuration,
@@ -1019,16 +1102,19 @@ def profile(context: click.Context, profile_output: str) -> int:
 
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
-    return run_pyre_command(
-        commands.Profile(
-            command_argument,
-            original_directory=os.getcwd(),
-            configuration=configuration,
-            profile_output=get_profile_output(profile_output),
-        ),
-        configuration,
-        command_argument.noninteractive,
-    )
+    if configuration.use_command_v2:
+        return v2.profile.run(configuration, get_profile_output(profile_output))
+    else:
+        return run_pyre_command(
+            commands.Profile(
+                command_argument,
+                original_directory=os.getcwd(),
+                configuration=configuration,
+                profile_output=get_profile_output(profile_output),
+            ),
+            configuration,
+            command_argument.noninteractive,
+        )
 
 
 @pyre.command()
@@ -1047,9 +1133,7 @@ def query(context: click.Context, query: str) -> int:
     configuration = _create_configuration_with_retry(command_argument, Path("."))
 
     if configuration.use_command_v2:
-        log.start_logging_to_directory(
-            command_argument.noninteractive, configuration.log_directory
-        )
+        _start_logging_to_directory(configuration.log_directory)
         return v2.query.run(configuration, query)
     else:
         return run_pyre_command(
@@ -1065,6 +1149,8 @@ def query(context: click.Context, query: str) -> int:
 
 
 @pyre.command()
+# pyre-fixme[56]: Pyre was not able to infer the type of argument `os.path.abspath`
+#  to decorator factory `click.option`.
 @click.option(
     "--output-file",
     type=os.path.abspath,
@@ -1150,9 +1236,7 @@ def restart(
     configuration = _create_configuration_with_retry(command_argument, Path("."))
     if configuration.use_command_v2:
         _check_configuration(configuration)
-        log.start_logging_to_directory(
-            command_argument.noninteractive, configuration.log_directory
-        )
+        _start_logging_to_directory(configuration.log_directory)
         start_arguments = command_arguments.StartArguments(
             changed_files_path=command_argument.changed_files_path,
             debug=command_argument.debug,
@@ -1295,9 +1379,7 @@ def start(
     configuration = _create_configuration_with_retry(command_argument, Path("."))
     if configuration.use_command_v2:
         _check_configuration(configuration)
-        log.start_logging_to_directory(
-            command_argument.noninteractive, configuration.log_directory
-        )
+        _start_logging_to_directory(configuration.log_directory)
         return v2.start.run(
             configuration,
             command_arguments.StartArguments(
@@ -1390,9 +1472,7 @@ def stop(context: click.Context) -> int:
         command_argument, Path(".")
     )
     if configuration.use_command_v2:
-        log.start_logging_to_directory(
-            command_argument.noninteractive, configuration.log_directory
-        )
+        _start_logging_to_directory(configuration.log_directory)
         return v2.stop.run(configuration)
     else:
         return run_pyre_command(
@@ -1416,9 +1496,7 @@ def validate_models(context: click.Context) -> int:
     configuration = _create_configuration_with_retry(command_argument, Path("."))
 
     if configuration.use_command_v2:
-        log.start_logging_to_directory(
-            command_argument.noninteractive, configuration.log_directory
-        )
+        _start_logging_to_directory(configuration.log_directory)
         return v2.validate_models.run(configuration, output=command_argument.output)
     else:
         return run_pyre_command(

@@ -72,10 +72,28 @@ type 'part pkg =
     }
       -> 'part pkg
 
-type 'call_model initialize_result = {
-  initial_models: 'call_model Callable.Map.t;
-  skip_overrides: Ast.Reference.Set.t;
-}
+module InitializedModels = struct
+  type 'call_model initialize_result = {
+    initial_models: 'call_model Callable.Map.t;
+    skip_overrides: Ast.Reference.Set.t;
+  }
+
+  type 'call_model t =
+    updated_environment:Analysis.TypeEnvironment.ReadOnly.t option -> 'call_model initialize_result
+
+  let create f = f
+
+  let empty =
+    create (fun ~updated_environment:_ ->
+        { initial_models = Callable.Map.empty; skip_overrides = Ast.Reference.Set.empty })
+
+
+  let get_models f = f ~updated_environment:None
+
+  (* Generate models from the initial models and an updated environment.
+   * For the taint analysis, this runs model queries. *)
+  let get_models_including_generated_models ~updated_environment f = f ~updated_environment
+end
 
 module type ANALYZER = sig
   type result
@@ -102,7 +120,7 @@ module type ANALYZER = sig
     environment:Analysis.TypeEnvironment.ReadOnly.t ->
     functions:Callable.t list ->
     stubs:Callable.t list ->
-    call_model initialize_result
+    call_model InitializedModels.t
 
   val report
     :  scheduler:Scheduler.t ->

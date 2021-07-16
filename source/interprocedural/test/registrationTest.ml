@@ -39,7 +39,7 @@ include SimpleAnalysis.Register (struct
       ~functions:_
       ~stubs:_
     =
-    { Result.initial_models = Callable.Map.empty; skip_overrides = Ast.Reference.Set.empty }
+    Result.InitializedModels.empty
 
 
   let analyze ~environment:_ ~callable:_ ~qualifier:_ ~define:_ ~existing:_ = "some result", 5

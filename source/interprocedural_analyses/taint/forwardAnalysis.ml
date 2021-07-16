@@ -132,7 +132,8 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
          sinks at the end. *)
       let triggered_sinks = String.Hash_set.create () in
       let apply_call_target state argument_taint call_target =
-        let ({ Model.model = { TaintResult.forward; backward; mode }; _ } as taint_model) =
+        let ({ Model.model = { TaintResult.forward; backward; sanitize; modes }; _ } as taint_model)
+          =
           Model.get_callsite_model ~resolution ~call_target ~arguments
         in
         log
@@ -176,8 +177,9 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
             (argument_taint, ((argument, sink_matches), (_dup, tito_matches)))
           =
           let taint_to_propagate =
-            match mode with
-            | Sanitize { tito = Some (SpecificTito { sanitized_tito_sources; _ }); _ } ->
+            match sanitize with
+            | { tito = Some AllTito; _ } -> ForwardState.Tree.bottom
+            | { tito = Some (SpecificTito { sanitized_tito_sources; _ }); _ } ->
                 ForwardState.Tree.partition
                   ForwardTaint.leaf
                   ByFilter
@@ -232,13 +234,10 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
               let return_paths =
                 match kind with
                 | Sinks.LocalReturn ->
-                    let gather_paths (Features.Complex.ReturnAccessPath extra_path) paths =
-                      extra_path :: paths
-                    in
                     BackwardTaint.fold
-                      BackwardTaint.complex_feature
+                      Features.ReturnAccessPathSet.Element
                       return_taint
-                      ~f:gather_paths
+                      ~f:List.cons
                       ~init:[]
                 | _ ->
                     (* No special handling of paths for side effects *)
@@ -262,7 +261,7 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
             |> Map.Poly.merge tito_effects ~f:(merge_tito_effect ForwardState.Tree.join)
           in
           let tito =
-            if taint_model.is_obscure then
+            if TaintResult.ModeSet.contains Obscure modes then
               let obscure_tito =
                 ForwardState.Tree.collapse
                   ~transform:(ForwardTaint.add_features Features.tito_broadening)
@@ -401,7 +400,7 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
         in
         let returned_taint =
           let joined = ForwardState.Tree.join result_taint tito in
-          if taint_model.is_obscure then
+          if TaintResult.ModeSet.contains Obscure modes then
             let annotation =
               Resolution.resolve_expression_to_type
                 resolution
@@ -1105,24 +1104,19 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
           taint
       in
       let apply_attribute_sanitizers taint =
-        match Model.GlobalModel.get_mode global_model with
-        | Sanitize { sources = sanitize_sources; _ } -> (
-            match sanitize_sources with
-            | Some TaintResult.Mode.AllSources -> ForwardState.Tree.empty
-            | Some (TaintResult.Mode.SpecificSources sanitized_sources) ->
-                ForwardState.Tree.partition
-                  ForwardTaint.leaf
-                  ByFilter
-                  ~f:(fun source ->
-                    Option.some_if
-                      (not (List.mem ~equal:Sources.equal sanitized_sources source))
-                      source)
-                  taint
-                |> Core.Map.Poly.fold
-                     ~init:ForwardState.Tree.bottom
-                     ~f:(fun ~key:_ ~data:source_state state ->
-                       ForwardState.Tree.join source_state state)
-            | None -> taint )
+        match Model.GlobalModel.get_sanitize global_model with
+        | { TaintResult.Sanitize.sources = Some AllSources; _ } -> ForwardState.Tree.empty
+        | { TaintResult.Sanitize.sources = Some (SpecificSources sanitized_sources); _ } ->
+            ForwardState.Tree.partition
+              ForwardTaint.leaf
+              ByFilter
+              ~f:(fun source ->
+                Option.some_if (not (List.mem ~equal:Sources.equal sanitized_sources source)) source)
+              taint
+            |> Core.Map.Poly.fold
+                 ~init:ForwardState.Tree.bottom
+                 ~f:(fun ~key:_ ~data:source_state state ->
+                   ForwardState.Tree.join source_state state)
         | _ -> taint
       in
 
@@ -1574,7 +1568,7 @@ let extract_source_model ~define ~resolution ~features_to_attach exit_taint =
   let return_type_breadcrumbs = Features.type_breadcrumbs ~resolution return_annotation in
   let {
     TaintConfiguration.analysis_model_constraints =
-      { maximum_model_width; maximum_complex_access_path_length; maximum_trace_length; _ };
+      { maximum_model_width; maximum_return_access_path_length; maximum_trace_length; _ };
     _;
   }
     =
@@ -1600,7 +1594,7 @@ let extract_source_model ~define ~resolution ~features_to_attach exit_taint =
     |> ForwardState.Tree.limit_to
          ~transform:(ForwardTaint.add_features Features.widen_broadening)
          ~width:maximum_model_width
-    |> ForwardState.Tree.approximate_complex_access_paths ~maximum_complex_access_path_length
+    |> ForwardState.Tree.approximate_return_access_paths ~maximum_return_access_path_length
   in
   let attach_features taint =
     if not (Features.SimpleSet.is_bottom features_to_attach) then

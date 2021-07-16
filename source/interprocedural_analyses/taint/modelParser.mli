@@ -52,15 +52,32 @@ module T : sig
   [@@deriving show, compare]
 
   module ModelQuery : sig
-    type annotation_constraint = IsAnnotatedTypeConstraint [@@deriving compare, show]
-
-    type parameter_constraint = AnnotationConstraint of annotation_constraint
-    [@@deriving compare, show]
-
     type name_constraint =
       | Equals of string
       | Matches of Re2.t
     [@@deriving compare, show]
+
+    type annotation_constraint =
+      | IsAnnotatedTypeConstraint
+      | AnnotationNameConstraint of name_constraint
+    [@@deriving compare, show]
+
+    module ParameterConstraint : sig
+      type t =
+        | AnnotationConstraint of annotation_constraint
+        | NameConstraint of name_constraint
+        | IndexConstraint of int
+        | AnyOf of t list
+        | Not of t
+      [@@deriving compare, show]
+    end
+
+    module ArgumentsConstraint : sig
+      type t =
+        | Equals of Ast.Expression.Call.Argument.t list
+        | Contains of Ast.Expression.Call.Argument.t list
+      [@@deriving compare, show]
+    end
 
     type class_constraint =
       | NameSatisfies of name_constraint
@@ -73,10 +90,13 @@ module T : sig
     type model_constraint =
       | NameConstraint of name_constraint
       | ReturnConstraint of annotation_constraint
-      | AnyParameterConstraint of parameter_constraint
+      | AnyParameterConstraint of ParameterConstraint.t
       | AnyOf of model_constraint list
       | ParentConstraint of class_constraint
-      | DecoratorNameConstraint of string
+      | DecoratorConstraint of {
+          name_constraint: name_constraint;
+          arguments_constraint: ArgumentsConstraint.t option;
+        }
       | Not of model_constraint
     [@@deriving compare, show]
 
@@ -103,12 +123,16 @@ module T : sig
           excludes: string list;
           taint: produced_taint list;
         }
-      | ParameterTaint of {
+      | NamedParameterTaint of {
           name: string;
           taint: produced_taint list;
         }
       | PositionalParameterTaint of {
           index: int;
+          taint: produced_taint list;
+        }
+      | ParameterTaint of {
+          where: ParameterConstraint.t list;
           taint: produced_taint list;
         }
       | ReturnTaint of produced_taint list
@@ -138,6 +162,8 @@ val parse
   ?rule_filter:int list ->
   source:string ->
   configuration:TaintConfiguration.t ->
+  functions:Interprocedural.Callable.HashSet.t option ->
+  stubs:Interprocedural.Callable.HashSet.t ->
   TaintResult.call_model Interprocedural.Callable.Map.t ->
   T.parse_result
 
@@ -153,6 +179,7 @@ val create_callable_model_from_annotations
   callable:Interprocedural.Callable.real_target ->
   sources_to_keep:Sources.Set.t option ->
   sinks_to_keep:Sinks.Set.t option ->
+  is_obscure:bool ->
   (T.annotation_kind * T.taint_annotation) list ->
   (TaintResult.call_model, ModelVerificationError.t) result
 

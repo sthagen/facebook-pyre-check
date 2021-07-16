@@ -88,13 +88,10 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   let transform_non_leaves path taint =
-    let f feature =
-      match feature with
-      | Features.Complex.ReturnAccessPath prefix -> Features.Complex.ReturnAccessPath (prefix @ path)
-    in
+    let f prefix = prefix @ path in
     match path with
     | Abstract.TreeDomain.Label.AnyIndex :: _ -> taint
-    | _ -> BackwardTaint.transform BackwardTaint.complex_feature Map ~f taint
+    | _ -> BackwardTaint.transform Features.ReturnAccessPathSet.Element Map ~f taint
 
 
   let read_tree = BackwardState.Tree.read ~transform_non_leaves
@@ -162,7 +159,7 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
           (Node.create_with_default_location call_expression)
           Model.pp
           taint_model;
-        let { TaintResult.backward; mode; _ } = taint_model.model in
+        let { TaintResult.backward; sanitize; modes; _ } = taint_model.model in
         let sink_taint = BackwardState.join backward.sink_taint triggered_taint in
         let sink_argument_matches =
           BackwardState.roots sink_taint |> AccessPath.match_actuals_to_formals arguments
@@ -197,13 +194,10 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
               let extra_paths =
                 match kind with
                 | Sinks.LocalReturn ->
-                    let gather_paths (Features.Complex.ReturnAccessPath extra_path) paths =
-                      extra_path :: paths
-                    in
                     BackwardTaint.fold
-                      BackwardTaint.complex_feature
+                      Features.ReturnAccessPathSet.Element
                       element
-                      ~f:gather_paths
+                      ~f:List.cons
                       ~init:[]
                 | _ ->
                     (* No special path handling for side effect taint *)
@@ -290,14 +284,23 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
             List.fold sink_matches ~f:(combine_sink_taint location) ~init:BackwardState.Tree.empty
           in
           let taint_in_taint_out =
-            let taint_in_taint_out =
-              List.fold
-                tito_matches
-                ~f:(combine_tito argument.Node.location)
-                ~init:BackwardState.Tree.empty
-            in
-            match mode with
-            | Sanitize { tito = Some (SpecificTito { sanitized_tito_sinks; _ }); _ } ->
+            List.fold
+              tito_matches
+              ~f:(combine_tito argument.Node.location)
+              ~init:BackwardState.Tree.empty
+          in
+          let taint_in_taint_out =
+            BackwardState.Tree.transform
+              FlowDetails.tito_position_element
+              Add
+              ~f:argument.Node.location
+              obscure_taint
+            |> BackwardState.Tree.join taint_in_taint_out
+          in
+          let taint_in_taint_out =
+            match sanitize with
+            | { tito = Some AllTito; _ } -> BackwardState.Tree.bottom
+            | { tito = Some (SpecificTito { sanitized_tito_sinks; _ }); _ } ->
                 BackwardState.Tree.partition
                   BackwardTaint.leaf
                   ByFilter
@@ -312,17 +315,7 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
                        BackwardState.Tree.join sink_state state)
             | _ -> taint_in_taint_out
           in
-          let obscure_taint =
-            BackwardState.Tree.transform
-              FlowDetails.tito_position_element
-              Add
-              ~f:argument.Node.location
-              obscure_taint
-          in
-          let argument_taint =
-            BackwardState.Tree.join sink_taint taint_in_taint_out
-            |> BackwardState.Tree.join obscure_taint
-          in
+          let argument_taint = BackwardState.Tree.join sink_taint taint_in_taint_out in
           let state =
             match AccessPath.of_expression ~resolution argument with
             | Some { AccessPath.root; path } ->
@@ -349,7 +342,7 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
           analyze_unstarred_expression ~resolution argument_taint argument state
         in
         let obscure_taint =
-          if taint_model.is_obscure then
+          if TaintResult.ModeSet.contains Obscure modes then
             let annotation =
               Resolution.resolve_expression_to_type
                 resolution
@@ -1122,24 +1115,19 @@ module AnalysisInstance (FunctionContext : FUNCTION_CONTEXT) = struct
               in
 
               let apply_attribute_sanitizers taint =
-                match Model.GlobalModel.get_mode global_model with
-                | Sanitize { sinks = sanitize_sinks; _ } -> (
-                    match sanitize_sinks with
-                    | Some TaintResult.Mode.AllSinks -> BackwardState.Tree.empty
-                    | Some (TaintResult.Mode.SpecificSinks sanitized_sinks) ->
-                        BackwardState.Tree.partition
-                          BackwardTaint.leaf
-                          ByFilter
-                          ~f:(fun sink ->
-                            Option.some_if
-                              (not (List.mem ~equal:Sinks.equal sanitized_sinks sink))
-                              sink)
-                          taint
-                        |> Core.Map.Poly.fold
-                             ~init:BackwardState.Tree.bottom
-                             ~f:(fun ~key:_ ~data:sink_state state ->
-                               BackwardState.Tree.join sink_state state)
-                    | None -> taint )
+                match Model.GlobalModel.get_sanitize global_model with
+                | { TaintResult.Sanitize.sinks = Some AllSinks; _ } -> BackwardState.Tree.empty
+                | { TaintResult.Sanitize.sinks = Some (SpecificSinks sanitized_sinks); _ } ->
+                    BackwardState.Tree.partition
+                      BackwardTaint.leaf
+                      ByFilter
+                      ~f:(fun sink ->
+                        Option.some_if (not (List.mem ~equal:Sinks.equal sanitized_sinks sink)) sink)
+                      taint
+                    |> Core.Map.Poly.fold
+                         ~init:BackwardState.Tree.bottom
+                         ~f:(fun ~key:_ ~data:sink_state state ->
+                           BackwardState.Tree.join sink_state state)
                 | _ -> taint
               in
               let taint =
@@ -1372,7 +1360,7 @@ let extract_tito_and_sink_models define ~is_constructor ~resolution ~existing_ba
     TaintConfiguration.analysis_model_constraints =
       {
         maximum_model_width;
-        maximum_complex_access_path_length;
+        maximum_return_access_path_length;
         maximum_trace_length;
         maximum_tito_depth;
         _;
@@ -1405,7 +1393,7 @@ let extract_tito_and_sink_models define ~is_constructor ~resolution ~existing_ba
     |> BackwardState.Tree.limit_to
          ~transform:(BackwardTaint.add_features Features.widen_broadening)
          ~width:maximum_model_width
-    |> BackwardState.Tree.approximate_complex_access_paths ~maximum_complex_access_path_length
+    |> BackwardState.Tree.approximate_return_access_paths ~maximum_return_access_path_length
   in
 
   let split_and_simplify model (parameter, name, original) =

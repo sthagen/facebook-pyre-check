@@ -35,7 +35,38 @@ end = struct
     path |> File.create ~content |> File.write
 end
 
-let matches_pattern ~pattern = Re2.matches (Re2.create_exn pattern)
+let sanitized_location_insensitive_compare left right =
+  let sanitize_decorator_argument ({ Expression.Call.Argument.name; value } as argument) =
+    let new_name =
+      match name with
+      | None -> None
+      | Some ({ Node.value = argument_name; _ } as previous_name) ->
+          Some { previous_name with value = Identifier.sanitized argument_name }
+    in
+    let new_value =
+      match value with
+      | { Node.value = Expression.Expression.Name (Expression.Name.Identifier argument_value); _ }
+        as previous_value ->
+          {
+            previous_value with
+            value =
+              Expression.Expression.Name
+                (Expression.Name.Identifier (Identifier.sanitized argument_value));
+          }
+      | _ -> value
+    in
+    { argument with name = new_name; value = new_value }
+  in
+  let left_sanitized = sanitize_decorator_argument left in
+  let right_sanitized = sanitize_decorator_argument right in
+  Expression.Call.Argument.location_insensitive_compare left_sanitized right_sanitized
+
+
+module SanitizedCallArgumentSet = Set.Make (struct
+  type t = Expression.Call.Argument.t [@@deriving sexp]
+
+  let compare = sanitized_location_insensitive_compare
+end)
 
 let is_ancestor ~resolution ~is_transitive ancestor_class child_class =
   if is_transitive then
@@ -58,6 +89,94 @@ let matches_name_constraint ~name_constraint =
   | ModelQuery.Matches pattern -> Re2.matches pattern
 
 
+let matches_decorator_constraint ~name_constraint ~arguments_constraint decorator =
+  let decorator_name_matches { Statement.Decorator.name = { Node.value = decorator_name; _ }; _ } =
+    matches_name_constraint ~name_constraint (Reference.show decorator_name)
+  in
+  let decorator_arguments_matches { Statement.Decorator.arguments = decorator_arguments; _ } =
+    let split_arguments =
+      List.partition_tf ~f:(fun { Expression.Call.Argument.name; _ } ->
+          match name with
+          | None -> true
+          | _ -> false)
+    in
+    let positional_arguments_equal left right =
+      List.equal (fun l r -> Int.equal (sanitized_location_insensitive_compare l r) 0) left right
+    in
+    match arguments_constraint, decorator_arguments with
+    | None, _ -> true
+    | Some (ModelQuery.ArgumentsConstraint.Contains constraint_arguments), None ->
+        List.is_empty constraint_arguments
+    | Some (ModelQuery.ArgumentsConstraint.Contains constraint_arguments), Some arguments ->
+        let constraint_positional_arguments, constraint_keyword_arguments =
+          split_arguments constraint_arguments
+        in
+        let decorator_positional_arguments, decorator_keyword_arguments =
+          split_arguments arguments
+        in
+        List.length constraint_positional_arguments <= List.length decorator_positional_arguments
+        && positional_arguments_equal
+             constraint_positional_arguments
+             (List.take
+                decorator_positional_arguments
+                (List.length constraint_positional_arguments))
+        && SanitizedCallArgumentSet.is_subset
+             (SanitizedCallArgumentSet.of_list constraint_keyword_arguments)
+             ~of_:(SanitizedCallArgumentSet.of_list decorator_keyword_arguments)
+    | Some (ModelQuery.ArgumentsConstraint.Equals constraint_arguments), None ->
+        List.is_empty constraint_arguments
+    | Some (ModelQuery.ArgumentsConstraint.Equals constraint_arguments), Some arguments ->
+        let constraint_positional_arguments, constraint_keyword_arguments =
+          split_arguments constraint_arguments
+        in
+        let decorator_positional_arguments, decorator_keyword_arguments =
+          split_arguments arguments
+        in
+        (* Since equality comparison is more costly, check the lists are the same lengths first. *)
+        Int.equal
+          (List.length constraint_positional_arguments)
+          (List.length decorator_positional_arguments)
+        && positional_arguments_equal constraint_positional_arguments decorator_positional_arguments
+        && SanitizedCallArgumentSet.equal
+             (SanitizedCallArgumentSet.of_list constraint_keyword_arguments)
+             (SanitizedCallArgumentSet.of_list decorator_keyword_arguments)
+  in
+  decorator_name_matches decorator && decorator_arguments_matches decorator
+
+
+let matches_annotation_constraint ~annotation_constraint ~annotation =
+  match annotation_constraint, annotation with
+  | ModelQuery.IsAnnotatedTypeConstraint, Type.Annotated _ -> true
+  | ModelQuery.AnnotationNameConstraint name_constraint, _ ->
+      matches_name_constraint ~name_constraint (Type.show annotation)
+  | _ -> false
+
+
+let rec normalized_parameter_matches_constraint
+    ~resolution
+    ~parameter:
+      ( (root, parameter_name, { Node.value = { Expression.Parameter.annotation; _ }; _ }) as
+      parameter )
+  = function
+  | ModelQuery.ParameterConstraint.AnnotationConstraint annotation_constraint ->
+      annotation
+      >>| (fun annotation ->
+            matches_annotation_constraint
+              ~annotation_constraint
+              ~annotation:(GlobalResolution.parse_annotation resolution annotation))
+      |> Option.value ~default:false
+  | ModelQuery.ParameterConstraint.NameConstraint name_constraint ->
+      matches_name_constraint ~name_constraint (Identifier.sanitized parameter_name)
+  | ModelQuery.ParameterConstraint.IndexConstraint index -> (
+      match root with
+      | AccessPath.Root.PositionalParameter { position; _ } when position = index -> true
+      | _ -> false )
+  | ModelQuery.ParameterConstraint.AnyOf constraints ->
+      List.exists constraints ~f:(normalized_parameter_matches_constraint ~resolution ~parameter)
+  | ModelQuery.ParameterConstraint.Not query_constraint ->
+      not (normalized_parameter_matches_constraint ~resolution ~parameter query_constraint)
+
+
 let rec callable_matches_constraint query_constraint ~resolution ~callable =
   let get_callable_type =
     Memo.unit (fun () ->
@@ -66,31 +185,21 @@ let rec callable_matches_constraint query_constraint ~resolution ~callable =
           Log.error "Could not find callable type for callable: `%s`" (Callable.show callable);
         callable_type)
   in
-  let matches_annotation_constraint ~annotation_constraint ~annotation =
-    match annotation_constraint with
-    | ModelQuery.IsAnnotatedTypeConstraint -> (
-        match annotation with
-        | Type.Annotated _ -> true
-        | _ -> false )
-  in
   match query_constraint with
-  | ModelQuery.DecoratorNameConstraint name -> (
-      let callable_type = get_callable_type () in
-      match callable_type with
+  | ModelQuery.DecoratorConstraint { name_constraint; arguments_constraint } -> (
+      match get_callable_type () with
       | Some
           {
             Node.value =
-              { Statement.Define.signature = { Statement.Define.Signature.decorators; _ }; _ };
+              {
+                Statement.Define.signature =
+                  { Statement.Define.Signature.decorators = _ :: _ as decorators; _ };
+                _;
+              };
             _;
-          }
-        when not (List.is_empty decorators) ->
-          let matches_pattern = matches_pattern ~pattern:name in
-          let decorator_name_matches
-              { Statement.Decorator.name = { Node.value = decorator_name; _ }; _ }
-            =
-            matches_pattern (Reference.show decorator_name)
-          in
-          List.exists decorators ~f:decorator_name_matches
+          } ->
+          List.exists decorators ~f:(fun decorator ->
+              matches_decorator_constraint ~name_constraint ~arguments_constraint decorator)
       | _ -> false )
   | ModelQuery.NameConstraint name_constraint ->
       matches_name_constraint ~name_constraint (Callable.external_target_name callable)
@@ -111,7 +220,7 @@ let rec callable_matches_constraint query_constraint ~resolution ~callable =
             ~annotation_constraint
             ~annotation:(GlobalResolution.parse_annotation resolution annotation)
       | _ -> false )
-  | ModelQuery.AnyParameterConstraint (ModelQuery.AnnotationConstraint annotation_constraint) -> (
+  | ModelQuery.AnyParameterConstraint parameter_constraint -> (
       let callable_type = get_callable_type () in
       match callable_type with
       | Some
@@ -120,15 +229,9 @@ let rec callable_matches_constraint query_constraint ~resolution ~callable =
               { Statement.Define.signature = { Statement.Define.Signature.parameters; _ }; _ };
             _;
           } ->
-          List.exists
-            parameters
-            ~f:(fun { Node.value = { Expression.Parameter.annotation; _ }; _ } ->
-              match annotation with
-              | Some annotation ->
-                  matches_annotation_constraint
-                    ~annotation_constraint
-                    ~annotation:(GlobalResolution.parse_annotation resolution annotation)
-              | None -> false)
+          AccessPath.Root.normalize_parameters parameters
+          |> List.exists ~f:(fun parameter ->
+                 normalized_parameter_matches_constraint ~resolution ~parameter parameter_constraint)
       | _ -> false )
   | ModelQuery.AnyOf constraints ->
       List.exists constraints ~f:(callable_matches_constraint ~resolution ~callable)
@@ -239,7 +342,7 @@ let apply_callable_productions ~resolution ~productions ~callable =
             List.filter_map productions ~f:(fun production ->
                 production_to_taint ~annotation:return_annotation ~production
                 >>| fun taint -> ReturnAnnotation, taint)
-        | ModelQuery.ParameterTaint { name; taint = productions } -> (
+        | ModelQuery.NamedParameterTaint { name; taint = productions } -> (
             let parameter =
               List.find_map
                 normalized_parameters
@@ -287,6 +390,24 @@ let apply_callable_productions ~resolution ~productions ~callable =
               else
                 production_to_taint ~annotation ~production
                 >>| fun taint -> ParameterAnnotation root, taint
+            in
+            List.cartesian_product normalized_parameters taint
+            |> List.filter_map ~f:apply_parameter_production
+        | ModelQuery.ParameterTaint { where; taint; _ } ->
+            let apply_parameter_production
+                ( ( (root, _, { Node.value = { Expression.Parameter.annotation; _ }; _ }) as
+                  parameter ),
+                  production )
+              =
+              if
+                List.for_all
+                  where
+                  ~f:(normalized_parameter_matches_constraint ~resolution ~parameter)
+              then
+                production_to_taint ~annotation ~production
+                >>| fun taint -> ParameterAnnotation root, taint
+              else
+                None
             in
             List.cartesian_product normalized_parameters taint
             |> List.filter_map ~f:apply_parameter_production
@@ -407,6 +528,7 @@ let apply_all_rules
     ~rule_filter
     ~rules
     ~callables
+    ~stubs
     ~environment
     ~models
   =
@@ -445,6 +567,7 @@ let apply_all_rules
             ~callable
             ~sources_to_keep
             ~sinks_to_keep
+            ~is_obscure:(Hash_set.mem stubs (callable :> Callable.t))
             taint_to_model
         with
         | Ok model ->

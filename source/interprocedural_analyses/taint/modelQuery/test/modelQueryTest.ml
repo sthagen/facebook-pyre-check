@@ -192,7 +192,7 @@ let test_apply_rule context =
         productions =
           [
             ReturnTaint [TaintAnnotation (source "Test")];
-            ParameterTaint { name = "x"; taint = [TaintAnnotation (source "Test")] };
+            NamedParameterTaint { name = "x"; taint = [TaintAnnotation (source "Test")] };
           ];
         rule_kind = MethodModel;
       }
@@ -268,6 +268,370 @@ let test_apply_rule context =
     ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
+        ( Taint.Model.ParameterAnnotation
+            (AccessPath.Root.PositionalParameter
+               { position = 0; name = "x"; positional_only = false }),
+          source "Test" );
+      ];
+
+  (* Parameter taint. *)
+  assert_applied_rules
+    ~source:{|
+      class C:
+        def foo(x: int, y: str): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [NameConstraint (Matches (Re2.create_exn "foo"))];
+        productions =
+          [
+            ParameterTaint
+              {
+                where = [NameConstraint (Matches (Re2.create_exn "x"))];
+                taint = [TaintAnnotation (source "Test")];
+              };
+          ];
+        rule_kind = MethodModel;
+      }
+    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~expected:
+      [
+        ( Taint.Model.ParameterAnnotation
+            (AccessPath.Root.PositionalParameter
+               { position = 0; name = "x"; positional_only = false }),
+          source "Test" );
+      ];
+  assert_applied_rules
+    ~source:{|
+      class C:
+        def foo(x: int, y: str): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [NameConstraint (Matches (Re2.create_exn "foo"))];
+        productions =
+          [
+            ParameterTaint
+              {
+                where = [Not (NameConstraint (Matches (Re2.create_exn "y")))];
+                taint = [TaintAnnotation (source "Test")];
+              };
+          ];
+        rule_kind = MethodModel;
+      }
+    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~expected:
+      [
+        ( Taint.Model.ParameterAnnotation
+            (AccessPath.Root.PositionalParameter
+               { position = 0; name = "x"; positional_only = false }),
+          source "Test" );
+      ];
+  assert_applied_rules
+    ~source:{|
+      class C:
+        def foo(x: int, y: str): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [NameConstraint (Matches (Re2.create_exn "foo"))];
+        productions =
+          [
+            ParameterTaint
+              {
+                where =
+                  [
+                    ParameterConstraint.AnnotationConstraint
+                      (AnnotationNameConstraint (Matches (Re2.create_exn "int")));
+                  ];
+                taint = [TaintAnnotation (source "Test")];
+              };
+          ];
+        rule_kind = MethodModel;
+      }
+    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~expected:
+      [
+        ( Taint.Model.ParameterAnnotation
+            (AccessPath.Root.PositionalParameter
+               { position = 0; name = "x"; positional_only = false }),
+          source "Test" );
+      ];
+  assert_applied_rules
+    ~source:{|
+      class C:
+        def foo(x: int, y: str): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [NameConstraint (Matches (Re2.create_exn "foo"))];
+        productions =
+          [
+            ParameterTaint
+              {
+                where =
+                  [
+                    Not
+                      (ParameterConstraint.AnnotationConstraint
+                         (AnnotationNameConstraint (Equals "int")));
+                  ];
+                taint = [TaintAnnotation (source "Test")];
+              };
+          ];
+        rule_kind = MethodModel;
+      }
+    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~expected:
+      [
+        ( Taint.Model.ParameterAnnotation
+            (AccessPath.Root.PositionalParameter
+               { position = 1; name = "y"; positional_only = false }),
+          source "Test" );
+      ];
+  assert_applied_rules
+    ~source:
+      {|
+      from typing import Annotated
+      class C:
+        def foo(x: int, y: Annotated[str, "foo"]): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [NameConstraint (Matches (Re2.create_exn "foo"))];
+        productions =
+          [
+            ParameterTaint
+              {
+                where = [ParameterConstraint.AnnotationConstraint IsAnnotatedTypeConstraint];
+                taint = [TaintAnnotation (source "Test")];
+              };
+          ];
+        rule_kind = MethodModel;
+      }
+    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~expected:
+      [
+        ( Taint.Model.ParameterAnnotation
+            (AccessPath.Root.PositionalParameter
+               { position = 1; name = "y"; positional_only = false }),
+          source "Test" );
+      ];
+  assert_applied_rules
+    ~source:{|
+      def foo(x: int, y: str): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [NameConstraint (Matches (Re2.create_exn "foo"))];
+        productions =
+          [
+            ParameterTaint
+              {
+                where = [NameConstraint (Matches (Re2.create_exn "x"))];
+                taint = [TaintAnnotation (source "Test")];
+              };
+          ];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:
+      [
+        ( Taint.Model.ParameterAnnotation
+            (AccessPath.Root.PositionalParameter
+               { position = 0; name = "x"; positional_only = false }),
+          source "Test" );
+      ];
+  assert_applied_rules
+    ~source:{|
+      def foo(x: int, y: str): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [NameConstraint (Matches (Re2.create_exn "foo"))];
+        productions =
+          [
+            ParameterTaint
+              {
+                where = [Not (NameConstraint (Matches (Re2.create_exn "y")))];
+                taint = [TaintAnnotation (source "Test")];
+              };
+          ];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:
+      [
+        ( Taint.Model.ParameterAnnotation
+            (AccessPath.Root.PositionalParameter
+               { position = 0; name = "x"; positional_only = false }),
+          source "Test" );
+      ];
+  assert_applied_rules
+    ~source:{|
+      def foo(x: int, y: str): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [NameConstraint (Matches (Re2.create_exn "foo"))];
+        productions =
+          [
+            ParameterTaint
+              {
+                where =
+                  [
+                    ParameterConstraint.AnnotationConstraint
+                      (AnnotationNameConstraint (Matches (Re2.create_exn "int")));
+                  ];
+                taint = [TaintAnnotation (source "Test")];
+              };
+          ];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:
+      [
+        ( Taint.Model.ParameterAnnotation
+            (AccessPath.Root.PositionalParameter
+               { position = 0; name = "x"; positional_only = false }),
+          source "Test" );
+      ];
+  assert_applied_rules
+    ~source:{|
+      def foo(x: int, y: str): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [NameConstraint (Matches (Re2.create_exn "foo"))];
+        productions =
+          [
+            ParameterTaint
+              {
+                where =
+                  [
+                    Not
+                      (ParameterConstraint.AnnotationConstraint
+                         (AnnotationNameConstraint (Equals "int")));
+                  ];
+                taint = [TaintAnnotation (source "Test")];
+              };
+          ];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:
+      [
+        ( Taint.Model.ParameterAnnotation
+            (AccessPath.Root.PositionalParameter
+               { position = 1; name = "y"; positional_only = false }),
+          source "Test" );
+      ];
+  assert_applied_rules
+    ~source:
+      {|
+      from typing import Annotated
+      def foo(x: int, y: Annotated[str, "foo"]): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [NameConstraint (Matches (Re2.create_exn "foo"))];
+        productions =
+          [
+            ParameterTaint
+              {
+                where = [ParameterConstraint.AnnotationConstraint IsAnnotatedTypeConstraint];
+                taint = [TaintAnnotation (source "Test")];
+              };
+          ];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:
+      [
+        ( Taint.Model.ParameterAnnotation
+            (AccessPath.Root.PositionalParameter
+               { position = 1; name = "y"; positional_only = false }),
+          source "Test" );
+      ];
+  assert_applied_rules
+    ~source:{|
+      def foo(x, y): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [NameConstraint (Matches (Re2.create_exn "foo"))];
+        productions =
+          [
+            ParameterTaint
+              {
+                where = [ParameterConstraint.IndexConstraint 0];
+                taint = [TaintAnnotation (source "Test")];
+              };
+          ];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:
+      [
+        ( Taint.Model.ParameterAnnotation
+            (AccessPath.Root.PositionalParameter
+               { position = 0; name = "x"; positional_only = false }),
+          source "Test" );
+      ];
+  assert_applied_rules
+    ~source:{|
+      def foo(x, y): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [NameConstraint (Matches (Re2.create_exn "foo"))];
+        productions =
+          [
+            ParameterTaint
+              {
+                where = [ParameterConstraint.IndexConstraint 1];
+                taint = [TaintAnnotation (source "Test")];
+              };
+          ];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:
+      [
+        ( Taint.Model.ParameterAnnotation
+            (AccessPath.Root.PositionalParameter
+               { position = 1; name = "y"; positional_only = false }),
+          source "Test" );
+      ];
+  assert_applied_rules
+    ~source:{|
+      def foo(x, y): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [NameConstraint (Matches (Re2.create_exn "foo"))];
+        productions = [ParameterTaint { where = []; taint = [TaintAnnotation (source "Test")] }];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:
+      [
+        ( Taint.Model.ParameterAnnotation
+            (AccessPath.Root.PositionalParameter
+               { position = 1; name = "y"; positional_only = false }),
+          source "Test" );
         ( Taint.Model.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 0; name = "x"; positional_only = false }),
@@ -449,7 +813,7 @@ let test_apply_rule context =
         query = [AnyParameterConstraint (AnnotationConstraint IsAnnotatedTypeConstraint)];
         productions =
           [
-            ParameterTaint
+            NamedParameterTaint
               {
                 name = "b";
                 taint =
@@ -531,7 +895,7 @@ let test_apply_rule context =
         query = [AnyParameterConstraint (AnnotationConstraint IsAnnotatedTypeConstraint)];
         productions =
           [
-            ParameterTaint
+            NamedParameterTaint
               {
                 name = "b";
                 taint =
@@ -574,7 +938,11 @@ let test_apply_rule context =
     ~rule:
       {
         name = None;
-        query = [DecoratorNameConstraint "d1"];
+        query =
+          [
+            DecoratorConstraint
+              { name_constraint = Matches (Re2.create_exn "d1"); arguments_constraint = None };
+          ];
         productions = [ReturnTaint [TaintAnnotation (source "Test")]];
         rule_kind = FunctionModel;
       }
@@ -598,7 +966,11 @@ let test_apply_rule context =
     ~rule:
       {
         name = None;
-        query = [DecoratorNameConstraint "d1"];
+        query =
+          [
+            DecoratorConstraint
+              { name_constraint = Matches (Re2.create_exn "d1"); arguments_constraint = None };
+          ];
         productions = [ReturnTaint [TaintAnnotation (source "Test")]];
         rule_kind = FunctionModel;
       }
@@ -622,7 +994,11 @@ let test_apply_rule context =
     ~rule:
       {
         name = None;
-        query = [DecoratorNameConstraint "d1"];
+        query =
+          [
+            DecoratorConstraint
+              { name_constraint = Matches (Re2.create_exn "d1"); arguments_constraint = None };
+          ];
         productions = [ReturnTaint [TaintAnnotation (source "Test")]];
         rule_kind = FunctionModel;
       }
@@ -639,12 +1015,369 @@ let test_apply_rule context =
     ~rule:
       {
         name = None;
-        query = [DecoratorNameConstraint "app.route"];
+        query =
+          [
+            DecoratorConstraint
+              {
+                name_constraint = Matches (Re2.create_exn "app.route");
+                arguments_constraint = None;
+              };
+          ];
         productions = [ReturnTaint [TaintAnnotation (source "Test")]];
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.foo")
     ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+  assert_applied_rules
+    ~source:
+      {|
+       def d1(c): ...
+       def d2(c): ...
+
+       @d1
+       def foo(a): ...
+       @d2
+       def bar(a): ...
+
+       @d1
+       @d2
+       def baz(a): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query =
+          [
+            DecoratorConstraint
+              { name_constraint = Matches (Re2.create_exn "d1"); arguments_constraint = None };
+          ];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.baz")
+    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+  assert_applied_rules
+    ~source:
+      {|
+       def d1(c): ...
+       def d2(c): ...
+
+       @d1
+       def foo(a): ...
+       @d2
+       def bar(a): ...
+
+       @d1
+       @d2
+       def baz(a): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query =
+          [DecoratorConstraint { name_constraint = Equals "test.d1"; arguments_constraint = None }];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.baz")
+    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+  assert_applied_rules
+    ~source:
+      {|
+       def d1(c): ...
+       def d2(c): ...
+
+       @d1
+       def foo(a): ...
+       @d2
+       def bar(a): ...
+
+       @d1
+       @d2
+       def baz(a): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query =
+          [
+            DecoratorConstraint
+              {
+                name_constraint = Equals "test.d1";
+                arguments_constraint =
+                  Some
+                    (ModelParser.T.ModelQuery.ArgumentsConstraint.Contains
+                       [
+                         {
+                           Ast.Expression.Call.Argument.name = None;
+                           value = +Ast.Expression.Expression.Integer 1;
+                         };
+                       ]);
+              };
+          ];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.baz")
+    ~expected:[];
+  assert_applied_rules
+    ~source:
+      {|
+       def d1(c): ...
+       def d2(c): ...
+
+       @d1
+       def foo(a): ...
+       @d2
+       def bar(a): ...
+
+       @d1(1)
+       @d2
+       def baz(a): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query =
+          [
+            DecoratorConstraint
+              {
+                name_constraint = Equals "test.d1";
+                arguments_constraint =
+                  Some
+                    (ModelParser.T.ModelQuery.ArgumentsConstraint.Contains
+                       [
+                         {
+                           Ast.Expression.Call.Argument.name = None;
+                           value = +Ast.Expression.Expression.Integer 1;
+                         };
+                       ]);
+              };
+          ];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.baz")
+    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+  assert_applied_rules
+    ~source:
+      {|
+       def d1(c): ...
+       def d2(c): ...
+
+       @d1
+       def foo(a): ...
+       @d2
+       def bar(a): ...
+
+       @d1(1)
+       @d2
+       def baz(a): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query =
+          [
+            DecoratorConstraint
+              {
+                name_constraint = Equals "test.d1";
+                arguments_constraint =
+                  Some
+                    (ModelParser.T.ModelQuery.ArgumentsConstraint.Contains
+                       [
+                         {
+                           Ast.Expression.Call.Argument.name =
+                             Some (Ast.Node.create_with_default_location "arg1");
+                           value = +Ast.Expression.Expression.Integer 1;
+                         };
+                       ]);
+              };
+          ];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.baz")
+    ~expected:[];
+  assert_applied_rules
+    ~source:
+      {|
+       def d1(c): ...
+       def d2(c): ...
+
+       @d1
+       def foo(a): ...
+       @d2
+       def bar(a): ...
+
+       @d1(arg1=1)
+       @d2
+       def baz(a): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query =
+          [
+            DecoratorConstraint
+              {
+                name_constraint = Equals "test.d1";
+                arguments_constraint =
+                  Some
+                    (ModelParser.T.ModelQuery.ArgumentsConstraint.Contains
+                       [
+                         {
+                           Ast.Expression.Call.Argument.name =
+                             Some (Ast.Node.create_with_default_location "arg1");
+                           value = +Ast.Expression.Expression.Integer 1;
+                         };
+                       ]);
+              };
+          ];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.baz")
+    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+  assert_applied_rules
+    ~source:
+      {|
+       def d1(c): ...
+       def d2(c): ...
+
+       @d1
+       def foo(a): ...
+       @d2
+       def bar(a): ...
+
+       @d1(1, method="POST")
+       @d2
+       def baz(a): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query =
+          [
+            DecoratorConstraint
+              {
+                name_constraint = Equals "test.d1";
+                arguments_constraint =
+                  Some
+                    (ModelParser.T.ModelQuery.ArgumentsConstraint.Contains
+                       [
+                         {
+                           Ast.Expression.Call.Argument.name =
+                             Some (Ast.Node.create_with_default_location "method");
+                           value =
+                             +Ast.Expression.Expression.String
+                                (Ast.Expression.StringLiteral.create "POST");
+                         };
+                         {
+                           Ast.Expression.Call.Argument.name = None;
+                           value = +Ast.Expression.Expression.Integer 1;
+                         };
+                       ]);
+              };
+          ];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.baz")
+    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+  assert_applied_rules
+    ~source:
+      {|
+       def d1(c): ...
+       def d2(c): ...
+
+       @d1(1)
+       def foo(a): ...
+       @d2
+       def bar(a): ...
+
+       @d1(1, method="POST")
+       @d2
+       def baz(a): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query =
+          [
+            DecoratorConstraint
+              {
+                name_constraint = Equals "test.d1";
+                arguments_constraint =
+                  Some
+                    (ModelParser.T.ModelQuery.ArgumentsConstraint.Equals
+                       [
+                         {
+                           Ast.Expression.Call.Argument.name =
+                             Some (Ast.Node.create_with_default_location "method");
+                           value =
+                             +Ast.Expression.Expression.String
+                                (Ast.Expression.StringLiteral.create "POST");
+                         };
+                         {
+                           Ast.Expression.Call.Argument.name = None;
+                           value = +Ast.Expression.Expression.Integer 1;
+                         };
+                       ]);
+              };
+          ];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:[];
+  assert_applied_rules
+    ~source:
+      {|
+       def d1(c): ...
+       def d2(c): ...
+
+       @d1(1)
+       def foo(a): ...
+       @d2
+       def bar(a): ...
+
+       @d1(1, method="POST")
+       @d2
+       def baz(a): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query =
+          [
+            DecoratorConstraint
+              {
+                name_constraint = Equals "test.d1";
+                arguments_constraint =
+                  Some
+                    (ModelParser.T.ModelQuery.ArgumentsConstraint.Equals
+                       [
+                         {
+                           Ast.Expression.Call.Argument.name =
+                             Some (Ast.Node.create_with_default_location "method");
+                           value =
+                             +Ast.Expression.Expression.String
+                                (Ast.Expression.StringLiteral.create "POST");
+                         };
+                         {
+                           Ast.Expression.Call.Argument.name = None;
+                           value = +Ast.Expression.Expression.Integer 1;
+                         };
+                       ]);
+              };
+          ];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.baz")
+    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+
   assert_applied_rules
     ~source:
       {|

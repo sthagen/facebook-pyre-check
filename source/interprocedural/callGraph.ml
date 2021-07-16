@@ -92,6 +92,7 @@ let merge_targets left right =
   | None, None -> None
   | _ ->
       (* TODO(T77637504): We should probably error here. *)
+      Log.warning "Failed to merge some call graph targets.";
       None
 
 
@@ -143,7 +144,6 @@ let rec resolve_ignoring_optional ~resolution expression =
 type callee_kind =
   | Method of { is_direct_call: bool }
   | Function
-  | RecognizedCallableTarget of string
 
 let is_local identifier = String.is_prefix ~prefix:"$" identifier
 
@@ -186,16 +186,6 @@ let rec callee_kind ~resolution callee callee_type =
             Function
       | _ -> Function )
   | Type.Union (callee_type :: _) -> callee_kind ~resolution callee callee_type
-  | _
-    when is_all_names (Node.value callee)
-         && Type.Set.mem SpecialCallResolution.recognized_callable_target_types callee_type -> (
-      match callee with
-      | { Node.value = Expression.Name name; _ } ->
-          Ast.Expression.name_to_reference name
-          >>| Reference.show
-          >>| (fun name -> RecognizedCallableTarget name)
-          |> Option.value ~default:(Method { is_direct_call = false })
-      | _ -> Method { is_direct_call = false } )
   | _ ->
       (* We must be dealing with a callable class. *)
       Method { is_direct_call = false }
@@ -306,7 +296,7 @@ let rec resolve_callees_from_type
     callable_type
   =
   match callable_type with
-  | Type.Callable { Type.Callable.kind = Type.Callable.Named name; _ } -> (
+  | Type.Callable { kind = Named name; _ } -> (
       match receiver_type with
       | Some receiver_type ->
           let targets =
@@ -322,6 +312,7 @@ let rec resolve_callees_from_type
             | _ -> Callable.create_function name
           in
           Some (RegularTargets { implicit_self = false; targets = [target]; collapse_tito }) )
+  | Type.Callable { kind = Anonymous; _ } -> None
   | Type.Parametric { name = "BoundMethod"; parameters = [Single callable; Single receiver_type] }
     ->
       resolve_callees_from_type ~resolution ~receiver_type ~callee_kind ~collapse_tito callable
@@ -337,46 +328,44 @@ let rec resolve_callees_from_type
             ~collapse_tito
             new_target
           |> merge_targets combined_targets)
-  | callable_type ->
+  | Type.Parametric { name = "type"; _ } -> resolve_constructor_callee ~resolution callable_type
+  | callable_type -> (
       (* Handle callable classes. `typing.Type` interacts specially with __call__, so we choose to
          ignore it for now to make sure our constructor logic via `cls()` still works. *)
-      if not (Type.is_meta callable_type) then
-        match
-          Resolution.resolve_attribute_access
-            resolution
-            ~base_type:callable_type
-            ~attribute:"__call__"
-        with
-        | Type.Any
-        | Type.Top ->
-            None
-        (* Callable protocol. *)
-        | Type.Callable { kind = Anonymous; _ } ->
-            Type.primitive_name callable_type
-            >>= fun primitive_callable_name ->
-            Some
-              (RegularTargets
-                 {
-                   implicit_self = true;
-                   targets =
-                     [
-                       `Method
-                         { Callable.class_name = primitive_callable_name; method_name = "__call__" };
-                     ];
-                   collapse_tito;
-                 })
-        | annotation ->
-            if not resolving_callable_class then
-              resolve_callees_from_type
-                ~resolution
-                ~resolving_callable_class:true
-                ~callee_kind
-                ~collapse_tito
-                annotation
-            else
-              None
-      else
-        resolve_constructor_callee ~resolution callable_type
+      match
+        Resolution.resolve_attribute_access
+          resolution
+          ~base_type:callable_type
+          ~attribute:"__call__"
+      with
+      | Type.Any
+      | Type.Top ->
+          None
+      (* Callable protocol. *)
+      | Type.Callable { kind = Anonymous; _ } ->
+          Type.primitive_name callable_type
+          >>= fun primitive_callable_name ->
+          Some
+            (RegularTargets
+               {
+                 implicit_self = true;
+                 targets =
+                   [
+                     `Method
+                       { Callable.class_name = primitive_callable_name; method_name = "__call__" };
+                   ];
+                 collapse_tito;
+               })
+      | annotation ->
+          if not resolving_callable_class then
+            resolve_callees_from_type
+              ~resolution
+              ~resolving_callable_class:true
+              ~callee_kind
+              ~collapse_tito
+              annotation
+          else
+            None )
 
 
 and resolve_constructor_callee ~resolution class_type =
@@ -528,32 +517,109 @@ let redirect_special_calls ~resolution call =
   | None -> Annotated.Call.redirect_special_calls ~resolution call
 
 
-let resolve_regular_callees ~resolution ~callee =
-  let callee_type = resolve_ignoring_optional ~resolution callee in
-  let callee_kind = callee_kind ~resolution callee callee_type in
-  let collapse_tito = collapse_tito ~resolution ~callee ~callable_type:callee_type in
-  match callee_kind, callee_type with
-  | RecognizedCallableTarget name, _ ->
-      Some (RegularTargets { implicit_self = false; targets = [`Function name]; collapse_tito })
+let resolve_recognized_callees ~resolution ~callee ~callee_type =
+  (* Special treatment for a set of hardcoded decorators returning callable classes. *)
+  match Node.value callee, callee_type with
   | ( _,
-      Parametric
+      Type.Parametric
         {
           name = "BoundMethod";
           parameters = [Single (Parametric { name; _ }); Single implementing_class];
         } )
     when Set.mem Recognized.allowlisted_callable_class_decorators name ->
       resolve_callee_from_defining_expression ~resolution ~callee ~implementing_class
-  | _, Parametric { name; _ } when Set.mem Recognized.allowlisted_callable_class_decorators name
-    -> (
+  | Expression.Name (Name.Attribute { base; _ }), Parametric { name; _ }
+    when Set.mem Recognized.allowlisted_callable_class_decorators name ->
       (* Because of the special class, we don't get a bound method & lose the self argument for
          non-classmethod LRU cache wrappers. Reconstruct self in this case. *)
-      match Node.value callee with
-      | Expression.Name (Name.Attribute { base; _ }) ->
-          resolve_ignoring_optional ~resolution base
-          |> fun implementing_class ->
-          resolve_callee_from_defining_expression ~resolution ~callee ~implementing_class
+      resolve_ignoring_optional ~resolution base
+      |> fun implementing_class ->
+      resolve_callee_from_defining_expression ~resolution ~callee ~implementing_class
+  | Expression.Name name, _
+    when is_all_names (Node.value callee)
+         && Type.Set.mem SpecialCallResolution.recognized_callable_target_types callee_type ->
+      Ast.Expression.name_to_reference name
+      >>| Reference.show
+      >>| fun name ->
+      let collapse_tito = collapse_tito ~resolution ~callee ~callable_type:callee_type in
+      RegularTargets { implicit_self = false; targets = [`Function name]; collapse_tito }
+  | _ -> None
+
+
+let resolve_callees_ignoring_decorators ~resolution ~collapse_tito callee =
+  let global_resolution = Resolution.global_resolution resolution in
+  let open UnannotatedGlobalEnvironment in
+  match Node.value callee with
+  | Expression.Name name when is_all_names (Node.value callee) -> (
+      (* Resolving expressions that do not reference local variables or parameters. *)
+      let name = Ast.Expression.name_to_reference_exn name in
+      match GlobalResolution.resolve_exports global_resolution name with
+      | Some
+          (ResolvedReference.ModuleAttribute
+            { export = ResolvedReference.Exported (Module.Export.Name.Define _); remaining = []; _ })
+        ->
+          Some
+            (RegularTargets
+               { implicit_self = false; targets = [`Function (Reference.show name)]; collapse_tito })
+      | Some
+          (ResolvedReference.ModuleAttribute
+            {
+              from;
+              name;
+              export = ResolvedReference.Exported Module.Export.Name.Class;
+              remaining = [attribute];
+              _;
+            }) -> (
+          let class_name = Reference.create ~prefix:from name |> Reference.show in
+          GlobalResolution.class_definition global_resolution (Type.Primitive class_name)
+          >>| Node.value
+          >>| ClassSummary.attributes
+          >>= Identifier.SerializableMap.find_opt attribute
+          >>| Node.value
+          >>= function
+          | { kind = Method { static; _ }; _ } ->
+              Some
+                (RegularTargets
+                   {
+                     implicit_self = not static;
+                     targets = [`Method { Callable.class_name; method_name = attribute }];
+                     collapse_tito;
+                   })
+          | _ -> None )
       | _ -> None )
-  | _ -> resolve_callees_from_type ~callee_kind ~resolution ~collapse_tito callee_type
+  | Expression.Name (Name.Attribute { base; attribute; _ }) -> (
+      (* Resolve `base.attribute` by looking up the type of `base`. *)
+      match resolve_ignoring_optional ~resolution base with
+      | Type.Primitive class_name -> (
+          GlobalResolution.class_definition global_resolution (Type.Primitive class_name)
+          >>| Node.value
+          >>| ClassSummary.attributes
+          >>= Identifier.SerializableMap.find_opt attribute
+          >>| Node.value
+          >>= function
+          | { kind = Method _; _ } ->
+              Some
+                (RegularTargets
+                   {
+                     implicit_self = true;
+                     targets = [`Method { Callable.class_name; method_name = attribute }];
+                     collapse_tito;
+                   })
+          | _ -> None )
+      | _ -> None )
+  | _ -> None
+
+
+let resolve_regular_callees ~resolution ~callee =
+  let callee_type = resolve_ignoring_optional ~resolution callee in
+  match resolve_recognized_callees ~resolution ~callee ~callee_type with
+  | Some callees -> Some callees
+  | None -> (
+      let callee_kind = callee_kind ~resolution callee callee_type in
+      let collapse_tito = collapse_tito ~resolution ~callee ~callable_type:callee_type in
+      match resolve_callees_from_type ~callee_kind ~resolution ~collapse_tito callee_type with
+      | Some callees -> Some callees
+      | None -> resolve_callees_ignoring_decorators ~resolution ~collapse_tito callee )
 
 
 let resolve_callees ~resolution ~call =

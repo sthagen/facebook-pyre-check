@@ -359,6 +359,7 @@ and kind =
       missing_key: string;
     }
   | UnboundName of Identifier.t
+  | UninitializedLocal of Identifier.t
   | UndefinedAttribute of {
       attribute: Identifier.t;
       origin: origin;
@@ -402,6 +403,12 @@ and kind =
   | DeadStore of Identifier.t
   | Deobfuscation of Source.t
   | UnawaitedAwaitable of unawaited_awaitable
+  (* Errors from type operators *)
+  | BroadcastError of {
+      expression: Expression.t;
+      left: Type.t;
+      right: Type.t;
+    }
 [@@deriving compare, eq, sexp, show, hash]
 
 let code = function
@@ -465,15 +472,19 @@ let code = function
   | UnsupportedOperand _ -> 58
   | DuplicateTypeVariables _ -> 59
   | TupleConcatenationError _ -> 60
+  | UninitializedLocal _ -> 61
   | ParserFailure _ -> 404
   (* Additional errors. *)
   | UnawaitedAwaitable _ -> 1001
   | Deobfuscation _ -> 1002
   | DeadStore _ -> 1003
+  (* Errors from type operators *)
+  | BroadcastError _ -> 2001
 
 
 let name = function
   | AnalysisFailure _ -> "Analysis failure"
+  | BroadcastError _ -> "Broadcast error"
   | DuplicateTypeVariables _ -> "Duplicate type variables"
   | ParserFailure _ -> "Parsing failure"
   | DeadStore _ -> "Dead store"
@@ -528,6 +539,7 @@ let name = function
   | UndefinedType _ -> "Undefined or invalid type"
   | UnexpectedKeyword _ -> "Unexpected keyword"
   | UninitializedAttribute _ -> "Uninitialized attribute"
+  | UninitializedLocal _ -> "Uninitialized local"
   | Unpack _ -> "Unable to unpack"
   | UnsafeCast _ -> "Unsafe cast"
   | UnsupportedOperand _ -> "Unsupported operand"
@@ -547,10 +559,25 @@ let weaken_literals kind =
     in
     { actual; expected; due_to_invariance }
   in
+  (* This is necessary because the `int.__add__` stub now takes type variables, which leads to
+     confusing errors *)
+  let weaken_int_variable annotation =
+    let constraints = function
+      | Type.Variable
+          {
+            Type.Record.Variable.RecordUnary.constraints =
+              Type.Record.Variable.Bound (Type.Primitive "int");
+            _;
+          } ->
+          Some Type.integer
+      | _ -> None
+    in
+    Type.instantiate ~constraints annotation
+  in
   let weaken_missing_annotation = function
     | { given_annotation = Some given; _ } as missing when Type.contains_literal given -> missing
     | { annotation = Some annotation; _ } as missing ->
-        { missing with annotation = Some (Type.weaken_literals annotation) }
+        { missing with annotation = Some (weaken_int_variable (Type.weaken_literals annotation)) }
     | missing -> missing
   in
   match kind with
@@ -679,6 +706,16 @@ let rec messages ~concise ~signature location kind =
       [Format.asprintf "Terminating analysis - type `%s` not defined." annotation]
   | AnalysisFailure annotation ->
       [Format.asprintf "Terminating analysis because type `%s` is not defined." annotation]
+  | BroadcastError { expression; left; right } ->
+      [
+        Format.asprintf
+          "Broadcast error at expression `%s`; types `%a` and `%a` cannot be broadcasted together."
+          (show_sanitized_expression expression)
+          pp_type
+          left
+          pp_type
+          right;
+      ]
   | ParserFailure message -> [message]
   | DeadStore name -> [Format.asprintf "Value assigned to `%a` is never used." pp_identifier name]
   | Deobfuscation source -> [Format.asprintf "\n%a" Source.pp source]
@@ -776,7 +813,7 @@ let rec messages ~concise ~signature location kind =
       | MisplacedOverloadDecorator ->
           ["The @overload decorator must be the topmost decorator if present."] )
   | IncompatibleParameterType
-      { name; position; callee; mismatch = { actual; expected; due_to_invariance; _ } } ->
+      { name; position; callee; mismatch = { actual; expected; due_to_invariance; _ } } -> (
       let trace =
         if due_to_invariance then
           [Format.asprintf "This call might modify the type of the parameter."; invariance_message]
@@ -799,8 +836,21 @@ let rec messages ~concise ~signature location kind =
         else
           Format.asprintf "%s %s to %s" (ordinal position) parameter callee
       in
-      Format.asprintf "Expected `%a` for %s but got `%a`." pp_type expected target pp_type actual
-      :: trace
+      match Option.map ~f:Reference.as_list callee with
+      | Some ["int"; "__add__"]
+      | Some ["int"; "__sub__"]
+      | Some ["int"; "__mul__"]
+      | Some ["int"; "__floordiv__"] ->
+          Format.asprintf "Expected `int` for %s but got `%a`." target pp_type actual :: trace
+      | _ ->
+          Format.asprintf
+            "Expected `%a` for %s but got `%a`."
+            pp_type
+            expected
+            target
+            pp_type
+            actual
+          :: trace )
   | IncompatibleConstructorAnnotation _ when concise -> ["`__init__` should return `None`."]
   | IncompatibleConstructorAnnotation annotation ->
       [
@@ -2042,6 +2092,16 @@ let rec messages ~concise ~signature location kind =
           name;
         "Did you forget to import it or assign to it?";
       ]
+  | UninitializedLocal name when concise ->
+      [Format.asprintf "`%a` may not be initialized here." Identifier.pp_sanitized name]
+  | UninitializedLocal name ->
+      [
+        Format.asprintf
+          "Local variable `%a` may not be initialized here."
+          Identifier.pp_sanitized
+          name;
+        "Check if along control flows the variable is defined.";
+      ]
   | UndefinedAttribute { attribute; origin } ->
       let target =
         match origin with
@@ -2372,6 +2432,7 @@ let due_to_analysis_limitations { kind; _ } =
   | Top -> true
   | UndefinedAttribute { origin = Class annotation; _ } -> Type.contains_unknown annotation
   | AnalysisFailure _
+  | BroadcastError _
   | ParserFailure _
   | DeadStore _
   | Deobfuscation _
@@ -2414,6 +2475,7 @@ let due_to_analysis_limitations { kind; _ } =
   | UnsafeCast _
   | UnawaitedAwaitable _
   | UnboundName _
+  | UninitializedLocal _
   | UndefinedAttribute _
   | UndefinedImport _
   | UndefinedType _
@@ -2432,6 +2494,11 @@ let less_or_equal ~resolution left right =
   &&
   match left.kind, right.kind with
   | AnalysisFailure left, AnalysisFailure right -> String.equal left right
+  | ( BroadcastError { expression = left_expression; left = first_left; right = first_right },
+      BroadcastError { expression = right_expression; left = second_left; right = second_right } )
+    when Expression.equal left_expression right_expression ->
+      GlobalResolution.less_or_equal resolution ~left:first_left ~right:first_right
+      && GlobalResolution.less_or_equal resolution ~left:second_left ~right:second_right
   | ParserFailure left_message, ParserFailure right_message ->
       String.equal left_message right_message
   | DeadStore left, DeadStore right -> Identifier.equal left right
@@ -2613,7 +2680,9 @@ let less_or_equal ~resolution left right =
     ->
       less_or_equal_mismatch left.mismatch right.mismatch
   | UnawaitedAwaitable left, UnawaitedAwaitable right -> equal_unawaited_awaitable left right
-  | UnboundName left_name, UnboundName right_name -> Identifier.equal_sanitized left_name right_name
+  | UnboundName left_name, UnboundName right_name
+  | UninitializedLocal left_name, UninitializedLocal right_name ->
+      Identifier.equal_sanitized left_name right_name
   | ( DuplicateTypeVariables { variable = left; base = left_base },
       DuplicateTypeVariables { variable = right; base = right_base } ) -> (
       match left_base, right_base with
@@ -2676,6 +2745,7 @@ let less_or_equal ~resolution left right =
       | _ -> false )
   | _, Top -> true
   | AnalysisFailure _, _
+  | BroadcastError _, _
   | ParserFailure _, _
   | DeadStore _, _
   | Deobfuscation _, _
@@ -2726,6 +2796,7 @@ let less_or_equal ~resolution left right =
   | TypedDictionaryKeyNotFound _, _
   | UnawaitedAwaitable _, _
   | UnboundName _, _
+  | UninitializedLocal _, _
   | DuplicateTypeVariables _, _
   | UndefinedAttribute _, _
   | UndefinedImport _, _
@@ -2768,6 +2839,15 @@ let join ~resolution left right =
     match left.kind, right.kind with
     | AnalysisFailure left, AnalysisFailure right when String.equal left right ->
         AnalysisFailure left
+    | ( BroadcastError { expression = left_expression; left = first_left; right = first_right },
+        BroadcastError { expression = right_expression; left = second_left; right = second_right } )
+      when Expression.equal left_expression right_expression ->
+        BroadcastError
+          {
+            expression = left_expression;
+            left = GlobalResolution.join resolution first_left second_left;
+            right = GlobalResolution.join resolution first_right second_right;
+          }
     | ParserFailure left_message, ParserFailure right_message
       when String.equal left_message right_message ->
         ParserFailure left_message
@@ -2981,6 +3061,9 @@ let join ~resolution left right =
     | UnboundName left_name, UnboundName right_name
       when Identifier.equal_sanitized left_name right_name ->
         left.kind
+    | UninitializedLocal left_name, UninitializedLocal right_name
+      when Identifier.equal_sanitized left_name right_name ->
+        left.kind
     | ( DuplicateTypeVariables { variable = left; base = GenericBase },
         DuplicateTypeVariables { variable = right; base = GenericBase } )
       when Type.Variable.equal left right ->
@@ -3102,6 +3185,7 @@ let join ~resolution left right =
     | _, Top ->
         Top
     | AnalysisFailure _, _
+    | BroadcastError _, _
     | ParserFailure _, _
     | DeadStore _, _
     | Deobfuscation _, _
@@ -3151,6 +3235,7 @@ let join ~resolution left right =
     | TypedDictionaryInitializationError _, _
     | UnawaitedAwaitable _, _
     | UnboundName _, _
+    | UninitializedLocal _, _
     | DuplicateTypeVariables _, _
     | UndefinedAttribute _, _
     | UndefinedImport _, _
@@ -3553,6 +3638,8 @@ let dequalify
   let kind =
     match kind with
     | AnalysisFailure annotation -> AnalysisFailure annotation
+    | BroadcastError { expression; left; right } ->
+        BroadcastError { expression; left = dequalify left; right = dequalify right }
     | DeadStore name -> DeadStore name
     | Deobfuscation left -> Deobfuscation left
     | IllegalAnnotationTarget { target = left; kind } ->
@@ -3762,6 +3849,7 @@ let dequalify
     | DuplicateTypeVariables { variable; base } ->
         DuplicateTypeVariables { variable = Type.Variable.dequalify dequalify_map variable; base }
     | UnboundName name -> UnboundName (dequalify_identifier name)
+    | UninitializedLocal name -> UninitializedLocal (dequalify_identifier name)
     | UndefinedAttribute { attribute; origin } ->
         let origin : origin =
           match origin with

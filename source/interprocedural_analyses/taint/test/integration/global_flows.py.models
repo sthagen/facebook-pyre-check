@@ -321,42 +321,10 @@
   "kind": "model",
   "data": {
     "callable": "Obj{global_flows.l}",
-    "sources": [],
     "sinks": [
       {
         "port": "formal($global)",
         "taint": [ { "decl": null, "leaves": [ { "kind": "Test" } ] } ]
-      }
-    ],
-    "tito": []
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "Obj{global_flows.x}",
-    "sources": [],
-    "sinks": [
-      {
-        "port": "formal($global)",
-        "taint": [ { "decl": null, "leaves": [ { "kind": "Test" } ] } ]
-      }
-    ],
-    "tito": []
-  }
-}
-{
-  "kind": "model",
-  "data": {
-    "callable": "global_flows.MyList.append",
-    "sources": [],
-    "sinks": [],
-    "tito": [
-      {
-        "port": "formal(item)",
-        "taint": [
-          { "decl": null, "leaves": [ { "kind": "ParameterUpdate0" } ] }
-        ]
       }
     ]
   }
@@ -364,8 +332,34 @@
 {
   "kind": "model",
   "data": {
+    "callable": "Obj{global_flows.x}",
+    "sinks": [
+      {
+        "port": "formal($global)",
+        "taint": [ { "decl": null, "leaves": [ { "kind": "Test" } ] } ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "global_flows.MyList.append",
+    "tito": [
+      {
+        "port": "formal(item)",
+        "taint": [
+          { "decl": null, "leaves": [ { "kind": "ParameterUpdate0" } ] }
+        ]
+      }
+    ],
+    "modes": [ "Obscure" ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
     "callable": "global_flows.append_argument",
-    "sources": [],
     "sinks": [
       {
         "port": "formal(arg)",
@@ -383,15 +377,13 @@
           }
         ]
       }
-    ],
-    "tito": []
+    ]
   }
 }
 {
   "kind": "model",
   "data": {
     "callable": "global_flows.indirectly_update_x_arg1",
-    "sources": [],
     "sinks": [
       {
         "port": "formal(arg)",
@@ -409,15 +401,13 @@
           }
         ]
       }
-    ],
-    "tito": []
+    ]
   }
 }
 {
   "kind": "model",
   "data": {
     "callable": "global_flows.indirectly_update_x_arg2",
-    "sources": [],
     "sinks": [
       {
         "port": "formal(arg)",
@@ -435,16 +425,13 @@
           }
         ]
       }
-    ],
-    "tito": []
+    ]
   }
 }
 {
   "kind": "model",
   "data": {
     "callable": "global_flows.update_arg1",
-    "sources": [],
-    "sinks": [],
     "tito": [
       {
         "port": "formal(arg2)",
@@ -452,15 +439,14 @@
           { "decl": null, "leaves": [ { "kind": "ParameterUpdate0" } ] }
         ]
       }
-    ]
+    ],
+    "modes": [ "Obscure" ]
   }
 }
 {
   "kind": "model",
   "data": {
     "callable": "global_flows.update_arg2",
-    "sources": [],
-    "sinks": [],
     "tito": [
       {
         "port": "formal(arg1)",
@@ -468,6 +454,7 @@
           { "decl": null, "leaves": [ { "kind": "ParameterUpdate1" } ] }
         ]
       }
-    ]
+    ],
+    "modes": [ "Obscure" ]
   }
 }

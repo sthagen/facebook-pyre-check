@@ -5,9 +5,27 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+module ArgumentList = struct
+  type t = string list
+
+  let to_buck_command arguments =
+    let open Core in
+    let escaped_arguments =
+      let quote argument =
+        if String.contains argument ' ' then
+          (* This makes sure that the buck command gets properly escaped by the shell. *)
+          Format.sprintf "'%s'" argument
+        else
+          argument
+      in
+      List.map arguments ~f:quote
+    in
+    String.concat ~sep:" " ("buck" :: escaped_arguments)
+end
+
 exception
   BuckError of {
-    arguments: string list;
+    arguments: ArgumentList.t;
     description: string;
     exit_code: int option;
   }
@@ -29,6 +47,10 @@ let isolation_prefix_to_buck_arguments = function
 let create () =
   let open Lwt.Infix in
   let invoke_buck ?isolation_prefix arguments =
+    arguments
+    |> Core.List.map ~f:(Format.asprintf "'%s'")
+    |> Core.String.concat ~sep:" "
+    |> Log.debug "Running buck command: buck %s";
     let consume_stderr stderr_channel =
       (* Forward the buck progress message from subprocess stderr to our users, so they get a sense
          of what is being done under the hood. *)
@@ -60,6 +82,7 @@ let create () =
         LwtSubprocess.run "buck" ~arguments ~consume_stderr)
     >>= function
     | { LwtSubprocess.Completed.status; stdout; _ } -> (
+        Log.debug "buck command finished";
         let fail_with_error ?exit_code description =
           let arguments =
             List.append (isolation_prefix_to_buck_arguments isolation_prefix) arguments

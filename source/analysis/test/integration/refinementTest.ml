@@ -402,6 +402,36 @@ let test_check_local_refinement context =
   assert_type_errors
     {|
       import typing
+      def foo(x: typing.Optional[int]) -> None:
+        if (y := x):
+          reveal_type(x)
+          reveal_type(y)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `x` is `typing.Optional[int]`.";
+      "Revealed type [-1]: Revealed type for `y` is `int`.";
+    ];
+  assert_type_errors
+    {|
+      import typing
+      def foo(x: typing.Optional[int]) -> None:
+        if (y := x) is not None:
+          reveal_type(x)
+          reveal_type(y)
+        if (y := x) is None:
+          reveal_type(x)
+          reveal_type(y)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `x` is `typing.Optional[int]`.";
+      "Revealed type [-1]: Revealed type for `y` is `int`.";
+      "Revealed type [-1]: Revealed type for `x` is `typing.Optional[int]`.";
+      (* TODO(T95581122): should be None *)
+      "Revealed type [-1]: Revealed type for `y` is `typing.Optional[int]`.";
+    ];
+  assert_type_errors
+    {|
+      import typing
       def foo(x: typing.Union[int, str, None]) -> None:
         if x:
           reveal_type(x)
@@ -482,38 +512,35 @@ let test_check_local_refinement context =
   ()
 
 
-let test_check_isinstance context =
+let test_check_if_else_clause context =
   let assert_type_errors = assert_type_errors ~context in
   assert_type_errors
     {|
       import typing
       def foo(x: typing.Optional[int]) -> None:
-        if isinstance(x, int):
+        if x is None:
+          reveal_type(x)
+        else:
           reveal_type(x)
     |}
-    ["Revealed type [-1]: Revealed type for `x` is `int`."];
+    [
+      "Revealed type [-1]: Revealed type for `x` is `None`.";
+      "Revealed type [-1]: Revealed type for `x` is `typing.Optional[int]` (inferred: `int`).";
+    ];
   assert_type_errors
     {|
       import typing
-      MY_GLOBAL: typing.Union[int, str] = 1
-
-      def foo() -> None:
-        if isinstance(MY_GLOBAL, str):
-          reveal_type(MY_GLOBAL)
+      def foo(x: typing.Optional[int]) -> None:
+        if x:
+          reveal_type(x)
+        else:
+          reveal_type(x)
     |}
-    ["Revealed type [-1]: Revealed type for `MY_GLOBAL` is `typing.Union[int, str]`."];
-  assert_type_errors
-    {|
-      import typing
-      class Foo:
-        def __init__(self) -> None:
-          self.x: typing.Union[int, str] = 1
-
-      def foo(f: Foo) -> None:
-        if isinstance(f.x, str):
-          reveal_type(f.x)
-    |}
-    ["Revealed type [-1]: Revealed type for `f.x` is `typing.Union[int, str]`."]
+    [
+      "Revealed type [-1]: Revealed type for `x` is `typing.Optional[int]` (inferred: `int`).";
+      "Revealed type [-1]: Revealed type for `x` is `typing.Optional[int]`.";
+    ];
+  ()
 
 
 let test_assert_contains_none context =
@@ -991,37 +1018,6 @@ let test_check_final_attribute_refinement context =
   ()
 
 
-let test_type_guard context =
-  let assert_type_errors = assert_type_errors ~context in
-
-  (* From PEP 647: https://www.python.org/dev/peps/pep-0647/.
-
-     TODO(T90609807): This is not implemented yet in Pyre. This is mainly to unblock use of
-     TypeGuard in typeshed. *)
-  assert_type_errors
-    {|
-      from typing import Any, List, TypeGuard
-
-      # pyre-ignore[2]: Should not have Any.
-      def is_str_list(val: List[Any]) -> TypeGuard[List[str]]:
-        """Determines whether all objects in the list are strings"""
-        # pyre-ignore[7]: Returning bool expected TypeGuard.
-        return all(isinstance(x, str) for x in val)
-
-      def foo(xs: List[int | str]) -> None:
-        my_bool: bool = is_str_list(xs)
-        if my_bool:
-          reveal_type(xs)
-        else:
-          reveal_type(xs)
-    |}
-    [
-      "Revealed type [-1]: Revealed type for `xs` is `List[typing.Union[int, str]]`.";
-      "Revealed type [-1]: Revealed type for `xs` is `List[typing.Union[int, str]]`.";
-    ];
-  ()
-
-
 let () =
   "refinement"
   >::: [
@@ -1029,10 +1025,9 @@ let () =
          "check_assert_is" >:: test_assert_is;
          "check_global_refinement" >:: test_check_global_refinement;
          "check_local_refinement" >:: test_check_local_refinement;
-         "check_isinstance" >:: test_check_isinstance;
+         "check_if_else_clause" >:: test_check_if_else_clause;
          "check_assert_contains_none" >:: test_assert_contains_none;
          "check_callable" >:: test_check_callable;
          "check_final_attribute_refinement" >:: test_check_final_attribute_refinement;
-         "type_guard" >:: test_type_guard;
        ]
   |> Test.run

@@ -5,7 +5,6 @@
 
 from typing import List, Type
 
-from . import infer_v2  # noqa
 from .analyze import Analyze as Analyze
 from .check import Check as Check
 from .command import (  # noqa; noqa; noqa

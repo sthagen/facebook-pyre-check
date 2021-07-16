@@ -67,7 +67,7 @@ module Record : sig
 
       type 'annotation t [@@deriving compare, eq, sexp, show, hash]
 
-      val unpack_public_name : string
+      type 'annotation record_broadcast [@@deriving compare, eq, sexp, show, hash]
 
       val pp_unpackable
         :  pp_type:(Format.formatter -> 'annotation -> unit) ->
@@ -105,6 +105,32 @@ module Record : sig
         :  ?prefix:'annotation list ->
         ?suffix:'annotation list ->
         'annotation ->
+        'annotation t
+
+      val create_unpackable_from_concrete_against_concatenation
+        :  concrete:'annotation list ->
+        concatenation:'annotation t ->
+        'annotation record_unpackable
+
+      val create_unpackable_from_concatenation_against_concatenation
+        :  compare_t:('annotation -> 'annotation -> int) ->
+        'annotation t ->
+        'annotation t ->
+        'annotation record_unpackable
+
+      val create_from_concrete_against_concatenation
+        :  ?prefix:'annotation list ->
+        ?suffix:'annotation list ->
+        concrete:'annotation list ->
+        concatenation:'annotation t ->
+        'annotation t
+
+      val create_from_concatenation_against_concatenation
+        :  ?prefix:'annotation list ->
+        ?suffix:'annotation list ->
+        compare_t:('annotation -> 'annotation -> int) ->
+        'annotation t ->
+        'annotation t ->
         'annotation t
     end
 
@@ -262,6 +288,10 @@ module Polynomial : sig
     'a t
 end
 
+module RecordIntExpression : sig
+  type 'a t = private Data of 'a Polynomial.t [@@deriving compare, eq, sexp, show, hash]
+end
+
 module Primitive : sig
   type t = Identifier.t [@@deriving compare, eq, sexp, show, hash]
 
@@ -304,8 +334,12 @@ and t =
   | Tuple of t Record.OrderedTypes.record
   | Union of t list
   | Variable of t Record.Variable.RecordUnary.record
-  | IntExpression of t Polynomial.t
+  | IntExpression of t RecordIntExpression.t
 [@@deriving compare, eq, sexp, show, hash]
+
+module IntExpression : sig
+  val create : t Polynomial.t -> t
+end
 
 type class_data = {
   instantiated: t;
@@ -702,6 +736,8 @@ module OrderedTypes : sig
     :  parse_annotation:(Expression.t -> type_t) ->
     Expression.t ->
     type_t Concatenation.t option
+
+  val broadcast : type_t -> type_t -> type_t
 end
 
 val split : t -> t * Parameter.t list

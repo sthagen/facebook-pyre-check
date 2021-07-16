@@ -141,6 +141,8 @@ module Record = struct
   module OrderedTypes = struct
     let concatenate_public_name = "pyre_extensions.type_variable_operators.Concatenate"
 
+    let unpack_public_name = "pyre_extensions.Unpack"
+
     let show_type_list types ~pp_type =
       Format.asprintf
         "%a"
@@ -149,11 +151,24 @@ module Record = struct
 
 
     module Concatenation = struct
-      let unpack_public_name = "pyre_extensions.Unpack"
-
       type 'annotation record_unpackable =
         | Variadic of 'annotation Variable.RecordVariadic.Tuple.record
         | UnboundedElements of 'annotation
+        | Broadcast of 'annotation record_broadcast
+      [@@deriving compare, eq, sexp, show, hash]
+
+      (* No need for concrete against concrete case, since that should be normalized to Bottom or an
+         answer. Only need one concrete against concatenation case because `Broadcast` is a
+         commutative operator. *)
+      and 'annotation record_broadcast =
+        | ConcreteAgainstConcatenation of {
+            concrete: 'annotation list;
+            concatenation: 'annotation t;
+          }
+        | ConcatenationAgainstConcatenation of {
+            left_concatenation: 'annotation t;
+            right_concatenation: 'annotation t;
+          }
       [@@deriving compare, eq, sexp, show, hash]
 
       (* We guarantee that there is exactly one top-level unpacked variadic in this concatenation.
@@ -161,7 +176,7 @@ module Record = struct
          Note that there may be unpacked variadics within the prefix or suffix, but they are not
          unpacked at the top-level. So, `Tuple[int, *Ts, Tuple[str, *Rs]]` will consider only the
          `*Ts` as the top-level unpacked variadic. *)
-      type 'annotation t = {
+      and 'annotation t = {
         prefix: 'annotation list;
         middle: 'annotation record_unpackable;
         suffix: 'annotation list;
@@ -184,13 +199,58 @@ module Record = struct
         create_from_unpackable ?prefix ?suffix (UnboundedElements annotation)
 
 
-      let pp_unpackable ~pp_type format = function
+      let create_unpackable_from_concrete_against_concatenation ~concrete ~concatenation =
+        Broadcast (ConcreteAgainstConcatenation { concrete; concatenation })
+
+
+      let create_unpackable_from_concatenation_against_concatenation
+          ~compare_t
+          left_concatenation
+          right_concatenation
+        =
+        if compare compare_t left_concatenation right_concatenation < 0 then
+          Broadcast (ConcatenationAgainstConcatenation { left_concatenation; right_concatenation })
+        else
+          Broadcast
+            (ConcatenationAgainstConcatenation
+               {
+                 left_concatenation = right_concatenation;
+                 right_concatenation = left_concatenation;
+               })
+
+
+      let create_from_concrete_against_concatenation ?prefix ?suffix ~concrete ~concatenation =
+        create_from_unpackable
+          ?prefix
+          ?suffix
+          (create_unpackable_from_concrete_against_concatenation ~concrete ~concatenation)
+
+
+      let create_from_concatenation_against_concatenation
+          ?prefix
+          ?suffix
+          ~compare_t
+          left_concatenation
+          right_concatenation
+        =
+        create_from_unpackable
+          ?prefix
+          ?suffix
+          (create_unpackable_from_concatenation_against_concatenation
+             ~compare_t
+             left_concatenation
+             right_concatenation)
+
+
+      let rec pp_unpackable ~pp_type format = function
         | Variadic variadic ->
             Format.fprintf format "*%a" Variable.RecordVariadic.Tuple.pp_concise variadic
         | UnboundedElements annotation -> Format.fprintf format "*Tuple[%a, ...]" pp_type annotation
+        | Broadcast broadcast ->
+            Format.fprintf format "*Broadcast[%a]" (pp_broadcast ~pp_type) broadcast
 
 
-      let pp_concatenation format { prefix; middle; suffix } ~pp_type =
+      and pp_concatenation format { prefix; middle; suffix } ~pp_type =
         Format.fprintf
           format
           "%s%s%a%s%s"
@@ -200,6 +260,24 @@ module Record = struct
           middle
           (if List.is_empty suffix then "" else ", ")
           (show_type_list ~pp_type suffix)
+
+
+      and pp_broadcast ~pp_type format = function
+        | ConcreteAgainstConcatenation { concrete; concatenation } ->
+            Format.fprintf
+              format
+              "typing.Tuple[%s], typing.Tuple[%a]"
+              (show_type_list concrete ~pp_type)
+              (pp_concatenation ~pp_type)
+              concatenation
+        | ConcatenationAgainstConcatenation { left_concatenation; right_concatenation } ->
+            Format.fprintf
+              format
+              "typing.Tuple[%a], typing.Tuple[%a]"
+              (pp_concatenation ~pp_type)
+              left_concatenation
+              (pp_concatenation ~pp_type)
+              right_concatenation
 
 
       let extract_sole_variadic = function
@@ -216,7 +294,7 @@ module Record = struct
         extract_sole_unbounded_annotation concatenation |> Option.is_some
 
 
-      let unpackable_to_expression ~expression ~location unpackable =
+      let rec unpackable_to_expression ~expression ~location unpackable =
         let argument =
           match unpackable with
           | Variadic variadic ->
@@ -229,6 +307,33 @@ module Record = struct
                 ~location
                 "typing.Tuple"
                 [expression annotation; Expression.Ellipsis |> Node.create ~location]
+          | Broadcast broadcast ->
+              let concatenation_to_expression { prefix; middle; suffix } =
+                List.map ~f:expression prefix
+                @ [unpackable_to_expression ~expression ~location middle]
+                @ List.map ~f:expression suffix
+                |> get_item_call ~location "typing.Tuple"
+              in
+              let broadcast_to_expression = function
+                | ConcreteAgainstConcatenation { concrete; concatenation } ->
+                    get_item_call
+                      ~location
+                      "pyre_extensions.Broadcast"
+                      [
+                        get_item_call ~location "typing.Tuple" (List.map ~f:expression concrete)
+                        |> Node.create ~location;
+                        concatenation_to_expression concatenation |> Node.create ~location;
+                      ]
+                | ConcatenationAgainstConcatenation { left_concatenation; right_concatenation } ->
+                    get_item_call
+                      ~location
+                      "pyre_extensions.Broadcast"
+                      [
+                        concatenation_to_expression left_concatenation |> Node.create ~location;
+                        concatenation_to_expression right_concatenation |> Node.create ~location;
+                      ]
+              in
+              broadcast_to_expression broadcast
         in
         Expression.Call
           {
@@ -240,7 +345,7 @@ module Record = struct
                     (Name.Attribute
                        {
                          base =
-                           Expression.Name (create_name ~location unpack_public_name)
+                           Expression.Name (create_name ~location "pyre_extensions.Unpack")
                            |> Node.create ~location;
                          attribute = "__getitem__";
                          special = true;
@@ -610,14 +715,18 @@ end = struct
     let total_degree_compare =
       Int.compare (sum_degrees left_variables) (sum_degrees right_variables)
     in
+    let compare_variable_and_degree
+        { Monomial.variable = left_variable; degree = left_degree }
+        { Monomial.variable = right_variable; degree = right_degree }
+      =
+      match compare_variable compare_t left_variable right_variable with
+      | result when not (Int.equal result 0) -> result
+      | _ -> Int.compare left_degree right_degree
+    in
     if total_degree_compare <> 0 then
       total_degree_compare
     else
-      let variable_list variables = List.map variables ~f:(fun { variable; _ } -> variable) in
-      List.compare
-        (compare_variable compare_t)
-        (variable_list left_variables)
-        (variable_list right_variables)
+      List.compare compare_variable_and_degree left_variables right_variables
 
 
   let normalize ~compare_t { constant_factor; variables } =
@@ -723,6 +832,8 @@ and Polynomial : sig
   val create_from_variable : 'a Record.Variable.RecordUnary.record -> 'a t
 
   val create_from_int : int -> 'a t
+
+  val normalize : compare_t:('a -> 'a -> int) -> 'a t -> 'a t
 
   val create_from_variables_list
     :  compare_t:('a -> 'a -> int) ->
@@ -975,6 +1086,38 @@ end = struct
         ]
 end
 
+module RecordIntExpression : sig
+  type 'a t = private Data of 'a Polynomial.t [@@deriving compare, eq, sexp, show, hash]
+
+  type 'a variant =
+    | Constant of int
+    | Variable of 'a Record.Variable.RecordUnary.record
+    | Polynomial of 'a t
+
+  val normalize_variant : compare_t:('a -> 'a -> int) -> 'a Polynomial.t -> 'a variant
+end = struct
+  type 'a t = Data of 'a Polynomial.t [@@deriving compare, eq, sexp, show, hash]
+
+  type 'a variant =
+    | Constant of int
+    | Variable of 'a Record.Variable.RecordUnary.record
+    | Polynomial of 'a t
+
+  let normalize_variant ~compare_t polynomial =
+    let normalized = Polynomial.normalize ~compare_t polynomial in
+    match normalized with
+    | [] -> Constant 0
+    | [{ variables = []; constant_factor }] -> Constant constant_factor
+    | [
+     {
+       Monomial.constant_factor = 1;
+       variables = [{ Monomial.variable = Monomial.Variable variable_name; degree = 1 }];
+     };
+    ] ->
+        Variable variable_name
+    | _ -> Polynomial (Data normalized)
+end
+
 open Record.Callable
 module CallableParameter = Record.Callable.RecordParameter
 
@@ -1027,11 +1170,23 @@ module T = struct
     | Tuple of t Record.OrderedTypes.record
     | Union of t list
     | Variable of t Record.Variable.RecordUnary.record
-    | IntExpression of t Polynomial.t
+    | IntExpression of t RecordIntExpression.t
   [@@deriving compare, eq, sexp, show, hash]
 end
 
 include T
+
+type type_t = t [@@deriving compare, eq, sexp, show, hash]
+
+module IntExpression : sig
+  val create : type_t Polynomial.t -> type_t
+end = struct
+  let create polynomial =
+    match RecordIntExpression.normalize_variant ~compare_t:[%compare: type_t] polynomial with
+    | RecordIntExpression.Constant n -> Literal (Integer n)
+    | RecordIntExpression.Variable variable_name -> Variable variable_name
+    | RecordIntExpression.Polynomial polynomial -> IntExpression polynomial
+end
 
 let _ = show (* shadowed below *)
 
@@ -1042,8 +1197,6 @@ type class_data = {
 }
 [@@deriving sexp]
 
-type type_t = t [@@deriving compare, eq, sexp, show, hash]
-
 let polynomial_to_type polynomial =
   match polynomial with
   | [] -> Literal (Integer 0)
@@ -1051,80 +1204,95 @@ let polynomial_to_type polynomial =
   | [{ Monomial.variables = [{ degree = 1; variable = Variable variable }]; constant_factor = 1 }]
     ->
       Variable variable
-  | _ -> IntExpression polynomial
+  | _ -> IntExpression.create polynomial
 
 
 let solve_less_or_equal_polynomial ~left ~right ~solve ~impossible =
   match left, right with
-  | IntExpression polynomial, _ when Polynomial.is_base_case polynomial ->
+  | IntExpression (Data polynomial), _ when Polynomial.is_base_case polynomial ->
       solve ~left:(polynomial_to_type polynomial) ~right
-  | _, IntExpression polynomial when Polynomial.is_base_case polynomial ->
+  | _, IntExpression (Data polynomial) when Polynomial.is_base_case polynomial ->
       solve ~left ~right:(polynomial_to_type polynomial)
-  | ( IntExpression ({ Monomial.constant_factor; variables = [] } :: polynomial),
+  | ( IntExpression (Data ({ Monomial.constant_factor; variables = [] } :: polynomial)),
       Literal (Integer literal) ) ->
-      solve ~left:(IntExpression polynomial) ~right:(Literal (Integer (literal - constant_factor)))
+      solve
+        ~left:(IntExpression.create polynomial)
+        ~right:(Literal (Integer (literal - constant_factor)))
   | ( Literal (Integer literal),
-      IntExpression ({ Monomial.constant_factor; variables = [] } :: polynomial) ) ->
-      solve ~left:(Literal (Integer (literal - constant_factor))) ~right:(IntExpression polynomial)
-  | IntExpression [{ Monomial.constant_factor; variables }], Literal (Integer literal)
+      IntExpression (Data ({ Monomial.constant_factor; variables = [] } :: polynomial)) ) ->
+      solve
+        ~left:(Literal (Integer (literal - constant_factor)))
+        ~right:(IntExpression.create polynomial)
+  | IntExpression (Data [{ Monomial.constant_factor; variables }]), Literal (Integer literal)
     when constant_factor <> 1 ->
       if literal mod constant_factor <> 0 then
         impossible
       else
         solve
-          ~left:(IntExpression [{ constant_factor = 1; variables }])
+          ~left:(IntExpression.create [{ constant_factor = 1; variables }])
           ~right:(Literal (Integer (literal / constant_factor)))
-  | Literal (Integer literal), IntExpression [{ Monomial.constant_factor; variables }]
+  | Literal (Integer literal), IntExpression (Data [{ Monomial.constant_factor; variables }])
     when constant_factor <> 1 ->
       if literal mod constant_factor <> 0 then
         impossible
       else
         solve
           ~left:(Literal (Integer (literal / constant_factor)))
-          ~right:(IntExpression [{ Monomial.constant_factor = 1; variables }])
-  | ( IntExpression (({ variables = []; _ } as left_monomial) :: left_polynomial_tail),
-      IntExpression ({ variables = []; _ } :: _ as right_polynomial) ) ->
+          ~right:(IntExpression.create [{ Monomial.constant_factor = 1; variables }])
+  | ( IntExpression (Data (({ variables = []; _ } as left_monomial) :: left_polynomial_tail)),
+      IntExpression (Data ({ variables = []; _ } :: _ as right_polynomial)) ) ->
       let right_polynomial =
         Polynomial.subtract right_polynomial [left_monomial] ~compare_t:T.compare
       in
-      solve ~left:(IntExpression left_polynomial_tail) ~right:(IntExpression right_polynomial)
+      solve
+        ~left:(IntExpression.create left_polynomial_tail)
+        ~right:(IntExpression.create right_polynomial)
   | IntExpression _, Primitive _ -> solve ~left:(Primitive "int") ~right
   | _ -> impossible
 
 
 let type_to_int_expression = function
-  | Literal (Integer literal) -> Some (IntExpression (Polynomial.create_from_int literal))
-  | Variable variable -> Some (IntExpression (Polynomial.create_from_variable variable))
-  | IntExpression polynomial -> Some (IntExpression polynomial)
+  | Literal (Integer literal) -> Some (IntExpression.create (Polynomial.create_from_int literal))
+  | Variable variable -> Some (IntExpression.create (Polynomial.create_from_variable variable))
+  | IntExpression (Data polynomial) -> Some (IntExpression.create polynomial)
   | Primitive "int" -> Some (Primitive "int")
   | Any -> Some Any
   | _ -> None
 
 
-let checked_division left right =
-  if List.length right = 0 then
-    Bottom
-  else
-    IntExpression (Polynomial.divide left right ~compare_t:T.compare)
-
-
-let merge_int_expressions ?(divide = false) left right ~operation =
-  match left, type_to_int_expression right |> Option.value ~default:Bottom with
-  | Bottom, _
-  | _, Bottom ->
+let apply_over_types ~operation ?(divide = false) left right =
+  let checked_division left right =
+    if List.length right = 0 then
       Bottom
-  | _, Any
-  | Any, _ ->
-      Any
-  | Primitive "int", _
-  | _, Primitive "int" ->
-      Primitive "int"
-  | IntExpression left, IntExpression right ->
+    else
+      IntExpression.create (Polynomial.divide left right ~compare_t:T.compare)
+  in
+  let type_to_polynomial = function
+    | Literal (Integer n) -> Some (Polynomial.create_from_int n)
+    | Variable variable_name -> Some (Polynomial.create_from_variable variable_name)
+    | IntExpression (Data polynomial) -> Some polynomial
+    | _ -> None
+  in
+  let non_int_expression_result left right =
+    match left, right with
+    | Bottom, _
+    | _, Bottom ->
+        Bottom
+    | Any, _
+    | _, Any ->
+        Any
+    | Primitive "int", _
+    | _, Primitive "int" ->
+        Primitive "int"
+    | _ -> Bottom
+  in
+  match type_to_polynomial left, type_to_polynomial right with
+  | Some left_polynomial, Some right_polynomial ->
       if divide then
-        checked_division left right
+        checked_division left_polynomial right_polynomial
       else
-        IntExpression (operation left right)
-  | _ -> Bottom
+        IntExpression.create (operation left_polynomial right_polynomial)
+  | _ -> non_int_expression_result left right
 
 
 let local_replace_polynomial polynomial ~replace_variable ~replace_recursive =
@@ -1139,12 +1307,12 @@ let local_replace_polynomial polynomial ~replace_variable ~replace_recursive =
         replace_variable variable >>| fun result -> monomial_variable, result
     | Monomial.Divide (dividend, quotient) ->
         let replace_polynomial polynomial =
-          match replace_recursive (IntExpression polynomial) with
+          match replace_recursive (IntExpression.create polynomial) with
           | Some replaced -> replaced
-          | None -> IntExpression polynomial
+          | None -> IntExpression.create polynomial
         in
         let replaced_division =
-          merge_int_expressions
+          apply_over_types
             (replace_polynomial dividend)
             (replace_polynomial quotient)
             ~divide:true
@@ -1157,11 +1325,11 @@ let local_replace_polynomial polynomial ~replace_variable ~replace_recursive =
     None
   else
     let merge_replace left (variable, right) =
-      merge_int_expressions left right ~operation:(fun left right ->
+      apply_over_types left right ~operation:(fun left right ->
           Polynomial.replace left ~by:right ~variable ~compare_t:T.compare)
     in
     let replaced_expression =
-      List.fold replacements ~init:(IntExpression polynomial) ~f:merge_replace
+      List.fold replacements ~init:(IntExpression.create polynomial) ~f:merge_replace
     in
     Some replaced_expression
 
@@ -1451,9 +1619,9 @@ let rec pp format annotation =
         "typing.Union[%s]"
         (List.map parameters ~f:show |> String.concat ~sep:", ")
   | Variable unary -> Record.Variable.RecordUnary.pp_concise format unary ~pp_type:pp
-  | IntExpression polynomial when Polynomial.is_base_case polynomial ->
+  | IntExpression (Data polynomial) when Polynomial.is_base_case polynomial ->
       pp format (polynomial_to_type polynomial)
-  | IntExpression polynomial ->
+  | IntExpression (Data polynomial) ->
       Format.fprintf
         format
         "pyre_extensions.IntExpression[%s]"
@@ -1538,9 +1706,9 @@ and pp_concise format annotation =
       Format.fprintf format "Optional[%a]" pp_concise parameter
   | Union parameters -> Format.fprintf format "Union[%a]" pp_comma_separated parameters
   | Variable { variable; _ } -> Format.fprintf format "%s" (strip_qualification variable)
-  | IntExpression polynomial when Polynomial.is_base_case polynomial ->
+  | IntExpression (Data polynomial) when Polynomial.is_base_case polynomial ->
       pp_concise format (polynomial_to_type polynomial)
-  | IntExpression polynomial ->
+  | IntExpression (Data polynomial) ->
       Format.fprintf
         format
         "pyre_extensions.IntExpression[%s]"
@@ -1902,9 +2070,9 @@ let rec expression annotation =
         get_item_call "typing.Optional" [expression parameter]
     | Union parameters -> get_item_call "typing.Union" (List.map ~f:expression parameters)
     | Variable { variable; _ } -> create_name variable
-    | IntExpression polynomial when Polynomial.is_base_case polynomial ->
+    | IntExpression (Data polynomial) when Polynomial.is_base_case polynomial ->
         convert_annotation (polynomial_to_type polynomial)
-    | IntExpression polynomial ->
+    | IntExpression (Data polynomial) ->
         let convert_int_expression arguments ~operator =
           Expression.Call
             {
@@ -1942,7 +2110,10 @@ let rec expression annotation =
                            {
                              name = "pyre_extensions.Divide";
                              parameters =
-                               [Single (IntExpression dividend); Single (IntExpression quotient)];
+                               [
+                                 Single (IntExpression.create dividend);
+                                 Single (IntExpression.create quotient);
+                               ];
                            })
                 in
                 if degree = 1 then
@@ -1953,7 +2124,7 @@ let rec expression annotation =
                   in
                   convert_int_expression ~operator:"Multiply" arguments)
           in
-          if List.length variables = 0 then
+          if List.length variables = 1 then
             constant_factor
           else
             convert_int_expression ~operator:"Multiply" (constant_factor :: variables)
@@ -1988,23 +2159,33 @@ module Transform = struct
     let rec visit_annotation ~state annotation =
       let visit_children annotation =
         let visit_all = List.map ~f:(visit_annotation ~state) in
-        let visit_concatenation { Record.OrderedTypes.Concatenation.prefix; middle; suffix } =
+        let rec visit_concatenation { Record.OrderedTypes.Concatenation.prefix; middle; suffix } =
           let middle =
             match middle with
             | Variadic _ -> middle
             | UnboundedElements annotation -> UnboundedElements (visit_annotation annotation ~state)
+            | Broadcast broadcast -> Broadcast (visit_broadcast broadcast)
           in
           {
             Record.OrderedTypes.Concatenation.prefix = visit_all prefix;
             middle;
             suffix = visit_all suffix;
           }
-        in
-        let visit_ordered_types ordered_types =
+        and visit_ordered_types ordered_types =
           match ordered_types with
           | Record.OrderedTypes.Concrete concretes ->
               Record.OrderedTypes.Concrete (visit_all concretes)
           | Concatenation concatenation -> Concatenation (visit_concatenation concatenation)
+        and visit_broadcast = function
+          | ConcreteAgainstConcatenation { concrete; concatenation } ->
+              ConcreteAgainstConcatenation
+                { concrete = visit_all concrete; concatenation = visit_concatenation concatenation }
+          | ConcatenationAgainstConcatenation { left_concatenation; right_concatenation } ->
+              ConcatenationAgainstConcatenation
+                {
+                  left_concatenation = visit_concatenation left_concatenation;
+                  right_concatenation = visit_concatenation right_concatenation;
+                }
         in
         let visit_parameters parameter =
           let visit_defined = function
@@ -2056,6 +2237,7 @@ module Transform = struct
               | Unpacked (Variadic _) as unpacked -> unpacked
               | Unpacked (UnboundedElements annotation) ->
                   Unpacked (UnboundedElements (visit_annotation annotation ~state))
+              | Unpacked (Broadcast broadcast) -> Unpacked (Broadcast (visit_broadcast broadcast))
             in
             Parametric { name; parameters = List.map parameters ~f:visit }
         | RecursiveType { name; body } ->
@@ -2657,13 +2839,15 @@ module OrderedTypes = struct
     | { Concatenation.prefix = []; middle; suffix = [] } ->
         Concatenation.unpackable_to_expression ~expression ~location:Location.any middle
     | concatenation ->
-        parametric Concatenation.unpack_public_name (to_parameters (Concatenation concatenation))
+        parametric
+          Record.OrderedTypes.unpack_public_name
+          (to_parameters (Concatenation concatenation))
         |> expression
 
 
   let concatenation_from_annotations ~variable_aliases annotations =
     let unpacked_element_index index = function
-      | Parametric { name; _ } when Identifier.equal name Concatenation.unpack_public_name ->
+      | Parametric { name; _ } when Identifier.equal name Record.OrderedTypes.unpack_public_name ->
           Some index
       | _ -> None
     in
@@ -2674,7 +2858,7 @@ module OrderedTypes = struct
         | middle :: suffix -> (
             match middle with
             | Parametric { name; parameters = [Single (Primitive variable_name)] }
-              when Identifier.equal name Record.OrderedTypes.Concatenation.unpack_public_name -> (
+              when Identifier.equal name Record.OrderedTypes.unpack_public_name -> (
                 variable_aliases variable_name
                 >>= function
                 | Record.Variable.TupleVariadic variadic ->
@@ -2690,7 +2874,7 @@ module OrderedTypes = struct
                           (Concatenation { prefix = inner_prefix; middle; suffix = inner_suffix }));
                     ];
                 }
-              when Identifier.equal name Record.OrderedTypes.Concatenation.unpack_public_name ->
+              when Identifier.equal name Record.OrderedTypes.unpack_public_name ->
                 Some { prefix = prefix @ inner_prefix; middle; suffix = inner_suffix @ suffix }
             | _ -> None )
         | _ -> None )
@@ -2708,7 +2892,7 @@ module OrderedTypes = struct
             };
         _;
       } as annotation
-      when name_is ~name:Concatenation.unpack_public_name base -> (
+      when name_is ~name:Record.OrderedTypes.unpack_public_name base -> (
         let location = Location.any in
         let wrapped_in_tuple =
           get_item_call ~location "typing.Tuple" [annotation] |> Node.create ~location
@@ -2717,6 +2901,124 @@ module OrderedTypes = struct
         | Tuple (Concatenation concatenation) -> Some concatenation
         | _ -> None )
     | _ -> None
+
+
+  let broadcast left_type right_type =
+    let match_broadcasted_dimensions left_dimensions right_dimensions =
+      let pad_with_ones ~length list =
+        List.init (max 0 (length - List.length list)) ~f:(fun _ -> Literal (Integer 1)) @ list
+      in
+      let simplify_type input =
+        match input with
+        | Any
+        | Primitive "int"
+        | Literal (Integer _)
+        | Variable { constraints = Record.Variable.Bound (Primitive "int"); _ } ->
+            input
+        | _ -> Bottom
+      in
+      let broadcast_concrete_dimensions left_dimension right_dimension =
+        match simplify_type left_dimension, simplify_type right_dimension with
+        | Bottom, _
+        | _, Bottom ->
+            None
+        | Any, _
+        | _, Any ->
+            Some Any
+        | Primitive "int", _
+        | _, Primitive "int" ->
+            Some (Primitive "int")
+        | Literal (Integer 1), _ -> Some right_dimension
+        | _, Literal (Integer 1) -> Some left_dimension
+        | Literal (Integer i), Literal (Integer j) when i = j -> Some left_dimension
+        | Variable left_variable, Variable right_variable
+          when [%equal: type_t Record.Variable.RecordUnary.record] left_variable right_variable ->
+            Some (Variable left_variable)
+        | _ -> None
+      in
+      let length = max (List.length left_dimensions) (List.length right_dimensions) in
+      match
+        List.map2
+          (pad_with_ones ~length left_dimensions)
+          (pad_with_ones ~length right_dimensions)
+          ~f:broadcast_concrete_dimensions
+      with
+      | Ok result -> Option.all result
+      | Unequal_lengths -> None
+    in
+    match left_type, right_type with
+    | Any, _
+    | _, Any ->
+        Any
+    | Parametric { name = "pyre_extensions.BroadcastError"; _ }, _ -> left_type
+    | _, Parametric { name = "pyre_extensions.BroadcastError"; _ } -> right_type
+    | Tuple (Concrete left_dimensions), Tuple (Concrete right_dimensions) ->
+        match_broadcasted_dimensions left_dimensions right_dimensions
+        >>| (fun new_dimensions -> Tuple (Concrete new_dimensions))
+        |> Option.value
+             ~default:
+               (Parametric
+                  {
+                    name = "pyre_extensions.BroadcastError";
+                    parameters =
+                      ( if [%compare: type_t] left_type right_type < 0 then
+                          [Parameter.Single left_type; Parameter.Single right_type]
+                      else
+                        [Parameter.Single right_type; Parameter.Single left_type] );
+                  })
+    | ( Tuple (Concrete concrete),
+        Tuple
+          (Concatenation { prefix = []; middle = UnboundedElements (Primitive "int"); suffix = [] })
+      )
+    | ( Tuple
+          (Concatenation { prefix = []; middle = UnboundedElements (Primitive "int"); suffix = [] }),
+        Tuple (Concrete concrete) ) ->
+        let is_numeric = function
+          | Literal (Integer _)
+          | Primitive "int"
+          | Variable { constraints = Record.Variable.Bound (Primitive "int"); _ } ->
+              true
+          | _ -> false
+        in
+        if List.for_all ~f:is_numeric concrete then
+          Tuple
+            (Concatenation
+               { prefix = []; middle = UnboundedElements (Primitive "int"); suffix = [] })
+        else
+          Bottom
+    | ( Tuple (Concrete _),
+        Tuple (Concatenation { prefix = []; middle = UnboundedElements Any; suffix = [] }) )
+    | ( Tuple (Concatenation { prefix = []; middle = UnboundedElements Any; suffix = [] }),
+        Tuple (Concrete _) ) ->
+        Tuple (Concatenation { prefix = []; middle = UnboundedElements Any; suffix = [] })
+    | Tuple (Concrete concrete), Tuple (Concatenation concatenation)
+    | Tuple (Concatenation concatenation), Tuple (Concrete concrete) ->
+        Tuple
+          (Concatenation
+             (Concatenation.create_from_concrete_against_concatenation
+                ~prefix:[]
+                ~suffix:[]
+                ~concrete
+                ~concatenation))
+    | Tuple (Concatenation left_concatenation), Tuple (Concatenation right_concatenation)
+      when [%eq: type_t Concatenation.t] left_concatenation right_concatenation ->
+        Tuple (Concatenation left_concatenation)
+    | Tuple (Concatenation left_concatenation), Tuple (Concatenation right_concatenation) ->
+        Tuple
+          (Concatenation
+             (Concatenation.create_from_concatenation_against_concatenation
+                ~prefix:[]
+                ~suffix:[]
+                ~compare_t:compare_type_t
+                left_concatenation
+                right_concatenation))
+    | _ -> Bottom
+
+
+  let expand_in_concatenation ~prefix ~suffix = function
+    | Concrete dimensions -> Tuple (Concrete (prefix @ dimensions @ suffix))
+    | Concatenation { prefix = new_prefix; middle; suffix = new_suffix } ->
+        Tuple (Concatenation { prefix = prefix @ new_prefix; middle; suffix = new_suffix @ suffix })
 end
 
 let parameters_from_unpacked_annotation annotation ~variable_aliases =
@@ -2731,10 +3033,10 @@ let parameters_from_unpacked_annotation annotation ~variable_aliases =
   in
   match annotation with
   | Parametric { name; parameters = [Single (Primitive _ as element)] }
-    when Identifier.equal name Record.OrderedTypes.Concatenation.unpack_public_name ->
+    when Identifier.equal name Record.OrderedTypes.unpack_public_name ->
       unpacked_variadic_to_parameter element >>| fun parameter -> [parameter]
   | Parametric { name; parameters = [Single (Tuple ordered_type)] }
-    when Identifier.equal name Record.OrderedTypes.Concatenation.unpack_public_name ->
+    when Identifier.equal name Record.OrderedTypes.unpack_public_name ->
       OrderedTypes.to_parameters ordered_type |> Option.some
   | _ -> None
 
@@ -3022,7 +3324,7 @@ let rec create_logic ~resolve_aliases ~variable_aliases { Node.value = expressio
             List.fold
               tl
               ~init:hd
-              ~f:(merge_int_expressions ~operation:(operation ~compare_t:T.compare) ~divide)
+              ~f:(apply_over_types ~operation:(operation ~compare_t:T.compare) ~divide)
     in
     match expression with
     | Call
@@ -3085,6 +3387,24 @@ let rec create_logic ~resolve_aliases ~variable_aliases { Node.value = expressio
         }
       when name_is ~name:"typing_extensions.IntVar" callee ->
         variable value ~constraints:LiteralIntegers
+    | Call
+        {
+          callee =
+            { Node.value = Name (Name.Attribute { attribute = "__getitem__"; _ }); _ } as callee;
+          arguments =
+            [
+              {
+                Call.Argument.name = None;
+                value = { Node.value = Expression.Tuple arguments; _ };
+                _;
+              };
+            ];
+        }
+      when name_is ~name:"pyre_extensions.Broadcast.__getitem__" callee ->
+        ( match List.map ~f:create_logic arguments with
+        | [left_type; right_type] -> OrderedTypes.broadcast left_type right_type
+        | _ -> Bottom )
+        |> resolve_aliases
     | Call
         {
           callee =
@@ -3219,7 +3539,10 @@ let rec create_logic ~resolve_aliases ~variable_aliases { Node.value = expressio
         let expression =
           try
             let parsed =
-              Parser.parse [value] |> Source.create |> Preprocessing.preprocess |> Source.statements
+              Parser.parse_exn [value]
+              |> Source.create
+              |> Preprocessing.preprocess
+              |> Source.statements
             in
             match parsed with
             | [{ Node.value = Expression { Node.value; _ }; _ }] -> Some value
@@ -3505,6 +3828,7 @@ let split annotation =
       in
       Primitive "tuple", parameters
   | Literal _ as literal -> weaken_literals literal, []
+  | IntExpression _ -> integer, []
   | Callable _ -> Primitive "typing.Callable", []
   | annotation -> annotation, []
 
@@ -3907,21 +4231,21 @@ end = struct
 
     let rec local_collect = function
       | Variable variable -> [variable]
-      | IntExpression polynomial ->
+      | IntExpression (Data polynomial) ->
           List.concat_map polynomial ~f:(fun { variables; _ } ->
               List.concat_map variables ~f:(fun { variable; _ } ->
                   match variable with
                   | Variable x -> [x]
                   | Divide (dividend, quotient) ->
-                      local_collect (IntExpression dividend)
-                      @ local_collect (IntExpression quotient)))
+                      local_collect (IntExpression.create dividend)
+                      @ local_collect (IntExpression.create quotient)))
           |> List.dedup_and_sort ~compare
       | _ -> []
 
 
     let rec local_replace replacement = function
       | Variable variable -> replacement variable
-      | IntExpression polynomial ->
+      | IntExpression (Data polynomial) ->
           let replace_variable variable =
             match replacement variable with
             | Some replaced_variable ->
@@ -4200,50 +4524,97 @@ end = struct
 
       let mark_as_escaped variable = { variable with state = Free { escaped = true } }
 
-      let local_collect = function
+      let rec local_collect annotation =
+        let collect_unpackable = function
+          | Record.OrderedTypes.Concatenation.Variadic variadic -> [variadic]
+          | Broadcast (ConcreteAgainstConcatenation { concrete; concatenation }) ->
+              local_collect (Tuple (Concrete concrete))
+              @ local_collect (Tuple (Concatenation concatenation))
+          | Broadcast
+              (ConcatenationAgainstConcatenation { left_concatenation; right_concatenation }) ->
+              local_collect (Tuple (Concatenation left_concatenation))
+              @ local_collect (Tuple (Concatenation right_concatenation))
+          | _ -> []
+        in
+        match annotation with
         | Parametric { parameters; _ } ->
             let extract = function
-              | Parameter.Unpacked (Variadic variadic) -> Some variadic
-              | _ -> None
+              | Parameter.Unpacked unpackable -> collect_unpackable unpackable
+              | _ -> []
             in
-            List.filter_map parameters ~f:extract
-        | Tuple (Concatenation { middle = Variadic variadic; _ }) -> [variadic]
+            List.concat_map parameters ~f:extract
+        | Tuple (Concatenation { middle = unpackable; _ }) -> collect_unpackable unpackable
         | Callable { implementation; overloads; _ } ->
             let extract = function
               | { parameters = Defined parameters; _ } ->
                   List.find_map parameters ~f:(function
-                      | Variable (Concatenation { middle = Variadic variadic; _ }) -> Some variadic
+                      | Variable (Concatenation { middle = unpackable; _ }) ->
+                          Some (collect_unpackable unpackable)
                       | _ -> None)
-              | _ -> None
+                  |> Option.value ~default:[]
+              | _ -> []
             in
-            List.filter_map (implementation :: overloads) ~f:extract
+            List.concat_map (implementation :: overloads) ~f:extract
         | _ -> []
 
 
-      let local_replace replacement = function
+      let rec local_replace replacement annotation =
+        let promote_to_tuple concatenation = Tuple (Concatenation concatenation) in
+        let replace_unpackable = function
+          | OrderedTypes.Concatenation.Broadcast
+              (ConcreteAgainstConcatenation { concrete; concatenation }) ->
+              promote_to_tuple concatenation
+              |> local_replace replacement
+              |> Option.value ~default:(promote_to_tuple concatenation)
+              |> OrderedTypes.broadcast (Tuple (Concrete concrete))
+              |> Option.some
+          | Broadcast
+              (ConcatenationAgainstConcatenation { left_concatenation; right_concatenation }) ->
+              let left_record =
+                promote_to_tuple left_concatenation
+                |> local_replace replacement
+                |> Option.value ~default:(promote_to_tuple left_concatenation)
+              in
+              let right_record =
+                promote_to_tuple right_concatenation
+                |> local_replace replacement
+                |> Option.value ~default:(promote_to_tuple right_concatenation)
+              in
+              Some (OrderedTypes.broadcast left_record right_record)
+          | Variadic variadic -> replacement variadic >>| fun result -> Tuple result
+          | _ -> None
+        in
+        match annotation with
         | Parametric ({ parameters; _ } as parametric) ->
             let replace parameter =
               let replaced =
                 match parameter with
-                | Parameter.Unpacked (Variadic variadic) ->
-                    replacement variadic >>| OrderedTypes.to_parameters
+                | Parameter.Unpacked unpackable -> (
+                    replace_unpackable unpackable
+                    >>| function
+                    | Tuple record -> OrderedTypes.to_parameters record
+                    | other -> [Parameter.Single other] )
                 | _ -> None
               in
               Option.value ~default:[parameter] replaced
             in
-            Parametric { parametric with parameters = List.concat_map parameters ~f:replace }
-            |> Option.some
-        | Tuple (Concatenation { prefix; middle = Variadic variadic; suffix }) ->
-            let expand_ordered_type_within_concatenation = function
-              | OrderedTypes.Concrete annotations ->
-                  OrderedTypes.Concrete (prefix @ annotations @ suffix)
-              | Concatenation { prefix = new_prefix; middle; suffix = new_suffix } ->
-                  Concatenation
-                    { prefix = prefix @ new_prefix; middle; suffix = new_suffix @ suffix }
+            let parameters = List.concat_map parameters ~f:replace in
+            let default = Parametric { parametric with parameters } |> Option.some in
+            let extract_broadcast_error = function
+              | Parameter.Single
+                  (Parametric { name = "pyre_extensions.BroadcastError"; _ } as parametric) ->
+                  Some parametric
+              | _ -> None
             in
-            replacement variadic
-            >>| expand_ordered_type_within_concatenation
-            >>| fun ordered_type -> Tuple ordered_type
+            List.find_map ~f:extract_broadcast_error parameters
+            |> fun result -> Option.first_some result default
+        | Tuple (Concatenation { prefix; middle = unpackable; suffix }) ->
+            let handle_broadcasted ~f = function
+              | Tuple record -> f record
+              | other -> other
+            in
+            replace_unpackable unpackable
+            >>| handle_broadcasted ~f:(OrderedTypes.expand_in_concatenation ~prefix ~suffix)
         | Callable callable ->
             let replace_variadic parameters_so_far parameters =
               let expanded_parameters =

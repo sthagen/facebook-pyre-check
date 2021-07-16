@@ -7,25 +7,19 @@
 
 module Kind = AnalysisKind
 
-type initialize_result = {
-  initial_models: InterproceduralResult.model_t Callable.Map.t;
-  skip_overrides: Ast.Reference.Set.t;
-}
-
 val initialize_configuration
-  :  Kind.abstract list ->
+  :  Kind.abstract ->
   static_analysis_configuration:Configuration.StaticAnalysis.t ->
   unit
 
-(* Calls init on all specified analyses to get initial models *)
 val initialize_models
-  :  Kind.abstract list ->
+  :  Kind.abstract ->
   scheduler:Scheduler.t ->
   static_analysis_configuration:Configuration.StaticAnalysis.t ->
   environment:Analysis.TypeEnvironment.ReadOnly.t ->
   functions:Callable.t list ->
   stubs:Callable.t list ->
-  initialize_result
+  InterproceduralResult.model_t InterproceduralResult.InitializedModels.t
 
 val record_initial_models
   :  functions:Callable.t list ->
@@ -45,7 +39,7 @@ type result = {
 }
 
 val one_analysis_pass
-  :  analyses:Kind.abstract list ->
+  :  analysis:Kind.abstract ->
   step:Fixpoint.step ->
   environment:Analysis.TypeEnvironment.ReadOnly.t ->
   callables:Callable.t list ->
@@ -55,7 +49,7 @@ val one_analysis_pass
 val compute_fixpoint
   :  scheduler:Scheduler.t ->
   environment:Analysis.TypeEnvironment.ReadOnly.t ->
-  analyses:Kind.abstract list ->
+  analysis:Kind.abstract ->
   dependencies:DependencyGraph.t ->
   filtered_callables:Callable.Set.t ->
   all_callables:Callable.t list ->
@@ -69,7 +63,7 @@ val report_results
   static_analysis_configuration:Configuration.StaticAnalysis.t ->
   environment:Analysis.TypeEnvironment.ReadOnly.t ->
   filename_lookup:(Ast.Reference.t -> string option) ->
-  analyses:Kind.abstract list ->
+  analysis:Kind.abstract ->
   callables:Callable.Set.t ->
   skipped_overrides:Ast.Reference.t list ->
   fixpoint_timer:Timer.t ->

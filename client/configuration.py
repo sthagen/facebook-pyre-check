@@ -418,9 +418,7 @@ class PartialConfiguration:
     @staticmethod
     def _get_extra_keys() -> Set[str]:
         return {
-            "accept_command_v2",
             "create_open_source_configuration",
-            "differential",
             "saved_state",
             "stable_client",
             "taint_models_path",

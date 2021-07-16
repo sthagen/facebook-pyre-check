@@ -1104,13 +1104,7 @@ module PairStringMapIntToString = struct
   let test_additional _ =
     let () =
       assert_equal
-        "Product [\n\
-        \  left\n\
-        \    Set(strings)\n\
-        \  right\n\
-        \    ints -> (strict)\n\
-        \      Set(strings)\n\
-         ]"
+        "Product [\n  left\n    Set(strings)\n  right\n    ints -> (strict)\n      Set(strings)\n]"
         (introspect Structure |> String.concat ~sep:"\n")
         ~printer:Fn.id
     in
@@ -2309,9 +2303,7 @@ module TreeOfStringSets = struct
     assert_show ~expected:"[a]" (parse_tree ["", ["a"]]);
     assert_show ~expected:"[a, b]" (parse_tree ["", ["a"; "b"]]);
     assert_show ~expected:"{\n   [a] -> [a]\n}" (parse_tree ["a", ["a"]]);
-    assert_show
-      ~expected:"{\n   [a] -> [a]\n   [b] -> [b]\n}"
-      (parse_tree ["a", ["a"]; "b", ["b"]]);
+    assert_show ~expected:"{\n   [a] -> [a]\n   [b] -> [b]\n}" (parse_tree ["a", ["a"]; "b", ["b"]]);
     assert_show
       ~expected:"{\n   [a]\n   [b] -> [b]\n   [c][d] -> [c]\n}"
       (parse_tree ["", ["a"]; "b", ["b"]; "c.d", ["c"]]);
@@ -2615,7 +2607,14 @@ module OverUnderStringSet = struct
     (* Test empty *)
     assert_bool "bottom is empty" (is_empty bottom);
     assert_bool "empty is empty" (is_empty empty);
-    assert_bool "subtraction is empty" (is_empty (subtract set_a ~from:set_a_over))
+    assert_bool "subtraction is empty" (is_empty (subtract set_a ~from:set_a_over));
+
+    (* Test expand *)
+    assert_equal
+      set_a
+      (transform Element Expand ~f:(fun e -> [e; "c"]) set_b)
+      ~printer:show
+      ~cmp:compare
 
 
   let test_context _ = ()

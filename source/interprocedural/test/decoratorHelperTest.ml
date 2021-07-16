@@ -93,7 +93,7 @@ let test_inline_decorators context =
   let assert_inlined ?(additional_sources = []) ?(handle = "test.py") source expected =
     let source, environment = setup ~additional_sources ~context ~handle source in
     let decorator_bodies = DecoratorHelper.all_decorator_bodies environment in
-    let actual = DecoratorHelper.inline_decorators ~environment ~decorator_bodies source in
+    let actual = DecoratorHelper.inline_decorators ~decorator_bodies source in
     (* Using the same setup code instead of `parse` because the SourcePath `priority` is different
        otherwise. *)
     let expected =
@@ -216,6 +216,82 @@ let test_inline_decorators context =
       @some_property.setter
       def some_property(self, value: str) -> None:
         self._some_property = value
+  |};
+  (* Ignore decorator if not all calls are identical. *)
+  assert_inlined
+    {|
+    from typing import Callable
+    from builtins import __test_sink
+
+    def with_logging(f: Callable) -> Callable:
+
+      def inner( *args, **kwargs) -> None:
+        __test_sink(args)
+        f( **kwargs)
+        f( *args)
+        f(1, 2)
+
+      return inner
+
+    @with_logging
+    def foo(x: str) -> None:
+      print(x)
+  |}
+    {|
+    from typing import Callable
+    from builtins import __test_sink
+
+    def with_logging(f: Callable) -> Callable:
+
+      def inner( *args, **kwargs) -> None:
+        __test_sink(args)
+        f( **kwargs)
+        f( *args)
+        f(1, 2)
+
+      return inner
+
+    @with_logging
+    def foo(x: str) -> None:
+      print(x)
+  |};
+  (* Inline a decorator even if it has no calls to the original function. *)
+  assert_inlined
+    {|
+    from typing import Callable
+    from builtins import __test_sink
+
+    def no_calls_to_original_function(f: Callable) -> Callable:
+
+      def inner( *args, **kwargs) -> None:
+        __test_sink(args)
+
+      return inner
+
+    @no_calls_to_original_function
+    def foo(x: str) -> None:
+      print(x)
+  |}
+    {|
+    from typing import Callable
+    from builtins import __test_sink
+
+    def no_calls_to_original_function(f: Callable) -> Callable:
+
+      def inner( *args, **kwargs) -> None:
+        __test_sink(args)
+
+      return inner
+
+    def foo( *args, **kwargs) -> None:
+
+      def __original_function(x: str) -> None:
+        print(x)
+
+      def __inlined_no_calls_to_original_function( *args, **kwargs) -> None:
+        __test_sink(args)
+
+      return __inlined_no_calls_to_original_function( *args, **kwargs)
   |};
   assert_inlined
     {|
@@ -1221,6 +1297,277 @@ let test_inline_decorators context =
 
       return __inlined_with_logging2(y)
   |};
+  (* Decorator that passes in a local variable to the original function.
+
+     Note: This is a bit of a weird edge case because the `@wraps` says that the signature is the
+     same as the original function, but in reality it takes in one less parameter. I'm reconciling
+     this by keeping the original signature (for the sake of model-writing and typechecking) but
+     only storing the remaining parameters in `__args` and `__kwargs`. *)
+  assert_inlined
+    {|
+    from typing import Callable
+    from builtins import __test_sink
+    from functools import wraps
+
+    def with_logging(f: Callable) -> Callable:
+
+      @wraps(f)
+      def inner(request: str, *args, **kwargs) -> None:
+        __test_sink(args)
+        x = 42
+        f(request, x, *args, **kwargs)
+
+      return inner
+
+    @with_logging
+    def foo(request: str, x: int, y: int) -> None:
+      print(x)
+  |}
+    {|
+    from typing import Callable
+    from builtins import __test_sink
+    from functools import wraps
+
+    def with_logging(f: Callable) -> Callable:
+
+      @wraps(f)
+      def inner(request: str, *args, **kwargs) -> None:
+        __test_sink(args)
+        x = 42
+        f(request, x, *args, **kwargs)
+
+      return inner
+
+    def foo(request: str, x: int, y: int) -> None:
+
+      def __original_function(request: str, x: int, y: int) -> None:
+        print(x)
+
+      def __inlined_with_logging(request: str, x: int, y: int) -> None:
+        __args = (y, )
+        __kwargs = {"y": y}
+        __test_sink(__args)
+
+        # Need to explicitly qualify this local variable because `x` is also a parameter.
+        $local_test?foo?__inlined_with_logging$x = 42
+        __original_function(request, $local_test?foo?__inlined_with_logging$x, y)
+
+      return __inlined_with_logging(request, x, y)
+  |};
+  (* Decorator that passes in a local variable but doesn't use @wraps. We fall back to having *args,
+     **kwargs in the outer signature. *)
+  assert_inlined
+    {|
+    from typing import Callable
+    from builtins import __test_sink
+
+    def with_logging(f: Callable) -> Callable:
+
+      def inner(request: str, *args, **kwargs) -> None:
+        __test_sink(args)
+        x = 42
+        f(request, x, *args, **kwargs)
+
+      return inner
+
+    @with_logging
+    def foo(request: str, x: int, y: int) -> None:
+      print(x)
+  |}
+    {|
+    from typing import Callable
+    from builtins import __test_sink
+
+    def with_logging(f: Callable) -> Callable:
+
+      def inner(request: str, *args, **kwargs) -> None:
+        __test_sink(args)
+        x = 42
+        f(request, x, *args, **kwargs)
+
+      return inner
+
+    def foo(request: str, *args, **kwargs) -> None:
+
+      def __original_function(request: str, x: int, y: int) -> None:
+        print(x)
+
+      def __inlined_with_logging(request: str, *args, **kwargs) -> None:
+        __test_sink(args)
+        x = 42
+        __original_function(request, x, *args, **kwargs)
+
+      return __inlined_with_logging(request, *args, **kwargs)
+  |};
+  (* Preserve the return type if the decorator uses @wraps. *)
+  assert_inlined
+    {|
+    from builtins import __test_sink
+    from typing import Any, Callable
+    from functools import wraps
+
+    def decorator_using_wraps(func: Callable) -> Any:
+        @wraps(func)
+        def wrap( *args: Any, **kwargs: Any) -> Any:
+            return func( *args, **kwargs)
+
+        return wrap
+
+    @decorator_using_wraps
+    def foo(x: str) -> str:
+      return x
+  |}
+    {|
+    from builtins import __test_sink
+    from typing import Any, Callable
+    from functools import wraps
+
+    def decorator_using_wraps(func: Callable) -> Any:
+        @wraps(func)
+        def wrap( *args: Any, **kwargs: Any) -> Any:
+            return func( *args, **kwargs)
+
+        return wrap
+
+    def foo(x: str) -> str:
+      def __original_function(x: str) -> str:
+        return x
+
+      def __inlined_decorator_using_wraps(x: str) -> str:
+        __args = (x,)
+        __kwargs = {"x": x}
+        return __original_function(x)
+
+      return __inlined_decorator_using_wraps(x)
+  |};
+  assert_inlined
+    {|
+    from builtins import __test_sink
+    from typing import Any, Callable
+    from functools import wraps
+
+    def decorator_using_wraps(callable: Callable) -> Callable:
+
+      @wraps(callable)
+      def inner(y: str) -> Any:
+        return callable(y)
+
+      return inner
+
+    @decorator_using_wraps
+    def foo(z: str) -> str:
+      return z
+  |}
+    {|
+    from builtins import __test_sink
+    from typing import Any, Callable
+    from functools import wraps
+
+    def decorator_using_wraps(callable: Callable) -> Callable:
+
+      @wraps(callable)
+      def inner(y: str) -> Any:
+        return callable(y)
+
+      return inner
+
+    def foo(y: str) -> str:
+      def __original_function(z: str) -> str:
+        return z
+
+      def __inlined_decorator_using_wraps(y: str) -> str:
+        return __original_function(y)
+
+      return __inlined_decorator_using_wraps(y)
+  |};
+  assert_inlined
+    {|
+    from typing import Any, Callable, TypeVar
+    from pyre_extensions import ParameterSpecification
+    from functools import wraps
+
+    P = ParameterSpecification("P")
+    R = TypeVar("R")
+
+    def decorator_using_wraps(callable: Callable[P, R]) -> Callable[P, R]:
+
+      @wraps(callable)
+      def inner( *args: P.args, **kwargs: P.kwargs) -> R:
+        return callable( *args, **kwargs)
+
+      return inner
+
+    @decorator_using_wraps
+    def foo(z: str) -> str:
+      return z
+  |}
+    {|
+    from typing import Any, Callable, TypeVar
+    from pyre_extensions import ParameterSpecification
+    from functools import wraps
+
+    P = ParameterSpecification("P")
+    R = TypeVar("R")
+
+    def decorator_using_wraps(callable: Callable[P, R]) -> Callable[P, R]:
+
+      @wraps(callable)
+      def inner( *args: P.args, **kwargs: P.kwargs) -> R:
+        return callable( *args, **kwargs)
+
+      return inner
+
+    def foo(z: str) -> str:
+      def __original_function(z: str) -> str:
+        return z
+
+      def __inlined_decorator_using_wraps(z: str) -> str:
+        __args = (z, )
+        __kwargs = {"z": z}
+        return __original_function(z)
+
+      return __inlined_decorator_using_wraps(z)
+  |};
+  (* Don't preserve the return type if the decorator doesn't use @wraps. *)
+  assert_inlined
+    {|
+    from builtins import __test_sink
+    from typing import Any, Callable
+
+    def decorator_not_using_wraps(func: Callable) -> Any:
+        def wrap( *args: Any, **kwargs: Any) -> int:
+            func( *args, **kwargs)
+            return 1
+
+        return wrap
+
+    @decorator_not_using_wraps
+    def foo(x: str) -> str:
+      return x
+  |}
+    {|
+    from builtins import __test_sink
+    from typing import Any, Callable
+
+    def decorator_not_using_wraps(func: Callable) -> Any:
+        def wrap( *args: Any, **kwargs: Any) -> int:
+            func( *args, **kwargs)
+            return 1
+
+        return wrap
+
+    def foo(x: str) -> int:
+      def __original_function(x: str) -> str:
+        return x
+
+      def __inlined_decorator_not_using_wraps(x: str) -> int:
+        __args = (x,)
+        __kwargs = {"x": x}
+        __original_function(x)
+        return 1
+
+      return __inlined_decorator_not_using_wraps(x)
+  |};
   ()
 
 
@@ -1234,7 +1581,7 @@ let test_decorator_location context =
     =
     let source, environment = setup ~additional_sources ~context ~handle source in
     let decorator_bodies = DecoratorHelper.all_decorator_bodies environment in
-    let actual = DecoratorHelper.inline_decorators ~environment ~decorator_bodies source in
+    let actual = DecoratorHelper.inline_decorators ~decorator_bodies source in
     (* Using the same setup code instead of `parse` because the SourcePath `priority` is different
        otherwise. *)
     let expected =

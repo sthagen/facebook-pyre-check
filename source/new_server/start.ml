@@ -102,7 +102,19 @@ let handle_request ~state request =
         ~server_configuration
         "Restarting Pyre server due to unexpected crash"
     in
-    Statistics.log_exception exn ~fatal:true ~origin:"server";
+    let origin =
+      match exn with
+      | Buck.Raw.BuckError _
+      | Buck.Builder.JsonError _
+      | Buck.Builder.LinkTreeConstructionError _ ->
+          "buck"
+      | Watchman.ConnectionError _
+      | Watchman.SubscriptionError _
+      | Watchman.QueryError _ ->
+          "watchman"
+      | _ -> "server"
+    in
+    Statistics.log_exception exn ~fatal:true ~origin;
     Stop.log_and_stop_waiting_server ~reason:"uncaught exception" ~state ()
   in
   Lwt.catch
@@ -472,6 +484,8 @@ let initialize_server_state
   get_initial_state ~build_system_initializer ()
   >>= fun state ->
   Log.info "Server state initialized.";
+  if configuration.debug then
+    Memory.report_statistics ();
   store_initial_state state;
   Lwt.return (ExclusiveLock.create state)
 
@@ -645,20 +659,10 @@ let start_server_and_wait ?event_channel server_configuration =
               | _ -> ServerEvent.ErrorKind.BuckInternal
             in
             ( kind,
-              let arguments =
-                let quote argument =
-                  if String.contains argument ' ' then
-                    (* This makes sure that the buck command gets properly escaped by the shell. *)
-                    Format.sprintf "'%s'" argument
-                  else
-                    argument
-                in
-                List.map arguments ~f:quote
-              in
               Format.sprintf
                 "Cannot build the project: %s. To reproduce this error, run `%s`."
                 description
-                (String.concat ~sep:" " ("buck" :: arguments)) )
+                (Buck.Raw.ArgumentList.to_buck_command arguments) )
         | Buck.Builder.JsonError message ->
             ( ServerEvent.ErrorKind.Pyre,
               Format.sprintf

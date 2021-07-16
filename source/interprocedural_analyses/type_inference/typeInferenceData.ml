@@ -33,6 +33,17 @@ module SerializableReference = struct
   let to_yojson reference = `String (Reference.show_sanitized reference)
 
   module Map = Reference.Map.Tree
+  module Set = Set.Make (Reference)
+end
+
+module SerializableDecorator = struct
+  type t = Statement.Decorator.t [@@deriving compare, eq, sexp, hash, show]
+
+  let to_yojson decorator =
+    Ast.Statement.Decorator.to_expression decorator
+    |> Expression.sanitized
+    |> Expression.show
+    |> fun shown -> `String shown
 end
 
 module DefaultValue = struct
@@ -64,43 +75,56 @@ module AnnotationLocation = struct
     create ~lookup ~qualifier ~line
 end
 
+module SerializableType = struct
+  type t = Type.t [@@deriving show, eq]
+
+  let to_yojson type_ = `String (type_to_string type_)
+end
+
 module TypeAnnotation = struct
-  type t = {
-    inferred: Type.t option;
-    given: Type.t option;
-  }
+  type t =
+    | Inferred of SerializableType.t
+    | Given of SerializableType.t
+    | Missing
   [@@deriving show, eq]
 
-  let is_inferred annotation = Option.is_some annotation.inferred
-
-  let combine_with ~f left right =
-    {
-      inferred =
-        ( match left.inferred, right.inferred with
-        | Some left, Some right -> Some (f left right)
-        | None, right -> right
-        | left, None -> left );
-      given = (if Option.is_some left.given then left.given else right.given);
-    }
+  let is_inferred = function
+    | Inferred _ -> true
+    | Given _
+    | Missing ->
+        false
 
 
-  let join ~global_resolution = combine_with ~f:(GlobalResolution.join global_resolution)
-
-  let meet ~global_resolution = combine_with ~f:(GlobalResolution.meet global_resolution)
-
-  let from_given ~global_resolution given =
+  let from_given ~global_resolution expression =
     let parser = GlobalResolution.annotation_parser global_resolution in
-    let given = given >>| parser.parse_annotation in
-    { inferred = None; given }
+    match expression >>| parser.parse_annotation with
+    | Some type_ -> Given type_
+    | None -> Missing
 
 
-  let from_inferred inferred = { inferred = Some inferred; given = None }
+  let from_inferred type_ = Inferred type_
 
-  let to_yojson { inferred; given } =
-    match inferred, given with
-    | Some inferred, _ -> `String (type_to_string inferred)
-    | None, Some given -> `String (type_to_string given)
-    | _ -> `Null
+  let merge ~f left right =
+    match left, right with
+    | Inferred left, Inferred right -> Inferred (f left right)
+    | Inferred type_, _
+    | _, Inferred type_ ->
+        Inferred type_
+    | Given type_, _
+    | _, Given type_ ->
+        Given type_
+    | Missing, Missing -> Missing
+
+
+  let join ~global_resolution = merge ~f:(GlobalResolution.join global_resolution)
+
+  let meet ~global_resolution = merge ~f:(GlobalResolution.meet global_resolution)
+
+  let to_yojson = function
+    | Inferred type_
+    | Given type_ ->
+        SerializableType.to_yojson type_
+    | Missing -> `Null
 end
 
 module AnnotationsByName = struct
@@ -137,12 +161,22 @@ module AnnotationsByName = struct
         SerializableReference.Map.add_exn map ~key:identifying_name ~data:value
 
 
-      let update_exn map value transform =
+      let update_exn map name transform =
         let transform_or_raise = function
           | Some value -> transform value
-          | None -> failwith "Did not expect to update with a missing name"
+          | None ->
+              failwith
+                (Format.asprintf
+                   "Did not expect an update with name %a (expected one of %a)"
+                   Reference.pp
+                   name
+                   pp
+                   map)
         in
-        SerializableReference.Map.update map value ~f:transform_or_raise
+        SerializableReference.Map.update map name ~f:transform_or_raise
+
+
+      let filter_not ~f = SerializableReference.Map.filter ~f:(fun value -> not (f value))
     end
   end
 
@@ -182,7 +216,7 @@ module GlobalAnnotation = struct
     type t = {
       name: SerializableReference.t;
       location: AnnotationLocation.t;
-      annotation: TypeAnnotation.t;
+      annotation: SerializableType.t;
     }
     [@@deriving show, eq, to_yojson]
 
@@ -199,12 +233,14 @@ module GlobalAnnotation = struct
     let combine ~global_resolution left right =
       {
         left with
-        annotation = TypeAnnotation.join ~global_resolution left.annotation right.annotation;
+        annotation = GlobalResolution.join global_resolution left.annotation right.annotation;
       }
   end
 
   module ByName = AnnotationsByName.Make (Value)
   include Value
+
+  let suppress { annotation; _ } = Type.is_none annotation
 end
 
 module AttributeAnnotation = struct
@@ -213,7 +249,7 @@ module AttributeAnnotation = struct
       parent: SerializableReference.t;
       name: SerializableReference.t;
       location: AnnotationLocation.t;
-      annotation: TypeAnnotation.t;
+      annotation: SerializableType.t;
     }
     [@@deriving show, eq, to_yojson]
 
@@ -230,12 +266,14 @@ module AttributeAnnotation = struct
     let combine ~global_resolution left right =
       {
         left with
-        annotation = TypeAnnotation.join ~global_resolution left.annotation right.annotation;
+        annotation = GlobalResolution.join global_resolution left.annotation right.annotation;
       }
   end
 
   module ByName = AnnotationsByName.Make (Value)
   include Value
+
+  let suppress { annotation; _ } = Type.is_none annotation
 end
 
 module DefineAnnotation = struct
@@ -272,7 +310,7 @@ module DefineAnnotation = struct
     parent: SerializableReference.t option;
     return: TypeAnnotation.t; [@compare.ignore]
     parameters: Parameters.ByName.t; [@compare.ignore]
-    decorators: Ast.Statement.Decorator.t list;
+    decorators: SerializableDecorator.t list;
     location: AnnotationLocation.t;
     async: bool;
   }
@@ -291,10 +329,11 @@ module DefineAnnotation = struct
 
 
   let add_inferred_parameter define name type_ =
+    let sanitized_name = name |> Reference.sanitized in
     {
       define with
       parameters =
-        Parameters.ByName.update_exn define.parameters name (fun parameter ->
+        Parameters.ByName.update_exn define.parameters sanitized_name (fun parameter ->
             { parameter with annotation = TypeAnnotation.from_inferred type_ });
     }
 end
@@ -304,12 +343,10 @@ module LocalResult = struct
     globals: GlobalAnnotation.ByName.t;
     attributes: AttributeAnnotation.ByName.t;
     define: DefineAnnotation.t;
-    (* Temporary: keep the errors for compatiblity as we roll this out *)
-    errors: AnalysisError.Instantiated.t list;
     (* Used to skip inferring abstract return types *)
     abstract: bool;
   }
-  [@@deriving show]
+  [@@deriving show, to_yojson]
 
   let from_signature
       ~global_resolution
@@ -343,7 +380,7 @@ module LocalResult = struct
           =
           DefineAnnotation.Parameters.Value.
             {
-              name = name |> Reference.create;
+              name = name |> Identifier.sanitized |> Reference.create;
               annotation = TypeAnnotation.from_given ~global_resolution annotation;
               value;
               index;
@@ -367,7 +404,6 @@ module LocalResult = struct
       globals = GlobalAnnotation.ByName.empty;
       attributes = AttributeAnnotation.ByName.empty;
       define;
-      errors = [];
       abstract = Statement.Define.Signature.is_abstract_method signature;
     }
 
@@ -375,15 +411,9 @@ module LocalResult = struct
   let add_missing_annotation_error
       ~global_resolution
       ~lookup
-      ({ globals; attributes; define; errors; abstract } as result)
+      ({ globals; attributes; define; abstract } as result)
       error
     =
-    let result =
-      {
-        result with
-        errors = AnalysisError.instantiate ~show_error_traces:true ~lookup error :: errors;
-      }
-    in
     let ignore type_ =
       Type.is_untyped type_
       || Type.contains_unknown type_
@@ -412,7 +442,7 @@ module LocalResult = struct
               {
                 parent = type_to_reference parent;
                 name;
-                annotation = TypeAnnotation.from_inferred type_;
+                annotation = type_;
                 location = error.location |> AnnotationLocation.from_location_with_module ~lookup;
               };
         }
@@ -425,14 +455,11 @@ module LocalResult = struct
               globals
               {
                 name;
-                annotation = TypeAnnotation.from_inferred type_;
+                annotation = type_;
                 location = error.location |> AnnotationLocation.from_location_with_module ~lookup;
               };
         }
     | _ -> result
-
-
-  let get_errors { errors; _ } = List.rev errors
 end
 
 module GlobalResult = struct
@@ -467,9 +494,26 @@ module GlobalResult = struct
     }
 
 
+  let add_define ~define_names ~defines define =
+    let name = DefineAnnotationsByName.Value.identifying_name define in
+    (* Duplicate defines can occur, for example with certain decorator-based tools like
+       typing.overloads. If we encounter a duplicate we skip that define entirely. *)
+    if SerializableReference.Set.mem define_names name then
+      define_names, SerializableReference.Map.remove defines name
+    else
+      let define_names = SerializableReference.Set.add define_names name in
+      let defines =
+        if DefineAnnotation.is_inferred define then
+          DefineAnnotationsByName.add_exn defines define
+        else
+          defines
+      in
+      define_names, defines
+
+
   let add_local_result
       ~global_resolution
-      { globals; attributes; defines }
+      (define_names, { globals; attributes; defines })
       {
         LocalResult.globals = globals_from_local;
         LocalResult.attributes = attributes_from_local;
@@ -477,16 +521,30 @@ module GlobalResult = struct
         _;
       }
     =
-    let defines =
-      if DefineAnnotation.is_inferred define then
-        DefineAnnotationsByName.add_exn defines define
-      else
-        defines
-    in
+    let define_names, defines = add_define ~define_names ~defines define in
+    ( define_names,
+      {
+        globals = GlobalAnnotation.ByName.merge ~global_resolution globals globals_from_local;
+        attributes =
+          AttributeAnnotation.ByName.merge ~global_resolution attributes attributes_from_local;
+        defines;
+      } )
+
+
+  let suppress_unhelpful_types { globals; attributes; defines } =
     {
-      globals = GlobalAnnotation.ByName.merge ~global_resolution globals globals_from_local;
+      globals = globals |> GlobalAnnotation.ByName.filter_not ~f:GlobalAnnotation.suppress;
       attributes =
-        AttributeAnnotation.ByName.merge ~global_resolution attributes attributes_from_local;
+        attributes |> AttributeAnnotation.ByName.filter_not ~f:AttributeAnnotation.suppress;
       defines;
     }
+
+
+  let from_local_results ~global_resolution local_results =
+    local_results
+    |> List.fold
+         ~init:(SerializableReference.Set.empty, empty)
+         ~f:(add_local_result ~global_resolution)
+    |> snd
+    |> suppress_unhelpful_types
 end
