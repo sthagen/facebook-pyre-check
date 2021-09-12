@@ -10,22 +10,11 @@ open Pyre
 open Ast
 open Analysis
 
-let type_to_string type_ =
-  type_
-  |> Type.Variable.convert_all_escaped_free_variables_to_anys
-  |> Type.infer_transform
-  |> Format.asprintf "%a" Type.pp
-
+let type_to_string type_ = type_ |> Format.asprintf "%a" Type.pp
 
 let type_to_reference type_ = type_ |> type_to_string |> Reference.create
 
 let expression_to_json expression = `String (expression |> Expression.sanitized |> Expression.show)
-
-let lookup ~configuration ~global_resolution reference =
-  GlobalResolution.ast_environment global_resolution
-  |> fun ast_environment ->
-  AstEnvironment.ReadOnly.get_real_path_relative ~configuration ast_environment reference
-
 
 module SerializableReference = struct
   type t = Reference.t [@@deriving compare, eq, sexp, hash, show]
@@ -84,7 +73,7 @@ end
 module TypeAnnotation = struct
   type t =
     | Inferred of SerializableType.t
-    | Given of SerializableType.t
+    | Given of Expression.t
     | Missing
   [@@deriving show, eq]
 
@@ -95,10 +84,9 @@ module TypeAnnotation = struct
         false
 
 
-  let from_given ~global_resolution expression =
-    let parser = GlobalResolution.annotation_parser global_resolution in
-    match expression >>| parser.parse_annotation with
-    | Some type_ -> Given type_
+  let from_given maybe_expression =
+    match maybe_expression with
+    | Some expression -> Given expression
     | None -> Missing
 
 
@@ -110,9 +98,9 @@ module TypeAnnotation = struct
     | Inferred type_, _
     | _, Inferred type_ ->
         Inferred type_
-    | Given type_, _
-    | _, Given type_ ->
-        Given type_
+    | Given expression, _
+    | _, Given expression ->
+        Given expression
     | Missing, Missing -> Missing
 
 
@@ -121,9 +109,8 @@ module TypeAnnotation = struct
   let meet ~global_resolution = merge ~f:(GlobalResolution.meet global_resolution)
 
   let to_yojson = function
-    | Inferred type_
-    | Given type_ ->
-        SerializableType.to_yojson type_
+    | Inferred type_ -> SerializableType.to_yojson type_
+    | Given expression -> expression_to_json expression
     | Missing -> `Null
 end
 
@@ -141,8 +128,6 @@ module AnnotationsByName = struct
       let empty = SerializableReference.Map.empty
 
       let length = SerializableReference.Map.length
-
-      let find = SerializableReference.Map.find
 
       let data map = SerializableReference.Map.data map |> List.sort ~compare:Value.compare
 
@@ -198,11 +183,19 @@ module AnnotationsByName = struct
 
 
       let merge ~global_resolution left right =
-        let combine ~key:_ = function
+        let combine ~key = function
           | `Left value
           | `Right value ->
               Some value
-          | `Both (left, right) -> Some (Value.combine ~global_resolution left right)
+          | `Both (left, right) -> (
+              try Some (Value.combine ~global_resolution left right) with
+              | Analysis.ClassHierarchy.Untracked annotation ->
+                  Statistics.event
+                    ~name:"undefined type during type inference merge"
+                    ~integers:[]
+                    ~normals:["type", annotation; "reference", SerializableReference.show key]
+                    ();
+                  Some left)
         in
         SerializableReference.Map.merge ~f:combine left right
     end
@@ -338,15 +331,62 @@ module DefineAnnotation = struct
     }
 end
 
+module Inference = struct
+  type target =
+    | Return
+    | Parameter of { name: Reference.t }
+    | Global of {
+        name: Reference.t;
+        location: Location.WithModule.t;
+      }
+    | Attribute of {
+        parent: Reference.t;
+        name: Reference.t;
+        location: Location.WithModule.t;
+      }
+  [@@deriving show]
+
+  type raw = {
+    type_: Type.t;
+    target: target;
+  }
+  [@@deriving show]
+
+  type t = raw option [@@deriving show]
+
+  let create { type_ = raw_type; target } =
+    let is_parameter =
+      match target with
+      | Parameter _ -> true
+      | _ -> false
+    in
+    let sanitized_type =
+      raw_type
+      |> Type.Variable.mark_all_free_variables_as_escaped
+      |> Type.Variable.convert_all_escaped_free_variables_to_anys
+      |> Type.infer_transform
+    in
+    let ignore =
+      Type.contains_unknown sanitized_type
+      || Type.contains_undefined sanitized_type
+      || Type.contains_prohibited_any sanitized_type
+      || (is_parameter && Type.equal sanitized_type NoneType)
+    in
+    if ignore then
+      None
+    else
+      Some { type_ = sanitized_type; target }
+end
+
 module LocalResult = struct
   type t = {
     globals: GlobalAnnotation.ByName.t;
     attributes: AttributeAnnotation.ByName.t;
     define: DefineAnnotation.t;
-    (* Used to skip inferring abstract return types *)
-    abstract: bool;
   }
   [@@deriving show, to_yojson]
+
+  let define_name { define = { name; _ }; _ } = name
 
   let from_signature
       ~global_resolution
@@ -364,7 +404,7 @@ module LocalResult = struct
                 parent;
                 async;
                 _;
-              } as signature;
+              };
             _;
           };
         Node.location = define_location;
@@ -372,7 +412,7 @@ module LocalResult = struct
     =
     let define =
       let open DefineAnnotation in
-      let return = TypeAnnotation.from_given ~global_resolution return_annotation in
+      let return = TypeAnnotation.from_given return_annotation in
       let parameters =
         let initialize_parameter
             index
@@ -381,7 +421,7 @@ module LocalResult = struct
           DefineAnnotation.Parameters.Value.
             {
               name = name |> Identifier.sanitized |> Reference.create;
-              annotation = TypeAnnotation.from_given ~global_resolution annotation;
+              annotation = TypeAnnotation.from_given annotation;
               value;
               index;
             }
@@ -404,62 +444,53 @@ module LocalResult = struct
       globals = GlobalAnnotation.ByName.empty;
       attributes = AttributeAnnotation.ByName.empty;
       define;
-      abstract = Statement.Define.Signature.is_abstract_method signature;
     }
 
 
-  let add_missing_annotation_error
+  let add_inference
       ~global_resolution
       ~lookup
-      ({ globals; attributes; define; abstract } as result)
-      error
+      ({ globals; attributes; define; _ } as result)
+      inference
     =
-    let ignore type_ =
-      Type.is_untyped type_
-      || Type.contains_unknown type_
-      || Type.Variable.convert_all_escaped_free_variables_to_anys type_
-         |> Type.contains_prohibited_any
+    let add_inferred_type Inference.{ type_; target } =
+      match target with
+      | Inference.Return ->
+          {
+            result with
+            define = DefineAnnotation.add_inferred_return ~global_resolution define type_;
+          }
+      | Inference.Parameter { name } ->
+          { result with define = DefineAnnotation.add_inferred_parameter define name type_ }
+      | Inference.Global { name; location } ->
+          {
+            result with
+            globals =
+              GlobalAnnotation.ByName.add
+                ~global_resolution
+                globals
+                {
+                  name;
+                  annotation = type_;
+                  location = location |> AnnotationLocation.from_location_with_module ~lookup;
+                };
+          }
+      | Inference.Attribute { parent; name; location } ->
+          {
+            result with
+            attributes =
+              AttributeAnnotation.ByName.add
+                ~global_resolution
+                attributes
+                {
+                  parent;
+                  name;
+                  annotation = type_;
+                  location = location |> AnnotationLocation.from_location_with_module ~lookup;
+                };
+          }
     in
-    let open AnalysisError in
-    match error.kind with
-    | MissingReturnAnnotation { annotation = Some type_; _ } when not (ignore type_ || abstract) ->
-        {
-          result with
-          define = DefineAnnotation.add_inferred_return ~global_resolution define type_;
-        }
-    | MissingParameterAnnotation { name; annotation = Some type_; _ }
-      when not (ignore type_ || Type.equal type_ NoneType) ->
-        { result with define = DefineAnnotation.add_inferred_parameter define name type_ }
-    | MissingAttributeAnnotation
-        { parent; missing_annotation = { name; annotation = Some type_; _ } }
-      when not (ignore type_) ->
-        {
-          result with
-          attributes =
-            AttributeAnnotation.ByName.add
-              ~global_resolution
-              attributes
-              {
-                parent = type_to_reference parent;
-                name;
-                annotation = type_;
-                location = error.location |> AnnotationLocation.from_location_with_module ~lookup;
-              };
-        }
-    | MissingGlobalAnnotation { name; annotation = Some type_; _ } when not (ignore type_) ->
-        {
-          result with
-          globals =
-            GlobalAnnotation.ByName.add
-              ~global_resolution
-              globals
-              {
-                name;
-                annotation = type_;
-                location = error.location |> AnnotationLocation.from_location_with_module ~lookup;
-              };
-        }
-    | _ -> result
+    inference |> Option.map ~f:add_inferred_type |> Option.value ~default:result
 end
 
 module GlobalResult = struct

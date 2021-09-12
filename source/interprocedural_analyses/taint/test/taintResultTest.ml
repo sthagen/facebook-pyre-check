@@ -13,23 +13,23 @@ open Interprocedural
 let test_decorators_to_skip _ =
   let normal_model =
     { Taint.Result.empty_model with modes = Taint.Result.ModeSet.empty }
-    |> Result.make_model Taint.Result.kind
+    |> AnalysisResult.make_model Taint.Result.kind
   in
   let skipped_decorator_model =
     {
       Taint.Result.empty_model with
       modes = Taint.Result.ModeSet.singleton SkipDecoratorWhenInlining;
     }
-    |> Result.make_model Taint.Result.kind
+    |> AnalysisResult.make_model Taint.Result.kind
   in
   assert_equal
     ~cmp:Ast.Reference.Set.equal
     (Ast.Reference.Set.of_list [!&"foo.skipped"])
     (Taint.Result.decorators_to_skip
-       (Callable.Map.of_alist_exn
+       (Target.Map.of_alist_exn
           [
-            Callable.create_function !&"foo.not_skipped", normal_model;
-            Callable.create_function !&"foo.skipped", skipped_decorator_model;
+            Target.create_function !&"foo.not_skipped", normal_model;
+            Target.create_function !&"foo.skipped", skipped_decorator_model;
           ]));
   ()
 

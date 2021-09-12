@@ -95,6 +95,84 @@ class BuckSourcePath:
 SourcePath = Union[SimpleSourcePath, BuckSourcePath]
 
 
+@dataclasses.dataclass(frozen=True)
+class BaseArguments:
+    """
+    Data structure for configuration options common to many backend commands.
+    Need to keep in sync with `pyre/command/newCommandStartup.ml`
+    """
+
+    log_path: str
+    global_root: str
+    source_paths: SourcePath
+
+    checked_directory_allowlist: Sequence[str] = dataclasses.field(default_factory=list)
+    checked_directory_blocklist: Sequence[str] = dataclasses.field(default_factory=list)
+    debug: bool = False
+    excludes: Sequence[str] = dataclasses.field(default_factory=list)
+    extensions: Sequence[str] = dataclasses.field(default_factory=list)
+    relative_local_root: Optional[str] = None
+    memory_profiling_output: Optional[Path] = None
+    number_of_workers: int = 1
+    parallel: bool = True
+    profiling_output: Optional[Path] = None
+    python_version: configuration_module.PythonVersion = (
+        configuration_module.PythonVersion(major=3)
+    )
+    shared_memory: configuration_module.SharedMemory = (
+        configuration_module.SharedMemory()
+    )
+    remote_logging: Optional[RemoteLogging] = None
+    search_paths: Sequence[configuration_module.SearchPathElement] = dataclasses.field(
+        default_factory=list
+    )
+
+    def get_local_root(self) -> Optional[str]:
+        if self.relative_local_root is None:
+            return None
+        return os.path.join(self.global_root, self.relative_local_root)
+
+    def serialize(self) -> Dict[str, Any]:
+        local_root = self.get_local_root()
+        return {
+            "source_paths": self.source_paths.serialize(),
+            "search_paths": [
+                element.command_line_argument() for element in self.search_paths
+            ],
+            "excludes": self.excludes,
+            "checked_directory_allowlist": self.checked_directory_allowlist,
+            "checked_directory_blocklist": self.checked_directory_blocklist,
+            "extensions": self.extensions,
+            "log_path": self.log_path,
+            "global_root": self.global_root,
+            **({} if local_root is None else {"local_root": local_root}),
+            "debug": self.debug,
+            "python_version": {
+                "major": self.python_version.major,
+                "minor": self.python_version.minor,
+                "micro": self.python_version.micro,
+            },
+            "shared_memory": self.shared_memory.to_json(),
+            "parallel": self.parallel,
+            "number_of_workers": self.number_of_workers,
+            **(
+                {}
+                if self.remote_logging is None
+                else {"remote_logging": self.remote_logging.serialize()}
+            ),
+            **(
+                {}
+                if self.profiling_output is None
+                else {"profiling_output": str(self.profiling_output)}
+            ),
+            **(
+                {}
+                if self.memory_profiling_output is None
+                else {"memory_profiling_output": str(self.memory_profiling_output)}
+            ),
+        }
+
+
 def find_watchman_root(base: Path) -> Optional[Path]:
     return find_directories.find_parent_directory_containing_file(
         base, ".watchmanconfig"
@@ -144,14 +222,14 @@ def get_source_path(
             isolation_prefix=configuration.isolation_prefix,
         )
 
-    if source_directories is None and targets is not None:
+    if source_directories is not None and targets is not None:
         raise configuration_module.InvalidConfiguration(
-            "`source_directory` and `targets` are mutually exclusive"
+            "`source_directories` and `targets` are mutually exclusive"
         )
 
     raise configuration_module.InvalidConfiguration(
         "Cannot find any source files to analyze. "
-        + "Either `source_directory` or `targets` must be specified."
+        + "Either `source_directories` or `targets` must be specified."
     )
 
 
@@ -204,3 +282,17 @@ def temporary_argument_file(arguments: SerializableArguments) -> Iterator[Path]:
     ) as argument_file:
         _write_argument_file(argument_file, arguments)
         yield Path(argument_file.name)
+
+
+@dataclasses.dataclass
+class LogFile:
+    name: str
+    file: IO[str]
+
+
+@contextlib.contextmanager
+def backend_log_file(prefix: str) -> Iterator[LogFile]:
+    with tempfile.NamedTemporaryFile(
+        mode="w", prefix=prefix, suffix=".log", delete=True
+    ) as argument_file:
+        yield LogFile(name=argument_file.name, file=argument_file.file)

@@ -169,13 +169,13 @@ let test_multiple_arguments context =
 
       _T = TypeVar("_T")
 
-      def is_set_of(val: List[Any], type: Type[_T]) -> TypeGuard[List[_T]]:
+      def is_list_of(val: List[Any], type: Type[_T]) -> TypeGuard[List[_T]]:
           return all(isinstance(x, type) for x in val)
 
       def foo(xs: List[int | str]) -> None:
-          if is_set_of(xs, int):
+          if is_list_of(xs, int):
               reveal_type(xs)
-          elif is_set_of(xs, str):
+          elif is_list_of(xs, str):
               reveal_type(xs)
           else:
               reveal_type(xs)
@@ -313,6 +313,7 @@ let test_callback context =
 
 let test_return_type context =
   let assert_type_errors = assert_type_errors ~context in
+  let assert_default_type_errors = assert_default_type_errors ~context in
 
   assert_type_errors
     {|
@@ -356,6 +357,19 @@ let test_return_type context =
         return True
     |}
     ["Invalid type parameters [24]: Generic type `TypeGuard` expects 1 type parameter."];
+  assert_default_type_errors
+    {|
+      from typing import TypeGuard, List, TypeVar, Any, Type
+
+      _T = TypeVar("_T")
+
+      def is_list_of(val: List[Any], type: Type[_T]) -> TypeGuard[List[_T]]:
+          return all(isinstance(x, type) for x in val)
+
+      def is_str_list(val: List[Any]) -> TypeGuard[List[str]]:
+        return is_list_of(val, str)
+    |}
+    [];
   ()
 
 
@@ -380,6 +394,7 @@ let test_walrus_operator context =
 let test_boolean_operators context =
   let assert_type_errors = assert_type_errors ~context in
   let assert_default_type_errors = assert_default_type_errors ~context in
+  (* We see only two revealed types because the `False` branches are unreachable. *)
   assert_type_errors
     {|
       from typing import TypeGuard
@@ -398,8 +413,6 @@ let test_boolean_operators context =
           reveal_type(val)
     |}
     [
-      "Revealed type [-1]: Revealed type for `val` is `int`.";
-      "Revealed type [-1]: Revealed type for `val` is `int`.";
       "Revealed type [-1]: Revealed type for `val` is `int`.";
       "Revealed type [-1]: Revealed type for `val` is `int`.";
     ];
@@ -548,6 +561,16 @@ let test_misc context =
           reveal_type(obj.field)
     |}
     ["Revealed type [-1]: Revealed type for `obj.field` is `int`."];
+  (* Test supported from typing_extensions as well. *)
+  assert_type_errors
+    {|
+      from typing import List
+      from typing_extensions import TypeGuard
+
+      def is_str_list(val: List[int | str]) -> TypeGuard[List[str]]:
+        return all(isinstance(x, str) for x in val)
+    |}
+    [];
   ()
 
 

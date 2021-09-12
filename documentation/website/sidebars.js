@@ -23,7 +23,9 @@ module.exports = {
     'querying-pyre',
   ],
   pysa: [
-    'pysa-quickstart',
+    ...fbContent({
+      external: ['pysa-quickstart'],
+    }),
     {
       'How Pysa Works': [
         'pysa-basics',
@@ -100,7 +102,6 @@ module.exports = {
             'fb/warning_codes/code-5101',
             'fb/warning_codes/code-5102',
             'fb/warning_codes/code-5103',
-            'fb/warning_codes/code-5104',
             'fb/warning_codes/code-5105',
             'fb/warning_codes/code-5106',
             'fb/warning_codes/code-5107',
@@ -114,6 +115,7 @@ module.exports = {
             'fb/warning_codes/code-6073',
             'fb/warning_codes/code-6074',
             'fb/warning_codes/code-6107',
+            'fb/warning_codes/code-6306',
             'fb/warning_codes/code-6308',
             'fb/warning_codes/code-6310',
             'fb/warning_codes/code-6312',
@@ -123,6 +125,7 @@ module.exports = {
             'fb/warning_codes/code-6449',
             'fb/warning_codes/code-6459',
             'fb/warning_codes/code-6460',
+            'fb/warning_codes/code-6461',
             'fb/warning_codes/code-7330',
           ],
         },

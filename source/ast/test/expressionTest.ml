@@ -293,7 +293,13 @@ let test_pp _ =
             [{ Dictionary.Entry.key = +Expression.Integer 1; value = +Expression.Integer 2 }];
           keywords = [];
         })
-    "{ 1:2 }"
+    "{ 1:2 }";
+  assert_pp_equal (+Expression.Yield None) "(yield)";
+  assert_pp_equal (+Expression.Yield (Some (+Expression.Integer 5))) "(yield 5)";
+  assert_pp_equal
+    (+Expression.YieldFrom (+Expression.List [+Expression.Integer 5]))
+    "(yield from [5])";
+  ()
 
 
 let test_equality _ =
@@ -525,17 +531,6 @@ let test_name_equals _ =
   assert_name_not_equals "" (Name.Identifier "a")
 
 
-let test_is_private_attribute _ =
-  let assert_is_private_attribute attribute = assert_true (is_private_attribute attribute) in
-  let assert_is_not_private_attribute attribute = assert_false (is_private_attribute attribute) in
-  assert_is_private_attribute "__foo_";
-  assert_is_private_attribute "__foo";
-  assert_is_private_attribute "__foo_bar_baz";
-  assert_is_private_attribute "__foo_bar_baz_";
-  assert_is_not_private_attribute "_foo_";
-  assert_is_not_private_attribute "__foo__"
-
-
 let test_arguments_location _ =
   let assert_arguments_location expression expected_start expected_stop =
     let expression = parse_single_expression expression in
@@ -571,7 +566,6 @@ let () =
          "create_name" >:: test_create_name;
          "name_to_identifiers" >:: test_name_to_identifiers;
          "name_equals" >:: test_name_equals;
-         "is_private_attribute" >:: test_is_private_attribute;
          "arguments_location" >:: test_arguments_location;
        ]
   |> Test.run

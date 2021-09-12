@@ -17,7 +17,7 @@ module type Transformer = sig
 
   val expression : t -> Expression.t -> Expression.t
 
-  val transform_children : t -> Statement.t -> bool
+  val transform_children : t -> Statement.t -> t * bool
 
   val statement : t -> Statement.t -> t * Statement.t list
 end
@@ -33,7 +33,7 @@ module Identity : sig
 
   val expression : 't -> Expression.t -> Expression.t
 
-  val transform_children : 't -> Statement.t -> bool
+  val transform_children : 't -> Statement.t -> 't * bool
 
   val statement : 't -> Statement.t -> 't * Statement.t list
 end = struct
@@ -41,7 +41,7 @@ end = struct
 
   let expression _ expression = expression
 
-  let transform_children _ _ = true
+  let transform_children state _ = state, true
 
   let statement state statement = state, [statement]
 end
@@ -186,6 +186,8 @@ module Make (Transformer : Transformer) = struct
             WalrusOperator
               { target = transform_expression target; value = transform_expression value }
         | Expression.Yield expression -> Expression.Yield (expression >>| transform_expression)
+        | Expression.YieldFrom expression ->
+            Expression.YieldFrom (expression |> transform_expression)
       in
       let initial_state = !state in
       let expression =
@@ -240,11 +242,12 @@ module Make (Transformer : Transformer) = struct
                 origin;
               }
         | Break -> value
-        | Class { Class.name; bases; body; decorators; top_level_unbound_names } ->
+        | Class { Class.name; base_arguments; body; decorators; top_level_unbound_names } ->
             Class
               {
                 Class.name;
-                bases = transform_list bases ~f:(transform_argument ~transform_expression);
+                base_arguments =
+                  transform_list base_arguments ~f:(transform_argument ~transform_expression);
                 body = transform_list body ~f:transform_statement |> List.concat;
                 decorators = transform_list decorators ~f:transform_decorator;
                 top_level_unbound_names;
@@ -355,12 +358,14 @@ module Make (Transformer : Transformer) = struct
                 body = transform_list body ~f:transform_statement |> List.concat;
                 orelse = transform_list orelse ~f:transform_statement |> List.concat;
               }
-        | Statement.Yield expression -> Statement.Yield (transform_expression expression)
-        | Statement.YieldFrom expression -> Statement.YieldFrom (transform_expression expression)
       in
       let statement =
-        if Transformer.transform_children !state statement then
-          { statement with Node.value = transform_children (Node.value statement) }
+        let parent_state, should_transform_children =
+          Transformer.transform_children !state statement
+        in
+        if should_transform_children then (
+          state := parent_state;
+          { statement with Node.value = transform_children (Node.value statement) })
         else
           statement
       in
@@ -399,9 +404,7 @@ module MakeStatementTransformer (Transformer : StatementTransformer) = struct
         | Pass
         | Raise _
         | Return _
-        | Nonlocal _
-        | Yield _
-        | YieldFrom _ ->
+        | Nonlocal _ ->
             value
         | Class ({ Class.body; _ } as value) ->
             Class { value with Class.body = List.concat_map ~f:transform_statement body }
@@ -447,7 +450,7 @@ let transform_expressions ~transform statement =
 
     let expression _ { Node.value; location } = { Node.value = transform value; location }
 
-    let transform_children _ _ = true
+    let transform_children state _ = state, true
 
     let statement state statement = state, [statement]
   end)
@@ -484,12 +487,12 @@ let sanitize_statement statement =
       | {
           Node.value =
             Statement.Define
-              ( {
-                  Define.signature =
-                    { Define.Signature.name = { Node.value = name; _ } as name_node; parameters; _ }
-                    as signature;
-                  _;
-                } as define );
+              ({
+                 Define.signature =
+                   { Define.Signature.name = { Node.value = name; _ } as name_node; parameters; _ }
+                   as signature;
+                 _;
+               } as define);
           _;
         } as statement ->
           let transform_parameter

@@ -12,7 +12,9 @@ module ClassDefinitionsCache : sig
 end
 
 module T : sig
-  type breadcrumbs = Features.Simple.t list [@@deriving show, compare]
+  type breadcrumbs = Features.Breadcrumb.t list [@@deriving show, compare]
+
+  type via_features = Features.ViaFeature.t list [@@deriving show, compare]
 
   type leaf_kind =
     | Leaf of {
@@ -20,11 +22,26 @@ module T : sig
         subkind: string option;
       }
     | Breadcrumbs of breadcrumbs
+    | ViaFeatures of via_features
+  [@@deriving show, compare]
+
+  type sanitize_annotation =
+    | AllSources
+    | SpecificSource of Sources.t
+    | AllSinks
+    | SpecificSink of Sinks.t
+    | AllTito
+    | SpecificTito of {
+        sources: Sources.t list;
+        sinks: Sinks.t list;
+      }
+  [@@deriving show, compare]
 
   type taint_annotation =
     | Sink of {
         sink: Sinks.t;
         breadcrumbs: breadcrumbs;
+        via_features: via_features;
         path: Abstract.TreeDomain.Label.path;
         leaf_names: Features.LeafName.t list;
         leaf_name_provided: bool;
@@ -32,6 +49,7 @@ module T : sig
     | Source of {
         source: Sources.t;
         breadcrumbs: breadcrumbs;
+        via_features: via_features;
         path: Abstract.TreeDomain.Label.path;
         leaf_names: Features.LeafName.t list;
         leaf_name_provided: bool;
@@ -39,12 +57,16 @@ module T : sig
     | Tito of {
         tito: Sinks.t;
         breadcrumbs: breadcrumbs;
+        via_features: via_features;
         path: Abstract.TreeDomain.Label.path;
       }
     | AddFeatureToArgument of {
         breadcrumbs: breadcrumbs;
+        via_features: via_features;
         path: Abstract.TreeDomain.Label.path;
       }
+    | Sanitize of sanitize_annotation list
+  [@@deriving show, compare]
 
   type annotation_kind =
     | ParameterAnnotation of AccessPath.Root.t
@@ -89,6 +111,7 @@ module T : sig
 
     type model_constraint =
       | NameConstraint of name_constraint
+      | AnnotationConstraint of annotation_constraint
       | ReturnConstraint of annotation_constraint
       | AnyParameterConstraint of ParameterConstraint.t
       | AnyOf of model_constraint list
@@ -149,7 +172,7 @@ module T : sig
   end
 
   type parse_result = {
-    models: TaintResult.call_model Interprocedural.Callable.Map.t;
+    models: TaintResult.call_model Interprocedural.Target.Map.t;
     queries: ModelQuery.rule list;
     skip_overrides: Ast.Reference.Set.t;
     errors: ModelVerificationError.t list;
@@ -162,9 +185,9 @@ val parse
   ?rule_filter:int list ->
   source:string ->
   configuration:TaintConfiguration.t ->
-  functions:Interprocedural.Callable.HashSet.t option ->
-  stubs:Interprocedural.Callable.HashSet.t ->
-  TaintResult.call_model Interprocedural.Callable.Map.t ->
+  callables:Interprocedural.Target.HashSet.t option ->
+  stubs:Interprocedural.Target.HashSet.t ->
+  TaintResult.call_model Interprocedural.Target.Map.t ->
   T.parse_result
 
 val verify_model_syntax : path:Path.t -> source:string -> unit
@@ -176,7 +199,7 @@ val compute_sources_and_sinks_to_keep
 
 val create_callable_model_from_annotations
   :  resolution:Analysis.Resolution.t ->
-  callable:Interprocedural.Callable.real_target ->
+  callable:Interprocedural.Target.callable_t ->
   sources_to_keep:Sources.Set.t option ->
   sinks_to_keep:Sinks.Set.t option ->
   is_obscure:bool ->

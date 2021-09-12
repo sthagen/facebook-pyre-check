@@ -96,7 +96,6 @@ module Analysis : sig
   [@@deriving show]
 
   type t = {
-    infer: bool;
     configuration_file_hash: string option;
     parallel: bool;
     analyze_external_sources: bool;
@@ -119,7 +118,6 @@ module Analysis : sig
     include_hints: bool;
     perform_autocompletion: bool;
     features: Features.t;
-    ignore_infer: Path.t list;
     log_directory: Path.t;
     python_major_version: int;
     python_minor_version: int;
@@ -129,8 +127,7 @@ module Analysis : sig
   [@@deriving show, eq]
 
   val create
-    :  ?infer:bool ->
-    ?configuration_file_hash:string ->
+    :  ?configuration_file_hash:string ->
     ?parallel:bool ->
     ?analyze_external_sources:bool ->
     ?filter_directories:Path.t list ->
@@ -151,7 +148,6 @@ module Analysis : sig
     ?include_hints:bool ->
     ?perform_autocompletion:bool ->
     ?features:Features.t ->
-    ?ignore_infer:Path.t list ->
     ?log_directory:string ->
     ?python_major_version:int ->
     ?python_minor_version:int ->

@@ -24,7 +24,7 @@ type candidate = {
 }
 
 type features = {
-  simple: Features.SimpleSet.t;
+  breadcrumbs: Features.BreadcrumbSet.t;
   first_indices: Features.FirstIndexSet.t;
   first_fields: Features.FirstFieldSet.t;
 }
@@ -56,7 +56,8 @@ let generate_source_sink_matches ~location ~source_tree ~sink_tree =
   let make_source_sink_matches (path, sink_taint) matches =
     let source_taint =
       ForwardState.Tree.read path source_tree
-      |> ForwardState.Tree.collapse ~transform:(ForwardTaint.add_features Features.issue_broadening)
+      |> ForwardState.Tree.collapse
+           ~transform:(ForwardTaint.add_breadcrumbs Features.issue_broadening)
     in
     if ForwardTaint.is_bottom source_taint then
       matches
@@ -78,22 +79,22 @@ type flow_state = {
 }
 
 let get_issue_features { source_taint; sink_taint } =
-  let simple =
-    let source_features =
+  let breadcrumbs =
+    let source_breadcrumbs =
       ForwardTaint.fold
-        Features.SimpleSet.Self
-        ~f:Features.SimpleSet.join
-        ~init:Features.SimpleSet.bottom
+        Features.BreadcrumbSet.Self
+        ~f:Features.BreadcrumbSet.join
+        ~init:Features.BreadcrumbSet.bottom
         source_taint
     in
-    let sink_features =
+    let sink_breadcrumbs =
       BackwardTaint.fold
-        Features.SimpleSet.Self
-        ~f:Features.SimpleSet.join
-        ~init:Features.SimpleSet.bottom
+        Features.BreadcrumbSet.Self
+        ~f:Features.BreadcrumbSet.join
+        ~init:Features.BreadcrumbSet.bottom
         sink_taint
     in
-    Features.SimpleSet.sequence_join source_features sink_features
+    Features.BreadcrumbSet.sequence_join source_breadcrumbs sink_breadcrumbs
   in
   let first_indices =
     let source_indices =
@@ -131,7 +132,7 @@ let get_issue_features { source_taint; sink_taint } =
     Features.FirstFieldSet.join source_fields sink_fields
   in
 
-  { simple; first_indices; first_fields }
+  { breadcrumbs; first_indices; first_fields }
 
 
 let generate_issues ~define { location; flows } =
@@ -147,11 +148,9 @@ let generate_issues ~define { location; flows } =
     let partition { source_taint; sink_taint } =
       {
         source_partition =
-          ForwardTaint.partition ForwardTaint.leaf By source_taint ~f:(fun leaf ->
-              erase_source_subkind leaf);
+          ForwardTaint.partition ForwardTaint.kind By source_taint ~f:erase_source_subkind;
         sink_partition =
-          BackwardTaint.partition BackwardTaint.leaf By sink_taint ~f:(fun leaf ->
-              erase_sink_subkind leaf);
+          BackwardTaint.partition BackwardTaint.kind By sink_taint ~f:erase_sink_subkind;
       }
     in
     List.map flows ~f:partition
@@ -232,12 +231,12 @@ let get_name_and_detailed_message { code; flow; _ } =
   | None -> failwith "issue with code that has no rule"
   | Some { name; message_format; _ } ->
       let sources =
-        Domains.ForwardTaint.leaves flow.source_taint
+        Domains.ForwardTaint.kinds flow.source_taint
         |> List.map ~f:Sources.show
         |> String.concat ~sep:", "
       in
       let sinks =
-        Domains.BackwardTaint.leaves flow.sink_taint
+        Domains.BackwardTaint.kinds flow.sink_taint
         |> List.map ~f:Sinks.show
         |> String.concat ~sep:", "
       in
@@ -259,7 +258,7 @@ let generate_error ({ code; issue_location; define; _ } as issue) =
 
 
 let to_json ~filename_lookup callable issue =
-  let callable_name = Interprocedural.Callable.external_target_name callable in
+  let callable_name = Interprocedural.Target.external_target_name callable in
   let _, detail = get_name_and_detailed_message issue in
   let message = detail in
   let source_traces =
@@ -268,18 +267,14 @@ let to_json ~filename_lookup callable issue =
   let sink_traces = Domains.BackwardTaint.to_external_json ~filename_lookup issue.flow.sink_taint in
   let features =
     let get_feature_json { Abstract.OverUnderSetDomain.element; in_under } breadcrumbs =
-      let open Features.Simple in
-      match element with
-      | Breadcrumb breadcrumb ->
-          let breadcrumb_json = Features.Breadcrumb.to_json breadcrumb ~on_all_paths:in_under in
-          breadcrumb_json :: breadcrumbs
-      | _ -> breadcrumbs
+      let breadcrumb_json = Features.Breadcrumb.to_json element ~on_all_paths:in_under in
+      breadcrumb_json :: breadcrumbs
     in
-    Features.SimpleSet.fold
-      Features.SimpleSet.ElementAndUnder
+    Features.BreadcrumbSet.fold
+      Features.BreadcrumbSet.ElementAndUnder
       ~f:get_feature_json
       ~init:[]
-      issue.features.simple
+      issue.features.breadcrumbs
   in
   let features =
     List.concat
@@ -329,15 +324,15 @@ let code_metadata () =
 let compute_triggered_sinks ~triggered_sinks ~location ~source_tree ~sink_tree =
   let partial_sinks_to_taint =
     BackwardState.Tree.collapse
-      ~transform:(BackwardTaint.add_features Features.issue_broadening)
+      ~transform:(BackwardTaint.add_breadcrumbs Features.issue_broadening)
       sink_tree
-    |> BackwardTaint.partition BackwardTaint.leaf ByFilter ~f:(function
+    |> BackwardTaint.partition BackwardTaint.kind ByFilter ~f:(function
            | Sinks.PartialSink { Sinks.kind; label } -> Some { Sinks.kind; label }
            | _ -> None)
   in
   if not (Map.Poly.is_empty partial_sinks_to_taint) then
     let sources =
-      source_tree |> ForwardState.Tree.partition ForwardTaint.leaf By ~f:Fn.id |> Map.Poly.keys
+      source_tree |> ForwardState.Tree.partition ForwardTaint.kind By ~f:Fn.id |> Map.Poly.keys
     in
     let add_triggered_sinks (triggered, candidates) sink =
       let add_triggered_sinks_for_source source =

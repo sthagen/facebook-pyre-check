@@ -2,9 +2,9 @@ name: pysa
 
 on:
   push:
-    branches: [ test-2, master ]
+    branches: [ main ]
   pull_request:
-    branches: [ master ]
+    branches: [ main ]
 
   workflow_dispatch:
 
@@ -40,7 +40,7 @@ jobs:
           unzip -qq ./stubs/typeshed/typeshed.zip -d ./typeshed/
           ./scripts/setup.sh --local --no-tests
           make -C source
-          echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
+          echo "PYTHONPATH=$GITHUB_WORKSPACE/..:$PYTHONPATH" >> $GITHUB_ENV
           echo "pythonLocation=$GITHUB_WORKSPACE:$pythonLocation" >> $GITHUB_ENV
           echo "PYRE_BINARY=$GITHUB_WORKSPACE/source/_build/default/main.exe" >> $GITHUB_ENV
           echo "PYRE_TYPESHED=$GITHUB_WORKSPACE/typeshed/typeshed-master/" >> $GITHUB_ENV

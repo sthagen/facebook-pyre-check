@@ -24,7 +24,7 @@ type candidate = {
 }
 
 type features = {
-  simple: Features.SimpleSet.t;
+  breadcrumbs: Features.BreadcrumbSet.t;
   first_indices: Features.FirstIndexSet.t;
   first_fields: Features.FirstFieldSet.t;
 }
@@ -55,7 +55,7 @@ val generate_issues : define:Define.t Node.t -> candidate -> issue list
 
 val to_json
   :  filename_lookup:(Reference.t -> string option) ->
-  Interprocedural.Callable.t ->
+  Interprocedural.Target.t ->
   issue ->
   Yojson.Safe.json
 

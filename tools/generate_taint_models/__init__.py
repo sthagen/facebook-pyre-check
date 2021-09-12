@@ -12,12 +12,13 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Type
+from itertools import chain
+from typing import Dict, List, Optional, Set, Mapping, AbstractSet
 
 from typing_extensions import Final
 
 from ...api.connection import PyreConnection
-from ...client import statistics
+from ...client import statistics_logger
 from .annotated_function_generator import (  # noqa
     AnnotatedFunctionGenerator,
     FunctionVisitor,
@@ -99,7 +100,7 @@ def _parse_arguments(
 
 
 def _report_results(
-    models: Dict[str, Set[Model]], output_directory: Optional[str]
+    models: Mapping[str, AbstractSet[Model]], output_directory: Optional[str]
 ) -> None:
     if output_directory is not None:
         for name in models:
@@ -123,9 +124,7 @@ def _report_results(
             )
         )
     else:
-        all_models = set()
-        for name in models:
-            all_models = all_models.union(models[name])
+        all_models = chain.from_iterable(models.values())
         print("\n".join([str(model) for model in sorted(all_models)]))
 
 
@@ -152,18 +151,18 @@ def run_from_parsed_arguments(
     generated_models: Dict[str, Set[Model]] = {}
     for mode in modes:
         LOG.info("Computing models for `%s`", mode)
-        start = time.time()
-        if mode in generator_options.keys():
-            generated_models[mode] = set(generator_options[mode].generate_models())
-        else:
+        if mode not in generator_options.keys():
+            LOG.warning(f"Unknown mode `{mode}`, skipping.")
             continue
+        start = time.time()
+        generated_models[mode] = set(generator_options[mode].generate_models())
         elapsed_time_seconds = time.time() - start
         LOG.info(f"Computed models for `{mode}` in {elapsed_time_seconds:.3f} seconds.")
 
         if logger_executable is not None:
             elapsed_time_milliseconds = int(elapsed_time_seconds * 1000)
-            statistics.log(
-                statistics.LoggerCategory.PERFORMANCE,
+            statistics_logger.log(
+                statistics_logger.LoggerCategory.PERFORMANCE,
                 integers={"time": elapsed_time_milliseconds},
                 normals={
                     "name": "model generation",

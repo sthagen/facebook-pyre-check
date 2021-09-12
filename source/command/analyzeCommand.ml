@@ -134,7 +134,7 @@ let run_analysis
     (fun () ->
       let timer = Timer.start () in
       Scheduler.with_scheduler ~configuration ~f:(fun scheduler ->
-          Interprocedural.Analysis.initialize_configuration
+          Interprocedural.FixpointAnalysis.initialize_configuration
             ~static_analysis_configuration
             analysis_kind;
 
@@ -160,23 +160,21 @@ let run_analysis
             let { Service.StaticAnalysis.callables_with_dependency_information; stubs; _ } =
               initial_callables
             in
-            Interprocedural.Analysis.initialize_models
+            Interprocedural.FixpointAnalysis.initialize_models
               analysis_kind
               ~static_analysis_configuration
               ~scheduler
               ~environment:(Analysis.TypeEnvironment.read_only environment)
-              ~functions:
-                ( List.map callables_with_dependency_information ~f:fst
-                  :> Interprocedural.Callable.t list )
-              ~stubs:(stubs :> Interprocedural.Callable.t list)
+              ~callables:(List.map callables_with_dependency_information ~f:fst)
+              ~stubs
           in
 
           let environment, initial_callables =
             if inline_decorators then (
               Log.info "Inlining decorators for taint analysis...";
               let timer = Timer.start () in
-              let { Interprocedural.Result.InitializedModels.initial_models; _ } =
-                Interprocedural.Result.InitializedModels.get_models initialized_models
+              let { Interprocedural.AnalysisResult.InitializedModels.initial_models; _ } =
+                Interprocedural.AnalysisResult.InitializedModels.get_models initialized_models
               in
               let updated_environment =
                 Interprocedural.DecoratorHelper.type_environment_with_decorators_inlined
@@ -201,7 +199,7 @@ let run_analysis
                   ~qualifiers
                   ~use_cache:false
               in
-              updated_environment, updated_initial_callables )
+              updated_environment, updated_initial_callables)
             else
               environment, initial_callables
           in
@@ -209,8 +207,8 @@ let run_analysis
           let environment = Analysis.TypeEnvironment.read_only environment in
           let ast_environment = Analysis.TypeEnvironment.ReadOnly.ast_environment environment in
 
-          let { Interprocedural.Result.InitializedModels.initial_models; skip_overrides } =
-            Interprocedural.Result.InitializedModels.get_models_including_generated_models
+          let { Interprocedural.AnalysisResult.InitializedModels.initial_models; skip_overrides } =
+            Interprocedural.AnalysisResult.InitializedModels.get_models_including_generated_models
               initialized_models
               ~updated_environment:(Some environment)
           in

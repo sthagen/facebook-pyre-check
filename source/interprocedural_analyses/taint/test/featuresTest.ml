@@ -22,25 +22,30 @@ let test_add_type_breadcrumb context =
     let actual =
       let open Abstract.OverUnderSetDomain in
       type_breadcrumbs ~resolution (Some annotation)
-      |> SimpleSet.to_approximation
+      |> BreadcrumbSet.to_approximation
       |> List.map ~f:(fun { element; _ } -> element)
       |> List.filter_map ~f:(function
-             | Simple.Breadcrumb (Breadcrumb.Type type_name) -> Some type_name
+             | Breadcrumb.Type type_name -> Some type_name
              | _ -> None)
     in
     assert_equal ~printer:(String.concat ~sep:", ") ~cmp:(List.equal String.equal) expected actual
   in
-  assert_type_based_breadcrumbs Type.integer ["scalar"];
   assert_type_based_breadcrumbs Type.bool ["bool"; "scalar"];
-  assert_type_based_breadcrumbs Type.float ["scalar"];
-  assert_type_based_breadcrumbs (Type.optional Type.integer) ["scalar"];
+  assert_type_based_breadcrumbs Type.enumeration ["enumeration"; "scalar"];
+  assert_type_based_breadcrumbs Type.integer ["integer"; "scalar"];
   assert_type_based_breadcrumbs (Type.optional Type.bool) ["bool"; "scalar"];
+  assert_type_based_breadcrumbs (Type.optional Type.enumeration) ["enumeration"; "scalar"];
+  assert_type_based_breadcrumbs (Type.optional Type.integer) ["integer"; "scalar"];
   assert_type_based_breadcrumbs Type.none [];
   assert_type_based_breadcrumbs Type.Any [];
-  assert_type_based_breadcrumbs (Type.awaitable Type.integer) ["scalar"];
   assert_type_based_breadcrumbs (Type.awaitable Type.bool) ["bool"; "scalar"];
+  assert_type_based_breadcrumbs (Type.awaitable Type.enumeration) ["enumeration"; "scalar"];
+  assert_type_based_breadcrumbs (Type.awaitable Type.integer) ["integer"; "scalar"];
   assert_type_based_breadcrumbs (Type.awaitable (Type.optional Type.bool)) ["bool"; "scalar"];
-  assert_type_based_breadcrumbs (Type.awaitable (Type.optional Type.integer)) ["scalar"]
+  assert_type_based_breadcrumbs
+    (Type.awaitable (Type.optional Type.enumeration))
+    ["enumeration"; "scalar"];
+  assert_type_based_breadcrumbs (Type.awaitable (Type.optional Type.integer)) ["integer"; "scalar"]
 
 
 let () = "features" >::: ["add_type_breadcrumb" >:: test_add_type_breadcrumb] |> Test.run

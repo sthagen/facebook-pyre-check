@@ -3,8 +3,6 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from __future__ import annotations
-
 import json
 import logging
 import os
@@ -14,7 +12,7 @@ import time
 import traceback
 from dataclasses import replace
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 import click
 
@@ -26,10 +24,9 @@ from . import (
     filesystem,
     log,
     recently_used_configurations,
-    statistics as statistics_module,
+    statistics_logger,
 )
 from .commands import Command, ExitCode, v2
-from .commands.analyze import MissingFlowsKind
 from .exceptions import EnvironmentException
 from .version import __version__
 
@@ -41,13 +38,13 @@ def _log_statistics(
     command: Command,
     start_time: float,
     client_exception_message: str,
-    error_message: str | None,
+    error_message: Optional[str],
     exit_code: int,
 ) -> None:
     configuration = command.configuration
     if configuration is not None:
-        statistics_module.log_with_configuration(
-            category=statistics_module.LoggerCategory.USAGE,
+        statistics_logger.log_with_configuration(
+            category=statistics_logger.LoggerCategory.USAGE,
             configuration=configuration,
             integers={
                 "exit_code": exit_code,
@@ -64,13 +61,17 @@ def _log_statistics(
         )
 
 
-def _show_pyre_version_as_text(binary_version: str | None, client_version: str) -> None:
+def _show_pyre_version_as_text(
+    binary_version: Optional[str], client_version: str
+) -> None:
     if binary_version:
         log.stdout.write(f"Binary version: {binary_version}\n")
     log.stdout.write(f"Client version: {__version__}\n")
 
 
-def _show_pyre_version_as_json(binary_version: str | None, client_version: str) -> None:
+def _show_pyre_version_as_json(
+    binary_version: Optional[str], client_version: str
+) -> None:
     version_json = {
         **({} if binary_version is None else {"binary": binary_version}),
         "client": client_version,
@@ -79,7 +80,7 @@ def _show_pyre_version_as_json(binary_version: str | None, client_version: str) 
 
 
 def _show_pyre_version(arguments: command_arguments.CommandArguments) -> None:
-    binary_version: str | None = None
+    binary_version: Optional[str] = None
     client_version: str = __version__
     try:
         configuration = configuration_module.create_configuration(arguments, Path("."))
@@ -254,8 +255,8 @@ def _run_default_command(arguments: command_arguments.CommandArguments) -> ExitC
 def _run_servers_list_command(
     arguments: command_arguments.CommandArguments,
 ) -> ExitCode:
-    if arguments.use_command_v2:
-        return v2.servers.run_list()
+    if arguments.use_command_v2 is not False:
+        return v2.servers.run_list(arguments.output)
     else:
         configuration = configuration_module.create_configuration(arguments, Path("."))
         return run_pyre_command(
@@ -379,7 +380,6 @@ def _check_configuration(configuration: configuration_module.Configuration) -> N
 @click.option("--log-identifier", type=str, default=None, hidden=True)
 @click.option("--dot-pyre-directory", type=str, hidden=True)
 @click.option("--logger", type=str, hidden=True)
-@click.option("--formatter", type=str, hidden=True)
 @click.option(
     "--target",
     type=str,
@@ -446,7 +446,9 @@ def _check_configuration(configuration: configuration_module.Configuration) -> N
 @click.option("--changed-files-path", type=str, hidden=True)
 @click.option("--saved-state-project", type=str, hidden=True)
 @click.option("--features", type=str, hidden=True)
-@click.option("--use-command-v2", is_flag=True, default=None, hidden=True)
+@click.option(
+    "--use-command-v2/--no-use-command-v2", is_flag=True, default=None, hidden=True
+)
 @click.option("--isolation-prefix", type=str, hidden=True)
 @click.option(
     "--python-version",
@@ -478,45 +480,44 @@ def _check_configuration(configuration: configuration_module.Configuration) -> N
 )
 def pyre(
     context: click.Context,
-    local_configuration: str | None,
+    local_configuration: Optional[str],
     version: bool,
     debug: bool,
-    sequential: bool | None,
-    strict: bool | None,
+    sequential: Optional[bool],
+    strict: Optional[bool],
     additional_check: Iterable[str],
     show_error_traces: bool,
     output: str,
     enable_profiling: bool,
     enable_memory_profiling: bool,
     noninteractive: bool,
-    logging_sections: str | None,
-    log_identifier: str | None,
-    dot_pyre_directory: str | None,
-    logger: str | None,
-    formatter: str | None,
+    logging_sections: Optional[str],
+    log_identifier: Optional[str],
+    dot_pyre_directory: Optional[str],
+    logger: Optional[str],
     target: Iterable[str],
-    use_buck_builder: bool | None,
-    buck_mode: str | None,
-    use_buck_source_database: bool | None,
+    use_buck_builder: Optional[bool],
+    buck_mode: Optional[str],
+    use_buck_source_database: Optional[bool],
     source_directory: Iterable[str],
-    filter_directory: str | None,
+    filter_directory: Optional[str],
     no_saved_state: bool,
     search_path: Iterable[str],
-    binary: str | None,
-    buck_builder_binary: str | None,
+    binary: Optional[str],
+    buck_builder_binary: Optional[str],
     exclude: Iterable[str],
-    typeshed: str | None,
-    save_initial_state_to: str | None,
-    load_initial_state_from: str | None,
-    changed_files_path: str | None,
-    saved_state_project: str | None,
-    features: str | None,
-    use_command_v2: bool | None,
-    isolation_prefix: str | None,
-    python_version: str | None,
-    shared_memory_heap_size: int | None,
-    shared_memory_dependency_table_power: int | None,
-    shared_memory_hash_table_power: int | None,
+    typeshed: Optional[str],
+    save_initial_state_to: Optional[str],
+    load_initial_state_from: Optional[str],
+    changed_files_path: Optional[str],
+    saved_state_project: Optional[str],
+    features: Optional[str],
+    use_command_v2: Optional[bool],
+    isolation_prefix: Optional[str],
+    python_version: Optional[str],
+    shared_memory_heap_size: Optional[int],
+    shared_memory_dependency_table_power: Optional[int],
+    shared_memory_hash_table_power: Optional[int],
 ) -> int:
     arguments = command_arguments.CommandArguments(
         local_configuration=local_configuration,
@@ -533,7 +534,6 @@ def pyre(
         logging_sections=logging_sections,
         log_identifier=log_identifier,
         logger=logger,
-        formatter=formatter,
         targets=list(target),
         use_buck_builder=use_buck_builder,
         use_buck_source_database=use_buck_source_database,
@@ -606,7 +606,7 @@ def pyre(
 )
 @click.option(
     "--find-missing-flows",
-    type=click.Choice([kind.value for kind in MissingFlowsKind]),
+    type=click.Choice([kind.value for kind in command_arguments.MissingFlowsKind]),
     help="Perform a taint analysis to find flows through obscure models.",
 )
 @click.option(
@@ -643,49 +643,82 @@ def analyze(
     analysis: str,
     taint_models_path: Iterable[str],
     no_verify: bool,
-    save_results_to: str | None,
+    save_results_to: Optional[str],
     dump_call_graph: bool,
-    repository_root: str | None,
+    repository_root: Optional[str],
     rule: Iterable[int],
-    find_missing_flows: str | None,
+    find_missing_flows: Optional[str],
     dump_model_query_results: bool,
     use_cache: bool,
     inline_decorators: bool,
-    maximum_trace_length: int | None,
-    maximum_tito_depth: int | None,
+    maximum_trace_length: Optional[int],
+    maximum_tito_depth: Optional[int],
 ) -> int:
     """
     Run Pysa, the inter-procedural static analysis tool.
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
-    rules = list(rule)
-    return run_pyre_command(
-        commands.Analyze(
-            command_argument,
-            original_directory=os.getcwd(),
-            configuration=configuration,
-            analysis=analysis,
-            taint_models_path=list(taint_models_path),
-            no_verify=no_verify,
-            save_results_to=save_results_to,
-            dump_call_graph=dump_call_graph,
-            repository_root=repository_root,
-            rules=list(rules) if len(rules) > 0 else None,
-            find_missing_flows=(
-                MissingFlowsKind(find_missing_flows)
+
+    # TODO: Change the condition to `configuration.use_command_v2` when ready
+    if False:
+        _check_configuration(configuration)
+        _start_logging_to_directory(configuration.log_directory)
+        return v2.analyze.run(
+            configuration,
+            command_arguments.AnalyzeArguments(
+                debug=command_argument.debug,
+                dump_call_graph=dump_call_graph,
+                dump_model_query_results=dump_model_query_results,
+                enable_memory_profiling=command_argument.enable_memory_profiling,
+                enable_profiling=command_argument.enable_profiling,
+                find_missing_flows=command_arguments.MissingFlowsKind(
+                    find_missing_flows
+                )
                 if find_missing_flows is not None
-                else None
+                else None,
+                inline_decorators=inline_decorators,
+                log_identifier=command_argument.log_identifier,
+                maximum_tito_depth=maximum_tito_depth,
+                maximum_trace_length=maximum_trace_length,
+                no_verify=no_verify,
+                output=command_argument.output,
+                repository_root=repository_root,
+                rule=list(rule),
+                save_results_to=save_results_to,
+                sequential=command_argument.sequential,
+                taint_models_path=list(taint_models_path),
+                use_cache=use_cache,
             ),
-            dump_model_query_results=dump_model_query_results,
-            use_cache=use_cache,
-            inline_decorators=inline_decorators,
-            maximum_trace_length=maximum_trace_length,
-            maximum_tito_depth=maximum_tito_depth,
-        ),
-        configuration,
-        command_argument.noninteractive,
-    )
+        )
+    else:
+        rules = list(rule)
+        return run_pyre_command(
+            commands.Analyze(
+                command_argument,
+                original_directory=os.getcwd(),
+                configuration=configuration,
+                analysis=analysis,
+                taint_models_path=list(taint_models_path),
+                no_verify=no_verify,
+                save_results_to=save_results_to,
+                dump_call_graph=dump_call_graph,
+                repository_root=repository_root,
+                rules=list(rules) if len(rules) > 0 else None,
+                find_missing_flows=(
+                    command_arguments.MissingFlowsKind(find_missing_flows)
+                    if find_missing_flows is not None
+                    else None
+                ),
+                dump_model_query_results=dump_model_query_results,
+                use_cache=use_cache,
+                inline_decorators=inline_decorators,
+                maximum_trace_length=maximum_trace_length,
+                maximum_tito_depth=maximum_tito_depth,
+            ),
+            configuration,
+            command_argument.noninteractive,
+        )
 
 
 @pyre.command()
@@ -792,13 +825,48 @@ def incremental(
     help="Read input from stdin instead of running a full infer.",
 )
 @click.option(
+    "--annotate-attributes",
+    is_flag=True,
+    default=False,
+    help=(
+        "Allow infer to attempt to annotate class attributes? "
+        "The code-generation logic for this is incomplete, so the "
+        "default is False but you may manually enable it."
+    ),
+)
+@click.option(
+    "--no-future-annotations",
+    is_flag=True,
+    default=False,
+    help=(
+        "Infer assumes it can insert unquoted annotations anywhere in a "
+        "module. In python versions between 3.7 and 3.10, we can ensure this "
+        "is valid by inserting `from __future__ import annotations`, which"
+        "we do by default. You can use this flag to disable the import, which "
+        "is illegal in pre-3.7 python versions and is unnecessary (but allowed) "
+        "in python 3.10+. This flag disables inserting the import."
+    ),
+)
+@click.option(
+    "--quote-annotations",
+    is_flag=True,
+    default=False,
+    help=(
+        "Quote all added type annotations? "
+        "This is recommended when using pyre infer prior to pysa "
+        "because it allows us to avoid introducing imports, which "
+        "is important because then the line numbers match checked-in "
+        "code."
+    ),
+)
+@click.option(
     "--dequalify",
     is_flag=True,
     default=False,
     help=(
         "Dequalify all annotations? This is a temporary flag, used to "
         "force fully-qualified names (e.g. sqlalchemy.sql.schema.Column) "
-        "to be dqualified (e.g. Column). It is needed now because pyre "
+        "to be dequalified (e.g. Column). It is needed now because pyre "
         "infer doesn't yet know how to handle imports and qualified names "
         "in a principled way."
     ),
@@ -809,18 +877,22 @@ def incremental(
     default=False,
     help=(
         "Use (experimental) interprocedural inference. "
-        "Will be slower, but may give better results."
+        "Not recommended except for pyre developers, this work "
+        "is incomplete."
     ),
 )
 @click.pass_context
 def infer(
     context: click.Context,
-    paths_to_modify: Iterable[str],
+    paths_to_modify: List[str],
     print_only: bool,
     in_place: bool,
     annotate_from_existing_stubs: bool,
     debug_infer: bool,
     read_stdin: bool,
+    annotate_attributes: bool,
+    no_future_annotations: bool,
+    quote_annotations: bool,
     dequalify: bool,
     interprocedural: bool,
 ) -> int:
@@ -835,126 +907,33 @@ def infer(
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
-    return run_pyre_command(
-        commands.Infer(
-            command_argument,
-            original_directory=os.getcwd(),
-            configuration=configuration,
-            print_only=print_only,
-            in_place=in_place,
-            paths_to_modify={Path(path) for path in paths_to_modify},
-            annotate_from_existing_stubs=annotate_from_existing_stubs,
-            debug_infer=debug_infer,
-            read_stdin=read_stdin,
-            dequalify=dequalify,
-            interprocedural=interprocedural,
-        ),
-        configuration,
-        command_argument.noninteractive,
+    working_directory = Path.cwd()
+    modify_paths = (
+        None
+        if len(paths_to_modify) == 0
+        else {working_directory / Path(path) for path in paths_to_modify}
     )
-
-
-@pyre.command()
-@click.argument(
-    "paths_to_modify",
-    type=filesystem.file_or_directory_exists,
-    nargs=-1,
-)
-@click.option(
-    "-p",
-    "--print-only",
-    is_flag=True,
-    default=False,
-    help=(
-        "Print raw JSON inference data to standard output, without "
-        "converting to stubs or annnotating."
-    ),
-)
-@click.option(
-    "-i",
-    "--in-place",
-    is_flag=True,
-    default=False,
-    help="Modifies original files and add inferred annotations to all functions.",
-)
-@click.option(
-    "--annotate-from-existing-stubs",
-    is_flag=True,
-    default=False,
-    help="Add annotations from existing stubs.",
-)
-@click.option(
-    "--debug-infer",
-    is_flag=True,
-    default=False,
-    help="Print error message when file fails to annotate.",
-)
-@click.option(
-    "--read-stdin",
-    is_flag=True,
-    default=False,
-    help="Read input from stdin instead of running a full infer.",
-)
-@click.option(
-    "--dequalify",
-    is_flag=True,
-    default=False,
-    help=(
-        "Dequalify all annotations? This is a temporary flag, used to "
-        "force fully-qualified names (e.g. sqlalchemy.sql.schema.Column) "
-        "to be dqualified (e.g. Column). It is needed now because pyre "
-        "infer doesn't yet know how to handle imports and qualified names "
-        "in a principled way."
-    ),
-)
-@click.option(
-    "--interprocedural",
-    is_flag=True,
-    default=False,
-    help=(
-        "Use (experimental) interprocedural inference. "
-        "Will be slower, but may give better results."
-    ),
-)
-@click.pass_context
-def infer_v2(
-    context: click.Context,
-    paths_to_modify: Iterable[str],
-    print_only: bool,
-    in_place: bool,
-    annotate_from_existing_stubs: bool,
-    debug_infer: bool,
-    read_stdin: bool,
-    dequalify: bool,
-    interprocedural: bool,
-) -> int:
-    """
-    Run the (under construction) interprocedural version of pyre infer.
-
-    The optional PATHS_TO_MODIFY argument is a list of directory or file
-    paths to include when annotating in-place.
-
-    If empty, then we'll annotate all relevant modules in-place, and it is
-    ignored unless the `--in-place` flag is set.
-    """
-    command_argument: command_arguments.CommandArguments = context.obj["arguments"]
-    configuration = _create_configuration_with_retry(command_argument, Path("."))
-    return run_pyre_command(
-        commands.Infer(
-            command_argument,
-            original_directory=os.getcwd(),
-            configuration=configuration,
-            print_only=print_only,
-            in_place=in_place,
-            paths_to_modify={Path(path) for path in paths_to_modify},
+    return v2.infer.run(
+        configuration,
+        command_arguments.InferArguments(
+            working_directory=working_directory,
+            annotate_attributes=annotate_attributes,
             annotate_from_existing_stubs=annotate_from_existing_stubs,
+            enable_memory_profiling=command_argument.enable_memory_profiling,
+            enable_profiling=command_argument.enable_profiling,
             debug_infer=debug_infer,
-            read_stdin=read_stdin,
+            quote_annotations=quote_annotations,
             dequalify=dequalify,
             interprocedural=interprocedural,
+            log_identifier=command_argument.log_identifier,
+            logging_sections=command_argument.logging_sections,
+            no_future_annotations=no_future_annotations,
+            in_place=in_place,
+            paths_to_modify=modify_paths,
+            print_only=print_only,
+            read_stdin=read_stdin,
+            sequential=command_argument.sequential,
         ),
-        configuration,
-        command_argument.noninteractive,
     )
 
 
@@ -970,7 +949,7 @@ def init(context: click.Context, local: bool) -> int:
     """
     Create a pyre configuration file at the current directory.
     """
-    return commands.Initialize().run().exit_code()
+    return v2.initialize.run()
 
 
 @pyre.command()
@@ -1163,7 +1142,9 @@ def query(context: click.Context, query: str) -> int:
     help="Number of server logs to include in the diagnositics. Default to 3.",
 )
 @click.pass_context
-def rage(context: click.Context, output_file: str | None, server_log_count: int) -> int:
+def rage(
+    context: click.Context, output_file: Optional[str], server_log_count: int
+) -> int:
     """
     Collects troubleshooting diagnostics for Pyre, and writes this information
     to the terminal or to a file.
@@ -1312,7 +1293,7 @@ def servers_stop(context: click.Context) -> int:
     Stop all running servers.
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
-    if command_argument.use_command_v2:
+    if command_argument.use_command_v2 is not False:
         return v2.servers.run_stop()
     else:
         configuration = configuration_module.create_configuration(
@@ -1421,8 +1402,7 @@ def start(
 
 
 @pyre.command()
-# TODO[T60916205]: Rename this argument, it doesn't make sense anymore
-@click.argument("filter_paths", type=filesystem.exists, nargs=-1)
+@click.argument("filter_paths", type=str, nargs=-1)
 @click.option(
     "--log-results",
     is_flag=True,
@@ -1447,18 +1427,64 @@ def statistics(
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
-    return run_pyre_command(
-        commands.Statistics(
-            command_argument,
-            original_directory=os.getcwd(),
-            configuration=configuration,
-            filter_paths=list(filter_paths),
-            log_results=log_results,
-            aggregate=print_aggregates,
-        ),
-        configuration,
-        command_argument.noninteractive,
-    )
+
+    if configuration.use_command_v2:
+        return v2.statistics.run(
+            configuration,
+            command_arguments.StatisticsArguments(
+                filter_paths=list(filter_paths),
+                log_identifier=command_argument.log_identifier,
+                log_results=log_results,
+                print_aggregates=print_aggregates,
+            ),
+        )
+    else:
+        return run_pyre_command(
+            commands.Statistics(
+                command_argument,
+                original_directory=os.getcwd(),
+                configuration=configuration,
+                filter_paths=list(filter_paths),
+                log_results=log_results,
+                aggregate=print_aggregates,
+            ),
+            configuration,
+            command_argument.noninteractive,
+        )
+
+
+@pyre.command()
+@click.option(
+    "--working-directory",
+    metavar="DIR",
+    default=os.curdir,
+    show_default="current directory",
+    type=str,
+    help="In the output, make paths relative to directory specified.",
+)
+@click.pass_context
+def coverage(
+    context: click.Context,
+    working_directory: str,
+) -> int:
+    """
+    Collect line-level type coverage.
+    """
+    command_argument: command_arguments.CommandArguments = context.obj["arguments"]
+    configuration = _create_configuration_with_retry(command_argument, Path("."))
+    if configuration.use_command_v2:
+        return v2.coverage.run(configuration, working_directory)
+    else:
+        return run_pyre_command(
+            commands.Coverage(
+                command_argument,
+                original_directory=os.getcwd(),
+                configuration=configuration,
+                working_directory=working_directory,
+            ),
+            configuration,
+            command_argument.noninteractive,
+        )
 
 
 @pyre.command()

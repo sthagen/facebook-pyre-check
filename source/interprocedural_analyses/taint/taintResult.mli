@@ -23,35 +23,14 @@ module Forward : sig
   val empty : model
 end
 
-module Sanitize : sig
-  type sanitize_sources =
-    | AllSources
-    | SpecificSources of Sources.t list
-
-  type sanitize_sinks =
-    | AllSinks
-    | SpecificSinks of Sinks.t list
-
-  type sanitize_tito =
-    | AllTito
-    | SpecificTito of {
-        sanitized_tito_sources: Sources.t list;
-        sanitized_tito_sinks: Sinks.t list;
-      }
-  [@@deriving show, compare, eq]
-
-  type t = {
-    sources: sanitize_sources option;
-    sinks: sanitize_sinks option;
-    tito: sanitize_tito option;
+module Sanitizers : sig
+  type model = {
+    global: Sanitize.t;
+    roots: SanitizeRootMap.t;
   }
-  [@@deriving show, eq]
+  [@@deriving show]
 
-  val empty : t
-
-  val is_empty : t -> bool
-
-  val join : t -> t -> t
+  val empty : model
 end
 
 module Mode : sig
@@ -84,7 +63,7 @@ end
 type call_model = {
   forward: Forward.model;
   backward: Backward.model;
-  sanitize: Sanitize.t;
+  sanitizers: Sanitizers.model;
   modes: ModeSet.t;
 }
 
@@ -97,16 +76,16 @@ val should_externalize_model : call_model -> bool
 type result = Flow.issue list
 
 include
-  Interprocedural.Result.ANALYSIS_RESULT_WITH_REGISTRATION
+  Interprocedural.AnalysisResult.ANALYSIS_RESULT_WITH_REGISTRATION
     with type result := result
      and type call_model := call_model
 
 val model_to_json
   :  filename_lookup:(Ast.Reference.t -> string option) ->
-  Interprocedural.Callable.t ->
+  Interprocedural.Target.t ->
   call_model ->
   Yojson.Safe.t
 
 val decorators_to_skip
-  :  Interprocedural.Result.model_t Interprocedural.Callable.Map.t ->
+  :  Interprocedural.AnalysisResult.model_t Interprocedural.Target.Map.t ->
   Ast.Reference.Set.t

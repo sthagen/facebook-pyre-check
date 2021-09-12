@@ -17,7 +17,7 @@ open TaintResult
 exception InvalidModel of string
 
 type t = {
-  call_target: Callable.t;
+  call_target: Target.t;
   model: TaintResult.call_model;
 }
 [@@deriving show]
@@ -33,16 +33,16 @@ let remove_sinks model =
 
 
 let add_obscure_sink ~resolution ~call_target model =
-  match Callable.get_real_target call_target with
+  match Target.get_callable_t call_target with
   | None -> model
   | Some real_target -> (
       match
-        Callable.get_module_and_definition
+        Target.get_module_and_definition
           ~resolution:(Resolution.global_resolution resolution)
           real_target
       with
       | None ->
-          let () = Log.warning "Found no definition for %s" (Callable.show call_target) in
+          let () = Log.warning "Found no definition for %s" (Target.show call_target) in
           model
       | Some (_, { value = { signature = { parameters; _ }; _ }; _ }) ->
           let open Domains in
@@ -56,7 +56,7 @@ let add_obscure_sink ~resolution ~call_target model =
           let sink_taint =
             List.fold_left ~init:model.backward.sink_taint ~f:add_parameter_sink parameters
           in
-          { model with backward = { model.backward with sink_taint } } )
+          { model with backward = { model.backward with sink_taint } })
 
 
 let unknown_callee ~location ~call =
@@ -65,7 +65,7 @@ let unknown_callee ~location ~call =
     | Expression.Call { callee; _ } -> callee
     | _ -> Node.create ~location:(Location.strip_module location) call
   in
-  Interprocedural.Callable.create_function
+  Interprocedural.Target.create_function
     (Reference.create
        (Format.asprintf "%a:%a" Location.WithModule.pp location Expression.pp callee))
 
@@ -99,89 +99,74 @@ let register_unknown_callee_model callable =
          ~path:[]
          local_return
   in
-  Interprocedural.Fixpoint.add_predefined
-    Interprocedural.Fixpoint.Epoch.predefined
+  Interprocedural.FixpointState.add_predefined
+    Interprocedural.FixpointState.Epoch.predefined
     callable
-    (Interprocedural.Result.make_model
+    (Interprocedural.AnalysisResult.make_model
        TaintResult.kind
        {
          TaintResult.forward = Forward.empty;
          backward = { sink_taint; taint_in_taint_out };
-         sanitize = Sanitize.empty;
+         sanitizers = Sanitizers.empty;
          modes = ModeSet.singleton Mode.SkipAnalysis;
        })
 
 
 let get_callsite_model ~resolution ~call_target ~arguments =
-  let call_target = (call_target :> Callable.t) in
-  match Interprocedural.Fixpoint.get_model call_target with
+  let call_target = (call_target :> Target.t) in
+  match Interprocedural.FixpointState.get_model call_target with
   | None -> { call_target; model = TaintResult.obscure_model }
   | Some model ->
       let expand_via_value_of
           {
             forward = { source_taint };
             backward = { sink_taint; taint_in_taint_out };
-            sanitize;
+            sanitizers;
             modes;
           }
         =
-        let expand features =
-          let transform feature features =
+        let expand flow_details =
+          let transform via_feature flow_details =
             let match_argument_to_parameter parameter =
               AccessPath.match_actuals_to_formals arguments [parameter]
               |> List.find ~f:(fun (_, matches) -> not (List.is_empty matches))
               >>| fst
             in
-            match feature with
-            | Features.Simple.ViaValueOf { parameter; tag } ->
-                features
-                |> Features.SimpleSet.remove feature
-                |> Features.SimpleSet.add
-                     (Features.Simple.via_value_of_breadcrumb
-                        ?tag
-                        ~argument:(match_argument_to_parameter parameter))
-            | Features.Simple.ViaTypeOf { parameter; tag } ->
-                features
-                |> Features.SimpleSet.remove feature
-                |> Features.SimpleSet.add
-                     (Features.Simple.via_type_of_breadcrumb
-                        ?tag
-                        ~resolution
-                        ~argument:(match_argument_to_parameter parameter))
-            | _ -> features
+            match via_feature with
+            | Features.ViaFeature.ViaValueOf { parameter; tag } ->
+                FlowDetails.add_breadcrumb
+                  (Features.ViaFeature.via_value_of_breadcrumb
+                     ?tag
+                     ~argument:(match_argument_to_parameter parameter))
+                  flow_details
+            | Features.ViaFeature.ViaTypeOf { parameter; tag } ->
+                FlowDetails.add_breadcrumb
+                  (Features.ViaFeature.via_type_of_breadcrumb
+                     ?tag
+                     ~resolution
+                     ~argument:(match_argument_to_parameter parameter))
+                  flow_details
           in
-          Features.SimpleSet.fold Features.SimpleSet.Element features ~f:transform ~init:features
+          FlowDetails.fold
+            Features.ViaFeatureSet.Element
+            ~f:transform
+            ~init:flow_details
+            flow_details
         in
-        let source_taint =
-          ForwardState.transform
-            ForwardTaint.simple_feature_self
-            Abstract.Domain.Map
-            ~f:expand
-            source_taint
-        in
-        let sink_taint =
-          BackwardState.transform
-            BackwardTaint.simple_feature_self
-            Abstract.Domain.Map
-            ~f:expand
-            sink_taint
-        in
+        let source_taint = ForwardState.transform FlowDetails.Self Map ~f:expand source_taint in
+        let sink_taint = BackwardState.transform FlowDetails.Self Map ~f:expand sink_taint in
         let taint_in_taint_out =
-          BackwardState.transform
-            BackwardTaint.simple_feature_self
-            Abstract.Domain.Map
-            ~f:expand
-            taint_in_taint_out
+          BackwardState.transform FlowDetails.Self Map ~f:expand taint_in_taint_out
         in
         {
           forward = { source_taint };
           backward = { sink_taint; taint_in_taint_out };
-          sanitize;
+          sanitizers;
           modes;
         }
       in
       let taint_model =
-        Interprocedural.Result.get_model TaintResult.kind model
+        Interprocedural.AnalysisResult.get_model TaintResult.kind model
         |> Option.value ~default:TaintResult.empty_model
         |> expand_via_value_of
       in
@@ -246,7 +231,7 @@ let get_global_targets ~resolution ~expression =
 
 let get_global_models ~resolution ~expression =
   let fetch_model target =
-    let call_target = Callable.create_object target in
+    let call_target = Target.create_object target in
     get_callsite_model ~resolution ~call_target ~arguments:[]
   in
   get_global_targets ~resolution ~expression |> List.map ~f:fetch_model
@@ -312,7 +297,10 @@ module GlobalModel = struct
 
 
   let get_sanitize { models; _ } =
-    let get_sanitize existing { model = { TaintResult.sanitize; _ }; _ } =
+    let get_sanitize
+        existing
+        { model = { TaintResult.sanitizers = { global = sanitize; _ }; _ }; _ }
+      =
       Sanitize.join sanitize existing
     in
     List.fold ~init:Sanitize.empty ~f:get_sanitize models
@@ -324,12 +312,12 @@ module GlobalModel = struct
 
 
   let is_sanitized { models; _ } =
-    let is_sanitized_model { model = { TaintResult.sanitize; _ }; _ } =
+    let is_sanitized_model { model = { TaintResult.sanitizers = { global = sanitize; _ }; _ }; _ } =
       match sanitize with
       | {
-       sources = Some TaintResult.Sanitize.AllSources;
-       sinks = Some TaintResult.Sanitize.AllSinks;
-       tito = Some TaintResult.Sanitize.AllTito;
+       sources = Some Sanitize.AllSources;
+       sinks = Some Sanitize.AllSinks;
+       tito = Some Sanitize.AllTito;
       } ->
           true
       | _ -> false
@@ -395,7 +383,7 @@ let infer_class_models ~environment =
             List.foldi ~f:fold_taint ~init:BackwardState.empty attributes;
           sink_taint = BackwardState.empty;
         };
-      sanitize = Sanitize.empty;
+      sanitizers = Sanitizers.empty;
       modes = ModeSet.empty;
     }
   in
@@ -422,7 +410,7 @@ let infer_class_models ~environment =
               List.foldi ~f:fold_taint ~init:BackwardState.empty attributes;
             sink_taint = BackwardState.empty;
           };
-        sanitize = Sanitize.empty;
+        sanitizers = Sanitizers.empty;
         modes = ModeSet.empty;
       }
   in
@@ -449,7 +437,7 @@ let infer_class_models ~environment =
   let inferred_models class_name =
     GlobalResolution.class_definition global_resolution (Type.Primitive class_name)
     >>= compute_models class_name
-    >>| fun model -> `Method { Callable.class_name; method_name = "__init__" }, model
+    >>| fun model -> `Method { Target.class_name; method_name = "__init__" }, model
   in
   let all_classes =
     TypeEnvironment.ReadOnly.global_resolution environment
@@ -458,7 +446,7 @@ let infer_class_models ~environment =
   in
   let models =
     List.filter_map all_classes ~f:inferred_models
-    |> Callable.Map.of_alist_reduce ~f:(TaintResult.join ~iteration:0)
+    |> Target.Map.of_alist_reduce ~f:(TaintResult.join ~iteration:0)
   in
   Statistics.performance
     ~name:"Computed inferred models"
@@ -466,3 +454,90 @@ let infer_class_models ~environment =
     ~timer
     ();
   models
+
+
+let apply_sanitizers
+    {
+      forward = { source_taint };
+      backward = { taint_in_taint_out; sink_taint };
+      sanitizers = { global; roots } as sanitizers;
+      modes;
+    }
+  =
+  (* Apply the global sanitizer. *)
+  let source_taint =
+    match global.sources with
+    | Some Sanitize.AllSources -> ForwardState.empty
+    | Some (Sanitize.SpecificSources sanitized_sources) ->
+        ForwardState.transform
+          ForwardTaint.kind
+          Filter
+          ~f:(fun source -> not (Sources.Set.mem source sanitized_sources))
+          source_taint
+    | None -> source_taint
+  in
+  let taint_in_taint_out =
+    match global.tito with
+    | Some AllTito -> BackwardState.empty
+    | _ -> taint_in_taint_out
+  in
+  let sink_taint =
+    match global.sinks with
+    | Some Sanitize.AllSinks -> BackwardState.empty
+    | Some (Sanitize.SpecificSinks sanitized_sinks) ->
+        BackwardState.transform
+          BackwardTaint.kind
+          Filter
+          ~f:(fun sink -> not (Sinks.Set.mem sink sanitized_sinks))
+          sink_taint
+    | None -> sink_taint
+  in
+  (* Apply root specific sanitizers. *)
+  let sanitize_root (root, sanitize) (source_taint, taint_in_taint_out, sink_taint) =
+    let source_taint =
+      match sanitize.Sanitize.sources with
+      | Some Sanitize.AllSources -> ForwardState.remove root source_taint
+      | Some (Sanitize.SpecificSources sanitized_sources) ->
+          let filter_sources = function
+            | None -> ForwardState.Tree.bottom
+            | Some taint_tree ->
+                ForwardState.Tree.transform
+                  ForwardTaint.kind
+                  Filter
+                  ~f:(fun source -> not (Sources.Set.mem source sanitized_sources))
+                  taint_tree
+          in
+          ForwardState.update source_taint root ~f:filter_sources
+      | None -> source_taint
+    in
+    let taint_in_taint_out =
+      match sanitize.Sanitize.tito with
+      | Some AllTito -> BackwardState.remove root taint_in_taint_out
+      | _ -> taint_in_taint_out
+    in
+    let sink_taint =
+      match sanitize.Sanitize.sinks with
+      | Some Sanitize.AllSinks -> BackwardState.remove root sink_taint
+      | Some (Sanitize.SpecificSinks sanitized_sinks) ->
+          let filter_sinks = function
+            | None -> BackwardState.Tree.bottom
+            | Some taint_tree ->
+                BackwardState.Tree.transform
+                  BackwardTaint.kind
+                  Filter
+                  ~f:(fun sink -> not (Sinks.Set.mem sink sanitized_sinks))
+                  taint_tree
+          in
+          BackwardState.update sink_taint root ~f:filter_sinks
+      | None -> sink_taint
+    in
+    source_taint, taint_in_taint_out, sink_taint
+  in
+  let source_taint, taint_in_taint_out, sink_taint =
+    SanitizeRootMap.fold
+      SanitizeRootMap.KeyValue
+      ~f:sanitize_root
+      ~init:(source_taint, taint_in_taint_out, sink_taint)
+      roots
+  in
+  { forward = { source_taint }; backward = { sink_taint; taint_in_taint_out }; sanitizers; modes }

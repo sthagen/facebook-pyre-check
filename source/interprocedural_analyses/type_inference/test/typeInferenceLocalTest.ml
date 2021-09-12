@@ -11,6 +11,176 @@ open Ast
 open Analysis
 open TypeInference.Data
 open Test
+module State = TypeInference.Local.State
+
+let configuration = Configuration.Analysis.create ~source_path:[] ()
+
+let assert_backward ~resolution precondition statement postcondition =
+  let module State = State (struct
+    let qualifier = Reference.empty
+
+    let configuration = configuration
+
+    let define = +mock_define
+  end)
+  in
+  let create annotations =
+    let resolution =
+      let annotation_store =
+        let annotify (name, annotation) =
+          let annotation =
+            let create annotation = RefinementUnit.create ~base:(Annotation.create annotation) () in
+            create annotation
+          in
+          !&name, annotation
+        in
+        {
+          Resolution.annotations = List.map annotations ~f:annotify |> Reference.Map.of_alist_exn;
+          temporary_annotations = Reference.Map.empty;
+        }
+      in
+      Resolution.with_annotation_store resolution ~annotation_store
+    in
+    State.create ~resolution ()
+  in
+  let assert_state_equal =
+    assert_equal
+      ~cmp:State.equal
+      ~printer:(Format.asprintf "%a" State.pp)
+      ~pp_diff:(diff ~print:State.pp)
+  in
+  let parsed =
+    parse statement
+    |> function
+    | { Source.statements; _ } -> statements
+  in
+  assert_state_equal
+    (create postcondition)
+    (List.fold_right
+       ~f:(fun statement state -> State.backward ~key:Cfg.exit_index state ~statement)
+       ~init:(create precondition)
+       parsed)
+
+
+let test_backward_resolution_handling context =
+  let resolution = ScratchProject.setup ~context [] |> ScratchProject.build_resolution in
+  let assert_backward = assert_backward ~resolution in
+  assert_backward ["y", Type.integer] "pass" ["y", Type.integer];
+
+  (* Assignments. *)
+  assert_backward ["x", Type.integer] "x = y" ["x", Type.integer; "y", Type.integer];
+  assert_backward ["y", Type.integer] "x = z" ["y", Type.integer];
+  assert_backward ["x", Type.integer] "x += 1" ["x", Type.integer];
+  assert_backward ["x", Type.integer] "x = y = z" ["x", Type.integer; "z", Type.integer];
+  assert_backward
+    ["x", Type.Primitive "B"; "y", Type.Primitive "C"]
+    "x = y = z"
+    ["x", Type.Primitive "B"; "y", Type.Primitive "C"; "z", Type.Primitive "B"];
+  assert_backward ["a", Type.integer] "a, b = c, d" ["a", Type.integer; "c", Type.integer];
+  assert_backward ["a", Type.Top; "b", Type.integer] "a = b" ["a", Type.Top; "b", Type.integer];
+
+  (* Tuples *)
+  assert_backward
+    ["x", Type.integer; "y", Type.string]
+    "x, y = z"
+    ["x", Type.integer; "y", Type.string; "z", Type.tuple [Type.integer; Type.string]];
+  assert_backward
+    ["x", Type.tuple [Type.integer; Type.string]]
+    "x = y, z"
+    ["x", Type.tuple [Type.integer; Type.string]; "y", Type.integer; "z", Type.string];
+
+  (* Literals. *)
+  assert_backward [] "x = 1.0" [];
+  assert_backward [] "x = 'string'" [];
+  assert_backward ["x", Type.Primitive "Foo"] "x = 'string'" ["x", Type.Primitive "Foo"];
+  assert_backward ["x", Type.Primitive "Foo"] "x = 'string'" ["x", Type.Primitive "Foo"];
+
+  (* Calls *)
+  assert_backward [] "int_to_str(x)" ["x", Type.integer];
+  assert_backward [] "str_float_to_int(x, y)" ["x", Type.string; "y", Type.float];
+  assert_backward [] "str_float_tuple_to_int(t)" ["t", Type.tuple [Type.string; Type.float]];
+  assert_backward ["x", Type.string] "unknown_to_int(x)" ["x", Type.string];
+  assert_backward ["x", Type.float] "x = int_to_str(x)" ["x", Type.integer];
+  assert_backward ["y", Type.float] "y = int_to_str(x)" ["y", Type.float; "x", Type.integer];
+  assert_backward ["y", Type.integer] "y = int_to_str(x)" ["y", Type.integer; "x", Type.integer];
+  assert_backward [] "str_float_to_int(x)" ["x", Type.string];
+  assert_backward [] "str_float_to_int(x, 1.0)" ["x", Type.string];
+  assert_backward [] "'a'.substr(x)" ["x", Type.integer];
+  assert_backward
+    ["y", Type.float]
+    "y = obj.static_int_to_str(x)"
+    ["y", Type.float; "x", Type.integer];
+  assert_backward [] "str_float_tuple_to_int((x, y))" ["x", Type.string; "y", Type.float];
+  assert_backward
+    []
+    "nested_tuple_to_int(((x, y), z))"
+    ["x", Type.string; "y", Type.float; "z", Type.float];
+  assert_backward
+    [
+      ( "cb",
+        Type.Callable.create
+          ~parameters:(Defined [Named { name = "arg"; annotation = Type.integer; default = false }])
+          ~annotation:Type.none
+          () );
+    ]
+    "cb(x)"
+    [
+      ( "cb",
+        Type.Callable.create
+          ~parameters:(Defined [Named { name = "arg"; annotation = Type.integer; default = false }])
+          ~annotation:Type.none
+          () );
+      "x", Type.integer;
+    ];
+  assert_backward
+    [
+      ( "cb",
+        Type.parametric
+          "BoundMethod"
+          [
+            Single
+              (Type.Callable.create
+                 ~parameters:
+                   (Defined
+                      [
+                        Named { name = "self"; annotation = Type.string; default = false };
+                        Named { name = "arg"; annotation = Type.integer; default = false };
+                      ])
+                 ~annotation:Type.none
+                 ());
+            Single Type.string;
+          ] );
+    ]
+    "cb(x)"
+    [
+      ( "cb",
+        Type.parametric
+          "BoundMethod"
+          [
+            Single
+              (Type.Callable.create
+                 ~parameters:
+                   (Defined
+                      [
+                        Named { name = "self"; annotation = Type.string; default = false };
+                        Named { name = "arg"; annotation = Type.integer; default = false };
+                      ])
+                 ~annotation:Type.none
+                 ());
+            Single Type.string;
+          ] );
+      "x", Type.integer;
+    ];
+
+  (* TODO(T84365830): Extend implementation to pass starred and unstarred tests *)
+  assert_backward [] "str_float_to_int(*(x, y))" [];
+
+  (* "x", Type.string; "y", Type.float *)
+  assert_backward [] "str_float_to_int(**{'s': x, 'f': y})" [];
+
+  (* "x", Type.string; "y", Type.float *)
+  assert_backward [] "star_int_to_int(*[], y)" []
+
 
 let setup_environment scratch_project =
   let { ScratchProject.BuiltGlobalEnvironment.global_environment; _ } =
@@ -22,7 +192,7 @@ let setup_environment scratch_project =
 module Setup = struct
   let set_up_project ~context code =
     let ({ ScratchProject.configuration; _ } as project) =
-      ScratchProject.setup ~context ["test.py", code] ~infer:true
+      ScratchProject.setup ~context ["test.py", code]
     in
     let environment =
       setup_environment project |> TypeEnvironment.create |> TypeEnvironment.read_only
@@ -33,15 +203,20 @@ module Setup = struct
   let run_inference ~context ~target code =
     let environment, configuration = set_up_project ~context code in
     let global_resolution = environment |> TypeEnvironment.ReadOnly.global_resolution in
+    let ast_environment = GlobalResolution.ast_environment global_resolution in
     let source =
-      let ast_environment = GlobalResolution.ast_environment global_resolution in
       AstEnvironment.ReadOnly.get_processed_source ast_environment (Reference.create "test")
       |> fun option -> Option.value_exn option
     in
     let module_results =
-      TypeInference.Local.infer_for_module ~configuration ~global_resolution ~source
+      TypeInference.Local.infer_for_module
+        ~configuration
+        ~global_resolution
+        ~filename_lookup:(Analysis.AstEnvironment.ReadOnly.get_relative ast_environment)
+        ~source
     in
-    let is_target { LocalResult.define = { name; _ }; _ } =
+    let is_target local_result =
+      let name = LocalResult.define_name local_result in
       Reference.equal name (Reference.create target)
     in
     let first = function
@@ -164,6 +339,13 @@ let test_inferred_returns context =
       def foo(a):
           x, _, z = a.b(':')
           return z, x
+    |}
+    ~target:"test.foo"
+    ~expected:{|null|};
+  check_inference_results
+    {|
+      def foo(x):
+          return x, "hello"
     |}
     ~target:"test.foo"
     ~expected:{|null|};
@@ -431,6 +613,19 @@ let test_inferred_function_parameters context =
     |}
     ~target:"test.bar"
     ~expected:(single_parameter ~default:"None" "Optional[str]");
+  (* For given annotations, use expressions rather than types so that the qualifier will match the
+     code rather than the fully qualified type name. This is important for aliased imports *)
+  check_inference_results
+    {|
+      # This is an aliased import.
+      # The full qualifier is sqlalchemy.ext.declarative.api.DeclarativeMeta.
+      from sqlalchemy.ext.declarative import DeclarativeMeta
+
+      def foo(x: DeclarativeMeta) -> None:
+          return None
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter "sqlalchemy.ext.declarative.DeclarativeMeta");
   let no_inferences =
     {|
       [{ "name": "x", "annotation": null, "value": null, "index": 0 }]
@@ -516,6 +711,24 @@ let test_inferred_function_parameters context =
         [
           { "name": "a", "annotation": null, "value": null, "index": 0 },
           { "name": "x", "annotation": "int", "value": "15", "index": 1 }
+        ]
+     |};
+  check_inference_results
+    {|
+      from typing import Any, Dict, Optional, TypeVar
+
+      # copied from typeshed
+      _T = TypeVar("_T")
+      def deepcopy(x: _T, memo: Optional[Dict[int, Any]] = ..., _nil: Any = ...) -> _T: ...
+
+      def foo(x):
+          return deepcopy(x)
+    |}
+    ~target:"test.foo"
+    ~expected:
+      {|
+        [
+          { "name": "x", "annotation": null, "value": null, "index": 0 }
         ]
      |};
   ()
@@ -833,6 +1046,7 @@ let test_inferred_attributes context =
 let () =
   "typeInferenceLocalTest"
   >::: [
+         "test_backward_resolution_handling" >:: test_backward_resolution_handling;
          "test_inferred_returns" >:: test_inferred_returns;
          "test_inferred_function_parameters" >:: test_inferred_function_parameters;
          "test_inferred_method_parameters" >:: test_inferred_method_parameters;

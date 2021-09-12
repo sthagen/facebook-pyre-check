@@ -22,11 +22,26 @@ let test_apply_rule context =
       | Some subkind -> Sources.ParametricSource { source_name = name; subkind }
     in
     Model.Source
-      { source; breadcrumbs = []; path = []; leaf_names = []; leaf_name_provided = false }
+      {
+        source;
+        breadcrumbs = [];
+        via_features = [];
+        path = [];
+        leaf_names = [];
+        leaf_name_provided = false;
+      }
   in
   let sink name =
     let sink = Sinks.NamedSink name in
-    Model.Sink { sink; breadcrumbs = []; path = []; leaf_names = []; leaf_name_provided = false }
+    Model.Sink
+      {
+        sink;
+        breadcrumbs = [];
+        via_features = [];
+        path = [];
+        leaf_names = [];
+        leaf_name_provided = false;
+      }
   in
   let assert_applied_rules ~source ~rule ~callable ~expected =
     let { ScratchProject.BuiltGlobalEnvironment.global_environment; _ } =
@@ -161,7 +176,7 @@ let test_apply_rule context =
         productions = [ReturnTaint [TaintAnnotation (source "Test")]];
         rule_kind = FunctionModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:[];
 
   assert_applied_rules
@@ -176,7 +191,7 @@ let test_apply_rule context =
         productions = [ReturnTaint [TaintAnnotation (source "Test")]];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
 
   (* Multiple productions. *)
@@ -196,7 +211,7 @@ let test_apply_rule context =
           ];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
         Taint.Model.ReturnAnnotation, source "Test";
@@ -219,7 +234,7 @@ let test_apply_rule context =
           [AllParametersTaint { excludes = []; taint = [TaintAnnotation (source "Test")] }];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
         ( Taint.Model.ParameterAnnotation
@@ -244,7 +259,7 @@ let test_apply_rule context =
           [AllParametersTaint { excludes = ["x"]; taint = [TaintAnnotation (source "Test")] }];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
         ( Taint.Model.ParameterAnnotation
@@ -265,7 +280,7 @@ let test_apply_rule context =
           [AllParametersTaint { excludes = ["y"]; taint = [TaintAnnotation (source "Test")] }];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
         ( Taint.Model.ParameterAnnotation
@@ -294,7 +309,7 @@ let test_apply_rule context =
           ];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
         ( Taint.Model.ParameterAnnotation
@@ -321,7 +336,7 @@ let test_apply_rule context =
           ];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
         ( Taint.Model.ParameterAnnotation
@@ -352,7 +367,7 @@ let test_apply_rule context =
           ];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
         ( Taint.Model.ParameterAnnotation
@@ -384,7 +399,7 @@ let test_apply_rule context =
           ];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
         ( Taint.Model.ParameterAnnotation
@@ -413,7 +428,7 @@ let test_apply_rule context =
           ];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
         ( Taint.Model.ParameterAnnotation
@@ -914,11 +929,184 @@ let test_apply_rule context =
             {
               sink = Sinks.ParametricSink { sink_name = "Dynamic"; subkind = "BSink" };
               breadcrumbs = [];
+              via_features = [];
               path = [];
               leaf_names = [];
               leaf_name_provided = false;
             } );
       ];
+  (* Type annotation constraint for callables *)
+  assert_applied_rules
+    ~source:{|
+       def foo(a, b: typing.Annotated[str, "foo"], c: str, d: int): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [AnyParameterConstraint (AnnotationConstraint IsAnnotatedTypeConstraint)];
+        productions =
+          [
+            ParameterTaint
+              {
+                where = [AnnotationConstraint IsAnnotatedTypeConstraint];
+                taint = [TaintAnnotation (source "Test")];
+              };
+          ];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:
+      [
+        ( Taint.Model.ParameterAnnotation
+            (AccessPath.Root.PositionalParameter
+               { position = 1; name = "b"; positional_only = false }),
+          source "Test" );
+      ];
+  assert_applied_rules
+    ~source:{|
+       def foo(a, b: typing.Annotated[str, "foo"], c: str, d: int): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query =
+          [
+            AnyParameterConstraint
+              (AnnotationConstraint (AnnotationNameConstraint (Matches (Re2.create_exn "str"))));
+          ];
+        productions =
+          [
+            ParameterTaint
+              {
+                where =
+                  [AnnotationConstraint (AnnotationNameConstraint (Matches (Re2.create_exn "str")))];
+                taint = [TaintAnnotation (source "Test")];
+              };
+          ];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:
+      [
+        ( Taint.Model.ParameterAnnotation
+            (AccessPath.Root.PositionalParameter
+               { position = 2; name = "c"; positional_only = false }),
+          source "Test" );
+        ( Taint.Model.ParameterAnnotation
+            (AccessPath.Root.PositionalParameter
+               { position = 1; name = "b"; positional_only = false }),
+          source "Test" );
+      ];
+  assert_applied_rules
+    ~source:{|
+       def foo(a, b: typing.Annotated[str, "foo"], c: str, d: int): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query =
+          [AnyParameterConstraint (AnnotationConstraint (AnnotationNameConstraint (Equals "int")))];
+        productions =
+          [
+            ParameterTaint
+              {
+                where = [AnnotationConstraint (AnnotationNameConstraint (Equals "int"))];
+                taint = [TaintAnnotation (source "Test")];
+              };
+          ];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:
+      [
+        ( Taint.Model.ParameterAnnotation
+            (AccessPath.Root.PositionalParameter
+               { position = 3; name = "d"; positional_only = false }),
+          source "Test" );
+      ];
+  assert_applied_rules
+    ~source:{|
+       def foo() -> int: ...
+       def bar() -> str: ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [ReturnConstraint (AnnotationNameConstraint (Equals "int"))];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+  assert_applied_rules
+    ~source:{|
+       def foo() -> int: ...
+       def bar() -> str: ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [ReturnConstraint (AnnotationNameConstraint (Equals "int"))];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.bar")
+    ~expected:[];
+  assert_applied_rules
+    ~source:{|
+       def foo() -> str: ...
+       def bar() -> List[str]: ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [ReturnConstraint (AnnotationNameConstraint (Matches (Re2.create_exn "str")))];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+  assert_applied_rules
+    ~source:{|
+       def foo() -> str: ...
+       def bar() -> typing.List[str]: ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [ReturnConstraint (AnnotationNameConstraint (Matches (Re2.create_exn "str")))];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.bar")
+    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+  assert_applied_rules
+    ~source:{|
+       def foo() -> typing.Annotated[str, "foo"]: ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [ReturnConstraint IsAnnotatedTypeConstraint];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+  assert_applied_rules
+    ~source:{|
+       def foo() -> typing.Annotated[str, "foo"]: ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [ReturnConstraint (AnnotationNameConstraint (Matches (Re2.create_exn "foo")))];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:[];
+
   (* Decorator names. *)
   assert_applied_rules
     ~source:
@@ -1395,7 +1583,7 @@ let test_apply_rule context =
         productions = [ReturnTaint [TaintAnnotation (source "Test")]];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:
@@ -1414,7 +1602,7 @@ let test_apply_rule context =
         productions = [ReturnTaint [TaintAnnotation (source "Test")]];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.D"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.D"; method_name = "foo" })
     ~expected:[];
 
   assert_applied_rules
@@ -1434,7 +1622,7 @@ let test_apply_rule context =
         productions = [ReturnTaint [TaintAnnotation (source "Test")]];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.DC"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.DC"; method_name = "foo" })
     ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
 
   (* Test attribute models. *)
@@ -1538,6 +1726,139 @@ let test_apply_rule context =
       }
     ~attribute_name:"test.E.z"
     ~expected:[];
+  assert_applied_rules_for_attribute
+    ~source:{|
+      class C:
+        x: int
+        y: str
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [AnnotationConstraint (AnnotationNameConstraint (Equals "int"))];
+        productions = [AttributeTaint [TaintAnnotation (source "Test")]];
+        rule_kind = AttributeModel;
+      }
+    ~attribute_name:"test.C.x"
+    ~expected:[source "Test"];
+  assert_applied_rules_for_attribute
+    ~source:{|
+      class C:
+        x: int
+        y: str
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [AnnotationConstraint (AnnotationNameConstraint (Equals "int"))];
+        productions = [AttributeTaint [TaintAnnotation (source "Test")]];
+        rule_kind = AttributeModel;
+      }
+    ~attribute_name:"test.C.y"
+    ~expected:[];
+  assert_applied_rules_for_attribute
+    ~source:
+      {|
+      class Foo1:
+        ...
+      class Foo2:
+        ...
+      class Bar:
+        ...
+      class C:
+        x: Foo1
+        y: Foo2
+        z: Bar
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [AnnotationConstraint (AnnotationNameConstraint (Matches (Re2.create_exn "Foo")))];
+        productions = [AttributeTaint [TaintAnnotation (source "Test")]];
+        rule_kind = AttributeModel;
+      }
+    ~attribute_name:"test.C.x"
+    ~expected:[source "Test"];
+  assert_applied_rules_for_attribute
+    ~source:
+      {|
+      class Foo1:
+        ...
+      class Foo2:
+        ...
+      class Bar:
+        ...
+      class C:
+        x: Foo1
+        y: Foo2
+        z: Bar
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [AnnotationConstraint (AnnotationNameConstraint (Matches (Re2.create_exn "Foo")))];
+        productions = [AttributeTaint [TaintAnnotation (source "Test")]];
+        rule_kind = AttributeModel;
+      }
+    ~attribute_name:"test.C.y"
+    ~expected:[source "Test"];
+  assert_applied_rules_for_attribute
+    ~source:
+      {|
+      class Foo1:
+        ...
+      class Foo2:
+        ...
+      class Bar:
+        ...
+      class C:
+        x: Foo1
+        y: Foo2
+        z: Bar
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [AnnotationConstraint (AnnotationNameConstraint (Matches (Re2.create_exn "Foo")))];
+        productions = [AttributeTaint [TaintAnnotation (source "Test")]];
+        rule_kind = AttributeModel;
+      }
+    ~attribute_name:"test.C.z"
+    ~expected:[];
+  assert_applied_rules_for_attribute
+    ~source:
+      {|
+      from typing import Annotated
+      class C:
+        x: int
+        y: Annotated[str, "foo"]
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [AnnotationConstraint IsAnnotatedTypeConstraint];
+        productions = [AttributeTaint [TaintAnnotation (source "Test")]];
+        rule_kind = AttributeModel;
+      }
+    ~attribute_name:"test.C.x"
+    ~expected:[];
+  assert_applied_rules_for_attribute
+    ~source:
+      {|
+      from typing import Annotated
+      class C:
+        x: int
+        y: Annotated[str, "foo"]
+     |}
+    ~rule:
+      {
+        name = None;
+        query = [AnnotationConstraint IsAnnotatedTypeConstraint];
+        productions = [AttributeTaint [TaintAnnotation (source "Test")]];
+        rule_kind = AttributeModel;
+      }
+    ~attribute_name:"test.C.y"
+    ~expected:[source "Test"];
 
   (* Test 'Not' clause *)
   assert_applied_rules
@@ -1612,7 +1933,7 @@ let test_apply_rule context =
         productions = [ReturnTaint [TaintAnnotation (source "Test")]];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:
@@ -1635,7 +1956,7 @@ let test_apply_rule context =
         productions = [ReturnTaint [TaintAnnotation (source "Test")]];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.DC"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.DC"; method_name = "foo" })
     ~expected:[];
   assert_applied_rules
     ~source:
@@ -1787,7 +2108,7 @@ let test_apply_rule context =
         productions = [ReturnTaint [TaintAnnotation (source "Test")]];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.A"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.A"; method_name = "foo" })
     ~expected:[];
   assert_applied_rules
     ~source:
@@ -1808,7 +2129,7 @@ let test_apply_rule context =
         productions = [ReturnTaint [TaintAnnotation (source "Test")]];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.B"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.B"; method_name = "foo" })
     ~expected:[];
   assert_applied_rules
     ~source:
@@ -1829,7 +2150,7 @@ let test_apply_rule context =
         productions = [ReturnTaint [TaintAnnotation (source "Test")]];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.C"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:[];
   assert_applied_rules
     ~source:
@@ -1850,7 +2171,7 @@ let test_apply_rule context =
         productions = [ReturnTaint [TaintAnnotation (source "Test")]];
         rule_kind = MethodModel;
       }
-    ~callable:(`Method { Interprocedural.Callable.class_name = "test.D"; method_name = "foo" })
+    ~callable:(`Method { Interprocedural.Target.class_name = "test.D"; method_name = "foo" })
     ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
   ()
 

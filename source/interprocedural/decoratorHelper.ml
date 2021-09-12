@@ -12,18 +12,18 @@ open Pyre
 open Statement
 open Expression
 
-let inlined_original_function_name = "__original_function"
+let inlined_original_function_name = "_original_function"
 
 let make_wrapper_function_name decorator_reference =
   Reference.delocalize decorator_reference
   |> Reference.last
-  |> Format.asprintf "__inlined_%s"
+  |> Format.asprintf "_inlined_%s"
   |> Reference.create
 
 
-let args_local_variable_name = "__args"
+let args_local_variable_name = "_args"
 
-let kwargs_local_variable_name = "__kwargs"
+let kwargs_local_variable_name = "_kwargs"
 
 type decorator_reference_and_module = {
   decorator: Reference.t;
@@ -172,7 +172,7 @@ let rename_local_variables ~pairs define =
         Transform.transform_expressions ~transform:rename_identifier (Statement.Define define)
       with
       | Statement.Define define -> define
-      | _ -> failwith "impossible" )
+      | _ -> failwith "impossible")
 
 
 let rename_local_variable ~from ~to_ define = rename_local_variables ~pairs:[from, to_] define
@@ -497,17 +497,17 @@ let call_function_with_precise_parameters
                 ~location
                 ~callee_name:(Reference.create callee_name)
                 ~async
-                ( prefix_arguments
-                @ List.map suffix_parameters ~f:(convert_parameter_to_argument ~location) ) )
+                (prefix_arguments
+                @ List.map suffix_parameters ~f:(convert_parameter_to_argument ~location)))
             else (
               inferred_args_kwargs_parameters := None;
-              expression )
+              expression)
         | _ ->
             (* The wrapper is calling the original function as something other than `original( <some
                arguments>, *args, **kwargs)`. This means it probably has a different signature from
                the original function, so give up on making it have the same signature. *)
             inferred_args_kwargs_parameters := None;
-            expression )
+            expression)
     | expression -> expression
   in
   match
@@ -526,7 +526,7 @@ let call_function_with_precise_parameters
    -> None`. Pass precise arguments to any calls to `callee_name`.
 
    In order to support uses of `args` and `kwargs` within `wrapper_define`, we create synthetic
-   local variables `__args` and `__kwargs` that contain all the arguments. *)
+   local variables `_args` and `_kwargs` that contain all the arguments. *)
 let replace_signature_if_always_passing_on_arguments
     ~callee_name
     ~new_signature:({ Define.Signature.parameters = new_parameters; _ } as new_signature)
@@ -543,8 +543,8 @@ let replace_signature_if_always_passing_on_arguments
       let prefix_parameters = List.rev remaining_parameters in
       let callee_prefix_parameters = List.take new_parameters (List.length prefix_parameters) in
 
-      (* We have to rename `args` and `kwargs` to `__args` and `__kwargs` before transforming calls
-         to `callee`. We also have to rename any prefix parameters.
+      (* We have to rename `args` and `kwargs` to `_args` and `_kwargs` before transforming calls to
+         `callee`. We also have to rename any prefix parameters.
 
          Otherwise, if we rename them after replacing calls to `callee`, we might inadvertently
          rename any `args` or `kwargs` present in `callee`'s parameters. *)
@@ -562,8 +562,7 @@ let replace_signature_if_always_passing_on_arguments
         | Ok pairs ->
             let pairs =
               (args_parameter, args_local_variable_name)
-              :: (kwargs_parameter, kwargs_local_variable_name)
-              :: pairs
+              :: (kwargs_parameter, kwargs_local_variable_name) :: pairs
             in
             Some (rename_local_variables ~pairs define_with_original_signature)
         | Unequal_lengths -> None
@@ -605,11 +604,11 @@ let make_wrapper_define
     ~location
     ~qualifier
     ~define:
-      ( {
-          Define.signature =
-            { parent; return_annotation = original_return_annotation; _ } as original_signature;
-          _;
-        } as define )
+      ({
+         Define.signature =
+           { parent; return_annotation = original_return_annotation; _ } as original_signature;
+         _;
+       } as define)
     ~function_to_call
     {
       wrapper_define =
@@ -654,8 +653,8 @@ let make_wrapper_define
   in
   let wrapper_qualifier = Reference.create ~prefix:qualifier wrapper_function_name in
   let make_helper_define
-      ( { Define.signature = { name = { Node.value = helper_function_name; _ }; _ }; _ } as
-      helper_define )
+      ({ Define.signature = { name = { Node.value = helper_function_name; _ }; _ }; _ } as
+      helper_define)
     =
     let helper_function_reference = Reference.delocalize helper_function_name in
     let new_helper_function_reference =
@@ -700,11 +699,11 @@ let make_wrapper_define
 let inline_decorators_at_same_scope
     ~location
     ~head_decorator:
-      ( {
-          outer_decorator_reference = head_outer_decorator_reference;
-          decorator_call_location = head_decorator_call_location;
-          _;
-        } as head_decorator )
+      ({
+         outer_decorator_reference = head_outer_decorator_reference;
+         decorator_call_location = head_decorator_call_location;
+         _;
+       } as head_decorator)
     ~tail_decorators
     ({ Define.signature = { name = { Node.value = name; _ }; _ }; _ } as define)
   =
@@ -749,11 +748,11 @@ let inline_decorators_at_same_scope
         is_implicit = false;
         expression =
           Some
-            ( create_function_call_to
-                ~location:head_decorator_call_location
-                ~callee_name:(make_wrapper_function_name head_outer_decorator_reference)
-                outer_signature
-            |> Node.create ~location );
+            (create_function_call_to
+               ~location:head_decorator_call_location
+               ~callee_name:(make_wrapper_function_name head_outer_decorator_reference)
+               outer_signature
+            |> Node.create ~location);
       }
     |> Node.create ~location
   in
@@ -837,7 +836,7 @@ let inline_decorators ~decorator_bodies source =
 
     let transform_expression_children _ _ = true
 
-    let transform_children _ _ = true
+    let transform_children state _ = state, true
 
     let expression _ expression = expression
 

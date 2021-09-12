@@ -3,7 +3,6 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import re
 from dataclasses import dataclass
 from functools import lru_cache
 from itertools import islice
@@ -100,6 +99,11 @@ class ClassHierarchy:
         return self.hierarchy.get(class_name, [])
 
 
+@dataclass
+class PyreCache:
+    class_hierarchy: Optional[ClassHierarchy] = None
+
+
 class InvalidModel(NamedTuple):
     fully_qualified_name: str
     path: Optional[str]
@@ -153,12 +157,30 @@ def defines(
 def get_class_hierarchy(pyre_connection: PyreConnection) -> ClassHierarchy:
     result = pyre_connection.query_server("dump_class_hierarchy()")
 
-    hierarchy = {
-        key: edges
-        for annotation_and_edges in result["response"]
-        for key, edges in annotation_and_edges.items()
-    }
-    return ClassHierarchy(hierarchy)
+    return ClassHierarchy(
+        {
+            key: edges
+            for annotation_and_edges in result["response"]
+            for key, edges in annotation_and_edges.items()
+        }
+    )
+
+
+def get_cached_class_hierarchy(
+    pyre_connection: PyreConnection, pyre_cache: Optional[PyreCache]
+) -> ClassHierarchy:
+    cached_class_hierarchy = (
+        pyre_cache.class_hierarchy if pyre_cache is not None else None
+    )
+    if cached_class_hierarchy is not None:
+        return cached_class_hierarchy
+
+    class_hierarchy = get_class_hierarchy(pyre_connection)
+
+    if pyre_cache is not None:
+        pyre_cache.class_hierarchy = class_hierarchy
+
+    return class_hierarchy
 
 
 def _annotations_per_file(data: PyreQueryResult) -> Dict[str, List[Annotation]]:

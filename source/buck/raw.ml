@@ -5,8 +5,10 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+open Base
+
 module ArgumentList = struct
-  type t = string list
+  type t = string list [@@deriving sexp_of]
 
   let to_buck_command arguments =
     let open Core in
@@ -29,6 +31,7 @@ exception
     description: string;
     exit_code: int option;
   }
+[@@deriving sexp_of]
 
 type t = {
   query: ?isolation_prefix:string -> string list -> string Lwt.t;
@@ -106,7 +109,7 @@ let create () =
             let description =
               Format.sprintf "Buck stopped with %s signal" (PrintSignal.string_of_signal signal)
             in
-            fail_with_error description )
+            fail_with_error description)
   in
   let query ?isolation_prefix arguments = invoke_buck ?isolation_prefix ("query" :: arguments) in
   let build ?isolation_prefix arguments = invoke_buck ?isolation_prefix ("build" :: arguments) in

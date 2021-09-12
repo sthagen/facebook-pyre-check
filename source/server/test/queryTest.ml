@@ -325,8 +325,8 @@ let test_handle_query_basic context =
          class B(A): ...
       |}
     ~query:
-      ( "is_compatible_with(typing.Type[test.B],"
-      ^ "typing.Coroutine[typing.Any, typing.Any, typing.Type[test.A]])" )
+      ("is_compatible_with(typing.Type[test.B],"
+      ^ "typing.Coroutine[typing.Any, typing.Any, typing.Type[test.A]])")
     ~actual:(Type.meta (Type.Primitive "test.B"))
     ~expected:(Type.meta (Type.Primitive "test.A"))
     true;
@@ -1199,32 +1199,32 @@ let test_inline_decorators context =
   in
   assert_response
     (Query.Request.inline_decorators (Reference.create "test.foo"))
-    ( {|
+    ({|
       {
       "response": {
         "definition": "def test.foo(a: int) -> int:
-        def __original_function(a: int) -> int:
+        def _original_function(a: int) -> int:
           return a|}
     ^ "\n        "
     ^ {|
-        def __inlined_identity(a: int) -> int:
-          __args = (a)
-          __kwargs = { \"a\":a }
-          return __original_function(a)|}
+        def _inlined_identity(a: int) -> int:
+          _args = (a)
+          _kwargs = { \"a\":a }
+          return _original_function(a)|}
     ^ "\n        "
     ^ {|
-        def __inlined_with_logging(a: int) -> int:
-          __args = (a)
-          __kwargs = { \"a\":a }
-          print(__args, __kwargs)
-          return __inlined_identity(a)|}
+        def _inlined_with_logging(a: int) -> int:
+          _args = (a)
+          _kwargs = { \"a\":a }
+          print(_args, _kwargs)
+          return _inlined_identity(a)|}
     ^ "\n        "
     ^ {|
-        return __inlined_with_logging(a)
+        return _inlined_with_logging(a)
       "
       }
       }
-    |} );
+    |});
   assert_response
     (Query.Request.inline_decorators (Reference.create "test.non_existent"))
     {|
@@ -1248,26 +1248,26 @@ let test_inline_decorators context =
          function_reference = Reference.create "test.foo";
          decorators_to_skip = [!&"decorators.identity"; !&"some.non_existent.decorator"];
        })
-    ( {|
+    ({|
       {
         "response": {
           "definition": "def test.foo(a: int) -> int:
-        def __original_function(a: int) -> int:
+        def _original_function(a: int) -> int:
           return a|}
     ^ "\n        "
     ^ {|
-        def __inlined_with_logging(a: int) -> int:
-          __args = (a)
-          __kwargs = { \"a\":a }
-          print(__args, __kwargs)
-          return __original_function(a)|}
+        def _inlined_with_logging(a: int) -> int:
+          _args = (a)
+          _kwargs = { \"a\":a }
+          print(_args, _kwargs)
+          return _original_function(a)|}
     ^ "\n        "
     ^ {|
-        return __inlined_with_logging(a)
+        return _inlined_with_logging(a)
       "
         }
       }
-    |} );
+    |});
   ()
 
 

@@ -10,18 +10,8 @@ open Analysis
 open Pyre
 
 type environment_data = {
-  module_tracker: ModuleTracker.t;
-  ast_environment: AstEnvironment.t;
   global_environment: AnnotatedGlobalEnvironment.ReadOnly.t;
-  global_resolution: GlobalResolution.t;
   qualifiers: Ast.Reference.t list;
-}
-
-type result = {
-  module_tracker: ModuleTracker.t;
-  ast_environment: AstEnvironment.t;
-  global_environment: AnnotatedGlobalEnvironment.ReadOnly.t;
-  errors: Analysis.InferenceError.t list;
 }
 
 let build_environment_data
@@ -68,62 +58,44 @@ let build_environment_data
     in
     global_environment, qualifiers
   in
+  { global_environment; qualifiers }
+
+
+let run_infer
+    ~configuration
+    ~scheduler
+    ~filename_lookup
+    ~paths_to_modify
+    { global_environment; qualifiers }
+  =
+  Log.info "Running inference...";
+  let timer = Timer.start () in
   let global_resolution = GlobalResolution.create global_environment in
-  { module_tracker; ast_environment; global_environment; global_resolution; qualifiers }
-
-
-let run_infer ~scheduler ~configuration ~global_resolution qualifiers =
-  let number_of_sources = List.length qualifiers in
-  Log.info "Running inference...";
-  let timer = Timer.start () in
   let ast_environment = GlobalResolution.ast_environment global_resolution in
-  let map _ qualifiers =
-    let analyze_source (errors, number_files) source =
-      let new_errors = Inference.run ~configuration ~global_resolution ~source in
-      List.append new_errors errors, number_files + 1
-    in
-    List.filter_map qualifiers ~f:(AstEnvironment.ReadOnly.get_processed_source ast_environment)
-    |> List.fold ~init:([], 0) ~f:analyze_source
+  let should_analyze =
+    match paths_to_modify with
+    | None -> fun _qualifier -> true
+    | Some paths_to_modify ->
+        let paths_to_modify = String.Set.of_list paths_to_modify in
+        fun qualifier ->
+          qualifier
+          |> filename_lookup
+          >>| String.Set.mem paths_to_modify
+          |> Option.value ~default:false
   in
-  let reduce (left_errors, left_number_files) (right_errors, right_number_files) =
-    let number_files = left_number_files + right_number_files in
-    Log.log ~section:`Progress "Processed %d of %d sources" number_files number_of_sources;
-    List.append left_errors right_errors, number_files
-  in
-  let errors, _ =
-    Scheduler.map_reduce
-      scheduler
-      ~policy:(Scheduler.Policy.legacy_fixed_chunk_size 75)
-      ~initial:([], 0)
-      ~map
-      ~reduce
-      ~inputs:qualifiers
-      ()
-  in
-  Statistics.performance ~name:"inference" ~phase_name:"Type inference" ~timer ();
-  errors
-
-
-let infer ~configuration ~scheduler () =
-  let { module_tracker; ast_environment; global_environment; global_resolution; qualifiers } =
-    build_environment_data ~configuration ~scheduler ()
-  in
-  let errors = run_infer ~scheduler ~configuration ~global_resolution qualifiers in
-  { module_tracker; ast_environment; global_environment; errors }
-
-
-let run_infer_v2 ~scheduler ~configuration ~global_resolution qualifiers =
-  Log.info "Running inference...";
-  let timer = Timer.start () in
-  let ast_environment = GlobalResolution.ast_environment global_resolution in
+  let qualifiers = qualifiers |> List.filter ~f:should_analyze in
   let map _ qualifiers =
     let analyze_qualifier qualifier =
       let analyze_source source =
-        TypeInference.Local.infer_for_module ~configuration ~global_resolution ~source
+        TypeInference.Local.infer_for_module
+          ~configuration
+          ~global_resolution
+          ~filename_lookup
+          ~source
       in
-      AstEnvironment.ReadOnly.get_processed_source ast_environment qualifier >>| analyze_source
+      qualifier |> AstEnvironment.ReadOnly.get_processed_source ast_environment >>| analyze_source
     in
-    List.filter_map qualifiers ~f:analyze_qualifier |> List.concat
+    qualifiers |> List.filter_map ~f:analyze_qualifier |> List.concat
   in
   let reduce left right = List.append left right in
   let results =
@@ -137,10 +109,4 @@ let run_infer_v2 ~scheduler ~configuration ~global_resolution qualifiers =
       ()
   in
   Statistics.performance ~name:"inference" ~phase_name:"Type inference" ~timer ();
-  results
-
-
-let infer_v2 ~configuration ~scheduler () =
-  let { global_resolution; qualifiers; _ } = build_environment_data ~configuration ~scheduler () in
-  run_infer_v2 ~scheduler ~configuration ~global_resolution qualifiers
-  |> TypeInference.Data.GlobalResult.from_local_results ~global_resolution
+  TypeInference.Data.GlobalResult.from_local_results ~global_resolution results

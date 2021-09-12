@@ -297,6 +297,7 @@ and Expression : sig
     | UnaryOperator of UnaryOperator.t
     | WalrusOperator of WalrusOperator.t
     | Yield of t option
+    | YieldFrom of t
 
   and t = expression Node.t [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
@@ -346,8 +347,6 @@ val exists_in_list : ?match_prefix:bool -> expression_list:t list -> string -> b
 val arguments_location : Call.t -> Location.t
 
 val get_item_call : string -> expression Node.t list -> location:Location.t -> expression
-
-val is_private_attribute : string -> bool
 
 val is_dunder_attribute : string -> bool
 

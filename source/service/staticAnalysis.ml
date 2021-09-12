@@ -9,7 +9,7 @@ open Core
 open Ast
 open Statement
 open Pyre
-module Callable = Interprocedural.Callable
+module Target = Interprocedural.Target
 module TypeEnvironment = Analysis.TypeEnvironment
 module AstEnvironment = Analysis.AstEnvironment
 module GlobalResolution = Analysis.GlobalResolution
@@ -17,12 +17,12 @@ module DependencyGraph = Interprocedural.DependencyGraph
 module DependencyGraphSharedMemory = Interprocedural.DependencyGraphSharedMemory
 
 (* The boolean indicated whether the callable is internal or not. *)
-type callable_with_dependency_information = Callable.real_target * bool
+type callable_with_dependency_information = Target.callable_t * bool
 
 type initial_callables = {
   callables_with_dependency_information: callable_with_dependency_information list;
-  stubs: Callable.real_target list;
-  filtered_callables: Callable.Set.t;
+  stubs: Target.callable_t list;
+  filtered_callables: Target.Set.t;
 }
 
 module InitialCallablesSharedMemory = Memory.Serializer (struct
@@ -132,7 +132,7 @@ end = struct
       with
       | error ->
           is_initialized := false;
-          raise error )
+          raise error)
 
 
   let save_shared_memory ~configuration =
@@ -265,7 +265,7 @@ end = struct
     let path = get_callgraph_save_path ~configuration in
     try
       let sexp = Sexplib.Sexp.load_sexp (Path.absolute path) in
-      let callgraph = Callable.RealMap.t_of_sexp (Core.List.t_of_sexp Callable.t_of_sexp) sexp in
+      let callgraph = Target.CallableMap.t_of_sexp (Core.List.t_of_sexp Target.t_of_sexp) sexp in
       Log.info "Loaded call graph from cache.";
       Some callgraph
     with
@@ -278,7 +278,7 @@ end = struct
   let save_call_graph ~configuration ~callgraph =
     let path = get_callgraph_save_path ~configuration in
     try
-      let data = Callable.RealMap.sexp_of_t (Core.List.sexp_of_t Callable.sexp_of_t) callgraph in
+      let data = Target.CallableMap.sexp_of_t (Core.List.sexp_of_t Target.sexp_of_t) callgraph in
       ensure_save_directory_exists ~configuration;
       Sexplib.Sexp.save (Path.absolute path) data;
       Log.info "Saved call graph to cache file: %s" (Path.absolute path)
@@ -331,11 +331,11 @@ let unfiltered_callables ~resolution ~source:{ Source.source_path = { SourcePath
     |> List.concat
     |> List.filter ~f:(fun { Node.value = define; _ } -> not (Define.is_overloaded_function define))
   in
-  List.map ~f:(fun define -> Callable.create define, define) defines
+  List.map ~f:(fun define -> Target.create define, define) defines
 
 
 type found_callable = {
-  callable: Callable.real_target;
+  callable: Target.callable_t;
   define: Define.t Node.t;
   is_internal: bool;
 }
@@ -380,11 +380,11 @@ let fetch_callables_to_analyze ~scheduler ~environment ~configuration ~qualifier
   in
   let map result qualifiers =
     let make_callables
-        ( {
-            callables_with_dependency_information = existing_callables;
-            stubs = existing_stubs;
-            filtered_callables = existing_filtered_callables;
-          } as result )
+        ({
+           callables_with_dependency_information = existing_callables;
+           stubs = existing_stubs;
+           filtered_callables = existing_filtered_callables;
+         } as result)
         qualifier
       =
       get_source ~environment qualifier
@@ -399,7 +399,7 @@ let fetch_callables_to_analyze ~scheduler ~environment ~configuration ~qualifier
               List.fold
                 new_filtered_callables
                 ~init:existing_filtered_callables
-                ~f:(Fn.flip Callable.Set.add)
+                ~f:(Fn.flip Target.Set.add)
             in
             { callables_with_dependency_information = callables; stubs; filtered_callables })
       |> Option.value ~default:result
@@ -417,7 +417,7 @@ let fetch_callables_to_analyze ~scheduler ~environment ~configuration ~qualifier
     {
       callables_with_dependency_information = List.rev_append new_callables callables;
       stubs = List.rev_append new_stubs stubs;
-      filtered_callables = Callable.Set.union new_filtered_callables filtered_callables;
+      filtered_callables = Target.Set.union new_filtered_callables filtered_callables;
     }
   in
   Scheduler.map_reduce
@@ -430,7 +430,7 @@ let fetch_callables_to_analyze ~scheduler ~environment ~configuration ~qualifier
       {
         callables_with_dependency_information = [];
         stubs = [];
-        filtered_callables = Callable.Set.empty;
+        filtered_callables = Target.Set.empty;
       }
     ~inputs:qualifiers
     ()
@@ -538,7 +538,8 @@ let record_overrides_for_qualifiers
 let build_call_graph
     ~scheduler
     ~static_analysis_configuration:
-      ({ Configuration.StaticAnalysis.configuration; use_cache; _ } as static_analysis_configuration)
+      ({ Configuration.StaticAnalysis.configuration; use_cache; _ } as
+      static_analysis_configuration)
     ~environment
     ~qualifiers
   =
@@ -568,9 +569,9 @@ let build_call_graph
         Scheduler.map_reduce
           scheduler
           ~policy:(Scheduler.Policy.legacy_fixed_chunk_count ())
-          ~initial:Callable.RealMap.empty
+          ~initial:Target.CallableMap.empty
           ~map:(fun _ qualifiers ->
-            List.fold qualifiers ~init:Callable.RealMap.empty ~f:build_call_graph)
+            List.fold qualifiers ~init:Target.CallableMap.empty ~f:build_call_graph)
           ~reduce:(Map.merge_skewed ~combine:(fun ~key:_ left _ -> left))
           ~inputs:qualifiers
           ()
@@ -587,7 +588,7 @@ let build_call_graph
    dependees (i.e. override targets to overrides + callers to callees) into a scheduling graph that
    maps dependees to dependers. *)
 let build_dependency_graph ~callables_with_dependency_information ~callgraph ~override_dependencies =
-  let override_targets = (Callable.Map.keys override_dependencies :> Callable.t list) in
+  let override_targets = (Target.Map.keys override_dependencies :> Target.t list) in
   let dependencies, callables_to_analyze =
     let dependencies =
       DependencyGraph.from_callgraph callgraph |> DependencyGraph.union override_dependencies
@@ -596,7 +597,7 @@ let build_dependency_graph ~callables_with_dependency_information ~callgraph ~ov
       DependencyGraph.prune
         dependencies
         ~callables_with_dependency_information:
-          (callables_with_dependency_information :> (Callable.t * bool) list)
+          (callables_with_dependency_information :> (Target.t * bool) list)
     in
     DependencyGraph.reverse dependencies, pruned_callables
   in
@@ -605,10 +606,10 @@ let build_dependency_graph ~callables_with_dependency_information ~callgraph ~ov
      these by joining models for all overrides *)
   let () =
     let add_predefined callable =
-      Interprocedural.Fixpoint.add_predefined
-        Interprocedural.Fixpoint.Epoch.initial
+      Interprocedural.FixpointState.add_predefined
+        Interprocedural.FixpointState.Epoch.initial
         callable
-        Interprocedural.Result.empty_model
+        Interprocedural.AnalysisResult.empty_model
     in
     List.iter override_targets ~f:add_predefined
   in
@@ -619,7 +620,8 @@ let analyze
     ~scheduler
     ~analysis
     ~static_analysis_configuration:
-      ({ Configuration.StaticAnalysis.configuration; use_cache; _ } as static_analysis_configuration)
+      ({ Configuration.StaticAnalysis.configuration; use_cache; _ } as
+      static_analysis_configuration)
     ~filename_lookup
     ~environment
     ~qualifiers
@@ -630,10 +632,9 @@ let analyze
   =
   Log.info "Recording initial models in shared memory...";
   let timer = Timer.start () in
-  Interprocedural.Analysis.record_initial_models
-    ~functions:
-      (List.map callables_with_dependency_information ~f:fst :> Interprocedural.Callable.t list)
-    ~stubs:(stubs :> Interprocedural.Callable.t list)
+  Interprocedural.FixpointAnalysis.record_initial_models
+    ~callables:(List.map callables_with_dependency_information ~f:fst)
+    ~stubs
     initial_models;
   Statistics.performance
     ~name:"Recorded initial models"
@@ -680,20 +681,20 @@ let analyze
   let callables_to_analyze = List.rev_append override_targets callables_to_analyze in
   let fixpoint_timer = Timer.start () in
   let compute_fixpoint () =
-    Interprocedural.Analysis.compute_fixpoint
+    Interprocedural.FixpointAnalysis.compute_fixpoint
       ~scheduler
       ~environment
       ~analysis
       ~dependencies
       ~filtered_callables
       ~all_callables:callables_to_analyze
-      Interprocedural.Fixpoint.Epoch.initial
+      Interprocedural.FixpointState.Epoch.initial
   in
   let report_results fixpoint_iterations =
     let callables =
-      Callable.Set.of_list (List.rev_append (Callable.Map.keys initial_models) callables_to_analyze)
+      Target.Set.of_list (List.rev_append (Target.Map.keys initial_models) callables_to_analyze)
     in
-    Interprocedural.Analysis.report_results
+    Interprocedural.FixpointAnalysis.report_results
       ~scheduler
       ~static_analysis_configuration
       ~environment

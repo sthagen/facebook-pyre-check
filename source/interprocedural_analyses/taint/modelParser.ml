@@ -18,9 +18,9 @@ open TaintResult
 open Model
 
 module T = struct
-  type breadcrumbs = Features.Simple.t list [@@deriving show, compare]
+  type breadcrumbs = Features.Breadcrumb.t list [@@deriving show, compare]
 
-  let _ = show_breadcrumbs (* unused but derived *)
+  type via_features = Features.ViaFeature.t list [@@deriving show, compare]
 
   type leaf_kind =
     | Leaf of {
@@ -28,11 +28,26 @@ module T = struct
         subkind: string option;
       }
     | Breadcrumbs of breadcrumbs
+    | ViaFeatures of via_features
+  [@@deriving show, compare]
+
+  type sanitize_annotation =
+    | AllSources
+    | SpecificSource of Sources.t
+    | AllSinks
+    | SpecificSink of Sinks.t
+    | AllTito
+    | SpecificTito of {
+        sources: Sources.t list;
+        sinks: Sinks.t list;
+      }
+  [@@deriving show, compare]
 
   type taint_annotation =
     | Sink of {
         sink: Sinks.t;
         breadcrumbs: breadcrumbs;
+        via_features: via_features;
         path: Abstract.TreeDomain.Label.path;
         leaf_names: Features.LeafName.t list;
         leaf_name_provided: bool;
@@ -40,6 +55,7 @@ module T = struct
     | Source of {
         source: Sources.t;
         breadcrumbs: breadcrumbs;
+        via_features: via_features;
         path: Abstract.TreeDomain.Label.path;
         leaf_names: Features.LeafName.t list;
         leaf_name_provided: bool;
@@ -47,12 +63,15 @@ module T = struct
     | Tito of {
         tito: Sinks.t;
         breadcrumbs: breadcrumbs;
+        via_features: via_features;
         path: Abstract.TreeDomain.Label.path;
       }
     | AddFeatureToArgument of {
         breadcrumbs: breadcrumbs;
+        via_features: via_features;
         path: Abstract.TreeDomain.Label.path;
       }
+    | Sanitize of sanitize_annotation list
   [@@deriving show, compare]
 
   type annotation_kind =
@@ -117,6 +136,7 @@ module T = struct
 
     type model_constraint =
       | NameConstraint of name_constraint
+      | AnnotationConstraint of annotation_constraint
       | ReturnConstraint of annotation_constraint
       | AnyParameterConstraint of ParameterConstraint.t
       | AnyOf of model_constraint list
@@ -177,7 +197,7 @@ module T = struct
   end
 
   type parse_result = {
-    models: TaintResult.call_model Interprocedural.Callable.Map.t;
+    models: TaintResult.call_model Interprocedural.Target.Map.t;
     queries: ModelQuery.rule list;
     skip_overrides: Reference.Set.t;
     errors: ModelVerificationError.t list;
@@ -196,8 +216,6 @@ let invalid_model_error ~path ~location ~name message =
 
 module ClassDefinitionsCache = ModelVerifier.ClassDefinitionsCache
 
-(* Don't propagate inferred model of methods with Sanitize *)
-
 let decorators = String.Set.union Recognized.property_decorators Recognized.classproperty_decorators
 
 let is_property define = String.Set.exists decorators ~f:(Define.has_decorator define)
@@ -206,12 +224,18 @@ let signature_is_property signature =
   String.Set.exists decorators ~f:(Define.Signature.has_decorator signature)
 
 
+(* Return `X` if the expression is of the form `X[Y]`, otherwise `None`. *)
 let base_name expression =
   match expression with
   | {
    Node.value =
      Expression.Name
-       (Name.Attribute { base = { Node.value = Name (Name.Identifier identifier); _ }; _ });
+       (Name.Attribute
+         {
+           base = { Node.value = Name (Name.Identifier identifier); _ };
+           attribute = "__getitem__";
+           special = true;
+         });
    _;
   } ->
       Some identifier
@@ -250,20 +274,18 @@ let rec parse_annotations
         in
         match List.find_mapi parameters ~f:matches_parameter_name with
         | Some index -> Ok index
-        | None -> Error (annotation_error (Format.sprintf "No such parameter `%s`" name)) )
+        | None -> Error (annotation_error (Format.sprintf "No such parameter `%s`" name)))
   in
   let rec extract_breadcrumbs ?(is_dynamic = false) expression =
     let open TaintConfiguration in
     match expression.Node.value with
     | Expression.Name (Name.Identifier breadcrumb) ->
-        let feature =
-          if is_dynamic then
-            Ok (Features.Simple.Breadcrumb (Features.Breadcrumb.SimpleVia breadcrumb))
-          else
-            Features.simple_via ~allowed:configuration.features breadcrumb
-            |> map_error ~f:annotation_error
-        in
-        feature >>| fun feature -> [feature]
+        if is_dynamic then
+          Ok [Features.Breadcrumb.SimpleVia breadcrumb]
+        else
+          Features.Breadcrumb.simple_via ~allowed:configuration.features breadcrumb
+          >>| (fun breadcrumb -> [breadcrumb])
+          |> map_error ~f:annotation_error
     | Tuple expressions ->
         List.map ~f:(extract_breadcrumbs ~is_dynamic) expressions |> all |> map ~f:List.concat
     | _ ->
@@ -343,14 +365,14 @@ let rec parse_annotations
             extract_via_tag expression
             >>= fun tag ->
             extract_via_parameters expression
-            >>| List.map ~f:(fun parameter -> Features.Simple.ViaValueOf { parameter; tag })
-            >>| fun breadcrumbs -> [Breadcrumbs breadcrumbs]
+            >>| List.map ~f:(fun parameter -> Features.ViaFeature.ViaValueOf { parameter; tag })
+            >>| fun via_features -> [ViaFeatures via_features]
         | Some "ViaTypeOf" ->
             extract_via_tag expression
             >>= fun tag ->
             extract_via_parameters expression
-            >>| List.map ~f:(fun parameter -> Features.Simple.ViaTypeOf { parameter; tag })
-            >>| fun breadcrumbs -> [Breadcrumbs breadcrumbs]
+            >>| List.map ~f:(fun parameter -> Features.ViaFeature.ViaTypeOf { parameter; tag })
+            >>| fun via_features -> [ViaFeatures via_features]
         | Some "Updates" ->
             let to_leaf name =
               get_parameter_position name
@@ -365,7 +387,7 @@ let rec parse_annotations
             List.map kinds ~f:(fun kind ->
                 match kind with
                 | Leaf { name; subkind = None } -> Leaf { name; subkind }
-                | _ -> kind) )
+                | _ -> kind))
     | Call { callee; _ } -> extract_kinds callee
     | Tuple expressions -> List.map ~f:extract_kinds expressions |> all >>| List.concat
     | _ ->
@@ -377,58 +399,88 @@ let rec parse_annotations
   in
   let extract_leafs expression =
     extract_kinds expression
-    >>| List.partition_map ~f:(function
-            | Leaf { name = leaf; subkind } -> Either.First (leaf, subkind)
-            | Breadcrumbs b -> Either.Second b)
-    >>| fun (kinds, breadcrumbs) -> kinds, List.concat breadcrumbs
+    >>| fun leaves ->
+    let kinds, leaves =
+      List.partition_map
+        ~f:(function
+          | Leaf { name = leaf; subkind } -> Either.First (leaf, subkind)
+          | other -> Either.Second other)
+        leaves
+    in
+    let breadcrumbs, via_features =
+      List.partition_map
+        ~f:(function
+          | Breadcrumbs b -> Either.First b
+          | ViaFeatures f -> Either.Second f
+          | _ -> failwith "impossible")
+        leaves
+    in
+    kinds, List.concat breadcrumbs, List.concat via_features
   in
   let get_source_kinds expression =
     let open TaintConfiguration in
     extract_leafs expression
-    >>= fun (kinds, breadcrumbs) ->
+    >>= fun (kinds, breadcrumbs, via_features) ->
     List.map kinds ~f:(fun (kind, subkind) ->
         AnnotationParser.parse_source ~allowed:configuration.sources ?subkind kind
         >>| fun source ->
-        Source { source; breadcrumbs; path = []; leaf_names = []; leaf_name_provided = false })
+        Source
+          {
+            source;
+            breadcrumbs;
+            via_features;
+            path = [];
+            leaf_names = [];
+            leaf_name_provided = false;
+          })
     |> all
     |> map_error ~f:annotation_error
   in
   let get_sink_kinds expression =
     let open TaintConfiguration in
     extract_leafs expression
-    >>= fun (kinds, breadcrumbs) ->
+    >>= fun (kinds, breadcrumbs, via_features) ->
     List.map kinds ~f:(fun (kind, subkind) ->
         AnnotationParser.parse_sink ~allowed:configuration.sinks ?subkind kind
         >>| fun sink ->
-        Sink { sink; breadcrumbs; path = []; leaf_names = []; leaf_name_provided = false })
+        Sink
+          {
+            sink;
+            breadcrumbs;
+            via_features;
+            path = [];
+            leaf_names = [];
+            leaf_name_provided = false;
+          })
     |> all
     |> map_error ~f:annotation_error
   in
   let get_taint_in_taint_out expression =
     let open TaintConfiguration in
     extract_leafs expression
-    >>= fun (kinds, breadcrumbs) ->
+    >>= fun (kinds, breadcrumbs, via_features) ->
     match kinds with
-    | [] -> Ok [Tito { tito = Sinks.LocalReturn; breadcrumbs; path = [] }]
+    | [] -> Ok [Tito { tito = Sinks.LocalReturn; breadcrumbs; via_features; path = [] }]
     | _ ->
         List.map kinds ~f:(fun (kind, _) ->
             AnnotationParser.parse_sink ~allowed:configuration.sinks kind
-            >>| fun sink -> Tito { tito = sink; breadcrumbs; path = [] })
+            >>| fun sink -> Tito { tito = sink; breadcrumbs; via_features; path = [] })
         |> all
         |> map_error ~f:annotation_error
   in
   let extract_attach_features ~name expression =
     let keep_features = function
-      | Breadcrumbs breadcrumbs -> Some breadcrumbs
+      | Breadcrumbs breadcrumbs -> Some (Either.First breadcrumbs)
+      | ViaFeatures via_features -> Some (Either.Second via_features)
       | _ -> None
     in
     (* Ensure AttachToX annotations don't have any non-Via annotations for now. *)
     extract_kinds expression
     >>| List.map ~f:keep_features
     >>| Option.all
-    >>| Option.map ~f:List.concat
+    >>| Option.map ~f:(List.partition_map ~f:Fn.id)
     >>= function
-    | Some features -> Ok features
+    | Some (breadcrumbs, via_features) -> Ok (List.concat breadcrumbs, List.concat via_features)
     | None ->
         Error
           (annotation_error
@@ -453,38 +505,29 @@ let rec parse_annotations
             }
             :: _;
         }
-    | Call
-        {
-          callee;
-          arguments =
-            [
-              { Call.Argument.value = { Node.value = index; _ }; _ };
-              { Call.Argument.value = { Node.value = expression; _ }; _ };
-            ];
-        }
       when [%compare.equal: string option] (base_name callee) (Some "AppliesTo") ->
-        let extend_path annotation =
-          let field =
-            match index with
-            | Expression.Integer index -> Ok (Abstract.TreeDomain.Label.create_int_index index)
-            | Expression.String { StringLiteral.value = index; _ } ->
-                Ok (Abstract.TreeDomain.Label.create_name_index index)
-            | _ ->
-                Error
-                  (annotation_error
-                     "Expected either integer or string as index in AppliesTo annotation.")
-          in
-          field
-          >>| fun field ->
-          match annotation with
-          | Sink ({ path; _ } as sink) -> Sink { sink with path = field :: path }
-          | Source ({ path; _ } as source) -> Source { source with path = field :: path }
-          | Tito ({ path; _ } as tito) -> Tito { tito with path = field :: path }
-          | AddFeatureToArgument ({ path; _ } as add_feature_to_argument) ->
-              AddFeatureToArgument { add_feature_to_argument with path = field :: path }
+        let field =
+          match index with
+          | Expression.Integer index -> Ok (Abstract.TreeDomain.Label.create_int_index index)
+          | Expression.String { StringLiteral.value = index; _ } ->
+              Ok (Abstract.TreeDomain.Label.create_name_index index)
+          | _ ->
+              Error
+                (annotation_error
+                   "Expected either integer or string as index in AppliesTo annotation.")
         in
+        let extend_path field = function
+          | Sink ({ path; _ } as sink) -> Ok (Sink { sink with path = field :: path })
+          | Source ({ path; _ } as source) -> Ok (Source { source with path = field :: path })
+          | Tito ({ path; _ } as tito) -> Ok (Tito { tito with path = field :: path })
+          | AddFeatureToArgument ({ path; _ } as add_feature_to_argument) ->
+              Ok (AddFeatureToArgument { add_feature_to_argument with path = field :: path })
+          | Sanitize _ -> Error (annotation_error "`AppliesTo[Sanitize[...]]` is not supported.")
+        in
+        field
+        >>= fun field ->
         parse_annotation expression
-        >>= fun annotations -> List.map ~f:extend_path annotations |> all
+        >>= fun annotations -> List.map ~f:(extend_path field) annotations |> all
     | Call { callee; arguments }
       when [%compare.equal: string option] (base_name callee) (Some "CrossRepositoryTaint") -> (
         match arguments with
@@ -541,7 +584,7 @@ let rec parse_annotations
             Error
               (annotation_error
                  "Cross repository taint must be of the form CrossRepositoryTaint[taint, \
-                  canonical_name, canonical_port, producer_id].") )
+                  canonical_name, canonical_port, producer_id]."))
     | Call { callee; arguments }
       when [%compare.equal: string option] (base_name callee) (Some "CrossRepositoryTaintAnchor")
       -> (
@@ -595,9 +638,17 @@ let rec parse_annotations
             Error
               (annotation_error
                  "Cross repository taint anchor must be of the form \
-                  CrossRepositoryTaintAnchor[taint, canonical_name, canonical_port].") )
-    | Call
-        { callee; arguments = { Call.Argument.value = { value = Tuple expressions; _ }; _ } :: _ }
+                  CrossRepositoryTaintAnchor[taint, canonical_name, canonical_port]."))
+    | Name (Name.Identifier "Sanitize") -> Ok [Sanitize [AllSources; AllSinks; AllTito]]
+    | Call { callee; arguments }
+      when [%compare.equal: string option] (base_name callee) (Some "Sanitize") ->
+        let parse_argument { Call.Argument.value = { Node.value = expression; _ }; _ } =
+          parse_sanitize_annotation expression
+        in
+        List.map ~f:parse_argument arguments
+        |> all
+        >>| fun annotations -> [Sanitize (List.concat annotations)]
+    | Call { callee; arguments = [{ Call.Argument.value = { value = Tuple expressions; _ }; _ }] }
       when [%compare.equal: string option] (base_name callee) (Some "Union") ->
         List.map expressions ~f:(fun expression ->
             parse_annotations
@@ -610,7 +661,7 @@ let rec parse_annotations
               expression)
         |> all
         |> map ~f:List.concat
-    | Call { callee; arguments = { Call.Argument.value = expression; _ } :: _ } -> (
+    | Call { callee; arguments = [{ Call.Argument.value = expression; _ }] } -> (
         let open Core.Result in
         match base_name callee with
         | Some "TaintSink" -> get_sink_kinds expression
@@ -618,15 +669,17 @@ let rec parse_annotations
         | Some "TaintInTaintOut" -> get_taint_in_taint_out expression
         | Some "AddFeatureToArgument" ->
             extract_leafs expression
-            >>| fun (_, breadcrumbs) -> [AddFeatureToArgument { breadcrumbs; path = [] }]
+            >>| fun (_, breadcrumbs, via_features) ->
+            [AddFeatureToArgument { breadcrumbs; via_features; path = [] }]
         | Some "AttachToSink" ->
             extract_attach_features ~name:"AttachToSink" expression
-            >>| fun breadcrumbs ->
+            >>| fun (breadcrumbs, via_features) ->
             [
               Sink
                 {
                   sink = Sinks.Attach;
                   breadcrumbs;
+                  via_features;
                   path = [];
                   leaf_names = [];
                   leaf_name_provided = false;
@@ -634,15 +687,17 @@ let rec parse_annotations
             ]
         | Some "AttachToTito" ->
             extract_attach_features ~name:"AttachToTito" expression
-            >>| fun breadcrumbs -> [Tito { tito = Sinks.Attach; breadcrumbs; path = [] }]
+            >>| fun (breadcrumbs, via_features) ->
+            [Tito { tito = Sinks.Attach; breadcrumbs; via_features; path = [] }]
         | Some "AttachToSource" ->
             extract_attach_features ~name:"AttachToSource" expression
-            >>| fun breadcrumbs ->
+            >>| fun (breadcrumbs, via_features) ->
             [
               Source
                 {
                   source = Sources.Attach;
                   breadcrumbs;
+                  via_features;
                   path = [];
                   leaf_names = [];
                   leaf_name_provided = false;
@@ -666,8 +721,9 @@ let rec parse_annotations
                         _;
                       };
                     arguments =
-                      { Call.Argument.value = { Node.value = Name (Name.Identifier label); _ }; _ }
-                      :: _;
+                      [
+                        { Call.Argument.value = { Node.value = Name (Name.Identifier label); _ }; _ };
+                      ];
                   } ->
                   if not (String.Map.Tree.mem configuration.partial_sink_labels kind) then
                     Error
@@ -695,14 +751,15 @@ let rec parse_annotations
                 {
                   sink = partial_sink;
                   breadcrumbs = [];
+                  via_features = [];
                   path = [];
                   leaf_names = [];
                   leaf_name_provided = false;
                 };
             ]
-        | _ -> invalid_annotation_error () )
+        | _ -> invalid_annotation_error ())
     | Name (Name.Identifier "TaintInTaintOut") ->
-        Ok [Tito { tito = Sinks.LocalReturn; breadcrumbs = []; path = [] }]
+        Ok [Tito { tito = Sinks.LocalReturn; breadcrumbs = []; via_features = []; path = [] }]
     | Expression.Tuple expressions ->
         List.map expressions ~f:(fun expression ->
             parse_annotations
@@ -714,8 +771,83 @@ let rec parse_annotations
               ~callable_parameter_names_to_positions
               expression)
         |> all
-        |> map ~f:List.concat
+        >>| List.concat
     | _ -> invalid_annotation_error ()
+  and parse_sanitize_annotation = function
+    | Expression.Tuple expressions ->
+        List.map ~f:(fun expression -> parse_sanitize_annotation expression.Node.value) expressions
+        |> all
+        >>| List.concat
+    | Expression.Name (Name.Identifier "TaintSource") -> Ok [AllSources]
+    | Expression.Name (Name.Identifier "TaintSink") -> Ok [AllSinks]
+    | Expression.Name (Name.Identifier "TaintInTaintOut") -> Ok [AllTito]
+    | Expression.Call
+        { Call.callee; arguments = [{ Call.Argument.value = { Node.value = expression; _ }; _ }] }
+      when [%compare.equal: string option] (base_name callee) (Some "TaintInTaintOut") ->
+        let gather_sources_sinks (sources, sinks) = function
+          | Source
+              {
+                source;
+                breadcrumbs = [];
+                via_features = [];
+                leaf_names = [];
+                leaf_name_provided = false;
+                path = [];
+              } ->
+              Ok (source :: sources, sinks)
+          | Sink
+              {
+                sink;
+                breadcrumbs = [];
+                via_features = [];
+                leaf_names = [];
+                leaf_name_provided = false;
+                path = [];
+              } ->
+              Ok (sources, sink :: sinks)
+          | taint_annotation ->
+              Error
+                (annotation_error
+                   (Format.asprintf
+                      "`%a` is not supported within `Sanitize[TaintInTaintOut[...]]`"
+                      pp_taint_annotation
+                      taint_annotation))
+        in
+        parse_annotation expression
+        >>= List.fold_result ~init:([], []) ~f:gather_sources_sinks
+        >>| fun (sources, sinks) -> [SpecificTito { sources; sinks }]
+    | expression ->
+        let to_sanitize = function
+          | Source
+              {
+                source;
+                breadcrumbs = [];
+                via_features = [];
+                leaf_names = [];
+                leaf_name_provided = false;
+                path = [];
+              } ->
+              Ok (SpecificSource source)
+          | Sink
+              {
+                sink;
+                breadcrumbs = [];
+                via_features = [];
+                leaf_names = [];
+                leaf_name_provided = false;
+                path = [];
+              } ->
+              Ok (SpecificSink sink)
+          | taint_annotation ->
+              Error
+                (annotation_error
+                   (Format.asprintf
+                      "`%a` is not supported within `Sanitize[...]`"
+                      pp_taint_annotation
+                      taint_annotation))
+        in
+        parse_annotation expression
+        >>= fun annotations -> List.map ~f:to_sanitize annotations |> all
   in
   parse_annotation (Node.value annotation)
 
@@ -728,13 +860,14 @@ let introduce_sink_taint
     ~leaf_name_provided
     ({ TaintResult.backward = { sink_taint; _ }; _ } as taint)
     taint_sink_kind
+    via_features
     breadcrumbs
   =
   let open Core.Result in
   let should_keep_taint =
     match sinks_to_keep with
     | None -> true
-    | Some sinks_to_keep -> Core.Set.mem sinks_to_keep taint_sink_kind
+    | Some sinks_to_keep -> Sinks.Set.mem taint_sink_kind sinks_to_keep
   in
   if should_keep_taint then
     let backward =
@@ -757,11 +890,13 @@ let introduce_sink_taint
               taint
           in
           let leaf_names = Features.LeafNameSet.of_list leaf_names in
-          let breadcrumbs = Features.SimpleSet.of_approximation breadcrumbs in
+          let breadcrumbs = Features.BreadcrumbSet.of_approximation breadcrumbs in
+          let via_features = Features.ViaFeatureSet.of_list via_features in
           let leaf_taint =
             BackwardTaint.singleton taint_sink_kind
-            |> BackwardTaint.transform BackwardTaint.leaf_name_set Add ~f:leaf_names
-            |> BackwardTaint.transform BackwardTaint.simple_feature_self Add ~f:breadcrumbs
+            |> BackwardTaint.transform Features.LeafNameSet.Self Add ~f:leaf_names
+            |> BackwardTaint.transform Features.BreadcrumbSet.Self Add ~f:breadcrumbs
+            |> BackwardTaint.transform Features.ViaFeatureSet.Self Add ~f:via_features
             |> transform_trace_information
             |> BackwardState.Tree.create_leaf
           in
@@ -778,6 +913,7 @@ let introduce_taint_in_taint_out
     ~path
     ({ TaintResult.backward = { taint_in_taint_out; _ }; _ } as taint)
     taint_sink_kind
+    via_features
     breadcrumbs
   =
   let open Core.Result in
@@ -785,23 +921,28 @@ let introduce_taint_in_taint_out
     let assign_backward_taint environment taint =
       BackwardState.assign ~weak:true ~root ~path taint environment
     in
-    let breadcrumbs = Features.SimpleSet.of_approximation breadcrumbs in
+    let breadcrumbs = Features.BreadcrumbSet.of_approximation breadcrumbs in
+    let via_features = Features.ViaFeatureSet.of_list via_features in
     match taint_sink_kind with
     | Sinks.LocalReturn ->
         let return_taint =
           Domains.local_return_taint
-          |> BackwardTaint.transform BackwardTaint.simple_feature_self Add ~f:breadcrumbs
+          |> BackwardTaint.transform Features.BreadcrumbSet.Self Add ~f:breadcrumbs
+          |> BackwardTaint.transform Features.ViaFeatureSet.Self Add ~f:via_features
           |> BackwardState.Tree.create_leaf
         in
         let taint_in_taint_out = assign_backward_taint taint_in_taint_out return_taint in
         Ok { taint.backward with taint_in_taint_out }
-    | Sinks.Attach when Features.SimpleSet.is_empty breadcrumbs ->
+    | Sinks.Attach
+      when Features.BreadcrumbSet.is_empty breadcrumbs
+           && Features.ViaFeatureSet.is_bottom via_features ->
         Error "`Attach` must be accompanied by a list of features to attach."
     | Sinks.ParameterUpdate _
     | Sinks.Attach ->
         let update_taint =
           BackwardTaint.singleton taint_sink_kind
-          |> BackwardTaint.transform BackwardTaint.simple_feature_self Add ~f:breadcrumbs
+          |> BackwardTaint.transform Features.BreadcrumbSet.Self Add ~f:breadcrumbs
+          |> BackwardTaint.transform Features.ViaFeatureSet.Self Add ~f:via_features
           |> BackwardState.Tree.create_leaf
         in
         let taint_in_taint_out = assign_backward_taint taint_in_taint_out update_taint in
@@ -823,18 +964,24 @@ let introduce_source_taint
     ~leaf_name_provided
     ({ TaintResult.forward = { source_taint }; _ } as taint)
     taint_source_kind
+    via_features
     breadcrumbs
   =
   let open Core.Result in
   let should_keep_taint =
     match sources_to_keep with
     | None -> true
-    | Some sources_to_keep -> Core.Set.mem sources_to_keep taint_source_kind
+    | Some sources_to_keep -> Sources.Set.mem taint_source_kind sources_to_keep
   in
-  if Sources.equal taint_source_kind Sources.Attach && List.is_empty breadcrumbs then
+  if
+    Sources.equal taint_source_kind Sources.Attach
+    && List.is_empty breadcrumbs
+    && List.is_empty via_features
+  then
     Error "`Attach` must be accompanied by a list of features to attach."
   else if should_keep_taint then
-    let breadcrumbs = Features.SimpleSet.of_approximation breadcrumbs in
+    let breadcrumbs = Features.BreadcrumbSet.of_approximation breadcrumbs in
+    let via_features = Features.ViaFeatureSet.of_list via_features in
     let source_taint =
       let transform_trace_information taint =
         if leaf_name_provided then
@@ -852,8 +999,9 @@ let introduce_source_taint
       let leaf_taint =
         let leaf_names = Features.LeafNameSet.of_list leaf_names in
         ForwardTaint.singleton taint_source_kind
-        |> ForwardTaint.transform ForwardTaint.leaf_name_set Add ~f:leaf_names
-        |> ForwardTaint.transform ForwardTaint.simple_feature_self Add ~f:breadcrumbs
+        |> ForwardTaint.transform Features.LeafNameSet.Self Add ~f:leaf_names
+        |> ForwardTaint.transform Features.BreadcrumbSet.Self Add ~f:breadcrumbs
+        |> ForwardTaint.transform Features.ViaFeatureSet.Self Add ~f:via_features
         |> transform_trace_information
         |> ForwardState.Tree.create_leaf
       in
@@ -862,6 +1010,40 @@ let introduce_source_taint
     Ok { taint with forward = { source_taint } }
   else
     Ok taint
+
+
+let sanitize_from_annotations annotations =
+  let open Domains in
+  let to_sanitize = function
+    | AllSources -> { Sanitize.empty with sources = Some AllSources }
+    | SpecificSource source ->
+        { Sanitize.empty with sources = Some (SpecificSources (Sources.Set.singleton source)) }
+    | AllSinks -> { Sanitize.empty with sinks = Some AllSinks }
+    | SpecificSink sink ->
+        { Sanitize.empty with sinks = Some (SpecificSinks (Sinks.Set.singleton sink)) }
+    | AllTito -> { Sanitize.empty with tito = Some AllTito }
+    | SpecificTito { sources; sinks } ->
+        {
+          Sanitize.empty with
+          tito =
+            Some
+              (SpecificTito
+                 {
+                   sanitized_tito_sources = Sources.Set.of_list sources;
+                   sanitized_tito_sinks = Sinks.Set.of_list sinks;
+                 });
+        }
+  in
+  annotations |> List.map ~f:to_sanitize |> List.fold ~init:Sanitize.empty ~f:Sanitize.join
+
+
+let introduce_sanitize ~root model annotations =
+  let roots =
+    Domains.SanitizeRootMap.of_list [root, sanitize_from_annotations annotations]
+    |> Domains.SanitizeRootMap.join model.sanitizers.roots
+  in
+  let sanitizers = { model.sanitizers with roots } in
+  { model with sanitizers }
 
 
 let parse_find_clause ~path ({ Node.value; location } as expression) =
@@ -877,7 +1059,7 @@ let parse_find_clause ~path ({ Node.value; location } as expression) =
                ~path
                ~location
                ~name:"model query"
-               (Format.sprintf "Unsupported find clause `%s`" unsupported)) )
+               (Format.sprintf "Unsupported find clause `%s`" unsupported)))
   | _ ->
       Error
         (invalid_model_error
@@ -911,21 +1093,6 @@ let is_class_member_clause_kind find_clause =
   | _ -> false
 
 
-let parse_annotation_constraint ~name ~arguments ~path ~location =
-  match name, arguments with
-  | "is_annotated_type", [] -> Ok ModelQuery.IsAnnotatedTypeConstraint
-  | _ ->
-      Error
-        (invalid_model_error
-           ~path
-           ~location
-           ~name:"model query"
-           (Format.sprintf
-              "`%s(%s)` does not correspond to an annotation constraint."
-              name
-              (List.to_string arguments ~f:Call.Argument.show)))
-
-
 let parse_name_constraint ~path ~location ({ Node.value; _ } as constraint_expression) =
   match value with
   | Expression.Call
@@ -955,14 +1122,64 @@ let parse_name_constraint ~path ~location ({ Node.value; _ } as constraint_expre
           match attribute with
           | "matches" -> Ok (ModelQuery.Matches (Re2.create_exn name_constraint))
           | "equals" -> Ok (ModelQuery.Equals name_constraint)
-          | _ -> failwith "impossible case" )
+          | _ -> failwith "impossible case")
       | _ ->
           Error
             (model_verification_error
                ~path
                ~location
-               (InvalidModelQueryClauseArguments { callee; arguments })) )
+               (InvalidModelQueryClauseArguments { callee; arguments })))
   | _ -> Error (model_verification_error ~path ~location (InvalidNameClause constraint_expression))
+
+
+let parse_annotation_constraint ~path ~location ({ Node.value; _ } as constraint_expression) =
+  match value with
+  | Expression.Call
+      {
+        Call.callee =
+          {
+            Node.value =
+              Expression.Name
+                (Name.Attribute
+                  { attribute = ("equals" | "matches" | "is_annotated_type") as attribute; _ });
+            _;
+          } as callee;
+        arguments;
+      } -> (
+      match attribute, arguments with
+      | ( "equals",
+          [
+            {
+              Call.Argument.value =
+                { Node.value = Expression.String { StringLiteral.value = type_name; _ }; _ };
+              _;
+            };
+          ] ) ->
+          Ok (ModelQuery.AnnotationNameConstraint (ModelQuery.Equals type_name))
+      | ( "matches",
+          [
+            {
+              Call.Argument.value =
+                { Node.value = Expression.String { StringLiteral.value = type_name_pattern; _ }; _ };
+              _;
+            };
+          ] ) ->
+          Ok
+            (ModelQuery.AnnotationNameConstraint
+               (ModelQuery.Matches (Re2.create_exn type_name_pattern)))
+      | "is_annotated_type", [] -> Ok ModelQuery.IsAnnotatedTypeConstraint
+      | _ ->
+          Error
+            (model_verification_error
+               ~path
+               ~location
+               (InvalidModelQueryClauseArguments { callee; arguments })))
+  | _ ->
+      Error
+        (model_verification_error
+           ~path
+           ~location
+           (InvalidTypeAnnotationClause constraint_expression))
 
 
 let parse_where_clause ~path ~find_clause ({ Node.value; location } as expression) =
@@ -973,30 +1190,6 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
       ~location
       (InvalidModelQueryWhereClause
          { expression = callee; find_clause_kind = get_find_clause_as_string find_clause })
-  in
-  let parse_parameter_constraint
-      ~parameter_constraint_kind
-      ~parameter_constraint
-      ~parameter_constraint_arguments
-    =
-    match parameter_constraint_kind with
-    | "annotation" ->
-        parse_annotation_constraint
-          ~name:parameter_constraint
-          ~arguments:parameter_constraint_arguments
-          ~path
-          ~location
-        >>| fun annotation_constraint ->
-        ModelQuery.ParameterConstraint.AnnotationConstraint annotation_constraint
-    | _ ->
-        Error
-          (invalid_model_error
-             ~path
-             ~location
-             ~name:"model query"
-             (Format.sprintf
-                "Unsupported constraint kind for parameters: `%s`"
-                parameter_constraint_kind))
   in
   let parse_arguments_constraint ({ Node.value; _ } as constraint_expression) =
     match value with
@@ -1019,7 +1212,7 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
         match attribute with
         | "contains" -> Ok (ModelQuery.ArgumentsConstraint.Contains arguments)
         | "equals" -> Ok (ModelQuery.ArgumentsConstraint.Equals arguments)
-        | _ -> failwith "impossible case" )
+        | _ -> failwith "impossible case")
     | _ ->
         Error
           (model_verification_error ~path ~location (InvalidArgumentsClause constraint_expression))
@@ -1039,6 +1232,24 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
         } ->
         parse_name_constraint ~path ~location constraint_expression
         >>= fun name_constraint -> Ok (ModelQuery.NameConstraint name_constraint)
+    | Expression.Call
+        {
+          Call.callee =
+            {
+              Node.value =
+                Expression.Name
+                  (Name.Attribute
+                    { base = { Node.value = Name (Name.Identifier "type_annotation"); _ }; _ });
+              _;
+            } as callee;
+          _;
+        } -> (
+        match is_callable_clause_kind find_clause with
+        | true -> Error (invalid_model_query_where_clause ~path ~location callee)
+        | _ ->
+            parse_annotation_constraint ~path ~location constraint_expression
+            >>= fun annotation_constraint ->
+            Ok (ModelQuery.AnnotationConstraint annotation_constraint))
     | Expression.Call
         {
           Call.callee = { Node.value = Expression.Name (Name.Identifier "Decorator"); _ } as callee;
@@ -1070,13 +1281,13 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
                 >>= fun arguments_constraint ->
                 Ok
                   (ModelQuery.DecoratorConstraint
-                     { name_constraint; arguments_constraint = Some arguments_constraint }) )
+                     { name_constraint; arguments_constraint = Some arguments_constraint }))
         | _ ->
             Error
               (model_verification_error
                  ~path
                  ~location
-                 (InvalidModelQueryClauseArguments { callee; arguments })) )
+                 (InvalidModelQueryClauseArguments { callee; arguments })))
     | Expression.Call
         {
           Call.callee =
@@ -1084,25 +1295,16 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
               Node.value =
                 Expression.Name
                   (Name.Attribute
-                    {
-                      base = { Node.value = Name (Name.Identifier "return_annotation"); _ };
-                      attribute = annotation_constraint_name;
-                      _;
-                    });
+                    { base = { Node.value = Name (Name.Identifier "return_annotation"); _ }; _ });
               _;
             } as callee;
-          arguments = annotation_constraint_arguments;
+          _;
         } -> (
         match is_callable_clause_kind find_clause with
         | false -> Error (invalid_model_query_where_clause ~path ~location callee)
         | _ ->
-            parse_annotation_constraint
-              ~name:annotation_constraint_name
-              ~arguments:annotation_constraint_arguments
-              ~path
-              ~location
-            >>= fun annotation_constraint -> Ok (ModelQuery.ReturnConstraint annotation_constraint)
-        )
+            parse_annotation_constraint ~path ~location constraint_expression
+            >>= fun annotation_constraint -> Ok (ModelQuery.ReturnConstraint annotation_constraint))
     | Expression.Call
         {
           Call.callee =
@@ -1123,22 +1325,20 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
                                 });
                           _;
                         };
-                      attribute = parameter_constraint;
                       _;
                     });
               _;
             } as callee;
-          arguments = parameter_constraint_arguments;
+          _;
         } -> (
-        match is_callable_clause_kind find_clause with
-        | false -> Error (invalid_model_query_where_clause ~path ~location callee)
-        | _ ->
-            parse_parameter_constraint
-              ~parameter_constraint_kind
-              ~parameter_constraint
-              ~parameter_constraint_arguments
+        match is_callable_clause_kind find_clause, parameter_constraint_kind with
+        | true, "annotation" ->
+            parse_annotation_constraint ~path ~location constraint_expression
             >>= fun parameter_constraint ->
-            Ok (ModelQuery.AnyParameterConstraint parameter_constraint) )
+            Ok
+              (ModelQuery.AnyParameterConstraint
+                 (ModelQuery.ParameterConstraint.AnnotationConstraint parameter_constraint))
+        | _ -> Error (invalid_model_query_where_clause ~path ~location callee))
     | Expression.Call
         {
           Call.callee = { Node.value = Expression.Name (Name.Identifier "AnyOf"); _ };
@@ -1192,7 +1392,7 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
                   (model_verification_error
                      ~path
                      ~location
-                     (InvalidModelQueryClauseArguments { callee; arguments })) ) )
+                     (InvalidModelQueryClauseArguments { callee; arguments }))))
     | Expression.Call
         {
           Call.callee =
@@ -1232,7 +1432,7 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
                value = { Node.value = is_transitive_value; _ } as is_transitive_expression;
              };
             ] ->
-                ( match is_transitive_value with
+                (match is_transitive_value with
                 | Expression.True -> Ok true
                 | Expression.False -> Ok false
                 | _ ->
@@ -1240,7 +1440,7 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
                       (model_verification_error
                          ~path
                          ~location
-                         (InvalidExtendsIsTransitive is_transitive_expression)) )
+                         (InvalidExtendsIsTransitive is_transitive_expression)))
                 >>= fun is_transitive ->
                 Ok (ModelQuery.ParentConstraint (Extends { class_name; is_transitive }))
             | _ ->
@@ -1248,7 +1448,7 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
                   (model_verification_error
                      ~path
                      ~location
-                     (InvalidModelQueryClauseArguments { callee; arguments })) ) )
+                     (InvalidModelQueryClauseArguments { callee; arguments }))))
     | Expression.Call { Call.callee; arguments = _ } ->
         Error
           (invalid_model_error
@@ -1309,52 +1509,14 @@ let parse_parameter_where_clause ~path ({ Node.value; location } as expression) 
               Node.value =
                 Expression.Name
                   (Name.Attribute
-                    {
-                      base = { Node.value = Name (Name.Identifier "type_annotation"); _ };
-                      attribute = ("equals" | "matches" | "is_annotated_type") as attribute;
-                      _;
-                    });
+                    { base = { Node.value = Name (Name.Identifier "type_annotation"); _ }; _ });
               _;
-            } as callee;
-          arguments;
-        } -> (
-        match attribute, arguments with
-        | ( "equals",
-            [
-              {
-                Call.Argument.value =
-                  { Node.value = Expression.String { StringLiteral.value = type_name; _ }; _ };
-                _;
-              };
-            ] ) ->
-            Ok
-              (ModelQuery.ParameterConstraint.AnnotationConstraint
-                 (ModelQuery.AnnotationNameConstraint (ModelQuery.Equals type_name)))
-        | ( "matches",
-            [
-              {
-                Call.Argument.value =
-                  {
-                    Node.value = Expression.String { StringLiteral.value = type_name_pattern; _ };
-                    _;
-                  };
-                _;
-              };
-            ] ) ->
-            Ok
-              (ModelQuery.ParameterConstraint.AnnotationConstraint
-                 (ModelQuery.AnnotationNameConstraint
-                    (ModelQuery.Matches (Re2.create_exn type_name_pattern))))
-        | "is_annotated_type", [] ->
-            Ok
-              (ModelQuery.ParameterConstraint.AnnotationConstraint
-                 ModelQuery.IsAnnotatedTypeConstraint)
-        | _ ->
-            Error
-              (model_verification_error
-                 ~path
-                 ~location
-                 (InvalidModelQueryClauseArguments { callee; arguments })) )
+            };
+          _;
+        } ->
+        parse_annotation_constraint ~path ~location constraint_expression
+        >>= fun annotation_constraint ->
+        Ok (ModelQuery.ParameterConstraint.AnnotationConstraint annotation_constraint)
     | Expression.Call
         {
           Call.callee =
@@ -1379,7 +1541,7 @@ let parse_parameter_where_clause ~path ({ Node.value; location } as expression) 
               (model_verification_error
                  ~path
                  ~location
-                 (InvalidModelQueryClauseArguments { callee; arguments })) )
+                 (InvalidModelQueryClauseArguments { callee; arguments })))
     | Expression.Call { Call.callee; _ } ->
         Error
           (model_verification_error
@@ -1419,8 +1581,8 @@ let parse_model_clause ~path ~configuration ~find_clause ({ Node.value; location
                   Node.value =
                     Expression.Name
                       (Name.Identifier
-                        ( ("ParametricSourceFromAnnotation" | "ParametricSinkFromAnnotation") as
-                        parametric_annotation ));
+                        (("ParametricSourceFromAnnotation" | "ParametricSinkFromAnnotation") as
+                        parametric_annotation));
                   _;
                 };
               arguments =
@@ -1446,7 +1608,7 @@ let parse_model_clause ~path ~configuration ~find_clause ({ Node.value; location
                      ~path
                      ~location
                      ~name:"model query"
-                     (Format.sprintf "Unexpected taint annotation `%s`" parametric_annotation)) )
+                     (Format.sprintf "Unexpected taint annotation `%s`" parametric_annotation)))
         | _ ->
             parse_annotations
               ~path
@@ -1472,7 +1634,7 @@ let parse_model_clause ~path ~configuration ~find_clause ({ Node.value; location
         } -> (
         match is_callable_clause_kind find_clause with
         | false -> Error (invalid_model_query_model_clause ~path ~location callee)
-        | _ -> parse_taint taint >>| fun taint -> ModelQuery.ReturnTaint taint )
+        | _ -> parse_taint taint >>| fun taint -> ModelQuery.ReturnTaint taint)
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "AttributeModel"); _ } as callee;
@@ -1480,7 +1642,7 @@ let parse_model_clause ~path ~configuration ~find_clause ({ Node.value; location
         } -> (
         match is_callable_clause_kind find_clause with
         | true -> Error (invalid_model_query_model_clause ~path ~location callee)
-        | _ -> parse_taint taint >>| fun taint -> ModelQuery.AttributeTaint taint )
+        | _ -> parse_taint taint >>| fun taint -> ModelQuery.AttributeTaint taint)
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "NamedParameter"); _ } as callee;
@@ -1495,7 +1657,7 @@ let parse_model_clause ~path ~configuration ~find_clause ({ Node.value; location
         } -> (
         match is_callable_clause_kind find_clause with
         | false -> Error (invalid_model_query_model_clause ~path ~location callee)
-        | _ -> parse_taint taint >>| fun taint -> ModelQuery.NamedParameterTaint { name; taint } )
+        | _ -> parse_taint taint >>| fun taint -> ModelQuery.NamedParameterTaint { name; taint })
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "PositionalParameter"); _ } as callee;
@@ -1511,8 +1673,7 @@ let parse_model_clause ~path ~configuration ~find_clause ({ Node.value; location
         match is_callable_clause_kind find_clause with
         | false -> Error (invalid_model_query_model_clause ~path ~location callee)
         | _ ->
-            parse_taint taint >>| fun taint -> ModelQuery.PositionalParameterTaint { index; taint }
-        )
+            parse_taint taint >>| fun taint -> ModelQuery.PositionalParameterTaint { index; taint })
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "AllParameters"); _ } as callee;
@@ -1522,7 +1683,7 @@ let parse_model_clause ~path ~configuration ~find_clause ({ Node.value; location
         | false -> Error (invalid_model_query_model_clause ~path ~location callee)
         | _ ->
             parse_taint taint
-            >>| fun taint -> ModelQuery.AllParametersTaint { excludes = []; taint } )
+            >>| fun taint -> ModelQuery.AllParametersTaint { excludes = []; taint })
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "AllParameters"); _ } as callee;
@@ -1550,7 +1711,7 @@ let parse_model_clause ~path ~configuration ~find_clause ({ Node.value; location
             in
             excludes
             >>= fun excludes ->
-            parse_taint taint >>| fun taint -> ModelQuery.AllParametersTaint { excludes; taint } )
+            parse_taint taint >>| fun taint -> ModelQuery.AllParametersTaint { excludes; taint })
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "Parameters"); _ } as callee;
@@ -1573,7 +1734,7 @@ let parse_model_clause ~path ~configuration ~find_clause ({ Node.value; location
               (model_verification_error
                  ~path
                  ~location
-                 (InvalidModelQueryClauseArguments { callee; arguments })) )
+                 (InvalidModelQueryClauseArguments { callee; arguments })))
     | _ ->
         Error
           (invalid_model_error
@@ -1629,9 +1790,9 @@ let add_signature_based_breadcrumbs ~resolution root ~callable_annotation =
     | ( AccessPath.Root.LocalResult,
         Some { Type.Callable.implementation = { Type.Callable.annotation; _ }; _ } ) ->
         Features.type_breadcrumbs ~resolution (Some annotation)
-    | _ -> Features.SimpleSet.empty
+    | _ -> Features.BreadcrumbSet.empty
   in
-  List.rev_append (Features.SimpleSet.to_approximation type_breadcrumbs)
+  List.rev_append (Features.BreadcrumbSet.to_approximation type_breadcrumbs)
 
 
 let parse_parameter_taint
@@ -1673,8 +1834,8 @@ let add_taint_annotation_to_model
   | ReturnAnnotation -> (
       let root = AccessPath.Root.LocalResult in
       match annotation with
-      | Sink { sink; breadcrumbs; path; leaf_names; leaf_name_provided } ->
-          List.map ~f:Features.SimpleSet.inject breadcrumbs
+      | Sink { sink; breadcrumbs; via_features; path; leaf_names; leaf_name_provided } ->
+          List.map ~f:Features.BreadcrumbSet.inject breadcrumbs
           |> add_signature_based_breadcrumbs ~resolution root ~callable_annotation
           |> introduce_sink_taint
                ~root
@@ -1684,9 +1845,10 @@ let add_taint_annotation_to_model
                ~sinks_to_keep
                model
                sink
+               via_features
           |> map_error ~f:annotation_error
-      | Source { source; breadcrumbs; path; leaf_names; leaf_name_provided } ->
-          List.map ~f:Features.SimpleSet.inject breadcrumbs
+      | Source { source; breadcrumbs; via_features; path; leaf_names; leaf_name_provided } ->
+          List.map ~f:Features.BreadcrumbSet.inject breadcrumbs
           |> add_signature_based_breadcrumbs ~resolution root ~callable_annotation
           |> introduce_source_taint
                ~root
@@ -1696,14 +1858,16 @@ let add_taint_annotation_to_model
                ~sources_to_keep
                model
                source
+               via_features
           |> map_error ~f:annotation_error
       | Tito _ -> Error (annotation_error "Invalid return annotation: TaintInTaintOut")
       | AddFeatureToArgument _ ->
-          Error (annotation_error "Invalid return annotation: AddFeatureToArgument") )
+          Error (annotation_error "Invalid return annotation: AddFeatureToArgument")
+      | Sanitize annotations -> Ok (introduce_sanitize ~root model annotations))
   | ParameterAnnotation root -> (
       match annotation with
-      | Sink { sink; breadcrumbs; path; leaf_names; leaf_name_provided } ->
-          List.map ~f:Features.SimpleSet.inject breadcrumbs
+      | Sink { sink; breadcrumbs; via_features; path; leaf_names; leaf_name_provided } ->
+          List.map ~f:Features.BreadcrumbSet.inject breadcrumbs
           |> add_signature_based_breadcrumbs ~resolution root ~callable_annotation
           |> introduce_sink_taint
                ~root
@@ -1713,9 +1877,10 @@ let add_taint_annotation_to_model
                ~sinks_to_keep
                model
                sink
+               via_features
           |> map_error ~f:annotation_error
-      | Source { source; breadcrumbs; path; leaf_names; leaf_name_provided } ->
-          List.map ~f:Features.SimpleSet.inject breadcrumbs
+      | Source { source; breadcrumbs; via_features; path; leaf_names; leaf_name_provided } ->
+          List.map ~f:Features.BreadcrumbSet.inject breadcrumbs
           |> add_signature_based_breadcrumbs ~resolution root ~callable_annotation
           |> introduce_source_taint
                ~root
@@ -1725,19 +1890,20 @@ let add_taint_annotation_to_model
                ~sources_to_keep
                model
                source
+               via_features
           |> map_error ~f:annotation_error
-      | Tito { tito; breadcrumbs; path } ->
+      | Tito { tito; breadcrumbs; via_features; path } ->
           (* For tito, both the parameter and the return type can provide type based breadcrumbs *)
-          List.map ~f:Features.SimpleSet.inject breadcrumbs
+          List.map ~f:Features.BreadcrumbSet.inject breadcrumbs
           |> add_signature_based_breadcrumbs ~resolution root ~callable_annotation
           |> add_signature_based_breadcrumbs
                ~resolution
                AccessPath.Root.LocalResult
                ~callable_annotation
-          |> introduce_taint_in_taint_out ~root ~path model tito
+          |> introduce_taint_in_taint_out ~root ~path model tito via_features
           |> map_error ~f:annotation_error
-      | AddFeatureToArgument { breadcrumbs; path } ->
-          List.map ~f:Features.SimpleSet.inject breadcrumbs
+      | AddFeatureToArgument { breadcrumbs; via_features; path } ->
+          List.map ~f:Features.BreadcrumbSet.inject breadcrumbs
           |> add_signature_based_breadcrumbs ~resolution root ~callable_annotation
           |> introduce_sink_taint
                ~root
@@ -1747,7 +1913,9 @@ let add_taint_annotation_to_model
                ~sinks_to_keep
                model
                Sinks.AddFeatureToArgument
-          |> map_error ~f:annotation_error )
+               via_features
+          |> map_error ~f:annotation_error
+      | Sanitize annotations -> Ok (introduce_sanitize ~root model annotations))
 
 
 let parse_return_taint
@@ -1774,7 +1942,7 @@ let parse_return_taint
 type parsed_signature = {
   signature: Define.Signature.t;
   location: Location.t;
-  call_target: Callable.real_target;
+  call_target: Target.callable_t;
 }
 
 type parsed_attribute = {
@@ -1783,7 +1951,7 @@ type parsed_attribute = {
   sink_annotation: Expression.t option;
   decorators: Decorator.t list;
   location: Location.t;
-  call_target: Callable.object_target;
+  call_target: Target.object_t;
 }
 
 type parsed_statement =
@@ -1842,7 +2010,7 @@ let adjust_sanitize_and_modes_and_skipped_override
   let sanitize_and_modes_and_skipped_override =
     let adjust
         (sanitize, modes, skipped_override)
-        { Decorator.name = { Node.value = name; _ }; arguments }
+        { Decorator.name = { Node.value = name; location = decorator_location }; arguments }
       =
       match Reference.show name with
       | "Sanitize" ->
@@ -1851,131 +2019,28 @@ let adjust_sanitize_and_modes_and_skipped_override
             | None ->
                 Ok
                   { Sanitize.sources = Some AllSources; sinks = Some AllSinks; tito = Some AllTito }
-            | Some arguments ->
-                let to_sanitize_kind sanitize { Call.Argument.value; _ } =
-                  match Node.value value with
-                  | Expression.Name (Name.Identifier name) -> (
-                      sanitize
-                      >>| fun sanitize ->
-                      match name with
-                      | "TaintSource" -> { sanitize with Sanitize.sources = Some AllSources }
-                      | "TaintSink" -> { sanitize with Sanitize.sinks = Some AllSinks }
-                      | "TaintInTaintOut" -> { sanitize with Sanitize.tito = Some AllTito }
-                      | _ -> sanitize )
-                  | Expression.Call { Call.callee; arguments = [{ Call.Argument.value; _ }] }
-                    when Option.equal String.equal (base_name callee) (Some "TaintInTaintOut") -> (
-                      let add_tito_annotation (sanitized_tito_sources, sanitized_tito_sinks)
-                        = function
-                        | Source
-                            {
-                              source;
-                              breadcrumbs = [];
-                              leaf_names = [];
-                              leaf_name_provided = false;
-                              path = [];
-                            } ->
-                            Ok (source :: sanitized_tito_sources, sanitized_tito_sinks)
-                        | Sink
-                            {
-                              sink;
-                              breadcrumbs = [];
-                              leaf_names = [];
-                              leaf_name_provided = false;
-                              path = [];
-                            } ->
-                            Ok (sanitized_tito_sources, sink :: sanitized_tito_sinks)
-                        | taint_annotation ->
-                            Error
-                              (invalid_model_error
-                                 ~path
-                                 ~location
-                                 ~name:(Reference.show define_name)
-                                 (Format.sprintf
-                                    "`%s` is not a supported TITO sanitizer."
-                                    (show_taint_annotation taint_annotation)))
-                      in
-                      let sanitize_tito =
-                        parse_annotations
-                          ~path
-                          ~location
-                          ~model_name:(Reference.show define_name)
-                          ~configuration
-                          ~parameters:[]
-                          ~callable_parameter_names_to_positions:None
-                          value
-                        >>= List.fold_result ~init:([], []) ~f:add_tito_annotation
-                        >>| fun (sanitized_tito_sources, sanitized_tito_sinks) ->
-                        Sanitize.SpecificTito { sanitized_tito_sources; sanitized_tito_sinks }
-                      in
-                      sanitize_tito
-                      >>= fun sanitize_tito ->
-                      sanitize
-                      >>| fun sanitize ->
-                      match sanitize.tito with
-                      | Some AllTito -> sanitize
-                      | _ -> { sanitize with tito = Some sanitize_tito } )
-                  | _ ->
-                      let add_annotation { Sanitize.sources; sinks; tito } = function
-                        | Source
-                            {
-                              source;
-                              breadcrumbs = [];
-                              leaf_names = [];
-                              leaf_name_provided = false;
-                              path = [];
-                            } ->
-                            let sources =
-                              match sources with
-                              | None -> Some (Sanitize.SpecificSources [source])
-                              | Some (Sanitize.SpecificSources sources) ->
-                                  Some (Sanitize.SpecificSources (source :: sources))
-                              | Some Sanitize.AllSources -> Some Sanitize.AllSources
-                            in
-                            Ok { Sanitize.sources; sinks; tito }
-                        | Sink
-                            {
-                              sink;
-                              breadcrumbs = [];
-                              leaf_names = [];
-                              leaf_name_provided = false;
-                              path = [];
-                            } ->
-                            let sinks =
-                              match sinks with
-                              | None -> Some (Sanitize.SpecificSinks [sink])
-                              | Some (Sanitize.SpecificSinks sinks) ->
-                                  Some (Sanitize.SpecificSinks (sink :: sinks))
-                              | Some Sanitize.AllSinks -> Some Sanitize.AllSinks
-                            in
-                            Ok { Sanitize.sources; sinks; tito }
-                        | taint_annotation ->
-                            Error
-                              (invalid_model_error
-                                 ~path
-                                 ~location
-                                 ~name:(Reference.show define_name)
-                                 (Format.sprintf
-                                    "`%s` is not a supported taint annotation for sanitizers."
-                                    (show_taint_annotation taint_annotation)))
-                      in
-                      parse_annotations
-                        ~path
-                        ~location
-                        ~model_name:(Reference.show define_name)
-                        ~configuration
-                        ~parameters:[]
-                        ~callable_parameter_names_to_positions:None
-                        value
-                      >>= fun annotations ->
-                      sanitize
-                      >>= fun sanitize ->
-                      List.fold_result ~init:sanitize ~f:add_annotation annotations
+            | Some arguments -> (
+                (* Pretend that it is a `Sanitize[...]` expression and use the annotation parser. *)
+                let expression =
+                  List.map ~f:(fun { Call.Argument.value; _ } -> value) arguments
+                  |> Ast.Expression.get_item_call "Sanitize" ~location:decorator_location
+                  |> Node.create ~location:decorator_location
                 in
-                List.fold arguments ~f:to_sanitize_kind ~init:(Ok Sanitize.empty)
+                parse_annotations
+                  ~path
+                  ~location
+                  ~model_name:(Reference.show define_name)
+                  ~configuration
+                  ~parameters:[]
+                  ~callable_parameter_names_to_positions:None
+                  expression
+                >>= function
+                | [Sanitize sanitize_annotations] ->
+                    Ok (sanitize_from_annotations sanitize_annotations)
+                | _ -> failwith "impossible case")
           in
           sanitize_kind
-          >>| fun sanitize_kind ->
-          TaintResult.Sanitize.join sanitize sanitize_kind, modes, skipped_override
+          >>| fun sanitize_kind -> Sanitize.join sanitize sanitize_kind, modes, skipped_override
       | "SkipAnalysis" -> Ok (sanitize, ModeSet.add SkipAnalysis modes, skipped_override)
       | "SkipDecoratorWhenInlining" ->
           Ok (sanitize, ModeSet.add SkipDecoratorWhenInlining modes, skipped_override)
@@ -1983,10 +2048,15 @@ let adjust_sanitize_and_modes_and_skipped_override
       | "SkipObscure" -> Ok (sanitize, ModeSet.remove Obscure modes, Some define_name)
       | _ -> Ok (sanitize, modes, skipped_override)
     in
-    List.fold_result top_level_decorators ~f:adjust ~init:(model.sanitize, model.modes, None)
+    List.fold_result
+      top_level_decorators
+      ~f:adjust
+      ~init:(model.sanitizers.global, model.modes, None)
   in
   sanitize_and_modes_and_skipped_override
-  >>| fun (sanitize, modes, skipped_override) -> { model with sanitize; modes }, skipped_override
+  >>| fun (sanitize, modes, skipped_override) ->
+  let sanitizers = { model.sanitizers with global = sanitize } in
+  { model with sanitizers; modes }, skipped_override
 
 
 let compute_sources_and_sinks_to_keep ~configuration ~rule_filter =
@@ -2016,8 +2086,8 @@ let compute_sources_and_sinks_to_keep ~configuration ~rule_filter =
             ( Sources.Set.singleton Sources.Attach,
               Sinks.Set.of_list [Sinks.AddFeatureToArgument; Sinks.Attach] )
           ~f:(fun (sources, sinks) (rule_sources, rule_sinks) ->
-            ( Core.Set.union sources (Sources.Set.of_list rule_sources),
-              Core.Set.union sinks (Sinks.Set.of_list rule_sinks) ))
+            ( Sources.Set.union sources (Sources.Set.of_list rule_sources),
+              Sinks.Set.union sinks (Sinks.Set.of_list rule_sinks) ))
       in
       Some sources_to_keep, Some sinks_to_keep
 
@@ -2044,9 +2114,9 @@ let parse_statement ~resolution ~path ~configuration statement =
       let call_target =
         match class_candidate with
         | Some _ when Define.Signature.is_property_setter signature ->
-            Callable.create_property_setter name
-        | Some _ -> Callable.create_method name
-        | None -> Callable.create_function name
+            Target.create_property_setter name
+        | Some _ -> Target.create_method name
+        | None -> Target.create_function name
       in
       Ok [ParsedSignature { signature; location; call_target }]
   | {
@@ -2059,7 +2129,7 @@ let parse_statement ~resolution ~path ~configuration statement =
      Class
        {
          Class.name = { Node.value = name; _ };
-         bases;
+         base_arguments;
          body = [{ Node.value = Statement.Expression { Node.value = Expression.Ellipsis; _ }; _ }];
          _;
        };
@@ -2072,7 +2142,7 @@ let parse_statement ~resolution ~path ~configuration statement =
           else
             None
         in
-        List.filter_map bases ~f:class_sink_base
+        List.filter_map base_arguments ~f:class_sink_base
       in
       let source_annotations, extra_decorators =
         let decorator_with_name name =
@@ -2092,9 +2162,8 @@ let parse_statement ~resolution ~path ~configuration statement =
           else
             None
         in
-        List.filter_map bases ~f:class_source_base
-        |> List.fold ~init:([], []) ~f:(fun (source_annotations, decorators) ->
-             function
+        List.filter_map base_arguments ~f:class_source_base
+        |> List.fold ~init:([], []) ~f:(fun (source_annotations, decorators) -> function
              | Either.First source_annotation -> source_annotation :: source_annotations, decorators
              | Either.Second decorator -> source_annotations, decorator :: decorators)
       in
@@ -2155,7 +2224,7 @@ let parse_statement ~resolution ~path ~configuration statement =
                                decorators;
                              };
                            location;
-                           call_target = Callable.create_method name;
+                           call_target = Target.create_method name;
                          }
                      in
                      let sources =
@@ -2234,7 +2303,7 @@ let parse_statement ~resolution ~path ~configuration statement =
                 sink_annotation = None;
                 decorators = [decorator];
                 location;
-                call_target = Callable.create_object name;
+                call_target = Target.create_object name;
               };
           ]
       else if Expression.show annotation |> String.is_substring ~substring:"TaintSource[" then
@@ -2248,7 +2317,7 @@ let parse_statement ~resolution ~path ~configuration statement =
                 sink_annotation = None;
                 decorators = [];
                 location;
-                call_target = Callable.create_object name;
+                call_target = Target.create_object name;
               };
           ]
       else if
@@ -2265,7 +2334,7 @@ let parse_statement ~resolution ~path ~configuration statement =
                 sink_annotation = Some annotation;
                 decorators = [];
                 location;
-                call_target = Callable.create_object name;
+                call_target = Target.create_object name;
               };
           ]
       else
@@ -2356,7 +2425,7 @@ let create_model_from_signature
   =
   let open Core.Result in
   let open ModelVerifier in
-  let call_target = (call_target :> Callable.t) in
+  let call_target = (call_target :> Target.t) in
   (* Strip off the decorators only used for taint annotations. *)
   let top_level_decorators, define =
     let is_taint_decorator decorator =
@@ -2455,7 +2524,7 @@ let create_model_from_signature
                           };
                       path;
                       location;
-                    } )
+                    })
           | _ -> Ok (root, name, parameter)
         in
         List.map parameters ~f:adjust_position |> all
@@ -2543,7 +2612,7 @@ let create_model_from_attribute
     { name; source_annotation; sink_annotation; decorators; location; call_target }
   =
   let open Core.Result in
-  let call_target = (call_target :> Callable.t) in
+  let call_target = (call_target :> Target.t) in
   ModelVerifier.verify_global ~path ~location ~resolution ~name
   >>= fun () ->
   source_annotation
@@ -2605,7 +2674,7 @@ let create_model_from_attribute
   >>| fun (model, skipped_override) -> Model ({ model; call_target }, skipped_override)
 
 
-let create ~resolution ~path ~configuration ~rule_filter ~functions ~stubs source =
+let create ~resolution ~path ~configuration ~rule_filter ~callables ~stubs source =
   let sources_to_keep, sinks_to_keep =
     compute_sources_and_sinks_to_keep ~configuration ~rule_filter
   in
@@ -2626,7 +2695,7 @@ let create ~resolution ~path ~configuration ~rule_filter ~functions ~stubs sourc
     (* The callable is obscure if and only if it is a type stub or it is not in the set of known
        callables. *)
     Hash_set.mem stubs call_target
-    || functions >>| Core.Fn.flip Hash_set.mem call_target >>| not |> Option.value ~default:false
+    || callables >>| Core.Fn.flip Hash_set.mem call_target >>| not |> Option.value ~default:false
   in
   let create_model_or_query = function
     | ParsedSignature ({ call_target; _ } as parsed_signature) ->
@@ -2636,7 +2705,7 @@ let create ~resolution ~path ~configuration ~rule_filter ~functions ~stubs sourc
           ~configuration
           ~sources_to_keep
           ~sinks_to_keep
-          ~is_obscure:(is_obscure (call_target :> Callable.t))
+          ~is_obscure:(is_obscure (call_target :> Target.t))
           parsed_signature
     | ParsedAttribute parsed_attribute ->
         create_model_from_attribute
@@ -2653,25 +2722,25 @@ let create ~resolution ~path ~configuration ~rule_filter ~functions ~stubs sourc
     (List.map signatures_and_queries ~f:create_model_or_query)
 
 
-let parse ~resolution ?path ?rule_filter ~source ~configuration ~functions ~stubs models =
+let parse ~resolution ?path ?rule_filter ~source ~configuration ~callables ~stubs models =
   let new_models_and_queries, errors =
-    create ~resolution ~path ~rule_filter ~configuration ~functions ~stubs source
+    create ~resolution ~path ~rule_filter ~configuration ~callables ~stubs source
     |> List.partition_result
   in
   let new_models, new_queries =
     List.fold
       new_models_and_queries
-      ~f:(fun (models, queries) -> function
-        | Model (model, skipped_override) -> (model, skipped_override) :: models, queries
-        | Query query -> models, query :: queries)
+      ~f:
+        (fun (models, queries) -> function
+          | Model (model, skipped_override) -> (model, skipped_override) :: models, queries
+          | Query query -> models, query :: queries)
       ~init:([], [])
   in
   {
     models =
       List.map new_models ~f:(fun (model, _) -> model.call_target, model.model)
-      |> Callable.Map.of_alist_reduce ~f:(join ~iteration:0)
-      |> Callable.Map.merge models ~f:(fun ~key:_ ->
-           function
+      |> Target.Map.of_alist_reduce ~f:(join ~iteration:0)
+      |> Target.Map.merge models ~f:(fun ~key:_ -> function
            | `Both (a, b) -> Some (join ~iteration:0 a b)
            | `Left model
            | `Right model ->
@@ -2699,13 +2768,11 @@ let create_callable_model_from_annotations
   let open Core.Result in
   let open ModelVerifier in
   let global_resolution = Resolution.global_resolution resolution in
-  match
-    Interprocedural.Callable.get_module_and_definition ~resolution:global_resolution callable
-  with
+  match Interprocedural.Target.get_module_and_definition ~resolution:global_resolution callable with
   | None ->
       Error
         (invalid_model_query_error
-           (Format.sprintf "No callable corresponding to `%s` found." (Callable.show callable)))
+           (Format.sprintf "No callable corresponding to `%s` found." (Target.show callable)))
   | Some (_, { Node.value = { Define.signature = define; _ }; _ }) ->
       resolve_global_callable
         ~path:None

@@ -11,9 +11,13 @@ open Ast
 open Interprocedural
 module Json = Yojson.Safe
 
-let get_result callable = Fixpoint.get_result callable |> Result.get_result TaintResult.kind
+let get_result callable =
+  FixpointState.get_result callable |> AnalysisResult.get_result TaintResult.kind
 
-let get_model callable = Fixpoint.get_model callable >>= Result.get_model TaintResult.kind
+
+let get_model callable =
+  FixpointState.get_model callable >>= AnalysisResult.get_model TaintResult.kind
+
 
 let get_errors result = List.map ~f:Flow.generate_error result
 
@@ -86,10 +90,10 @@ let save_results_to_directory
     fun json ->
       if !seen_element then (
         Bi_outbuf.add_string out_buffer "\n";
-        Json.to_outbuf out_buffer json )
+        Json.to_outbuf out_buffer json)
       else (
         seen_element := true;
-        Json.to_outbuf out_buffer json )
+        Json.to_outbuf out_buffer json)
   in
   let timer = Timer.start () in
   let models_path analysis_name = Format.sprintf "%s-output.json" analysis_name in
@@ -105,7 +109,7 @@ let save_results_to_directory
     in
     Json.to_outbuf out_buffer header_with_version;
     Bi_outbuf.add_string out_buffer "\n";
-    Callable.Set.iter (emit_externalization ~filename_lookup array_emitter) callables;
+    Target.Set.iter (emit_externalization ~filename_lookup array_emitter) callables;
     Bi_outbuf.flush_output_writer out_buffer;
     close_out out_channel
   in
@@ -167,10 +171,10 @@ let report
     ~fixpoint_timer
     ~fixpoint_iterations
   =
-  let errors = extract_errors scheduler (Callable.Set.elements callables) in
+  let errors = extract_errors scheduler (Target.Set.elements callables) in
   (* Log and record stats *)
   Log.info "Found %d issues" (List.length errors);
-  ( match fixpoint_iterations with
+  (match fixpoint_iterations with
   | Some iterations ->
       Log.info "Fixpoint iterations: %d" iterations;
       Statistics.performance
@@ -184,7 +188,7 @@ let report
             "pysa issues", List.length errors;
           ]
         ()
-  | None -> () );
+  | None -> ());
   (* Dump results to output directory if one was provided, and return a list of json (empty whenever
      we dumped to a directory) to summarize *)
   match result_json_path with

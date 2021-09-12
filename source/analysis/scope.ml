@@ -71,6 +71,7 @@ module Binding = struct
     | Expression.Starred (Starred.Once expression | Starred.Twice expression)
     | Expression.Yield (Some expression) ->
         of_expression sofar expression
+    | Expression.YieldFrom expression -> of_expression sofar expression
     | Expression.BooleanOperator { BooleanOperator.left; right; _ }
     | Expression.ComparisonOperator { ComparisonOperator.left; right; _ } ->
         let sofar = of_expression sofar left in
@@ -151,13 +152,15 @@ module Binding = struct
     | Statement.Assign { Assign.target; value; _ } ->
         let sofar = of_expression sofar value in
         of_unannotated_target ~kind:(Kind.AssignTarget None) sofar target
-    | Statement.Class { Class.name = { Node.value = name; _ }; bases; decorators; _ } ->
+    | Statement.Class { Class.name = { Node.value = name; _ }; base_arguments; decorators; _ } ->
         let sofar =
           List.map decorators ~f:Decorator.to_expression |> List.fold ~init:sofar ~f:of_expression
         in
         let sofar =
-          List.fold bases ~init:sofar ~f:(fun sofar { Expression.Call.Argument.value; _ } ->
-              of_expression sofar value)
+          List.fold
+            base_arguments
+            ~init:sofar
+            ~f:(fun sofar { Expression.Call.Argument.value; _ } -> of_expression sofar value)
         in
         { kind = Kind.ClassName; name = Reference.show name; location } :: sofar
     | Statement.Define
@@ -177,10 +180,7 @@ module Binding = struct
               of_optional_expression sofar value)
         in
         { kind = Kind.DefineName signature; name = Reference.show name; location } :: sofar
-    | Statement.Expression expression
-    | Statement.Yield expression
-    | Statement.YieldFrom expression ->
-        of_expression sofar expression
+    | Statement.Expression expression -> of_expression sofar expression
     | Statement.For { For.target; iterator; body; orelse; _ } ->
         let sofar = of_unannotated_target ~kind:Kind.ForTarget sofar target in
         let sofar = of_expression sofar iterator in
@@ -203,7 +203,7 @@ module Binding = struct
               | None ->
                   (* `import a.b` actually binds name a *)
                   let name = Reference.as_list name |> List.hd_exn in
-                  { kind = Kind.ImportName; name; location } :: sofar )
+                  { kind = Kind.ImportName; name; location } :: sofar)
         in
         List.fold imports ~init:sofar ~f:binding_of_import
     | Statement.Raise { Raise.expression; from } ->
@@ -307,9 +307,7 @@ let rec globals_of_statement sofar { Node.value; _ } =
   | Nonlocal _
   | Pass
   | Raise _
-  | Return _
-  | Yield _
-  | YieldFrom _ ->
+  | Return _ ->
       sofar
 
 
@@ -347,9 +345,7 @@ let rec nonlocals_of_statement sofar { Node.value; _ } =
   | Import _
   | Pass
   | Raise _
-  | Return _
-  | Yield _
-  | YieldFrom _ ->
+  | Return _ ->
       sofar
 
 
@@ -507,7 +503,7 @@ module Scope = struct
     | false -> (
         match Set.mem nonlocals name with
         | true -> Some Lookup.Nonlocal
-        | false -> Map.find bindings name >>| fun binding -> Lookup.Binding binding )
+        | false -> Map.find bindings name >>| fun binding -> Lookup.Binding binding)
 end
 
 module Access = struct
@@ -561,7 +557,7 @@ module ScopeStack = struct
           match Scope.lookup scope name with
           | Some (Scope.Lookup.Binding binding) -> Some (scope, binding)
           | Some Scope.Lookup.Global -> lookup_outer_scopes ~exclude_global []
-          | _ -> lookup_outer_scopes ~exclude_global rest )
+          | _ -> lookup_outer_scopes ~exclude_global rest)
     in
     match locals with
     | [] ->
@@ -584,7 +580,7 @@ module ScopeStack = struct
         | None ->
             lookup_outer_scopes ~exclude_global:false rest
             >>| fun (scope, binding) ->
-            { Access.binding; scope; kind = Access.(Kind.OuterScope Locality.Local) } )
+            { Access.binding; scope; kind = Access.(Kind.OuterScope Locality.Local) })
 
 
   let extend ~with_ { global; locals } = { global; locals = with_ :: locals }

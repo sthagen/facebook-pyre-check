@@ -96,23 +96,110 @@ ModelQuery(
 
 ### `return_annotation` clauses
 
-Model queries allow for querying based on the return annotation of a function. Pysa currently only allows querying whether a function type is `typing.Annotated`.
+Model queries allow for querying based on the return annotation of a callable. Note that this `where` clause does not work when the `find` clause specifies `"attributes"`.
+
+#### `return_annotation.equals`
+
+The clause will match when the fully-qualified name of the callable's return type matches the specified value exactly.
+
+```python
+ModelQuery(
+  find = "functions",
+  where = [
+    return_annotation.equals("django.http.HttpRequest"),
+  ],
+  model = Returns(TaintSource[UserControlled, Via[http_request]])
+)
+```
+
+#### `return_annotation.matches`
+
+This is similar to the previous clause, but will match when the fully-qualified name of the callable's return type matches the specified pattern.
+
+```python
+ModelQuery(
+  find = "methods",
+  where = [
+    return_annotation.matches(".*Request"),
+  ],
+  model = Returns(TaintSource[UserControlled, Via[http_request]])
+)
+```
+
+#### `return_annotation.is_annotated_type`
+
+This will match when a callable's return type is annotated with [`typing.Annotated`](https://docs.python.org/3/library/typing.html#typing.Annotated). This is a type used to decorate existing types with context-specific metadata, e.g.
+```python
+from typing import Annotated
+
+def bad() -> Annotated[str, "SQL"]:
+  ...
+```
 
 Example:
 
 ```python
 ModelQuery(
-  find = ...,
+  find = functions,
   where = [
     return_annotation.is_annotated_type(),
   ],
-  model = ...
+  model = Returns(TaintSource[SQL])
 )
 ```
 
+This query would match on functions like the one shown above.
+
 ### `any_parameter` clauses
 
-Model queries allow matching callables where any parameter matches a given clause. For now, the only clauses we support for parameters is type- based ones.
+Model queries allow matching callables where any parameter matches a given clause. For now, the only clauses we support for parameters is specifying conditions on the type annotation of a callable's parameters. These can be used in conjunction with the `Parameters` model clause (see [`type_annotation`](#type_annotation-clause)) to taint specific parameters. Note that this `where` clause does not work when the `find` clause specifies `"attributes"`.
+
+#### `any_parameter.annotation.equals`
+
+This clause will match all callables which have at least one parameter where the fully-qualified name of the parameter type matches the specified value exactly.
+
+Example:
+```python
+ModelQuery(
+  find = "functions",
+  where = [
+    any_parameter.annotation.equals("django.http.HttpRequest")
+  ],
+  model =
+    Parameters(
+      TaintSource[UserControlled],
+      where=[
+        name.equals("request"),
+        name.matches("data$")
+      ]
+    )
+)
+```
+
+#### `any_parameter.annotation.matches`
+
+This clause will match all callables which have at least one parameter where the fully-qualified name of the parameter type matches the specified pattern.
+
+Example:
+```python
+ModelQuery(
+  find = "methods",
+  where = [
+    any_parameter.annotation.matches(".*Request")
+  ],
+  model =
+    Parameters(
+      TaintSource[UserControlled],
+      where=[
+        type_annotation.matches(".*Request"),
+      ]
+    )
+)
+```
+
+#### `any_parameter.annotation.is_annotated_type`
+
+This clause will match all callables which have at least one parameter with type `typing.Annotated`.
 
 Example:
 ```python
@@ -121,11 +208,15 @@ ModelQuery(
   where = [
     any_parameter.annotation.is_annotated_type()
   ],
-  model = ...
+  model =
+    Parameters(
+      TaintSource[Test],
+      where=[
+        type_annotation.is_annotated_type(),
+      ]
+    )
 )
 ```
-
-This model query will taint all functions which have one parameter with type `typing.Annotated`.
 
 ### `AnyOf` clauses
 
@@ -367,51 +458,110 @@ ModelQuery(
 
 ### Parameter taint
 
-Parameter taint can be specified by name or by position.
-
-Named parameter taint takes the form of `NamedParameter(name=..., taint = TaintSpecification)`, and positional parameter taint takes the form of `PositionalParameter(index=..., taint = TaintSpecification)`:
+Parameters can be tainted using the `Parameters()` clause. By default, all parameters will be tained with the supplied taint specification. If you would like to only taint specific parameters matching certain conditions, an optional `where` clause can be specified to accomplish this, allowing for constraints on parameter names, the annotation type of the parameter, or parameter position. For example:
 
 ```python
 ModelQuery(
   find = "methods",
   where = ...,
   model = [
-    NamedParameter(name="x", taint = TaintSource[Test, Via[foo]]),
-    PositionalParameter(index=0, taint = TaintSink[Test, Via[bar]]),
+    Parameters(TaintSource[A]), # will taint all parameters by default
+    Parameters(
+      TaintSource[B],
+      where=[
+        Not(index.equals(0))   # will only taint parameters that are not the first parameter
+      ]
+    ),
   ]
 )
 ```
 
-### Tainting all parameters
+#### `name` clauses
 
-One final convenience we provide is the ability to taint all parameters of a callable. The syntax is `AlllParameters(TaintSpecification)`.
+To specify a constraint on parameter name, the `name.equals()` or `name.matches()` clauses can be used. As in the main `where` clause of the model query, `equals()` searches for an exact match on the specified string, while `matches()` allows a regex to be supplied as a pattern to match against.
+
+Example:
 
 ```python
 ModelQuery(
-  find = "functions",
+  find = "methods",
   where = ...,
   model = [
-    AllParameters(TaintSource[Test])
+    Parameters(
+      TaintSource[Test],
+      where=[
+        name.equals("request"),
+        name.matches("data$")
+      ]
+    )
   ]
 )
 ```
 
-You can choose to exclude a single parameter or a list of parameters in order to avoid overtainting.
+#### `index` clause
+
+To specify a constraint on parameter position, the `index.equals()` clause can be used. It takes a single integer denoting the position of the parameter.
+
+Example:
 
 ```python
 ModelQuery(
-  find = "functions",
+  find = "methods",
   where = ...,
   model = [
-    AllParameters(TaintSource[Test], exclude="self")
+    Parameters(
+      TaintSource[Test],
+      where=[
+        index.equals(1)
+      ]
+    )
   ]
 )
+```
 
+#### `type_annotation` clause
+
+This clause is used to specify a constraint on parameter type annotation. Currently the clauses supported are: `type_annotation.equals()`, which takes the fully-qualified name of a Python type or class and matches when there is an exact match, `type_annotation.matches()`, which takes a regex pattern to match type annotations against, and `type_annotation.is_annotated_type()`, which will match parameters of type [`typing.Annotated`](https://docs.python.org/3/library/typing.html#typing.Annotated).
+
+Example:
+
+```python
 ModelQuery(
-  find = "functions",
+  find = "methods",
   where = ...,
   model = [
-    AllParameters(TaintSource[Test], exclude=["self", "other"])
+    Parameters(
+      TaintSource[Test],
+      where=[
+        type_annotation.equals("foo.bar.C"),  # exact match
+        type_annotation.matches("^List\["),   # regex match
+        type_annotation.is_annotated_type(),  # matches Annotated[T, x]
+      ]
+    )
+  ]
+)
+```
+
+#### `Not` and `AnyOf` clauses
+
+The `Not` and `AnyOf` clauses can be used in the same way as they are in the main `where` clause of the model query. `Not` can be used to negate any existing clause, and `AnyOf` can be used to match when any one of several supplied clauses match.
+
+Example:
+
+```python
+ModelQuery(
+  find = "methods",
+  where = ...,
+  model = [
+    Parameters(
+      TaintSource[Test],
+      where=[
+        Not(AnyOf(
+          name.equals("self"),
+          name.equals("cls")
+        ))
+      ]
+    )
   ]
 )
 ```

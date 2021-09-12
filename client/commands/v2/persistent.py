@@ -23,7 +23,7 @@ from ... import (
     command_arguments,
     commands,
     configuration as configuration_module,
-    statistics,
+    statistics_logger,
 )
 from . import (
     backend_arguments,
@@ -42,6 +42,7 @@ CONSECUTIVE_START_ATTEMPT_THRESHOLD: int = 5
 
 class LSPEvent(enum.Enum):
     INITIALIZED = "initialized"
+    NOT_INITIALIZED = "not initialized"
     CONNECTED = "connected"
     NOT_CONNECTED = "not connected"
     NOT_CONFIGURED = "not configured"
@@ -59,8 +60,8 @@ def _log_lsp_event(
         logger = remote_logging.logger
         if logger is not None:
             log_identifier = remote_logging.identifier
-            statistics.log(
-                category=statistics.LoggerCategory.LSP_EVENTS,
+            statistics_logger.log(
+                category=statistics_logger.LoggerCategory.LSP_EVENTS,
                 logger=logger,
                 integers=integers,
                 normals={
@@ -162,9 +163,14 @@ async def try_initialize(
         )
 
         initialized_notification = await lsp.read_json_rpc(input_channel)
-        if initialized_notification.method != "initialized":
+        if initialized_notification.method == "shutdown":
+            await _wait_for_exit(input_channel, output_channel)
+            return InitializationExit()
+        elif initialized_notification.method != "initialized":
+            actual_message = json.dumps(initialized_notification.json())
             raise lsp.ServerNotInitializedError(
-                "Failed to receive an `initialized` request from client"
+                "Failed to receive an `initialized` request from client. "
+                + f"Got {log.truncate(actual_message, 100)}"
             )
 
         return InitializationSuccess(
@@ -203,6 +209,27 @@ async def _read_lsp_request(
         )
 
 
+async def _wait_for_exit(
+    input_channel: connection.TextReader, output_channel: connection.TextWriter
+) -> None:
+    """
+    Wait for an LSP "exit" request from the `input_channel`. This is mostly useful
+    when the LSP server has received a "shutdown" request, in which case the LSP
+    specification dictates that only "exit" can be sent from the client side.
+
+    If a non-exit LSP request is received, drop it and keep waiting on another
+    "exit" request.
+    """
+    while True:
+        async with _read_lsp_request(input_channel, output_channel) as request:
+            if request.method == "exit":
+                return
+            else:
+                raise json_rpc.InvalidRequestError(
+                    f"Only exit requests are accepted after shutdown. Got {request}."
+                )
+
+
 async def _publish_diagnostics(
     output_channel: connection.TextWriter,
     path: Path,
@@ -229,6 +256,10 @@ async def _publish_diagnostics(
 
 @dataclasses.dataclass
 class ServerState:
+    # Immutable States
+    client_capabilities: lsp.ClientCapabilities = lsp.ClientCapabilities()
+
+    # Mutable States
     consecutive_start_failure: int = 0
     opened_documents: Set[Path] = dataclasses.field(default_factory=set)
     diagnostics: Dict[Path, List[lsp.Diagnostic]] = dataclasses.field(
@@ -241,38 +272,27 @@ class PyreServer:
     input_channel: connection.TextReader
     output_channel: connection.TextWriter
 
-    # Immutable States
-    client_capabilities: lsp.ClientCapabilities
-
-    # Mutable States
-    state: ServerState
+    # `pyre_manager` is responsible for handling all interactions with background
+    # Pyre server.
     pyre_manager: connection.BackgroundTaskManager
+    # NOTE: `state` is mutable and can be changed on `pyre_manager` side.
+    state: ServerState
 
     def __init__(
         self,
         input_channel: connection.TextReader,
         output_channel: connection.TextWriter,
-        client_capabilities: lsp.ClientCapabilities,
         state: ServerState,
         pyre_manager: connection.BackgroundTaskManager,
     ) -> None:
         self.input_channel = input_channel
         self.output_channel = output_channel
-        self.client_capabilities = client_capabilities
         self.state = state
         self.pyre_manager = pyre_manager
 
     async def wait_for_exit(self) -> int:
-        while True:
-            async with _read_lsp_request(
-                self.input_channel, self.output_channel
-            ) as request:
-                LOG.debug(f"Received post-shutdown request: {request}")
-
-                if request.method == "exit":
-                    return 0
-                else:
-                    raise json_rpc.InvalidRequestError("LSP server has been shut down")
+        await _wait_for_exit(self.input_channel, self.output_channel)
+        return 0
 
     async def _try_restart_pyre_server(self) -> None:
         if self.state.consecutive_start_failure < CONSECUTIVE_START_ATTEMPT_THRESHOLD:
@@ -405,6 +425,7 @@ class StartSuccess:
 
 @dataclasses.dataclass(frozen=True)
 class StartFailure:
+    message: str
     detail: str
 
 
@@ -425,7 +446,7 @@ async def _start_pyre_server(
             }
 
             with start.background_server_log_file(
-                Path(pyre_arguments.log_path)
+                Path(pyre_arguments.base_arguments.log_path)
             ) as server_stderr:
                 server_process = await asyncio.create_subprocess_exec(
                     binary_location,
@@ -449,10 +470,19 @@ async def _start_pyre_server(
             )
 
         return StartSuccess()
+    except server_event.ServerStartException as error:
+        # We know where the exception come from. Let's keep the error details
+        # succinct.
+        message = str(error)
+        LOG.error(message)
+        return StartFailure(message=message, detail=message)
     except Exception as error:
+        # These exceptions are unexpected. Let's keep verbose stack traces to
+        # help with post-mortem analyses.
+        message = str(error)
         detail = traceback.format_exc()
-        LOG.error(f"Exception occured during server start. {detail}")
-        return StartFailure(detail)
+        LOG.error(f"{detail}")
+        return StartFailure(message=message, detail=detail)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -582,31 +612,72 @@ class PyreServerHandler(connection.BackgroundTask):
         self.client_output_channel = client_output_channel
         self.server_state = server_state
 
-    async def show_message_to_client(
-        self, message: str, level: lsp.MessageType = lsp.MessageType.INFO
+    async def show_status_message_to_client(
+        self,
+        message: str,
+        short_message: Optional[str] = None,
+        level: lsp.MessageType = lsp.MessageType.INFO,
     ) -> None:
-        await lsp.write_json_rpc(
-            self.client_output_channel,
-            json_rpc.Request(
-                method="window/showMessage",
-                parameters=json_rpc.ByNameParameters(
-                    {"type": int(level), "message": message}
-                ),
-            ),
-        )
+        def clientSupportsStatusBar(
+            client_capabilities: lsp.ClientCapabilities,
+        ) -> bool:
+            window_capabilities = client_capabilities.window
+            if window_capabilities is not None:
+                return window_capabilities.status is not None
+            else:
+                return False
 
-    async def log_and_show_message_to_client(
-        self, message: str, level: lsp.MessageType = lsp.MessageType.INFO
-    ) -> None:
-        if level == lsp.MessageType.ERROR:
-            LOG.error(message)
-        elif level == lsp.MessageType.WARNING:
-            LOG.warning(message)
-        elif level == lsp.MessageType.INFO:
-            LOG.info(message)
+        if clientSupportsStatusBar(self.server_state.client_capabilities):
+            await lsp.write_json_rpc(
+                self.client_output_channel,
+                json_rpc.Request(
+                    id=0,  # the value doesn't matter but the existence does
+                    method="window/showStatus",
+                    parameters=json_rpc.ByNameParameters(
+                        {
+                            "type": int(level),
+                            "message": message,
+                            **(
+                                {}
+                                if short_message is None
+                                else {"shortMessage": short_message}
+                            ),
+                        }
+                    ),
+                ),
+            )
         else:
-            LOG.debug(message)
-        await self.show_message_to_client(message, level)
+            status_message = (
+                message if short_message is None else f"{short_message}: {message}"
+            )
+            await lsp.write_json_rpc(
+                self.client_output_channel,
+                json_rpc.Request(
+                    method="window/showMessage",
+                    parameters=json_rpc.ByNameParameters(
+                        {"type": int(level), "message": status_message}
+                    ),
+                ),
+            )
+
+    async def log_and_show_status_message_to_client(
+        self,
+        message: str,
+        short_message: Optional[str] = None,
+        level: lsp.MessageType = lsp.MessageType.INFO,
+    ) -> None:
+        log_message = (
+            message if short_message is None else f"[{short_message}] {message}"
+        )
+        if level == lsp.MessageType.ERROR:
+            LOG.error(log_message)
+        elif level == lsp.MessageType.WARNING:
+            LOG.warning(log_message)
+        elif level == lsp.MessageType.INFO:
+            LOG.info(log_message)
+        else:
+            LOG.debug(log_message)
+        await self.show_status_message_to_client(message, short_message, level)
 
     def update_type_errors(self, type_errors: Sequence[error.Error]) -> None:
         LOG.info(
@@ -670,9 +741,14 @@ class PyreServerHandler(connection.BackgroundTask):
                 server_input_channel, server_output_channel
             )
         finally:
-            await self.show_message_to_client(
-                "Lost connection to background Pyre server.",
-                level=lsp.MessageType.WARNING,
+            await self.show_status_message_to_client(
+                "Lost connection to the background Pyre Server. "
+                "This usually happens when Pyre detect changes in project which "
+                "it was not able to handle incrementally. "
+                "A new Pyre server will be started next time you open or save "
+                "a .py file",
+                short_message="Pyre Stopped",
+                level=lsp.MessageType.ERROR,
             )
             self.server_state.diagnostics = {}
             await self.show_type_errors_to_client()
@@ -681,11 +757,13 @@ class PyreServerHandler(connection.BackgroundTask):
     def _auxiliary_logging_info(
         server_start_options: PyreServerStartOptions,
     ) -> Dict[str, Optional[str]]:
-        relative_local_root = server_start_options.start_arguments.relative_local_root
+        relative_local_root = (
+            server_start_options.start_arguments.base_arguments.relative_local_root
+        )
         return {
             "binary": server_start_options.binary,
-            "log_path": server_start_options.start_arguments.log_path,
-            "global_root": server_start_options.start_arguments.global_root,
+            "log_path": server_start_options.start_arguments.base_arguments.log_path,
+            "global_root": server_start_options.start_arguments.base_arguments.global_root,
             **(
                 {}
                 if relative_local_root is None
@@ -697,16 +775,18 @@ class PyreServerHandler(connection.BackgroundTask):
         server_identifier = server_start_options.server_identifier
         start_arguments = server_start_options.start_arguments
         socket_path = server_connection.get_default_socket_path(
-            log_directory=Path(start_arguments.log_path)
+            log_directory=Path(start_arguments.base_arguments.log_path)
         )
         try:
             async with connection.connect_in_text_mode(socket_path) as (
                 input_channel,
                 output_channel,
             ):
-                await self.log_and_show_message_to_client(
+                await self.log_and_show_status_message_to_client(
                     "Established connection with existing Pyre server at "
-                    f"`{server_identifier}`."
+                    f"`{server_identifier}`.",
+                    short_message="Pyre Ready",
+                    level=lsp.MessageType.INFO,
                 )
                 self.server_state.consecutive_start_failure = 0
                 _log_lsp_event(
@@ -719,17 +799,21 @@ class PyreServerHandler(connection.BackgroundTask):
                 )
                 await self.subscribe_to_type_error(input_channel, output_channel)
         except connection.ConnectionFailure:
-            await self.log_and_show_message_to_client(
+            await self.log_and_show_status_message_to_client(
                 f"Starting a new Pyre server at `{server_identifier}` in "
-                "the background..."
+                "the background.",
+                short_message="Starting Pyre...",
+                level=lsp.MessageType.WARNING,
             )
 
             start_status = await _start_pyre_server(
                 server_start_options.binary, start_arguments
             )
             if isinstance(start_status, StartSuccess):
-                await self.log_and_show_message_to_client(
-                    f"Pyre server at `{server_identifier}` has been initialized."
+                await self.log_and_show_status_message_to_client(
+                    f"Pyre server at `{server_identifier}` has been initialized.",
+                    short_message="Pyre Ready",
+                    level=lsp.MessageType.INFO,
                 )
 
                 async with connection.connect_in_text_mode(socket_path) as (
@@ -760,14 +844,17 @@ class PyreServerHandler(connection.BackgroundTask):
                             "exception": str(start_status.detail),
                         },
                     )
-                    await self.show_message_to_client(
-                        f"Cannot start a new Pyre server at `{server_identifier}`.",
-                        level=lsp.MessageType.ERROR,
+                    await self.show_status_message_to_client(
+                        f"Cannot start a new Pyre server at `{server_identifier}`. "
+                        f"{start_status.message}",
+                        short_message="Pyre Stopped",
+                        level=lsp.MessageType.WARNING,
                     )
                 else:
-                    await self.show_message_to_client(
+                    await self.show_status_message_to_client(
                         f"Pyre server restart at `{server_identifier}` has been "
                         "failing repeatedly. Disabling The Pyre plugin for now.",
+                        short_message="Pyre Disabled",
                         level=lsp.MessageType.ERROR,
                     )
                     _log_lsp_event(
@@ -840,11 +927,10 @@ async def run_persistent(
 
             client_capabilities = initialize_result.client_capabilities
             LOG.debug(f"Client capabilities: {client_capabilities}")
-            initial_server_state = ServerState()
+            initial_server_state = ServerState(client_capabilities=client_capabilities)
             server = PyreServer(
                 input_channel=stdin,
                 output_channel=stdout,
-                client_capabilities=client_capabilities,
                 state=initial_server_state,
                 pyre_manager=connection.BackgroundTaskManager(
                     PyreServerHandler(
@@ -862,6 +948,15 @@ async def run_persistent(
                 str(exception) if exception is not None else "ignoring notification"
             )
             LOG.info(f"Initialization failed: {message}")
+            _log_lsp_event(
+                remote_logging=remote_logging,
+                event=LSPEvent.NOT_INITIALIZED,
+                normals=(
+                    {
+                        "exception": message,
+                    }
+                ),
+            )
             # Loop until we get either InitializeExit or InitializeSuccess
         else:
             raise RuntimeError("Cannot determine the type of initialize_result")

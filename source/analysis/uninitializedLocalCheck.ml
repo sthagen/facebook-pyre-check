@@ -82,6 +82,7 @@ module AccessCollector = struct
     | UnaryOperator { UnaryOperator.operand; _ } -> from_expression collected operand
     | WalrusOperator { WalrusOperator.value; _ } -> from_expression collected value
     | Yield yield -> Option.value_map yield ~default:collected ~f:(from_expression collected)
+    | YieldFrom yield -> from_expression collected yield
     | String _
     | Complex _
     | Ellipsis
@@ -94,7 +95,10 @@ module AccessCollector = struct
 
   (* Generators are as special as lambdas -- they bind their own names, which we want to exclude *)
   and from_comprehension :
-        'a. (NameAccessSet.t -> 'a -> NameAccessSet.t) -> NameAccessSet.t -> 'a Comprehension.t ->
+        'a.
+        (NameAccessSet.t -> 'a -> NameAccessSet.t) ->
+        NameAccessSet.t ->
+        'a Comprehension.t ->
         NameAccessSet.t
     =
    fun from_element collected { Comprehension.element; generators } ->
@@ -138,8 +142,6 @@ let extract_reads_statement { Node.value; _ } =
     | Statement.Assign { Assign.value = expression; _ }
     | Delete expression
     | Expression expression
-    | Yield expression
-    | YieldFrom expression
     | If { If.test = expression; _ }
     | While { While.test = expression; _ } ->
         [expression]

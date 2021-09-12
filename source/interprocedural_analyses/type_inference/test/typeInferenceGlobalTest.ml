@@ -8,7 +8,7 @@
 open Core
 open OUnit2
 open Ast
-module TypeEnvironment = Analysis.TypeEnvironment
+open Analysis
 open Test
 open Interprocedural
 
@@ -38,13 +38,11 @@ let analysis = TypeInference.Analysis.abstract_kind
 
 let fixpoint_result ~context ~sources ~callable_names ~transform_configuration =
   let callables =
-    let callable_of_string name : Callable.t =
-      name |> Reference.create |> Callable.create_function
-    in
+    let callable_of_string name = name |> Reference.create |> Target.create_function in
     callable_names |> List.map ~f:callable_of_string
   in
-  let scratch_project = ScratchProject.setup ~context ~infer:true sources in
-  let filtered_callables = Callable.Set.of_list callables in
+  let scratch_project = ScratchProject.setup ~context sources in
+  let filtered_callables = Target.Set.of_list callables in
   let environment =
     setup_environment scratch_project |> TypeEnvironment.create |> TypeEnvironment.read_only
   in
@@ -52,12 +50,12 @@ let fixpoint_result ~context ~sources ~callable_names ~transform_configuration =
   let static_analysis_configuration =
     static_analysis_configuration ~transform_configuration scratch_project
   in
-  Analysis.initialize_configuration ~static_analysis_configuration analysis;
-  Analysis.record_initial_models ~functions:callables ~stubs:[] Callable.Map.empty;
+  FixpointAnalysis.initialize_configuration ~static_analysis_configuration analysis;
+  FixpointAnalysis.record_initial_models ~callables ~stubs:[] Target.Map.empty;
   let fixpoint_iterations =
     let iteration_limit = 1 in
     Some
-      (Analysis.compute_fixpoint
+      (FixpointAnalysis.compute_fixpoint
          ~scheduler
          ~environment
          ~analysis
@@ -66,7 +64,7 @@ let fixpoint_result ~context ~sources ~callable_names ~transform_configuration =
          ~all_callables:callables
          iteration_limit)
   in
-  Analysis.report_results
+  FixpointAnalysis.report_results
     ~scheduler
     ~static_analysis_configuration
     ~environment
@@ -101,7 +99,7 @@ let assert_fixpoint_result
   assert_json_equal ~context (List.hd_exn result) ~expected
 
 
-let type_inference_serialization_test context =
+let serialization_test context =
   assert_fixpoint_result
     ~context
     ~sources:
@@ -129,41 +127,15 @@ let type_inference_serialization_test context =
     ~expected:
       {|
         {
-          "globals": [
-            {
-              "name": "x",
-              "location": { "qualifier": "test", "path": "test.py", "line": 4 },
-              "annotation": "int"
-            }
-          ],
-          "attributes": [
-            {
-              "parent": "C",
-              "name": "x",
-              "location": { "qualifier": "test", "path": "test.py", "line": 7 },
-              "annotation": "int"
-            }
-          ],
-          "defines": [
-            {
-              "name": "test.needs_return",
-              "parent": null,
-              "return": "int",
-              "parameters": [
-                { "name": "y", "annotation": "int", "value": null, "index": 0 },
-                { "name": "x", "annotation": "int", "value": null, "index": 1 }
-              ],
-              "decorators": [ "functools.lru_cache(4)" ],
-              "location": { "qualifier": "test", "path": "test.py", "line": 13 },
-              "async": false
-            }
-          ]
+          "globals": [],
+          "attributes": [],
+          "defines": []
         }
-    |}
+      |}
     ()
 
 
-let type_inference_duplicate_define_test context =
+let duplicate_define_test context =
   (* This is a made-up example because overloads should have empty bodies, but normal libraries can
      implement similar decorator-based behavior that infer needs to handle. Note that whether we
      filter duplicates does not depend on whether there are duplicate _inference_ results; _any_
@@ -242,7 +214,7 @@ let type_inference_duplicate_define_test context =
   ()
 
 
-let type_inference_suppress_test context =
+let suppress_test context =
   assert_fixpoint_result
     ~context
     ~sources:
@@ -250,7 +222,7 @@ let type_inference_suppress_test context =
           x = None
 
           class Foo:
-            x = None
+              x = None
           |}]
     ~callable_names:["test.Foo.$class_toplevel"; "test.Foo.__init__"]
     ~expected:
@@ -264,7 +236,7 @@ let type_inference_suppress_test context =
     ()
 
 
-let type_inference_attribute_widen_test context =
+let attribute_widen_test context =
   assert_fixpoint_result
     ~context
     ~sources:
@@ -272,9 +244,9 @@ let type_inference_attribute_widen_test context =
         ( "test.py",
           {|
           class Foo:
-            x = None
-            def __init__(self) -> None:
-              self.x = 1 + 1
+              x = None
+              def __init__(self) -> None:
+                  self.x = 1 + 1
           |}
         );
       ]
@@ -283,71 +255,19 @@ let type_inference_attribute_widen_test context =
       {|
         {
           "globals": [],
-          "attributes": [
-            {
-              "parent": "Foo",
-              "name": "x",
-              "location": { "qualifier": "test", "path": "test.py", "line": 3 },
-              "annotation": "typing.Optional[int]"
-            }
-          ],
+          "attributes": [],
           "defines": []
         }
       |}
     ()
 
 
-let type_inference_ignore_infer_test context =
-  let assert_fixpoint_result =
-    assert_fixpoint_result
-      ~context
-      ~sources:["test.py", {|
-          x = 1 + 1
-          |}]
-      ~callable_names:["test.$toplevel"]
-  in
-  assert_fixpoint_result
-    ~expected:
-      {|
-        {
-          "globals": [
-            {
-              "name": "x",
-              "location": { "qualifier": "test", "path": "test.py", "line": 2 },
-              "annotation": "int"
-            }
-          ],
-          "attributes": [],
-          "defines": []
-        }
-      |}
-    ();
-  assert_fixpoint_result
-    ~transform_configuration:(fun configuration ->
-      {
-        configuration with
-        Configuration.Analysis.ignore_infer =
-          [PyrePath.create_relative ~root:configuration.local_root ~relative:"test.py"];
-      })
-    ~expected:
-      {|
-        {
-          "globals": [],
-          "attributes": [],
-          "defines": []
-        }
-      |}
-    ();
-  ()
-
-
 let () =
   "typeInferenceAnalysisTest"
   >::: [
-         "serialization" >:: type_inference_serialization_test;
-         "duplicates" >:: type_inference_duplicate_define_test;
-         "suppress" >:: type_inference_suppress_test;
-         "attribute_widen" >:: type_inference_attribute_widen_test;
-         "ignore_infer" >:: type_inference_ignore_infer_test;
+         "serialization" >:: serialization_test;
+         "duplicates" >:: duplicate_define_test;
+         "suppress" >:: suppress_test;
+         "attribute_widen" >:: attribute_widen_test;
        ]
   |> Test.run

@@ -4,7 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 # flake8: noqa
-from builtins import __test_sink, __test_source
+from builtins import _test_sink, _test_source
 from typing import Sequence, TypeVar
 
 
@@ -84,19 +84,19 @@ def return_taint_sanitize(arg: T) -> T:
 
 def test1():
     tainted = object()
-    tainted.id = __test_source()
+    tainted.id = _test_source()
     test2(tainted)
     test3(tainted)
 
 
 def test2(tainted_other):
     tainted = return_taint_sanitize(tainted_other)
-    __test_sink(tainted.id)
+    _test_sink(tainted.id)
 
 
 def test3(colliding_name):
     colliding_name = return_taint_sanitize(colliding_name)
-    __test_sink(colliding_name.id)
+    _test_sink(colliding_name.id)
 
 
 def source_with_tito(x):
@@ -104,17 +104,17 @@ def source_with_tito(x):
 
 
 def sanitize_sources(x):
-    __test_sink(x)
+    _test_sink(x)
     return source_with_tito(x)
 
 
 def sanitize_sinks(x):
-    __test_sink(x)
+    _test_sink(x)
     return source_with_tito(x)
 
 
 def sanitize_tito(x):
-    __test_sink(x)
+    _test_sink(x)
     return source_with_tito(x)
 
 
@@ -226,7 +226,7 @@ def sanitize_test_a_source_attribute():
     else:
         x = b_source()
     c = C_sanitized_a_source(x)
-    __test_sink(c.attribute)
+    _test_sink(c.attribute)
 
 
 def sanitize_test_b_source_attribute():
@@ -235,7 +235,7 @@ def sanitize_test_b_source_attribute():
     else:
         x = b_source()
     c = C_sanitized_b_source(x)
-    __test_sink(c.attribute)
+    _test_sink(c.attribute)
 
 
 def sanitize_test_ab_sources_attribute():
@@ -244,7 +244,7 @@ def sanitize_test_ab_sources_attribute():
     else:
         x = b_source()
     c = C_sanitized_ab_sources(x)
-    __test_sink(c.attribute)  # should only trigger Test -> Test
+    _test_sink(c.attribute)  # should only trigger Test -> Test
 
 
 def sanitize_test_all_sources_attribute():
@@ -253,9 +253,9 @@ def sanitize_test_all_sources_attribute():
     elif 2 > 3:
         x = b_source()
     else:
-        x = __test_source()
+        x = _test_source()
     c = C_sanitized_all_sources(x)
-    __test_sink(c.attribute)
+    _test_sink(c.attribute)
 
 
 def sanitize_test_a_source_instance():
@@ -264,7 +264,7 @@ def sanitize_test_a_source_instance():
     else:
         x = b_source()
     c = C_sanitized_a_source(x)
-    __test_sink(c.instance)
+    _test_sink(c.instance)
 
 
 def sanitize_test_b_source_instance():
@@ -273,7 +273,7 @@ def sanitize_test_b_source_instance():
     else:
         x = b_source()
     c = C_sanitized_b_source(x)
-    __test_sink(c.instance)
+    _test_sink(c.instance)
 
 
 def sanitize_test_ab_sources_instance():
@@ -282,7 +282,7 @@ def sanitize_test_ab_sources_instance():
     else:
         x = b_source()
     c = C_sanitized_ab_sources(x)
-    __test_sink(c.instance)  # should only trigger Test -> Test
+    _test_sink(c.instance)  # should only trigger Test -> Test
 
 
 def sanitize_test_all_sources_instance():
@@ -291,9 +291,9 @@ def sanitize_test_all_sources_instance():
     elif 2 > 3:
         x = b_source()
     else:
-        x = __test_source()
+        x = _test_source()
     c = C_sanitized_all_sources(x)
-    __test_sink(c.instance)
+    _test_sink(c.instance)
 
 
 def sanitize_a_sink_attribute(c: C_sanitized_a_sink):
@@ -323,7 +323,7 @@ def sanitize_all_sinks_attribute(c: C_sanitized_all_sinks):
     elif 2 > 3:
         b_sink(c.attribute)
     else:
-        __test_sink(c.attribute)
+        _test_sink(c.attribute)
 
 
 def sanitize_a_sink_instance(c: C_sanitized_a_sink):
@@ -353,40 +353,142 @@ def sanitize_all_sinks_instance(c: C_sanitized_all_sinks):
     elif 2 > 3:
         b_sink(c.instance)
     else:
-        __test_sink(c.instance)
+        _test_sink(c.instance)
 
 
 def sanitize_test_a_sink_attribute():
-    sanitize_a_sink_attribute(__test_source())
+    sanitize_a_sink_attribute(_test_source())
 
 
 def sanitize_test_b_sink_attribute():
-    sanitize_b_sink_attribute(__test_source())
+    sanitize_b_sink_attribute(_test_source())
 
 
 def sanitize_test_ab_sinks_attribute():
-    sanitize_ab_sinks_attribute(__test_source())
+    sanitize_ab_sinks_attribute(_test_source())
 
 
 def sanitize_test_all_sinks_attribute():
-    sanitize_all_sinks_attribute(__test_source())  # should not trigger
+    sanitize_all_sinks_attribute(_test_source())  # should not trigger
     c = C_sanitized_all_sinks({})
-    c.attribute = __test_source()  # should trigger Test -> Test
+    c.attribute = _test_source()  # should trigger Test -> Test
 
 
 def sanitize_test_a_sink_instance():
-    sanitize_a_sink_instance(__test_source())
+    sanitize_a_sink_instance(_test_source())
 
 
 def sanitize_test_b_sink_instance():
-    sanitize_b_sink_instance(__test_source())
+    sanitize_b_sink_instance(_test_source())
 
 
 def sanitize_test_ab_sinks_instance():
-    sanitize_ab_sinks_instance(__test_source())
+    sanitize_ab_sinks_instance(_test_source())
 
 
 def sanitize_test_all_sinks_instance():
-    sanitize_all_sinks_instance(__test_source())  # should not trigger
+    sanitize_all_sinks_instance(_test_source())  # should not trigger
     c = C_sanitized_all_sinks({})
-    c.instance = __test_source()  # should trigger Test -> Test
+    c.instance = _test_source()  # should trigger Test -> Test
+
+
+def sanitize_parameter(x, y):
+    _test_sink(x)
+    _test_sink(y)
+    return source_with_tito(x) + source_with_tito(y)
+
+
+def sanitize_parameter_all_sources(x, y):
+    _test_sink(x)
+    _test_sink(y)
+    return source_with_tito(x) + source_with_tito(y)
+
+
+def sanitize_parameter_all_sinks(x, y):
+    _test_sink(x)
+    _test_sink(y)
+    return source_with_tito(x) + source_with_tito(y)
+
+
+def sanitize_parameter_all_tito(x, y):
+    _test_sink(x)
+    _test_sink(y)
+    return source_with_tito(x) + source_with_tito(y)
+
+
+def sanitize_parameter_a_sink(x):
+    if 1 > 2:
+        a_sink(x)
+    else:
+        b_sink(x)
+
+
+def sanitize_parameter_b_sink(x):
+    if 1 > 2:
+        a_sink(x)
+    else:
+        b_sink(x)
+
+
+def sanitize_parameter_a_source_tito(x):
+    return x
+
+
+def no_propagation_with_sanitize_parameter_a_source_tito():
+    a = a_source()
+    b = sanitize_parameter_a_source_tito(a)
+    return b
+
+
+def propagation_of_b_with_sanitize_parameter_a_source_tito():
+    b = b_source()
+    tito = sanitize_parameter_a_source_tito(b)
+    return tito
+
+
+def sanitize_parameter_a_sink_tito(x):
+    return x
+
+
+def no_propagation_with_sanitize_parameter_a_sink_tito(x):
+    y = sanitize_parameter_a_sink_tito(x)
+    a_sink(y)
+
+
+def propagation_of_b_with_sanitize_parameter_a_sink_tito(x):
+    y = sanitize_a_sink_tito(x)
+    b_sink(y)
+
+
+def sanitize_return(x):
+    _test_sink(x)
+    return source_with_tito(x)
+
+
+def sanitize_return_all_sources(x):
+    _test_sink(x)
+    return source_with_tito(x)
+
+
+def sanitize_return_a_source():
+    if 1 > 2:
+        x = a_source()
+    else:
+        x = b_source()
+    return x
+
+
+def sanitize_return_b_source():
+    if 1 > 2:
+        x = a_source()
+    else:
+        x = b_source()
+    return x
+
+
+def sanitize_return_a_and_b_source():
+    if 1 > 2:
+        x = a_source()
+    else:
+        x = b_source()
+    return x

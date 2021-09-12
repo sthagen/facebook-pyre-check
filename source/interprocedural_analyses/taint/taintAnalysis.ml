@@ -5,10 +5,10 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-module Callable = Interprocedural.Callable
 open Core
 open Pyre
 open Taint
+module Target = Interprocedural.Target
 
 (* Registers the Taint analysis with the interprocedural analysis framework. *)
 include Taint.Result.Register (struct
@@ -51,7 +51,8 @@ include Taint.Result.Register (struct
   }
 
   type parse_sources_result = {
-    initialize_result: call_model Interprocedural.Result.InitializedModels.initialize_result;
+    initialize_result:
+      call_model Interprocedural.AnalysisResult.InitializedModels.initialize_result;
     query_data: model_query_data option;
   }
 
@@ -60,10 +61,10 @@ include Taint.Result.Register (struct
       ~static_analysis_configuration:
         { Configuration.StaticAnalysis.rule_filter; find_missing_flows; _ }
       ~environment
-      ~functions
+      ~callables
       ~stubs
       ~initialize_result:
-        { Interprocedural.Result.InitializedModels.initial_models = models; skip_overrides }
+        { Interprocedural.AnalysisResult.InitializedModels.initial_models = models; skip_overrides }
       { queries; taint_configuration }
     =
     let resolution =
@@ -75,10 +76,10 @@ include Taint.Result.Register (struct
     try
       let models =
         let callables =
-          Hash_set.fold stubs ~f:(Core.Fn.flip List.cons) ~init:functions
+          Hash_set.fold stubs ~f:(Core.Fn.flip List.cons) ~init:callables
           |> List.filter_map ~f:(function
-                 | `Function _ as callable -> Some (callable :> Callable.real_target)
-                 | `Method _ as callable -> Some (callable :> Callable.real_target)
+                 | `Function _ as callable -> Some (callable :> Target.callable_t)
+                 | `Method _ as callable -> Some (callable :> Target.callable_t)
                  | _ -> None)
         in
         TaintModelQuery.ModelQuery.apply_all_rules
@@ -92,20 +93,20 @@ include Taint.Result.Register (struct
           ~environment
           ~models
       in
-      let remove_sinks models = Callable.Map.map ~f:Model.remove_sinks models in
+      let remove_sinks models = Target.Map.map ~f:Model.remove_sinks models in
       let add_obscure_sinks models =
         let add_obscure_sink models callable =
           let model =
-            Callable.Map.find models callable
+            Target.Map.find models callable
             |> Option.value ~default:Taint.Result.empty_model
             |> Model.add_obscure_sink ~resolution ~call_target:callable
             |> Model.remove_obscureness
           in
-          Callable.Map.set models ~key:callable ~data:model
+          Target.Map.set models ~key:callable ~data:model
         in
         stubs
         |> Hash_set.filter ~f:(fun callable ->
-               Callable.Map.find models callable >>| Model.is_obscure |> Option.value ~default:true)
+               Target.Map.find models callable >>| Model.is_obscure |> Option.value ~default:true)
         |> Hash_set.fold ~f:add_obscure_sink ~init:models
       in
       let find_missing_flows =
@@ -117,7 +118,7 @@ include Taint.Result.Register (struct
         | Some Type -> models |> remove_sinks
         | None -> models
       in
-      { Interprocedural.Result.InitializedModels.initial_models = models; skip_overrides }
+      { Interprocedural.AnalysisResult.InitializedModels.initial_models = models; skip_overrides }
     with
     | exception_ -> log_and_reraise_taint_model_exception exception_
 
@@ -125,17 +126,17 @@ include Taint.Result.Register (struct
   let parse_models_and_queries_from_sources
       ~scheduler
       ~static_analysis_configuration:
-        ( {
-            Configuration.StaticAnalysis.verify_models;
-            configuration = { taint_model_paths; _ };
-            rule_filter;
-            find_missing_flows;
-            maximum_trace_length;
-            maximum_tito_depth;
-            _;
-          } as static_analysis_configuration )
+        ({
+           Configuration.StaticAnalysis.verify_models;
+           configuration = { taint_model_paths; _ };
+           rule_filter;
+           find_missing_flows;
+           maximum_trace_length;
+           maximum_tito_depth;
+           _;
+         } as static_analysis_configuration)
       ~environment
-      ~functions
+      ~callables
       ~stubs
     =
     let resolution =
@@ -162,7 +163,7 @@ include Taint.Result.Register (struct
                 ~path
                 ~source
                 ~configuration:taint_configuration
-                ~functions
+                ~callables
                 ~stubs
                 ?rule_filter
                 models
@@ -182,7 +183,7 @@ include Taint.Result.Register (struct
               Some model
           | `Both (left, right) -> Some (Result.join ~iteration:0 left right)
         in
-        ( Callable.Map.merge models_left models_right ~f:merge_models,
+        ( Target.Map.merge models_left models_right ~f:merge_models,
           List.rev_append errors_left errors_right,
           Set.union skip_overrides_left skip_overrides_right,
           List.rev_append queries_left queries_right )
@@ -237,7 +238,10 @@ include Taint.Result.Register (struct
         in
         {
           initialize_result =
-            { Interprocedural.Result.InitializedModels.initial_models = models; skip_overrides };
+            {
+              Interprocedural.AnalysisResult.InitializedModels.initial_models = models;
+              skip_overrides;
+            };
           query_data = Some { queries; taint_configuration };
         }
       with
@@ -249,7 +253,7 @@ include Taint.Result.Register (struct
         {
           initialize_result =
             {
-              Interprocedural.Result.InitializedModels.initial_models;
+              Interprocedural.AnalysisResult.InitializedModels.initial_models;
               skip_overrides = Ast.Reference.Set.empty;
             };
           query_data = None;
@@ -257,8 +261,9 @@ include Taint.Result.Register (struct
     | _ -> add_models_and_queries_from_sources initial_models
 
 
-  let initialize_models ~scheduler ~static_analysis_configuration ~environment ~functions ~stubs =
-    let stubs = Callable.HashSet.of_list stubs in
+  let initialize_models ~scheduler ~static_analysis_configuration ~environment ~callables ~stubs =
+    let callables = (callables :> Target.t list) in
+    let stubs = Target.HashSet.of_list (stubs :> Target.t list) in
 
     Log.info "Parsing taint models...";
     let timer = Timer.start () in
@@ -267,7 +272,7 @@ include Taint.Result.Register (struct
         ~scheduler
         ~static_analysis_configuration
         ~environment
-        ~functions:(Some (Callable.HashSet.of_list functions))
+        ~callables:(Some (Target.HashSet.of_list callables))
         ~stubs
     in
     Statistics.performance ~name:"Parsed taint models" ~phase_name:"Parsing taint models" ~timer ();
@@ -282,7 +287,7 @@ include Taint.Result.Register (struct
               ~scheduler
               ~static_analysis_configuration
               ~environment:updated_environment
-              ~functions
+              ~callables
               ~stubs
               ~initialize_result
               query_data
@@ -295,10 +300,10 @@ include Taint.Result.Register (struct
           models
       | _ -> initialize_result
     in
-    Interprocedural.Result.InitializedModels.create get_taint_models
+    Interprocedural.AnalysisResult.InitializedModels.create get_taint_models
 
 
-  let analyze ~environment ~callable ~qualifier ~define ~sanitize ~modes existing_model =
+  let analyze ~environment ~callable ~qualifier ~define ~sanitizers ~modes existing_model =
     let call_graph_of_define =
       Interprocedural.CallGraph.SharedMemory.get_or_compute
         ~callable
@@ -323,48 +328,8 @@ include Taint.Result.Register (struct
       else
         forward, backward
     in
-    let model =
-      let open Domains in
-      let forward =
-        match sanitize.Sanitize.sources with
-        | Some Sanitize.AllSources -> empty_model.forward
-        | Some (Sanitize.SpecificSources sanitized_sources) ->
-            let { Forward.source_taint } = forward in
-            ForwardState.partition
-              ForwardTaint.leaf
-              ByFilter
-              ~f:(fun source ->
-                Option.some_if (not (List.mem ~equal:Sources.equal sanitized_sources source)) source)
-              source_taint
-            |> Core.Map.Poly.fold
-                 ~init:ForwardState.bottom
-                 ~f:(fun ~key:_ ~data:source_state state -> ForwardState.join source_state state)
-            |> fun source_taint -> { Forward.source_taint }
-        | None -> forward
-      in
-      let taint_in_taint_out =
-        match sanitize.Sanitize.tito with
-        | Some AllTito -> empty_model.backward.taint_in_taint_out
-        | _ -> backward.taint_in_taint_out
-      in
-      let sink_taint =
-        match sanitize.Sanitize.sinks with
-        | Some Sanitize.AllSinks -> empty_model.backward.sink_taint
-        | Some (Sanitize.SpecificSinks sanitized_sinks) ->
-            let { Backward.sink_taint; _ } = backward in
-            BackwardState.partition
-              BackwardTaint.leaf
-              ByFilter
-              ~f:(fun source ->
-                Option.some_if (not (List.mem ~equal:Sinks.equal sanitized_sinks source)) source)
-              sink_taint
-            |> Core.Map.Poly.fold
-                 ~init:BackwardState.bottom
-                 ~f:(fun ~key:_ ~data:source_state state -> BackwardState.join source_state state)
-        | None -> backward.sink_taint
-      in
-      { forward; backward = { sink_taint; taint_in_taint_out }; sanitize; modes }
-    in
+    let model = { forward; backward; sanitizers; modes } in
+    let model = Model.apply_sanitizers model in
     result, model
 
 
@@ -373,11 +338,11 @@ include Taint.Result.Register (struct
       ~callable
       ~qualifier
       ~define:
-        ( {
-            Ast.Node.value =
-              { Ast.Statement.Define.signature = { name = { Ast.Node.value = name; _ }; _ }; _ };
-            _;
-          } as define )
+        ({
+           Ast.Node.value =
+             { Ast.Statement.Define.signature = { name = { Ast.Node.value = name; _ }; _ }; _ };
+           _;
+         } as define)
       ~existing
     =
     let define_qualifier = Ast.Reference.delocalize name in
@@ -391,17 +356,17 @@ include Taint.Result.Register (struct
     in
     match existing with
     | Some ({ modes; _ } as model) when ModeSet.contains Mode.SkipAnalysis modes ->
-        let () = Log.info "Skipping taint analysis of %a" Callable.pretty_print callable in
+        let () = Log.info "Skipping taint analysis of %a" Target.pretty_print callable in
         [], model
-    | Some ({ sanitize; modes; _ } as model) ->
-        analyze ~callable ~environment ~qualifier ~define ~sanitize ~modes model
+    | Some ({ sanitizers; modes; _ } as model) ->
+        analyze ~callable ~environment ~qualifier ~define ~sanitizers ~modes model
     | None ->
         analyze
           ~callable
           ~environment
           ~qualifier
           ~define
-          ~sanitize:Sanitize.empty
+          ~sanitizers:Sanitizers.empty
           ~modes:ModeSet.empty
           empty_model
 

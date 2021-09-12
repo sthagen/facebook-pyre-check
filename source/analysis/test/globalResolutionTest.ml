@@ -242,9 +242,9 @@ let test_constructors context =
     |}
     "Foo"
     (Some
-       ( "BoundMethod[typing.Callable('test.Foo.__init__')[[Named(self, test.Foo), Named(a, int)], \
-          test.Foo]"
-       ^ "[[[Named(self, test.Foo), Named(b, str)], test.Foo]], test.Foo]" ));
+       ("BoundMethod[typing.Callable('test.Foo.__init__')[[Named(self, test.Foo), Named(a, int)], \
+         test.Foo]"
+       ^ "[[[Named(self, test.Foo), Named(b, str)], test.Foo]], test.Foo]"));
 
   (* Generic classes. *)
   assert_constructor
@@ -458,11 +458,11 @@ let test_constructors context =
 
 
 let test_is_protocol _ =
-  let assert_is_protocol bases expected =
-    let is_protocol bases =
+  let assert_is_protocol base_arguments expected =
+    let is_protocol base_arguments =
       {
         StatementClass.name = + !&"Derp";
-        bases;
+        base_arguments;
         body = [];
         decorators = [];
         top_level_unbound_names = [];
@@ -470,7 +470,7 @@ let test_is_protocol _ =
       |> ClassSummary.create ~qualifier:Reference.empty
       |> ClassSummary.is_protocol
     in
-    assert_equal expected (is_protocol bases)
+    assert_equal expected (is_protocol base_arguments)
   in
   let parse = parse_single_expression in
   assert_is_protocol [] false;
@@ -556,10 +556,10 @@ let test_class_attributes context =
       ~cmp:attribute_list_equal
       ~printer:print_attributes
       ~pp_diff:(diff ~print)
-      ( GlobalResolution.attributes ~resolution definition
+      (GlobalResolution.attributes ~resolution definition
       |> (fun a -> Option.value_exn a)
       |> List.map
-           ~f:(GlobalResolution.instantiate_attribute ~resolution ~accessed_through_class:false) )
+           ~f:(GlobalResolution.instantiate_attribute ~resolution ~accessed_through_class:false))
       attributes
   in
   let uninstantiated_constructor =
@@ -1029,9 +1029,10 @@ let test_invalid_type_parameters context =
     ];
   let variadic = Type.Variable.Variadic.Tuple.create "Ts" in
   assert_invalid_type_parameters
-    ~aliases:(fun ?replace_unbound_parameters_with_any:_ -> function
-      | "Ts" -> Some (VariableAlias (Type.Variable.TupleVariadic variadic))
-      | _ -> None)
+    ~aliases:
+      (fun ?replace_unbound_parameters_with_any:_ -> function
+        | "Ts" -> Some (VariableAlias (Type.Variable.TupleVariadic variadic))
+        | _ -> None)
     ~given_type:"typing.List[pyre_extensions.Unpack[Ts]]"
     ~expected_transformed_type:"typing.List[typing.Any]"
     [
@@ -1084,9 +1085,10 @@ let test_invalid_type_parameters context =
     ~expected_transformed_type:"test.Foo[int, str]"
     [];
   assert_invalid_type_parameters
-    ~aliases:(fun ?replace_unbound_parameters_with_any:_ -> function
-      | "Ts" -> Some (VariableAlias (Type.Variable.TupleVariadic variadic))
-      | _ -> None)
+    ~aliases:
+      (fun ?replace_unbound_parameters_with_any:_ -> function
+        | "Ts" -> Some (VariableAlias (Type.Variable.TupleVariadic variadic))
+        | _ -> None)
     ~source:
       {|
       from typing import Generic
@@ -1138,9 +1140,10 @@ let test_invalid_type_parameters context =
       };
     ];
   assert_invalid_type_parameters
-    ~aliases:(fun ?replace_unbound_parameters_with_any:_ -> function
-      | "Ts" -> Some (VariableAlias (Type.Variable.TupleVariadic variadic))
-      | _ -> None)
+    ~aliases:
+      (fun ?replace_unbound_parameters_with_any:_ -> function
+        | "Ts" -> Some (VariableAlias (Type.Variable.TupleVariadic variadic))
+        | _ -> None)
     ~source:
       {|
       from typing import Generic, TypeVar
@@ -1262,12 +1265,14 @@ let test_typed_dictionary_attributes context =
            "x", "foo.Foo";
            "__class__", "object";
            "__delattr__", "object";
+           "__dir__", "object";
            "__doc__", "object";
            "__eq__", "object";
            "__format__", "object";
            "__getattribute__", "object";
            "__hash__", "object";
            "__init__", "object";
+           "__init_subclass__", "object";
            "__module__", "object";
            "__ne__", "object";
            "__new__", "object";
@@ -1301,11 +1306,13 @@ let test_typed_dictionary_attributes context =
            "values", "typing.Mapping";
            "__class__", "object";
            "__delattr__", "object";
+           "__dir__", "object";
            "__doc__", "object";
            "__eq__", "object";
            "__format__", "object";
            "__getattribute__", "object";
            "__hash__", "object";
+           "__init_subclass__", "object";
            "__module__", "object";
            "__ne__", "object";
            "__new__", "object";
@@ -2296,29 +2303,118 @@ let test_metaclasses context =
 
 
 let test_overrides context =
+  let create_simple_callable_attribute ?(initialized = Attribute.OnClass) ~signature ~parent name =
+    let annotation = Type.Callable signature in
+    Annotated.Attribute.create
+      ~abstract:false
+      ~annotation
+      ~original_annotation:annotation
+      ~uninstantiated_annotation:(Some annotation)
+      ~async_property:false
+      ~class_variable:false
+      ~defined:true
+      ~initialized
+      ~name
+      ~parent
+      ~visibility:ReadWrite
+      ~property:false
+      ~undecorated_signature:(Some signature)
+      ~problem:None
+  in
+  let create_callable ~name ~parameters ~annotation ~overloads =
+    {
+      Type.Callable.kind = Named (Reference.create name);
+      implementation = { parameters = Defined parameters; annotation };
+      overloads;
+    }
+  in
   let resolution =
     ScratchProject.setup
       ~context
       [
         ( "test.py",
           {|
-      class Foo:
-        def foo(): pass
-      class Bar(Foo):
-        pass
-      class Baz(Bar):
-        def foo(): pass
-        def baz(): pass
-    |}
+            class Foo:
+              def foo() -> int: pass
+            class Bar(Foo):
+              pass
+            class Baz(Bar):
+              def foo() -> int: pass
+              def baz() -> int: pass
+          |}
+        );
+        ( "overloads.py",
+          {|
+            from typing import Union
+            class Foo:
+              @overload
+              def foo() -> int: pass
+              @overload
+              def foo() -> str: pass
+              def foo() -> Union[int, str]: pass
+            class Bar(Foo):
+              def foo() -> int: pass
+          |}
         );
       ]
     |> ScratchProject.build_global_resolution
   in
-  assert_is_none (GlobalResolution.overrides "test.Baz" ~resolution ~name:"baz");
-  let overrides = GlobalResolution.overrides "test.Baz" ~resolution ~name:"foo" in
-  assert_is_some overrides;
-  assert_equal ~cmp:String.equal (Attribute.name (Option.value_exn overrides)) "foo";
-  assert_equal (Option.value_exn overrides |> Attribute.parent) "test.Foo"
+  let assert_overrides ~class_name ~method_name ~expected_override =
+    let overrides = GlobalResolution.overrides ~resolution ~name:method_name class_name in
+    let print_attribute attribute =
+      Annotated.Attribute.sexp_of_instantiated attribute |> Sexp.to_string_hum
+    in
+    match expected_override with
+    | Some expected ->
+        let actual = Option.value_exn overrides in
+        assert_equal
+          ~cmp:Attribute.equal_instantiated
+          ~printer:print_attribute
+          ~pp_diff:
+            (diff ~print:(fun format attribute ->
+                 Format.fprintf format "%s" ([%show: Attribute.instantiated] attribute)))
+          actual
+          expected
+    | None -> assert_is_none overrides
+  in
+  assert_overrides ~class_name:"test.Baz" ~method_name:"baz" ~expected_override:None;
+  assert_overrides
+    ~class_name:"test.Baz"
+    ~method_name:"foo"
+    ~expected_override:
+      (create_simple_callable_attribute
+         ~initialized:OnClass
+         ~signature:
+           (create_callable
+              ~name:"test.Foo.foo"
+              ~parameters:[]
+              ~annotation:Type.integer
+              ~overloads:[])
+         ~parent:"test.Foo"
+         "foo"
+      |> Option.some);
+
+  (* Test overloads. *)
+  assert_overrides
+    ~class_name:"overloads.Bar"
+    ~method_name:"foo"
+    ~expected_override:
+      (create_simple_callable_attribute
+         ~initialized:OnClass
+         ~signature:
+           (create_callable
+              ~name:"overloads.Foo.foo"
+              ~parameters:[]
+              ~annotation:(Type.union [Type.integer; Type.string])
+              ~overloads:
+                [
+                  { parameters = Defined []; annotation = Type.integer };
+                  { parameters = Defined []; annotation = Type.string };
+                ])
+         ~parent:"overloads.Foo"
+         "foo"
+      |> Option.some);
+  ()
 
 
 let test_extract_type_parameter context =
@@ -2499,7 +2595,7 @@ let test_define context =
   in
   let source =
     {|
-    from builtins import __test_sink
+    from builtins import _test_sink
     from typing import Callable
 
     def simple_function(x: int) -> str:
@@ -2509,14 +2605,14 @@ let test_define context =
     def with_logging(callable: Callable[[str], None]) -> Callable[[str], None]:
 
       def inner(y: str) -> None:
-        __test_sink(y)
+        _test_sink(y)
         callable(y)
 
       return inner
 
     def two_inner_functions(callable: Callable[[str], None]) -> Callable[[str], None]:
       def inner1(y: str) -> None:
-        __test_sink(y)
+        _test_sink(y)
 
       def inner2(y: str) -> None:
         inner1(y)
@@ -2527,7 +2623,7 @@ let test_define context =
     def decorator_factory(x: int) -> Callable[[Callable[[str], None]], Callable[[str], None]]:
       def wrapper(f: Callable[[str], None]) -> Callable[[str], None]:
         def inner(y: str) -> None:
-          __test_sink(y)
+          _test_sink(y)
           f(y)
 
         return inner
@@ -2551,12 +2647,12 @@ let test_define context =
     ~source
     ~expected_define_source:
       {|
-    from builtins import __test_sink
+    from builtins import _test_sink
     from typing import Callable
     def with_logging(callable: Callable[[str], None]) -> Callable[[str], None]:
 
       def inner(y: str) -> None:
-        __test_sink(y)
+        _test_sink(y)
         callable(y)
 
       return inner
@@ -2566,12 +2662,12 @@ let test_define context =
     ~source
     ~expected_define_source:
       {|
-    from builtins import __test_sink
+    from builtins import _test_sink
     from typing import Callable
 
     def two_inner_functions(callable: Callable[[str], None]) -> Callable[[str], None]:
       def inner1(y: str) -> None:
-        __test_sink(y)
+        _test_sink(y)
 
       def inner2(y: str) -> None:
         inner1(y)
@@ -2584,13 +2680,13 @@ let test_define context =
     ~source
     ~expected_define_source:
       {|
-    from builtins import __test_sink
+    from builtins import _test_sink
     from typing import Callable
 
     def decorator_factory(x: int) -> Callable[[Callable[[str], None]], Callable[[str], None]]:
       def wrapper(f: Callable[[str], None]) -> Callable[[str], None]:
         def inner(y: str) -> None:
-          __test_sink(y)
+          _test_sink(y)
           f(y)
 
         return inner

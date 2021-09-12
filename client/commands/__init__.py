@@ -15,10 +15,9 @@ from .command import (  # noqa; noqa; noqa
     ProfileOutput as ProfileOutput,
     IncrementalStyle as IncrementalStyle,
 )
+from .coverage import Coverage
 from .deobfuscate import Deobfuscate as Deobfuscate
 from .incremental import Incremental as Incremental
-from .infer import Infer as Infer
-from .initialize import Initialize as Initialize
 from .kill import Kill as Kill
 from .persistent import Persistent as Persistent
 from .profile import Profile as Profile
@@ -35,10 +34,9 @@ from .validate_models import ValidateModels as ValidateModels
 COMMANDS: List[Type[CommandParser]] = [
     Analyze,
     Check,
+    Coverage,
     Deobfuscate,
     Incremental,
-    Infer,
-    Initialize,
     Kill,
     Persistent,
     Profile,
