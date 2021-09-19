@@ -216,6 +216,10 @@ let invalid_model_error ~path ~location ~name message =
 
 module ClassDefinitionsCache = ModelVerifier.ClassDefinitionsCache
 
+(* We don't have real models for attributes, so we make a fake callable model with a 'parameter'
+   $global which acts as the taint sink whenever attributes are marked as sinks. *)
+let attribute_symbolic_parameter = "$global"
+
 let decorators = String.Set.union Recognized.property_decorators Recognized.classproperty_decorators
 
 let is_property define = String.Set.exists decorators ~f:(Define.has_decorator define)
@@ -249,6 +253,7 @@ let rec parse_annotations
     ~configuration
     ~parameters
     ~callable_parameter_names_to_positions
+    ~is_object_target
     annotation
   =
   let open Core.Result in
@@ -351,6 +356,30 @@ let rec parse_annotations
   in
   let rec extract_kinds expression =
     match expression.Node.value with
+    | Expression.Name (Name.Identifier "ViaTypeOf") ->
+        if is_object_target then (* ViaTypeOf is treated as ViaTypeOf[$global] *)
+          Ok
+            [
+              ViaFeatures
+                [
+                  Features.ViaFeature.ViaTypeOf
+                    {
+                      parameter =
+                        AccessPath.Root.PositionalParameter
+                          {
+                            name = attribute_symbolic_parameter;
+                            position = 0;
+                            positional_only = false;
+                          };
+                      tag = None;
+                    };
+                ];
+            ]
+        else
+          Error
+            (annotation_error
+               "A standalone `ViaTypeOf` without arguments can only be used in attribute or global \
+                models.")
     | Expression.Name (Name.Identifier taint_kind) ->
         Ok [Leaf { name = taint_kind; subkind = None }]
     | Name (Name.Attribute { base; _ }) -> extract_kinds base
@@ -658,6 +687,7 @@ let rec parse_annotations
               ~configuration
               ~parameters
               ~callable_parameter_names_to_positions
+              ~is_object_target
               expression)
         |> all
         |> map ~f:List.concat
@@ -760,6 +790,27 @@ let rec parse_annotations
         | _ -> invalid_annotation_error ())
     | Name (Name.Identifier "TaintInTaintOut") ->
         Ok [Tito { tito = Sinks.LocalReturn; breadcrumbs = []; via_features = []; path = [] }]
+    | Name (Name.Identifier "ViaTypeOf") ->
+        if is_object_target then
+          (* Attribute annotations of the form `a: ViaTypeOf = ...` is equivalent to:
+             TaintInTaintOut[ViaTypeOf[$global]] = ...` *)
+          let via_features =
+            [
+              Features.ViaFeature.ViaTypeOf
+                {
+                  parameter =
+                    AccessPath.Root.PositionalParameter
+                      { name = attribute_symbolic_parameter; position = 0; positional_only = false };
+                  tag = None;
+                };
+            ]
+          in
+          Ok [Tito { tito = Sinks.LocalReturn; breadcrumbs = []; via_features; path = [] }]
+        else
+          Error
+            (annotation_error
+               "A standalone `ViaTypeOf` without arguments can only be used in attribute or global \
+                models.")
     | Expression.Tuple expressions ->
         List.map expressions ~f:(fun expression ->
             parse_annotations
@@ -769,6 +820,7 @@ let rec parse_annotations
               ~configuration
               ~parameters
               ~callable_parameter_names_to_positions
+              ~is_object_target
               expression)
         |> all
         >>| List.concat
@@ -1561,7 +1613,13 @@ let parse_parameter_where_clause ~path ({ Node.value; location } as expression) 
   | _ -> parse_constraint expression >>| List.return
 
 
-let parse_model_clause ~path ~configuration ~find_clause ({ Node.value; location } as expression) =
+let parse_model_clause
+    ~path
+    ~configuration
+    ~find_clause
+    ~is_object_target
+    ({ Node.value; location } as expression)
+  =
   let open Core.Result in
   let invalid_model_query_model_clause ~path ~location callee =
     model_verification_error
@@ -1617,6 +1675,7 @@ let parse_model_clause ~path ~configuration ~find_clause ({ Node.value; location
               ~configuration
               ~parameters:[]
               ~callable_parameter_names_to_positions:None
+              ~is_object_target
               expression
             >>| List.map ~f:(fun taint -> ModelQuery.TaintAnnotation taint)
       in
@@ -1802,6 +1861,7 @@ let parse_parameter_taint
     ~configuration
     ~parameters
     ~callable_parameter_names_to_positions
+    ~is_object_target
     (root, _name, parameter)
   =
   parameter.Node.value.Parameter.annotation
@@ -1812,6 +1872,7 @@ let parse_parameter_taint
         ~configuration
         ~parameters
         ~callable_parameter_names_to_positions
+        ~is_object_target
   |> Option.value ~default:(Ok [])
   |> Core.Result.map ~f:(List.map ~f:(fun annotation -> annotation, ParameterAnnotation root))
 
@@ -1925,6 +1986,7 @@ let parse_return_taint
     ~configuration
     ~parameters
     ~callable_parameter_names_to_positions
+    ~is_object_target
     expression
   =
   let open Core.Result in
@@ -1935,6 +1997,7 @@ let parse_return_taint
     ~configuration
     ~parameters
     ~callable_parameter_names_to_positions
+    ~is_object_target
     expression
   |> map ~f:(List.map ~f:(fun annotation -> annotation, ReturnAnnotation))
 
@@ -2003,59 +2066,81 @@ let adjust_sanitize_and_modes_and_skipped_override
     ~define_name
     ~configuration
     ~top_level_decorators
+    ~is_object_target
     model
   =
-  (* Adjust analysis modes and whether we skip overrides by applying top-level decorators. *)
   let open Core.Result in
-  let sanitize_and_modes_and_skipped_override =
-    let adjust
-        (sanitize, modes, skipped_override)
-        { Decorator.name = { Node.value = name; location = decorator_location }; arguments }
-      =
-      match Reference.show name with
-      | "Sanitize" ->
-          let sanitize_kind =
-            match arguments with
-            | None ->
-                Ok
-                  { Sanitize.sources = Some AllSources; sinks = Some AllSinks; tito = Some AllTito }
-            | Some arguments -> (
-                (* Pretend that it is a `Sanitize[...]` expression and use the annotation parser. *)
-                let expression =
-                  List.map ~f:(fun { Call.Argument.value; _ } -> value) arguments
-                  |> Ast.Expression.get_item_call "Sanitize" ~location:decorator_location
-                  |> Node.create ~location:decorator_location
-                in
-                parse_annotations
-                  ~path
-                  ~location
-                  ~model_name:(Reference.show define_name)
-                  ~configuration
-                  ~parameters:[]
-                  ~callable_parameter_names_to_positions:None
-                  expression
-                >>= function
-                | [Sanitize sanitize_annotations] ->
-                    Ok (sanitize_from_annotations sanitize_annotations)
-                | _ -> failwith "impossible case")
-          in
-          sanitize_kind
-          >>| fun sanitize_kind -> Sanitize.join sanitize sanitize_kind, modes, skipped_override
-      | "SkipAnalysis" -> Ok (sanitize, ModeSet.add SkipAnalysis modes, skipped_override)
-      | "SkipDecoratorWhenInlining" ->
-          Ok (sanitize, ModeSet.add SkipDecoratorWhenInlining modes, skipped_override)
-      | "SkipOverrides" -> Ok (sanitize, ModeSet.add SkipOverrides modes, Some define_name)
-      | "SkipObscure" -> Ok (sanitize, ModeSet.remove Obscure modes, Some define_name)
-      | _ -> Ok (sanitize, modes, skipped_override)
+  let join_with_sanitize_decorator ~sanitizers ~decorator_location arguments =
+    let parse_sanitize arguments =
+      (* Pretend that it is a `Sanitize[...]` expression and use the annotation parser. *)
+      let expression =
+        List.map ~f:(fun { Call.Argument.value; _ } -> value) arguments
+        |> Ast.Expression.get_item_call "Sanitize" ~location:decorator_location
+        |> Node.create ~location:decorator_location
+      in
+      parse_annotations
+        ~path
+        ~location
+        ~model_name:(Reference.show define_name)
+        ~configuration
+        ~parameters:[]
+        ~callable_parameter_names_to_positions:None
+        ~is_object_target
+        expression
+      >>= function
+      | [Sanitize sanitize_annotations] -> Ok (sanitize_from_annotations sanitize_annotations)
+      | _ -> failwith "impossible case"
     in
-    List.fold_result
-      top_level_decorators
-      ~f:adjust
-      ~init:(model.sanitizers.global, model.modes, None)
+    match arguments with
+    | None ->
+        let global =
+          { Sanitize.sources = Some AllSources; sinks = Some AllSinks; tito = Some AllTito }
+        in
+        Ok { sanitizers with Sanitizers.global }
+    | Some
+        [
+          {
+            Call.Argument.value = { Node.value = Expression.Name (Name.Identifier "Parameters"); _ };
+            _;
+          };
+        ] ->
+        let parameters =
+          { Sanitize.sources = Some AllSources; sinks = Some AllSinks; tito = Some AllTito }
+        in
+        Ok { sanitizers with Sanitizers.parameters }
+    | Some
+        [
+          { Call.Argument.value = { Node.value = Expression.Call { Call.callee; arguments }; _ }; _ };
+        ]
+      when [%compare.equal: string option] (base_name callee) (Some "Parameters") ->
+        parse_sanitize arguments
+        >>| fun parameters_sanitize ->
+        { sanitizers with parameters = Sanitize.join sanitizers.parameters parameters_sanitize }
+    | Some arguments ->
+        parse_sanitize arguments
+        >>| fun global_sanitize ->
+        { sanitizers with global = Sanitize.join sanitizers.global global_sanitize }
   in
-  sanitize_and_modes_and_skipped_override
-  >>| fun (sanitize, modes, skipped_override) ->
-  let sanitizers = { model.sanitizers with global = sanitize } in
+  let join_with_decorator
+      (sanitizers, modes, skipped_override)
+      { Decorator.name = { Node.value = name; location = decorator_location }; arguments }
+    =
+    match Reference.show name with
+    | "Sanitize" ->
+        join_with_sanitize_decorator ~sanitizers ~decorator_location arguments
+        >>| fun sanitizers -> sanitizers, modes, skipped_override
+    | "SkipAnalysis" -> Ok (sanitizers, ModeSet.add SkipAnalysis modes, skipped_override)
+    | "SkipDecoratorWhenInlining" ->
+        Ok (sanitizers, ModeSet.add SkipDecoratorWhenInlining modes, skipped_override)
+    | "SkipOverrides" -> Ok (sanitizers, ModeSet.add SkipOverrides modes, Some define_name)
+    | "SkipObscure" -> Ok (sanitizers, ModeSet.remove Obscure modes, skipped_override)
+    | _ -> Ok (sanitizers, modes, skipped_override)
+  in
+  List.fold_result
+    top_level_decorators
+    ~f:join_with_decorator
+    ~init:(model.sanitizers, model.modes, None)
+  >>| fun (sanitizers, modes, skipped_override) ->
   { model with sanitizers; modes }, skipped_override
 
 
@@ -2337,6 +2422,20 @@ let parse_statement ~resolution ~path ~configuration statement =
                 call_target = Target.create_object name;
               };
           ]
+      else if Expression.show annotation |> String.equal "ViaTypeOf" then
+        let name = name_to_reference_exn name in
+        Ok
+          [
+            ParsedAttribute
+              {
+                name;
+                source_annotation = None;
+                sink_annotation = Some annotation;
+                decorators = [];
+                location;
+                call_target = Target.create_object name;
+              };
+          ]
       else
         Error
           (model_verification_error
@@ -2366,12 +2465,17 @@ let parse_statement ~resolution ~path ~configuration statement =
          { Call.Argument.name = Some { Node.value = "model"; _ }; value = model_clause };
         ] ->
             let parsed_find_clause = parse_find_clause ~path find_clause in
+            let is_object_target = not (is_callable_clause_kind parsed_find_clause) in
             Ok
               ( None,
                 parsed_find_clause,
                 parse_where_clause ~path ~find_clause:parsed_find_clause where_clause,
-                parse_model_clause ~path ~configuration ~find_clause:parsed_find_clause model_clause
-              )
+                parse_model_clause
+                  ~path
+                  ~configuration
+                  ~find_clause:parsed_find_clause
+                  ~is_object_target
+                  model_clause )
         | [
          {
            Call.Argument.name = Some { Node.value = "name"; _ };
@@ -2382,12 +2486,17 @@ let parse_statement ~resolution ~path ~configuration statement =
          { Call.Argument.name = Some { Node.value = "model"; _ }; value = model_clause };
         ] ->
             let parsed_find_clause = parse_find_clause ~path find_clause in
+            let is_object_target = not (is_callable_clause_kind parsed_find_clause) in
             Ok
               ( Some name,
                 parsed_find_clause,
                 parse_where_clause ~path ~find_clause:parsed_find_clause where_clause,
-                parse_model_clause ~path ~configuration ~find_clause:parsed_find_clause model_clause
-              )
+                parse_model_clause
+                  ~path
+                  ~configuration
+                  ~find_clause:parsed_find_clause
+                  ~is_object_target
+                  model_clause )
         | _ -> Error (model_verification_error ~path ~location (InvalidModelQueryClauses arguments))
       in
 
@@ -2426,6 +2535,7 @@ let create_model_from_signature
   let open Core.Result in
   let open ModelVerifier in
   let call_target = (call_target :> Target.t) in
+  let is_object_target = false in
   (* Strip off the decorators only used for taint annotations. *)
   let top_level_decorators, define =
     let is_taint_decorator decorator =
@@ -2541,7 +2651,8 @@ let create_model_from_signature
            ~model_name:(Reference.show callable_name)
            ~configuration
            ~parameters
-           ~callable_parameter_names_to_positions)
+           ~callable_parameter_names_to_positions
+           ~is_object_target)
     |> all
     >>| List.concat
     >>= fun parameter_taint ->
@@ -2554,7 +2665,8 @@ let create_model_from_signature
               ~model_name:(Reference.show callable_name)
               ~configuration
               ~parameters
-              ~callable_parameter_names_to_positions)
+              ~callable_parameter_names_to_positions
+              ~is_object_target)
     |> Option.value ~default:(Ok [])
     >>| fun return_taint -> List.rev_append parameter_taint return_taint
   in
@@ -2596,12 +2708,9 @@ let create_model_from_signature
         ~configuration
         ~top_level_decorators
         ~define_name:callable_name
+        ~is_object_target
   >>| fun (model, skipped_override) -> Model ({ model; call_target }, skipped_override)
 
-
-(* We don't have real models for attributes, so we make a fake callable model with a 'parameter'
-   $global which acts as the taint sink whenever attributes are marked as sinks. *)
-let attribute_symbolic_parameter = "$global"
 
 let create_model_from_attribute
     ~resolution
@@ -2613,6 +2722,7 @@ let create_model_from_attribute
   =
   let open Core.Result in
   let call_target = (call_target :> Target.t) in
+  let is_object_target = true in
   ModelVerifier.verify_global ~path ~location ~resolution ~name
   >>= fun () ->
   source_annotation
@@ -2624,7 +2734,8 @@ let create_model_from_attribute
             ~model_name:(Reference.show name)
             ~configuration
             ~parameters:[]
-            ~callable_parameter_names_to_positions:None)
+            ~callable_parameter_names_to_positions:None
+            ~is_object_target)
   |> Option.value ~default:(Ok [])
   >>= fun source_taint ->
   let parse_sink_taint annotation =
@@ -2642,6 +2753,7 @@ let create_model_from_attribute
       ~configuration
       ~parameters:[]
       ~callable_parameter_names_to_positions:None
+      ~is_object_target
       (root, attribute_symbolic_parameter, parameter)
   in
   sink_annotation
@@ -2671,6 +2783,7 @@ let create_model_from_attribute
         ~configuration
         ~top_level_decorators:decorators
         ~define_name:name
+        ~is_object_target
   >>| fun (model, skipped_override) -> Model ({ model; call_target }, skipped_override)
 
 

@@ -8,7 +8,7 @@ import dataclasses
 from collections import defaultdict
 from enum import Enum
 from re import compile
-from typing import Any, Dict, List, Pattern, Sequence
+from typing import Iterable, Any, Dict, List, Pattern, Sequence
 
 import libcst as cst
 from libcst.metadata import CodeRange, PositionProvider
@@ -62,6 +62,9 @@ class FunctionAnnotationInfo:
     annotation_kind: FunctionAnnotationKind
     code_range: CodeRange
 
+    return_info: AnnotationInfo
+    parameter_infos: List[AnnotationInfo]
+
     @property
     def is_annotated(self) -> bool:
         return self.annotation_kind != FunctionAnnotationKind.NOT_ANNOTATED
@@ -80,15 +83,22 @@ class AnnotationCollector(cst.CSTVisitor):
     path: str = ""
 
     def __init__(self) -> None:
-        self.returns: List[AnnotationInfo] = []
         self.globals: List[AnnotationInfo] = []
-        self.parameters: List[AnnotationInfo] = []
         self.attributes: List[AnnotationInfo] = []
         self.functions: List[FunctionAnnotationInfo] = []
         self.class_definition_depth = 0
         self.function_definition_depth = 0
         self.static_function_definition_depth = 0
         self.line_count = 0
+
+    def returns(self) -> Iterable[AnnotationInfo]:
+        for function in self.functions:
+            yield function.return_info
+
+    def parameters(self) -> Iterable[AnnotationInfo]:
+        for function in self.functions:
+            for parameter in function.parameter_infos:
+                yield parameter
 
     def in_class_definition(self) -> bool:
         return self.class_definition_depth > 0
@@ -108,18 +118,14 @@ class AnnotationCollector(cst.CSTVisitor):
     def _code_range(self, node: cst.CSTNode) -> CodeRange:
         return self.get_metadata(PositionProvider, node)
 
-    def _check_parameter_annotations(self, parameters: Sequence[cst.Param]) -> int:
-        annotated_parameter_count = 0
+    def _parameter_annotations(
+        self, parameters: Sequence[cst.Param]
+    ) -> Iterable[AnnotationInfo]:
         for index, parameter in enumerate(parameters):
             is_annotated = parameter.annotation is not None or self._is_self_or_cls(
                 index
             )
-            self.parameters.append(
-                AnnotationInfo(parameter, is_annotated, self._code_range(parameter))
-            )
-            if is_annotated:
-                annotated_parameter_count += 1
-        return annotated_parameter_count
+            yield AnnotationInfo(parameter, is_annotated, self._code_range(parameter))
 
     def visit_FunctionDef(self, node: cst.FunctionDef) -> None:
         for decorator in node.decorators:
@@ -136,10 +142,14 @@ class AnnotationCollector(cst.CSTVisitor):
         else:
             code_range = self._code_range(node.returns)
             return_is_annotated = True
-        self.returns.append(AnnotationInfo(node, return_is_annotated, code_range))
-        annotated_parameter_count = self._check_parameter_annotations(
-            node.params.params
-        )
+        return_info = AnnotationInfo(node, return_is_annotated, code_range)
+
+        parameter_infos = []
+        annotated_parameter_count = 0
+        for parameter_info in self._parameter_annotations(node.params.params):
+            if parameter_info.is_annotated:
+                annotated_parameter_count += 1
+            parameter_infos.append(parameter_info)
 
         annotation_kind = FunctionAnnotationKind.from_function_data(
             return_is_annotated,
@@ -148,7 +158,11 @@ class AnnotationCollector(cst.CSTVisitor):
             parameters=node.params.params,
         )
         code_range = self._code_range(node.body)
-        self.functions.append(FunctionAnnotationInfo(node, annotation_kind, code_range))
+        self.functions.append(
+            FunctionAnnotationInfo(
+                node, annotation_kind, code_range, return_info, parameter_infos
+            )
+        )
 
     def leave_FunctionDef(self, original_node: cst.FunctionDef) -> None:
         self.function_definition_depth -= 1
@@ -207,38 +221,50 @@ class StatisticsCollector(cst.CSTVisitor):
 
 
 class AnnotationCountCollector(StatisticsCollector, AnnotationCollector):
-    def annotated_returns(self) -> List[AnnotationInfo]:
-        return [r for r in self.returns if r.is_annotated]
+    def return_count(self) -> int:
+        return len(list(self.returns()))
 
-    def annotated_globals(self) -> List[AnnotationInfo]:
-        return [g for g in self.globals if g.is_annotated]
+    def annotated_return_count(self) -> int:
+        return len([r for r in self.returns() if r.is_annotated])
 
-    def annotated_parameters(self) -> List[AnnotationInfo]:
-        return [p for p in self.parameters if p.is_annotated]
+    def globals_count(self) -> int:
+        return len(self.globals)
 
-    def annotated_attributes(self) -> List[AnnotationInfo]:
-        return [a for a in self.attributes if a.is_annotated]
+    def annotated_globals_count(self) -> int:
+        return len([g for g in self.globals if g.is_annotated])
 
-    def partially_annotated_functions(self) -> List[FunctionAnnotationInfo]:
-        return [f for f in self.functions if f.is_partially_annotated]
+    def parameters_count(self) -> int:
+        return len(list(self.parameters()))
 
-    def fully_annotated_functions(self) -> List[FunctionAnnotationInfo]:
-        return [f for f in self.functions if f.is_fully_annotated]
+    def annotated_parameters_count(self) -> int:
+        return len([p for p in self.parameters() if p.is_annotated])
+
+    def attributes_count(self) -> int:
+        return len(self.attributes)
+
+    def annotated_attributes_count(self) -> int:
+        return len([a for a in self.attributes if a.is_annotated])
+
+    def partially_annotated_functions_count(self) -> int:
+        return len([f for f in self.functions if f.is_partially_annotated])
+
+    def fully_annotated_functions_count(self) -> int:
+        return len([f for f in self.functions if f.is_fully_annotated])
 
     def build_json(self) -> Dict[str, int]:
         return {
-            "return_count": len(self.returns),
-            "annotated_return_count": len(self.annotated_returns()),
-            "globals_count": len(self.globals),
-            "annotated_globals_count": len(self.annotated_globals()),
-            "parameter_count": len(self.parameters),
-            "annotated_parameter_count": len(self.annotated_parameters()),
-            "attribute_count": len(self.attributes),
-            "annotated_attribute_count": len(self.annotated_attributes()),
+            "return_count": self.return_count(),
+            "annotated_return_count": self.annotated_return_count(),
+            "globals_count": self.globals_count(),
+            "annotated_globals_count": self.annotated_globals_count(),
+            "parameter_count": self.parameters_count(),
+            "annotated_parameter_count": self.annotated_parameters_count(),
+            "attribute_count": self.attributes_count(),
+            "annotated_attribute_count": self.annotated_attributes_count(),
             "partially_annotated_function_count": (
-                len(self.partially_annotated_functions())
+                self.partially_annotated_functions_count()
             ),
-            "fully_annotated_function_count": len(self.fully_annotated_functions()),
+            "fully_annotated_function_count": self.fully_annotated_functions_count(),
             "line_count": self.line_count,
         }
 

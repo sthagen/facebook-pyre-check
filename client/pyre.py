@@ -594,7 +594,11 @@ def pyre(
     type=filesystem.writable_directory,
     help="Directory to write analysis results to.",
 )
-@click.option("--dump-call-graph", is_flag=True, default=False, hidden=True)
+@click.option(
+    "--dump-call-graph",
+    type=str,
+    help="Dump the call graph in the given file.",
+)
 # pyre-fixme[56]: Pyre was not able to infer the type of argument `os.path.abspath`
 #  to decorator factory `click.option`.
 @click.option("--repository-root", type=os.path.abspath)
@@ -611,9 +615,8 @@ def pyre(
 )
 @click.option(
     "--dump-model-query-results",
-    is_flag=True,
-    default=False,
-    help="Provide model query debugging output.",
+    type=str,
+    help="Dump model query results in the given file.",
 )
 @click.option(
     "--use-cache",
@@ -644,11 +647,11 @@ def analyze(
     taint_models_path: Iterable[str],
     no_verify: bool,
     save_results_to: Optional[str],
-    dump_call_graph: bool,
+    dump_call_graph: Optional[str],
     repository_root: Optional[str],
     rule: Iterable[int],
     find_missing_flows: Optional[str],
-    dump_model_query_results: bool,
+    dump_model_query_results: Optional[str],
     use_cache: bool,
     inline_decorators: bool,
     maximum_trace_length: Optional[int],
@@ -1454,6 +1457,11 @@ def statistics(
 
 
 @pyre.command()
+@click.argument(
+    "roots",
+    type=str,
+    nargs=-1,
+)
 @click.option(
     "--working-directory",
     metavar="DIR",
@@ -1465,6 +1473,7 @@ def statistics(
 @click.pass_context
 def coverage(
     context: click.Context,
+    roots: Iterable[str],
     working_directory: str,
 ) -> int:
     """
@@ -1473,7 +1482,7 @@ def coverage(
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
     if configuration.use_command_v2:
-        return v2.coverage.run(configuration, working_directory)
+        return v2.coverage.run(configuration, working_directory, list(roots))
     else:
         return run_pyre_command(
             commands.Coverage(
