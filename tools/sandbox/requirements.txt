@@ -10,6 +10,7 @@ fb-sapp==0.2.8
 Flask==1.1.2
 Flask-Cors==3.0.9
 Flask-GraphQL==2.0.1
+flask-socketio==5.1.1
 graphene==2.1.8
 graphene-sqlalchemy==2.3.0
 graphql-core==2.3.2
@@ -36,7 +37,6 @@ ptyprocess==0.6.0
 Pygments==2.7.3
 pyre-check-nightly==0.0.101608763182
 pyre-extensions==0.0.19
-pywatchman==1.4.1
 PyYAML==5.3.1
 Rx==1.6.1
 singledispatch==3.4.0.3

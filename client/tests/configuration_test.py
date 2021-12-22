@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Optional
 
 import testslide
 
@@ -23,6 +24,7 @@ from .. import (
 )
 from ..configuration import (
     PythonVersion,
+    IdeFeatures,
     InvalidPythonVersion,
     SharedMemory,
     Configuration,
@@ -89,6 +91,7 @@ class PartialConfigurationTest(unittest.TestCase):
                 dot_pyre_directory=Path(".pyre"),
                 python_version="3.6.7",
                 shared_memory_heap_size=42,
+                number_of_workers=43,
             )
         )
         self.assertEqual(configuration.binary, "binary")
@@ -113,6 +116,27 @@ class PartialConfigurationTest(unittest.TestCase):
             configuration.python_version, PythonVersion(major=3, minor=6, micro=7)
         )
         self.assertEqual(configuration.shared_memory, SharedMemory(heap_size=42))
+        self.assertEqual(configuration.number_of_workers, 43)
+
+    def test_create_from_command_arguments__ide_features(self) -> None:
+        configuration = PartialConfiguration.from_command_arguments(
+            command_arguments.CommandArguments(
+                enable_hover=True,
+            )
+        )
+        assert configuration.ide_features is not None
+        self.assertTrue(configuration.ide_features.is_hover_enabled())
+        configuration = PartialConfiguration.from_command_arguments(
+            command_arguments.CommandArguments(
+                enable_hover=False,
+            )
+        )
+        assert configuration.ide_features is not None
+        self.assertFalse(configuration.ide_features.is_hover_enabled())
+        configuration = PartialConfiguration.from_command_arguments(
+            command_arguments.CommandArguments()
+        )
+        self.assertEqual(configuration.ide_features, None)
 
     def test_create_from_string_success(self) -> None:
         self.assertEqual(
@@ -145,7 +169,7 @@ class PartialConfigurationTest(unittest.TestCase):
             list(
                 PartialConfiguration.from_string(
                     json.dumps({"do_not_ignore_errors_in": ["foo", "bar"]})
-                ).do_not_ignore_all_errors_in
+                ).do_not_ignore_errors_in
             ),
             ["foo", "bar"],
         )
@@ -413,6 +437,27 @@ class PartialConfigurationTest(unittest.TestCase):
             hashlib.sha1(file_content.encode("utf-8")).hexdigest(),
         )
 
+    def test_create_from_string_ide_features(self) -> None:
+        def assert_ide_features_equal(input: object, expected: object) -> None:
+            self.assertEqual(
+                PartialConfiguration.from_string(json.dumps(input)).ide_features,
+                expected,
+            )
+
+        def assert_ide_features_raises(input: object) -> None:
+            with self.assertRaises(InvalidConfiguration):
+                PartialConfiguration.from_string(json.dumps(input))
+
+        assert_ide_features_equal({}, None)
+        assert_ide_features_equal({"ide_features": {}}, IdeFeatures())
+        assert_ide_features_equal(
+            {"ide_features": {"hover_enabled": True}}, IdeFeatures(hover_enabled=True)
+        )
+        assert_ide_features_equal(
+            {"ide_features": {"hover_enabled": False}}, IdeFeatures(hover_enabled=False)
+        )
+        assert_ide_features_raises({"ide_features": {"hover_enabled": 42}})
+
     def test_create_from_string_failure(self) -> None:
         def assert_raises(content: str) -> None:
             with self.assertRaises(InvalidConfiguration):
@@ -540,7 +585,7 @@ class PartialConfigurationTest(unittest.TestCase):
         assert_overwritten("buck_builder_binary")
         assert_overwritten("buck_mode")
         assert_overwritten("disabled")
-        assert_prepended("do_not_ignore_all_errors_in")
+        assert_prepended("do_not_ignore_errors_in")
         assert_overwritten("dot_pyre_directory")
         assert_prepended("excludes")
         assert_prepended("extensions")
@@ -563,6 +608,38 @@ class PartialConfigurationTest(unittest.TestCase):
         assert_overwritten("use_command_v2")
         assert_overwritten("version_hash")
 
+    def test_merge__ide_features(self) -> None:
+        def assert_merged(
+            base_ide_features: Optional[IdeFeatures],
+            override_ide_features: Optional[IdeFeatures],
+            expected: Optional[IdeFeatures],
+        ) -> None:
+            self.assertEqual(
+                merge_partial_configurations(
+                    base=PartialConfiguration(ide_features=base_ide_features),
+                    override=PartialConfiguration(ide_features=override_ide_features),
+                ).ide_features,
+                expected,
+            )
+
+        assert_merged(None, None, None)
+        assert_merged(
+            IdeFeatures(hover_enabled=True), None, IdeFeatures(hover_enabled=True)
+        )
+        assert_merged(
+            None, IdeFeatures(hover_enabled=True), IdeFeatures(hover_enabled=True)
+        )
+        assert_merged(
+            IdeFeatures(hover_enabled=False),
+            IdeFeatures(hover_enabled=True),
+            IdeFeatures(hover_enabled=True),
+        )
+        assert_merged(
+            IdeFeatures(hover_enabled=True),
+            IdeFeatures(hover_enabled=False),
+            IdeFeatures(hover_enabled=False),
+        )
+
     def test_expand_relative_paths(self) -> None:
         self.assertEqual(
             PartialConfiguration(binary="foo").expand_relative_paths("bar").binary,
@@ -579,9 +656,9 @@ class PartialConfigurationTest(unittest.TestCase):
             "bar/foo",
         )
         self.assertEqual(
-            PartialConfiguration(do_not_ignore_all_errors_in=["foo", "bar"])
+            PartialConfiguration(do_not_ignore_errors_in=["foo", "bar"])
             .expand_relative_paths("baz")
-            .do_not_ignore_all_errors_in,
+            .do_not_ignore_errors_in,
             ["baz/foo", "baz/bar"],
         )
         self.assertEqual(
@@ -659,11 +736,12 @@ class ConfigurationTest(testslide.TestCase):
                 buck_builder_binary="buck_builder_binary",
                 buck_mode="opt",
                 disabled=None,
-                do_not_ignore_all_errors_in=["foo"],
+                do_not_ignore_errors_in=["foo"],
                 dot_pyre_directory=None,
                 excludes=["exclude"],
                 extensions=[ExtensionElement(".ext", False)],
                 file_hash="abc",
+                ide_features=IdeFeatures(hover_enabled=True),
                 ignore_all_errors=["bar"],
                 ignore_infer=["baz"],
                 logger="logger",
@@ -692,11 +770,12 @@ class ConfigurationTest(testslide.TestCase):
         self.assertEqual(configuration.buck_builder_binary, "buck_builder_binary")
         self.assertEqual(configuration.buck_mode, "opt")
         self.assertEqual(configuration.disabled, False)
-        self.assertListEqual(list(configuration.do_not_ignore_all_errors_in), ["foo"])
+        self.assertListEqual(list(configuration.do_not_ignore_errors_in), ["foo"])
         self.assertEqual(configuration.dot_pyre_directory, Path("root/.pyre"))
         self.assertListEqual(list(configuration.excludes), ["exclude"])
         self.assertEqual(configuration.extensions, [ExtensionElement(".ext", False)])
         self.assertEqual(configuration.file_hash, "abc")
+        self.assertEqual(configuration.ide_features, IdeFeatures(hover_enabled=True))
         self.assertListEqual(list(configuration.ignore_all_errors), ["bar"])
         self.assertListEqual(list(configuration.ignore_infer), ["baz"])
         self.assertEqual(configuration.logger, "logger")
@@ -909,7 +988,7 @@ class ConfigurationTest(testslide.TestCase):
                 Configuration(
                     project_root=str(root_path),
                     dot_pyre_directory=Path(".pyre"),
-                    do_not_ignore_all_errors_in=[
+                    do_not_ignore_errors_in=[
                         str(root_path / "a"),
                         str(root_path / "x"),
                         "//b/c",
@@ -1162,6 +1241,21 @@ class ConfigurationTest(testslide.TestCase):
                 ],
             ).get_valid_extension_suffixes(),
             [".bar"],
+        )
+
+    def test_is_hover_enabled(self) -> None:
+        self.assertFalse(
+            Configuration(
+                project_root="irrelevant",
+                dot_pyre_directory=Path(".pyre"),
+            ).is_hover_enabled(),
+        )
+        self.assertTrue(
+            Configuration(
+                project_root="irrelevant",
+                dot_pyre_directory=Path(".pyre"),
+                ide_features=IdeFeatures(hover_enabled=True),
+            ).is_hover_enabled(),
         )
 
     def test_create_from_command_arguments_only(self) -> None:
@@ -1472,6 +1566,13 @@ class SearchPathElementTest(unittest.TestCase):
             create_search_paths({"site-package": "foo"}, site_roots=["site1"]),
             [SitePackageSearchPathElement("site1", "foo")],
         )
+        self.assertListEqual(
+            create_search_paths(
+                {"site-package": "foo", "is_toplevel_module": "true"},
+                site_roots=["site1"],
+            ),
+            [SitePackageSearchPathElement("site1", "foo", True)],
+        )
 
         with self.assertRaises(InvalidConfiguration):
             create_search_paths({}, site_roots=[])
@@ -1499,6 +1600,10 @@ class SearchPathElementTest(unittest.TestCase):
         self.assertEqual(
             SitePackageSearchPathElement("foo", "bar").command_line_argument(),
             "foo$bar",
+        )
+        self.assertEqual(
+            SitePackageSearchPathElement("foo", "bar", True).command_line_argument(),
+            "foo$bar.py",
         )
 
     def test_expand_global_root(self) -> None:

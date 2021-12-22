@@ -11,6 +11,30 @@ from typing import List, Optional, Set
 
 TEXT: str = "text"
 JSON: str = "json"
+SARIF: str = "sarif"
+
+
+class IncrementalStyle(enum.Enum):
+    SHALLOW = "shallow"
+    FINE_GRAINED = "fine_grained"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class ProfileOutput(enum.Enum):
+    TRACE_EVENT: str = "trace_event"
+    COLD_START_PHASES: str = "cold_start_phases"
+    INCREMENTAL_UPDATES: str = "incremental_updates"
+    TAINT: str = "taint"
+    INDIVIDUAL_TABLE_SIZES: str = "individual_table_sizes"
+    TOTAL_SHARED_MEMORY_SIZE_OVER_TIME: str = "total_shared_memory_size_over_time"
+    TOTAL_SHARED_MEMORY_SIZE_OVER_TIME_GRAPH: str = (
+        "total_shared_memory_size_over_time_graph"  # noqa B950
+    )
+
+    def __str__(self) -> str:
+        return self.value
 
 
 class MissingFlowsKind(str, enum.Enum):
@@ -38,7 +62,7 @@ class CommandArguments:
     use_buck_builder: Optional[bool] = None
     use_buck_source_database: Optional[bool] = None
     source_directories: List[str] = field(default_factory=list)
-    filter_directory: Optional[str] = None
+    do_not_ignore_errors_in: List[str] = field(default_factory=list)
     buck_mode: Optional[str] = None
     no_saved_state: bool = False
     search_path: List[str] = field(default_factory=list)
@@ -58,6 +82,8 @@ class CommandArguments:
     shared_memory_heap_size: Optional[int] = None
     shared_memory_dependency_table_power: Optional[int] = None
     shared_memory_hash_table_power: Optional[int] = None
+    number_of_workers: Optional[int] = None
+    enable_hover: Optional[bool] = None
 
 
 @dataclass(frozen=True)
@@ -111,11 +137,11 @@ class InferArguments:
     dequalify: bool = False
     enable_memory_profiling: bool = False
     enable_profiling: bool = False
-    interprocedural: bool = False
     log_identifier: Optional[str] = None
     logging_sections: Optional[str] = None
-    no_future_annotations: bool = False
+    use_future_annotations: bool = False
     in_place: bool = False
+    simple_annotations: bool = False
     paths_to_modify: Optional[Set[Path]] = None
     print_only: bool = False
     read_stdin: bool = False

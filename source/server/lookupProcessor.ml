@@ -8,23 +8,22 @@
 open Core
 open Ast
 open Analysis
-open Pyre
 
 type error_reason =
   | StubShadowing
   | FileNotFound
 
 type types_by_path = {
-  path: PyrePath.t;
+  path: string;
   types_by_location: ((Location.t * Type.t) list, error_reason) Result.t;
 }
 
 type lookup = {
-  path: PyrePath.t;
+  path: string;
   lookup: (Lookup.t, error_reason) Result.t;
 }
 
-let get_lookups ~configuration ~environment paths =
+let get_lookups ~configuration ~build_system ~environment paths =
   let generate_lookup_for_existent_path (path, { SourcePath.qualifier; _ }) =
     let lookup = Lookup.create_of_module (TypeEnvironment.read_only environment) qualifier in
     { path; lookup = Result.Ok lookup }
@@ -33,24 +32,28 @@ let get_lookups ~configuration ~environment paths =
     { path; lookup = Result.Error error_reason }
   in
   let generate_lookup_for_path path =
-    let module_tracker = TypeEnvironment.module_tracker environment in
-    match ModuleTracker.lookup_path ~configuration module_tracker path with
-    | ModuleTracker.PathLookup.Found source_path ->
-        generate_lookup_for_existent_path (path, source_path)
-    | ModuleTracker.PathLookup.ShadowedBy _ ->
-        generate_lookup_for_nonexistent_path (path, StubShadowing)
-    | ModuleTracker.PathLookup.NotFound -> generate_lookup_for_nonexistent_path (path, FileNotFound)
+    let full_path =
+      let { Configuration.Analysis.local_root = root; _ } = configuration in
+      PyrePath.create_relative ~root ~relative:path
+    in
+    match BuildSystem.lookup_artifact build_system full_path with
+    | [] -> generate_lookup_for_nonexistent_path (path, FileNotFound)
+    | artifact_path :: _ -> (
+        (* If a source path corresponds to multiple artifacts, randomly pick an artifact and compute
+           results for it. *)
+        let module_tracker = TypeEnvironment.module_tracker environment in
+        match ModuleTracker.lookup_path ~configuration module_tracker artifact_path with
+        | ModuleTracker.PathLookup.Found source_path ->
+            generate_lookup_for_existent_path (path, source_path)
+        | ModuleTracker.PathLookup.ShadowedBy _ ->
+            generate_lookup_for_nonexistent_path (path, StubShadowing)
+        | ModuleTracker.PathLookup.NotFound ->
+            generate_lookup_for_nonexistent_path (path, FileNotFound))
   in
   List.map paths ~f:generate_lookup_for_path
 
 
-let find_annotation ~environment ~configuration ~path ~position =
-  let { lookup; _ } = get_lookups ~configuration ~environment [path] |> List.hd_exn in
-  let annotation = Result.ok lookup >>= Lookup.get_annotation ~position in
-  annotation
-
-
-let find_all_annotations_batch ~environment ~configuration ~paths =
+let find_all_annotations_batch ~environment ~build_system ~configuration paths =
   let get_annotations { path; lookup; _ } =
     {
       path;
@@ -59,10 +62,4 @@ let find_all_annotations_batch ~environment ~configuration ~paths =
             Lookup.get_all_annotations lookup |> List.sort ~compare:[%compare: Location.t * Type.t]);
     }
   in
-  List.map ~f:get_annotations (get_lookups ~configuration ~environment paths)
-
-
-let find_definition ~environment ~configuration path position =
-  let { lookup; _ } = get_lookups ~configuration ~environment [path] |> List.hd_exn in
-  let definition = Result.ok lookup >>= Lookup.get_definition ~position in
-  definition
+  List.map ~f:get_annotations (get_lookups ~configuration ~environment ~build_system paths)

@@ -14,6 +14,7 @@ type t
 module ParserError : sig
   type t = {
     source_path: SourcePath.t;
+    location: Location.t;
     is_suppressed: bool;
     message: string;
   }
@@ -47,7 +48,7 @@ module ReadOnly : sig
     :  configuration:Configuration.Analysis.t ->
     t ->
     Reference.t ->
-    Pyre.Path.t option
+    PyrePath.t option
 
   val get_real_path_relative
     :  configuration:Configuration.Analysis.t ->

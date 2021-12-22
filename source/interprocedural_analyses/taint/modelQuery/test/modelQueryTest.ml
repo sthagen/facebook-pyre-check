@@ -7,11 +7,18 @@
 
 open OUnit2
 open Core
+open Pyre
 open Test
 open Taint
-open Model.ModelQuery
 
-type query_rule_element = Taint.Model.annotation_kind * Taint.Model.taint_annotation
+module ModelParser = struct
+  include Taint.ModelParser
+  include Taint.ModelParser.Internal
+end
+
+open Taint.ModelParser.Internal.ModelQuery
+
+type query_rule_element = ModelParser.annotation_kind * ModelParser.taint_annotation
 [@@deriving show, compare]
 
 let test_apply_rule context =
@@ -21,7 +28,7 @@ let test_apply_rule context =
       | None -> Sources.NamedSource name
       | Some subkind -> Sources.ParametricSource { source_name = name; subkind }
     in
-    Model.Source
+    ModelParser.Source
       {
         source;
         breadcrumbs = [];
@@ -33,7 +40,7 @@ let test_apply_rule context =
   in
   let sink name =
     let sink = Sinks.NamedSink name in
-    Model.Sink
+    ModelParser.Sink
       {
         sink;
         breadcrumbs = [];
@@ -64,7 +71,7 @@ let test_apply_rule context =
       expected
       actual
   in
-  let assert_applied_rules_for_attribute ~source ~rule ~attribute_name ~expected =
+  let assert_applied_rules_for_attribute ~source ~rule ~name ~annotation ~expected =
     let { ScratchProject.BuiltGlobalEnvironment.global_environment; _ } =
       ScratchProject.setup ~context ["test.py", source] |> ScratchProject.build_global_environment
     in
@@ -77,11 +84,12 @@ let test_apply_rule context =
         ~verbose:false
         ~resolution
         ~rule
-        ~attribute:(Ast.Reference.create attribute_name)
+        ~name:(Ast.Reference.create name)
+        ~annotation:(annotation >>| Type.expression)
     in
     assert_equal
-      ~cmp:(List.equal (fun left right -> Taint.Model.compare_taint_annotation left right = 0))
-      ~printer:(List.to_string ~f:Taint.Model.show_taint_annotation)
+      ~cmp:(List.equal (fun left right -> ModelParser.compare_taint_annotation left right = 0))
+      ~printer:(List.to_string ~f:ModelParser.show_taint_annotation)
       expected
       actual
   in
@@ -97,7 +105,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.foo")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:{|
       def foo(): ...
@@ -123,7 +131,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.foo")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
 
   (* Test multiple constraints. *)
   assert_applied_rules
@@ -143,7 +151,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.barfoo")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:{|
       def foo(): ...
@@ -192,7 +200,7 @@ let test_apply_rule context =
         rule_kind = MethodModel;
       }
     ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
 
   (* Multiple productions. *)
   assert_applied_rules
@@ -214,8 +222,8 @@ let test_apply_rule context =
     ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
-        Taint.Model.ReturnAnnotation, source "Test";
-        ( Taint.Model.ParameterAnnotation
+        ModelParser.ReturnAnnotation, source "Test";
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 0; name = "x"; positional_only = false }),
           source "Test" );
@@ -237,11 +245,11 @@ let test_apply_rule context =
     ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 1; name = "y"; positional_only = false }),
           source "Test" );
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 0; name = "x"; positional_only = false }),
           source "Test" );
@@ -262,7 +270,7 @@ let test_apply_rule context =
     ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 1; name = "y"; positional_only = false }),
           source "Test" );
@@ -283,7 +291,7 @@ let test_apply_rule context =
     ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 0; name = "x"; positional_only = false }),
           source "Test" );
@@ -312,7 +320,7 @@ let test_apply_rule context =
     ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 0; name = "x"; positional_only = false }),
           source "Test" );
@@ -339,7 +347,7 @@ let test_apply_rule context =
     ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 0; name = "x"; positional_only = false }),
           source "Test" );
@@ -370,7 +378,7 @@ let test_apply_rule context =
     ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 0; name = "x"; positional_only = false }),
           source "Test" );
@@ -402,7 +410,7 @@ let test_apply_rule context =
     ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 1; name = "y"; positional_only = false }),
           source "Test" );
@@ -431,7 +439,7 @@ let test_apply_rule context =
     ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 1; name = "y"; positional_only = false }),
           source "Test" );
@@ -457,7 +465,7 @@ let test_apply_rule context =
     ~callable:(`Function "test.foo")
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 0; name = "x"; positional_only = false }),
           source "Test" );
@@ -483,7 +491,7 @@ let test_apply_rule context =
     ~callable:(`Function "test.foo")
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 0; name = "x"; positional_only = false }),
           source "Test" );
@@ -513,7 +521,7 @@ let test_apply_rule context =
     ~callable:(`Function "test.foo")
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 0; name = "x"; positional_only = false }),
           source "Test" );
@@ -544,7 +552,7 @@ let test_apply_rule context =
     ~callable:(`Function "test.foo")
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 1; name = "y"; positional_only = false }),
           source "Test" );
@@ -572,7 +580,7 @@ let test_apply_rule context =
     ~callable:(`Function "test.foo")
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 1; name = "y"; positional_only = false }),
           source "Test" );
@@ -598,7 +606,7 @@ let test_apply_rule context =
     ~callable:(`Function "test.foo")
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 0; name = "x"; positional_only = false }),
           source "Test" );
@@ -624,7 +632,7 @@ let test_apply_rule context =
     ~callable:(`Function "test.foo")
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 1; name = "y"; positional_only = false }),
           source "Test" );
@@ -643,11 +651,11 @@ let test_apply_rule context =
     ~callable:(`Function "test.foo")
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 1; name = "y"; positional_only = false }),
           source "Test" );
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 0; name = "x"; positional_only = false }),
           source "Test" );
@@ -668,7 +676,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.foo")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:{|
        def foo(x: int, y: str) -> int: ...
@@ -707,7 +715,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.foo")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:{|
        def foo(a, b: typing.Annotated[int, "annotation"], c: str): ...
@@ -720,7 +728,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.foo")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   (* Any of. *)
   assert_applied_rules
     ~source:{|
@@ -741,7 +749,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.foo")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:{|
        def foo(a, b, c: str) -> typing.Annotated[int, "annotation"]: ...
@@ -761,7 +769,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.foo")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:{|
        def foo(a, b: typing.Annotated[int, DynamicSource(A)], c: str): ...
@@ -787,7 +795,7 @@ let test_apply_rule context =
     ~callable:(`Function "test.foo")
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 1; name = "b"; positional_only = false }),
           source ~subkind:"A" "Dynamic" );
@@ -813,6 +821,69 @@ let test_apply_rule context =
                   ];
               };
           ];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:[];
+  (* All of. *)
+  assert_applied_rules
+    ~source:
+      {|
+       def foo(a: typing.Annotated[int, "annotation"])-> typing.Annotated[int, "annotation"]: ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query =
+          [
+            AllOf
+              [
+                AnyParameterConstraint (AnnotationConstraint IsAnnotatedTypeConstraint);
+                ReturnConstraint IsAnnotatedTypeConstraint;
+              ];
+          ];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
+  (* Some cases where we don't match with "AllOf". *)
+  assert_applied_rules
+    ~source:{|
+       def foo(a: typing.Annotated[int, "annotation"]): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query =
+          [
+            AllOf
+              [
+                AnyParameterConstraint (AnnotationConstraint IsAnnotatedTypeConstraint);
+                ReturnConstraint IsAnnotatedTypeConstraint;
+              ];
+          ];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
+        rule_kind = FunctionModel;
+      }
+    ~callable:(`Function "test.foo")
+    ~expected:[];
+  assert_applied_rules
+    ~source:{|
+       def foo(a) -> typing.Annotated[int, "annotation"]): ...
+     |}
+    ~rule:
+      {
+        name = None;
+        query =
+          [
+            AllOf
+              [
+                AnyParameterConstraint (AnnotationConstraint IsAnnotatedTypeConstraint);
+                ReturnConstraint IsAnnotatedTypeConstraint;
+              ];
+          ];
+        productions = [ReturnTaint [TaintAnnotation (source "Test")]];
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.foo")
@@ -843,7 +914,7 @@ let test_apply_rule context =
     ~callable:(`Function "test.foo")
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 1; name = "b"; positional_only = false }),
           source ~subkind:"A" "Dynamic" );
@@ -874,7 +945,7 @@ let test_apply_rule context =
     ~callable:(`Function "test.foo")
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 1; name = "b"; positional_only = false }),
           source ~subkind:"A" "Dynamic" );
@@ -898,7 +969,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.foo")
-    ~expected:[Taint.Model.ReturnAnnotation, source ~subkind:"B" "Dynamic"];
+    ~expected:[ModelParser.ReturnAnnotation, source ~subkind:"B" "Dynamic"];
   (* Named parameters + parametric sinks from annotation. *)
   assert_applied_rules
     ~source:{|
@@ -922,10 +993,10 @@ let test_apply_rule context =
     ~callable:(`Function "test.foo")
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 1; name = "b"; positional_only = false }),
-          Model.Sink
+          ModelParser.Sink
             {
               sink = Sinks.ParametricSink { sink_name = "Dynamic"; subkind = "BSink" };
               breadcrumbs = [];
@@ -957,7 +1028,7 @@ let test_apply_rule context =
     ~callable:(`Function "test.foo")
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 1; name = "b"; positional_only = false }),
           source "Test" );
@@ -988,11 +1059,11 @@ let test_apply_rule context =
     ~callable:(`Function "test.foo")
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 2; name = "c"; positional_only = false }),
           source "Test" );
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 1; name = "b"; positional_only = false }),
           source "Test" );
@@ -1019,7 +1090,7 @@ let test_apply_rule context =
     ~callable:(`Function "test.foo")
     ~expected:
       [
-        ( Taint.Model.ParameterAnnotation
+        ( ModelParser.ParameterAnnotation
             (AccessPath.Root.PositionalParameter
                { position = 3; name = "d"; positional_only = false }),
           source "Test" );
@@ -1037,7 +1108,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.foo")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:{|
        def foo() -> int: ...
@@ -1065,7 +1136,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.foo")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:{|
        def foo() -> str: ...
@@ -1079,7 +1150,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.bar")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:{|
        def foo() -> typing.Annotated[str, "foo"]: ...
@@ -1092,7 +1163,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.foo")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:{|
        def foo() -> typing.Annotated[str, "foo"]: ...
@@ -1105,7 +1176,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.foo")
-    ~expected:[];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
 
   (* Decorator names. *)
   assert_applied_rules
@@ -1135,7 +1206,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.foo")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:
       {|
@@ -1191,7 +1262,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.baz")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:
       {|
@@ -1215,7 +1286,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.foo")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:
       {|
@@ -1243,7 +1314,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.baz")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:
       {|
@@ -1268,7 +1339,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.baz")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:
       {|
@@ -1294,11 +1365,11 @@ let test_apply_rule context =
                 name_constraint = Equals "test.d1";
                 arguments_constraint =
                   Some
-                    (ModelParser.T.ModelQuery.ArgumentsConstraint.Contains
+                    (ArgumentsConstraint.Contains
                        [
                          {
                            Ast.Expression.Call.Argument.name = None;
-                           value = +Ast.Expression.Expression.Integer 1;
+                           value = +Ast.Expression.(Expression.Constant (Constant.Integer 1));
                          };
                        ]);
               };
@@ -1333,11 +1404,11 @@ let test_apply_rule context =
                 name_constraint = Equals "test.d1";
                 arguments_constraint =
                   Some
-                    (ModelParser.T.ModelQuery.ArgumentsConstraint.Contains
+                    (ArgumentsConstraint.Contains
                        [
                          {
                            Ast.Expression.Call.Argument.name = None;
-                           value = +Ast.Expression.Expression.Integer 1;
+                           value = +Ast.Expression.(Expression.Constant (Constant.Integer 1));
                          };
                        ]);
               };
@@ -1346,7 +1417,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.baz")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:
       {|
@@ -1372,12 +1443,12 @@ let test_apply_rule context =
                 name_constraint = Equals "test.d1";
                 arguments_constraint =
                   Some
-                    (ModelParser.T.ModelQuery.ArgumentsConstraint.Contains
+                    (ArgumentsConstraint.Contains
                        [
                          {
                            Ast.Expression.Call.Argument.name =
                              Some (Ast.Node.create_with_default_location "arg1");
-                           value = +Ast.Expression.Expression.Integer 1;
+                           value = +Ast.Expression.(Expression.Constant (Constant.Integer 1));
                          };
                        ]);
               };
@@ -1412,12 +1483,12 @@ let test_apply_rule context =
                 name_constraint = Equals "test.d1";
                 arguments_constraint =
                   Some
-                    (ModelParser.T.ModelQuery.ArgumentsConstraint.Contains
+                    (ArgumentsConstraint.Contains
                        [
                          {
                            Ast.Expression.Call.Argument.name =
                              Some (Ast.Node.create_with_default_location "arg1");
-                           value = +Ast.Expression.Expression.Integer 1;
+                           value = +Ast.Expression.(Expression.Constant (Constant.Integer 1));
                          };
                        ]);
               };
@@ -1426,7 +1497,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.baz")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:
       {|
@@ -1452,18 +1523,19 @@ let test_apply_rule context =
                 name_constraint = Equals "test.d1";
                 arguments_constraint =
                   Some
-                    (ModelParser.T.ModelQuery.ArgumentsConstraint.Contains
+                    (ArgumentsConstraint.Contains
                        [
                          {
                            Ast.Expression.Call.Argument.name =
                              Some (Ast.Node.create_with_default_location "method");
                            value =
-                             +Ast.Expression.Expression.String
-                                (Ast.Expression.StringLiteral.create "POST");
+                             +Ast.Expression.(
+                                Expression.Constant
+                                  (Constant.String (Ast.Expression.StringLiteral.create "POST")));
                          };
                          {
                            Ast.Expression.Call.Argument.name = None;
-                           value = +Ast.Expression.Expression.Integer 1;
+                           value = +Ast.Expression.(Expression.Constant (Constant.Integer 1));
                          };
                        ]);
               };
@@ -1472,7 +1544,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.baz")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:
       {|
@@ -1498,18 +1570,19 @@ let test_apply_rule context =
                 name_constraint = Equals "test.d1";
                 arguments_constraint =
                   Some
-                    (ModelParser.T.ModelQuery.ArgumentsConstraint.Equals
+                    (ArgumentsConstraint.Equals
                        [
                          {
                            Ast.Expression.Call.Argument.name =
                              Some (Ast.Node.create_with_default_location "method");
                            value =
-                             +Ast.Expression.Expression.String
-                                (Ast.Expression.StringLiteral.create "POST");
+                             +Ast.Expression.(
+                                Expression.Constant
+                                  (Constant.String (Ast.Expression.StringLiteral.create "POST")));
                          };
                          {
                            Ast.Expression.Call.Argument.name = None;
-                           value = +Ast.Expression.Expression.Integer 1;
+                           value = +Ast.Expression.(Expression.Constant (Constant.Integer 1));
                          };
                        ]);
               };
@@ -1544,18 +1617,19 @@ let test_apply_rule context =
                 name_constraint = Equals "test.d1";
                 arguments_constraint =
                   Some
-                    (ModelParser.T.ModelQuery.ArgumentsConstraint.Equals
+                    (ArgumentsConstraint.Equals
                        [
                          {
                            Ast.Expression.Call.Argument.name =
                              Some (Ast.Node.create_with_default_location "method");
                            value =
-                             +Ast.Expression.Expression.String
-                                (Ast.Expression.StringLiteral.create "POST");
+                             +Ast.Expression.(
+                                Expression.Constant
+                                  (Constant.String (Ast.Expression.StringLiteral.create "POST")));
                          };
                          {
                            Ast.Expression.Call.Argument.name = None;
-                           value = +Ast.Expression.Expression.Integer 1;
+                           value = +Ast.Expression.(Expression.Constant (Constant.Integer 1));
                          };
                        ]);
               };
@@ -1564,7 +1638,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.baz")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
 
   assert_applied_rules
     ~source:
@@ -1584,7 +1658,7 @@ let test_apply_rule context =
         rule_kind = MethodModel;
       }
     ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:
       {|
@@ -1623,7 +1697,7 @@ let test_apply_rule context =
         rule_kind = MethodModel;
       }
     ~callable:(`Method { Interprocedural.Target.class_name = "test.DC"; method_name = "foo" })
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
 
   (* Test attribute models. *)
   assert_applied_rules_for_attribute
@@ -1640,7 +1714,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (source "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.C.x"
+    ~name:"test.C.x"
+    ~annotation:None
     ~expected:[source "Test"];
   assert_applied_rules_for_attribute
     ~source:{|
@@ -1656,7 +1731,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (sink "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.C.x"
+    ~name:"test.C.x"
+    ~annotation:None
     ~expected:[sink "Test"];
   assert_applied_rules_for_attribute
     ~source:{|
@@ -1672,7 +1748,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (source "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.D.y"
+    ~name:"test.D.y"
+    ~annotation:None
     ~expected:[];
   assert_applied_rules_for_attribute
     ~source:{|
@@ -1688,7 +1765,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (source "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.C.x"
+    ~name:"test.C.x"
+    ~annotation:None
     ~expected:[source "Test"];
   ();
   assert_applied_rules_for_attribute
@@ -1705,7 +1783,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (source "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.D.y"
+    ~name:"test.D.y"
+    ~annotation:None
     ~expected:[source "Test"];
   assert_applied_rules_for_attribute
     ~source:
@@ -1724,7 +1803,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (source "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.E.z"
+    ~name:"test.E.z"
+    ~annotation:None
     ~expected:[];
   assert_applied_rules_for_attribute
     ~source:{|
@@ -1739,7 +1819,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (source "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.C.x"
+    ~name:"test.C.x"
+    ~annotation:(Some Type.integer)
     ~expected:[source "Test"];
   assert_applied_rules_for_attribute
     ~source:{|
@@ -1754,7 +1835,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (source "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.C.y"
+    ~name:"test.C.y"
+    ~annotation:(Some Type.string)
     ~expected:[];
   assert_applied_rules_for_attribute
     ~source:
@@ -1777,7 +1859,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (source "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.C.x"
+    ~name:"test.C.x"
+    ~annotation:(Some (Type.meta (Type.Primitive "Foo1")))
     ~expected:[source "Test"];
   assert_applied_rules_for_attribute
     ~source:
@@ -1800,7 +1883,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (source "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.C.y"
+    ~name:"test.C.y"
+    ~annotation:(Some (Type.meta (Type.Primitive "Foo2")))
     ~expected:[source "Test"];
   assert_applied_rules_for_attribute
     ~source:
@@ -1823,7 +1907,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (source "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.C.z"
+    ~name:"test.C.z"
+    ~annotation:(Some (Type.meta (Type.Primitive "Bar")))
     ~expected:[];
   assert_applied_rules_for_attribute
     ~source:
@@ -1840,7 +1925,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (source "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.C.x"
+    ~name:"test.C.x"
+    ~annotation:(Some Type.integer)
     ~expected:[];
   assert_applied_rules_for_attribute
     ~source:
@@ -1857,7 +1943,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (source "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.C.y"
+    ~name:"test.C.y"
+    ~annotation:(Some (Type.Annotated Type.string))
     ~expected:[source "Test"];
 
   (* Test 'Not' clause *)
@@ -1878,7 +1965,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.foo")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:{|
       def foo(): ...
@@ -1934,7 +2021,7 @@ let test_apply_rule context =
         rule_kind = MethodModel;
       }
     ~callable:(`Method { Interprocedural.Target.class_name = "test.C"; method_name = "foo" })
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules
     ~source:
       {|
@@ -1972,7 +2059,7 @@ let test_apply_rule context =
         rule_kind = FunctionModel;
       }
     ~callable:(`Function "test.bar")
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   assert_applied_rules_for_attribute
     ~source:
       {|
@@ -1990,7 +2077,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (source "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.C.x"
+    ~name:"test.C.x"
+    ~annotation:None
     ~expected:[];
   assert_applied_rules_for_attribute
     ~source:
@@ -2009,7 +2097,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (source "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.D.y"
+    ~name:"test.D.y"
+    ~annotation:None
     ~expected:[];
   assert_applied_rules_for_attribute
     ~source:
@@ -2028,7 +2117,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (source "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.E.z"
+    ~name:"test.E.z"
+    ~annotation:None
     ~expected:[source "Test"];
 
   (* Test transitive extends *)
@@ -2049,7 +2139,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (source "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.E.z"
+    ~name:"test.E.z"
+    ~annotation:None
     ~expected:[source "Test"];
   assert_applied_rules_for_attribute
     ~source:
@@ -2068,7 +2159,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (source "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.D.y"
+    ~name:"test.D.y"
+    ~annotation:None
     ~expected:[source "Test"];
   assert_applied_rules_for_attribute
     ~source:
@@ -2087,7 +2179,8 @@ let test_apply_rule context =
         productions = [AttributeTaint [TaintAnnotation (source "Test")]];
         rule_kind = AttributeModel;
       }
-    ~attribute_name:"test.C.x"
+    ~name:"test.C.x"
+    ~annotation:None
     ~expected:[source "Test"];
   assert_applied_rules
     ~source:
@@ -2172,7 +2265,7 @@ let test_apply_rule context =
         rule_kind = MethodModel;
       }
     ~callable:(`Method { Interprocedural.Target.class_name = "test.D"; method_name = "foo" })
-    ~expected:[Taint.Model.ReturnAnnotation, source "Test"];
+    ~expected:[ModelParser.ReturnAnnotation, source "Test"];
   ()
 
 

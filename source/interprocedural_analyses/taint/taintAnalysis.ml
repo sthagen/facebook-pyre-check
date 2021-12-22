@@ -21,10 +21,10 @@ include Taint.Result.Register (struct
     (* In order to save time, sanity check models before starting the analysis. *)
     Log.info "Verifying model syntax and configuration.";
     let timer = Timer.start () in
-    Taint.Model.get_model_sources ~paths:taint_model_paths
-    |> List.iter ~f:(fun (path, source) -> Taint.Model.verify_model_syntax ~path ~source);
-    let (_ : Taint.TaintConfiguration.t) =
-      Taint.TaintConfiguration.create
+    ModelParser.get_model_sources ~paths:taint_model_paths
+    |> List.iter ~f:(fun (path, source) -> ModelParser.verify_model_syntax ~path ~source);
+    let (_ : TaintConfiguration.t) =
+      TaintConfiguration.create
         ~rule_filter:None
         ~find_missing_flows:None
         ~dump_model_query_results_path:None
@@ -46,13 +46,12 @@ include Taint.Result.Register (struct
 
 
   type model_query_data = {
-    queries: Model.ModelQuery.rule list;
+    queries: ModelParser.Internal.ModelQuery.rule list;
     taint_configuration: TaintConfiguration.t;
   }
 
   type parse_sources_result = {
-    initialize_result:
-      call_model Interprocedural.AnalysisResult.InitializedModels.initialize_result;
+    initialize_result: Model.t Interprocedural.AnalysisResult.InitializedModels.initialize_result;
     query_data: model_query_data option;
   }
 
@@ -98,7 +97,7 @@ include Taint.Result.Register (struct
         let add_obscure_sink models callable =
           let model =
             Target.Map.find models callable
-            |> Option.value ~default:Taint.Result.empty_model
+            |> Option.value ~default:Model.empty_model
             |> Model.add_obscure_sink ~resolution ~call_target:callable
             |> Model.remove_obscureness
           in
@@ -153,7 +152,7 @@ include Taint.Result.Register (struct
           ~init:state
           ~f:(fun (models, errors, skip_overrides, queries) (path, source) ->
             let {
-              ModelParser.T.models;
+              ModelParser.models;
               errors = new_errors;
               skip_overrides = new_skip_overrides;
               queries = new_queries;
@@ -214,22 +213,21 @@ include Taint.Result.Register (struct
         in
         TaintConfiguration.register taint_configuration;
         let models, errors, skip_overrides, queries =
-          Model.get_model_sources ~paths:taint_model_paths
+          ModelParser.get_model_sources ~paths:taint_model_paths
           |> create_models ~taint_configuration ~initial_models
         in
-        Model.register_verification_errors errors;
+        ModelVerificationError.register errors;
         let () =
           if not (List.is_empty errors) then
             (* Exit or log errors, depending on whether models need to be verified. *)
             if not verify_models then begin
               Log.error "Found %d model verification errors!" (List.length errors);
               List.iter errors ~f:(fun error ->
-                  Log.error "%s" (Taint.Model.display_verification_error error))
+                  Log.error "%s" (ModelVerificationError.display error))
             end
             else begin
               Yojson.Safe.pretty_to_string
-                (`Assoc
-                  ["errors", `List (List.map errors ~f:Taint.Model.verification_error_to_json)])
+                (`Assoc ["errors", `List (List.map errors ~f:ModelVerificationError.to_json)])
               |> Log.print "%s";
               exit 0
             end
@@ -245,7 +243,7 @@ include Taint.Result.Register (struct
       with
       | exception_ -> log_and_reraise_taint_model_exception exception_
     in
-    let initial_models = Model.infer_class_models ~environment in
+    let initial_models = ClassModels.infer ~environment in
     match taint_model_paths with
     | [] ->
         {
@@ -302,6 +300,12 @@ include Taint.Result.Register (struct
 
 
   let analyze ~environment ~callable ~qualifier ~define ~sanitizers ~modes existing_model =
+    let profiler =
+      if Ast.Statement.Define.dump_perf (Ast.Node.value define) then
+        TaintProfiler.create ()
+      else
+        TaintProfiler.none
+    in
     let call_graph_of_define =
       Interprocedural.CallGraph.SharedMemory.get_or_compute
         ~callable
@@ -309,25 +313,38 @@ include Taint.Result.Register (struct
         ~define:(Ast.Node.value define)
     in
     let forward, result, triggered_sinks =
-      ForwardAnalysis.run ~environment ~qualifier ~define ~call_graph_of_define ~existing_model
+      TaintProfiler.track_duration ~profiler ~name:"Forward analysis" ~f:(fun () ->
+          ForwardAnalysis.run
+            ~profiler
+            ~environment
+            ~qualifier
+            ~define
+            ~call_graph_of_define
+            ~existing_model)
     in
     let backward =
-      BackwardAnalysis.run
-        ~environment
-        ~qualifier
-        ~define
-        ~call_graph_of_define
-        ~existing_model
-        ~triggered_sinks
+      TaintProfiler.track_duration ~profiler ~name:"Backward analysis" ~f:(fun () ->
+          BackwardAnalysis.run
+            ~profiler
+            ~environment
+            ~qualifier
+            ~define
+            ~call_graph_of_define
+            ~existing_model
+            ~triggered_sinks)
     in
     let forward, backward =
-      if ModeSet.contains Mode.SkipAnalysis modes then
+      if Model.ModeSet.contains Model.Mode.SkipAnalysis modes then
         empty_model.forward, empty_model.backward
       else
         forward, backward
     in
-    let model = { forward; backward; sanitizers; modes } in
-    let model = Model.apply_sanitizers model in
+    let model = { Model.forward; backward; sanitizers; modes } in
+    let model =
+      TaintProfiler.track_duration ~profiler ~name:"Sanitize" ~f:(fun () ->
+          Model.apply_sanitizers model)
+    in
+    TaintProfiler.dump profiler;
     result, model
 
 
@@ -336,24 +353,29 @@ include Taint.Result.Register (struct
       ~callable
       ~qualifier
       ~define:
-        ({
-           Ast.Node.value =
-             { Ast.Statement.Define.signature = { name = { Ast.Node.value = name; _ }; _ }; _ };
-           _;
-         } as define)
+        ({ Ast.Node.value = { Ast.Statement.Define.signature = { name; _ }; _ }; _ } as define)
       ~existing
     =
     let define_qualifier = Ast.Reference.delocalize name in
-    let qualifier =
+    let open Analysis in
+    let open Ast in
+    let module_reference =
+      let global_resolution = TypeEnvironment.ReadOnly.global_resolution environment in
+      let annotated_global_environment =
+        GlobalResolution.annotated_global_environment global_resolution
+      in
       (* Pysa inlines decorators when a function is decorated. However, we want issues and models to
          point to the lines in the module where the decorator was defined, not the module where it
          was inlined. So, look up the originating module, if any, and use that as the module
          qualifier. *)
-      Interprocedural.DecoratorHelper.DecoratorModule.get define_qualifier
-      |> Option.value ~default:qualifier
+      InlineDecorator.InlinedNameToOriginalName.get define_qualifier
+      >>= AnnotatedGlobalEnvironment.ReadOnly.get_global_location annotated_global_environment
+      >>| fun { Location.WithModule.path; _ } -> path
     in
+    let qualifier = Option.value ~default:qualifier module_reference in
     match existing with
-    | Some ({ modes; _ } as model) when ModeSet.contains Mode.SkipAnalysis modes ->
+    | Some ({ Model.modes; _ } as model) when Model.ModeSet.contains Model.Mode.SkipAnalysis modes
+      ->
         let () = Log.info "Skipping taint analysis of %a" Target.pretty_print callable in
         [], model
     | Some ({ sanitizers; modes; _ } as model) ->
@@ -364,8 +386,8 @@ include Taint.Result.Register (struct
           ~environment
           ~qualifier
           ~define
-          ~sanitizers:Sanitizers.empty
-          ~modes:ModeSet.empty
+          ~sanitizers:Model.Sanitizers.empty
+          ~modes:Model.ModeSet.empty
           empty_model
 
 

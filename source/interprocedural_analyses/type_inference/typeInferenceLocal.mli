@@ -11,6 +11,10 @@ module type Context = sig
   val qualifier : Ast.Reference.t
 
   val define : Ast.Statement.Define.t Ast.Node.t
+
+  val resolution_fixpoint : Analysis.LocalAnnotationMap.t option
+
+  val error_map : Analysis.TypeCheck.LocalErrorMap.t option
 end
 
 module type Signature = sig
@@ -38,15 +42,17 @@ val infer_for_define
   define:Ast.Statement.Define.t Ast.Node.t ->
   TypeInferenceData.LocalResult.t
 
-val empty_infer_for_define
-  :  global_resolution:Analysis.GlobalResolution.t ->
-  qualifier:Ast.Reference.t ->
-  define:Ast.Statement.Define.t Ast.Node.t ->
-  TypeInferenceData.LocalResult.t
-
 val infer_for_module
-  :  configuration:Configuration.Analysis.t ->
+  :  ?skip_annotated:bool ->
+  configuration:Configuration.Analysis.t ->
   global_resolution:Analysis.GlobalResolution.t ->
   filename_lookup:(Ast.Reference.t -> string option) ->
-  source:Ast.Source.t ->
+  Ast.Source.t ->
   TypeInferenceData.LocalResult.t list
+
+module Testing : sig
+  val define_names_to_analyze
+    :  global_resolution:Analysis.GlobalResolution.t ->
+    Ast.Source.t ->
+    Ast.Reference.t list
+end

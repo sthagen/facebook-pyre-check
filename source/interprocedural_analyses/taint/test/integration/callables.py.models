@@ -15,18 +15,21 @@
         "name": "forward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [ { "always-via": "tito" } ],
+            "tito": [ { "line": 56, "start": 42, "end": 56 } ],
             "root": {
               "filename": "callables.py",
               "line": 56,
               "start": 42,
               "end": 56
-            },
-            "tito": [ { "line": 56, "start": 42, "end": 56 } ],
-            "leaves": [ { "kind": "Test", "name": "_test_source" } ],
-            "features": [
-              { "always-via": "tito" },
-              { "always-via": "special_source" }
-            ]
+            }
           }
         ]
       },
@@ -34,6 +37,14 @@
         "name": "backward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "length": 1,
+                "kind": "Test"
+              }
+            ],
             "call": {
               "position": {
                 "filename": "callables.py",
@@ -44,11 +55,8 @@
               "resolves_to": [
                 "callables.ConcreteEventProcessor.async_call_tainted"
               ],
-              "port": "formal(self)[tainted]",
-              "length": 1
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+              "port": "formal(self)[tainted]"
+            }
           }
         ]
       }
@@ -69,10 +77,10 @@
         "port": "formal(benign)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[benign]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[benign]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -80,10 +88,10 @@
         "port": "formal(tainted)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[tainted]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[tainted]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -91,8 +99,8 @@
         "port": "formal(self)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
+            "decl": null
           }
         ]
       }
@@ -108,14 +116,19 @@
         "port": "formal(self)[tainted]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "builtins.pyi",
               "line": -1,
               "start": -1,
               "end": -1
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       }
@@ -131,14 +144,19 @@
         "port": "formal(self)[benign]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "builtins.pyi",
               "line": -1,
               "start": -1,
               "end": -1
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       }
@@ -154,14 +172,19 @@
         "port": "formal(self)[tainted]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "builtins.pyi",
               "line": -1,
               "start": -1,
               "end": -1
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       }
@@ -177,14 +200,19 @@
         "port": "formal(self)[benign]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "builtins.pyi",
               "line": -1,
               "start": -1,
               "end": -1
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       }
@@ -200,14 +228,13 @@
         "port": "formal(processor_type)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
+            "kinds": [
               {
-                "kind": "LocalReturn",
-                "name": "[processor_type]",
-                "depth": 0
+                "return_paths": [ "[processor_type]" ],
+                "kind": "LocalReturn"
               }
-            ]
+            ],
+            "decl": null
           }
         ]
       },
@@ -215,8 +242,8 @@
         "port": "formal(self)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
+            "decl": null
           }
         ]
       }
@@ -232,10 +259,10 @@
         "port": "formal(benign)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[benign]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[benign]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -243,10 +270,10 @@
         "port": "formal(tainted)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[tainted]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[tainted]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -254,14 +281,13 @@
         "port": "formal(processor_type)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
+            "kinds": [
               {
-                "kind": "LocalReturn",
-                "name": "[processor_type]",
-                "depth": 0
+                "return_paths": [ "[processor_type]" ],
+                "kind": "LocalReturn"
               }
-            ]
+            ],
+            "decl": null
           }
         ]
       },
@@ -269,8 +295,8 @@
         "port": "formal(self)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
+            "decl": null
           }
         ]
       }
@@ -286,10 +312,10 @@
         "port": "formal(benign)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[benign]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[benign]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -297,10 +323,10 @@
         "port": "formal(tainted)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[tainted]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[tainted]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -308,8 +334,8 @@
         "port": "formal(self)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
+            "decl": null
           }
         ]
       }
@@ -325,14 +351,19 @@
         "port": "formal(self)[tainted]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "callables.py",
               "line": 33,
               "start": 19,
               "end": 31
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       }
@@ -348,14 +379,19 @@
         "port": "formal(self)[benign]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "callables.py",
               "line": 30,
               "start": 19,
               "end": 30
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       }
@@ -371,14 +407,13 @@
         "port": "formal(processor_type)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
+            "kinds": [
               {
-                "kind": "LocalReturn",
-                "name": "[processor_type]",
-                "depth": 0
+                "return_paths": [ "[processor_type]" ],
+                "kind": "LocalReturn"
               }
-            ]
+            ],
+            "decl": null
           }
         ]
       },
@@ -386,8 +421,8 @@
         "port": "formal(self)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
+            "decl": null
           }
         ]
       }

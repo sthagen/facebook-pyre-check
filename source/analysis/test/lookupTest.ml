@@ -98,25 +98,25 @@ let test_lookup_pick_narrowest context =
     ~lookup
     [
       "2:14-2:18/typing.Type[bool]";
-      "2:20-2:26/typing.Optional[bool]";
+      "2:20-2:49/typing.Optional[bool]";
       "2:28-2:49/typing.Type[typing.Optional[bool]]";
       "2:4-2:7/typing.Callable(test.foo)[[Named(flag, bool), Named(testme, \
        typing.Optional[bool])], None]";
       "2:54-2:58/None";
-      "2:8-2:12/bool";
+      "2:8-2:18/bool";
       "3:17-3:27/bool";
       "3:21-3:27/typing.Optional[bool]";
       "3:7-3:11/bool";
       (* TODO (T68817342): Should be `bool` *)
-      "3:7-3:28/typing.Optional[bool]";
+      "3:7-3:27/typing.Optional[bool]";
     ];
   let assert_annotation = assert_annotation ~lookup in
   assert_annotation
     ~position:{ Location.line = 3; column = 11 } (* TODO (T68817342): Should be `bool` *)
-    ~annotation:(Some "3:7-3:28/typing.Optional[bool]");
+    ~annotation:(Some "3:7-3:27/typing.Optional[bool]");
   assert_annotation
     ~position:{ Location.line = 3; column = 16 } (* TODO (T68817342): Should be `bool` *)
-    ~annotation:(Some "3:7-3:28/typing.Optional[bool]");
+    ~annotation:(Some "3:7-3:27/typing.Optional[bool]");
   assert_annotation ~position:{ Location.line = 3; column = 17 } ~annotation:(Some "3:17-3:27/bool");
   assert_annotation
     ~position:{ Location.line = 3; column = 21 }
@@ -262,7 +262,7 @@ let test_lookup_attributes context =
       "3:4-3:5/int";
       "3:7-3:10/typing.Type[int]";
       "4:17-4:21/test.A";
-      "4:23-4:24/int";
+      "4:23-4:29/int";
       "4:26-4:29/typing.Type[int]";
       "4:34-4:38/None";
       "4:8-4:16/typing.Callable(test.A.__init__)[[Named(self, test.A), Named(i, int)], None]";
@@ -495,7 +495,7 @@ let test_lookup_comprehensions context =
     [
       "2:6-2:9/typing.Type[test.Foo]";
       "3:15-3:19/test.Foo";
-      "3:21-3:22/int";
+      "3:21-3:27/int";
       "3:24-3:27/typing.Type[int]";
       "3:32-3:36/None";
       "3:6-3:14/typing.Callable(test.Foo.__init__)[[Named(self, test.Foo), Named(x, int)], None]";
@@ -568,7 +568,7 @@ let test_lookup_comprehensions context =
       "3:44-3:45/typing_extensions.Literal[1]";
       "3:47-3:48/typing_extensions.Literal[2]";
       "3:6-3:50/typing.List[typing.Tuple[float, int]]";
-      "3:8-3:12/typing.Tuple[float, int]";
+      "3:7-3:13/typing.Tuple[float, int]";
     ];
   let source = {|
        def foo() -> None:
@@ -664,11 +664,11 @@ let test_lookup_if_statements context =
     ~lookup
     [
       "2:14-2:18/typing.Type[bool]";
-      "2:20-2:24/typing.List[int]";
+      "2:20-2:42/typing.List[int]";
       "2:26-2:42/typing.Type[typing.List[int]]";
       "2:4-2:7/typing.Callable(test.foo)[[Named(flag, bool), Named(list, typing.List[int])], None]";
       "2:47-2:51/None";
-      "2:8-2:12/bool";
+      "2:8-2:18/bool";
       "3:7-3:11/bool";
       "5:11-5:15/bool";
       "5:7-5:15/bool";
@@ -682,9 +682,7 @@ let test_lookup_imports context =
   let source = {|
       from typing import List as l
     |} in
-  assert_annotation_list
-    ~lookup:(generate_lookup ~context source)
-    ["2:19-2:23/typing.Type[list]"; "2:27-2:28/typing.Type[list]"];
+  assert_annotation_list ~lookup:(generate_lookup ~context source) ["2:19-2:28/typing.Type[list]"];
 
   let source =
     {|
@@ -696,9 +694,7 @@ let test_lookup_imports context =
     ~lookup:(generate_lookup ~context source)
     [
       "2:26-2:30/typing.Type[unittest.mock.Mock]";
-      "3:23-3:27/typing.Callable(subprocess.call)[[Named(command, unknown), Named(shell, \
-       unknown)], typing.Any]";
-      "3:31-3:38/typing.Callable(subprocess.call)[[Named(command, unknown), Named(shell, \
+      "3:23-3:38/typing.Callable(subprocess.call)[[Named(command, unknown), Named(shell, \
        unknown)], typing.Any]";
     ];
 
@@ -732,13 +728,13 @@ let test_lookup_string_annotations context =
     ~lookup
     [
       "2:4-2:7/typing.Callable(test.foo)[[Named(x, int), Named(y, str)], None]";
-      "3:3-3:4/int";
+      "3:3-3:11/int";
       "3:6-3:11/typing.Type[int]";
-      "4:3-4:4/str";
+      "4:3-4:11/str";
       "4:6-4:11/typing.Type[str]";
       "5:5-5:9/None";
     ];
-  assert_annotation ~position:{ Location.line = 3; column = 3 } ~annotation:(Some "3:3-3:4/int");
+  assert_annotation ~position:{ Location.line = 3; column = 3 } ~annotation:(Some "3:3-3:11/int");
   assert_annotation
     ~position:{ Location.line = 3; column = 6 }
     ~annotation:(Some "3:6-3:11/typing.Type[int]");
@@ -749,7 +745,7 @@ let test_lookup_string_annotations context =
     ~position:{ Location.line = 3; column = 10 }
     ~annotation:(Some "3:6-3:11/typing.Type[int]");
   assert_annotation ~position:{ Location.line = 3; column = 11 } ~annotation:None;
-  assert_annotation ~position:{ Location.line = 4; column = 3 } ~annotation:(Some "4:3-4:4/str");
+  assert_annotation ~position:{ Location.line = 4; column = 3 } ~annotation:(Some "4:3-4:11/str");
   assert_annotation
     ~position:{ Location.line = 4; column = 6 }
     ~annotation:(Some "4:6-4:11/typing.Type[str]");
@@ -780,7 +776,7 @@ let test_lookup_unbound context =
       "2:14-2:29/typing.Type[typing.List[Variable[_T]]]";
       "2:34-2:38/None";
       "2:4-2:7/typing.Callable(test.foo)[[Named(list, typing.List[Variable[_T]])], None]";
-      "2:8-2:12/typing.List[Variable[_T]]";
+      "2:8-2:29/typing.List[Variable[_T]]";
       "3:13-3:14/typing.Any";
       "3:18-3:20/typing.List[Variable[_T]]";
       "3:2-3:3/typing.List[typing.Any]";

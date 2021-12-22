@@ -8,8 +8,6 @@ import logging
 import os
 import shutil
 import sys
-import time
-import traceback
 from dataclasses import replace
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -17,48 +15,17 @@ from typing import Iterable, List, Optional
 import click
 
 from . import (
-    buck,
     command_arguments,
-    commands,
     configuration as configuration_module,
     filesystem,
     log,
     recently_used_configurations,
-    statistics_logger,
 )
-from .commands import Command, ExitCode, v2
-from .exceptions import EnvironmentException
+from . import commands
 from .version import __version__
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
-
-
-def _log_statistics(
-    command: Command,
-    start_time: float,
-    client_exception_message: str,
-    error_message: Optional[str],
-    exit_code: int,
-) -> None:
-    configuration = command.configuration
-    if configuration is not None:
-        statistics_logger.log_with_configuration(
-            category=statistics_logger.LoggerCategory.USAGE,
-            configuration=configuration,
-            integers={
-                "exit_code": exit_code,
-                "runtime": int((time.time() - start_time) * 1000),
-            },
-            normals={
-                "cwd": os.getcwd(),
-                "client_version": __version__,
-                "command_line": " ".join(sys.argv),
-                "command": command.NAME,
-                "client_exception": client_exception_message,
-                "error_message": error_message,
-            },
-        )
 
 
 def _show_pyre_version_as_text(
@@ -99,145 +66,73 @@ def _start_logging_to_directory(log_directory: str) -> None:
     log.enable_file_logging(log_directory_path / "pyre.stderr")
 
 
-def run_pyre_command(
-    command: Command,
-    configuration: configuration_module.Configuration,
-    noninteractive: bool,
-) -> ExitCode:
-    start_time = time.time()
-
-    client_exception_message = ""
-    # Having this as a fails-by-default helps flag unexpected exit
-    # from exception flows.
-    exit_code = ExitCode.FAILURE
-    try:
-        _check_configuration(configuration)
-        _start_logging_to_directory(configuration.log_directory)
-        LOG.debug(f"Running cli command `{' '.join(sys.argv)}`...")
-        exit_code = command.run().exit_code()
-    except (buck.BuckException, EnvironmentException) as error:
-        client_exception_message = str(error)
-        exit_code = ExitCode.FAILURE
-        if isinstance(error, buck.BuckUserError):
-            exit_code = ExitCode.BUCK_USER_ERROR
-        elif isinstance(error, buck.BuckException):
-            exit_code = ExitCode.BUCK_INTERNAL_ERROR
-    except (configuration_module.InvalidConfiguration) as error:
-        client_exception_message = str(error)
-        exit_code = ExitCode.CONFIGURATION_ERROR
-    except commands.ClientException as error:
-        client_exception_message = str(error)
-        exit_code = error.exit_code
-    except Exception:
-        client_exception_message = traceback.format_exc()
-        exit_code = ExitCode.FAILURE
-    except KeyboardInterrupt:
-        LOG.warning("Interrupted by user")
-        LOG.debug(traceback.format_exc())
-        exit_code = ExitCode.SUCCESS
-    finally:
-        if len(client_exception_message) > 0:
-            LOG.error(client_exception_message)
-        result = command.result()
-        error_message = result.error if result else None
-        command.cleanup()
-        _log_statistics(
-            command,
-            start_time,
-            client_exception_message,
-            error_message,
-            exit_code,
-        )
-    return exit_code
-
-
-def _run_check_command(arguments: command_arguments.CommandArguments) -> ExitCode:
+def _run_check_command(
+    arguments: command_arguments.CommandArguments,
+) -> commands.ExitCode:
     configuration = _create_configuration_with_retry(arguments, Path("."))
-    if configuration.use_command_v2:
-        _check_configuration(configuration)
-        _start_logging_to_directory(configuration.log_directory)
-        check_arguments = command_arguments.CheckArguments(
-            debug=arguments.debug,
-            enable_memory_profiling=arguments.enable_memory_profiling,
-            enable_profiling=arguments.enable_profiling,
-            log_identifier=arguments.log_identifier,
-            logging_sections=arguments.logging_sections,
-            noninteractive=arguments.noninteractive,
-            output=arguments.output,
-            sequential=arguments.sequential,
-            show_error_traces=arguments.show_error_traces,
-        )
-        return v2.check.run(configuration, check_arguments)
-    else:
-        return run_pyre_command(
-            commands.Check(
-                arguments, original_directory=os.getcwd(), configuration=configuration
-            ),
-            configuration,
-            arguments.noninteractive,
-        )
+    _check_configuration(configuration)
+    _start_logging_to_directory(configuration.log_directory)
+    check_arguments = command_arguments.CheckArguments(
+        debug=arguments.debug,
+        enable_memory_profiling=arguments.enable_memory_profiling,
+        enable_profiling=arguments.enable_profiling,
+        log_identifier=arguments.log_identifier,
+        logging_sections=arguments.logging_sections,
+        noninteractive=arguments.noninteractive,
+        output=arguments.output,
+        sequential=arguments.sequential,
+        show_error_traces=arguments.show_error_traces,
+    )
+    return commands.check.run(configuration, check_arguments)
 
 
 def _run_incremental_command(
     arguments: command_arguments.CommandArguments,
     nonblocking: bool,
-    incremental_style: commands.IncrementalStyle,
+    incremental_style: command_arguments.IncrementalStyle,
     no_start_server: bool,
     no_watchman: bool,
-) -> ExitCode:
+) -> commands.ExitCode:
     configuration = _create_configuration_with_retry(arguments, Path("."))
-    if configuration.use_command_v2:
-        _check_configuration(configuration)
-        _start_logging_to_directory(configuration.log_directory)
-        start_arguments = command_arguments.StartArguments(
-            changed_files_path=arguments.changed_files_path,
-            debug=arguments.debug,
-            enable_memory_profiling=arguments.enable_memory_profiling,
-            enable_profiling=arguments.enable_profiling,
-            load_initial_state_from=arguments.load_initial_state_from,
-            log_identifier=arguments.log_identifier,
-            logging_sections=arguments.logging_sections,
-            no_saved_state=arguments.no_saved_state,
-            no_watchman=no_watchman,
-            noninteractive=arguments.noninteractive,
-            save_initial_state_to=arguments.save_initial_state_to,
-            saved_state_project=arguments.saved_state_project,
-            sequential=arguments.sequential,
-            show_error_traces=arguments.show_error_traces,
-            store_type_check_resolution=False,
-            terminal=False,
-            wait_on_initialization=True,
-        )
-        return v2.incremental.run(
-            configuration,
-            command_arguments.IncrementalArguments(
-                output=arguments.output,
-                no_start=no_start_server,
-                start_arguments=start_arguments,
-            ),
-        )
-    else:
-        return run_pyre_command(
-            commands.Incremental(
-                arguments,
-                original_directory=os.getcwd(),
-                configuration=configuration,
-                nonblocking=nonblocking,
-                incremental_style=incremental_style,
-                no_start_server=no_start_server,
-                no_watchman=no_watchman,
-            ),
-            configuration,
-            arguments.noninteractive,
-        )
+    _check_configuration(configuration)
+    _start_logging_to_directory(configuration.log_directory)
+    start_arguments = command_arguments.StartArguments(
+        changed_files_path=arguments.changed_files_path,
+        debug=arguments.debug,
+        enable_memory_profiling=arguments.enable_memory_profiling,
+        enable_profiling=arguments.enable_profiling,
+        load_initial_state_from=arguments.load_initial_state_from,
+        log_identifier=arguments.log_identifier,
+        logging_sections=arguments.logging_sections,
+        no_saved_state=arguments.no_saved_state,
+        no_watchman=no_watchman,
+        noninteractive=arguments.noninteractive,
+        save_initial_state_to=arguments.save_initial_state_to,
+        saved_state_project=arguments.saved_state_project,
+        sequential=arguments.sequential,
+        show_error_traces=arguments.show_error_traces,
+        store_type_check_resolution=False,
+        terminal=False,
+        wait_on_initialization=True,
+    )
+    return commands.incremental.run(
+        configuration,
+        command_arguments.IncrementalArguments(
+            output=arguments.output,
+            no_start=no_start_server,
+            start_arguments=start_arguments,
+        ),
+    )
 
 
-def _run_default_command(arguments: command_arguments.CommandArguments) -> ExitCode:
+def _run_default_command(
+    arguments: command_arguments.CommandArguments,
+) -> commands.ExitCode:
     if shutil.which("watchman"):
         return _run_incremental_command(
             arguments=arguments,
             nonblocking=False,
-            incremental_style=commands.IncrementalStyle.FINE_GRAINED,
+            incremental_style=command_arguments.IncrementalStyle.FINE_GRAINED,
             no_start_server=False,
             no_watchman=False,
         )
@@ -250,25 +145,6 @@ def _run_default_command(arguments: command_arguments.CommandArguments) -> ExitC
         )
         LOG.warning("Defaulting to non-incremental check.")
         return _run_check_command(arguments)
-
-
-def _run_servers_list_command(
-    arguments: command_arguments.CommandArguments,
-) -> ExitCode:
-    if arguments.use_command_v2 is not False:
-        return v2.servers.run_list(arguments.output)
-    else:
-        configuration = configuration_module.create_configuration(arguments, Path("."))
-        return run_pyre_command(
-            commands.Servers(
-                arguments,
-                original_directory=os.getcwd(),
-                configuration=configuration,
-                subcommand="list",
-            ),
-            configuration,
-            arguments.noninteractive,
-        )
 
 
 def _create_configuration_with_retry(
@@ -361,7 +237,8 @@ def _check_configuration(configuration: configuration_module.Configuration) -> N
 @click.option(
     "--output",
     type=click.Choice(
-        [command_arguments.TEXT, command_arguments.JSON], case_sensitive=False
+        [command_arguments.TEXT, command_arguments.JSON, command_arguments.SARIF],
+        case_sensitive=False,
     ),
     default=command_arguments.TEXT,
     help="How to format output.",
@@ -409,7 +286,12 @@ def _check_configuration(configuration: configuration_module.Configuration) -> N
         "Can be specified multiple times to include multiple directories."
     ),
 )
-@click.option("--filter-directory", type=str, hidden=True)
+@click.option(
+    "--do-not-ignore-errors-in",
+    type=str,
+    multiple=True,
+    help=("Report type errors within the given directory."),
+)
 @click.option(
     "--no-saved-state",
     is_flag=True,
@@ -478,6 +360,14 @@ def _check_configuration(configuration: configuration_module.Configuration) -> N
     help="Power of the hash table in shared memory.",
     hidden=True,
 )
+@click.option(
+    "--enable-hover/--no-enable-hover",
+    is_flag=True,
+    help="Whether Pyre should show types on hover in the IDE.",
+    default=None,
+    hidden=True,
+)
+@click.option("--number-of-workers", type=int, help="Number of parallel workers to use")
 def pyre(
     context: click.Context,
     local_configuration: Optional[str],
@@ -500,7 +390,7 @@ def pyre(
     buck_mode: Optional[str],
     use_buck_source_database: Optional[bool],
     source_directory: Iterable[str],
-    filter_directory: Optional[str],
+    do_not_ignore_errors_in: Iterable[str],
     no_saved_state: bool,
     search_path: Iterable[str],
     binary: Optional[str],
@@ -518,6 +408,8 @@ def pyre(
     shared_memory_heap_size: Optional[int],
     shared_memory_dependency_table_power: Optional[int],
     shared_memory_hash_table_power: Optional[int],
+    number_of_workers: Optional[int],
+    enable_hover: Optional[bool],
 ) -> int:
     arguments = command_arguments.CommandArguments(
         local_configuration=local_configuration,
@@ -538,7 +430,7 @@ def pyre(
         use_buck_builder=use_buck_builder,
         use_buck_source_database=use_buck_source_database,
         source_directories=list(source_directory),
-        filter_directory=filter_directory,
+        do_not_ignore_errors_in=list(do_not_ignore_errors_in),
         buck_mode=buck_mode,
         no_saved_state=no_saved_state,
         search_path=list(search_path),
@@ -560,10 +452,12 @@ def pyre(
         shared_memory_heap_size=shared_memory_heap_size,
         shared_memory_dependency_table_power=shared_memory_dependency_table_power,
         shared_memory_hash_table_power=shared_memory_hash_table_power,
+        number_of_workers=number_of_workers,
+        enable_hover=enable_hover,
     )
     if arguments.version:
         _show_pyre_version(arguments)
-        return ExitCode.SUCCESS
+        return commands.ExitCode.SUCCESS
 
     context.ensure_object(dict)
     context.obj["arguments"] = arguments
@@ -572,7 +466,7 @@ def pyre(
         return _run_default_command(arguments)
 
     # This return value is not used anywhere.
-    return ExitCode.SUCCESS
+    return commands.ExitCode.SUCCESS
 
 
 @pyre.command()
@@ -662,66 +556,33 @@ def analyze(
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
-
-    # TODO: Change the condition to `configuration.use_command_v2` when ready
-    if False:
-        _check_configuration(configuration)
-        _start_logging_to_directory(configuration.log_directory)
-        return v2.analyze.run(
-            configuration,
-            command_arguments.AnalyzeArguments(
-                debug=command_argument.debug,
-                dump_call_graph=dump_call_graph,
-                dump_model_query_results=dump_model_query_results,
-                enable_memory_profiling=command_argument.enable_memory_profiling,
-                enable_profiling=command_argument.enable_profiling,
-                find_missing_flows=command_arguments.MissingFlowsKind(
-                    find_missing_flows
-                )
-                if find_missing_flows is not None
-                else None,
-                inline_decorators=inline_decorators,
-                log_identifier=command_argument.log_identifier,
-                maximum_tito_depth=maximum_tito_depth,
-                maximum_trace_length=maximum_trace_length,
-                no_verify=no_verify,
-                output=command_argument.output,
-                repository_root=repository_root,
-                rule=list(rule),
-                save_results_to=save_results_to,
-                sequential=command_argument.sequential,
-                taint_models_path=list(taint_models_path),
-                use_cache=use_cache,
-            ),
-        )
-    else:
-        rules = list(rule)
-        return run_pyre_command(
-            commands.Analyze(
-                command_argument,
-                original_directory=os.getcwd(),
-                configuration=configuration,
-                analysis=analysis,
-                taint_models_path=list(taint_models_path),
-                no_verify=no_verify,
-                save_results_to=save_results_to,
-                dump_call_graph=dump_call_graph,
-                repository_root=repository_root,
-                rules=list(rules) if len(rules) > 0 else None,
-                find_missing_flows=(
-                    command_arguments.MissingFlowsKind(find_missing_flows)
-                    if find_missing_flows is not None
-                    else None
-                ),
-                dump_model_query_results=dump_model_query_results,
-                use_cache=use_cache,
-                inline_decorators=inline_decorators,
-                maximum_trace_length=maximum_trace_length,
-                maximum_tito_depth=maximum_tito_depth,
-            ),
-            configuration,
-            command_argument.noninteractive,
-        )
+    _check_configuration(configuration)
+    _start_logging_to_directory(configuration.log_directory)
+    return commands.analyze.run(
+        configuration,
+        command_arguments.AnalyzeArguments(
+            debug=command_argument.debug,
+            dump_call_graph=dump_call_graph,
+            dump_model_query_results=dump_model_query_results,
+            enable_memory_profiling=command_argument.enable_memory_profiling,
+            enable_profiling=command_argument.enable_profiling,
+            find_missing_flows=command_arguments.MissingFlowsKind(find_missing_flows)
+            if find_missing_flows is not None
+            else None,
+            inline_decorators=inline_decorators,
+            log_identifier=command_argument.log_identifier,
+            maximum_tito_depth=maximum_tito_depth,
+            maximum_trace_length=maximum_trace_length,
+            no_verify=no_verify,
+            output=command_argument.output,
+            repository_root=repository_root,
+            rule=list(rule),
+            save_results_to=save_results_to,
+            sequential=command_argument.sequential,
+            taint_models_path=list(taint_models_path),
+            use_cache=use_cache,
+        ),
+    )
 
 
 @pyre.command()
@@ -747,11 +608,11 @@ def check(context: click.Context) -> int:
     "--incremental-style",
     type=click.Choice(
         [
-            str(commands.IncrementalStyle.SHALLOW),
-            str(commands.IncrementalStyle.FINE_GRAINED),
+            str(command_arguments.IncrementalStyle.SHALLOW),
+            str(command_arguments.IncrementalStyle.FINE_GRAINED),
         ]
     ),
-    default=str(commands.IncrementalStyle.FINE_GRAINED),
+    default=str(command_arguments.IncrementalStyle.FINE_GRAINED),
     help="[DEPRECATED] How to approach doing incremental checks.",
 )
 @click.option("--no-start", is_flag=True, default=False, hidden=True)
@@ -778,9 +639,9 @@ def incremental(
     return _run_incremental_command(
         arguments=command_argument,
         nonblocking=nonblocking,
-        incremental_style=commands.IncrementalStyle.SHALLOW
-        if incremental_style == str(commands.IncrementalStyle.SHALLOW)
-        else commands.IncrementalStyle.FINE_GRAINED,
+        incremental_style=command_arguments.IncrementalStyle.SHALLOW
+        if incremental_style == str(command_arguments.IncrementalStyle.SHALLOW)
+        else command_arguments.IncrementalStyle.FINE_GRAINED,
         no_start_server=no_start,
         no_watchman=no_watchman,
     )
@@ -838,16 +699,13 @@ def incremental(
     ),
 )
 @click.option(
-    "--no-future-annotations",
+    "--use-future-annotations/--no-future-annotations",
     is_flag=True,
     default=False,
     help=(
-        "Infer assumes it can insert unquoted annotations anywhere in a "
-        "module. In python versions between 3.7 and 3.10, we can ensure this "
-        "is valid by inserting `from __future__ import annotations`, which"
-        "we do by default. You can use this flag to disable the import, which "
-        "is illegal in pre-3.7 python versions and is unnecessary (but allowed) "
-        "in python 3.10+. This flag disables inserting the import."
+        "Should pyre infer inject `from __future__ import annotations`? "
+        "By default, we won't because it may not work depending on the "
+        "version of python and libcst we ware using."
     ),
 )
 @click.option(
@@ -863,6 +721,15 @@ def incremental(
     ),
 )
 @click.option(
+    "--simple-annotations",
+    is_flag=True,
+    default=False,
+    help=(
+        "Only infer the simplest annotations that are guaranteed to "
+        "codemod with --in-place cleanly."
+    ),
+)
+@click.option(
     "--dequalify",
     is_flag=True,
     default=False,
@@ -872,16 +739,6 @@ def incremental(
         "to be dequalified (e.g. Column). It is needed now because pyre "
         "infer doesn't yet know how to handle imports and qualified names "
         "in a principled way."
-    ),
-)
-@click.option(
-    "--interprocedural",
-    is_flag=True,
-    default=False,
-    help=(
-        "Use (experimental) interprocedural inference. "
-        "Not recommended except for pyre developers, this work "
-        "is incomplete."
     ),
 )
 @click.pass_context
@@ -894,10 +751,10 @@ def infer(
     debug_infer: bool,
     read_stdin: bool,
     annotate_attributes: bool,
-    no_future_annotations: bool,
+    use_future_annotations: bool,
     quote_annotations: bool,
+    simple_annotations: bool,
     dequalify: bool,
-    interprocedural: bool,
 ) -> int:
     """
     Run pyre infer.
@@ -916,7 +773,7 @@ def infer(
         if len(paths_to_modify) == 0
         else {working_directory / Path(path) for path in paths_to_modify}
     )
-    return v2.infer.run(
+    return commands.infer.run(
         configuration,
         command_arguments.InferArguments(
             working_directory=working_directory,
@@ -926,11 +783,11 @@ def infer(
             enable_profiling=command_argument.enable_profiling,
             debug_infer=debug_infer,
             quote_annotations=quote_annotations,
+            simple_annotations=simple_annotations,
             dequalify=dequalify,
-            interprocedural=interprocedural,
             log_identifier=command_argument.log_identifier,
             logging_sections=command_argument.logging_sections,
-            no_future_annotations=no_future_annotations,
+            use_future_annotations=use_future_annotations,
             in_place=in_place,
             paths_to_modify=modify_paths,
             print_only=print_only,
@@ -952,7 +809,20 @@ def init(context: click.Context, local: bool) -> int:
     """
     Create a pyre configuration file at the current directory.
     """
-    return v2.initialize.run()
+    return commands.initialize.run()
+
+
+@pyre.command()
+@click.pass_context
+def init_pysa(context: click.Context) -> int:
+    """
+    Creates a suitable environment for running pyre analyze.
+    """
+    create_configuration_return_code: int = commands.initialize.run()
+    if create_configuration_return_code == commands.ExitCode.SUCCESS:
+        return commands.initialize_pysa.run()
+    else:
+        return create_configuration_return_code
 
 
 @pyre.command()
@@ -968,25 +838,12 @@ def kill(context: click.Context, with_fire: bool) -> int:
     configuration = configuration_module.create_configuration(
         command_argument, Path(".")
     )
-    if configuration.use_command_v2:
-        return v2.kill.run(configuration, with_fire)
-    else:
-        return run_pyre_command(
-            commands.Kill(
-                command_argument,
-                original_directory=os.getcwd(),
-                configuration=configuration,
-                with_fire=with_fire,
-            ),
-            configuration,
-            command_argument.noninteractive,
-        )
+    return commands.kill.run(configuration, with_fire)
 
 
 @pyre.command()
-@click.option("--no-watchman", is_flag=True, default=False, hidden=True)
 @click.pass_context
-def persistent(context: click.Context, no_watchman: bool) -> int:
+def persistent(context: click.Context) -> int:
     """
     Entry point for IDE integration to Pyre. Communicates with a Pyre server using
     the Language Server Protocol, accepts input from stdin and writing diagnostics
@@ -997,30 +854,16 @@ def persistent(context: click.Context, no_watchman: bool) -> int:
     configuration = configuration_module.create_configuration(
         command_argument, base_directory
     )
-    if configuration.use_command_v2:
-        _start_logging_to_directory(
-            configuration.log_directory,
-        )
-        # NOTE(grievejia): `--no-watchman` has no effect here. We might want to
-        # either respect it or deprecate it at some point.
-        return v2.persistent.run(
-            command_argument,
-            base_directory,
-            v2.backend_arguments.RemoteLogging.create(
-                configuration.logger, command_argument.log_identifier
-            ),
-        )
-    else:
-        return run_pyre_command(
-            commands.Persistent(
-                command_argument,
-                original_directory=os.getcwd(),
-                configuration=configuration,
-                no_watchman=no_watchman,
-            ),
-            configuration,
-            True,
-        )
+    _start_logging_to_directory(
+        configuration.log_directory,
+    )
+    return commands.persistent.run(
+        command_argument,
+        base_directory,
+        commands.backend_arguments.RemoteLogging.create(
+            configuration.logger, command_argument.log_identifier
+        ),
+    )
 
 
 @pyre.command()
@@ -1039,7 +882,7 @@ def pysa_language_server(context: click.Context, no_watchman: bool) -> int:
     _start_logging_to_directory(
         configuration.log_directory,
     )
-    return v2.pysa_server.run(
+    return commands.pysa_server.run(
         configuration,
         command_arguments.StartArguments(
             changed_files_path=command_argument.changed_files_path,
@@ -1066,8 +909,8 @@ def pysa_language_server(context: click.Context, no_watchman: bool) -> int:
 @pyre.command()
 @click.option(
     "--profile-output",
-    type=click.Choice([str(x) for x in commands.ProfileOutput]),
-    default=str(commands.ProfileOutput.COLD_START_PHASES),
+    type=click.Choice([str(x) for x in command_arguments.ProfileOutput]),
+    default=str(command_arguments.ProfileOutput.COLD_START_PHASES),
     help="Specify what to output.",
 )
 @click.pass_context
@@ -1076,27 +919,15 @@ def profile(context: click.Context, profile_output: str) -> int:
     Display profiling output.
     """
 
-    def get_profile_output(profile_output: str) -> commands.ProfileOutput:
-        for item in commands.ProfileOutput:
+    def get_profile_output(profile_output: str) -> command_arguments.ProfileOutput:
+        for item in command_arguments.ProfileOutput:
             if str(item) == profile_output:
                 return item
         raise ValueError(f"Unrecognized value for --profile-output: {profile_output}")
 
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
-    if configuration.use_command_v2:
-        return v2.profile.run(configuration, get_profile_output(profile_output))
-    else:
-        return run_pyre_command(
-            commands.Profile(
-                command_argument,
-                original_directory=os.getcwd(),
-                configuration=configuration,
-                profile_output=get_profile_output(profile_output),
-            ),
-            configuration,
-            command_argument.noninteractive,
-        )
+    return commands.profile.run(configuration, get_profile_output(profile_output))
 
 
 @pyre.command()
@@ -1113,21 +944,8 @@ def query(context: click.Context, query: str) -> int:
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
-
-    if configuration.use_command_v2:
-        _start_logging_to_directory(configuration.log_directory)
-        return v2.query.run(configuration, query)
-    else:
-        return run_pyre_command(
-            commands.Query(
-                command_argument,
-                original_directory=os.getcwd(),
-                configuration=configuration,
-                query=query,
-            ),
-            configuration,
-            command_argument.noninteractive,
-        )
+    _start_logging_to_directory(configuration.log_directory)
+    return commands.query.run(configuration, query)
 
 
 @pyre.command()
@@ -1156,26 +974,13 @@ def rage(
     configuration = configuration_module.create_configuration(
         command_argument, Path(".")
     )
-
-    if configuration.use_command_v2:
-        return v2.rage.run(
-            configuration,
-            command_arguments.RageArguments(
-                output=Path(output_file) if output_file is not None else None,
-                server_log_count=server_log_count,
-            ),
-        )
-    else:
-        return run_pyre_command(
-            commands.Rage(
-                command_argument,
-                original_directory=os.getcwd(),
-                configuration=configuration,
-                output_path=output_file,
-            ),
-            configuration,
-            command_argument.noninteractive,
-        )
+    return commands.rage.run(
+        configuration,
+        command_arguments.RageArguments(
+            output=Path(output_file) if output_file is not None else None,
+            server_log_count=server_log_count,
+        ),
+    )
 
 
 @pyre.command()
@@ -1198,11 +1003,11 @@ def rage(
     "--incremental-style",
     type=click.Choice(
         [
-            str(commands.IncrementalStyle.SHALLOW),
-            str(commands.IncrementalStyle.FINE_GRAINED),
+            str(command_arguments.IncrementalStyle.SHALLOW),
+            str(command_arguments.IncrementalStyle.FINE_GRAINED),
         ]
     ),
-    default=str(commands.IncrementalStyle.FINE_GRAINED),
+    default=str(command_arguments.IncrementalStyle.FINE_GRAINED),
     help="[DEPRECATED] How to approach doing incremental checks.",
 )
 @click.pass_context
@@ -1218,52 +1023,35 @@ def restart(
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
-    if configuration.use_command_v2:
-        _check_configuration(configuration)
-        _start_logging_to_directory(configuration.log_directory)
-        start_arguments = command_arguments.StartArguments(
-            changed_files_path=command_argument.changed_files_path,
-            debug=command_argument.debug,
-            enable_memory_profiling=command_argument.enable_memory_profiling,
-            enable_profiling=command_argument.enable_profiling,
-            load_initial_state_from=command_argument.load_initial_state_from,
-            log_identifier=command_argument.log_identifier,
-            logging_sections=command_argument.logging_sections,
-            no_saved_state=command_argument.no_saved_state,
-            no_watchman=no_watchman,
-            noninteractive=command_argument.noninteractive,
-            save_initial_state_to=command_argument.save_initial_state_to,
-            saved_state_project=command_argument.saved_state_project,
-            sequential=command_argument.sequential,
-            show_error_traces=command_argument.show_error_traces,
-            store_type_check_resolution=store_type_check_resolution,
-            terminal=terminal,
-            wait_on_initialization=True,
-        )
-        return v2.restart.run(
-            configuration,
-            command_arguments.IncrementalArguments(
-                output=command_argument.output,
-                no_start=False,
-                start_arguments=start_arguments,
-            ),
-        )
-    else:
-        return run_pyre_command(
-            commands.Restart(
-                command_argument,
-                original_directory=os.getcwd(),
-                configuration=configuration,
-                terminal=terminal,
-                store_type_check_resolution=store_type_check_resolution,
-                use_watchman=not no_watchman,
-                incremental_style=commands.IncrementalStyle.SHALLOW
-                if incremental_style == str(commands.IncrementalStyle.SHALLOW)
-                else commands.IncrementalStyle.FINE_GRAINED,
-            ),
-            configuration,
-            command_argument.noninteractive,
-        )
+    _check_configuration(configuration)
+    _start_logging_to_directory(configuration.log_directory)
+    start_arguments = command_arguments.StartArguments(
+        changed_files_path=command_argument.changed_files_path,
+        debug=command_argument.debug,
+        enable_memory_profiling=command_argument.enable_memory_profiling,
+        enable_profiling=command_argument.enable_profiling,
+        load_initial_state_from=command_argument.load_initial_state_from,
+        log_identifier=command_argument.log_identifier,
+        logging_sections=command_argument.logging_sections,
+        no_saved_state=command_argument.no_saved_state,
+        no_watchman=no_watchman,
+        noninteractive=command_argument.noninteractive,
+        save_initial_state_to=command_argument.save_initial_state_to,
+        saved_state_project=command_argument.saved_state_project,
+        sequential=command_argument.sequential,
+        show_error_traces=command_argument.show_error_traces,
+        store_type_check_resolution=store_type_check_resolution,
+        terminal=terminal,
+        wait_on_initialization=True,
+    )
+    return commands.restart.run(
+        configuration,
+        command_arguments.IncrementalArguments(
+            output=command_argument.output,
+            no_start=False,
+            start_arguments=start_arguments,
+        ),
+    )
 
 
 @pyre.group(
@@ -1275,9 +1063,10 @@ def servers(context: click.Context) -> int:
     Commands to manipulate multiple Pyre servers.
     """
     if context.invoked_subcommand is None:
-        return _run_servers_list_command(context.obj["arguments"])
+        arguments: command_arguments.CommandArguments = context.obj["arguments"]
+        return commands.servers.run_list(arguments.output)
     # This return value is not used anywhere.
-    return ExitCode.SUCCESS
+    return commands.ExitCode.SUCCESS
 
 
 @servers.command(name="list")
@@ -1286,7 +1075,8 @@ def servers_list(context: click.Context) -> int:
     """
     List all running servers.
     """
-    return _run_servers_list_command(context.obj["arguments"])
+    arguments: command_arguments.CommandArguments = context.obj["arguments"]
+    return commands.servers.run_list(arguments.output)
 
 
 @servers.command(name="stop")
@@ -1295,23 +1085,7 @@ def servers_stop(context: click.Context) -> int:
     """
     Stop all running servers.
     """
-    command_argument: command_arguments.CommandArguments = context.obj["arguments"]
-    if command_argument.use_command_v2 is not False:
-        return v2.servers.run_stop()
-    else:
-        configuration = configuration_module.create_configuration(
-            command_argument, Path(".")
-        )
-        return run_pyre_command(
-            commands.Servers(
-                command_argument,
-                original_directory=os.getcwd(),
-                configuration=configuration,
-                subcommand="stop",
-            ),
-            configuration,
-            command_argument.noninteractive,
-        )
+    return commands.servers.run_stop()
 
 
 @pyre.command()
@@ -1334,11 +1108,11 @@ def servers_stop(context: click.Context) -> int:
     "--incremental-style",
     type=click.Choice(
         [
-            str(commands.IncrementalStyle.SHALLOW),
-            str(commands.IncrementalStyle.FINE_GRAINED),
+            str(command_arguments.IncrementalStyle.SHALLOW),
+            str(command_arguments.IncrementalStyle.FINE_GRAINED),
         ]
     ),
-    default=str(commands.IncrementalStyle.FINE_GRAINED),
+    default=str(command_arguments.IncrementalStyle.FINE_GRAINED),
     help="[DEPRECATED] How to approach doing incremental checks.",
 )
 @click.option(
@@ -1361,47 +1135,30 @@ def start(
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
-    if configuration.use_command_v2:
-        _check_configuration(configuration)
-        _start_logging_to_directory(configuration.log_directory)
-        return v2.start.run(
-            configuration,
-            command_arguments.StartArguments(
-                changed_files_path=command_argument.changed_files_path,
-                debug=command_argument.debug,
-                enable_memory_profiling=command_argument.enable_memory_profiling,
-                enable_profiling=command_argument.enable_profiling,
-                load_initial_state_from=command_argument.load_initial_state_from,
-                log_identifier=command_argument.log_identifier,
-                logging_sections=command_argument.logging_sections,
-                no_saved_state=command_argument.no_saved_state,
-                no_watchman=no_watchman,
-                noninteractive=command_argument.noninteractive,
-                save_initial_state_to=command_argument.save_initial_state_to,
-                saved_state_project=command_argument.saved_state_project,
-                sequential=command_argument.sequential,
-                show_error_traces=command_argument.show_error_traces,
-                store_type_check_resolution=store_type_check_resolution,
-                terminal=terminal,
-                wait_on_initialization=wait_on_initialization,
-            ),
-        )
-    else:
-        return run_pyre_command(
-            commands.Start(
-                command_argument,
-                original_directory=os.getcwd(),
-                configuration=configuration,
-                terminal=terminal,
-                store_type_check_resolution=store_type_check_resolution,
-                use_watchman=not no_watchman,
-                incremental_style=commands.IncrementalStyle.SHALLOW
-                if incremental_style == str(commands.IncrementalStyle.SHALLOW)
-                else commands.IncrementalStyle.FINE_GRAINED,
-            ),
-            configuration,
-            command_argument.noninteractive,
-        )
+    _check_configuration(configuration)
+    _start_logging_to_directory(configuration.log_directory)
+    return commands.start.run(
+        configuration,
+        command_arguments.StartArguments(
+            changed_files_path=command_argument.changed_files_path,
+            debug=command_argument.debug,
+            enable_memory_profiling=command_argument.enable_memory_profiling,
+            enable_profiling=command_argument.enable_profiling,
+            load_initial_state_from=command_argument.load_initial_state_from,
+            log_identifier=command_argument.log_identifier,
+            logging_sections=command_argument.logging_sections,
+            no_saved_state=command_argument.no_saved_state,
+            no_watchman=no_watchman,
+            noninteractive=command_argument.noninteractive,
+            save_initial_state_to=command_argument.save_initial_state_to,
+            saved_state_project=command_argument.saved_state_project,
+            sequential=command_argument.sequential,
+            show_error_traces=command_argument.show_error_traces,
+            store_type_check_resolution=store_type_check_resolution,
+            terminal=terminal,
+            wait_on_initialization=wait_on_initialization,
+        ),
+    )
 
 
 @pyre.command()
@@ -1430,30 +1187,15 @@ def statistics(
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
-
-    if configuration.use_command_v2:
-        return v2.statistics.run(
-            configuration,
-            command_arguments.StatisticsArguments(
-                filter_paths=list(filter_paths),
-                log_identifier=command_argument.log_identifier,
-                log_results=log_results,
-                print_aggregates=print_aggregates,
-            ),
-        )
-    else:
-        return run_pyre_command(
-            commands.Statistics(
-                command_argument,
-                original_directory=os.getcwd(),
-                configuration=configuration,
-                filter_paths=list(filter_paths),
-                log_results=log_results,
-                aggregate=print_aggregates,
-            ),
-            configuration,
-            command_argument.noninteractive,
-        )
+    return commands.statistics.run(
+        configuration,
+        command_arguments.StatisticsArguments(
+            filter_paths=list(filter_paths),
+            log_identifier=command_argument.log_identifier,
+            log_results=log_results,
+            print_aggregates=print_aggregates,
+        ),
+    )
 
 
 @pyre.command()
@@ -1481,19 +1223,7 @@ def coverage(
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
-    if configuration.use_command_v2:
-        return v2.coverage.run(configuration, working_directory, list(roots))
-    else:
-        return run_pyre_command(
-            commands.Coverage(
-                command_argument,
-                original_directory=os.getcwd(),
-                configuration=configuration,
-                working_directory=working_directory,
-            ),
-            configuration,
-            command_argument.noninteractive,
-        )
+    return commands.coverage.run(configuration, working_directory, list(roots))
 
 
 @pyre.command()
@@ -1506,19 +1236,8 @@ def stop(context: click.Context) -> int:
     configuration = configuration_module.create_configuration(
         command_argument, Path(".")
     )
-    if configuration.use_command_v2:
-        _start_logging_to_directory(configuration.log_directory)
-        return v2.stop.run(configuration)
-    else:
-        return run_pyre_command(
-            commands.Stop(
-                command_argument,
-                original_directory=os.getcwd(),
-                configuration=configuration,
-            ),
-            configuration,
-            command_argument.noninteractive,
-        )
+    _start_logging_to_directory(configuration.log_directory)
+    return commands.stop.run(configuration)
 
 
 @pyre.command()
@@ -1529,20 +1248,8 @@ def validate_models(context: click.Context) -> int:
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration_with_retry(command_argument, Path("."))
-
-    if configuration.use_command_v2:
-        _start_logging_to_directory(configuration.log_directory)
-        return v2.validate_models.run(configuration, output=command_argument.output)
-    else:
-        return run_pyre_command(
-            commands.ValidateModels(
-                command_argument,
-                original_directory=os.getcwd(),
-                configuration=configuration,
-            ),
-            configuration,
-            command_argument.noninteractive,
-        )
+    _start_logging_to_directory(configuration.log_directory)
+    return commands.validate_models.run(configuration, output=command_argument.output)
 
 
 # Need the default argument here since this is our entry point in setup.py
@@ -1553,16 +1260,17 @@ def main(argv: List[str] = sys.argv[1:]) -> int:
             return_code = pyre(argv, auto_envvar_prefix="PYRE", standalone_mode=False)
         except configuration_module.InvalidConfiguration as error:
             LOG.error(str(error))
-            return ExitCode.CONFIGURATION_ERROR
+            return commands.ExitCode.CONFIGURATION_ERROR
         except click.ClickException as error:
             error.show()
-            return_code = ExitCode.FAILURE
+            return_code = commands.ExitCode.FAILURE
         except commands.ClientException as error:
-            LOG.error(str(error))
+            for line in str(error).split("\n"):
+                LOG.error(line)
             return_code = error.exit_code
         except Exception as error:
             LOG.error(str(error))
-            return_code = ExitCode.FAILURE
+            return_code = commands.ExitCode.FAILURE
     return return_code
 
 
@@ -1574,5 +1282,5 @@ if __name__ == "__main__":
             "Pyre could not determine the current working directory. "
             "Has it been removed?\nExiting."
         )
-        sys.exit(ExitCode.FAILURE)
+        sys.exit(commands.ExitCode.FAILURE)
     sys.exit(main(sys.argv[1:]))

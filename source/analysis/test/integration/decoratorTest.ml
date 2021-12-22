@@ -839,6 +839,19 @@ let test_decorator_factories context =
 
      def decorator_factory(name: str) -> Callable[[Callable[[str], int]], Callable[[], str]]: ...
 
+     @decorator_factory(f"{1+2}")
+     def foo(name: str) -> int:
+         return len(name)
+
+     reveal_type(foo)
+    |}
+    ["Revealed type [-1]: Revealed type for `test.foo` is `typing.Callable[[], str]`."];
+  assert_type_errors
+    {|
+     from typing import Callable
+
+     def decorator_factory(name: str) -> Callable[[Callable[[str], int]], Callable[[], str]]: ...
+
      @decorator_factory(name="literal")
      def foo(name: str) -> int:
          return len(name)
@@ -1096,6 +1109,16 @@ let test_decorator_factories context =
       "Revealed type [-1]: Revealed type for `test.test_foo` is `typing.Callable[[int], str]`.";
       "Revealed type [-1]: Revealed type for `test.test_bar` is `typing.Callable[[int], str]`.";
     ];
+  assert_type_errors
+    {|
+     from typing import Callable, Tuple, Optional
+
+     def factory(x: Tuple[int, Optional[str]]) -> Callable[[Callable[[], None]], int]: ...
+
+     @factory((1, None))
+     def bar() -> None: ...
+    |}
+    [];
   ()
 
 

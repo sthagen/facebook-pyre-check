@@ -177,6 +177,18 @@ class ErrorsTest(unittest.TestCase):
             ),
             [],
         )
+        self.assertEqual(
+            _get_unused_ignore_codes(
+                [
+                    {
+                        "code": "1",
+                        "description": "The `pyre-ignore[]` or `pyre-fixme[]` "
+                        + "comment is not suppressing type errors, please remove it.",
+                    }
+                ]
+            ),
+            [],
+        )
 
     @patch.object(errors, "_get_unused_ignore_codes")
     def test_remove_unused_ignores(self, get_unused_ignore_codes) -> None:
@@ -808,6 +820,28 @@ class ErrorsTest(unittest.TestCase):
             max_line_length=25,
         )
 
+    def test_suppress_errors__manual_import(self) -> None:
+        self.assertSuppressErrors(
+            {
+                3: [{"code": "21", "description": "description"}],
+                4: [{"code": "21", "description": "description"}],
+            },
+            """
+            from a import b
+            # @manual=//special:case
+            from a import c
+            from a import d
+            """,
+            """
+            from a import b
+            # FIXME[21]: description
+            # @manual=//special:case
+            from a import c
+            # FIXME[21]: description
+            from a import d
+            """,
+        )
+
     def test_suppress_errors__format_string(self) -> None:
         self.assertSuppressErrors(
             {
@@ -881,6 +915,72 @@ class ErrorsTest(unittest.TestCase):
                 {"world" + int("a")}
                 bar
                 \"\"\"
+            """,
+        )
+
+    def test_suppress_errors__empty_fixme_code(self) -> None:
+        self.assertSuppressErrors(
+            {
+                2: [
+                    {
+                        "code": "0",
+                        "description": "Some error",
+                    }
+                ],
+            },
+            """
+            def foo() -> None:
+                # FIXME[]
+                unused_ignore: str = "hello"
+            """,
+            """
+            def foo() -> None:
+                unused_ignore: str = "hello"
+            """,
+        )
+        self.assertSuppressErrors(
+            {
+                2: [
+                    {
+                        "code": "0",
+                        "description": "Some error",
+                    },
+                ],
+                3: [
+                    {
+                        "code": "42",
+                        "description": "Some error",
+                    },
+                ],
+            },
+            """
+            def foo() -> None:
+                # FIXME[]
+                x: str = 1
+            """,
+            """
+            def foo() -> None:
+                # FIXME[42]: Some error
+                x: str = 1
+            """,
+        )
+        self.assertSuppressErrors(
+            {
+                2: [
+                    {
+                        "code": "0",
+                        "description": "Some error",
+                    }
+                ],
+            },
+            """
+            def foo() -> None:
+                # FIXME[,]
+                unused_ignore: str = "hello"
+            """,
+            """
+            def foo() -> None:
+                unused_ignore: str = "hello"
             """,
         )
 

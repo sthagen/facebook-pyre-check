@@ -6,7 +6,6 @@
  *)
 
 open Core
-open Pyre
 
 module Rule : sig
   type t = {
@@ -16,7 +15,7 @@ module Rule : sig
     name: string;
     message_format: string; (* format *)
   }
-  [@@deriving eq, show]
+  [@@deriving compare, show]
 end
 
 type literal_string_sink = {
@@ -49,7 +48,7 @@ type partial_sink_converter = (Sources.t list * Sinks.t) list String.Map.Tree.t
 type missing_flows_kind =
   | Obscure
   | Type
-[@@deriving eq, show]
+[@@deriving compare, show]
 
 val missing_flows_kind_from_string : string -> missing_flows_kind option
 
@@ -62,8 +61,10 @@ type t = {
   implicit_sources: implicit_sources;
   partial_sink_converter: partial_sink_converter;
   partial_sink_labels: string list Core.String.Map.Tree.t;
+  matching_sources: Sources.Set.t Sinks.Map.t;
+  matching_sinks: Sinks.Set.t Sources.Map.t;
   find_missing_flows: missing_flows_kind option;
-  dump_model_query_results_path: Path.t option;
+  dump_model_query_results_path: PyrePath.t option;
   analysis_model_constraints: analysis_model_constraints;
   lineage_analysis: bool;
 }
@@ -87,10 +88,10 @@ val default : t
 val create
   :  rule_filter:int list option ->
   find_missing_flows:missing_flows_kind option ->
-  dump_model_query_results_path:Path.t option ->
+  dump_model_query_results_path:PyrePath.t option ->
   maximum_trace_length:int option ->
   maximum_tito_depth:int option ->
-  taint_model_paths:Path.t list ->
+  taint_model_paths:PyrePath.t list ->
   t
 
 val validate : t -> unit

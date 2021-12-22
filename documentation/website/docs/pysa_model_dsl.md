@@ -35,10 +35,10 @@ Things to note in this example:
 1. The `where` clause is how you refine your criteria for when a model should be generated - in this example, we're filtering for functions where the name matches `"foo"`.
 1. The `model` clause is a list of models to generate. Here, the syntax means that the functions matching the where clause should be modelled as returning `TaintSource[Test]`.
 
-When invoking Pysa, if you add the `--dump-model-query-results` flag to your invocation, the generated models will be written to a file in JSON format.
+When invoking Pysa, if you add the `--dump-model-query-results /path/to/output/file` flag to your invocation, the generated models will be written to a file in JSON format.
 
 ```
-$ pyre analyze --dump-model-query-results
+$ pyre analyze --dump-model-query-results /path/to/output/file.txt
 ...
 > Emitting the model query results to `/my/home/dir/.pyre/model_query_results.pysa`
 ```
@@ -542,6 +542,49 @@ ModelQuery(
 )
 ```
 
+To match on the annotation portion of `Annotated` types, consider the following example. Suppose this code was in `test.py`:
+```python
+from enum import Enum
+from typing import Annotated, Option
+
+class Color(Enum):
+    RED = 1
+    GREEN = 2
+    BLUE = 3
+
+class Foo:
+  x: Annotated[Optional[int], Color.RED]
+  y: Annotated[Optional[int], Color.BLUE]
+  z: Annotated[int, "z"]
+```
+
+Note that the type name that should be matched against is its fully qualified name, which also includes the fully qualified name of any other types referenced (for example, `typing.Optional` rather than just `Optional`). When multiple arguments are provided to the type they are implicitly treated as being in a tuple.
+
+Here are some examples of `where` clauses that can be used to specify models for the annotated attributes in this case:
+```python
+ModelQuery(
+  find = "attributes",
+  where = [
+    AnyOf(
+      type_annotation.equals("typing.Annotated[(typing.Optional[int], test.Color.RED)]"),
+      type_annotation.equals("typing.Annotated[(int, z)]"),
+      type_annotation.matches(".*Annotated\[.*Optional[int].*Color\..*\]")
+      type_annotation.is_annotated_type()
+    )
+  ],
+  model = [
+    AttributeModel(TaintSource[Test]),
+  ]
+)
+```
+
+This query should generate the following models:
+```
+test.Foo.x: TaintSource[Test]
+test.Foo.y: TaintSource[Test]
+test.Foo.z: TaintSource[Test]
+```
+
 #### `Not` and `AnyOf` clauses
 
 The `Not` and `AnyOf` clauses can be used in the same way as they are in the main `where` clause of the model query. `Not` can be used to negate any existing clause, and `AnyOf` can be used to match when any one of several supplied clauses match.
@@ -565,6 +608,40 @@ ModelQuery(
   ]
 )
 ```
+
+#### Using `ViaTypeOf` with the `Parameters` clause
+
+Usually when specifying a `ViaTypeOf` the argument that you want to capture the value or type of should be specified. However, when writing model queries and trying to find all parameters that match certain conditions, we may not know the exact name of the parameters that will be modelled. For example:
+```python
+def f1(bad_1, good_1, good_2):
+  pass
+
+def f2(good_3, bad_2, good_4):
+  pass
+```
+
+Suppose we wanted to model all parameters with the prefix `bad_` here and attach a `ViaTypeOf` to them. In this case it is still possible to attach these features to the parameter model, by using a standalone `ViaTypeOf` as follows:
+```python
+ModelQuery(
+  find = "functions",
+  where = name.matches("f"),
+  model = [
+    Parameters(
+      TaintSink[Test, ViaTypeOf],
+      where=[
+        name.matches("bad_")
+      ]
+    )
+  ]
+)
+```
+
+This would produce models equivalent to the following:
+```python
+def f1(bad_1: TaintSink[Test, ViaTypeOf[bad_1]]): ...
+def f2(bad_2: TaintSink[Test, ViaTypeOf[bad_2]]): ...
+```
+
 
 ### Models for attributes
 

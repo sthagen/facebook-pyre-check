@@ -339,6 +339,13 @@ class SkippingUnparseableFileException(Exception):
     pass
 
 
+def _str_to_int(digits: str) -> Optional[int]:
+    try:
+        return int(digits)
+    except ValueError:
+        return None
+
+
 def _get_unused_ignore_codes(errors: List[Dict[str, str]]) -> List[int]:
     unused_ignore_codes: List[int] = []
     ignore_errors = [error for error in errors if error["code"] == "0"]
@@ -348,7 +355,11 @@ def _get_unused_ignore_codes(errors: List[Dict[str, str]]) -> List[int]:
         )
         if match:
             unused_ignore_codes.extend(
-                [int(code.strip()) for code in match.group(1).split(",")]
+                int_code
+                for int_code in (
+                    _str_to_int(code.strip()) for code in match.group(1).split(",")
+                )
+                if int_code is not None
             )
     unused_ignore_codes.sort()
     return unused_ignore_codes
@@ -356,7 +367,7 @@ def _get_unused_ignore_codes(errors: List[Dict[str, str]]) -> List[int]:
 
 def _remove_unused_ignores(line: str, errors: List[Dict[str, str]]) -> str:
     unused_ignore_codes = _get_unused_ignore_codes(errors)
-    match = re.search(r"pyre-(ignore|fixme) *\[([0-9, ]*)\]", line)
+    match = re.search(r"pyre-(ignore|fixme) *\[([0-9, ]+)\]", line)
     stripped_line = re.sub(r"# pyre-(ignore|fixme).*$", "", line).rstrip()
     if not match:
         return stripped_line
@@ -364,7 +375,9 @@ def _remove_unused_ignores(line: str, errors: List[Dict[str, str]]) -> str:
     # One or more codes are specified in the ignore comment.
     # Remove only the codes that are erroring as unused.
     ignore_codes_string = match.group(2)
-    ignore_codes = [int(code.strip()) for code in ignore_codes_string.split(",")]
+    ignore_codes = [
+        int(code.strip()) for code in ignore_codes_string.split(",") if code != ""
+    ]
     remaining_ignore_codes = set(ignore_codes) - set(unused_ignore_codes)
     if len(remaining_ignore_codes) == 0 or len(unused_ignore_codes) == 0:
         return stripped_line
@@ -434,6 +447,10 @@ def _lines_after_suppressing_errors(
             else:
                 removing_pyre_comments = False
         number = index + 1
+        if line.startswith("#") and re.match(r"# *@manual=.*$", line):
+            # Apply suppressions for lines following @manual to current line.
+            errors[number] = errors[number + 1]
+            del errors[number + 1]
 
         # Deduplicate errors
         error_mapping = {
@@ -492,7 +509,7 @@ def _relocate_errors(
     relocated = defaultdict(list)
     for line, errors in errors.items():
         target_line = target_line_map.get(line)
-        if target_line is None:
+        if target_line is None or target_line == line:
             target_line = line
         else:
             LOG.info(

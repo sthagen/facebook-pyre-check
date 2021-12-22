@@ -18,7 +18,7 @@ module Rule = struct
     name: string;
     message_format: string; (* format *)
   }
-  [@@deriving eq, show]
+  [@@deriving compare, show]
 end
 
 type literal_string_sink = {
@@ -67,7 +67,7 @@ type missing_flows_kind =
   | Obscure
   (* Find missing flows due to missing type information. *)
   | Type
-[@@deriving eq, show]
+[@@deriving compare, show]
 
 let missing_flows_kind_from_string = function
   | "obscure" -> Some Obscure
@@ -84,8 +84,10 @@ type t = {
   implicit_sources: implicit_sources;
   partial_sink_converter: partial_sink_converter;
   partial_sink_labels: string list String.Map.Tree.t;
+  matching_sources: Sources.Set.t Sinks.Map.t;
+  matching_sinks: Sinks.Set.t Sources.Map.t;
   find_missing_flows: missing_flows_kind option;
-  dump_model_query_results_path: Path.t option;
+  dump_model_query_results_path: PyrePath.t option;
   analysis_model_constraints: analysis_model_constraints;
   lineage_analysis: bool;
 }
@@ -100,6 +102,8 @@ let empty =
     implicit_sinks = empty_implicit_sinks;
     implicit_sources = empty_implicit_sources;
     partial_sink_labels = String.Map.Tree.empty;
+    matching_sources = Sinks.Map.empty;
+    matching_sinks = Sources.Map.empty;
     find_missing_flows = None;
     dump_model_query_results_path = None;
     analysis_model_constraints = default_analysis_model_constraints;
@@ -134,6 +138,33 @@ exception
     path: string;
     parse_error: string;
   }
+
+let matching_kinds_from_rules rules =
+  let add_rule (matching_sources, matching_sinks) { Rule.sources; sinks; _ } =
+    let sinks_set = Sinks.Set.of_list sinks in
+    let sources_set = Sources.Set.of_list sources in
+    let update_matching_sources matching_sources sink =
+      Sinks.Map.update
+        sink
+        (function
+          | None -> Some sources_set
+          | Some sources -> Some (Sources.Set.union sources sources_set))
+        matching_sources
+    in
+    let update_matching_sinks matching_sinks source =
+      Sources.Map.update
+        source
+        (function
+          | None -> Some sinks_set
+          | Some sinks -> Some (Sinks.Set.union sinks sinks_set))
+        matching_sinks
+    in
+    let matching_sources = List.fold ~f:update_matching_sources ~init:matching_sources sinks in
+    let matching_sinks = List.fold ~f:update_matching_sinks ~init:matching_sinks sources in
+    matching_sources, matching_sinks
+  in
+  List.fold ~f:add_rule ~init:(Sinks.Map.empty, Sources.Map.empty) rules
+
 
 module PartialSinkConverter = struct
   let mangle { Sinks.kind; label } = Format.sprintf "%s$%s" kind label
@@ -192,14 +223,35 @@ let parse source_jsons =
     | `String "parametric" -> AnnotationParser.Parametric
     | unexpected -> failwith (Format.sprintf "Unexpected kind %s" (Json.Util.to_string unexpected))
   in
+  let check_keys ~required_keys ~valid_keys ~current_keys ~section =
+    let valid_keys_hash_set = String.Hash_set.of_list valid_keys in
+    let current_keys_hash_set = String.Hash_set.of_list current_keys in
+    let check_required_key_present key =
+      if not (Hash_set.mem current_keys_hash_set key) then
+        failwith (Format.sprintf "Required key `%s` is not found in section `%s`" key section)
+    in
+    let check_key_is_valid key =
+      if not (Hash_set.mem valid_keys_hash_set key) then
+        Log.error "Unknown key `%s` encountered in section `%s`" key section
+    in
+    List.iter current_keys ~f:check_key_is_valid;
+    List.iter required_keys ~f:check_required_key_present
+  in
   let parse_lineage_analysis json = json_bool_member "lineage_analysis" json ~default:false in
   let parse_string_list json = Json.Util.to_list json |> List.map ~f:Json.Util.to_string in
-  let parse_source_or_sink json =
+  let parse_source_or_sink section json =
+    check_keys
+      ~required_keys:["name"]
+      ~current_keys:(Json.Util.keys json)
+      ~valid_keys:["name"; "comment"]
+      ~section;
     let name = Json.Util.member "name" json |> Json.Util.to_string in
     { AnnotationParser.name; kind = kind json }
   in
-  let parse_sources json = array_member "sources" json |> List.map ~f:parse_source_or_sink in
-  let parse_sinks json = array_member "sinks" json |> List.map ~f:parse_source_or_sink in
+  let parse_sources json =
+    array_member "sources" json |> List.map ~f:(parse_source_or_sink "sources")
+  in
+  let parse_sinks json = array_member "sinks" json |> List.map ~f:(parse_source_or_sink "sinks") in
   let parse_features json =
     let parse_feature json = Json.Util.member "name" json |> Json.Util.to_string in
     array_member "features" json |> List.map ~f:parse_feature
@@ -212,6 +264,9 @@ let parse source_jsons =
   in
   let parse_rules ~allowed_sources ~allowed_sinks json =
     let parse_rule json =
+      let required_keys = ["name"; "code"; "sources"; "sinks"; "message_format"] in
+      let valid_keys = "oncall" :: "comment" :: required_keys in
+      check_keys ~required_keys ~valid_keys ~current_keys:(Json.Util.keys json) ~section:"rules";
       let sources =
         Json.Util.member "sources" json
         |> parse_string_list
@@ -332,6 +387,11 @@ let parse source_jsons =
     match member "implicit_sinks" json with
     | `Null -> empty_implicit_sinks
     | implicit_sinks ->
+        check_keys
+          ~required_keys:[]
+          ~valid_keys:["conditional_test"; "literal_strings"]
+          ~current_keys:(Json.Util.keys implicit_sinks)
+          ~section:"implicit_sinks";
         let conditional_test =
           match member "conditional_test" implicit_sinks with
           | `Null -> []
@@ -365,6 +425,11 @@ let parse source_jsons =
     match member "implicit_sources" json with
     | `Null -> { literal_strings = [] }
     | implicit_sources ->
+        check_keys
+          ~required_keys:[]
+          ~valid_keys:["conditional_test"; "literal_strings"]
+          ~current_keys:(Json.Util.keys implicit_sources)
+          ~section:"implicit_sources";
         let literal_strings =
           array_member "literal_strings" implicit_sources
           |> List.map ~f:(fun json ->
@@ -381,7 +446,6 @@ let parse source_jsons =
         in
         { literal_strings }
   in
-
   let sources = List.concat_map source_jsons ~f:parse_sources in
   let sinks = List.concat_map source_jsons ~f:parse_sinks in
   let features = List.concat_map source_jsons ~f:parse_features in
@@ -433,15 +497,19 @@ let parse source_jsons =
     |> List.fold ~init:empty_implicit_sources ~f:merge_implicit_sources
   in
   let lineage_analysis = List.exists ~f:parse_lineage_analysis source_jsons in
+  let rules = List.rev_append rules generated_combined_rules in
+  let matching_sources, matching_sinks = matching_kinds_from_rules rules in
   {
     sources;
     sinks;
     features;
-    rules = List.rev_append rules generated_combined_rules;
+    rules;
     partial_sink_converter;
     implicit_sinks;
     implicit_sources;
     partial_sink_labels;
+    matching_sources;
+    matching_sinks;
     find_missing_flows = None;
     dump_model_query_results_path = None;
     analysis_model_constraints =
@@ -480,25 +548,100 @@ let register configuration =
 
 
 let default =
+  let sources =
+    List.map
+      ~f:(fun name -> { AnnotationParser.name; kind = Named })
+      ["Demo"; "Test"; "UserControlled"; "PII"; "Secrets"; "Cookies"]
+  in
+  let sinks =
+    List.map
+      ~f:(fun name -> { AnnotationParser.name; kind = Named })
+      [
+        "Demo";
+        "FileSystem";
+        "GetAttr";
+        "Logging";
+        "RemoteCodeExecution";
+        "SQL";
+        "Test";
+        "XMLParser";
+        "XSS";
+      ]
+  in
+  let rules =
+    [
+      {
+        Rule.sources = [Sources.NamedSource "UserControlled"];
+        sinks = [Sinks.NamedSink "RemoteCodeExecution"];
+        code = 5001;
+        name = "Possible shell injection.";
+        message_format =
+          "Possible remote code execution due to [{$sources}] data reaching [{$sinks}] sink(s)";
+      };
+      {
+        sources = [Sources.NamedSource "Test"; Sources.NamedSource "UserControlled"];
+        sinks = [Sinks.NamedSink "Test"];
+        code = 5002;
+        name = "Test flow.";
+        message_format = "Data from [{$sources}] source(s) may reach [{$sinks}] sink(s)";
+      };
+      {
+        sources = [Sources.NamedSource "UserControlled"];
+        sinks = [Sinks.NamedSink "SQL"];
+        code = 5005;
+        name = "User controlled data to SQL execution.";
+        message_format = "Data from [{$sources}] source(s) may reach [{$sinks}] sink(s)";
+      };
+      {
+        sources =
+          [Sources.NamedSource "Cookies"; Sources.NamedSource "PII"; Sources.NamedSource "Secrets"];
+        sinks = [Sinks.NamedSink "Logging"];
+        code = 5006;
+        name = "Restricted data being logged.";
+        message_format = "Data from [{$sources}] source(s) may reach [{$sinks}] sink(s)";
+      };
+      {
+        sources = [Sources.NamedSource "UserControlled"];
+        sinks = [Sinks.NamedSink "XMLParser"];
+        code = 5007;
+        name = "User data to XML Parser.";
+        message_format = "Data from [{$sources}] source(s) may reach [{$sinks}] sink(s)";
+      };
+      {
+        sources = [Sources.NamedSource "UserControlled"];
+        sinks = [Sinks.NamedSink "XSS"];
+        code = 5008;
+        name = "XSS";
+        message_format = "Possible XSS due to [{$sources}] data reaching [{$sinks}] sink(s)";
+      };
+      {
+        sources = [Sources.NamedSource "Demo"];
+        sinks = [Sinks.NamedSink "Demo"];
+        code = 5009;
+        name = "Demo flow.";
+        message_format = "Data from [{$sources}] source(s) may reach [{$sinks}] sink(s)";
+      };
+      {
+        sources = [Sources.NamedSource "UserControlled"];
+        sinks = [Sinks.NamedSink "GetAttr"];
+        code = 5010;
+        name = "User data to getattr.";
+        message_format = "Attacker may control at least one argument to getattr(,).";
+      };
+      {
+        sources = [Sources.NamedSource "Demo"];
+        sinks = [Sinks.NamedSink "Demo"];
+        code = 6001;
+        name = "Duplicate demo flow.";
+        message_format =
+          "Possible remote code execution due to [{$sources}] data reaching [{$sinks}] sink(s)";
+      };
+    ]
+  in
+  let matching_sources, matching_sinks = matching_kinds_from_rules rules in
   {
-    sources =
-      List.map
-        ~f:(fun name -> { AnnotationParser.name; kind = Named })
-        ["Demo"; "Test"; "UserControlled"; "PII"; "Secrets"; "Cookies"];
-    sinks =
-      List.map
-        ~f:(fun name -> { AnnotationParser.name; kind = Named })
-        [
-          "Demo";
-          "FileSystem";
-          "GetAttr";
-          "Logging";
-          "RemoteCodeExecution";
-          "SQL";
-          "Test";
-          "XMLParser";
-          "XSS";
-        ];
+    sources;
+    sinks;
     features =
       [
         "copy";
@@ -509,81 +652,13 @@ let default =
         "string_concat_lhs";
         "string_concat_rhs";
       ];
-    rules =
-      [
-        {
-          sources = [Sources.NamedSource "UserControlled"];
-          sinks = [Sinks.NamedSink "RemoteCodeExecution"];
-          code = 5001;
-          name = "Possible shell injection.";
-          message_format =
-            "Possible remote code execution due to [{$sources}] data reaching [{$sinks}] sink(s)";
-        };
-        {
-          sources = [Sources.NamedSource "Test"; Sources.NamedSource "UserControlled"];
-          sinks = [Sinks.NamedSink "Test"];
-          code = 5002;
-          name = "Test flow.";
-          message_format = "Data from [{$sources}] source(s) may reach [{$sinks}] sink(s)";
-        };
-        {
-          sources = [Sources.NamedSource "UserControlled"];
-          sinks = [Sinks.NamedSink "SQL"];
-          code = 5005;
-          name = "User controlled data to SQL execution.";
-          message_format = "Data from [{$sources}] source(s) may reach [{$sinks}] sink(s)";
-        };
-        {
-          sources =
-            [
-              Sources.NamedSource "Cookies"; Sources.NamedSource "PII"; Sources.NamedSource "Secrets";
-            ];
-          sinks = [Sinks.NamedSink "Logging"];
-          code = 5006;
-          name = "Restricted data being logged.";
-          message_format = "Data from [{$sources}] source(s) may reach [{$sinks}] sink(s)";
-        };
-        {
-          sources = [Sources.NamedSource "UserControlled"];
-          sinks = [Sinks.NamedSink "XMLParser"];
-          code = 5007;
-          name = "User data to XML Parser.";
-          message_format = "Data from [{$sources}] source(s) may reach [{$sinks}] sink(s)";
-        };
-        {
-          sources = [Sources.NamedSource "UserControlled"];
-          sinks = [Sinks.NamedSink "XSS"];
-          code = 5008;
-          name = "XSS";
-          message_format = "Possible XSS due to [{$sources}] data reaching [{$sinks}] sink(s)";
-        };
-        {
-          sources = [Sources.NamedSource "Demo"];
-          sinks = [Sinks.NamedSink "Demo"];
-          code = 5009;
-          name = "Demo flow.";
-          message_format = "Data from [{$sources}] source(s) may reach [{$sinks}] sink(s)";
-        };
-        {
-          sources = [Sources.NamedSource "UserControlled"];
-          sinks = [Sinks.NamedSink "GetAttr"];
-          code = 5010;
-          name = "User data to getattr.";
-          message_format = "Attacker may control at least one argument to getattr(,).";
-        };
-        {
-          sources = [Sources.NamedSource "Demo"];
-          sinks = [Sinks.NamedSink "Demo"];
-          code = 6001;
-          name = "Duplicate demo flow.";
-          message_format =
-            "Possible remote code execution due to [{$sources}] data reaching [{$sinks}] sink(s)";
-        };
-      ];
+    rules;
     partial_sink_converter = String.Map.Tree.empty;
     partial_sink_labels = String.Map.Tree.empty;
     implicit_sinks = empty_implicit_sinks;
     implicit_sources = empty_implicit_sources;
+    matching_sources;
+    matching_sinks;
     find_missing_flows = None;
     dump_model_query_results_path = None;
     analysis_model_constraints = default_analysis_model_constraints;
@@ -592,43 +667,37 @@ let default =
 
 
 let obscure_flows_configuration configuration =
-  {
-    configuration with
-    rules =
-      [
-        {
-          sources =
-            List.map
-              ~f:(fun { name = source; _ } -> Sources.NamedSource source)
-              configuration.sources;
-          sinks = [Sinks.NamedSink "Obscure"];
-          code = 9001;
-          name = "Obscure flow.";
-          message_format = "Data from [{$sources}] source(s) may reach an obscure model";
-        };
-      ];
-    find_missing_flows = Some Obscure;
-  }
+  let rules =
+    [
+      {
+        Rule.sources =
+          List.map ~f:(fun { name = source; _ } -> Sources.NamedSource source) configuration.sources;
+        sinks = [Sinks.NamedSink "Obscure"];
+        code = 9001;
+        name = "Obscure flow.";
+        message_format = "Data from [{$sources}] source(s) may reach an obscure model";
+      };
+    ]
+  in
+  let matching_sources, matching_sinks = matching_kinds_from_rules rules in
+  { configuration with rules; matching_sources; matching_sinks; find_missing_flows = Some Obscure }
 
 
 let missing_type_flows_configuration configuration =
-  {
-    configuration with
-    rules =
-      [
-        {
-          sources =
-            List.map
-              ~f:(fun { name = source; _ } -> Sources.NamedSource source)
-              configuration.sources;
-          sinks = [Sinks.NamedSink "UnknownCallee"];
-          code = 9002;
-          name = "Unknown callee flow.";
-          message_format = "Data from [{$sources}] source(s) may flow to an unknown callee";
-        };
-      ];
-    find_missing_flows = Some Type;
-  }
+  let rules =
+    [
+      {
+        Rule.sources =
+          List.map ~f:(fun { name = source; _ } -> Sources.NamedSource source) configuration.sources;
+        sinks = [Sinks.NamedSink "UnknownCallee"];
+        code = 9002;
+        name = "Unknown callee flow.";
+        message_format = "Data from [{$sources}] source(s) may flow to an unknown callee";
+      };
+    ]
+  in
+  let matching_sources, matching_sinks = matching_kinds_from_rules rules in
+  { configuration with rules; matching_sources; matching_sinks; find_missing_flows = Some Type }
 
 
 let apply_missing_flows configuration = function
@@ -650,11 +719,14 @@ let create
     ~maximum_tito_depth
     ~taint_model_paths
   =
-  let file_paths = Path.get_matching_files_recursively ~suffix:".config" ~paths:taint_model_paths in
+  let file_paths =
+    PyrePath.get_matching_files_recursively ~suffix:".config" ~paths:taint_model_paths
+  in
   let parse_configuration config_file =
-    if not (Path.file_exists config_file) then
+    if not (PyrePath.file_exists config_file) then
       raise
-        (MalformedConfiguration { path = Path.absolute config_file; parse_error = "File not found" })
+        (MalformedConfiguration
+           { path = PyrePath.absolute config_file; parse_error = "File not found" })
     else
       try
         config_file
@@ -666,7 +738,7 @@ let create
       with
       | Yojson.Json_error parse_error
       | Failure parse_error ->
-          raise (MalformedConfiguration { path = Path.absolute config_file; parse_error })
+          raise (MalformedConfiguration { path = PyrePath.absolute config_file; parse_error })
   in
   let configurations = file_paths |> List.filter_map ~f:parse_configuration in
   if List.is_empty configurations then
@@ -725,7 +797,7 @@ let get_triggered_sink ~partial_sink ~source =
 let is_missing_flow_analysis kind =
   match get () with
   | { find_missing_flows; _ } ->
-      Option.equal equal_missing_flows_kind (Some kind) find_missing_flows
+      Option.equal [%compare.equal: missing_flows_kind] (Some kind) find_missing_flows
 
 
 let get_maximum_model_width () =
@@ -742,7 +814,7 @@ let maximum_return_access_path_width = 5
 
 let maximum_return_access_path_depth = 3
 
-let maximum_tito_positions = 30
+let maximum_tito_positions = 50
 
 let maximum_tree_depth_after_widening = 4
 

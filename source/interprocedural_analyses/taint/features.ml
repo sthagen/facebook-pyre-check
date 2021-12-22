@@ -10,6 +10,37 @@ open Ast
 open Analysis
 open Pyre
 
+module MakeInterner (T : sig
+  type t
+
+  val name : string
+
+  val pp : Format.formatter -> t -> unit
+
+  val show : t -> string
+end) =
+struct
+  module Value = struct
+    include T
+
+    let to_string = T.show
+
+    let prefix = Prefix.make ()
+
+    let description = T.name
+
+    let unmarshall value = Marshal.from_string value 0
+  end
+
+  include Memory.Interner (Value)
+
+  let name = T.name
+
+  let pp formatter id = id |> unintern |> T.pp formatter
+
+  let show id = id |> unintern |> T.show
+end
+
 module First (Kind : sig
   val kind : string
 end) =
@@ -33,12 +64,59 @@ module FirstIndex = First (struct
   let kind = "index"
 end)
 
+module FirstIndexInterned = MakeInterner (FirstIndex)
+
+module FirstIndexSet = struct
+  include Abstract.SetDomain.Make (FirstIndexInterned)
+
+  let number_regexp = Str.regexp "[0-9]+"
+
+  let add_first index indices =
+    let is_numeric name = Str.string_match number_regexp name 0 in
+    let to_first_name = function
+      | Abstract.TreeDomain.Label.Index name when is_numeric name -> Some "<numeric>"
+      | Index name -> Some name
+      | Field _ -> None
+      | AnyIndex -> Some "<unknown>"
+    in
+    if is_bottom indices then
+      to_first_name index
+      >>| FirstIndexInterned.intern
+      >>| singleton
+      |> Option.value ~default:bottom
+    else
+      indices
+
+
+  let sequence_join new_indices existing_indices =
+    if is_bottom existing_indices then
+      new_indices
+    else
+      existing_indices
+end
+
 module FirstField = First (struct
   let kind = "field"
 end)
 
-module FirstIndexSet = Abstract.SetDomain.Make (FirstIndex)
-module FirstFieldSet = Abstract.SetDomain.Make (FirstField)
+module FirstFieldInterned = MakeInterner (FirstField)
+
+module FirstFieldSet = struct
+  include Abstract.SetDomain.Make (FirstFieldInterned)
+
+  let add_first field fields =
+    if is_bottom fields then
+      field |> FirstFieldInterned.intern |> singleton
+    else
+      fields
+
+
+  let sequence_join new_fields existing_fields =
+    if is_bottom existing_fields then
+      new_fields
+    else
+      existing_fields
+end
 
 module TitoPosition = struct
   let name = "tito positions"
@@ -67,23 +145,25 @@ module LeafName = struct
 
   let show = Format.asprintf "%a" pp
 
-  let to_json ~kind_json { leaf; port } =
+  let to_json { leaf; port } =
     let port_assoc =
       match port with
       | Some port -> ["port", `String port]
       | None -> []
     in
-    `Assoc (port_assoc @ ["kind", kind_json; "name", `String leaf])
+    `Assoc (port_assoc @ ["name", `String leaf])
 end
 
-module LeafNameSet = Abstract.SetDomain.Make (LeafName)
+module LeafNameInterned = MakeInterner (LeafName)
+module LeafNameSet = Abstract.SetDomain.Make (LeafNameInterned)
 
 module Breadcrumb = struct
   let name = "breadcrumbs"
 
   type t =
     | FormatString (* Via f"{something}" *)
-    | Obscure
+    | ObscureModel
+    | ObscureUnknownCallee
     | Lambda
     | SimpleVia of string (* Declared breadcrumbs *)
     | ViaValue of {
@@ -112,7 +192,8 @@ module Breadcrumb = struct
     in
     match breadcrumb with
     | FormatString -> Format.fprintf formatter "FormatString"
-    | Obscure -> Format.fprintf formatter "Obscure"
+    | ObscureModel -> Format.fprintf formatter "ObscureModel"
+    | ObscureUnknownCallee -> Format.fprintf formatter "ObscureUnknownCallee"
     | Lambda -> Format.fprintf formatter "Lambda"
     | SimpleVia name -> Format.fprintf formatter "SimpleVia[%s]" name
     | ViaValue { tag; value } -> pp_via_value_or_type "ViaValue" tag value
@@ -136,7 +217,8 @@ module Breadcrumb = struct
     in
     match breadcrumb with
     | FormatString -> `Assoc [prefix ^ "via", `String "format-string"]
-    | Obscure -> `Assoc [prefix ^ "via", `String "obscure"]
+    | ObscureModel -> `Assoc [prefix ^ "via", `String "obscure:model"]
+    | ObscureUnknownCallee -> `Assoc [prefix ^ "via", `String "obscure:unknown-callee"]
     | Lambda -> `Assoc [prefix ^ "via", `String "lambda"]
     | SimpleVia name -> `Assoc [prefix ^ "via", `String name]
     | ViaValue { tag; value } -> via_value_or_type_annotation ~via_kind:"value" ~tag ~value
@@ -156,7 +238,8 @@ module Breadcrumb = struct
       Error (Format.sprintf "Unrecognized Via annotation `%s`" name)
 end
 
-module BreadcrumbSet = Abstract.OverUnderSetDomain.Make (Breadcrumb)
+module BreadcrumbInterned = MakeInterner (Breadcrumb)
+module BreadcrumbSet = Abstract.OverUnderSetDomain.Make (BreadcrumbInterned)
 
 module ViaFeature = struct
   let name = "via features"
@@ -186,15 +269,33 @@ module ViaFeature = struct
 
   let show = Format.asprintf "%a" pp
 
-  let via_value_of_breadcrumb ?tag ~argument =
-    let feature =
-      match argument with
-      | None -> "<missing>"
-      | Some argument ->
-          Interprocedural.CallResolution.extract_constant_name argument
-          |> Option.value ~default:"<unknown>"
+  let via_value_of_breadcrumb ?tag ~arguments =
+    let open Ast.Expression.Call.Argument in
+    let extract_constant_value arguments =
+      List.find_map
+        ~f:(fun argument -> Interprocedural.CallResolution.extract_constant_name argument.value)
+        arguments
     in
-    Breadcrumb.ViaValue { value = feature; tag }
+    let argument_kind = function
+      | { value = { Node.value = Starred (Once _); _ }; _ } -> "args"
+      | { value = { Node.value = Starred (Twice _); _ }; _ } -> "kwargs"
+      | { value = _; name = Some _ } -> "named"
+      | { value = _; name = None } -> "positional"
+    in
+    let generate_kind arguments =
+      List.map ~f:argument_kind arguments
+      |> List.sort ~compare:String.compare
+      |> String.concat ~sep:"_or_"
+    in
+    let feature =
+      match arguments with
+      | [] -> "<missing>"
+      | arguments -> (
+          match extract_constant_value arguments with
+          | Some value -> value
+          | None -> Format.asprintf "<unknown:%s>" (generate_kind arguments))
+    in
+    Breadcrumb.ViaValue { value = feature; tag } |> BreadcrumbInterned.intern
 
 
   let via_type_of_breadcrumb ?tag ~resolution ~argument =
@@ -206,7 +307,7 @@ module ViaFeature = struct
       |> Option.value ~default:Type.Top
       |> Type.show
     in
-    Breadcrumb.ViaType { value = feature; tag }
+    Breadcrumb.ViaType { value = feature; tag } |> BreadcrumbInterned.intern
 
 
   let via_type_of_breadcrumb_for_object ?tag ~resolution ~object_target =
@@ -217,7 +318,22 @@ module ViaFeature = struct
       |> Type.weaken_literals
       |> Type.show
     in
-    Breadcrumb.ViaType { value = feature; tag }
+    Breadcrumb.ViaType { value = feature; tag } |> BreadcrumbInterned.intern
+
+
+  let to_json via =
+    let to_json_via_value_or_type kind parameter tag =
+      let json = ["kind", `String kind; "parameter", `String (AccessPath.Root.show parameter)] in
+      let json =
+        match tag with
+        | Some tag -> ("tag", `String tag) :: json
+        | None -> json
+      in
+      `Assoc json
+    in
+    match via with
+    | ViaValueOf { parameter; tag } -> to_json_via_value_or_type "ViaValueOf" parameter tag
+    | ViaTypeOf { parameter; tag } -> to_json_via_value_or_type "ViaTypeOf" parameter tag
 end
 
 module ViaFeatureSet = Abstract.SetDomain.Make (ViaFeature)
@@ -244,6 +360,9 @@ module ReturnAccessPath = struct
         | x -> x
       in
       List.map ~f:truncate set
+
+
+  let to_json path = `String (Abstract.TreeDomain.Label.show_path path)
 end
 
 module ReturnAccessPathSet = struct
@@ -258,45 +377,57 @@ module ReturnAccessPathSet = struct
       set
 end
 
-let obscure = Breadcrumb.Obscure
+(* We need to make all breadcrumb creation lazy because the shared memory might
+ * not be initialized yet. *)
 
-let lambda = Breadcrumb.Lambda
+let memoize closure () = Lazy.force closure
 
-let tito = Breadcrumb.Tito
-
-let format_string = Breadcrumb.FormatString
-
-let widen_broadening =
-  BreadcrumbSet.create
-    [
-      Part (BreadcrumbSet.Element, Breadcrumb.Broadening);
-      Part (BreadcrumbSet.Element, Breadcrumb.WidenBroadening);
-    ]
+let memoize_breadcrumb_interned breadcrumb =
+  memoize (lazy (breadcrumb |> BreadcrumbInterned.intern))
 
 
-let tito_broadening =
-  BreadcrumbSet.create
-    [
-      Part (BreadcrumbSet.Element, Breadcrumb.Broadening);
-      Part (BreadcrumbSet.Element, Breadcrumb.TitoBroadening);
-    ]
+let obscure_model = memoize_breadcrumb_interned Breadcrumb.ObscureModel
+
+let obscure_unknown_callee = memoize_breadcrumb_interned Breadcrumb.ObscureUnknownCallee
+
+let lambda = memoize_breadcrumb_interned Breadcrumb.Lambda
+
+let tito = memoize_breadcrumb_interned Breadcrumb.Tito
+
+let format_string = memoize_breadcrumb_interned Breadcrumb.FormatString
+
+let type_scalar = memoize_breadcrumb_interned (Breadcrumb.Type "scalar")
+
+let type_bool = memoize_breadcrumb_interned (Breadcrumb.Type "bool")
+
+let type_integer = memoize_breadcrumb_interned (Breadcrumb.Type "integer")
+
+let type_enumeration = memoize_breadcrumb_interned (Breadcrumb.Type "enumeration")
+
+let broadening = memoize_breadcrumb_interned Breadcrumb.Broadening
+
+let issue_broadening = memoize_breadcrumb_interned Breadcrumb.IssueBroadening
+
+let memoize_breadcrumb_set breadcrumbs =
+  memoize
+    (lazy
+      (breadcrumbs
+      |> List.map ~f:(fun breadcrumb ->
+             Abstract.Domain.Part (BreadcrumbSet.Element, BreadcrumbInterned.intern breadcrumb))
+      |> BreadcrumbSet.create))
 
 
-let issue_broadening =
-  BreadcrumbSet.create
-    [
-      Part (BreadcrumbSet.Element, Breadcrumb.Broadening);
-      Part (BreadcrumbSet.Element, Breadcrumb.IssueBroadening);
-    ]
+let widen_broadening_set =
+  memoize_breadcrumb_set [Breadcrumb.Broadening; Breadcrumb.WidenBroadening]
 
 
-let type_bool =
-  BreadcrumbSet.create
-    [
-      Part (BreadcrumbSet.Element, Breadcrumb.Type "scalar");
-      Part (BreadcrumbSet.Element, Breadcrumb.Type "bool");
-    ]
+let tito_broadening_set = memoize_breadcrumb_set [Breadcrumb.Broadening; Breadcrumb.TitoBroadening]
 
+let issue_broadening_set =
+  memoize_breadcrumb_set [Breadcrumb.Broadening; Breadcrumb.IssueBroadening]
+
+
+let type_bool_scalar_set = memoize_breadcrumb_set [Breadcrumb.Type "scalar"; Breadcrumb.Type "bool"]
 
 let type_breadcrumbs ~resolution annotation =
   let matches_at_leaves ~f annotation =
@@ -336,26 +467,14 @@ let type_breadcrumbs ~resolution annotation =
         GlobalResolution.less_or_equal resolution ~left ~right:Type.enumeration)
   in
   let is_scalar = is_boolean || is_integer || is_float || is_enumeration in
-  let add_if cond type_name features =
-    if cond then
-      BreadcrumbSet.add (Breadcrumb.Type type_name) features
+  let add_if condition breadcrumb features =
+    if condition then
+      BreadcrumbSet.add (breadcrumb ()) features
     else
       features
   in
   BreadcrumbSet.bottom
-  |> add_if is_scalar "scalar"
-  |> add_if is_boolean "bool"
-  |> add_if is_integer "integer"
-  |> add_if is_enumeration "enumeration"
-
-
-let number_regexp = Str.regexp "[0-9]+"
-
-let is_numeric name = Str.string_match number_regexp name 0
-
-let to_first_name label =
-  match label with
-  | Abstract.TreeDomain.Label.Index name when is_numeric name -> Some "<numeric>"
-  | Index name -> Some name
-  | Field _ -> None
-  | AnyIndex -> Some "<unknown>"
+  |> add_if is_scalar type_scalar
+  |> add_if is_boolean type_bool
+  |> add_if is_integer type_integer
+  |> add_if is_enumeration type_enumeration

@@ -2,10 +2,10 @@ dataclasses; python_version < "3.7"
 async-generator
 click
 dataclasses-json
+intervaltree
 libcst
 psutil
 pyre-extensions
-pywatchman
 tabulate
 testslide>=2.7.0
 typing_extensions

@@ -39,14 +39,15 @@ let assert_taint ~context source expected =
     in
     let backward =
       BackwardAnalysis.run
+        ?profiler:None
         ~environment:(TypeEnvironment.read_only environment)
         ~qualifier
         ~define
         ~call_graph_of_define
-        ~existing_model:Taint.Result.empty_model
+        ~existing_model:Model.empty_model
         ~triggered_sinks:(Ast.Location.Table.create ())
     in
-    let model = { Taint.Result.empty_model with backward } in
+    let model = { Model.empty_model with backward } in
     AnalysisResult.empty_model
     |> AnalysisResult.with_model Taint.Result.kind model
     |> FixpointState.add_predefined FixpointState.Epoch.predefined call_target
@@ -1036,7 +1037,7 @@ let test_walrus context =
     ~context
     {|
       def sink_in_walrus(arg):
-          x := _test_sink(arg)
+          (x := _test_sink(arg))
 
       def tito_via_walrus(arg):
           return (x := arg)
@@ -1407,7 +1408,7 @@ let test_decorator context =
   assert_taint
     ~context
     {|
-      @$strip_first_parameter
+      @_strip_first_parameter_
       def decorated(self, into_sink):
         _test_sink(into_sink)
 

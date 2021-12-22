@@ -13,7 +13,7 @@ open TypeInference.Data
 open Test
 module State = TypeInference.Local.State
 
-let configuration = Configuration.Analysis.create ~source_path:[] ()
+let configuration = Configuration.Analysis.create ~source_paths:[] ()
 
 let assert_backward ~resolution precondition statement postcondition =
   let module State = State (struct
@@ -22,6 +22,10 @@ let assert_backward ~resolution precondition statement postcondition =
     let configuration = configuration
 
     let define = +mock_define
+
+    let resolution_fixpoint = Some (LocalAnnotationMap.empty ())
+
+    let error_map = Some (TypeCheck.LocalErrorMap.empty ())
   end)
   in
   let create annotations =
@@ -29,13 +33,14 @@ let assert_backward ~resolution precondition statement postcondition =
       let annotation_store =
         let annotify (name, annotation) =
           let annotation =
-            let create annotation = RefinementUnit.create ~base:(Annotation.create annotation) () in
+            let create annotation = Refinement.Unit.create (Annotation.create_mutable annotation) in
             create annotation
           in
           !&name, annotation
         in
         {
-          Resolution.annotations = List.map annotations ~f:annotify |> Reference.Map.of_alist_exn;
+          Refinement.Store.annotations =
+            List.map annotations ~f:annotify |> Reference.Map.of_alist_exn;
           temporary_annotations = Reference.Map.empty;
         }
       in
@@ -57,7 +62,7 @@ let assert_backward ~resolution precondition statement postcondition =
   assert_state_equal
     (create postcondition)
     (List.fold_right
-       ~f:(fun statement state -> State.backward ~key:Cfg.exit_index state ~statement)
+       ~f:(fun statement state -> State.backward ~statement_key:Cfg.exit_index state ~statement)
        ~init:(create precondition)
        parsed)
 
@@ -200,31 +205,84 @@ module Setup = struct
     environment, configuration
 
 
-  let run_inference ~context ~target code =
+  let get_environment_data ~context code =
     let environment, configuration = set_up_project ~context code in
     let global_resolution = environment |> TypeEnvironment.ReadOnly.global_resolution in
     let ast_environment = GlobalResolution.ast_environment global_resolution in
+    let filename_lookup = Analysis.AstEnvironment.ReadOnly.get_relative ast_environment in
     let source =
       AstEnvironment.ReadOnly.get_processed_source ast_environment (Reference.create "test")
       |> fun option -> Option.value_exn option
     in
+    configuration, global_resolution, filename_lookup, source
+
+
+  let run_inference ?(skip_annotated = false) ~context ~target code =
+    let configuration, global_resolution, filename_lookup, source =
+      get_environment_data ~context code
+    in
     let module_results =
       TypeInference.Local.infer_for_module
+        ~skip_annotated
         ~configuration
         ~global_resolution
-        ~filename_lookup:(Analysis.AstEnvironment.ReadOnly.get_relative ast_environment)
-        ~source
+        ~filename_lookup
+        source
     in
     let is_target local_result =
       let name = LocalResult.define_name local_result in
       Reference.equal name (Reference.create target)
     in
-    let first = function
-      | head :: _ -> head
-      | [] -> failwith ("Could not find target define " ^ target)
-    in
-    module_results |> List.filter ~f:is_target |> first
+    module_results |> List.filter ~f:is_target |> List.hd
+
+
+  let run_inference_exn ~context ~target code =
+    match run_inference ~context ~target code with
+    | Some result -> result
+    | None -> failwith ("Could not find target define " ^ target)
 end
+
+let test_should_analyze_define context =
+  let check ~should_analyze ~target code =
+    let _, global_resolution, _, source = Setup.get_environment_data ~context code in
+    let would_analyze =
+      source
+      |> TypeInference.Local.Testing.define_names_to_analyze ~global_resolution
+      |> List.exists ~f:(Reference.equal target)
+    in
+    Bool.equal would_analyze should_analyze
+    |> assert_bool "Unexpected result from should_analyze_define"
+  in
+  check
+    {|
+      def foo() -> int:
+          pass
+    |}
+    ~target:(Reference.create "test.foo")
+    ~should_analyze:false;
+  check
+    {|
+      def foo(x: str) -> int:
+          pass
+    |}
+    ~target:(Reference.create "test.foo")
+    ~should_analyze:false;
+  check
+    {|
+      def foo() -> int:
+          pass
+    |}
+    ~target:(Reference.create "test.$toplevel")
+    ~should_analyze:true;
+  check
+    {|
+      def foo(x: Any) -> int:
+          pass
+    |}
+    ~target:(Reference.create "test.foo")
+    ~should_analyze:true;
+  ()
+
 
 let assert_json_equal ~context ~expected result =
   let expected = Yojson.Safe.from_string expected in
@@ -254,7 +312,7 @@ let access_by_path field_path body =
 
 let check_inference_results ?(field_path = []) ~context ~target ~expected code =
   code
-  |> Setup.run_inference ~context ~target
+  |> Setup.run_inference_exn ~context ~target
   |> LocalResult.to_yojson
   |> access_by_path field_path
   |> assert_json_equal ~context ~expected
@@ -273,13 +331,6 @@ let test_inferred_returns context =
     {|
       def foo(x: int):
           return x
-    |}
-    ~target:"test.foo"
-    ~expected:{|"int"|};
-  check_inference_results
-    {|
-      def foo() -> int:
-          pass
     |}
     ~target:"test.foo"
     ~expected:{|"int"|};
@@ -367,7 +418,7 @@ let test_inferred_returns context =
               return self
     |}
     ~target:"test.Test.ret_self"
-    ~expected:{|"Test"|};
+    ~expected:{|"test.Test"|};
   check_inference_results
     {|
       def foo():
@@ -395,10 +446,19 @@ let test_inferred_returns context =
     {|
       from typing import Any
       def foo(x: Any):
-          return {"": x}
+          return {1 + 1: x}
     |}
     ~target:"test.foo"
     ~expected:{|null|};
+  (* This is allowed because of special-casing in Type.contains_prohibited_any *)
+  check_inference_results
+    {|
+      from typing import Any
+      def foo(x: Any):
+          return {"": x}
+    |}
+    ~target:"test.foo"
+    ~expected:{|"typing.Dict[str, typing.Any]"|};
   check_inference_results
     {|
       def foo(y: bool):
@@ -493,6 +553,18 @@ let test_inferred_function_parameters context =
       type_
       (option_to_json default)
   in
+  let no_inferences =
+    {|
+      [{ "name": "x", "annotation": null, "value": null, "index": 0 }]
+    |}
+  in
+  let no_inferences_with_default ~default =
+    Format.asprintf
+      {|
+      [{ "name": "x", "annotation": null, "value": "%s", "index": 0 }]
+    |}
+      default
+  in
   check_inference_results
     {|
       def foo(x: typing.Any) -> None:
@@ -563,7 +635,7 @@ let test_inferred_function_parameters context =
           return x
     |}
     ~target:"test.foo"
-    ~expected:(single_parameter "Optional[str]");
+    ~expected:(single_parameter "typing.Optional[str]");
   check_inference_results
     {|
       def foo(y) -> typing.Tuple[int, float]:
@@ -590,7 +662,7 @@ let test_inferred_function_parameters context =
               x = ""
     |}
     ~target:"test.foo"
-    ~expected:(single_parameter ~default:"None" "str");
+    ~expected:(no_inferences_with_default ~default:"None");
   check_inference_results
     {|
       from typing import Optional
@@ -601,7 +673,7 @@ let test_inferred_function_parameters context =
           foo(x)
     |}
     ~target:"test.foo"
-    ~expected:(single_parameter "typing.Optional[str]");
+    ~expected:no_inferences;
   check_inference_results
     {|
       from typing import Optional
@@ -612,25 +684,7 @@ let test_inferred_function_parameters context =
           foo(x)
     |}
     ~target:"test.bar"
-    ~expected:(single_parameter ~default:"None" "Optional[str]");
-  (* For given annotations, use expressions rather than types so that the qualifier will match the
-     code rather than the fully qualified type name. This is important for aliased imports *)
-  check_inference_results
-    {|
-      # This is an aliased import.
-      # The full qualifier is sqlalchemy.ext.declarative.api.DeclarativeMeta.
-      from sqlalchemy.ext.declarative import DeclarativeMeta
-
-      def foo(x: DeclarativeMeta) -> None:
-          return None
-    |}
-    ~target:"test.foo"
-    ~expected:(single_parameter "sqlalchemy.ext.declarative.DeclarativeMeta");
-  let no_inferences =
-    {|
-      [{ "name": "x", "annotation": null, "value": null, "index": 0 }]
-    |}
-  in
+    ~expected:(single_parameter ~default:"None" "typing.Optional[str]");
   (* TODO(T84365830): Support inference on addition. *)
   check_inference_results
     {|
@@ -767,7 +821,8 @@ let test_inferred_method_parameters context =
               return x
     |}
     ~target:"test.B.foo"
-    ~expected:(single_parameter_method (Some "A"));
+    ~expected:(single_parameter_method (Some "test.A"));
+  let no_inferences = single_parameter_method None in
   (* Don't override explicit annotations if they clash with parent class *)
   check_inference_results
     {|
@@ -778,8 +833,7 @@ let test_inferred_method_parameters context =
               return x
     |}
     ~target:"test.B.foo"
-    ~expected:(single_parameter_method (Some "str"));
-  let no_inferences = single_parameter_method None in
+    ~expected:no_inferences;
   check_inference_results
     {|
       from typing import Any
@@ -829,13 +883,13 @@ let test_inferred_method_parameters context =
     ~expected:{|
         [{ "name": "self", "annotation": null, "value": null, "index": 0 }]
      |};
-  (* Do not propagate types on `self` *)
+  (* Don't override existing explicit annotations *)
   check_inference_results
     {|
       class A:
-          def foo(self, x: int, y: str) -> int: ...
+          def foo(self, x: int, y: str, z: int) -> int: ...
       class B(A):
-          def foo(self, x, y: str):
+          def foo(self, x, y: str, z: int):
               return x
     |}
     ~target:"test.B.foo"
@@ -844,7 +898,8 @@ let test_inferred_method_parameters context =
         [
           { "name": "self", "annotation": null, "value": null, "index": 0 },
           { "name": "x", "annotation": "int", "value": null, "index": 1 },
-          { "name": "y", "annotation": "str", "value": null, "index": 2 }
+          { "name": "y", "annotation": null, "value": null, "index": 2 },
+          { "name": "z", "annotation": null, "value": null, "index": 3 }
         ]
       |};
   check_inference_results
@@ -958,7 +1013,7 @@ let test_inferred_attributes context =
       {|
         [
           {
-            "parent": "Foo",
+            "parent": "test.Foo",
             "name": "x",
             "location": { "qualifier": "test", "path": "test.py", "line": 5 },
             "annotation": "int"
@@ -975,7 +1030,7 @@ let test_inferred_attributes context =
       {|
         [
           {
-            "parent": "Foo",
+            "parent": "test.Foo",
             "name": "x",
             "location": { "qualifier": "test", "path": "test.py", "line": 3 },
             "annotation": "int"
@@ -993,7 +1048,7 @@ let test_inferred_attributes context =
       {|
         [
           {
-            "parent": "Foo",
+            "parent": "test.Foo",
             "name": "x",
             "location": { "qualifier": "test", "path": "test.py", "line": 4 },
             "annotation": "int"
@@ -1014,7 +1069,7 @@ let test_inferred_attributes context =
       {|
         [
           {
-            "parent": "Foo",
+            "parent": "test.Foo",
             "name": "x",
             "location": { "qualifier": "test", "path": "test.py", "line": 4 },
             "annotation": "int"
@@ -1033,7 +1088,7 @@ let test_inferred_attributes context =
       {|
         [
           {
-            "parent": "Foo",
+            "parent": "test.Foo",
             "name": "foo",
             "location": { "qualifier": "test", "path": "test.py", "line": 3 },
             "annotation": "None"
@@ -1047,6 +1102,7 @@ let () =
   "typeInferenceLocalTest"
   >::: [
          "test_backward_resolution_handling" >:: test_backward_resolution_handling;
+         "test_should_analyze_define" >:: test_should_analyze_define;
          "test_inferred_returns" >:: test_inferred_returns;
          "test_inferred_function_parameters" >:: test_inferred_function_parameters;
          "test_inferred_method_parameters" >:: test_inferred_method_parameters;

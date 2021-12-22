@@ -6,7 +6,6 @@
  *)
 
 open Ast
-open Analysis
 open Expression
 
 (** Roots representing parameters, locals, and special return value in models. *)
@@ -22,7 +21,7 @@ module Root : sig
     | StarParameter of { position: int }
     | StarStarParameter of { excluded: Identifier.t list }
     | Variable of Identifier.t
-  [@@deriving compare, eq, show]
+  [@@deriving compare, show]
 
   val normalize_parameters : Parameter.t list -> (t * Identifier.t * Parameter.t) list
 
@@ -33,21 +32,17 @@ type t = {
   root: Root.t;
   path: Abstract.TreeDomain.Label.path;
 }
-[@@deriving show, eq]
+[@@deriving show, compare]
 
 val create : Root.t -> Abstract.TreeDomain.Label.path -> t
 
 val extend : t -> path:Abstract.TreeDomain.Label.path -> t
 
-val of_expression : resolution:Resolution.t -> Expression.t -> t option
+val of_expression : Expression.t -> t option
 
 val get_index : Expression.t -> Abstract.TreeDomain.Label.t
 
 val to_json : t -> Yojson.Safe.json
-
-val get_global : resolution:Resolution.t -> Expression.t -> Reference.t option
-
-val is_global : resolution:Resolution.t -> Expression.t -> bool
 
 type argument_match = {
   root: Root.t;
@@ -60,6 +55,6 @@ type argument_match = {
 val match_actuals_to_formals
   :  Call.Argument.t list ->
   Root.t list ->
-  (Expression.t * argument_match list) list
+  (Call.Argument.t * argument_match list) list
 
 val dictionary_keys : Abstract.TreeDomain.Label.t

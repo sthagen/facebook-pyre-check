@@ -10,16 +10,10 @@ open Commands
 
 let commands =
   [
-    "analyze", Analyze.command;
-    "check", Check.check_command;
-    "rage", Rage.command;
-    "newanalyze", NewAnalyze.command;
-    "newcheck", NewCheck.command;
-    "newinfer", NewInfer.command;
-    "newserver", NewServer.command;
-    "persistent", Persistent.command;
-    "start", Start.command;
-    "stop", Stop.command;
+    "newanalyze", Analyze.command;
+    "newcheck", Check.command;
+    "newinfer", Infer.command;
+    "newserver", Server.command;
   ]
 
 

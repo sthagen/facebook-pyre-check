@@ -10,7 +10,7 @@ open Pyre
 open Sexplib.Conv
 
 module T = struct
-  type t = Identifier.t list [@@deriving compare, eq, sexp, hash, to_yojson, show]
+  type t = Identifier.t list [@@deriving compare, sexp, hash, to_yojson, show]
 end
 
 include T
@@ -85,6 +85,8 @@ let sanitize_qualified reference =
   |> List.rev
 
 
+let equal = [%compare.equal: t]
+
 let equal_sanitized left right = equal (sanitized left) (sanitized right)
 
 let pp_sanitized format reference =
@@ -143,6 +145,11 @@ let prefix reference =
 
 
 let head reference = List.hd reference >>| fun head -> [head]
+
+let first = function
+  | [] -> ""
+  | head :: _ -> head
+
 
 let last = function
   | [] -> ""

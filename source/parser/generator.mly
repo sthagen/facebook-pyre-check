@@ -13,13 +13,8 @@
   open Pyre
   open ParserExpression
 
-  type decorator = { decorator_name : Reference.t Node.t; arguments : Call.Argument.t list option }
-
   let with_decorators decorators decoratee =
     let decorators =
-      let convert ({ decorator_name; arguments } ) =
-        { Decorator.name = decorator_name; arguments = arguments >>| List.map ~f:convert_argument }
-      in
       List.map decorators ~f:convert
     in
     match decoratee with
@@ -149,8 +144,7 @@
     let arguments =
       let argument argument location =
         let none =
-          Expression.Name (Name.Identifier "None")
-          |> Node.create ~location
+          Node.create ~location (Expression.Constant AstExpression.Constant.NoneLiteral)
         in
         Option.value argument ~default:none
       in
@@ -170,16 +164,22 @@
 
   let create_ellipsis (start, stop) =
     let location = Location.create ~start ~stop in
-    Node.create Expression.Ellipsis ~location
+    Node.create (Expression.Constant AstExpression.Constant.Ellipsis) ~location
 
   let create_ellipsis_after { Node.location; _ } =
-    Node.create Expression.Ellipsis ~location:{ location with start = location.stop }
+    Node.create
+      (Expression.Constant AstExpression.Constant.Ellipsis)
+      ~location:{ location with start = location.stop }
 
-  let subscript_argument ~subscripts ~location =
+  let subscript_argument subscripts =
     let value =
       match subscripts with
+      | [] -> failwith "subscript can never be empty"
       | [subscript] -> subscript
-      | subscripts -> { Node.location; value = Expression.Tuple subscripts }
+      | subscripts ->
+         let { Node.location = { Location.start; _ }; _ } = List.hd_exn subscripts  in
+         let { Node.location = { Location.stop; _ }; _ } = List.last_exn subscripts in
+         { Node.location = { Location.start; stop }; value = Expression.Tuple subscripts }
     in
     { Call.Argument.name = None; value }
 
@@ -188,9 +188,9 @@
     let location = Node.location head in
     let callee =
       Expression.Name (Name.Attribute { base = head; attribute = "__getitem__"; special = true })
-      |> Node.create ~location
+      |> Node.create ~location:(Node.location head)
     in
-    Expression.Call { callee; arguments = [subscript_argument ~subscripts ~location] }
+    Expression.Call { callee; arguments = [subscript_argument subscripts] }
     |> Node.create ~location:{ subscript_location with start = location.start }
 
   let subscript_mutation ~subscript ~value ~annotation:_ =
@@ -207,7 +207,7 @@
     in
     Expression.Call {
       callee;
-      arguments = [subscript_argument ~subscripts ~location; { Call.Argument.name = None; value }];
+      arguments = [subscript_argument subscripts; { Call.Argument.name = None; value }];
     }
     |> Node.create ~location
     |> fun expression -> Statement.Expression (convert expression)
@@ -225,13 +225,53 @@
     in
     { parameter with Node.value }
 
-  let create_substring kind (string_position, (start, stop), value) =
+  let create_literal_substring (string_position, (start, stop), value) =
     string_position,
     {
-      Node.location = Location.create ~start ~stop;
-      value = { AstExpression.Substring.kind; value };
+      Substring.kind = Substring.Kind.Literal;
+      location = Location.create ~start ~stop;
+      value;
     }
 
+  let create_raw_format_substring (string_position, (start, stop), value) =
+    string_position,
+    {
+      Substring.kind = Substring.Kind.RawFormat;
+      location = Location.create ~start ~stop;
+      value;
+    }
+
+  let create_mixed_string = function
+    | [] -> Expression.Constant
+              (AstExpression.Constant.String {
+                   AstExpression.StringLiteral.value = "";
+                   kind = String
+              })
+    | [ { Substring.kind = Substring.Kind.Literal; value; _ } ] ->
+       Expression.Constant
+         (AstExpression.Constant.String {
+              AstExpression.StringLiteral.value;
+              kind = String
+         })
+    | _ as pieces ->
+       let is_all_literal = List.for_all ~f:(fun { Substring.kind; _ } ->
+          match kind with
+          | Substring.Kind.Literal -> true
+          | Substring.Kind.RawFormat -> false
+        )
+        in
+        if is_all_literal pieces then
+          let value =
+            List.map pieces ~f:(fun { Substring.value; _ } -> value)
+            |> String.concat ~sep:""
+          in
+          Expression.Constant
+            (AstExpression.Constant.String {
+                 AstExpression.StringLiteral.value;
+                 kind = String
+            })
+        else
+          Expression.FormatString pieces
 %}
 
 (* The syntactic junkyard. *)
@@ -311,6 +351,7 @@
 %token <(Lexing.position * Lexing.position)> ELLIPSES
 %token <(Lexing.position * Lexing.position)> FALSE
 %token <(Lexing.position * Lexing.position)> TRUE
+%token <(Lexing.position * Lexing.position)> NONE
 
 (* Control. *)
 %token <Lexing.position> ASSERT
@@ -418,7 +459,6 @@ small_statement:
           Assign.target = convert target;
           annotation = None;
           value = convert value;
-          parent = None;
         };
       }]
     }
@@ -433,7 +473,6 @@ small_statement:
           Assign.target = convert target;
           annotation = Some annotation >>| convert;
           value = create_ellipsis_after annotation |> convert;
-          parent = None;
         };
       }]
     }
@@ -448,7 +487,6 @@ small_statement:
           Assign.target = convert target;
           annotation = Some annotation >>| convert;
           value = create_ellipsis_after annotation |> convert;
-          parent = None;
         };
       }]
     }
@@ -465,7 +503,6 @@ small_statement:
           Assign.target = convert target;
           annotation = Some annotation >>| convert;
           value = convert value;
-          parent = None;
         };
       }]
     }
@@ -482,7 +519,6 @@ small_statement:
           Assign.target = convert target;
           annotation = Some annotation >>| convert;
           value = convert value;
-          parent = None;
         };
       }]
     }
@@ -507,7 +543,6 @@ small_statement:
           Assign.target = convert target;
           annotation = Some annotation >>| convert;
           value = convert ellipsis;
-          parent = None;
         };
       }]
     }
@@ -616,11 +651,11 @@ small_statement:
     }
 
   | delete = DELETE;
-    expression = expression_list {
-      let stop = Node.stop expression in
+    expressions = separated_nonempty_list(COMMA, expression) {
+      let stop = Node.stop (List.last_exn expressions) in
       [{
         Node.location = location_create_with_stop ~start:delete ~stop;
-        value = Delete (convert expression);
+        value = Delete (List.map expressions ~f:convert);
       }]
     }
   ;
@@ -636,19 +671,14 @@ compound_statement:
       let location = Location.create ~start:definition ~stop:colon_position in
       let body_location, body = body in
       let location = { location with Location.stop = body_location.Location.stop } in
-      let name_location, name = name in
+      let _, name = name in
       let body =
         let rec transform_toplevel_statements = function
-          | { Node.location; value = Statement.Assign assign } ->
-              {
-                Node.location;
-                value = Statement.Assign { assign with Assign.parent = Some name };
-              }
-          | { Node.location; value = Define define } ->
+          | { Node.location; value = Statement.Define define } ->
               let signature = { define.signature with Define.Signature.parent = Some name } in
               {
                 Node.location;
-                value = Define { define with signature };
+                value = Statement.Define { define with signature };
               }
           | {
               Node.location;
@@ -673,7 +703,7 @@ compound_statement:
       {
         Node.location;
         value = Class {
-          Class.name = { Node.location = name_location; value = name };
+          Class.name = name;
           base_arguments = List.map ~f:convert_argument bases;
           body;
           decorators = [];
@@ -702,7 +732,10 @@ compound_statement:
           >>= (fun ((start, stop), _, return_annotation) ->
               Some {
                 Node.location = Location.create ~start ~stop;
-                value = Expression.String (StringLiteral.create return_annotation);
+                value = Expression.Constant (
+                          AstExpression.Constant.String
+                            (AstExpression.StringLiteral.create return_annotation)
+                        );
               }
             )
       in
@@ -720,7 +753,10 @@ compound_statement:
                       parameter with
                         Parameter.annotation = Some {
                           Node.location = Location.create ~start ~stop;
-                          value = Expression.String (StringLiteral.create annotation);
+                          value = Expression.Constant (
+                                    AstExpression.Constant.String
+                                      (AstExpression.StringLiteral.create annotation)
+                                  );
                         };
                       }
                   }
@@ -750,12 +786,12 @@ compound_statement:
         | _ ->
             parameters
       in
-      let name_location, name = name in
+      let _, name = name in
       {
         Node.location;
         value = Define {
           signature = {
-            name = { Node.location = name_location; value = name };
+            name = name;
             parameters = List.map ~f:convert_parameter parameters;
             decorators = [];
             return_annotation = annotation >>| convert;
@@ -892,7 +928,16 @@ block_or_stub_body:
   | ellipsis = ELLIPSES; NEWLINE
   | NEWLINE+; INDENT; ellipsis = ELLIPSES; NEWLINE; DEDENT; NEWLINE* {
     let location = Location.create ~start:(fst ellipsis) ~stop:(snd ellipsis) in
-    let body = [Node.create (Statement.Expression (Node.create AstExpression.Expression.Ellipsis ~location)) ~location] in
+    let body = [
+      Node.create
+        ~location
+        (Statement.Expression
+          (Node.create
+            ~location
+            (AstExpression.Expression.Constant AstExpression.Constant.Ellipsis)
+          )
+        )
+    ] in
     location, body
    }
   | statements = block { statements }
@@ -946,13 +991,9 @@ bases:
     }
   ;
 
-decorator_arguments:
-  | { None }
-  | LEFTPARENS; arguments = arguments; RIGHTPARENS { Some arguments }
-
 decorator:
-  | AT; name = reference; arguments = decorator_arguments; NEWLINE+ {
-      { decorator_name = { Node.location = fst name; value = snd name }; arguments }
+  | AT; expression = expression; NEWLINE+ {
+      expression
     }
   ;
 
@@ -1014,14 +1055,26 @@ define_parameters:
     }
   }
   | name = name; annotation = annotation? {
+      let location =
+        let name_location = fst name in
+        match annotation with
+        | None -> name_location
+        | Some { Node.location = { Location.stop; _ }; _ } -> { name_location with stop }
+      in
       {
-        Node.location = fst name;
+        Node.location;
         value = { Parameter.name = snd name; value = None; annotation };
       }
     }
   | name = name; annotation = annotation?; EQUALS; value = test {
+      let location =
+        let name_location = fst name in
+        match annotation with
+        | None -> name_location
+        | Some { Node.location = { Location.stop; _ }; _ } -> { name_location with stop }
+      in
       {
-        Node.location = fst name;
+        Node.location;
         value = { Parameter.name = snd name; value = Some value; annotation };
       }
     }
@@ -1084,8 +1137,8 @@ define_parameters:
       let (start, stop), annotation = annotation in
       annotation
       |> String.strip ~drop:(function | '\'' | '"' -> true | _ -> false)
-      |> StringLiteral.create
-      |> fun string -> Expression.String string
+      |> AstExpression.StringLiteral.create
+      |> fun string -> Expression.Constant (AstExpression.Constant.String string)
       |> Node.create ~location:(Location.create ~start ~stop)
     }
 
@@ -1140,46 +1193,32 @@ handler:
 
 from:
   | from = from_string {
-      { Node.location = fst from; value = Reference.create (snd from) }
-      |> Option.some
+      Some (Reference.create from)
     }
   ;
 
 from_string:
   | identifier = identifier {
-      identifier
+      snd identifier
   }
   | identifier = identifier; from_string = from_string {
-      let location =
-        { (fst identifier) with Location.stop = (fst from_string).Location.stop }
-      in
-      location, (snd identifier) ^ (snd from_string)
+      (snd identifier) ^ from_string
     }
   | relative = nonempty_list(ellipsis_or_dot) {
-      let location =
-        Location.create
-          ~start:(fst (fst (List.hd_exn relative)))
-          ~stop:(snd (fst (List.last_exn relative)))
-      in
-      location, String.concat (List.map ~f:snd relative)
+      String.concat relative
     }
   | relative = nonempty_list(ellipsis_or_dot);
     from_string = from_string {
-      let location =
-        location_create_with_stop
-          ~start:(fst (fst (List.hd_exn relative)))
-          ~stop:((fst from_string).Location.stop)
-      in
-      location, (String.concat (List.map ~f:snd relative)) ^ (snd from_string)
+      (String.concat relative) ^ from_string
     }
   ;
 
 ellipsis_or_dot:
-  | position = DOT {
-      position, "."
+  | DOT {
+      "."
     }
-  | position = ELLIPSES {
-      position, "..."
+  | ELLIPSES {
+      "..."
     }
   ;
 
@@ -1190,13 +1229,13 @@ imports:
         let (stop, _) = List.last_exn imports in
         { start with Location.stop = stop.Location.stop }
       in
-      location, List.map ~f:snd imports
+      location, List.map imports ~f:(fun (location, value) -> { Node.value; location })
     }
   | start = LEFTPARENS;
     imports = parser_generator_separated_nonempty_list(COMMA, import);
     stop = RIGHTPARENS {
       (Location.create ~start ~stop),
-      List.map ~f:snd imports
+      List.map imports ~f:(fun (location, value) -> { Node.value; location })
     }
   ;
 
@@ -1208,14 +1247,14 @@ import:
       in
       location,
       {
-        Import.name = { Node.location; value = Reference.create "*" };
+        Import.name = Reference.create "*";
         alias = None;
       }
     }
   | name = reference {
       fst name,
       {
-        Import.name = { Node.location = fst name; value = snd name };
+        Import.name = snd name;
         alias = None;
       }
     }
@@ -1223,8 +1262,8 @@ import:
     AS; alias = identifier {
       {(fst name) with Location.stop = (fst alias).Location.stop},
       {
-        Import.name = { Node.location = fst name; value = snd name };
-        alias = Some { Node.location = fst alias; value = snd alias };
+        Import.name = snd name;
+        alias = Some (snd alias);
       }
     }
   ;
@@ -1241,7 +1280,6 @@ import:
             Assign.target = convert target;
             annotation = annotation >>| convert;
             value = convert value;
-            parent = None;
           };
         }
       in
@@ -1271,7 +1309,7 @@ atom:
 
   | ellipsis = ELLIPSES {
       let location = Location.create ~start:(fst ellipsis) ~stop:(snd ellipsis) in
-      Node.create Expression.Ellipsis ~location
+      Node.create (Expression.Constant AstExpression.Constant.Ellipsis) ~location
     }
 
   | left = expression;
@@ -1284,23 +1322,23 @@ atom:
       let (start, stop), _, _ = List.hd_exn bytes in
       {
         Node.location = Location.create ~start ~stop;
-        value = String (
-          StringLiteral.create
+        value = Constant (AstExpression.Constant.String (
+          AstExpression.StringLiteral.create
             ~bytes:true
             (String.concat (List.map bytes ~f:(fun (_, _, value) -> value)))
-        );
+        ));
       }
     }
 
   | format = FORMAT; mixed_string = mixed_string {
-      let all_strings = create_substring AstExpression.Substring.Format format :: mixed_string in
+      let all_strings = create_raw_format_substring format :: mixed_string in
       let all_pieces = List.map all_strings ~f:snd in
       let (head, _), (last, _) = List.hd_exn all_strings, List.last_exn all_strings in
       let (start, _) = head in
       let (_, stop) = last in
       {
         Node.location = Location.create ~start ~stop;
-        value = String (StringLiteral.create_mixed all_pieces);
+        value = create_mixed_string all_pieces;
       }
     }
 
@@ -1322,7 +1360,7 @@ atom:
       let start, stop = position in
       {
         Node.location = Location.create ~start ~stop;
-        value = Expression.False;
+        value = Expression.Constant AstExpression.Constant.False;
       }
     }
 
@@ -1330,7 +1368,7 @@ atom:
       let start, stop = fst number in
       {
         Node.location = Location.create ~start ~stop;
-        value = Expression.Complex (snd number);
+        value = Expression.Constant (AstExpression.Constant.Complex (snd number));
       }
     }
 
@@ -1338,7 +1376,7 @@ atom:
       let start, stop = fst number in
       {
         Node.location = Location.create ~start ~stop;
-        value = Expression.Float (snd number);
+        value = Expression.Constant (AstExpression.Constant.Float (snd number));
       }
     }
 
@@ -1346,7 +1384,15 @@ atom:
       let start, stop = fst number in
       {
         Node.location = Location.create ~start ~stop;
-        value = Expression.Integer (snd number);
+        value = Expression.Constant (AstExpression.Constant.Integer (snd number));
+      }
+    }
+
+  | position = NONE {
+      let start, stop = position in
+      {
+        Node.location = Location.create ~start ~stop;
+        value = Expression.Constant AstExpression.Constant.NoneLiteral;
       }
     }
 
@@ -1396,20 +1442,23 @@ atom:
     }
 
   | string = STRING; mixed_string = mixed_string {
-      let all_strings = create_substring AstExpression.Substring.Literal string :: mixed_string in
+      let all_strings = create_literal_substring string :: mixed_string in
       let all_pieces = List.map all_strings ~f:snd in
       let (head, _), (last, _) = List.hd_exn all_strings, List.last_exn all_strings in
       let (start, _) = head in
       let (_, stop) = last in
       {
         Node.location = Location.create ~start ~stop;
-        value = String (StringLiteral.create_mixed all_pieces);
+        value = create_mixed_string all_pieces;
       }
     }
 
   | position = TRUE {
       let start, stop = position in
-      { Node.location = Location.create ~start ~stop; value = True }
+      {
+        Node.location = Location.create ~start ~stop;
+        value = Constant AstExpression.Constant.True
+      }
     }
 
   | operator = unary_operator; operand = expression {
@@ -1418,9 +1467,10 @@ atom:
       let location = location_create_with_stop ~start ~stop:(Node.stop operand)
       in
       match operator, value with
-      | AstExpression.UnaryOperator.Negative, Integer literal -> {
+      | AstExpression.UnaryOperator.Negative,
+        Constant (AstExpression.Constant.Integer literal) -> {
         Node.location;
-        value = Integer (-1 * literal);
+        value = Constant (AstExpression.Constant.Integer (-1 * literal));
       }
       | _, _ -> {
         Node.location;
@@ -1498,10 +1548,10 @@ expression_list:
 mixed_string:
   | { [] }
   | first_string = FORMAT; rest = mixed_string {
-      create_substring AstExpression.Substring.Format first_string :: rest
+      create_raw_format_substring first_string :: rest
     }
   | first_string = STRING; rest = mixed_string {
-      create_substring AstExpression.Substring.Literal first_string :: rest
+      create_literal_substring first_string :: rest
     }
   ;
 
@@ -1730,8 +1780,13 @@ arguments:
 
 argument:
   | identifier = identifier; EQUALS; value = test {
+      let location =
+        let identifier_location = fst identifier in
+        let value_location = Node.location value in
+        { identifier_location with stop = value_location.stop }
+      in
       {
-        Call.Argument.name = Some { Node.location = fst identifier; value = snd identifier };
+        Call.Argument.name = Some { Node.location; value = snd identifier };
         value;
       }
     }

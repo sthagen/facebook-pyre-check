@@ -10,24 +10,19 @@ open Core
 open Taint
 open Test
 
-let test_of_expression context =
+let test_of_expression _ =
   let ( !+ ) expression = Test.parse_single_expression expression in
-  let assert_of_expression ~resolution expression expected =
+  let assert_of_expression expression expected =
     assert_equal
-      ~cmp:(Option.equal AccessPath.equal)
+      ~cmp:(Option.equal [%compare.equal: AccessPath.t])
       ~printer:(function
         | None -> "None"
         | Some access_path -> AccessPath.show access_path)
       expected
-      (AccessPath.of_expression ~resolution expression)
+      (AccessPath.of_expression expression)
   in
-  let resolution = ScratchProject.setup ~context [] |> ScratchProject.build_resolution in
+  assert_of_expression !+"a" (Some { AccessPath.root = AccessPath.Root.Variable "a"; path = [] });
   assert_of_expression
-    ~resolution
-    !+"a"
-    (Some { AccessPath.root = AccessPath.Root.Variable "a"; path = [] });
-  assert_of_expression
-    ~resolution
     !+"a.b"
     (Some
        {
@@ -35,29 +30,44 @@ let test_of_expression context =
          path = [Abstract.TreeDomain.Label.Index "b"];
        });
   assert_of_expression
-    ~resolution
     !+"a.b.c"
     (Some
        {
          AccessPath.root = AccessPath.Root.Variable "a";
          path = [Abstract.TreeDomain.Label.Index "b"; Abstract.TreeDomain.Label.Index "c"];
        });
-  assert_of_expression ~resolution !+"a.b.call()" None;
-
-  let resolution =
-    ScratchProject.setup ~context ["qualifier.py", "unannotated = unknown_value()"]
-    |> ScratchProject.build_resolution
-  in
   assert_of_expression
-    ~resolution
-    !"$local_qualifier$unannotated"
+    !+"a[\"b\"]['c']"
     (Some
        {
-         AccessPath.root = AccessPath.Root.Variable "qualifier";
-         path = [Abstract.TreeDomain.Label.Index "unannotated"];
+         AccessPath.root = AccessPath.Root.Variable "a";
+         path = [Abstract.TreeDomain.Label.Index "b"; Abstract.TreeDomain.Label.Index "c"];
        });
   assert_of_expression
-    ~resolution
+    !+"a['b']['c']['d']"
+    (Some
+       {
+         AccessPath.root = AccessPath.Root.Variable "a";
+         path =
+           [
+             Abstract.TreeDomain.Label.Index "b";
+             Abstract.TreeDomain.Label.Index "c";
+             Abstract.TreeDomain.Label.Index "d";
+           ];
+       });
+  assert_of_expression
+    !+"mydict['level1']['level2']"
+    (Some
+       {
+         AccessPath.root = AccessPath.Root.Variable "mydict";
+         path = [Abstract.TreeDomain.Label.Index "level1"; Abstract.TreeDomain.Label.Index "level2"];
+       });
+  assert_of_expression !+"a.b.call()" None;
+
+  assert_of_expression
+    !"$local_qualifier$unannotated"
+    (Some { AccessPath.root = AccessPath.Root.Variable "$local_qualifier$unannotated"; path = [] });
+  assert_of_expression
     !"$local_qualifier$missing"
     (Some { AccessPath.root = AccessPath.Root.Variable "$local_qualifier$missing"; path = [] })
 
@@ -108,7 +118,7 @@ let test_match_actuals_to_formals _ =
     in
     let actual =
       AccessPath.match_actuals_to_formals actuals formals
-      |> List.map ~f:(fun (expression, matches) -> Expression.show expression, matches)
+      |> List.map ~f:(fun ({ Call.Argument.value; _ }, matches) -> Expression.show value, matches)
     in
     let printer items =
       List.map items ~f:(fun (expression, matches) ->

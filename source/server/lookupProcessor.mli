@@ -13,7 +13,7 @@ type error_reason =
   | FileNotFound
 
 type types_by_path = {
-  path: PyrePath.t;
+  path: string;
   types_by_location: ((Location.t * Type.t) list, error_reason) Core.Result.t;
 }
 
@@ -21,22 +21,9 @@ type types_by_path = {
    `TypeEnvironment.ReadOnly.t`. But we are prevented from doing it at the moment due to the lack of
    a read-only variant of `ModuleTracker.t`. *)
 
-val find_annotation
-  :  environment:TypeEnvironment.t ->
-  configuration:Configuration.Analysis.t ->
-  path:PyrePath.t ->
-  position:Location.position ->
-  (Location.t * Type.t) option
-
 val find_all_annotations_batch
   :  environment:TypeEnvironment.t ->
+  build_system:BuildSystem.t ->
   configuration:Configuration.Analysis.t ->
-  paths:PyrePath.t list ->
+  string list ->
   types_by_path list
-
-val find_definition
-  :  environment:TypeEnvironment.t ->
-  configuration:Configuration.Analysis.t ->
-  PyrePath.t ->
-  Location.position ->
-  Location.t option

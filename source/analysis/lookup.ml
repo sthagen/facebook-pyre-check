@@ -112,7 +112,7 @@ module NodeVisitor = struct
 
               iterator |> to_call "__iter__" |> to_call "__next__"
             in
-            { Assign.target; value = iterator_element_call; annotation = None; parent = None }
+            { Assign.target; value = iterator_element_call; annotation = None }
           in
           Resolution.resolve_assignment resolution target_assignment
         in
@@ -127,11 +127,9 @@ module NodeVisitor = struct
       in
       match value with
       | Call { arguments; _ } ->
-          let annotate_argument_name { Call.Argument.name; value = { Node.location; _ } as value } =
+          let annotate_argument_name { Call.Argument.name; value } =
             match name, resolve ~resolution ~expression:value with
-            | Some { Node.location = { Location.start; _ }; _ }, Some annotation ->
-                let location = { location with Location.start } in
-                store_annotation location annotation
+            | Some { Node.location; _ }, Some annotation -> store_annotation location annotation
             | _ -> ()
           in
           List.iter ~f:annotate_argument_name arguments
@@ -170,6 +168,8 @@ module NodeVisitor = struct
   let node_postcondition = node_base ~postcondition:true
 
   let visit_statement_children _ _ = true
+
+  let visit_format_string_children _ _ = false
 end
 
 module Visit = struct
@@ -200,42 +200,31 @@ module Visit = struct
           annotation >>| store_annotation |> ignore;
           precondition_visit value
       | Define
-          {
-            Define.signature =
-              {
-                name = { Node.value = name; location = name_location };
-                parameters;
-                decorators;
-                return_annotation;
-                _;
-              };
-            _;
-          } ->
+          ({ Define.signature = { name; parameters; decorators; return_annotation; _ }; _ } as
+          define) ->
           let visit_parameter { Node.value = { Parameter.annotation; value; name }; location } =
             Expression.Name (Name.Identifier name) |> Node.create ~location |> postcondition_visit;
             Option.iter ~f:postcondition_visit value;
             annotation >>| store_annotation |> ignore
           in
-          precondition_visit (Ast.Expression.from_reference ~location:name_location name);
+          precondition_visit
+            (Ast.Expression.from_reference
+               ~location:(Define.name_location ~body_location:statement.location define)
+               name);
           List.iter parameters ~f:visit_parameter;
-          List.map decorators ~f:Ast.Statement.Decorator.to_expression
-          |> List.iter ~f:postcondition_visit;
+          List.iter decorators ~f:postcondition_visit;
           Option.iter ~f:postcondition_visit return_annotation
       | Import { Import.from; imports } ->
-          let visit_import { Import.name = { Node.value = name; location = name_location }; alias } =
+          let visit_import { Node.value = { Import.name; _ }; location = import_location } =
             let qualifier =
               match from with
-              | Some { Node.value = from; _ } -> from
+              | Some from -> from
               | None -> Reference.empty
             in
             let create_qualified_expression ~location =
               Reference.combine qualifier name |> Ast.Expression.from_reference ~location
             in
-            precondition_visit (create_qualified_expression ~location:name_location);
-            Option.iter
-              ~f:(fun { Node.location; _ } ->
-                precondition_visit (create_qualified_expression ~location))
-              alias
+            precondition_visit (create_qualified_expression ~location:import_location)
           in
           List.iter imports ~f:visit_import
       | _ -> visit_statement ~state statement
@@ -249,10 +238,7 @@ let create_of_module type_environment qualifier =
   let definitions_lookup = Location.Table.create () in
   let global_resolution = TypeEnvironment.ReadOnly.global_resolution type_environment in
   let walk_define
-      ({
-         Node.value = { Define.signature = { name = { Node.value = name; _ }; _ }; _ } as define;
-         _;
-       } as define_node)
+      ({ Node.value = { Define.signature = { name; _ }; _ } as define; _ } as define_node)
     =
     let annotation_lookup =
       TypeCheck.get_or_recompute_local_annotations ~environment:type_environment name
@@ -263,11 +249,11 @@ let create_of_module type_environment qualifier =
     let cfg = Cfg.create define in
     let walk_statement node_id statement_index statement =
       let pre_annotations, post_annotations =
-        let key = [%hash: int * int] (node_id, statement_index) in
-        ( LocalAnnotationMap.ReadOnly.get_precondition annotation_lookup key
-          |> Option.value ~default:Resolution.empty_annotation_store,
-          LocalAnnotationMap.ReadOnly.get_postcondition annotation_lookup key
-          |> Option.value ~default:Resolution.empty_annotation_store )
+        let statement_key = [%hash: int * int] (node_id, statement_index) in
+        ( LocalAnnotationMap.ReadOnly.get_precondition annotation_lookup ~statement_key
+          |> Option.value ~default:Refinement.Store.empty,
+          LocalAnnotationMap.ReadOnly.get_postcondition annotation_lookup ~statement_key
+          |> Option.value ~default:Refinement.Store.empty )
       in
       let pre_resolution =
         (* TODO(T65923817): Eliminate the need of creating a dummy context here *)

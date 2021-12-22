@@ -9,6 +9,32 @@ open Test
 open OUnit2
 open IntegrationTest
 
+let assert_type_errors
+    ?include_line_numbers
+    ?update_environment_with
+    ?show_error_traces
+    ~context
+    source
+    expected_errors
+  =
+  assert_type_errors
+    ~context
+    ~constraint_solving_style:Configuration.Analysis.ExpressionLevel
+    ?include_line_numbers
+    ?update_environment_with
+    ?show_error_traces
+    source
+    expected_errors;
+  assert_type_errors
+    ~context
+    ~constraint_solving_style:Configuration.Analysis.FunctionCallLevel
+    ?include_line_numbers
+    ?update_environment_with
+    ?show_error_traces
+    source
+    expected_errors
+
+
 let test_check_method_returns context =
   assert_type_errors
     ~context
@@ -273,7 +299,6 @@ let test_check_inverse_operator context =
        `int.__lt__` but got `Optional[int]`.";
       "Unsupported operand [58]: `<` is not supported for operand types `int` and `Optional[int]`.";
     ];
-  (* TODO(T69286342): Inferred literal types give the incompatible parameter type error. *)
   assert_type_errors
     ~context
     {|
@@ -284,8 +309,9 @@ let test_check_inverse_operator context =
     |}
     [
       "Revealed type [-1]: Revealed type for `y` is `typing_extensions.Literal[1]`.";
-      "Incompatible parameter type [6]: Expected `int` for 1st positional only parameter to call \
-       `int.__add__` but got `str`.";
+      "Incomplete type [37]: Type `pyre_extensions.IntExpression[1 + N2]` inferred for `y` is \
+       incomplete, add an explicit annotation.";
+      "Unsupported operand [58]: `+` is not supported for operand types `int` and `str`.";
     ];
   assert_type_errors
     ~context
@@ -504,6 +530,45 @@ let test_check_inverse_operator context =
       z: F = F() >> E()
     |}
     [];
+  (* When an operator doesn't exist on either side, raise an undefined attribute error. *)
+  assert_type_errors
+    ~context
+    {|
+      class D: ...
+
+      y1: D
+      y1.__radd__(D())
+
+      # Wrong number of arguments.
+      y2: D
+      y2.__add__(1, 2)
+
+      my_union: str | D
+      my_union.__radd__(D())
+    |}
+    [
+      "Undefined attribute [16]: `D` has no attribute `__radd__`.";
+      "Undefined attribute [16]: `D` has no attribute `__add__`.";
+      "Undefined attribute [16]: `typing.Union` has no attribute `__radd__`.";
+    ];
+  (* When an object has type `Any`, we should not use the inverse operator since the `Any` object
+     might have the original operator. Just treat it as an unknown callable. *)
+  assert_type_errors
+    ~context
+    {|
+      from typing import Any
+
+      class D:
+        def __radd__(self, other: D) -> D: ...
+
+        def __call__(self, other: int) -> bool: ...
+
+      # pyre-ignore[2]: Deliberate use of `Any`.
+      def main(x: Any) -> None:
+        y = x.__add__(D())
+        reveal_type(y)
+    |}
+    ["Revealed type [-1]: Revealed type for `y` is `typing.Any`."];
   ()
 
 
@@ -1599,6 +1664,31 @@ let test_check_method_resolution context =
         reveal_type(input[42])
     |}
     ["Revealed type [-1]: Revealed type for `input[42]` is `typing.Type[typing.Protocol[]]`."];
+  assert_type_errors
+    ~context
+    {|
+      from typing import overload, Generic, TypeVar
+
+      T = TypeVar("T")
+
+      class Foo(Generic[T]):
+        def __add__(self, other: Foo[T]) -> Foo[int]: ...
+
+      def main() -> None:
+        x: Foo[int]
+        good: Foo[int]
+        x += good
+
+        reveal_type(x.__iadd__)
+        bad: Foo[str]
+        x += bad
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `x.__iadd__` is \
+       `BoundMethod[typing.Callable(Foo.__add__)[[Named(self, Foo[int]), Named(other, Foo[int])], \
+       Foo[int]], Foo[int]]`.";
+      "Unsupported operand [58]: `+` is not supported for operand types `Foo[int]` and `Foo[str]`.";
+    ];
   ()
 
 
@@ -2971,83 +3061,30 @@ let test_fixpoint_threshold context =
       def foo() -> bool: ...
 
       def bar() -> None:
-          u = 42
-
-          if foo():
-              x1 = foo()
-              if x1:
-                  x2 = foo()
-                  if x2:
-                      pass
-              else:
-                  pass
-
-              if foo():
-                  pass
-
-              if foo():
-                  x3 = foo()
-                  if x3:
-                      x4 = foo()
-                      if foo():
-                          pass
-                  if foo():
-                      pass
-              pass
-
-          if foo():
-              if foo():
-                  x5 = foo()
-              else:
-                  x6 = foo()
-                  if foo():
-                      pass
-                  else:
-                      pass
-
-          reveal_type(u)
-
-          if foo():
-              if foo():
-                  x7 = foo()
-              pass
-              if foo():
-                  pass
-
-          reveal_type(u)
-
-          if foo():
-              x8 = foo()
-              if x8:
-                  x9 = foo()
-                  if foo():
-                      pass
-                  pass
-              pass
-
-
-          reveal_type(u)
-
-          if foo():
-              x10 = await foo()
-
-              if x10 is not None:
-                  if foo():
-                      pass
-                  elif foo():
-                      pass
-
-          final_type = u
-          reveal_type(final_type)
+          l = [(0, 1)]
+          for x in range(1000000):
+              l = [(0, l*x)]
+          reveal_type(l)
     |}
     [
       "Analysis failure [30]: Pyre gave up inferring types for some variables because function \
        `test.bar` was too complex.";
-      "Revealed type [-1]: Revealed type for `u` is `typing_extensions.Literal[42]`.";
-      "Revealed type [-1]: Revealed type for `u` is `typing_extensions.Literal[42]`.";
-      "Revealed type [-1]: Revealed type for `u` is `typing_extensions.Literal[42]`.";
-      "Incompatible awaitable type [12]: Expected an awaitable but got `bool`.";
-      "Revealed type [-1]: Revealed type for `final_type` is `unknown`.";
+      "Unsupported operand [58]: `*` is not supported for operand types `unknown` and `int`.";
+      "Revealed type [-1]: Revealed type for `l` is `unknown`.";
+    ];
+  assert_type_errors
+    ~context
+    {|
+      from typing import Set
+      def foo() -> None:
+        for _ in range(10000):
+          s: "Set[Missing]" = set()
+          reveal_type(s)
+    |}
+    [
+      "Undefined import [21]: Could not find a name `Set` defined in module `typing`.";
+      "Undefined or invalid type [11]: Annotation `Missing` is not defined as a type.";
+      "Revealed type [-1]: Revealed type for `s` is `Set[Variable[_T]]`.";
     ];
   ()
 

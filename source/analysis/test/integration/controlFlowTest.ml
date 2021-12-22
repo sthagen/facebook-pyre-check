@@ -288,7 +288,7 @@ let test_check_unbound_variables context =
           other = 1
         return result
     |}
-    ["Uninitialized local [61]: Local variable `result` may not be initialized here."];
+    ["Uninitialized local [61]: Local variable `result` is undefined, or not always defined."];
   assert_type_errors
     {|
       def foo(flag: bool) -> int:
@@ -298,7 +298,7 @@ let test_check_unbound_variables context =
     |}
     [
       "Unbound name [10]: Name `narnia` is used but not defined in the current scope.";
-      "Uninitialized local [61]: Local variable `result` may not be initialized here.";
+      "Uninitialized local [61]: Local variable `result` is undefined, or not always defined.";
     ];
   assert_type_errors
     {|
@@ -311,7 +311,7 @@ let test_check_unbound_variables context =
     |}
     [
       "Unbound name [10]: Name `narnia` is used but not defined in the current scope.";
-      "Uninitialized local [61]: Local variable `result` may not be initialized here.";
+      "Uninitialized local [61]: Local variable `result` is undefined, or not always defined.";
     ];
   assert_type_errors
     {|
@@ -486,6 +486,22 @@ let test_check_nested context =
     [
       "Missing annotation for captured variable [53]: Captured variable `always_declared` is not \
        annotated.";
+    ];
+  assert_type_errors
+    {|
+      from builtins import int_to_int
+      def foo(x:int) -> None:
+        match x:
+          case _:
+            def nested() -> None:
+              int_to_int(1.0)
+            int_to_int("hi")
+    |}
+    [
+      "Incompatible parameter type [6]: "
+      ^ "Expected `int` for 1st positional only parameter to call `int_to_int` but got `float`.";
+      "Incompatible parameter type [6]: "
+      ^ "Expected `int` for 1st positional only parameter to call `int_to_int` but got `str`.";
     ]
 
 

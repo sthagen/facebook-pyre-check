@@ -16,7 +16,7 @@ module Error = Analysis.AnalysisError
 
 let signature_value ?(return_annotation = Some !"int") ?(name = "foo") () =
   {
-    Define.Signature.name = Reference.create name |> Node.create_with_default_location;
+    Define.Signature.name = Reference.create name;
     parameters = [];
     decorators = [];
     return_annotation;
@@ -347,7 +347,7 @@ let test_join context =
   let resolution = ScratchProject.setup ~context [] |> ScratchProject.build_global_resolution in
   let assert_join left right expected =
     let result = Error.join ~resolution left right in
-    assert_equal ~printer:Error.show ~cmp:Error.equal expected result
+    assert_equal ~printer:Error.show ~cmp:[%compare.equal: Error.t] expected result
   in
   assert_join
     (error
@@ -582,32 +582,32 @@ let test_join context =
     (error (Error.AnalysisFailure (FixpointThresholdReached { define = !&"foo.not_bar" })))
     (error Error.Top);
   assert_join
-    (error (revealed_type "a" (Annotation.create Type.integer)))
-    (error (revealed_type "a" (Annotation.create Type.float)))
-    (error (revealed_type "a" (Annotation.create Type.float)));
+    (error (revealed_type "a" (Annotation.create_mutable Type.string)))
+    (error (revealed_type "a" (Annotation.create_mutable Type.float)))
+    (error (revealed_type "a" (Annotation.create_mutable (Type.union [Type.string; Type.float]))));
   assert_join
-    (error (revealed_type "a" (Annotation.create_immutable Type.integer)))
+    (error (revealed_type "a" (Annotation.create_immutable Type.string)))
     (error (revealed_type "a" (Annotation.create_immutable Type.float)))
-    (error Error.Top);
+    (error (revealed_type "a" (Annotation.create_immutable (Type.union [Type.string; Type.float]))));
   assert_join
     (error (revealed_type "a" (Annotation.create_immutable Type.integer)))
     (error (revealed_type "a" (Annotation.create_immutable Type.integer)))
     (error (revealed_type "a" (Annotation.create_immutable Type.integer)));
   assert_join
-    (error (revealed_type "a" (Annotation.create Type.integer)))
-    (error (revealed_type "b" (Annotation.create Type.float)))
+    (error (revealed_type "a" (Annotation.create_mutable Type.integer)))
+    (error (revealed_type "b" (Annotation.create_mutable Type.float)))
     (error Error.Top);
   let stop = { Location.line = 42; column = 42 } in
   assert_join
     (error
        ~location:{ Location.start = { Location.line = 1; column = 0 }; stop }
-       (revealed_type "a" (Annotation.create Type.integer)))
+       (revealed_type "a" (Annotation.create_mutable Type.integer)))
     (error
        ~location:{ Location.start = { Location.line = 2; column = 1 }; stop }
-       (revealed_type "a" (Annotation.create Type.float)))
+       (revealed_type "a" (Annotation.create_mutable Type.float)))
     (error
        ~location:{ Location.start = { Location.line = 1; column = 0 }; stop }
-       (revealed_type "a" (Annotation.create Type.float)))
+       (revealed_type "a" (Annotation.create_mutable Type.float)))
 
 
 let test_less_or_equal context =
@@ -664,8 +664,8 @@ let test_less_or_equal context =
   assert_false
     (Error.less_or_equal
        ~resolution
-       (error (revealed_type "a" (Annotation.create_immutable Type.integer)))
-       (error (revealed_type "a" (Annotation.create_immutable Type.float))))
+       (error (revealed_type "a" (Annotation.create_immutable Type.float)))
+       (error (revealed_type "a" (Annotation.create_immutable Type.integer))))
 
 
 let test_filter context =
@@ -691,7 +691,7 @@ let test_filter context =
   in
   let assert_unfiltered ?qualifier ?(location = Location.any) ?(signature = mock_signature) kind =
     let errors = [error ?qualifier ~signature ~location kind] in
-    assert_equal ~cmp:(List.equal equal) errors (filter ~resolution errors)
+    assert_equal ~cmp:(List.equal [%compare.equal: t]) errors (filter ~resolution errors)
   in
   (* Suppress stub errors. *)
   assert_unfiltered
@@ -801,36 +801,16 @@ let test_suppress _ =
   assert_not_suppressed Source.Strict (missing_return Type.Any);
   assert_not_suppressed Source.Strict (Error.AnalysisFailure (UnexpectedUndefinedType "int"));
   assert_suppressed Source.Unsafe (missing_return Type.Top);
-  assert_not_suppressed
-    Source.Strict
-    (Error.InvalidDecoration
-       {
-         decorator =
-           {
-             Decorator.name = Reference.create "test" |> Node.create_with_default_location;
-             arguments = None;
-           };
-         reason = CouldNotResolve;
-       });
-  assert_suppressed
-    Source.Unsafe
-    (Error.InvalidDecoration
-       {
-         decorator =
-           {
-             Decorator.name = Reference.create "test" |> Node.create_with_default_location;
-             arguments = None;
-           };
-         reason = CouldNotResolve;
-       });
+  assert_not_suppressed Source.Strict (Error.InvalidDecoration (CouldNotResolve !"test"));
+  assert_suppressed Source.Unsafe (Error.InvalidDecoration (CouldNotResolve !"test"));
 
   (* Should not be made *)
   assert_not_suppressed Source.Unsafe (incompatible_return_type Type.integer Type.Any);
-  assert_not_suppressed Source.Unsafe (revealed_type "a" (Annotation.create Type.integer));
+  assert_not_suppressed Source.Unsafe (revealed_type "a" (Annotation.create_mutable Type.integer));
   assert_not_suppressed
     ~signature:untyped_signature
     Source.Unsafe
-    (revealed_type "a" (Annotation.create Type.integer));
+    (revealed_type "a" (Annotation.create_mutable Type.integer));
   assert_not_suppressed Source.Unsafe (Error.AnalysisFailure (UnexpectedUndefinedType "int"));
   assert_suppressed
     Source.Unsafe
@@ -1044,6 +1024,95 @@ let test_weaken_literals _ =
   ()
 
 
+let test_simplification_map _ =
+  let assert_simplification_map names expected_simplifications =
+    let references = List.map ~f:Reference.create names in
+    let computed = Error.SimplificationMap.create references in
+    let expected =
+      expected_simplifications
+      |> List.map ~f:(fun (x, y) -> Reference.create x, Reference.create y)
+      |> Reference.Map.of_alist_exn
+    in
+    assert_equal
+      ~cmp:(Map.equal Reference.equal)
+      ~printer:Error.SimplificationMap.show
+      expected
+      computed
+  in
+  assert_simplification_map [] [];
+  assert_simplification_map [""] [];
+  assert_simplification_map ["a"] [];
+  assert_simplification_map ["a.b"] ["a.b", "b"];
+  assert_simplification_map ["a.b.c"] ["a.b.c", "c"];
+  assert_simplification_map ["a"; "a"] [];
+  assert_simplification_map ["a"; "b"] [];
+  assert_simplification_map ["Foo.a"; "Foo.b"] ["Foo.a", "a"; "Foo.b", "b"];
+  assert_simplification_map ["Foo.a"; "Foo.a"] ["Foo.a", "a"];
+  assert_simplification_map ["Foo.a"; "Bar.a"] [];
+  assert_simplification_map ["Foo.Bar.a"; "Foo.Bar.b"] ["Foo.Bar.a", "a"; "Foo.Bar.b", "b"];
+  assert_simplification_map ["X.Foo.Bar.a"; "X.Foo.Bar.b"] ["X.Foo.Bar.a", "a"; "X.Foo.Bar.b", "b"];
+  assert_simplification_map ["a"; "Foo.a"] [];
+  assert_simplification_map ["a"; "Foo.a"; "Bar.a"] [];
+  assert_simplification_map ["a"; "X.Foo.a"; "X.Bar.a"] ["X.Foo.a", "Foo.a"; "X.Bar.a", "Bar.a"];
+  assert_simplification_map ["Foo.Bar"; "Bar.Foo"] ["Foo.Bar", "Bar"; "Bar.Foo", "Foo"];
+  assert_simplification_map
+    [
+      "typing.Tuple";
+      "str";
+      "typing.Union";
+      "None";
+      "typing.Mapping";
+      "typing.Sequence";
+      "bool";
+      "bytes";
+      "datetime.date";
+      "datetime.datetime";
+      "datetime.time";
+      "datetime.timedelta";
+      "decimal.Decimal";
+      "float";
+      "int";
+    ]
+    [
+      "typing.Tuple", "Tuple";
+      "typing.Union", "Union";
+      "typing.Mapping", "Mapping";
+      "typing.Sequence", "Sequence";
+      "datetime.date", "date";
+      "datetime.datetime", "datetime";
+      "datetime.time", "time";
+      "datetime.timedelta", "timedelta";
+      "decimal.Decimal", "Decimal";
+    ];
+  ()
+
+
+let test_simplify_mismatch _ =
+  let create_mismatch actual expected =
+    let create_type s =
+      Type.create
+        ~aliases:(fun ?replace_unbound_parameters_with_any:_ _ -> None)
+        (parse_single_expression ~preprocess:true s)
+      |> Type.dequalify Reference.Map.empty
+    in
+    {
+      Error.actual = create_type actual;
+      expected = create_type expected;
+      due_to_invariance = false;
+    }
+  in
+  let show_mismatch { Error.actual; expected; _ } = Type.show actual ^ " " ^ Type.show expected in
+  let original = create_mismatch "Foo.a" "Foo.b" in
+  let simplified = create_mismatch "a" "b" in
+  assert_equal ~printer:show_mismatch simplified (Error.simplify_mismatch original);
+  let original =
+    create_mismatch "typing.Union[Foo.a, builtins.bool]" "typing.Union[Foo.b, builtins.bool]"
+  in
+  let simplified = create_mismatch "Union[a, bool]" "Union[b, bool]" in
+  assert_equal ~printer:show_mismatch simplified (Error.simplify_mismatch original);
+  ()
+
+
 let () =
   "error"
   >::: [
@@ -1055,5 +1124,7 @@ let () =
          "namespace_insensitive_set" >:: test_namespace_insensitive_set;
          "messages" >:: test_description;
          "weaken_literals" >:: test_weaken_literals;
+         "test_simplification_map" >:: test_simplification_map;
+         "test_simplify_mismatch" >:: test_simplify_mismatch;
        ]
   |> Test.run

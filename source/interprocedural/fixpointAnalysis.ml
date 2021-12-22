@@ -334,7 +334,7 @@ let analyze_define
           ~section:`Info
           "Could not generate model for `%a` due to invalid annotation `%s`"
           Reference.pp
-          (Node.value name)
+          name
           annotation;
         AnalysisResult.Kind.Map.empty, AnalysisResult.Kind.Map.empty
     | Sys.Break as exn -> analysis_failed step ~exn ~message:"Hit Ctrl+C" callable
@@ -357,6 +357,7 @@ let strip_for_callsite model =
 
 
 let analyze_overrides ({ FixpointState.iteration; _ } as step) callable =
+  let timer = Timer.start () in
   let overrides =
     DependencyGraphSharedMemory.get_overriding_types
       ~member:(Target.get_override_reference callable)
@@ -393,7 +394,18 @@ let analyze_overrides ({ FixpointState.iteration; _ } as step) callable =
     | None ->
         Format.asprintf "No initial model found for %a" Target.pretty_print callable |> failwith
   in
-  widen_if_necessary step callable ~old_model ~new_model:model AnalysisResult.empty_result
+  let state =
+    widen_if_necessary step callable ~old_model ~new_model:model AnalysisResult.empty_result
+  in
+  Statistics.performance
+    ~randomly_log_every:1000
+    ~always_log_time_threshold:1.0 (* Seconds *)
+    ~name:"Override analysis"
+    ~section:`Interprocedural
+    ~normals:["callable", callable |> Target.get_override_reference |> Reference.show]
+    ~timer
+    ();
+  state
 
 
 let callables_to_dump =
@@ -692,7 +704,7 @@ let compute_fixpoint
       in
       Log.dump
         "Model for `%s` after %d iterations:\n%a"
-        (Log.Color.yellow (Reference.show (Node.value name)))
+        (Log.Color.yellow (Reference.show name))
         iterations
         AnalysisResult.pp_model_t
         model

@@ -26,6 +26,9 @@ module.exports = {
   tagline: 'A performant type-checker for Python 3',
   url: 'https://pyre-check.org',
   baseUrl: '/',
+  onBrokenLinks: 'throw',
+  onBrokenMarkdownLinks: 'warn',
+  trailingSlash: true,
   organizationName: 'facebook',
   projectName: 'pyre-check',
   favicon: 'img/favicon.ico',
@@ -49,14 +52,22 @@ module.exports = {
           sidebarPath: require.resolve('./sidebars.js'),
           // Where to point users when they click "Edit this page"
           editUrl: fbContent({
-            internal: 'https://www.internalfb.com/intern/diffusion/FBS/browse/master/fbcode/tools/pyre/documentation/website/',
-            external: 'https://github.com/facebook/pyre-check/tree/main/documentation/website'
+            internal:
+              'https://www.internalfb.com/intern/diffusion/FBS/browse/master/fbcode/tools/pyre/documentation/website/',
+            external:
+              'https://github.com/facebook/pyre-check/tree/main/documentation/website',
           }),
         },
         theme: {
           customCss: require.resolve('./src/css/custom.css'),
         },
         enableEditor: true,
+        staticDocsProject: 'pyre',
+        trackingFile: 'xplat/staticdocs/WATCHED_FILES',
+        'remark-code-snippets': {
+          baseDir: '../..',
+        },
+
         // ...
       },
     ],
@@ -88,11 +99,13 @@ module.exports = {
           ],
         },
         ...fbContent({
-          internal: [{
-            to: 'docs/fb/development-getting-started',
-            label: 'Internal',
-            position: 'left',
-          }],
+          internal: [
+            {
+              to: 'docs/fb/development-getting-started',
+              label: 'Internal',
+              position: 'left',
+            },
+          ],
           external: [],
         }),
         {
@@ -134,5 +147,9 @@ module.exports = {
     gtag: {
       trackingID: 'G-8CK1L365DB',
     },
+  },
+  customFields: {
+    fbRepoName: 'fbsource',
+    ossRepoPath: 'fbcode/tools/pyre',
   },
 };

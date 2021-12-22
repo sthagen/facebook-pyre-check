@@ -18,7 +18,7 @@ module Global = struct
     undecorated_signature: Type.Callable.t option;
     problem: AnnotatedAttribute.problem option;
   }
-  [@@deriving eq, show, compare, sexp]
+  [@@deriving show, compare, sexp]
 end
 
 module UninstantiatedAnnotation = struct
@@ -84,9 +84,18 @@ type reasons = {
   annotation: SignatureSelectionTypes.reason list;
 }
 
+let empty_reasons = { arity = []; annotation = [] }
+
+module ParameterArgumentMapping = struct
+  type t = {
+    parameter_argument_mapping: argument list Type.Callable.Parameter.Map.t;
+    reasons: reasons;
+  }
+end
+
 type signature_match = {
   callable: Type.Callable.t;
-  argument_mapping: argument list Type.Callable.Parameter.Map.t;
+  parameter_argument_mapping: argument list Type.Callable.Parameter.Map.t;
   constraints_set: TypeConstraints.t list;
   ranks: ranks;
   reasons: reasons;
@@ -170,13 +179,13 @@ module TypeParameterValidationTypes = struct
         actual: Type.Parameter.t;
         expected: Type.Variable.t;
       }
-  [@@deriving compare, eq, sexp, show, hash]
+  [@@deriving compare, sexp, show, hash]
 
   type type_parameters_mismatch = {
     name: string;
     kind: generic_type_problems;
   }
-  [@@deriving compare, eq, sexp, show, hash]
+  [@@deriving compare, sexp, show, hash]
 end
 
 let class_hierarchy_environment class_metadata_environment =
@@ -236,6 +245,7 @@ module ClassDecorators = struct
     repr: bool;
     eq: bool;
     order: bool;
+    match_args: bool;
   }
 
   let extract_options
@@ -265,8 +275,8 @@ module ClassDecorators = struct
     let extract_options_from_arguments =
       let apply_arguments default argument =
         let recognize_value ~default = function
-          | Expression.False -> false
-          | True -> true
+          | Expression.Constant Constant.False -> false
+          | Expression.Constant Constant.True -> true
           | _ -> default
         in
         match argument with
@@ -299,6 +309,12 @@ module ClassDecorators = struct
               else
                 default
             in
+            let default =
+              if String.equal argument_name "match_args" then
+                { default with match_args = recognize_value value ~default:default.match_args }
+              else
+                default
+            in
             default
         | _ -> default
       in
@@ -313,7 +329,7 @@ module ClassDecorators = struct
   let dataclass_options =
     extract_options
       ~names:["dataclasses.dataclass"; "dataclass"]
-      ~default:{ init = true; repr = true; eq = true; order = false }
+      ~default:{ init = true; repr = true; eq = true; order = false; match_args = true }
       ~init:"init"
       ~repr:"repr"
       ~eq:"eq"
@@ -323,7 +339,7 @@ module ClassDecorators = struct
   let attrs_attributes =
     extract_options
       ~names:["attr.s"; "attr.attrs"]
-      ~default:{ init = true; repr = true; eq = true; order = true }
+      ~default:{ init = true; repr = true; eq = true; order = true; match_args = false }
       ~init:"init"
       ~repr:"repr"
       ~eq:"cmp"
@@ -356,6 +372,22 @@ module ClassDecorators = struct
     let generate_attributes ~options =
       let already_in_table name =
         UninstantiatedAttributeTable.lookup_name table name |> Option.is_some
+      in
+      let make_attribute ~annotation ~attribute_name =
+        AnnotatedAttribute.create_uninstantiated
+          ~uninstantiated_annotation:
+            { UninstantiatedAnnotation.accessed_via_metaclass = false; kind = Attribute annotation }
+          ~abstract:false
+          ~async_property:false
+          ~class_variable:false
+          ~defined:true
+          ~initialized:OnClass
+          ~name:attribute_name
+          ~parent:(Reference.show name)
+          ~visibility:ReadWrite
+          ~property:false
+          ~undecorated_signature:None
+          ~problem:None
       in
       let make_method ~parameters ~annotation ~attribute_name =
         let parameters =
@@ -395,215 +427,218 @@ module ClassDecorators = struct
       in
       match options definition with
       | None -> []
-      | Some { init; repr; eq; order } ->
-          let methods =
-            if init && not (already_in_table "__init__") then
-              let parameters =
-                let extract_dataclass_field_arguments (_, value) =
-                  match value with
-                  | {
-                   Node.value =
-                     Expression.Call
+      | Some { init; repr; eq; order; match_args } ->
+          let init_parameters ~implicitly_initialize =
+            let extract_dataclass_field_arguments (_, value) =
+              match value with
+              | {
+               Node.value =
+                 Expression.Call
+                   {
+                     callee =
                        {
-                         callee =
-                           {
-                             Node.value =
-                               Expression.Name
-                                 (Name.Attribute
+                         Node.value =
+                           Expression.Name
+                             (Name.Attribute
+                               {
+                                 base =
                                    {
-                                     base =
-                                       {
-                                         Node.value =
-                                           Expression.Name (Name.Identifier "dataclasses");
-                                         _;
-                                       };
-                                     attribute = "field";
+                                     Node.value = Expression.Name (Name.Identifier "dataclasses");
                                      _;
-                                   });
-                             _;
-                           };
-                         arguments;
+                                   };
+                                 attribute = "field";
+                                 _;
+                               });
                          _;
                        };
+                     arguments;
+                     _;
+                   };
+               _;
+              } ->
+                  Some arguments
+              | _ -> None
+            in
+            let init_not_disabled attribute =
+              let is_disable_init { Call.Argument.name; value = { Node.value; _ } } =
+                match name, value with
+                | Some { Node.value = parameter_name; _ }, Expression.Constant Constant.False
+                  when String.equal "init" (Identifier.sanitized parameter_name) ->
+                    true
+                | _ -> false
+              in
+              match extract_dataclass_field_arguments attribute with
+              | Some arguments -> not (List.exists arguments ~f:is_disable_init)
+              | _ -> true
+            in
+            let extract_init_value (attribute, value) =
+              let initialized = AnnotatedAttribute.initialized attribute in
+              let get_default_value { Call.Argument.name; value } =
+                match name with
+                | Some { Node.value = parameter_name; _ } ->
+                    if String.equal "default" (Identifier.sanitized parameter_name) then
+                      Some value
+                    else if String.equal "default_factory" (Identifier.sanitized parameter_name)
+                    then
+                      let { Node.location; _ } = value in
+                      Some
+                        {
+                          Node.value = Expression.Call { Call.callee = value; arguments = [] };
+                          location;
+                        }
+                    else
+                      None
+                | _ -> None
+              in
+              match initialized with
+              | NotInitialized -> None
+              | _ -> (
+                  match extract_dataclass_field_arguments (attribute, value) with
+                  | Some arguments -> List.find_map arguments ~f:get_default_value
+                  | _ -> Some value)
+            in
+            let collect_parameters parameters (attribute, value) =
+              (* Parameters must be annotated attributes *)
+              let annotation =
+                instantiate_attribute attribute
+                |> AnnotatedAttribute.annotation
+                |> Annotation.original
+                |> function
+                | Type.Parametric
+                    { name = "dataclasses.InitVar"; parameters = [Single single_parameter] } ->
+                    single_parameter
+                | annotation -> annotation
+              in
+              match AnnotatedAttribute.name attribute with
+              | name when not (Type.contains_unknown annotation) ->
+                  if implicitly_initialize then
+                    UninstantiatedAttributeTable.mark_as_implicitly_initialized_if_uninitialized
+                      table
+                      name;
+                  let name = "$parameter$" ^ name in
+                  let value = extract_init_value (attribute, value) in
+                  let rec override_existing_parameters unchecked_parameters =
+                    match unchecked_parameters with
+                    | [] ->
+                        [
+                          {
+                            Type.Callable.Parameter.name;
+                            annotation;
+                            default = Option.is_some value;
+                          };
+                        ]
+                    | { Type.Callable.Parameter.name = old_name; default = old_default; _ } :: tail
+                      when Identifier.equal old_name name ->
+                        { name; annotation; default = Option.is_some value || old_default } :: tail
+                    | head :: tail -> head :: override_existing_parameters tail
+                  in
+                  override_existing_parameters parameters
+              | _ -> parameters
+            in
+            let get_table ({ Node.value = class_summary; _ } as parent) =
+              let create attribute : uninstantiated_attribute * Expression.t =
+                let value =
+                  match attribute with
+                  | {
+                   Node.value = { Attribute.kind = Simple { values = { value; _ } :: _; _ }; _ };
                    _;
                   } ->
-                      Some arguments
-                  | _ -> None
+                      value
+                  | { Node.location; _ } ->
+                      Node.create (Expression.Constant Constant.Ellipsis) ~location
                 in
-                let init_not_disabled attribute =
-                  let is_disable_init { Call.Argument.name; value = { Node.value; _ } } =
-                    match name, value with
-                    | Some { Node.value = parameter_name; _ }, Expression.False
-                      when String.equal "init" (Identifier.sanitized parameter_name) ->
-                        true
-                    | _ -> false
-                  in
-                  match extract_dataclass_field_arguments attribute with
-                  | Some arguments -> not (List.exists arguments ~f:is_disable_init)
-                  | _ -> true
-                in
-                let extract_init_value (attribute, value) =
-                  let initialized = AnnotatedAttribute.initialized attribute in
-                  let get_default_value { Call.Argument.name; value } =
-                    match name with
-                    | Some { Node.value = parameter_name; _ } ->
-                        if String.equal "default" (Identifier.sanitized parameter_name) then
-                          Some value
-                        else if String.equal "default_factory" (Identifier.sanitized parameter_name)
-                        then
-                          let { Node.location; _ } = value in
-                          Some
-                            {
-                              Node.value = Expression.Call { Call.callee = value; arguments = [] };
-                              location;
-                            }
-                        else
-                          None
-                    | _ -> None
-                  in
-                  match initialized with
-                  | NotInitialized -> None
-                  | _ -> (
-                      match extract_dataclass_field_arguments (attribute, value) with
-                      | Some arguments -> List.find_map arguments ~f:get_default_value
-                      | _ -> Some value)
-                in
-                let collect_parameters parameters (attribute, value) =
-                  (* Parameters must be annotated attributes *)
-                  let annotation =
-                    instantiate_attribute attribute
-                    |> AnnotatedAttribute.annotation
-                    |> Annotation.original
-                    |> function
-                    | Type.Parametric
-                        { name = "dataclasses.InitVar"; parameters = [Single single_parameter] } ->
-                        single_parameter
-                    | annotation -> annotation
-                  in
-                  match AnnotatedAttribute.name attribute with
-                  | name when not (Type.contains_unknown annotation) ->
-                      UninstantiatedAttributeTable.mark_as_implicitly_initialized_if_uninitialized
-                        table
-                        name;
-                      let name = "$parameter$" ^ name in
-                      let value = extract_init_value (attribute, value) in
-                      let rec override_existing_parameters unchecked_parameters =
-                        match unchecked_parameters with
-                        | [] ->
-                            [
-                              {
-                                Type.Callable.Parameter.name;
-                                annotation;
-                                default = Option.is_some value;
-                              };
-                            ]
-                        | { Type.Callable.Parameter.name = old_name; default = old_default; _ }
-                          :: tail
-                          when Identifier.equal old_name name ->
-                            { name; annotation; default = Option.is_some value || old_default }
-                            :: tail
-                        | head :: tail -> head :: override_existing_parameters tail
-                      in
-                      override_existing_parameters parameters
-                  | _ -> parameters
-                in
-                let get_table ({ Node.value = class_summary; _ } as parent) =
-                  let create attribute : uninstantiated_attribute * Expression.t =
-                    let value =
-                      match attribute with
-                      | {
-                       Node.value = { Attribute.kind = Simple { values = { value; _ } :: _; _ }; _ };
-                       _;
-                      } ->
-                          value
-                      | { Node.location; _ } -> Node.create Expression.Ellipsis ~location
-                    in
-                    ( create_attribute
-                        ~parent
-                        ?defined:None
-                        ~accessed_via_metaclass:false
-                        (Node.value attribute),
-                      value )
-                  in
-                  let compare_by_location left right =
-                    Ast.Location.compare (Node.location left) (Node.location right)
-                  in
-                  ClassSummary.attributes
-                    ~include_generated_attributes:false
-                    ~in_test:false
-                    class_summary
-                  |> Identifier.SerializableMap.bindings
-                  |> List.unzip
-                  |> snd
-                  |> List.filter ~f:(fun attribute ->
-                         (* ClassVar should be excluded from considerations as field. *)
-                         match Node.value attribute with
-                         | {
-                          Attribute.kind =
-                            Attribute.Simple
-                              {
-                                annotation =
-                                  Some
-                                    {
-                                      Node.value =
-                                        Expression.Call
-                                          {
-                                            callee =
-                                              {
-                                                value =
-                                                  Name
-                                                    (Name.Attribute
-                                                      {
-                                                        attribute = "__getitem__";
-                                                        base =
-                                                          {
-                                                            Node.value =
-                                                              Name
-                                                                (Name.Attribute
-                                                                  {
-                                                                    attribute = "ClassVar";
-                                                                    base =
-                                                                      {
-                                                                        Node.value =
-                                                                          Name
-                                                                            (Name.Identifier
-                                                                              "typing");
-                                                                        _;
-                                                                      };
-                                                                    _;
-                                                                  });
-                                                            _;
-                                                          };
-                                                        _;
-                                                      });
-                                                _;
-                                              };
-                                            arguments = [_];
-                                          };
-                                      _;
-                                    };
-                                _;
-                              };
-                          _;
-                         } ->
-                             false
-                         | _ -> true)
-                  |> List.sort ~compare:compare_by_location
-                  |> List.map ~f:create
-                in
-
-                let parent_attribute_tables =
-                  parent_dataclasses
-                  |> List.filter ~f:(fun definition -> options definition |> Option.is_some)
-                  |> List.rev
-                  |> List.map ~f:get_table
-                in
-                parent_attribute_tables @ [get_table definition]
-                |> List.map ~f:(List.filter ~f:init_not_disabled)
-                |> List.fold ~init:[] ~f:(fun parameters ->
-                       List.fold ~init:parameters ~f:collect_parameters)
+                ( create_attribute
+                    ~parent
+                    ?defined:None
+                    ~accessed_via_metaclass:false
+                    (Node.value attribute),
+                  value )
               in
-              [make_method ~parameters ~annotation:Type.none ~attribute_name:"__init__"]
+              let compare_by_location left right =
+                Ast.Location.compare (Node.location left) (Node.location right)
+              in
+              ClassSummary.attributes
+                ~include_generated_attributes:false
+                ~in_test:false
+                class_summary
+              |> Identifier.SerializableMap.bindings
+              |> List.unzip
+              |> snd
+              |> List.filter ~f:(fun attribute ->
+                     (* ClassVar should be excluded from considerations as field. *)
+                     match Node.value attribute with
+                     | {
+                      Attribute.kind =
+                        Attribute.Simple
+                          {
+                            annotation =
+                              Some
+                                {
+                                  Node.value =
+                                    Expression.Call
+                                      {
+                                        callee =
+                                          {
+                                            value =
+                                              Name
+                                                (Name.Attribute
+                                                  {
+                                                    attribute = "__getitem__";
+                                                    base =
+                                                      {
+                                                        Node.value =
+                                                          Name
+                                                            (Name.Attribute
+                                                              {
+                                                                attribute = "ClassVar";
+                                                                base =
+                                                                  {
+                                                                    Node.value =
+                                                                      Name
+                                                                        (Name.Identifier "typing");
+                                                                    _;
+                                                                  };
+                                                                _;
+                                                              });
+                                                        _;
+                                                      };
+                                                    _;
+                                                  });
+                                            _;
+                                          };
+                                        arguments = [_];
+                                      };
+                                  _;
+                                };
+                            _;
+                          };
+                      _;
+                     } ->
+                         false
+                     | _ -> true)
+              |> List.sort ~compare:compare_by_location
+              |> List.map ~f:create
+            in
+
+            let parent_attribute_tables =
+              parent_dataclasses
+              |> List.filter ~f:(fun definition -> options definition |> Option.is_some)
+              |> List.rev
+              |> List.map ~f:get_table
+            in
+            parent_attribute_tables @ [get_table definition]
+            |> List.map ~f:(List.filter ~f:init_not_disabled)
+            |> List.fold ~init:[] ~f:(fun parameters ->
+                   List.fold ~init:parameters ~f:collect_parameters)
+          in
+          let methods =
+            if init && not (already_in_table "__init__") then
+              [
+                make_method
+                  ~parameters:(init_parameters ~implicitly_initialize:true)
+                  ~annotation:Type.none
+                  ~attribute_name:"__init__";
+              ]
             else
               []
           in
@@ -637,6 +672,20 @@ module ClassDecorators = struct
             if order then
               ["__lt__"; "__le__"; "__gt__"; "__ge__"]
               |> List.fold ~init:methods ~f:add_order_method
+            else
+              methods
+          in
+          let methods =
+            if match_args && not (already_in_table "__match_args__") then
+              let parameter_name { Callable.RecordParameter.name; _ } = Identifier.sanitized name in
+              let init_parameter_names =
+                List.map ~f:parameter_name (init_parameters ~implicitly_initialize:false)
+              in
+              let literal_string_value_type name = Type.Literal (String (LiteralValue name)) in
+              let annotation =
+                Type.tuple (List.map ~f:literal_string_value_type init_parameter_names)
+              in
+              make_attribute ~annotation ~attribute_name:"__match_args__" :: methods
             else
               methods
           in
@@ -717,6 +766,934 @@ let callable_call_special_cases
       |> fun callable -> Type.Callable callable |> Option.some
   | _ -> None
 
+
+module SignatureSelection = struct
+  let get_parameter_argument_mapping ~all_parameters ~parameters ~self_argument arguments =
+    let open Type.Callable in
+    let all_arguments = arguments in
+    let rec consume
+        ({ ParameterArgumentMapping.parameter_argument_mapping; reasons = { arity; _ } as reasons }
+        as parameter_argument_mapping_with_reasons)
+        ~arguments
+        ~parameters
+      =
+      let update_mapping parameter argument =
+        Map.add_multi parameter_argument_mapping ~key:parameter ~data:argument
+      in
+      let arity_mismatch ?(unreachable_parameters = []) ~arguments reasons =
+        match all_parameters with
+        | Defined all_parameters ->
+            let matched_keyword_arguments =
+              let is_keyword_argument = function
+                | { Argument.WithPosition.kind = Named _; _ } -> true
+                | _ -> false
+              in
+              List.filter ~f:is_keyword_argument all_arguments
+            in
+            let positional_parameter_count =
+              List.length all_parameters
+              - List.length unreachable_parameters
+              - List.length matched_keyword_arguments
+            in
+            let self_argument_adjustment =
+              if Option.is_some self_argument then
+                1
+              else
+                0
+            in
+            let error =
+              SignatureSelectionTypes.TooManyArguments
+                {
+                  expected = positional_parameter_count - self_argument_adjustment;
+                  provided =
+                    positional_parameter_count + List.length arguments - self_argument_adjustment;
+                }
+            in
+            { reasons with arity = error :: arity }
+        | _ -> reasons
+      in
+      match arguments, parameters with
+      | [], [] ->
+          (* Both empty *)
+          parameter_argument_mapping_with_reasons
+      | { Argument.WithPosition.kind = SingleStar; _ } :: arguments_tail, []
+      | { kind = DoubleStar; _ } :: arguments_tail, [] ->
+          (* Starred or double starred arguments; parameters empty *)
+          consume ~arguments:arguments_tail ~parameters parameter_argument_mapping_with_reasons
+      | { kind = Named name; _ } :: _, [] ->
+          (* Named argument; parameters empty *)
+          let reasons = { reasons with arity = UnexpectedKeyword name.value :: arity } in
+          { parameter_argument_mapping_with_reasons with reasons }
+      | _, [] ->
+          (* Positional argument; parameters empty *)
+          {
+            parameter_argument_mapping_with_reasons with
+            reasons = arity_mismatch ~arguments reasons;
+          }
+      | [], (Parameter.KeywordOnly { default = true; _ } as parameter) :: parameters_tail
+      | [], (Parameter.PositionalOnly { default = true; _ } as parameter) :: parameters_tail
+      | [], (Parameter.Named { default = true; _ } as parameter) :: parameters_tail ->
+          (* Arguments empty, default parameter *)
+          let parameter_argument_mapping = update_mapping parameter Default in
+          consume
+            ~arguments
+            ~parameters:parameters_tail
+            { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
+      | [], parameter :: parameters_tail ->
+          (* Arguments empty, parameter *)
+          let parameter_argument_mapping =
+            match Map.find parameter_argument_mapping parameter with
+            | Some _ -> parameter_argument_mapping
+            | None -> Map.set ~key:parameter ~data:[] parameter_argument_mapping
+          in
+          consume
+            ~arguments
+            ~parameters:parameters_tail
+            { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
+      | ( ({ kind = Named _; _ } as argument) :: arguments_tail,
+          (Parameter.Keywords _ as parameter) :: _ ) ->
+          (* Labeled argument, keywords parameter *)
+          let parameter_argument_mapping = update_mapping parameter (Argument argument) in
+          consume
+            ~arguments:arguments_tail
+            ~parameters
+            { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
+      | ({ kind = Named name; _ } as argument) :: arguments_tail, parameters ->
+          (* Labeled argument *)
+          let rec extract_matching_name searched to_search =
+            match to_search with
+            | [] -> None, List.rev searched
+            | (Parameter.KeywordOnly { name = parameter_name; _ } as head) :: tail
+            | (Parameter.Named { name = parameter_name; _ } as head) :: tail
+              when Identifier.equal_sanitized parameter_name name.value ->
+                Some head, List.rev searched @ tail
+            | (Parameter.Keywords _ as head) :: tail ->
+                let matching, parameters = extract_matching_name (head :: searched) tail in
+                let matching = Some (Option.value matching ~default:head) in
+                matching, parameters
+            | head :: tail -> extract_matching_name (head :: searched) tail
+          in
+          let matching_parameter, remaining_parameters = extract_matching_name [] parameters in
+          let parameter_argument_mapping, reasons =
+            match matching_parameter with
+            | Some matching_parameter ->
+                update_mapping matching_parameter (Argument argument), reasons
+            | None ->
+                ( parameter_argument_mapping,
+                  { reasons with arity = UnexpectedKeyword name.value :: arity } )
+          in
+          consume
+            ~arguments:arguments_tail
+            ~parameters:remaining_parameters
+            { parameter_argument_mapping_with_reasons with parameter_argument_mapping; reasons }
+      | ( ({ kind = DoubleStar; _ } as argument) :: arguments_tail,
+          (Parameter.Keywords _ as parameter) :: _ )
+      | ( ({ kind = SingleStar; _ } as argument) :: arguments_tail,
+          (Parameter.Variable _ as parameter) :: _ ) ->
+          (* (Double) starred argument, (double) starred parameter *)
+          let parameter_argument_mapping = update_mapping parameter (Argument argument) in
+          consume
+            ~arguments:arguments_tail
+            ~parameters
+            { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
+      | { kind = SingleStar; _ } :: _, Parameter.Keywords _ :: parameters_tail ->
+          (* Starred argument, double starred parameter *)
+          consume
+            ~arguments
+            ~parameters:parameters_tail
+            { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
+      | { kind = Positional; _ } :: _, Parameter.Keywords _ :: parameters_tail ->
+          (* Unlabeled argument, double starred parameter *)
+          consume
+            ~arguments
+            ~parameters:parameters_tail
+            { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
+      | { kind = DoubleStar; _ } :: _, Parameter.Variable _ :: parameters_tail ->
+          (* Double starred argument, starred parameter *)
+          consume
+            ~arguments
+            ~parameters:parameters_tail
+            { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
+      | ( ({ kind = Positional; _ } as argument) :: arguments_tail,
+          (Parameter.Variable _ as parameter) :: _ ) ->
+          (* Unlabeled argument, starred parameter *)
+          let parameter_argument_mapping_with_reasons =
+            let parameter_argument_mapping = update_mapping parameter (Argument argument) in
+            { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
+          in
+          consume ~arguments:arguments_tail ~parameters parameter_argument_mapping_with_reasons
+      | { kind = SingleStar; _ } :: arguments_tail, Type.Callable.Parameter.KeywordOnly _ :: _ ->
+          (* Starred argument, keyword only parameter *)
+          consume ~arguments:arguments_tail ~parameters parameter_argument_mapping_with_reasons
+      | ({ kind = DoubleStar; _ } as argument) :: _, parameter :: parameters_tail
+      | ({ kind = SingleStar; _ } as argument) :: _, parameter :: parameters_tail ->
+          (* Double starred or starred argument, parameter *)
+          let parameter_argument_mapping = update_mapping parameter (Argument argument) in
+          consume
+            ~arguments
+            ~parameters:parameters_tail
+            { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
+      | { kind = Positional; _ } :: _, (Parameter.KeywordOnly _ as parameter) :: parameters_tail ->
+          (* Unlabeled argument, keyword only parameter *)
+          let reasons =
+            arity_mismatch reasons ~unreachable_parameters:(parameter :: parameters_tail) ~arguments
+          in
+          { parameter_argument_mapping_with_reasons with reasons }
+      | ({ kind = Positional; _ } as argument) :: arguments_tail, parameter :: parameters_tail ->
+          (* Unlabeled argument, parameter *)
+          let parameter_argument_mapping = update_mapping parameter (Argument argument) in
+          consume
+            ~arguments:arguments_tail
+            ~parameters:parameters_tail
+            { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
+    in
+    {
+      ParameterArgumentMapping.parameter_argument_mapping = Parameter.Map.empty;
+      reasons = empty_reasons;
+    }
+    |> consume ~arguments ~parameters
+
+
+  let check_arguments_against_parameters
+      ~order
+      ~resolve_mutable_literals
+      ~resolve_with_locals
+      ~callable
+      { ParameterArgumentMapping.parameter_argument_mapping; reasons }
+    =
+    let open SignatureSelectionTypes in
+    let open Type.Callable in
+    (* Check whether the parameter annotation is `Callable[[ParamVar], ReturnVar]`
+     * and the argument is `lambda parameter: body` *)
+    let is_generic_lambda parameter arguments =
+      match parameter, arguments with
+      | ( Parameter.PositionalOnly
+            {
+              annotation =
+                Type.Callable
+                  {
+                    kind = Anonymous;
+                    implementation =
+                      {
+                        annotation = Type.Variable return_variable;
+                        parameters =
+                          Defined
+                            [
+                              Parameter.PositionalOnly
+                                {
+                                  index = 0;
+                                  annotation = Type.Variable parameter_variable;
+                                  default = false;
+                                };
+                            ];
+                      };
+                    overloads = [];
+                  } as annotation;
+              _;
+            },
+          [
+            Argument
+              {
+                expression =
+                  Some
+                    {
+                      value =
+                        Lambda
+                          {
+                            body = lambda_body;
+                            parameters =
+                              [
+                                {
+                                  value =
+                                    { name = lambda_parameter; value = None; annotation = None };
+                                  _;
+                                };
+                              ];
+                          };
+                      _;
+                    };
+                _;
+              };
+          ] )
+        when Type.Variable.Unary.is_free parameter_variable
+             && Type.Variable.Unary.is_free return_variable ->
+          Some (annotation, parameter_variable, return_variable, lambda_parameter, lambda_body)
+      | _ -> None
+    in
+    let update ~key ~data ({ reasons = { arity; _ } as reasons; _ } as signature_match) =
+      let bind_arguments_to_variadic ~expected ~arguments =
+        let extract_ordered_types arguments =
+          let extracted, errors =
+            let arguments =
+              List.map arguments ~f:(function
+                  | Argument argument -> argument
+                  | Default -> failwith "Variable parameters do not have defaults")
+            in
+            let extract { Argument.WithPosition.kind; resolved; expression; _ } =
+              match kind with
+              | SingleStar -> (
+                  match resolved with
+                  | Type.Tuple ordered_types -> Either.First ordered_types
+                  (* We don't support unpacking unbounded tuples yet. *)
+                  | annotation -> Either.Second { expression; annotation })
+              | _ -> Either.First (Type.OrderedTypes.Concrete [resolved])
+            in
+            List.rev arguments |> List.partition_map ~f:extract
+          in
+          match errors with
+          | [] -> Ok extracted
+          | not_bounded_tuple :: _ ->
+              Error
+                (Mismatches
+                   [
+                     MismatchWithTupleVariadicTypeVariable
+                       { variable = expected; mismatch = NotBoundedTuple not_bounded_tuple };
+                   ])
+        in
+        let concatenate extracted =
+          let concatenated =
+            match extracted with
+            | [] -> Some (Type.OrderedTypes.Concrete [])
+            | head :: tail ->
+                let concatenate sofar next =
+                  sofar >>= fun left -> Type.OrderedTypes.concatenate ~left ~right:next
+                in
+                List.fold tail ~f:concatenate ~init:(Some head)
+          in
+          match concatenated with
+          | Some concatenated -> Ok concatenated
+          | None ->
+              Error
+                (Mismatches
+                   [
+                     MismatchWithTupleVariadicTypeVariable
+                       { variable = expected; mismatch = CannotConcatenate extracted };
+                   ])
+        in
+        let solve concatenated =
+          let updated_constraints_set =
+            TypeOrder.OrderedConstraintsSet.add
+              signature_match.constraints_set
+              ~new_constraint:(OrderedTypesLessOrEqual { left = concatenated; right = expected })
+              ~order
+          in
+          if ConstraintsSet.potentially_satisfiable updated_constraints_set then
+            Ok updated_constraints_set
+          else
+            Error
+              (Mismatches
+                 [
+                   MismatchWithTupleVariadicTypeVariable
+                     { variable = expected; mismatch = ConstraintFailure concatenated };
+                 ])
+        in
+        let make_signature_match = function
+          | Ok constraints_set -> { signature_match with constraints_set }
+          | Error error ->
+              { signature_match with reasons = { reasons with arity = error :: arity } }
+        in
+        let open Result in
+        extract_ordered_types arguments >>= concatenate >>= solve |> make_signature_match
+      in
+      match key, data with
+      | Parameter.Variable (Concatenation concatenation), arguments ->
+          bind_arguments_to_variadic
+            ~expected:(Type.OrderedTypes.Concatenation concatenation)
+            ~arguments
+      | Parameter.Variable _, []
+      | Parameter.Keywords _, [] ->
+          (* Parameter was not matched, but empty is acceptable for variable arguments and keyword
+             arguments. *)
+          signature_match
+      | Parameter.KeywordOnly { name; _ }, []
+      | Parameter.Named { name; _ }, [] ->
+          (* Parameter was not matched *)
+          let reasons = { reasons with arity = MissingArgument (Named name) :: arity } in
+          { signature_match with reasons }
+      | Parameter.PositionalOnly { index; _ }, [] ->
+          (* Parameter was not matched *)
+          let reasons = { reasons with arity = MissingArgument (PositionalOnly index) :: arity } in
+          { signature_match with reasons }
+      | PositionalOnly { annotation = parameter_annotation; _ }, arguments
+      | KeywordOnly { annotation = parameter_annotation; _ }, arguments
+      | Named { annotation = parameter_annotation; _ }, arguments
+      | Variable (Concrete parameter_annotation), arguments
+      | Keywords parameter_annotation, arguments -> (
+          let set_constraints_and_reasons
+              ~position
+              ~argument_location
+              ~name
+              ~argument_annotation
+              ({ constraints_set; reasons = { annotation; _ }; _ } as signature_match)
+            =
+            let reasons_with_mismatch =
+              let mismatch =
+                let location = name >>| Node.location |> Option.value ~default:argument_location in
+                {
+                  actual = argument_annotation;
+                  expected = parameter_annotation;
+                  name = Option.map name ~f:Node.value;
+                  position;
+                }
+                |> Node.create ~location
+                |> fun mismatch -> Mismatches [Mismatch mismatch]
+              in
+              { reasons with annotation = mismatch :: annotation }
+            in
+            let updated_constraints_set =
+              TypeOrder.OrderedConstraintsSet.add
+                constraints_set
+                ~new_constraint:
+                  (LessOrEqual { left = argument_annotation; right = parameter_annotation })
+                ~order
+            in
+            if ConstraintsSet.potentially_satisfiable updated_constraints_set then
+              { signature_match with constraints_set = updated_constraints_set }
+            else
+              { signature_match with constraints_set; reasons = reasons_with_mismatch }
+          in
+          let rec check signature_match = function
+            | [] -> signature_match
+            | Default :: tail ->
+                (* Parameter default value was used. Assume it is correct. *)
+                check signature_match tail
+            | Argument { expression; position; kind; resolved } :: tail -> (
+                let argument_location =
+                  expression >>| Node.location |> Option.value ~default:Location.any
+                in
+                let set_constraints_and_reasons argument_annotation =
+                  let name =
+                    match kind with
+                    | Named name -> Some name
+                    | _ -> None
+                  in
+                  set_constraints_and_reasons
+                    ~position
+                    ~argument_location
+                    ~argument_annotation
+                    ~name
+                    signature_match
+                  |> fun signature_match -> check signature_match tail
+                in
+                let add_annotation_error
+                    ({ reasons = { annotation; _ }; _ } as signature_match)
+                    error
+                  =
+                  {
+                    signature_match with
+                    reasons = { reasons with annotation = error :: annotation };
+                  }
+                in
+                let solution_based_extraction ~create_error ~synthetic_variable ~solve_against =
+                  let signature_with_error =
+                    { expression; annotation = resolved }
+                    |> Node.create ~location:argument_location
+                    |> create_error
+                    |> add_annotation_error signature_match
+                  in
+                  let iterable_constraints =
+                    if Type.is_unbound resolved then
+                      ConstraintsSet.impossible
+                    else
+                      TypeOrder.OrderedConstraintsSet.add
+                        ConstraintsSet.empty
+                        ~new_constraint:(LessOrEqual { left = resolved; right = solve_against })
+                        ~order
+                  in
+                  match TypeOrder.OrderedConstraintsSet.solve iterable_constraints ~order with
+                  | None -> signature_with_error
+                  | Some solution ->
+                      ConstraintsSet.Solution.instantiate_single_variable
+                        solution
+                        synthetic_variable
+                      |> Option.value ~default:Type.Any
+                      |> set_constraints_and_reasons
+                in
+                match kind with
+                | DoubleStar ->
+                    let create_error error = InvalidKeywordArgument error in
+                    let synthetic_variable = Type.Variable.Unary.create "$_T" in
+                    let solve_against =
+                      Type.parametric
+                        "typing.Mapping"
+                        [Single Type.string; Single (Type.Variable synthetic_variable)]
+                    in
+                    solution_based_extraction ~create_error ~synthetic_variable ~solve_against
+                | SingleStar ->
+                    let create_error error = InvalidVariableArgument error in
+                    let synthetic_variable = Type.Variable.Unary.create "$_T" in
+                    let solve_against = Type.iterable (Type.Variable synthetic_variable) in
+                    solution_based_extraction ~create_error ~synthetic_variable ~solve_against
+                | Named _
+                | Positional -> (
+                    let argument_annotation, weakening_error =
+                      if Type.Variable.all_variables_are_resolved parameter_annotation then
+                        let { WeakenMutableLiterals.resolved; typed_dictionary_errors } =
+                          resolve_mutable_literals
+                            ~resolve:(resolve_with_locals ~locals:[])
+                            ~expression
+                            ~resolved
+                            ~expected:parameter_annotation
+                        in
+                        let weakening_error =
+                          if List.is_empty typed_dictionary_errors then
+                            None
+                          else
+                            Some (TypedDictionaryInitializationError typed_dictionary_errors)
+                        in
+                        resolved, weakening_error
+                      else
+                        resolved, None
+                    in
+                    match weakening_error with
+                    | Some weakening_error -> add_annotation_error signature_match weakening_error
+                    | None -> argument_annotation |> set_constraints_and_reasons))
+          in
+          match is_generic_lambda key arguments with
+          | Some _ -> signature_match (* Handle this later in `special_case_lambda_parameter` *)
+          | None -> List.rev arguments |> check signature_match)
+    in
+    let check_if_solution_exists
+        ({ constraints_set; reasons = { annotation; _ } as reasons; callable; _ } as
+        signature_match)
+      =
+      let solution =
+        TypeOrder.OrderedConstraintsSet.solve
+          constraints_set
+          ~order
+          ~only_solve_for:(Type.Variable.all_free_variables (Type.Callable callable))
+      in
+      if Option.is_some solution then
+        signature_match
+      else
+        (* All other cases should have been able to been blamed on a specefic argument, this is the
+           only global failure. *)
+        {
+          signature_match with
+          reasons = { reasons with annotation = MutuallyRecursiveTypeVariables :: annotation };
+        }
+    in
+    let special_case_dictionary_constructor
+        ({ parameter_argument_mapping; callable; constraints_set; _ } as signature_match)
+      =
+      let open Type.Record.Callable in
+      let has_matched_keyword_parameter parameters =
+        List.find parameters ~f:(function
+            | RecordParameter.Keywords _ -> true
+            | _ -> false)
+        >>= Type.Callable.Parameter.Map.find parameter_argument_mapping
+        >>| List.is_empty
+        >>| not
+        |> Option.value ~default:false
+      in
+      match callable with
+      | {
+       kind = Named name;
+       implementation =
+         {
+           parameters = Defined parameters;
+           annotation = Type.Parametric { parameters = [Single key_type; _]; _ };
+           _;
+         };
+       _;
+      }
+        when String.equal (Reference.show name) "dict.__init__"
+             && has_matched_keyword_parameter parameters ->
+          let updated_constraints =
+            TypeOrder.OrderedConstraintsSet.add
+              constraints_set
+              ~new_constraint:(LessOrEqual { left = Type.string; right = key_type })
+              ~order
+          in
+          if ConstraintsSet.potentially_satisfiable updated_constraints then
+            { signature_match with constraints_set = updated_constraints }
+          else (* TODO(T41074174): Error here *)
+            signature_match
+      | _ -> signature_match
+    in
+    let special_case_lambda_parameter ({ parameter_argument_mapping; _ } as signature_match) =
+      (* Special case: `Callable[[ParamVar], ReturnVar]` with `lambda parameter: body` *)
+      let update ~key ~data ({ constraints_set; _ } as signature_match) =
+        match is_generic_lambda key data with
+        | None -> signature_match
+        | Some (annotation, parameter_variable, _, lambda_parameter, lambda_body) -> (
+            (* Infer the parameter type using existing constraints. *)
+            let solution =
+              TypeOrder.OrderedConstraintsSet.solve
+                constraints_set
+                ~order
+                ~only_solve_for:[Type.Record.Variable.Unary parameter_variable]
+              >>= fun solution ->
+              ConstraintsSet.Solution.instantiate_single_variable solution parameter_variable
+            in
+            match solution with
+            | None -> signature_match
+            | Some parameter_type ->
+                (* Infer the return type by resolving the lambda body with the parameter type *)
+                let updated_constraints =
+                  let resolved =
+                    let return_type =
+                      resolve_with_locals
+                        ~locals:
+                          [
+                            ( Reference.create lambda_parameter,
+                              Annotation.create_mutable parameter_type );
+                          ]
+                        lambda_body
+                      |> Type.weaken_literals
+                    in
+                    let parameters =
+                      Type.Callable.Parameter.create
+                        [
+                          {
+                            Type.Callable.Parameter.name = lambda_parameter;
+                            annotation = parameter_type;
+                            default = false;
+                          };
+                        ]
+                    in
+                    Type.Callable.create ~parameters:(Defined parameters) ~annotation:return_type ()
+                  in
+                  TypeOrder.OrderedConstraintsSet.add
+                    constraints_set
+                    ~new_constraint:(LessOrEqual { left = resolved; right = annotation })
+                    ~order
+                  (* Once we've used this solution, we have to commit to it *)
+                  |> TypeOrder.OrderedConstraintsSet.add
+                       ~new_constraint:
+                         (VariableIsExactly (UnaryPair (parameter_variable, parameter_type)))
+                       ~order
+                in
+                { signature_match with constraints_set = updated_constraints })
+      in
+      Map.fold ~init:signature_match ~f:update parameter_argument_mapping
+    in
+    let signature_match =
+      {
+        callable;
+        parameter_argument_mapping;
+        constraints_set = [TypeConstraints.empty];
+        ranks = { arity = 0; annotation = 0; position = 0 };
+        reasons;
+      }
+    in
+    Map.fold ~init:signature_match ~f:update parameter_argument_mapping
+    |> special_case_dictionary_constructor
+    |> special_case_lambda_parameter
+    |> check_if_solution_exists
+
+
+  let rec check_arguments_against_signature
+      ~order
+      ~resolve_mutable_literals
+      ~resolve_with_locals
+      ~callable
+      ~self_argument
+      ~(arguments : Argument.WithPosition.t list)
+      implementation
+    =
+    let open SignatureSelectionTypes in
+    let open Type.Callable in
+    let callable = { callable with Type.Callable.implementation; overloads = [] } in
+    let base_signature_match =
+      {
+        callable;
+        parameter_argument_mapping = Parameter.Map.empty;
+        constraints_set = [TypeConstraints.empty];
+        ranks = { arity = 0; annotation = 0; position = 0 };
+        reasons = empty_reasons;
+      }
+    in
+    let { parameters = all_parameters; _ } = implementation in
+    let check_arguments_against_parameters =
+      check_arguments_against_parameters ~order ~resolve_mutable_literals ~resolve_with_locals
+    in
+    match all_parameters with
+    | Defined parameters ->
+        get_parameter_argument_mapping ~parameters ~all_parameters ~self_argument arguments
+        |> check_arguments_against_parameters ~callable
+        |> fun signature_match -> [signature_match]
+    | Undefined -> [base_signature_match]
+    | ParameterVariadicTypeVariable { head; variable }
+      when Type.Variable.Variadic.Parameters.is_free variable -> (
+        let front, back =
+          let is_labeled = function
+            | { Argument.WithPosition.kind = Named _; _ } -> true
+            | _ -> false
+          in
+          let labeled, unlabeled = List.partition_tf arguments ~f:is_labeled in
+          let first_unlabeled, remainder = List.split_n unlabeled (List.length head) in
+          first_unlabeled, labeled @ remainder
+        in
+        let ({ constraints_set; reasons = { arity = head_arity; annotation = head_annotation }; _ }
+            as head_signature)
+          =
+          get_parameter_argument_mapping
+            ~all_parameters
+            ~parameters:(Type.Callable.prepend_anonymous_parameters ~head ~tail:[])
+            ~self_argument
+            front
+          |> check_arguments_against_parameters ~callable
+        in
+        let solve_back parameters =
+          let constraints_set =
+            (* If we use this option, we have to commit to it as to not move away from it later *)
+            TypeOrder.OrderedConstraintsSet.add
+              constraints_set
+              ~new_constraint:(VariableIsExactly (ParameterVariadicPair (variable, parameters)))
+              ~order
+          in
+          check_arguments_against_signature
+            ~order
+            ~resolve_mutable_literals
+            ~resolve_with_locals
+            ~callable
+            ~self_argument
+            ~arguments:back
+            { implementation with parameters }
+          |> List.map
+               ~f:(fun { reasons = { arity = tail_arity; annotation = tail_annotation }; _ } ->
+                 {
+                   base_signature_match with
+                   constraints_set;
+                   reasons =
+                     {
+                       arity = head_arity @ tail_arity;
+                       annotation = head_annotation @ tail_annotation;
+                     };
+                 })
+        in
+        TypeOrder.OrderedConstraintsSet.get_parameter_specification_possibilities
+          constraints_set
+          ~parameter_specification:variable
+          ~order
+        |> List.concat_map ~f:solve_back
+        |> function
+        | [] -> [head_signature]
+        | nonempty -> nonempty)
+    | ParameterVariadicTypeVariable { head; variable } -> (
+        let combines_into_variable ~positional_component ~keyword_component =
+          Type.Variable.Variadic.Parameters.Components.combine
+            { positional_component; keyword_component }
+          >>| Type.Variable.Variadic.Parameters.equal variable
+          |> Option.value ~default:false
+        in
+        match List.rev arguments with
+        | { kind = DoubleStar; resolved = keyword_component; _ }
+          :: { kind = SingleStar; resolved = positional_component; _ } :: reversed_arguments_head
+          when combines_into_variable ~positional_component ~keyword_component ->
+            let arguments = List.rev reversed_arguments_head in
+            get_parameter_argument_mapping
+              ~parameters:(Type.Callable.prepend_anonymous_parameters ~head ~tail:[])
+              ~all_parameters
+              ~self_argument
+              arguments
+            |> check_arguments_against_parameters ~callable
+            |> fun signature_match -> [signature_match]
+        | _ ->
+            [
+              {
+                base_signature_match with
+                reasons = { arity = [CallingParameterVariadicTypeVariable]; annotation = [] };
+              };
+            ])
+
+
+  let calculate_rank ({ reasons = { arity; annotation; _ }; _ } as signature_match) =
+    let open SignatureSelectionTypes in
+    let arity_rank = List.length arity in
+    let positions, annotation_rank =
+      let count_unique (positions, count) = function
+        | Mismatches mismatches ->
+            let count_unique_mismatches (positions, count) mismatch =
+              match mismatch with
+              | Mismatch { Node.value = { position; _ }; _ } when not (Set.mem positions position)
+                ->
+                  Set.add positions position, count + 1
+              | Mismatch _ -> positions, count
+              | _ -> positions, count + 1
+            in
+            List.fold ~init:(positions, count) mismatches ~f:count_unique_mismatches
+        | _ -> positions, count + 1
+      in
+      List.fold ~init:(Int.Set.empty, 0) ~f:count_unique annotation
+    in
+    let position_rank =
+      Int.Set.min_elt positions >>| Int.neg |> Option.value ~default:Int.min_value
+    in
+    {
+      signature_match with
+      ranks = { arity = arity_rank; annotation = annotation_rank; position = position_rank };
+    }
+
+
+  let instantiate_return_annotation
+      ?(skip_marking_escapees = false)
+      ~order
+      {
+        callable =
+          { implementation = { annotation = uninstantiated_return_annotation; _ }; _ } as callable;
+        constraints_set;
+        reasons = { arity; annotation; _ };
+        _;
+      }
+    =
+    let open SignatureSelectionTypes in
+    let instantiated_return_annotation =
+      let local_free_variables = Type.Variable.all_free_variables (Type.Callable callable) in
+      let solution =
+        TypeOrder.OrderedConstraintsSet.solve
+          constraints_set
+          ~only_solve_for:local_free_variables
+          ~order
+        |> Option.value ~default:ConstraintsSet.Solution.empty
+      in
+      let instantiated =
+        ConstraintsSet.Solution.instantiate solution uninstantiated_return_annotation
+      in
+      if skip_marking_escapees then
+        instantiated
+      else
+        Type.Variable.mark_all_free_variables_as_escaped ~specific:local_free_variables instantiated
+        (* We need to do transformations of the form Union[T_escaped, int] => int in order to
+           properly handle some typeshed stubs which only sometimes bind type variables and expect
+           them to fall out in this way (see Mapping.get) *)
+        |> Type.Variable.collapse_all_escaped_variable_unions
+    in
+    let rev_filter_out_self_argument_errors reasons =
+      let filter_too_many_arguments = function
+        (* These would come from methods lacking a self argument called on an instance *)
+        | TooManyArguments { expected; _ } -> not (Int.equal expected (-1))
+        | _ -> true
+      in
+      let filter_mismatches reason =
+        match reason with
+        | Mismatches mismatches ->
+            Mismatches
+              (List.filter mismatches ~f:(function
+                  | Mismatch { Node.value = { position; _ }; _ } -> not (Int.equal position 0)
+                  | _ -> true))
+        | _ -> reason
+      in
+      List.map (List.rev_filter ~f:filter_too_many_arguments reasons) ~f:filter_mismatches
+    in
+    match
+      rev_filter_out_self_argument_errors arity, rev_filter_out_self_argument_errors annotation
+    with
+    | [], [] -> Found { selected_return_annotation = instantiated_return_annotation }
+    | reason :: reasons, _
+    | [], reason :: reasons ->
+        let importance = function
+          | AbstractClassInstantiation _ -> 1
+          | CallingParameterVariadicTypeVariable -> 1
+          | InvalidKeywordArgument _ -> 0
+          | InvalidVariableArgument _ -> 0
+          | Mismatches _ -> -1
+          | MissingArgument _ -> 1
+          | MutuallyRecursiveTypeVariables -> 1
+          | ProtocolInstantiation _ -> 1
+          | TooManyArguments _ -> 1
+          | TypedDictionaryInitializationError _ -> 1
+          | UnexpectedKeyword _ -> 1
+        in
+        let get_most_important best_reason reason =
+          if importance reason > importance best_reason then
+            reason
+          else
+            match best_reason, reason with
+            | Mismatches mismatches, Mismatches other_mismatches ->
+                Mismatches (List.append mismatches other_mismatches)
+            | _, _ -> best_reason
+        in
+        let sort_mismatches reason =
+          match reason with
+          | Mismatches mismatches ->
+              let compare_mismatches mismatch other_mismatch =
+                match mismatch, other_mismatch with
+                | ( Mismatch { Node.value = { position; _ }; _ },
+                    Mismatch { Node.value = { position = other_position; _ }; _ } ) ->
+                    position - other_position
+                | _, _ -> 0
+              in
+              Mismatches (List.sort mismatches ~compare:compare_mismatches)
+          | _ -> reason
+        in
+        let reason =
+          Some (List.fold ~init:reason ~f:get_most_important reasons |> sort_mismatches)
+        in
+        NotFound { closest_return_annotation = instantiated_return_annotation; reason }
+
+
+  let default_signature
+      { Type.Callable.implementation = { annotation = default_return_annotation; _ }; _ }
+    =
+    let open SignatureSelectionTypes in
+    NotFound { closest_return_annotation = default_return_annotation; reason = None }
+
+
+  let find_closest_signature signature_matches =
+    let get_arity_rank { ranks = { arity; _ }; _ } = arity in
+    let get_annotation_rank { ranks = { annotation; _ }; _ } = annotation in
+    let get_position_rank { ranks = { position; _ }; _ } = position in
+    let rec get_best_rank ~best_matches ~best_rank ~getter = function
+      | [] -> best_matches
+      | head :: tail ->
+          let rank = getter head in
+          if rank < best_rank then
+            get_best_rank ~best_matches:[head] ~best_rank:rank ~getter tail
+          else if rank = best_rank then
+            get_best_rank ~best_matches:(head :: best_matches) ~best_rank ~getter tail
+          else
+            get_best_rank ~best_matches ~best_rank ~getter tail
+    in
+    signature_matches
+    |> List.map ~f:calculate_rank
+    |> get_best_rank ~best_matches:[] ~best_rank:Int.max_value ~getter:get_arity_rank
+    |> get_best_rank ~best_matches:[] ~best_rank:Int.max_value ~getter:get_annotation_rank
+    |> get_best_rank ~best_matches:[] ~best_rank:Int.max_value ~getter:get_position_rank
+    (* Each get_best_rank reverses the list, because we have an odd number, we need an extra reverse
+       in order to prefer the first defined overload *)
+    |> List.rev
+    |> List.hd
+
+
+  let prepare_arguments_for_signature_selection ~self_argument arguments =
+    let add_positions arguments =
+      let add_index index { Argument.expression; kind; resolved } =
+        { Argument.WithPosition.position = index + 1; expression; kind; resolved }
+      in
+      List.mapi ~f:add_index arguments
+    in
+    let unpack_starred_arguments arguments =
+      let unpack sofar argument =
+        match argument with
+        | { Argument.resolved = Tuple (Concrete tuple_parameters); kind = SingleStar; expression }
+          ->
+            let unpacked_arguments =
+              List.map tuple_parameters ~f:(fun resolved ->
+                  { Argument.expression; kind = Positional; resolved })
+            in
+            List.concat [List.rev unpacked_arguments; sofar]
+        | _ -> argument :: sofar
+      in
+      List.fold ~f:unpack ~init:[] arguments |> List.rev
+    in
+    let separate_labeled_unlabeled_arguments arguments =
+      let is_labeled = function
+        | { Argument.WithPosition.kind = Named _; _ } -> true
+        | _ -> false
+      in
+      let labeled_arguments, unlabeled_arguments = arguments |> List.partition_tf ~f:is_labeled in
+      let self_argument =
+        self_argument
+        >>| (fun resolved ->
+              { Argument.WithPosition.position = 0; expression = None; kind = Positional; resolved })
+        |> Option.to_list
+      in
+      self_argument @ labeled_arguments @ unlabeled_arguments
+    in
+    arguments |> unpack_starred_arguments |> add_positions |> separate_labeled_unlabeled_arguments
+end
 
 class base class_metadata_environment dependency =
   object (self)
@@ -1735,7 +2712,14 @@ class base class_metadata_environment dependency =
                       ];
                 }
               in
-              let overloads = List.mapi ~f:overload members @ overloads in
+              let overloads =
+                List.mapi ~f:overload members
+                @ List.map2_exn
+                    ~f:overload
+                    (List.init ~f:(fun x -> -x - 1) (List.length members))
+                    (List.rev members)
+                @ overloads
+              in
               Type.Callable { callable with overloads }
           | ( Parametric { name = "type"; parameters = [Single (Type.Primitive name)] },
               "__getitem__",
@@ -1889,7 +2873,7 @@ class base class_metadata_environment dependency =
             match special with
             | Some special -> special
             | None
-              when AnnotatedAttribute.equal_initialized
+              when [%compare.equal: AnnotatedAttribute.initialized]
                      (AnnotatedAttribute.initialized attribute)
                      OnClass
                    && apply_descriptors -> (
@@ -2130,6 +3114,24 @@ class base class_metadata_environment dependency =
                 in
                 annotation, visibility
             in
+            (* Try resolve to tuple of string literal types for __match_args__ *)
+            let annotation =
+              let open Expression in
+              match attribute_name, annotation, value with
+              | "__match_args__", None, Some { Node.value = Expression.Tuple elements; _ } ->
+                  let string_literal_value_to_type = function
+                    | {
+                        Node.value =
+                          Expression.Constant
+                            (Constant.String { StringLiteral.kind = String; value });
+                        _;
+                      } ->
+                        Some (Type.Literal (String (LiteralValue value)))
+                    | _ -> None
+                  in
+                  List.map elements ~f:string_literal_value_to_type |> Option.all >>| Type.tuple
+              | _ -> annotation
+            in
             let annotation =
               match annotation, value with
               | Some annotation, _ -> annotation
@@ -2253,7 +3255,9 @@ class base class_metadata_environment dependency =
         | Simple { nested_class = true; _ } -> AnnotatedAttribute.OnClass
         | Simple { values; _ } ->
             let is_not_ellipsis = function
-              | { Attribute.value = { Node.value = Ellipsis; _ }; _ } -> false
+              | { Attribute.value = { Node.value = Constant Expression.Constant.Ellipsis; _ }; _ }
+                ->
+                  false
               | _ -> true
             in
             List.find values ~f:is_not_ellipsis
@@ -2312,7 +3316,7 @@ class base class_metadata_environment dependency =
               |> List.map ~f:base_to_class
               |> List.filter_map ~f:(class_definition class_metadata_environment ~dependency)
               |> List.filter ~f:(fun base_class ->
-                     not (Node.equal ClassSummary.equal base_class original))
+                     not ([%compare.equal: ClassSummary.t Node.t] base_class original))
             in
             let filter_generic_meta base_metaclasses =
               (* We only want a class directly inheriting from Generic to have a metaclass of
@@ -2476,7 +3480,16 @@ class base class_metadata_environment dependency =
               (* Constructor on concrete class or fully specified generic,
                * e.g. global = GenericClass[int](x, y) or global = ConcreteClass(x) *)
               Option.value (fully_specified_type callee) ~default:Type.Any)
-      | Name (Identifier "None") -> Type.Any
+      | Constant Constant.NoneLiteral -> Type.Any
+      | Constant (Constant.Complex _) -> Type.complex
+      | Constant (Constant.False | Constant.True) -> Type.bool
+      | Constant (Constant.Float _) -> Type.float
+      | Constant (Constant.Integer _) -> Type.integer
+      | Constant (Constant.String { StringLiteral.kind; _ }) -> (
+          match kind with
+          | StringLiteral.Bytes -> Type.bytes
+          | _ -> Type.string)
+      | FormatString _ -> Type.string
       | Name name when is_simple_name name -> (
           let reference = name_to_reference_exn name in
           let unannotated_global_environment =
@@ -2501,7 +3514,6 @@ class base class_metadata_environment dependency =
               Result.ok decorated |> Option.value ~default:Type.Any
           | _ -> resolve_name expression)
       | Name _ -> resolve_name expression
-      | Complex _ -> Type.complex
       | Dictionary { Dictionary.entries; keywords = [] } ->
           let key_annotation, value_annotation =
             let join_entry (key_annotation, value_annotation) { Dictionary.Entry.key; value } =
@@ -2514,9 +3526,6 @@ class base class_metadata_environment dependency =
           let value = if Type.is_concrete value_annotation then value_annotation else Type.Any in
           Type.dictionary ~key ~value
       | Dictionary _ -> Type.dictionary ~key:Type.Any ~value:Type.Any
-      | False -> Type.bool
-      | Float _ -> Type.float
-      | Integer _ -> Type.integer
       | List elements ->
           let parameter =
             let join sofar element =
@@ -2533,10 +3542,6 @@ class base class_metadata_environment dependency =
             List.fold ~init:Type.Bottom ~f:join elements
           in
           if Type.is_concrete parameter then Type.set parameter else Type.set Type.Any
-      | String { StringLiteral.kind; _ } -> (
-          match kind with
-          | StringLiteral.Bytes -> Type.bytes
-          | _ -> Type.string)
       | Ternary { Ternary.target; alternative; _ } ->
           let annotation =
             TypeOrder.join
@@ -2545,275 +3550,301 @@ class base class_metadata_environment dependency =
               (self#resolve_literal ~assumptions alternative)
           in
           if Type.is_concrete annotation then annotation else Type.Any
-      | True -> Type.bool
       | Tuple elements -> Type.tuple (List.map elements ~f:(self#resolve_literal ~assumptions))
       | Expression.Yield _ -> Type.yield Type.Any
       | _ -> Type.Any
 
     method resolve_define ~assumptions ~implementation ~overloads =
-      let apply_decorator (index, { Decorator.name; arguments }) argument =
-        let name = Node.value name |> Reference.delocalize in
-        let decorator =
-          UnannotatedGlobalEnvironment.ReadOnly.resolve_exports
-            (unannotated_global_environment class_metadata_environment)
-            ?dependency
-            name
+      let apply_decorator (index, decorator) argument =
+        let make_error reason =
+          Result.Error (AnnotatedAttribute.InvalidDecorator { index; reason })
         in
-        let simple_decorator_name =
-          match decorator with
-          | Some (ModuleAttribute { from; name; remaining; _ }) ->
-              Reference.create_from_list (Reference.as_list from @ name :: remaining)
-              |> Reference.show
-          | _ -> Reference.show name
-        in
-        match simple_decorator_name, argument with
-        | ("click.decorators.pass_context" | "click.decorators.pass_obj"), Type.Callable callable ->
-            (* Suppress caller/callee parameter matching by altering the click entry point to have a
-               generic parameter list. *)
-            let parameters =
-              Type.Callable.Defined
-                [
-                  Type.Callable.Parameter.Variable (Concrete Type.Any);
-                  Type.Callable.Parameter.Keywords Type.Any;
-                ]
+        match Decorator.from_expression decorator with
+        | None -> make_error CouldNotResolve
+        | Some { Decorator.name; arguments } -> (
+            let name = Node.value name |> Reference.delocalize in
+            let decorator =
+              UnannotatedGlobalEnvironment.ReadOnly.resolve_exports
+                (unannotated_global_environment class_metadata_environment)
+                ?dependency
+                name
             in
-            Type.Callable (Type.Callable.map_parameters callable ~f:(fun _ -> parameters))
-            |> Result.return
-        | name, Callable callable
-          when String.equal name "contextlib.asynccontextmanager"
-               || Set.mem Recognized.asyncio_contextmanager_decorators name ->
-            let process_overload ({ Type.Callable.annotation; _ } as overload) =
-              let joined =
-                let order = self#full_order ~assumptions in
-                try TypeOrder.join order annotation (Type.async_iterator Type.Bottom) with
-                | ClassHierarchy.Untracked _ ->
-                    (* create_overload gets called when building the environment, which is unsound
-                       and can raise. *)
-                    Type.Any
-              in
-              if Type.is_async_iterator joined then
-                {
-                  overload with
-                  Type.Callable.annotation =
-                    Type.parametric
-                      "typing.AsyncContextManager"
-                      [Single (Type.single_parameter joined)];
-                }
-              else
-                overload
+            let simple_decorator_name =
+              match decorator with
+              | Some (ModuleAttribute { from; name; remaining; _ }) ->
+                  Reference.create_from_list (Reference.as_list from @ name :: remaining)
+                  |> Reference.show
+              | _ -> Reference.show name
             in
-            let { Type.Callable.implementation = old_implementation; overloads = old_overloads; _ } =
-              callable
-            in
-            Type.Callable
-              {
-                callable with
-                implementation = process_overload old_implementation;
-                overloads = List.map old_overloads ~f:process_overload;
-              }
-            |> Result.return
-        | name, callable when String.is_suffix name ~suffix:".validator" ->
-            (* TODO(T70606997): We should be type checking attr validators properly. *)
-            Result.return callable
-        | "contextlib.contextmanager", Callable callable ->
-            let process_overload ({ Type.Callable.annotation; _ } as overload) =
-              let joined =
-                let order = self#full_order ~assumptions in
-                try TypeOrder.join order annotation (Type.iterator Type.Bottom) with
-                | ClassHierarchy.Untracked _ ->
-                    (* create_overload gets called when building the environment, which is unsound
-                       and can raise. *)
-                    Type.Any
-              in
-              if Type.is_iterator joined then
-                {
-                  overload with
-                  Type.Callable.annotation =
-                    Type.parametric
-                      "contextlib._GeneratorContextManager"
-                      [Single (Type.single_parameter joined)];
-                }
-              else
-                overload
-            in
-            let { Type.Callable.implementation = old_implementation; overloads = old_overloads; _ } =
-              callable
-            in
-            Type.Callable
-              {
-                callable with
-                implementation = process_overload old_implementation;
-                overloads = List.map old_overloads ~f:process_overload;
-              }
-            |> Result.return
-        | name, argument when Set.mem Decorators.special_decorators name ->
-            Decorators.apply ~argument ~name |> Result.return
-        | name, _ when Set.mem Recognized.classmethod_decorators name ->
-            (* TODO (T67024249): convert these to just normal stubs *)
-            Type.parametric "typing.ClassMethod" [Single argument] |> Result.return
-        | "staticmethod", _ ->
-            Type.parametric "typing.StaticMethod" [Single argument] |> Result.return
-        | _ -> (
-            let make_error reason =
-              Result.Error (AnnotatedAttribute.InvalidDecorator { index; reason })
-            in
-            let { decorator_assumptions; _ } = assumptions in
-            if
-              Assumptions.DecoratorAssumptions.not_a_decorator decorator_assumptions ~candidate:name
-            then
-              make_error CouldNotResolve
-            else
-              let assumptions =
-                {
-                  assumptions with
-                  decorator_assumptions =
-                    Assumptions.DecoratorAssumptions.add
-                      decorator_assumptions
-                      ~assume_is_not_a_decorator:name;
-                }
-              in
-              let resolve_attribute_access ?special_method base ~attribute_name =
-                let access { Type.instantiated; accessed_through_class; class_name } =
-                  self#attribute
-                    ~assumptions
-                    ~transitive:true
-                    ~accessed_through_class
-                    ~include_generated_attributes:true
-                    ?special_method
-                    ~attribute_name
-                    ~instantiated
-                    class_name
+            match simple_decorator_name, argument with
+            | ( ("click.decorators.pass_context" | "click.decorators.pass_obj"),
+                Type.Callable callable ) ->
+                (* Suppress caller/callee parameter matching by altering the click entry point to
+                   have a generic parameter list. *)
+                let parameters =
+                  Type.Callable.Defined
+                    [
+                      Type.Callable.Parameter.Variable (Concrete Type.Any);
+                      Type.Callable.Parameter.Keywords Type.Any;
+                    ]
                 in
-                let join_all = function
-                  | head :: tail ->
-                      let order = self#full_order ~assumptions in
-                      List.fold tail ~init:head ~f:(TypeOrder.join order) |> Option.some
-                  | [] -> None
+                Type.Callable (Type.Callable.map_parameters callable ~f:(fun _ -> parameters))
+                |> Result.return
+            | name, Callable callable
+              when String.equal name "contextlib.asynccontextmanager"
+                   || Set.mem Recognized.asyncio_contextmanager_decorators name ->
+                let process_overload ({ Type.Callable.annotation; _ } as overload) =
+                  let joined =
+                    let order = self#full_order ~assumptions in
+                    try TypeOrder.join order annotation (Type.async_iterator Type.Bottom) with
+                    | ClassHierarchy.Untracked _ ->
+                        (* create_overload gets called when building the environment, which is
+                           unsound and can raise. *)
+                        Type.Any
+                  in
+                  if Type.is_async_iterator joined then
+                    {
+                      overload with
+                      Type.Callable.annotation =
+                        Type.parametric
+                          "typing.AsyncContextManager"
+                          [Single (Type.single_parameter joined)];
+                    }
+                  else
+                    overload
                 in
-                Type.resolve_class base
-                >>| List.map ~f:access
-                >>= Option.all
-                >>| List.map ~f:AnnotatedAttribute.annotation
-                >>| List.map ~f:Annotation.annotation
-                >>= join_all
-              in
-              let resolver = function
-                | UnannotatedGlobalEnvironment.ResolvedReference.Module _ -> None
-                | PlaceholderStub _ -> Some Type.Any
-                | ModuleAttribute { from; name; remaining; _ } ->
-                    let rec resolve_remaining base ~remaining =
-                      match remaining with
-                      | [] -> Some base
-                      | attribute_name :: remaining ->
-                          resolve_attribute_access base ~attribute_name
-                          >>= resolve_remaining ~remaining
+                let {
+                  Type.Callable.implementation = old_implementation;
+                  overloads = old_overloads;
+                  _;
+                }
+                  =
+                  callable
+                in
+                Type.Callable
+                  {
+                    callable with
+                    implementation = process_overload old_implementation;
+                    overloads = List.map old_overloads ~f:process_overload;
+                  }
+                |> Result.return
+            | name, callable when String.is_suffix name ~suffix:".validator" ->
+                (* TODO(T70606997): We should be type checking attr validators properly. *)
+                Result.return callable
+            | "contextlib.contextmanager", Callable callable ->
+                let process_overload ({ Type.Callable.annotation; _ } as overload) =
+                  let joined =
+                    let order = self#full_order ~assumptions in
+                    try TypeOrder.join order annotation (Type.iterator Type.Bottom) with
+                    | ClassHierarchy.Untracked _ ->
+                        (* create_overload gets called when building the environment, which is
+                           unsound and can raise. *)
+                        Type.Any
+                  in
+                  if Type.is_iterator joined then
+                    {
+                      overload with
+                      Type.Callable.annotation =
+                        Type.parametric
+                          "contextlib._GeneratorContextManager"
+                          [Single (Type.single_parameter joined)];
+                    }
+                  else
+                    overload
+                in
+                let {
+                  Type.Callable.implementation = old_implementation;
+                  overloads = old_overloads;
+                  _;
+                }
+                  =
+                  callable
+                in
+                Type.Callable
+                  {
+                    callable with
+                    implementation = process_overload old_implementation;
+                    overloads = List.map old_overloads ~f:process_overload;
+                  }
+                |> Result.return
+            | name, argument when Set.mem Decorators.special_decorators name ->
+                Decorators.apply ~argument ~name |> Result.return
+            | name, _ when Set.mem Recognized.classmethod_decorators name ->
+                (* TODO (T67024249): convert these to just normal stubs *)
+                Type.parametric "typing.ClassMethod" [Single argument] |> Result.return
+            | "staticmethod", _ ->
+                Type.parametric "typing.StaticMethod" [Single argument] |> Result.return
+            | _ -> (
+                let { decorator_assumptions; _ } = assumptions in
+                if
+                  Assumptions.DecoratorAssumptions.not_a_decorator
+                    decorator_assumptions
+                    ~candidate:name
+                then
+                  make_error CouldNotResolve
+                else
+                  let assumptions =
+                    {
+                      assumptions with
+                      decorator_assumptions =
+                        Assumptions.DecoratorAssumptions.add
+                          decorator_assumptions
+                          ~assume_is_not_a_decorator:name;
+                    }
+                  in
+                  let resolve_attribute_access ?special_method base ~attribute_name =
+                    let access { Type.instantiated; accessed_through_class; class_name } =
+                      self#attribute
+                        ~assumptions
+                        ~transitive:true
+                        ~accessed_through_class
+                        ~include_generated_attributes:true
+                        ?special_method
+                        ~attribute_name
+                        ~instantiated
+                        class_name
                     in
-                    Reference.create_from_list [name]
-                    |> Reference.combine from
-                    |> self#global_annotation ~assumptions
-                    >>| (fun { Global.annotation = { annotation; _ }; _ } -> annotation)
-                    >>= resolve_remaining ~remaining
-              in
-              let extract_callable = function
-                | Type.Callable callable -> Some callable
-                | other -> (
-                    match
-                      resolve_attribute_access other ~attribute_name:"__call__" ~special_method:true
-                    with
-                    | None -> None
-                    | Some (Type.Callable callable) -> Some callable
-                    | Some other -> (
-                        (* We potentially need to go specifically two layers in order to support
-                           when name resolves to Type[X], which has a __call__ of its constructor
-                           that is itself a BoundMethod, which has a Callable __call__ *)
+                    let join_all = function
+                      | head :: tail ->
+                          let order = self#full_order ~assumptions in
+                          List.fold tail ~init:head ~f:(TypeOrder.join order) |> Option.some
+                      | [] -> None
+                    in
+                    Type.resolve_class base
+                    >>| List.map ~f:access
+                    >>= Option.all
+                    >>| List.map ~f:AnnotatedAttribute.annotation
+                    >>| List.map ~f:Annotation.annotation
+                    >>= join_all
+                  in
+                  let resolver = function
+                    | UnannotatedGlobalEnvironment.ResolvedReference.Module _ -> None
+                    | PlaceholderStub _ -> Some Type.Any
+                    | ModuleAttribute { from; name; remaining; _ } ->
+                        let rec resolve_remaining base ~remaining =
+                          match remaining with
+                          | [] -> Some base
+                          | attribute_name :: remaining ->
+                              resolve_attribute_access base ~attribute_name
+                              >>= resolve_remaining ~remaining
+                        in
+                        Reference.create_from_list [name]
+                        |> Reference.combine from
+                        |> self#global_annotation ~assumptions
+                        >>| (fun { Global.annotation = { annotation; _ }; _ } -> annotation)
+                        >>= resolve_remaining ~remaining
+                  in
+                  let extract_callable = function
+                    | Type.Callable callable -> Some callable
+                    | other -> (
                         match
                           resolve_attribute_access
                             other
                             ~attribute_name:"__call__"
                             ~special_method:true
                         with
-                        | Some (Callable callable) -> Some callable
-                        | _ -> None))
-              in
-              let apply_arguments_to_decorator_factory ~factory_callable ~arguments =
-                let arguments =
-                  let resolve argument_index argument =
-                    let expression, kind = Ast.Expression.Call.Argument.unpack argument in
-                    let make_argument resolved =
-                      { Argument.kind; expression = Some expression; resolved }
-                    in
-                    let error = AnnotatedAttribute.CouldNotResolveArgument { argument_index } in
-                    match expression with
-                    | { Node.value = Expression.Expression.Name name; _ } ->
-                        Expression.name_to_reference name
-                        >>| Reference.delocalize
-                        >>= UnannotatedGlobalEnvironment.ReadOnly.resolve_exports
-                              (unannotated_global_environment class_metadata_environment)
-                              ?dependency
-                        >>= resolver
-                        >>| make_argument
-                        |> Result.of_option
-                             ~error:(AnnotatedAttribute.InvalidDecorator { index; reason = error })
-                    | expression ->
-                        let resolved = self#resolve_literal ~assumptions expression in
-                        if Type.is_untyped resolved || Type.contains_unknown resolved then
-                          make_error error
-                        else
-                          Ok (make_argument resolved)
+                        | None -> None
+                        | Some (Type.Callable callable) -> Some callable
+                        | Some other -> (
+                            (* We potentially need to go specifically two layers in order to support
+                               when name resolves to Type[X], which has a __call__ of its
+                               constructor that is itself a BoundMethod, which has a Callable
+                               __call__ *)
+                            match
+                              resolve_attribute_access
+                                other
+                                ~attribute_name:"__call__"
+                                ~special_method:true
+                            with
+                            | Some (Callable callable) -> Some callable
+                            | _ -> None))
                   in
-                  List.mapi arguments ~f:resolve |> Result.all
-                in
-                let select arguments =
-                  self#signature_select
-                    ~assumptions
-                    ~resolve_with_locals:(fun ~locals:_ _ -> Type.Top)
-                    ~arguments
-                    ~callable:factory_callable
-                    ~self_argument:None
-                    ~skip_marking_escapees:false
-                in
-                let extract = function
-                  | SignatureSelectionTypes.Found { selected_return_annotation; _ } ->
-                      Result.Ok selected_return_annotation
-                  | NotFound { reason; _ } ->
-                      make_error
-                        (FactorySignatureSelectionFailed { reason; callable = factory_callable })
-                in
-                Result.map arguments ~f:select |> Result.bind ~f:extract
-              in
-              let resolved_decorator =
-                match decorator >>= resolver with
-                | None -> make_error CouldNotResolve
-                | Some Any -> Ok Type.Any
-                | Some fetched -> (
-                    match arguments with
-                    | None -> Ok fetched
-                    | Some arguments -> (
-                        match extract_callable fetched with
-                        | None -> make_error (NonCallableDecoratorFactory fetched)
-                        | Some factory_callable ->
-                            apply_arguments_to_decorator_factory ~factory_callable ~arguments))
-              in
-              match resolved_decorator with
-              | Error error -> Result.Error error
-              | Ok Any -> Ok Any
-              | Ok resolved_decorator -> (
-                  match extract_callable resolved_decorator with
-                  | None -> make_error (NonCallableDecorator resolved_decorator)
-                  | Some callable -> (
-                      match
-                        self#signature_select
-                          ~assumptions
-                          ~resolve_with_locals:(fun ~locals:_ _ -> Type.object_primitive)
-                          ~arguments:[{ kind = Positional; expression = None; resolved = argument }]
-                          ~callable
-                          ~self_argument:None
-                          ~skip_marking_escapees:false
-                      with
+                  let apply_arguments_to_decorator_factory ~factory_callable ~arguments =
+                    let arguments =
+                      let resolve argument_index argument =
+                        let expression, kind = Ast.Expression.Call.Argument.unpack argument in
+                        let make_argument resolved =
+                          { Argument.kind; expression = Some expression; resolved }
+                        in
+                        let error = AnnotatedAttribute.CouldNotResolveArgument { argument_index } in
+                        match expression with
+                        | {
+                         Node.value = Expression.Expression.Constant Expression.Constant.NoneLiteral;
+                         _;
+                        } ->
+                            Ok (make_argument Type.NoneType)
+                        | { Node.value = Expression.Expression.Name name; _ } ->
+                            Expression.name_to_reference name
+                            >>| Reference.delocalize
+                            >>= UnannotatedGlobalEnvironment.ReadOnly.resolve_exports
+                                  (unannotated_global_environment class_metadata_environment)
+                                  ?dependency
+                            >>= resolver
+                            >>| make_argument
+                            |> Result.of_option
+                                 ~error:
+                                   (AnnotatedAttribute.InvalidDecorator { index; reason = error })
+                        | expression ->
+                            let resolved = self#resolve_literal ~assumptions expression in
+                            if Type.is_untyped resolved || Type.contains_unknown resolved then
+                              make_error error
+                            else
+                              Ok (make_argument resolved)
+                      in
+                      List.mapi arguments ~f:resolve |> Result.all
+                    in
+                    let select arguments =
+                      self#signature_select
+                        ~assumptions
+                        ~resolve_with_locals:(fun ~locals:_ _ -> Type.Top)
+                        ~arguments
+                        ~callable:factory_callable
+                        ~self_argument:None
+                        ~skip_marking_escapees:false
+                    in
+                    let extract = function
                       | SignatureSelectionTypes.Found { selected_return_annotation; _ } ->
-                          Ok selected_return_annotation
+                          Result.Ok selected_return_annotation
                       | NotFound { reason; _ } ->
-                          make_error (ApplicationFailed { reason; callable }))))
+                          make_error
+                            (FactorySignatureSelectionFailed { reason; callable = factory_callable })
+                    in
+                    Result.map arguments ~f:select |> Result.bind ~f:extract
+                  in
+                  let resolved_decorator =
+                    match decorator >>= resolver with
+                    | None -> make_error CouldNotResolve
+                    | Some Any -> Ok Type.Any
+                    | Some fetched -> (
+                        match arguments with
+                        | None -> Ok fetched
+                        | Some arguments -> (
+                            match extract_callable fetched with
+                            | None -> make_error (NonCallableDecoratorFactory fetched)
+                            | Some factory_callable ->
+                                apply_arguments_to_decorator_factory ~factory_callable ~arguments))
+                  in
+                  match resolved_decorator with
+                  | Error error -> Result.Error error
+                  | Ok Any -> Ok Any
+                  | Ok resolved_decorator -> (
+                      match extract_callable resolved_decorator with
+                      | None -> make_error (NonCallableDecorator resolved_decorator)
+                      | Some callable -> (
+                          match
+                            self#signature_select
+                              ~assumptions
+                              ~resolve_with_locals:(fun ~locals:_ _ -> Type.object_primitive)
+                              ~arguments:
+                                [{ kind = Positional; expression = None; resolved = argument }]
+                              ~callable
+                              ~self_argument:None
+                              ~skip_marking_escapees:false
+                          with
+                          | SignatureSelectionTypes.Found { selected_return_annotation; _ } ->
+                              Ok selected_return_annotation
+                          | NotFound { reason; _ } ->
+                              make_error (ApplicationFailed { reason; callable })))))
       in
       let parse =
         let parser =
@@ -2838,7 +3869,7 @@ class base class_metadata_environment dependency =
         match implementation, overloads with
         | Some { Define.Signature.name; _ }, _
         | _, { Define.Signature.name; _ } :: _ ->
-            Type.Callable.Named (Node.value name)
+            Type.Callable.Named name
         | None, [] ->
             (* Should never happen, but not worth crashing over *)
             Type.Callable.Anonymous
@@ -2859,7 +3890,7 @@ class base class_metadata_environment dependency =
             in
             let enforce_equality ~parsed ~current sofar =
               let equal left right =
-                Int.equal (Ast.Statement.Decorator.location_insensitive_compare left right) 0
+                Int.equal (Ast.Expression.location_insensitive_compare left right) 0
               in
               if List.equal equal sofar (purify current) then
                 Ok sofar
@@ -2923,915 +3954,25 @@ class base class_metadata_environment dependency =
         ~callable:({ Type.Callable.implementation; overloads; _ } as callable)
         ~self_argument
         ~skip_marking_escapees =
-      let open SignatureSelectionTypes in
       let order = self#full_order ~assumptions in
-      let open Type.Callable in
-      let match_arity ~all_parameters signature_match ~arguments ~parameters =
-        let all_arguments = arguments in
-        let rec consume
-            ({ argument_mapping; reasons = { arity; _ } as reasons; _ } as signature_match)
-            ~arguments
-            ~parameters
-          =
-          let update_mapping parameter argument =
-            Map.add_multi argument_mapping ~key:parameter ~data:argument
-          in
-          let arity_mismatch ?(unreachable_parameters = []) ~arguments reasons =
-            match all_parameters with
-            | Defined all_parameters ->
-                let matched_keyword_arguments =
-                  let is_keyword_argument = function
-                    | { Argument.WithPosition.kind = Named _; _ } -> true
-                    | _ -> false
-                  in
-                  List.filter ~f:is_keyword_argument all_arguments
-                in
-                let positional_parameter_count =
-                  List.length all_parameters
-                  - List.length unreachable_parameters
-                  - List.length matched_keyword_arguments
-                in
-                let self_argument_adjustment =
-                  if Option.is_some self_argument then
-                    1
-                  else
-                    0
-                in
-                let error =
-                  TooManyArguments
-                    {
-                      expected = positional_parameter_count - self_argument_adjustment;
-                      provided =
-                        positional_parameter_count
-                        + List.length arguments
-                        - self_argument_adjustment;
-                    }
-                in
-                { reasons with arity = error :: arity }
-            | _ -> reasons
-          in
-          match arguments, parameters with
-          | [], [] ->
-              (* Both empty *)
-              signature_match
-          | { Argument.WithPosition.kind = SingleStar; _ } :: arguments_tail, []
-          | { kind = DoubleStar; _ } :: arguments_tail, [] ->
-              (* Starred or double starred arguments; parameters empty *)
-              consume ~arguments:arguments_tail ~parameters signature_match
-          | { kind = Named name; _ } :: _, [] ->
-              (* Named argument; parameters empty *)
-              let reasons = { reasons with arity = UnexpectedKeyword name.value :: arity } in
-              { signature_match with reasons }
-          | _, [] ->
-              (* Positional argument; parameters empty *)
-              { signature_match with reasons = arity_mismatch ~arguments reasons }
-          | [], (Parameter.KeywordOnly { default = true; _ } as parameter) :: parameters_tail
-          | [], (Parameter.PositionalOnly { default = true; _ } as parameter) :: parameters_tail
-          | [], (Parameter.Named { default = true; _ } as parameter) :: parameters_tail ->
-              (* Arguments empty, default parameter *)
-              let argument_mapping = update_mapping parameter Default in
-              consume
-                ~arguments
-                ~parameters:parameters_tail
-                { signature_match with argument_mapping }
-          | [], parameter :: parameters_tail ->
-              (* Arguments empty, parameter *)
-              let argument_mapping =
-                match Map.find argument_mapping parameter with
-                | Some _ -> argument_mapping
-                | None -> Map.set ~key:parameter ~data:[] argument_mapping
-              in
-              consume
-                ~arguments
-                ~parameters:parameters_tail
-                { signature_match with argument_mapping }
-          | ( ({ kind = Named _; _ } as argument) :: arguments_tail,
-              (Parameter.Keywords _ as parameter) :: _ ) ->
-              (* Labeled argument, keywords parameter *)
-              let argument_mapping = update_mapping parameter (Argument argument) in
-              consume
-                ~arguments:arguments_tail
-                ~parameters
-                { signature_match with argument_mapping }
-          | ({ kind = Named name; _ } as argument) :: arguments_tail, parameters ->
-              (* Labeled argument *)
-              let rec extract_matching_name searched to_search =
-                match to_search with
-                | [] -> None, List.rev searched
-                | (Parameter.KeywordOnly { name = parameter_name; _ } as head) :: tail
-                | (Parameter.Named { name = parameter_name; _ } as head) :: tail
-                  when Identifier.equal_sanitized parameter_name name.value ->
-                    Some head, List.rev searched @ tail
-                | (Parameter.Keywords _ as head) :: tail ->
-                    let matching, parameters = extract_matching_name (head :: searched) tail in
-                    let matching = Some (Option.value matching ~default:head) in
-                    matching, parameters
-                | head :: tail -> extract_matching_name (head :: searched) tail
-              in
-              let matching_parameter, remaining_parameters = extract_matching_name [] parameters in
-              let argument_mapping, reasons =
-                match matching_parameter with
-                | Some matching_parameter ->
-                    update_mapping matching_parameter (Argument argument), reasons
-                | None ->
-                    argument_mapping, { reasons with arity = UnexpectedKeyword name.value :: arity }
-              in
-              consume
-                ~arguments:arguments_tail
-                ~parameters:remaining_parameters
-                { signature_match with argument_mapping; reasons }
-          | ( ({ kind = DoubleStar; _ } as argument) :: arguments_tail,
-              (Parameter.Keywords _ as parameter) :: _ )
-          | ( ({ kind = SingleStar; _ } as argument) :: arguments_tail,
-              (Parameter.Variable _ as parameter) :: _ ) ->
-              (* (Double) starred argument, (double) starred parameter *)
-              let argument_mapping = update_mapping parameter (Argument argument) in
-              consume
-                ~arguments:arguments_tail
-                ~parameters
-                { signature_match with argument_mapping }
-          | { kind = SingleStar; _ } :: _, Parameter.Keywords _ :: parameters_tail ->
-              (* Starred argument, double starred parameter *)
-              consume
-                ~arguments
-                ~parameters:parameters_tail
-                { signature_match with argument_mapping }
-          | { kind = Positional; _ } :: _, Parameter.Keywords _ :: parameters_tail ->
-              (* Unlabeled argument, double starred parameter *)
-              consume
-                ~arguments
-                ~parameters:parameters_tail
-                { signature_match with argument_mapping }
-          | { kind = DoubleStar; _ } :: _, Parameter.Variable _ :: parameters_tail ->
-              (* Double starred argument, starred parameter *)
-              consume
-                ~arguments
-                ~parameters:parameters_tail
-                { signature_match with argument_mapping }
-          | ( ({ kind = Positional; _ } as argument) :: arguments_tail,
-              (Parameter.Variable _ as parameter) :: _ ) ->
-              (* Unlabeled argument, starred parameter *)
-              let signature_match =
-                let argument_mapping = update_mapping parameter (Argument argument) in
-                { signature_match with argument_mapping }
-              in
-              consume ~arguments:arguments_tail ~parameters signature_match
-          | { kind = SingleStar; _ } :: arguments_tail, Type.Callable.Parameter.KeywordOnly _ :: _
-            ->
-              (* Starred argument, keyword only parameter *)
-              consume ~arguments:arguments_tail ~parameters signature_match
-          | ({ kind = DoubleStar; _ } as argument) :: _, parameter :: parameters_tail
-          | ({ kind = SingleStar; _ } as argument) :: _, parameter :: parameters_tail ->
-              (* Double starred or starred argument, parameter *)
-              let argument_mapping = update_mapping parameter (Argument argument) in
-              consume
-                ~arguments
-                ~parameters:parameters_tail
-                { signature_match with argument_mapping }
-          | { kind = Positional; _ } :: _, (Parameter.KeywordOnly _ as parameter) :: parameters_tail
-            ->
-              (* Unlabeled argument, keyword only parameter *)
-              let reasons =
-                arity_mismatch
-                  reasons
-                  ~unreachable_parameters:(parameter :: parameters_tail)
-                  ~arguments
-              in
-              { signature_match with reasons }
-          | ({ kind = Positional; _ } as argument) :: arguments_tail, parameter :: parameters_tail
-            ->
-              (* Unlabeled argument, parameter *)
-              let argument_mapping = update_mapping parameter (Argument argument) in
-              consume
-                ~arguments:arguments_tail
-                ~parameters:parameters_tail
-                { signature_match with argument_mapping }
-        in
-        consume signature_match ~arguments ~parameters
-      in
-      let check_annotations ({ argument_mapping; _ } as signature_match) =
-        (* Check whether the parameter annotation is `Callable[[ParamVar], ReturnVar]`
-         * and the argument is `lambda parameter: body` *)
-        let is_generic_lambda parameter arguments =
-          match parameter, arguments with
-          | ( Parameter.PositionalOnly
-                {
-                  annotation =
-                    Type.Callable
-                      {
-                        kind = Anonymous;
-                        implementation =
-                          {
-                            annotation = Type.Variable return_variable;
-                            parameters =
-                              Defined
-                                [
-                                  Parameter.PositionalOnly
-                                    {
-                                      index = 0;
-                                      annotation = Type.Variable parameter_variable;
-                                      default = false;
-                                    };
-                                ];
-                          };
-                        overloads = [];
-                      } as annotation;
-                  _;
-                },
-              [
-                Argument
-                  {
-                    expression =
-                      Some
-                        {
-                          value =
-                            Lambda
-                              {
-                                body = lambda_body;
-                                parameters =
-                                  [
-                                    {
-                                      value =
-                                        { name = lambda_parameter; value = None; annotation = None };
-                                      _;
-                                    };
-                                  ];
-                              };
-                          _;
-                        };
-                    _;
-                  };
-              ] )
-            when Type.Variable.Unary.is_free parameter_variable
-                 && Type.Variable.Unary.is_free return_variable ->
-              Some (annotation, parameter_variable, return_variable, lambda_parameter, lambda_body)
-          | _ -> None
-        in
-        let update ~key ~data ({ reasons = { arity; _ } as reasons; _ } as signature_match) =
-          let bind_arguments_to_variadic ~expected ~arguments =
-            let extract_ordered_types arguments =
-              let extracted, errors =
-                let arguments =
-                  List.map arguments ~f:(function
-                      | Argument argument -> argument
-                      | Default -> failwith "Variable parameters do not have defaults")
-                in
-                let extract { Argument.WithPosition.kind; resolved; expression; _ } =
-                  match kind with
-                  | SingleStar -> (
-                      match resolved with
-                      | Type.Tuple ordered_types -> Either.First ordered_types
-                      (* We don't support unpacking unbounded tuples yet. *)
-                      | annotation -> Either.Second { expression; annotation })
-                  | _ -> Either.First (Type.OrderedTypes.Concrete [resolved])
-                in
-                List.rev arguments |> List.partition_map ~f:extract
-              in
-              match errors with
-              | [] -> Ok extracted
-              | not_bounded_tuple :: _ ->
-                  Error
-                    (Mismatches
-                       [
-                         MismatchWithTupleVariadicTypeVariable
-                           { variable = expected; mismatch = NotBoundedTuple not_bounded_tuple };
-                       ])
-            in
-            let concatenate extracted =
-              let concatenated =
-                match extracted with
-                | [] -> Some (Type.OrderedTypes.Concrete [])
-                | head :: tail ->
-                    let concatenate sofar next =
-                      sofar >>= fun left -> Type.OrderedTypes.concatenate ~left ~right:next
-                    in
-                    List.fold tail ~f:concatenate ~init:(Some head)
-              in
-              match concatenated with
-              | Some concatenated -> Ok concatenated
-              | None ->
-                  Error
-                    (Mismatches
-                       [
-                         MismatchWithTupleVariadicTypeVariable
-                           { variable = expected; mismatch = CannotConcatenate extracted };
-                       ])
-            in
-            let solve concatenated =
-              let updated_constraints_set =
-                TypeOrder.OrderedConstraintsSet.add
-                  signature_match.constraints_set
-                  ~new_constraint:
-                    (OrderedTypesLessOrEqual { left = concatenated; right = expected })
-                  ~order
-              in
-              if ConstraintsSet.potentially_satisfiable updated_constraints_set then
-                Ok updated_constraints_set
-              else
-                Error
-                  (Mismatches
-                     [
-                       MismatchWithTupleVariadicTypeVariable
-                         { variable = expected; mismatch = ConstraintFailure concatenated };
-                     ])
-            in
-            let make_signature_match = function
-              | Ok constraints_set -> { signature_match with constraints_set }
-              | Error error ->
-                  { signature_match with reasons = { reasons with arity = error :: arity } }
-            in
-            let open Result in
-            extract_ordered_types arguments >>= concatenate >>= solve |> make_signature_match
-          in
-          match key, data with
-          | Parameter.Variable (Concatenation concatenation), arguments ->
-              bind_arguments_to_variadic
-                ~expected:(Type.OrderedTypes.Concatenation concatenation)
-                ~arguments
-          | Parameter.Variable _, []
-          | Parameter.Keywords _, [] ->
-              (* Parameter was not matched, but empty is acceptable for variable arguments and
-                 keyword arguments. *)
-              signature_match
-          | Parameter.KeywordOnly { name; _ }, []
-          | Parameter.Named { name; _ }, [] ->
-              (* Parameter was not matched *)
-              let reasons = { reasons with arity = MissingArgument (Named name) :: arity } in
-              { signature_match with reasons }
-          | Parameter.PositionalOnly { index; _ }, [] ->
-              (* Parameter was not matched *)
-              let reasons =
-                { reasons with arity = MissingArgument (PositionalOnly index) :: arity }
-              in
-              { signature_match with reasons }
-          | PositionalOnly { annotation = parameter_annotation; _ }, arguments
-          | KeywordOnly { annotation = parameter_annotation; _ }, arguments
-          | Named { annotation = parameter_annotation; _ }, arguments
-          | Variable (Concrete parameter_annotation), arguments
-          | Keywords parameter_annotation, arguments -> (
-              let set_constraints_and_reasons
-                  ~position
-                  ~argument_location
-                  ~name
-                  ~argument_annotation
-                  ({ constraints_set; reasons = { annotation; _ }; _ } as signature_match)
-                =
-                let reasons_with_mismatch =
-                  let mismatch =
-                    let location =
-                      name >>| Node.location |> Option.value ~default:argument_location
-                    in
-                    {
-                      actual = argument_annotation;
-                      expected = parameter_annotation;
-                      name = Option.map name ~f:Node.value;
-                      position;
-                    }
-                    |> Node.create ~location
-                    |> fun mismatch -> Mismatches [Mismatch mismatch]
-                  in
-                  { reasons with annotation = mismatch :: annotation }
-                in
-                let updated_constraints_set =
-                  TypeOrder.OrderedConstraintsSet.add
-                    constraints_set
-                    ~new_constraint:
-                      (LessOrEqual { left = argument_annotation; right = parameter_annotation })
-                    ~order
-                in
-                if ConstraintsSet.potentially_satisfiable updated_constraints_set then
-                  { signature_match with constraints_set = updated_constraints_set }
-                else
-                  { signature_match with constraints_set; reasons = reasons_with_mismatch }
-              in
-              let rec check signature_match = function
-                | [] -> signature_match
-                | Default :: tail ->
-                    (* Parameter default value was used. Assume it is correct. *)
-                    check signature_match tail
-                | Argument { expression; position; kind; resolved } :: tail -> (
-                    let argument_location =
-                      expression >>| Node.location |> Option.value ~default:Location.any
-                    in
-                    let set_constraints_and_reasons argument_annotation =
-                      let name =
-                        match kind with
-                        | Named name -> Some name
-                        | _ -> None
-                      in
-                      set_constraints_and_reasons
-                        ~position
-                        ~argument_location
-                        ~argument_annotation
-                        ~name
-                        signature_match
-                      |> fun signature_match -> check signature_match tail
-                    in
-                    let add_annotation_error
-                        ({ reasons = { annotation; _ }; _ } as signature_match)
-                        error
-                      =
-                      {
-                        signature_match with
-                        reasons = { reasons with annotation = error :: annotation };
-                      }
-                    in
-                    let solution_based_extraction ~create_error ~synthetic_variable ~solve_against =
-                      let signature_with_error =
-                        { expression; annotation = resolved }
-                        |> Node.create ~location:argument_location
-                        |> create_error
-                        |> add_annotation_error signature_match
-                      in
-                      let iterable_constraints =
-                        if Type.is_unbound resolved then
-                          ConstraintsSet.impossible
-                        else
-                          TypeOrder.OrderedConstraintsSet.add
-                            ConstraintsSet.empty
-                            ~new_constraint:(LessOrEqual { left = resolved; right = solve_against })
-                            ~order
-                      in
-                      match TypeOrder.OrderedConstraintsSet.solve iterable_constraints ~order with
-                      | None -> signature_with_error
-                      | Some solution ->
-                          ConstraintsSet.Solution.instantiate_single_variable
-                            solution
-                            synthetic_variable
-                          |> Option.value ~default:Type.Any
-                          |> set_constraints_and_reasons
-                    in
-                    match kind with
-                    | DoubleStar ->
-                        let create_error error = InvalidKeywordArgument error in
-                        let synthetic_variable = Type.Variable.Unary.create "$_T" in
-                        let solve_against =
-                          Type.parametric
-                            "typing.Mapping"
-                            [Single Type.string; Single (Type.Variable synthetic_variable)]
-                        in
-                        solution_based_extraction ~create_error ~synthetic_variable ~solve_against
-                    | SingleStar ->
-                        let create_error error = InvalidVariableArgument error in
-                        let synthetic_variable = Type.Variable.Unary.create "$_T" in
-                        let solve_against = Type.iterable (Type.Variable synthetic_variable) in
-                        solution_based_extraction ~create_error ~synthetic_variable ~solve_against
-                    | Named _
-                    | Positional -> (
-                        let argument_annotation, weakening_error =
-                          if Type.Variable.all_variables_are_resolved parameter_annotation then
-                            let { WeakenMutableLiterals.resolved; typed_dictionary_errors } =
-                              self#resolve_mutable_literals
-                                ~assumptions
-                                ~resolve:(resolve_with_locals ~locals:[])
-                                ~expression
-                                ~resolved
-                                ~expected:parameter_annotation
-                            in
-                            let weakening_error =
-                              if List.is_empty typed_dictionary_errors then
-                                None
-                              else
-                                Some (TypedDictionaryInitializationError typed_dictionary_errors)
-                            in
-                            resolved, weakening_error
-                          else
-                            resolved, None
-                        in
-                        match weakening_error with
-                        | Some weakening_error ->
-                            add_annotation_error signature_match weakening_error
-                        | None -> argument_annotation |> set_constraints_and_reasons))
-              in
-              match is_generic_lambda key arguments with
-              | Some _ -> signature_match (* Handle this later in `special_case_lambda_parameter` *)
-              | None -> List.rev arguments |> check signature_match)
-        in
-        let check_if_solution_exists
-            ({ constraints_set; reasons = { annotation; _ } as reasons; callable; _ } as
-            signature_match)
-          =
-          let solution =
-            TypeOrder.OrderedConstraintsSet.solve
-              constraints_set
-              ~order
-              ~only_solve_for:(Type.Variable.all_free_variables (Type.Callable callable))
-          in
-          if Option.is_some solution then
-            signature_match
-          else
-            (* All other cases should have been able to been blamed on a specefic argument, this is
-               the only global failure. *)
-            {
-              signature_match with
-              reasons = { reasons with annotation = MutuallyRecursiveTypeVariables :: annotation };
-            }
-        in
-        let special_case_dictionary_constructor
-            ({ argument_mapping; callable; constraints_set; _ } as signature_match)
-          =
-          let open Type.Record.Callable in
-          let has_matched_keyword_parameter parameters =
-            List.find parameters ~f:(function
-                | RecordParameter.Keywords _ -> true
-                | _ -> false)
-            >>= Type.Callable.Parameter.Map.find argument_mapping
-            >>| List.is_empty
-            >>| not
-            |> Option.value ~default:false
-          in
-          match callable with
-          | {
-           kind = Named name;
-           implementation =
-             {
-               parameters = Defined parameters;
-               annotation = Type.Parametric { parameters = [Single key_type; _]; _ };
-               _;
-             };
-           _;
-          }
-            when String.equal (Reference.show name) "dict.__init__"
-                 && has_matched_keyword_parameter parameters ->
-              let updated_constraints =
-                TypeOrder.OrderedConstraintsSet.add
-                  constraints_set
-                  ~new_constraint:(LessOrEqual { left = Type.string; right = key_type })
-                  ~order
-              in
-              if ConstraintsSet.potentially_satisfiable updated_constraints then
-                { signature_match with constraints_set = updated_constraints }
-              else (* TODO(T41074174): Error here *)
-                signature_match
-          | _ -> signature_match
-        in
-        let special_case_lambda_parameter ({ argument_mapping; _ } as signature_match) =
-          (* Special case: `Callable[[ParamVar], ReturnVar]` with `lambda parameter: body` *)
-          let update ~key ~data ({ constraints_set; _ } as signature_match) =
-            match is_generic_lambda key data with
-            | None -> signature_match
-            | Some (annotation, parameter_variable, _, lambda_parameter, lambda_body) -> (
-                (* Infer the parameter type using existing constraints. *)
-                let solution =
-                  TypeOrder.OrderedConstraintsSet.solve
-                    constraints_set
-                    ~order
-                    ~only_solve_for:[Type.Record.Variable.Unary parameter_variable]
-                  >>= fun solution ->
-                  ConstraintsSet.Solution.instantiate_single_variable solution parameter_variable
-                in
-                match solution with
-                | None -> signature_match
-                | Some parameter_type ->
-                    (* Infer the return type by resolving the lambda body with the parameter type *)
-                    let updated_constraints =
-                      let resolved =
-                        let return_type =
-                          resolve_with_locals
-                            ~locals:
-                              [Reference.create lambda_parameter, Annotation.create parameter_type]
-                            lambda_body
-                          |> Type.weaken_literals
-                        in
-                        let parameters =
-                          Type.Callable.Parameter.create
-                            [
-                              {
-                                Type.Callable.Parameter.name = lambda_parameter;
-                                annotation = parameter_type;
-                                default = false;
-                              };
-                            ]
-                        in
-                        Type.Callable.create
-                          ~parameters:(Defined parameters)
-                          ~annotation:return_type
-                          ()
-                      in
-                      TypeOrder.OrderedConstraintsSet.add
-                        constraints_set
-                        ~new_constraint:(LessOrEqual { left = resolved; right = annotation })
-                        ~order
-                      (* Once we've used this solution, we have to commit to it *)
-                      |> TypeOrder.OrderedConstraintsSet.add
-                           ~new_constraint:
-                             (VariableIsExactly (UnaryPair (parameter_variable, parameter_type)))
-                           ~order
-                    in
-                    { signature_match with constraints_set = updated_constraints })
-          in
-          Map.fold ~init:signature_match ~f:update argument_mapping
-        in
-        Map.fold ~init:signature_match ~f:update argument_mapping
-        |> special_case_dictionary_constructor
-        |> special_case_lambda_parameter
-        |> check_if_solution_exists
-      in
-      let calculate_rank ({ reasons = { arity; annotation; _ }; _ } as signature_match) =
-        let arity_rank = List.length arity in
-        let positions, annotation_rank =
-          let count_unique (positions, count) = function
-            | Mismatches mismatches ->
-                let count_unique_mismatches (positions, count) mismatch =
-                  match mismatch with
-                  | Mismatch { Node.value = { position; _ }; _ }
-                    when not (Set.mem positions position) ->
-                      Set.add positions position, count + 1
-                  | Mismatch _ -> positions, count
-                  | _ -> positions, count + 1
-                in
-                List.fold ~init:(positions, count) mismatches ~f:count_unique_mismatches
-            | _ -> positions, count + 1
-          in
-          List.fold ~init:(Int.Set.empty, 0) ~f:count_unique annotation
-        in
-        let position_rank =
-          Int.Set.min_elt positions >>| Int.neg |> Option.value ~default:Int.min_value
-        in
-        {
-          signature_match with
-          ranks = { arity = arity_rank; annotation = annotation_rank; position = position_rank };
-        }
-      in
-      let find_closest signature_matches =
-        let get_arity_rank { ranks = { arity; _ }; _ } = arity in
-        let get_annotation_rank { ranks = { annotation; _ }; _ } = annotation in
-        let get_position_rank { ranks = { position; _ }; _ } = position in
-        let rec get_best_rank ~best_matches ~best_rank ~getter = function
-          | [] -> best_matches
-          | head :: tail ->
-              let rank = getter head in
-              if rank < best_rank then
-                get_best_rank ~best_matches:[head] ~best_rank:rank ~getter tail
-              else if rank = best_rank then
-                get_best_rank ~best_matches:(head :: best_matches) ~best_rank ~getter tail
-              else
-                get_best_rank ~best_matches ~best_rank ~getter tail
-        in
-        let determine_reason
-            {
-              callable =
-                { implementation = { annotation = uninstantiated_return_annotation; _ }; _ } as
-                callable;
-              constraints_set;
-              reasons = { arity; annotation; _ };
-              _;
-            }
-          =
-          let instantiated_return_annotation =
-            let local_free_variables = Type.Variable.all_free_variables (Type.Callable callable) in
-            let solution =
-              TypeOrder.OrderedConstraintsSet.solve
-                constraints_set
-                ~only_solve_for:local_free_variables
-                ~order
-              |> Option.value ~default:ConstraintsSet.Solution.empty
-            in
-            let instantiated =
-              ConstraintsSet.Solution.instantiate solution uninstantiated_return_annotation
-            in
-            if skip_marking_escapees then
-              instantiated
-            else
-              Type.Variable.mark_all_free_variables_as_escaped
-                ~specific:local_free_variables
-                instantiated
-              (* We need to do transformations of the form Union[T_escaped, int] => int in order to
-                 properly handle some typeshed stubs which only sometimes bind type variables and
-                 expect them to fall out in this way (see Mapping.get) *)
-              |> Type.Variable.collapse_all_escaped_variable_unions
-          in
-          let rev_filter_out_self_argument_errors reasons =
-            let filter_too_many_arguments = function
-              (* These would come from methods lacking a self argument called on an instance *)
-              | TooManyArguments { expected; _ } -> not (Int.equal expected (-1))
-              | _ -> true
-            in
-            let filter_mismatches reason =
-              match reason with
-              | Mismatches mismatches ->
-                  Mismatches
-                    (List.filter mismatches ~f:(function
-                        | Mismatch { Node.value = { position; _ }; _ } -> not (Int.equal position 0)
-                        | _ -> true))
-              | _ -> reason
-            in
-            List.map (List.rev_filter ~f:filter_too_many_arguments reasons) ~f:filter_mismatches
-          in
-          match
-            ( rev_filter_out_self_argument_errors arity,
-              rev_filter_out_self_argument_errors annotation )
-          with
-          | [], [] -> Found { selected_return_annotation = instantiated_return_annotation }
-          | reason :: reasons, _
-          | [], reason :: reasons ->
-              let importance = function
-                | AbstractClassInstantiation _ -> 1
-                | CallingParameterVariadicTypeVariable -> 1
-                | InvalidKeywordArgument _ -> 0
-                | InvalidVariableArgument _ -> 0
-                | Mismatches _ -> -1
-                | MissingArgument _ -> 1
-                | MutuallyRecursiveTypeVariables -> 1
-                | ProtocolInstantiation _ -> 1
-                | TooManyArguments _ -> 1
-                | TypedDictionaryInitializationError _ -> 1
-                | UnexpectedKeyword _ -> 1
-              in
-              let get_most_important best_reason reason =
-                if importance reason > importance best_reason then
-                  reason
-                else
-                  match best_reason, reason with
-                  | Mismatches mismatches, Mismatches other_mismatches ->
-                      Mismatches (List.append mismatches other_mismatches)
-                  | _, _ -> best_reason
-              in
-              let sort_mismatches reason =
-                match reason with
-                | Mismatches mismatches ->
-                    let compare_mismatches mismatch other_mismatch =
-                      match mismatch, other_mismatch with
-                      | ( Mismatch { Node.value = { position; _ }; _ },
-                          Mismatch { Node.value = { position = other_position; _ }; _ } ) ->
-                          position - other_position
-                      | _, _ -> 0
-                    in
-                    Mismatches (List.sort mismatches ~compare:compare_mismatches)
-                | _ -> reason
-              in
-              let reason =
-                Some (List.fold ~init:reason ~f:get_most_important reasons |> sort_mismatches)
-              in
-              NotFound { closest_return_annotation = instantiated_return_annotation; reason }
-        in
-        let { implementation = { annotation = default_return_annotation; _ }; _ } = callable in
-        signature_matches
-        |> get_best_rank ~best_matches:[] ~best_rank:Int.max_value ~getter:get_arity_rank
-        |> get_best_rank ~best_matches:[] ~best_rank:Int.max_value ~getter:get_annotation_rank
-        |> get_best_rank ~best_matches:[] ~best_rank:Int.max_value ~getter:get_position_rank
-        (* Each get_best_rank reverses the list, because we have an odd number, we need an extra
-           reverse in order to prefer the first defined overload *)
-        |> List.rev
-        |> List.hd
-        >>| determine_reason
-        |> Option.value
-             ~default:
-               (NotFound { closest_return_annotation = default_return_annotation; reason = None })
-      in
-      let rec check_arity_and_annotations implementation ~(arguments : Argument.WithPosition.t list)
-        =
-        let base_signature_match =
-          {
-            callable = { callable with Type.Callable.implementation; overloads = [] };
-            argument_mapping = Parameter.Map.empty;
-            constraints_set = [TypeConstraints.empty];
-            ranks = { arity = 0; annotation = 0; position = 0 };
-            reasons = { arity = []; annotation = [] };
-          }
-        in
-        let { parameters = all_parameters; _ } = implementation in
-        match all_parameters with
-        | Defined parameters ->
-            match_arity base_signature_match ~arguments ~parameters ~all_parameters
-            |> check_annotations
-            |> fun signature_match -> [signature_match]
-        | Undefined -> [base_signature_match]
-        | ParameterVariadicTypeVariable { head; variable }
-          when Type.Variable.Variadic.Parameters.is_free variable -> (
-            let front, back =
-              let is_labeled = function
-                | { Argument.WithPosition.kind = Named _; _ } -> true
-                | _ -> false
-              in
-              let labeled, unlabeled = List.partition_tf arguments ~f:is_labeled in
-              let first_unlabeled, remainder = List.split_n unlabeled (List.length head) in
-              first_unlabeled, labeled @ remainder
-            in
-            let ({
-                   constraints_set;
-                   reasons = { arity = head_arity; annotation = head_annotation };
-                   _;
-                 } as head_signature)
-              =
-              match_arity
-                base_signature_match
-                ~arguments:front
-                ~parameters:(Type.Callable.prepend_anonymous_parameters ~head ~tail:[])
-                ~all_parameters
-              |> check_annotations
-            in
-            let solve_back parameters =
-              let constraints_set =
-                (* If we use this option, we have to commit to it as to not move away from it later *)
-                TypeOrder.OrderedConstraintsSet.add
-                  constraints_set
-                  ~new_constraint:(VariableIsExactly (ParameterVariadicPair (variable, parameters)))
-                  ~order
-              in
-              check_arity_and_annotations { implementation with parameters } ~arguments:back
-              |> List.map
-                   ~f:(fun { reasons = { arity = tail_arity; annotation = tail_annotation }; _ } ->
-                     {
-                       base_signature_match with
-                       constraints_set;
-                       reasons =
-                         {
-                           arity = head_arity @ tail_arity;
-                           annotation = head_annotation @ tail_annotation;
-                         };
-                     })
-            in
-            TypeOrder.OrderedConstraintsSet.get_parameter_specification_possibilities
-              constraints_set
-              ~parameter_specification:variable
-              ~order
-            |> List.concat_map ~f:solve_back
-            |> function
-            | [] -> [head_signature]
-            | nonempty -> nonempty)
-        | ParameterVariadicTypeVariable { head; variable } -> (
-            let combines_into_variable ~positional_component ~keyword_component =
-              Type.Variable.Variadic.Parameters.Components.combine
-                { positional_component; keyword_component }
-              >>| Type.Variable.Variadic.Parameters.equal variable
-              |> Option.value ~default:false
-            in
-            match List.rev arguments with
-            | { kind = DoubleStar; resolved = keyword_component; _ }
-              :: { kind = SingleStar; resolved = positional_component; _ }
-                 :: reversed_arguments_head
-              when combines_into_variable ~positional_component ~keyword_component ->
-                let arguments = List.rev reversed_arguments_head in
-                match_arity
-                  base_signature_match
-                  ~arguments
-                  ~parameters:(Type.Callable.prepend_anonymous_parameters ~head ~tail:[])
-                  ~all_parameters
-                |> check_annotations
-                |> fun signature_match -> [signature_match]
-            | _ ->
-                [
-                  {
-                    base_signature_match with
-                    reasons = { arity = [CallingParameterVariadicTypeVariable]; annotation = [] };
-                  };
-                ])
-      in
-
       let get_match signatures =
-        let arguments =
-          let arguments =
-            let add_index index { Argument.expression; kind; resolved } =
-              { Argument.WithPosition.position = index + 1; expression; kind; resolved }
-            in
-            List.mapi arguments ~f:add_index
-          in
-          let unpack sofar argument =
-            match argument with
-            | {
-             Argument.WithPosition.resolved = Tuple (Concrete tuple_parameters);
-             kind = SingleStar;
-             position;
-             expression;
-            } ->
-                let unpacked_arguments =
-                  List.map tuple_parameters ~f:(fun resolved ->
-                      { Argument.WithPosition.expression; kind = Positional; resolved; position })
-                in
-                List.concat [List.rev unpacked_arguments; sofar]
-            | _ -> argument :: sofar
-          in
-          let update_position index argument =
-            Argument.WithPosition.{ argument with position = index + 1 }
-          in
-          let arguments =
-            List.fold ~f:unpack ~init:[] arguments |> List.rev |> List.mapi ~f:update_position
-          in
-          let is_labeled = function
-            | { Argument.WithPosition.kind = Named _; _ } -> true
-            | _ -> false
-          in
-          let labeled_arguments, unlabeled_arguments =
-            arguments |> List.partition_tf ~f:is_labeled
-          in
-          let self_argument =
-            self_argument
-            >>| (fun resolved ->
-                  {
-                    Argument.WithPosition.position = 0;
-                    expression = None;
-                    kind = Positional;
-                    resolved;
-                  })
-            |> Option.to_list
-          in
-          self_argument @ labeled_arguments @ unlabeled_arguments
+        let check_arguments_against_signature =
+          SignatureSelection.check_arguments_against_signature
+            ~order
+            ~resolve_mutable_literals:(self#resolve_mutable_literals ~assumptions)
+            ~resolve_with_locals
+            ~callable
+            ~self_argument
+            ~arguments:
+              (SignatureSelection.prepare_arguments_for_signature_selection
+                 ~self_argument
+                 arguments)
         in
         signatures
-        |> List.concat_map ~f:(check_arity_and_annotations ~arguments)
-        |> List.map ~f:calculate_rank
-        |> find_closest
+        |> List.concat_map ~f:check_arguments_against_signature
+        |> SignatureSelection.find_closest_signature
+        >>| SignatureSelection.instantiate_return_annotation ~skip_marking_escapees ~order
+        |> Option.value ~default:(SignatureSelection.default_signature callable)
       in
       if List.is_empty overloads then
         get_match [implementation]
@@ -3962,7 +4103,7 @@ class base class_metadata_environment dependency =
 
     method global_annotation ~assumptions name =
       let process_unannotated_global global =
-        let produce_assignment_global ~is_explicit annotation =
+        let produce_assignment_global ~is_explicit ~is_final annotation =
           let original =
             if is_explicit then
               None
@@ -3974,7 +4115,7 @@ class base class_metadata_environment dependency =
             else
               None
           in
-          Annotation.create_immutable ~original annotation
+          Annotation.create_immutable ~final:is_final ~original annotation
         in
         match global with
         | UnannotatedGlobal.Define defines ->
@@ -4036,12 +4177,17 @@ class base class_metadata_environment dependency =
               >>| self#parse_annotation ~assumptions
               >>= fun annotation -> Option.some_if (not (Type.is_type_alias annotation)) annotation
             in
-            let annotation =
+            let annotation, is_final =
               match explicit_annotation with
-              | Some explicit -> explicit
-              | None -> self#resolve_literal value ~assumptions
+              | Some explicit when Type.is_final explicit ->
+                  Type.final_value explicit |> Option.value ~default:explicit, true
+              | Some explicit -> explicit, false
+              | None -> self#resolve_literal value ~assumptions, false
             in
-            produce_assignment_global ~is_explicit:(Option.is_some explicit_annotation) annotation
+            produce_assignment_global
+              ~is_explicit:(Option.is_some explicit_annotation)
+              ~is_final
+              annotation
             |> fun annotation ->
             Some { Global.annotation; undecorated_signature = None; problem = None }
         | TupleAssign { value; index; total_length; _ } ->
@@ -4056,7 +4202,7 @@ class base class_metadata_environment dependency =
                   |> Option.value ~default:Type.Top
               | _ -> Type.Top
             in
-            produce_assignment_global ~is_explicit:false extracted
+            produce_assignment_global ~is_explicit:false ~is_final:false extracted
             |> fun annotation ->
             Some { Global.annotation; undecorated_signature = None; problem = None }
         | _ -> None
@@ -4369,7 +4515,7 @@ module GlobalAnnotationCache = struct
       | None -> "None"
 
 
-    let equal_value = Option.equal Global.equal
+    let equal_value = Option.equal [%compare.equal: Global.t]
   end)
 
   include Cache

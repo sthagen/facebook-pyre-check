@@ -348,13 +348,13 @@ let test_type_collection context =
     in
     let { Define.signature = { name; _ }; body = statements; _ } = List.nth_exn defines 2 in
     let lookup =
-      TypeEnvironment.ReadOnly.get_local_annotations environment (Node.value name)
+      TypeEnvironment.ReadOnly.get_local_annotations environment name
       |> fun value -> Option.value_exn value
     in
     let test_expect (node_id, statement_index, test_expression, expected_type) =
-      let key = [%hash: int * int] (node_id, statement_index) in
+      let statement_key = [%hash: int * int] (node_id, statement_index) in
       let annotation_store =
-        LocalAnnotationMap.ReadOnly.get_precondition lookup key
+        LocalAnnotationMap.ReadOnly.get_precondition lookup ~statement_key
         |> fun value -> Option.value_exn value
       in
       let global_resolution = TypeEnvironment.ReadOnly.global_resolution environment in

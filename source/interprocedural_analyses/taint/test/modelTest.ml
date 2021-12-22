@@ -12,7 +12,6 @@ open Test
 open TestHelper
 module Target = Interprocedural.Target
 open Taint
-open Model.ModelQuery
 
 let set_up_environment ?source ?rules ~context ~model_source () =
   let source =
@@ -69,8 +68,8 @@ let set_up_environment ?source ?rules ~context ~model_source () =
     | Some rules -> Some (List.map rules ~f:(fun { Taint.TaintConfiguration.Rule.code; _ } -> code))
     | None -> None
   in
-  let ({ Taint.Model.errors; skip_overrides; _ } as parse_result) =
-    Taint.Model.parse
+  let ({ ModelParser.errors; skip_overrides; _ } as parse_result) =
+    ModelParser.parse
       ~resolution
       ?rule_filter
       ~source
@@ -82,7 +81,7 @@ let set_up_environment ?source ?rules ~context ~model_source () =
   assert_bool
     (Format.sprintf
        "Models have parsing errors: %s"
-       (List.to_string errors ~f:Taint.Model.display_verification_error))
+       (List.to_string errors ~f:ModelVerificationError.display))
     (List.is_empty errors);
 
   let environment =
@@ -92,7 +91,7 @@ let set_up_environment ?source ?rules ~context ~model_source () =
 
 
 let assert_model ?source ?rules ?expected_skipped_overrides ~context ~model_source ~expect () =
-  let { Taint.Model.models; _ }, environment, skip_overrides =
+  let { ModelParser.models; _ }, environment, skip_overrides =
     set_up_environment ?source ?rules ~context ~model_source ()
   in
   begin
@@ -110,13 +109,63 @@ let assert_model ?source ?rules ?expected_skipped_overrides ~context ~model_sour
   List.iter ~f:(check_expectation ~environment ~get_model) expect
 
 
+let assert_invalid_model ?path ?source ?(sources = []) ~context ~model_source ~expect () =
+  let source =
+    match source with
+    | Some source -> source
+    | None ->
+        {|
+              unannotated_global = source()
+              def sink(parameter) -> None: pass
+              def sink_with_optional(parameter, firstOptional=1, secondOptional=2) -> None: pass
+              def source() -> None: pass
+              def taint(x, y) -> None: pass
+              def partial_sink(x, y) -> None: pass
+              def function_with_args(normal_arg, __anonymous_arg, *args) -> None: pass
+              def function_with_kwargs(normal_arg, **kwargs) -> None: pass
+              def anonymous_only(__arg1, __arg2, __arg3) -> None: pass
+              def anonymous_with_optional(__arg1, __arg2, __arg3=2) -> None: pass
+              class C:
+                unannotated_class_variable = source()
+            |}
+  in
+  let sources = ("test.py", source) :: sources in
+  let resolution = ScratchProject.setup ~context sources |> ScratchProject.build_resolution in
+  let configuration =
+    TaintConfiguration.
+      {
+        empty with
+        sources = List.map ~f:(fun name -> { AnnotationParser.name; kind = Named }) ["A"; "B"];
+        sinks = List.map ~f:(fun name -> { AnnotationParser.name; kind = Named }) ["X"; "Y"; "Test"];
+        features = ["featureA"; "featureB"];
+        rules = [];
+        partial_sink_labels = String.Map.Tree.of_alist_exn ["Test", ["a"; "b"]];
+      }
+  in
+  let error_message =
+    let path = path >>| PyrePath.create_absolute in
+    ModelParser.parse
+      ~resolution
+      ~configuration
+      ?path
+      ~source:(Test.trim_extra_indentation model_source)
+      ~callables:None
+      ~stubs:(Target.HashSet.create ())
+      Target.Map.empty
+    |> fun { ModelParser.errors; _ } ->
+    List.hd errors >>| ModelVerificationError.display |> Option.value ~default:"no failure"
+  in
+  assert_equal ~printer:ident expect error_message
+
+
 let assert_queries ?source ?rules ~context ~model_source ~expect () =
-  let { Taint.Model.queries; _ }, _, _ =
+  let { ModelParser.queries; _ }, _, _ =
     set_up_environment ?source ?rules ~context ~model_source ()
   in
   assert_equal
-    ~cmp:(List.equal (fun left right -> compare_rule left right = 0))
-    ~printer:(List.to_string ~f:show_rule)
+    ~cmp:
+      (List.equal (fun left right -> ModelParser.Internal.ModelQuery.compare_rule left right = 0))
+    ~printer:(List.to_string ~f:ModelParser.Internal.ModelQuery.show_rule)
     queries
     expect
 
@@ -254,6 +303,7 @@ let test_source_models context =
 let test_global_sanitize context =
   let open Taint.Domains in
   let assert_model = assert_model ~context in
+  let assert_invalid_model = assert_invalid_model ~context in
   assert_model
     ~model_source:{|
       @Sanitize
@@ -323,20 +373,15 @@ let test_global_sanitize context =
           "test.taint";
       ]
     ();
-  assert_model
+  assert_invalid_model
     ~model_source:
       {|
       @Sanitize(TaintSource, TaintInTaintOut)
       def test.taint(x): ...
     |}
     ~expect:
-      [
-        outcome
-          ~kind:`Function
-          ~global_sanitizer:
-            { Sanitize.sources = Some AllSources; sinks = None; tito = Some AllTito }
-          "test.taint";
-      ]
+      "`Sanitize[(TaintSource, TaintInTaintOut)]` is an invalid taint annotation: \
+       `Sanitize[TaintSource]` is ambiguous here. Did you mean `Sanitize`?"
     ();
   assert_model
     ~model_source:{|
@@ -494,7 +539,7 @@ let test_global_sanitize context =
           ~kind:`Function
           ~global_sanitizer:
             { Sanitize.sources = Some AllSources; sinks = Some AllSinks; tito = Some AllTito }
-          ~analysis_modes:(Taint.Result.ModeSet.singleton SkipDecoratorWhenInlining)
+          ~analysis_modes:(Model.ModeSet.singleton SkipDecoratorWhenInlining)
           "test.taint";
       ]
     ()
@@ -607,6 +652,7 @@ let test_attribute_sanitize context =
 let test_parameter_sanitize context =
   let open Taint.Domains in
   let assert_model = assert_model ~context in
+  let assert_invalid_model = assert_invalid_model ~context in
   assert_model
     ~model_source:{|
       def test.taint(x: Sanitize): ...
@@ -626,41 +672,21 @@ let test_parameter_sanitize context =
           "test.taint";
       ]
     ();
-  assert_model
+  assert_invalid_model
     ~model_source:{|
       def test.taint(x: Sanitize[TaintSource]): ...
     |}
     ~expect:
-      [
-        outcome
-          ~kind:`Function
-          ~parameter_sanitizers:
-            [
-              {
-                name = "x";
-                sanitize = { Sanitize.sources = Some AllSources; sinks = None; tito = None };
-              };
-            ]
-          "test.taint";
-      ]
+      "`Sanitize[TaintSource]` is an invalid taint annotation: `Sanitize[TaintSource]` is \
+       ambiguous here. Did you mean `Sanitize`?"
     ();
-  assert_model
+  assert_invalid_model
     ~model_source:{|
       def test.taint(x: Sanitize[TaintSink]): ...
     |}
     ~expect:
-      [
-        outcome
-          ~kind:`Function
-          ~parameter_sanitizers:
-            [
-              {
-                name = "x";
-                sanitize = { Sanitize.sources = None; sinks = Some AllSinks; tito = None };
-              };
-            ]
-          "test.taint";
-      ]
+      "`Sanitize[TaintSink]` is an invalid taint annotation: `Sanitize[TaintSink]` is ambiguous \
+       here. Did you mean `Sanitize`?"
     ();
   assert_model
     ~model_source:{|
@@ -680,46 +706,22 @@ let test_parameter_sanitize context =
           "test.taint";
       ]
     ();
-  assert_model
+  assert_invalid_model
     ~model_source:
       {|
       def test.taint(x: Sanitize[TaintSource], y: Sanitize[TaintInTaintOut]): ...
     |}
     ~expect:
-      [
-        outcome
-          ~kind:`Function
-          ~parameter_sanitizers:
-            [
-              {
-                name = "x";
-                sanitize = { Sanitize.sources = Some AllSources; sinks = None; tito = None };
-              };
-              {
-                name = "y";
-                sanitize = { Sanitize.sources = None; sinks = None; tito = Some AllTito };
-              };
-            ]
-          "test.taint";
-      ]
+      "`Sanitize[TaintSource]` is an invalid taint annotation: `Sanitize[TaintSource]` is \
+       ambiguous here. Did you mean `Sanitize`?"
     ();
-  assert_model
+  assert_invalid_model
     ~model_source:{|
       def test.taint(x: Sanitize[TaintSource, TaintInTaintOut]): ...
     |}
     ~expect:
-      [
-        outcome
-          ~kind:`Function
-          ~parameter_sanitizers:
-            [
-              {
-                name = "x";
-                sanitize = { Sanitize.sources = Some AllSources; sinks = None; tito = Some AllTito };
-              };
-            ]
-          "test.taint";
-      ]
+      "`Sanitize[(TaintSource, TaintInTaintOut)]` is an invalid taint annotation: \
+       `Sanitize[TaintSource]` is ambiguous here. Did you mean `Sanitize`?"
     ();
   assert_model
     ~model_source:{|
@@ -900,6 +902,7 @@ let test_parameter_sanitize context =
 let test_return_sanitize context =
   let open Taint.Domains in
   let assert_model = assert_model ~context in
+  let assert_invalid_model = assert_invalid_model ~context in
   assert_model
     ~model_source:{|
       def test.taint(x) -> Sanitize: ...
@@ -913,29 +916,21 @@ let test_return_sanitize context =
           "test.taint";
       ]
     ();
-  assert_model
+  assert_invalid_model
     ~model_source:{|
       def test.taint(x) -> Sanitize[TaintSource]: ...
     |}
     ~expect:
-      [
-        outcome
-          ~kind:`Function
-          ~return_sanitizer:{ Sanitize.sources = Some AllSources; sinks = None; tito = None }
-          "test.taint";
-      ]
+      "`Sanitize[TaintSource]` is an invalid taint annotation: `Sanitize[TaintSource]` is \
+       ambiguous here. Did you mean `Sanitize`?"
     ();
-  assert_model
+  assert_invalid_model
     ~model_source:{|
       def test.taint(x) -> Sanitize[TaintSink]: ...
     |}
     ~expect:
-      [
-        outcome
-          ~kind:`Function
-          ~return_sanitizer:{ Sanitize.sources = None; sinks = Some AllSinks; tito = None }
-          "test.taint";
-      ]
+      "`Sanitize[TaintSink]` is an invalid taint annotation: `Sanitize[TaintSink]` is ambiguous \
+       here. Did you mean `Sanitize`?"
     ();
   assert_model
     ~model_source:{|
@@ -949,18 +944,13 @@ let test_return_sanitize context =
           "test.taint";
       ]
     ();
-  assert_model
+  assert_invalid_model
     ~model_source:{|
       def test.taint(x) -> Sanitize[TaintSource, TaintInTaintOut]: ...
     |}
     ~expect:
-      [
-        outcome
-          ~kind:`Function
-          ~return_sanitizer:
-            { Sanitize.sources = Some AllSources; sinks = None; tito = Some AllTito }
-          "test.taint";
-      ]
+      "`Sanitize[(TaintSource, TaintInTaintOut)]` is an invalid taint annotation: \
+       `Sanitize[TaintSource]` is ambiguous here. Did you mean `Sanitize`?"
     ();
   assert_model
     ~model_source:{|
@@ -1104,6 +1094,7 @@ let test_return_sanitize context =
 let test_parameters_sanitize context =
   let open Taint.Domains in
   let assert_model = assert_model ~context in
+  let assert_invalid_model = assert_invalid_model ~context in
   assert_model
     ~model_source:{|
       @Sanitize(Parameters)
@@ -1118,31 +1109,23 @@ let test_parameters_sanitize context =
           "test.taint";
       ]
     ();
-  assert_model
+  assert_invalid_model
     ~model_source:{|
       @Sanitize(Parameters[TaintSource])
       def test.taint(x): ...
     |}
     ~expect:
-      [
-        outcome
-          ~kind:`Function
-          ~parameters_sanitizer:{ Sanitize.sources = Some AllSources; sinks = None; tito = None }
-          "test.taint";
-      ]
+      "`Sanitize[TaintSource]` is an invalid taint annotation: `Sanitize[TaintSource]` is \
+       ambiguous here. Did you mean `Sanitize`?"
     ();
-  assert_model
+  assert_invalid_model
     ~model_source:{|
       @Sanitize(Parameters[TaintSink])
       def test.taint(x): ...
     |}
     ~expect:
-      [
-        outcome
-          ~kind:`Function
-          ~parameters_sanitizer:{ Sanitize.sources = None; sinks = Some AllSinks; tito = None }
-          "test.taint";
-      ]
+      "`Sanitize[TaintSink]` is an invalid taint annotation: `Sanitize[TaintSink]` is ambiguous \
+       here. Did you mean `Sanitize`?"
     ();
   assert_model
     ~model_source:
@@ -1158,7 +1141,7 @@ let test_parameters_sanitize context =
           "test.taint";
       ]
     ();
-  assert_model
+  assert_invalid_model
     ~model_source:
       {|
       @Sanitize(Parameters[TaintSource])
@@ -1166,28 +1149,18 @@ let test_parameters_sanitize context =
       def test.taint(x): ...
     |}
     ~expect:
-      [
-        outcome
-          ~kind:`Function
-          ~parameters_sanitizer:
-            { Sanitize.sources = Some AllSources; sinks = None; tito = Some AllTito }
-          "test.taint";
-      ]
+      "`Sanitize[TaintSource]` is an invalid taint annotation: `Sanitize[TaintSource]` is \
+       ambiguous here. Did you mean `Sanitize`?"
     ();
-  assert_model
+  assert_invalid_model
     ~model_source:
       {|
       @Sanitize(Parameters[TaintSource, TaintInTaintOut])
       def test.taint(x): ...
     |}
     ~expect:
-      [
-        outcome
-          ~kind:`Function
-          ~parameters_sanitizer:
-            { Sanitize.sources = Some AllSources; sinks = None; tito = Some AllTito }
-          "test.taint";
-      ]
+      "`Sanitize[(TaintSource, TaintInTaintOut)]` is an invalid taint annotation: \
+       `Sanitize[TaintSource]` is ambiguous here. Did you mean `Sanitize`?"
     ();
   assert_model
     ~model_source:
@@ -1548,8 +1521,8 @@ let test_class_models context =
     ~source:
       {|
         class Sink:
-          def Sink.method(parameter): ...
-          def Sink.method_with_multiple_parameters(first, second): ...
+          def method(parameter): ...
+          def method_with_multiple_parameters(first, second): ...
       |}
     ~model_source:"class test.Sink(TaintSink[TestSink]): ..."
     ~expect:
@@ -1572,8 +1545,8 @@ let test_class_models context =
     ~source:
       {|
         class Sink:
-          def Sink.method(parameter): ...
-          def Sink.method_with_multiple_parameters(first, second): ...
+          def method(parameter): ...
+          def method_with_multiple_parameters(first, second): ...
       |}
     ~model_source:"class test.Sink(TaintSink[TestSink], TaintSink[OtherSink]): ..."
     ~expect:
@@ -1599,10 +1572,9 @@ let test_class_models context =
       ]
     ();
   assert_model
-    ~source:
-      {|
+    ~source:{|
         class SinkAndSource:
-          def SinkAndSource.method(parameter): ...
+          def method(parameter): ...
       |}
     ~model_source:"class test.SinkAndSource(TaintSink[TestSink], TaintSource[TestTest]): ..."
     ~expect:
@@ -1619,8 +1591,8 @@ let test_class_models context =
     ~source:
       {|
         class Source:
-          def Source.method(parameter): ...
-          def Source.method_with_multiple_parameters(first, second): ...
+          def method(parameter): ...
+          def method_with_multiple_parameters(first, second): ...
           Source.attribute = ...
       |}
     ~model_source:{|
@@ -1639,7 +1611,7 @@ let test_class_models context =
     ~source:
       {|
         class AnnotatedSink:
-          def AnnotatedSink.method(parameter: int) -> None: ...
+          def method(parameter: int) -> None: ...
       |}
     ~model_source:"class test.AnnotatedSink(TaintSink[TestSink]): ..."
     ~expect:
@@ -1654,7 +1626,7 @@ let test_class_models context =
     ~source:
       {|
          class AnnotatedSource:
-          def AnnotatedSource.method(parameter: int) -> None: ...
+          def method(parameter: int) -> None: ...
       |}
     ~model_source:"class test.AnnotatedSource(TaintSource[UserControlled]): ..."
     ~expect:
@@ -1669,7 +1641,7 @@ let test_class_models context =
     ~source:
       {|
          class SourceWithDefault:
-          def SourceWithDefault.method(parameter: int = 1) -> None: ...
+          def method(parameter: int = 1) -> None: ...
       |}
     ~model_source:"class test.SourceWithDefault(TaintSink[Test]): ..."
     ~expect:
@@ -1685,7 +1657,7 @@ let test_class_models context =
       {|
          class Source:
            @classmethod
-           def Source.method(cls, parameter: int) -> None: ...
+           def method(cls, parameter: int) -> None: ...
       |}
     ~model_source:"class test.Source(TaintSource[UserControlled]): ..."
     ~expect:
@@ -1696,7 +1668,7 @@ let test_class_models context =
       {|
          class Source:
            @property
-           def Source.prop(self) -> int: ...
+           def prop(self) -> int: ...
       |}
     ~model_source:"class test.Source(TaintSource[UserControlled]): ..."
     ~expect:
@@ -1706,19 +1678,19 @@ let test_class_models context =
     ~source:
       {|
         class SkipMe:
-          def SkipMe.method(parameter): ...
-          def SkipMe.method_with_multiple_parameters(first, second): ...
+          def method(parameter): ...
+          def method_with_multiple_parameters(first, second): ...
       |}
     ~model_source:"class test.SkipMe(SkipAnalysis): ..."
     ~expect:
       [
         outcome
           ~kind:`Method
-          ~analysis_modes:(Taint.Result.ModeSet.singleton SkipAnalysis)
+          ~analysis_modes:(Model.ModeSet.singleton SkipAnalysis)
           "test.SkipMe.method";
         outcome
           ~kind:`Method
-          ~analysis_modes:(Taint.Result.ModeSet.singleton SkipAnalysis)
+          ~analysis_modes:(Model.ModeSet.singleton SkipAnalysis)
           "test.SkipMe.method_with_multiple_parameters";
       ]
     ();
@@ -1727,8 +1699,8 @@ let test_class_models context =
     ~source:
       {|
         class SkipMe:
-          def SkipMe.method(parameter): ...
-          def SkipMe.method_with_multiple_parameters(first, second): ...
+          def method(parameter): ...
+          def method_with_multiple_parameters(first, second): ...
       |}
     ~model_source:"class test.SkipMe(SkipOverrides): ..."
     ~expected_skipped_overrides:
@@ -1766,17 +1738,11 @@ let test_skip_analysis context =
       def test.taint(x): ...
     |}
     ~expect:
-      [
-        outcome
-          ~kind:`Function
-          ~analysis_modes:(Taint.Result.ModeSet.singleton SkipAnalysis)
-          "test.taint";
-      ]
+      [outcome ~kind:`Function ~analysis_modes:(Model.ModeSet.singleton SkipAnalysis) "test.taint"]
     ()
 
 
 let test_skip_inlining_decorator context =
-  let open Taint.Result in
   let assert_model = assert_model ~context in
   assert_model
     ~model_source:{|
@@ -1787,7 +1753,7 @@ let test_skip_inlining_decorator context =
       [
         outcome
           ~kind:`Function
-          ~analysis_modes:(ModeSet.singleton SkipDecoratorWhenInlining)
+          ~analysis_modes:(Model.ModeSet.singleton SkipDecoratorWhenInlining)
           "test.my_decorator";
       ]
     ();
@@ -1909,58 +1875,11 @@ let test_partial_sinks context =
 
 
 let test_invalid_models context =
-  let assert_invalid_model ?path ?source ?(sources = []) ~model_source ~expect () =
-    let source =
-      match source with
-      | Some source -> source
-      | None ->
-          {|
-              unannotated_global = source()
-              def test.sink(parameter) -> None: pass
-              def test.sink_with_optional(parameter, firstOptional=1, secondOptional=2) -> None: pass
-              def test.source() -> None: pass
-              def test.partial_sink(x, y) -> None: pass
-              def function_with_args(normal_arg, __anonymous_arg, *args) -> None: pass
-              def function_with_kwargs(normal_arg, **kwargs) -> None: pass
-              def anonymous_only(__arg1, __arg2, __arg3) -> None: pass
-              def anonymous_with_optional(__arg1, __arg2, __arg3=2) -> None: pass
-              class C:
-                unannotated_class_variable = source()
-            |}
-    in
-    let sources = ("test.py", source) :: sources in
-    let resolution = ScratchProject.setup ~context sources |> ScratchProject.build_resolution in
-    let configuration =
-      TaintConfiguration.
-        {
-          empty with
-          sources = List.map ~f:(fun name -> { AnnotationParser.name; kind = Named }) ["A"; "B"];
-          sinks =
-            List.map ~f:(fun name -> { AnnotationParser.name; kind = Named }) ["X"; "Y"; "Test"];
-          features = ["featureA"; "featureB"];
-          rules = [];
-          partial_sink_labels = String.Map.Tree.of_alist_exn ["Test", ["a"; "b"]];
-        }
-    in
-    let error_message =
-      let path = path >>| Path.create_absolute in
-      Model.parse
-        ~resolution
-        ~configuration
-        ?path
-        ~source:(Test.trim_extra_indentation model_source)
-        ~callables:None
-        ~stubs:(Target.HashSet.create ())
-        Target.Map.empty
-      |> fun { Taint.Model.errors; _ } ->
-      List.hd errors
-      >>| Taint.Model.display_verification_error
-      |> Option.value ~default:"no failure"
-    in
-    assert_equal ~printer:ident expect error_message
+  let assert_invalid_model ?path ?source ?sources ~model_source ~expect () =
+    assert_invalid_model ?path ?source ?sources ~context ~model_source ~expect ()
   in
-  let assert_valid_model ?source ?sources ~model_source () =
-    assert_invalid_model ?source ?sources ~model_source ~expect:"no failure" ()
+  let assert_valid_model ?path ?source ?sources ~model_source () =
+    assert_invalid_model ?path ?source ?sources ~model_source ~expect:"no failure" ()
   in
   assert_invalid_model ~model_source:"1 + import" ~expect:"Syntax error." ();
   assert_invalid_model ~model_source:"import foo" ~expect:"Unexpected statement." ();
@@ -1992,7 +1911,7 @@ let test_invalid_models context =
     ();
   assert_invalid_model
     ~model_source:"def test.source() -> TaintInTaintOut: ..."
-    ~expect:"Invalid model for `test.source`: Invalid return annotation: TaintInTaintOut"
+    ~expect:"Invalid model for `test.source`: Invalid return annotation `TaintInTaintOut`."
     ();
   assert_invalid_model
     ~model_source:"def test.sink(parameter: TaintInTaintOut[Test]): ..."
@@ -2472,7 +2391,7 @@ let test_invalid_models context =
   assert_valid_model ~model_source:"test.unannotated_global: TaintSink[Test]" ();
   assert_invalid_model
     ~model_source:"test.missing_global: TaintSink[Test]"
-    ~expect:"`test.missing_global` is not part of the environment!"
+    ~expect:"Module `test` does not define `test.missing_global`."
     ();
   assert_invalid_model
     ~source:{|
@@ -2858,8 +2777,9 @@ let test_invalid_models context =
       def test.foo(x): ...
     |}
     ~expect:
-      {|`Sanitize[TaintSource[(A, Via[featureA])]]` is an invalid taint annotation: `ModelParser.T.Source {source = A; breadcrumbs = [SimpleVia[featureA]];
-   via_features = []; path = ; leaf_names = []; leaf_name_provided = false}` is not supported within `Sanitize[...]`|}
+      {|`Sanitize[TaintSource[(A, Via[featureA])]]` is an invalid taint annotation: `ModelParser.Internal.Source {source = A;
+   breadcrumbs = [SimpleVia[featureA]]; via_features = []; path = ;
+   leaf_names = []; leaf_name_provided = false}` is not supported within `Sanitize[...]`|}
     ();
   assert_invalid_model
     ~model_source:
@@ -2980,7 +2900,8 @@ let test_invalid_models context =
       @Sanitize
       def a.not_in_environment(self): ...
     |}
-    ~expect:"a.py:2: `a.not_in_environment` is not part of the environment!"
+    ~expect:
+      "a.py:2: `a.not_in_environment` is not part of the environment, no module `a` in search path."
     ();
   assert_invalid_model
     ~path:"a.py"
@@ -2990,7 +2911,8 @@ let test_invalid_models context =
       @Sanitize(TaintSource)
       def a.not_in_environment(self): ...
     |}
-    ~expect:"a.py:2: `a.not_in_environment` is not part of the environment!"
+    ~expect:
+      "a.py:2: `a.not_in_environment` is not part of the environment, no module `a` in search path."
     ();
   assert_invalid_model
     ~source:{|
@@ -3031,11 +2953,15 @@ let test_invalid_models context =
   (* Error on non-existenting callables. *)
   assert_invalid_model
     ~model_source:"def not_in_the_environment(parameter: InvalidTaintDirection[Test]): ..."
-    ~expect:"`not_in_the_environment` is not part of the environment!"
+    ~expect:
+      "`not_in_the_environment` is not part of the environment, no module `not_in_the_environment` \
+       in search path."
     ();
   assert_invalid_model
     ~model_source:"def not_in_the_environment.derp(parameter: InvalidTaintDirection[Test]): ..."
-    ~expect:"`not_in_the_environment.derp` is not part of the environment!"
+    ~expect:
+      "`not_in_the_environment.derp` is not part of the environment, no module \
+       `not_in_the_environment` in search path."
     ();
   assert_invalid_model
     ~model_source:"def test(parameter: InvalidTaintDirection[Test]): ..."
@@ -3189,7 +3115,7 @@ let test_invalid_models context =
       @property
       def test.Child.foo(self) -> TaintSource[Test]: ...
     |}
-    ~expect:"`test.Child.foo` is not part of the environment!"
+    ~expect:"Module `test` does not define `test.Child.foo`."
     ();
   assert_invalid_model
     ~source:{|
@@ -3300,7 +3226,7 @@ let test_invalid_models context =
 
 let test_demangle_class_attributes _ =
   let assert_demangle ~expected name =
-    assert_equal expected (Model.demangle_class_attribute name)
+    assert_equal expected (ModelVerifier.demangle_class_attribute name)
   in
   assert_demangle ~expected:"a.B" "a.B";
   assert_demangle ~expected:"a.B" "a.__class__.B";
@@ -3408,6 +3334,8 @@ let test_filter_by_rules context =
 
 
 let test_query_parsing context =
+  let open ModelParser.Internal.ModelQuery in
+  let module ModelParser = ModelParser.Internal in
   assert_queries
     ~context
     ~model_source:
@@ -3429,7 +3357,7 @@ let test_query_parsing context =
               ReturnTaint
                 [
                   TaintAnnotation
-                    (Model.Source
+                    (Source
                        {
                          source = Sources.NamedSource "Test";
                          breadcrumbs = [];
@@ -3464,7 +3392,7 @@ let test_query_parsing context =
               ReturnTaint
                 [
                   TaintAnnotation
-                    (Model.Source
+                    (Source
                        {
                          source = Sources.NamedSource "Test";
                          breadcrumbs = [];
@@ -3503,7 +3431,7 @@ let test_query_parsing context =
               ReturnTaint
                 [
                   TaintAnnotation
-                    (Model.Source
+                    (ModelParser.Source
                        {
                          source = Sources.NamedSource "Test";
                          breadcrumbs = [];
@@ -3538,7 +3466,7 @@ let test_query_parsing context =
               ReturnTaint
                 [
                   TaintAnnotation
-                    (Model.Source
+                    (ModelParser.Source
                        {
                          source = Sources.NamedSource "Test";
                          breadcrumbs = [];
@@ -3548,7 +3476,7 @@ let test_query_parsing context =
                          leaf_name_provided = false;
                        });
                   TaintAnnotation
-                    (Model.Sink
+                    (ModelParser.Sink
                        {
                          sink = Sinks.NamedSink "Test";
                          breadcrumbs = [];
@@ -3583,7 +3511,7 @@ let test_query_parsing context =
               ReturnTaint
                 [
                   TaintAnnotation
-                    (Model.Source
+                    (ModelParser.Source
                        {
                          source = Sources.NamedSource "Test";
                          breadcrumbs = [];
@@ -3593,7 +3521,7 @@ let test_query_parsing context =
                          leaf_name_provided = false;
                        });
                   TaintAnnotation
-                    (Model.Sink
+                    (ModelParser.Sink
                        {
                          sink = Sinks.NamedSink "Test";
                          breadcrumbs = [];
@@ -3629,7 +3557,7 @@ let test_query_parsing context =
               ReturnTaint
                 [
                   TaintAnnotation
-                    (Model.Source
+                    (ModelParser.Source
                        {
                          source = Sources.NamedSource "Test";
                          breadcrumbs = [];
@@ -3639,7 +3567,7 @@ let test_query_parsing context =
                          leaf_name_provided = false;
                        });
                   TaintAnnotation
-                    (Model.Sink
+                    (ModelParser.Sink
                        {
                          sink = Sinks.NamedSink "Test";
                          breadcrumbs = [];
@@ -3675,7 +3603,7 @@ let test_query_parsing context =
               ReturnTaint
                 [
                   TaintAnnotation
-                    (Model.Source
+                    (ModelParser.Source
                        {
                          source = Sources.NamedSource "Test";
                          breadcrumbs = [];
@@ -3711,7 +3639,7 @@ let test_query_parsing context =
               ReturnTaint
                 [
                   TaintAnnotation
-                    (Model.Source
+                    (ModelParser.Source
                        {
                          source = Sources.NamedSource "Test";
                          breadcrumbs = [];
@@ -3757,7 +3685,53 @@ let test_query_parsing context =
               ReturnTaint
                 [
                   TaintAnnotation
-                    (Model.Source
+                    (ModelParser.Source
+                       {
+                         source = Sources.NamedSource "Test";
+                         breadcrumbs = [];
+                         via_features = [];
+                         path = [];
+                         leaf_names = [];
+                         leaf_name_provided = false;
+                       });
+                ];
+            ];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+       name = "foo_finders",
+       find = "functions",
+       where = AllOf(
+         any_parameter.annotation.is_annotated_type(),
+         return_annotation.is_annotated_type(),
+       ),
+       model = [Returns([TaintSource[Test]])]
+    )
+    |}
+    ~expect:
+      [
+        {
+          name = Some "foo_finders";
+          query =
+            [
+              AllOf
+                [
+                  AnyParameterConstraint (AnnotationConstraint IsAnnotatedTypeConstraint);
+                  ReturnConstraint IsAnnotatedTypeConstraint;
+                ];
+            ];
+          rule_kind = FunctionModel;
+          productions =
+            [
+              ReturnTaint
+                [
+                  TaintAnnotation
+                    (ModelParser.Source
                        {
                          source = Sources.NamedSource "Test";
                          breadcrumbs = [];
@@ -3797,7 +3771,7 @@ let test_query_parsing context =
                   taint =
                     [
                       TaintAnnotation
-                        (Model.Source
+                        (ModelParser.Source
                            {
                              source = Sources.NamedSource "Test";
                              breadcrumbs = [];
@@ -3837,7 +3811,7 @@ let test_query_parsing context =
                   taint =
                     [
                       TaintAnnotation
-                        (Model.Source
+                        (ModelParser.Source
                            {
                              source = Sources.NamedSource "Test";
                              breadcrumbs = [];
@@ -3877,7 +3851,7 @@ let test_query_parsing context =
                   taint =
                     [
                       TaintAnnotation
-                        (Model.Source
+                        (ModelParser.Source
                            {
                              source = Sources.NamedSource "Test";
                              breadcrumbs = [];
@@ -3984,7 +3958,7 @@ let test_query_parsing context =
               ReturnTaint
                 [
                   TaintAnnotation
-                    (Model.Source
+                    (ModelParser.Source
                        {
                          source = Sources.NamedSource "Test";
                          breadcrumbs = [];
@@ -3994,7 +3968,7 @@ let test_query_parsing context =
                          leaf_name_provided = false;
                        });
                   TaintAnnotation
-                    (Model.Sink
+                    (ModelParser.Sink
                        {
                          sink = Sinks.NamedSink "Test";
                          breadcrumbs = [];
@@ -4029,7 +4003,7 @@ let test_query_parsing context =
               ReturnTaint
                 [
                   TaintAnnotation
-                    (Model.Source
+                    (ModelParser.Source
                        {
                          source = Sources.NamedSource "Test";
                          breadcrumbs = [];
@@ -4039,7 +4013,7 @@ let test_query_parsing context =
                          leaf_name_provided = false;
                        });
                   TaintAnnotation
-                    (Model.Sink
+                    (ModelParser.Sink
                        {
                          sink = Sinks.NamedSink "Test";
                          breadcrumbs = [];
@@ -4074,7 +4048,7 @@ let test_query_parsing context =
               ReturnTaint
                 [
                   TaintAnnotation
-                    (Model.Source
+                    (ModelParser.Source
                        {
                          source = Sources.NamedSource "Test";
                          breadcrumbs = [];
@@ -4109,7 +4083,7 @@ let test_query_parsing context =
               ReturnTaint
                 [
                   TaintAnnotation
-                    (Model.Source
+                    (ModelParser.Source
                        {
                          source = Sources.NamedSource "Test";
                          breadcrumbs = [];
@@ -4144,7 +4118,7 @@ let test_query_parsing context =
               ReturnTaint
                 [
                   TaintAnnotation
-                    (Model.Source
+                    (ModelParser.Source
                        {
                          source = Sources.NamedSource "Test";
                          breadcrumbs = [];
@@ -4154,7 +4128,7 @@ let test_query_parsing context =
                          leaf_name_provided = false;
                        });
                   TaintAnnotation
-                    (Model.Sink
+                    (ModelParser.Sink
                        {
                          sink = Sinks.NamedSink "Test";
                          breadcrumbs = [];
@@ -4194,7 +4168,7 @@ let test_query_parsing context =
               ReturnTaint
                 [
                   TaintAnnotation
-                    (Model.Source
+                    (ModelParser.Source
                        {
                          source = Sources.NamedSource "Test";
                          breadcrumbs = [];
@@ -4266,7 +4240,7 @@ let test_query_parsing context =
                   taint =
                     [
                       TaintAnnotation
-                        (Model.Sink
+                        (ModelParser.Sink
                            {
                              sink = Sinks.NamedSink "Test";
                              breadcrumbs = [];

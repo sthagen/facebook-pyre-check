@@ -18,9 +18,10 @@ module Error = AnalysisError
 let ignore ~qualifier { Source.metadata = { Source.Metadata.ignore_lines; _ }; _ } errors =
   let unused_ignores, ignore_lookup =
     let unused_ignores = Location.Table.create () in
-    let ignore_lookup = Location.Table.create () in
+    let ignore_lookup = Int.Table.create () in
     List.iter ignore_lines ~f:(fun ignore ->
-        Hashtbl.add_multi ignore_lookup ~key:(Ignore.key ignore) ~data:ignore);
+        let key = Ignore.ignored_line ignore in
+        Hashtbl.add_multi ignore_lookup ~key ~data:ignore);
     let register_unused_ignore ignore =
       match Ignore.kind ignore with
       | Ignore.TypeIgnore ->
@@ -60,8 +61,10 @@ let ignore ~qualifier { Source.metadata = { Source.Metadata.ignore_lines; _ }; _
           ignored := true)
       in
       let key =
-        (* Don't care about module name here since we always operate within the same module *)
-        Error.key error |> fun { Location.WithModule.start; stop; _ } -> { Location.start; stop }
+        let { Error.location = { Location.WithModule.start = { Location.line; _ }; _ }; _ } =
+          error
+        in
+        line
       in
       Hashtbl.find ignore_lookup key >>| List.iter ~f:process_ignore |> ignore;
       not !ignored
@@ -156,13 +159,7 @@ let run ~scheduler ~configuration ~environment sources =
         when is_external ->
           []
       | Some (Result.Error { AstEnvironment.ParserError.is_suppressed; _ }) when is_suppressed -> []
-      | Some (Result.Error { AstEnvironment.ParserError.message; _ }) ->
-          let location =
-            {
-              Location.start = { Location.line = 1; column = 1 };
-              stop = { Location.line = 1; column = 1 };
-            }
-          in
+      | Some (Result.Error { AstEnvironment.ParserError.message; location; _ }) ->
           let location_with_module =
             {
               Location.WithModule.path = module_name;

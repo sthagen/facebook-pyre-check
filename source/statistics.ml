@@ -90,10 +90,10 @@ let sample ?(integers = []) ?(normals = []) ?(metadata = true) () =
                   { Configuration.Server.shared_memory_path; changed_files_path })) ->
               let changed =
                 match changed_files_path with
-                | Some changed -> ["changed_files_path", Path.absolute changed]
+                | Some changed -> ["changed_files_path", PyrePath.absolute changed]
                 | None -> []
               in
-              ("shared_memory_path", Path.absolute shared_memory_path) :: changed
+              ("shared_memory_path", PyrePath.absolute shared_memory_path) :: changed
           | Some
               (Configuration.Server.Load (Configuration.Server.LoadFromProject { project_name; _ }))
             ->
@@ -101,7 +101,7 @@ let sample ?(integers = []) ?(normals = []) ?(metadata = true) () =
           | Some (Configuration.Server.Save project) -> ["save_state_to", project]
           | None -> []
         in
-        ("socket_path", Path.absolute socket_path) :: saved_state_metadata
+        ("socket_path", PyrePath.absolute socket_path) :: saved_state_metadata
     | None -> []
   in
   let normals =
@@ -297,8 +297,3 @@ let log_worker_exception ~pid ~origin status =
         "fatal", "true";
       ]
     ()
-
-
-let server_telemetry normals =
-  sample ~integers:["time", Unix.time () |> Int.of_float] ~normals ~metadata:false ()
-  |> log ~flush:true "perfpipe_pyre_server_telemetry"

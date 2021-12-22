@@ -5,13 +5,12 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-open Pyre
-
 module ClassDefinitionsCache : sig
   val invalidate : unit -> unit
 end
 
-module T : sig
+(* Exposed for model queries. *)
+module Internal : sig
   type breadcrumbs = Features.Breadcrumb.t list [@@deriving show, compare]
 
   type via_features = Features.ViaFeature.t list [@@deriving show, compare]
@@ -90,6 +89,7 @@ module T : sig
         | NameConstraint of name_constraint
         | IndexConstraint of int
         | AnyOf of t list
+        | AllOf of t list
         | Not of t
       [@@deriving compare, show]
     end
@@ -115,6 +115,7 @@ module T : sig
       | ReturnConstraint of annotation_constraint
       | AnyParameterConstraint of ParameterConstraint.t
       | AnyOf of model_constraint list
+      | AllOf of model_constraint list
       | ParentConstraint of class_constraint
       | DecoratorConstraint of {
           name_constraint: name_constraint;
@@ -170,46 +171,52 @@ module T : sig
     }
     [@@deriving show, compare]
   end
-
-  type parse_result = {
-    models: TaintResult.call_model Interprocedural.Target.Map.t;
-    queries: ModelQuery.rule list;
-    skip_overrides: Ast.Reference.Set.t;
-    errors: ModelVerificationError.t list;
-  }
 end
+
+val get_model_sources : paths:PyrePath.t list -> (PyrePath.t * string) list
+
+type parse_result = {
+  models: Model.t Interprocedural.Target.Map.t;
+  queries: Internal.ModelQuery.rule list;
+  skip_overrides: Ast.Reference.Set.t;
+  errors: ModelVerificationError.t list;
+}
 
 val parse
   :  resolution:Analysis.Resolution.t ->
-  ?path:Path.t ->
+  ?path:PyrePath.t ->
   ?rule_filter:int list ->
   source:string ->
   configuration:TaintConfiguration.t ->
   callables:Interprocedural.Target.HashSet.t option ->
   stubs:Interprocedural.Target.HashSet.t ->
-  TaintResult.call_model Interprocedural.Target.Map.t ->
-  T.parse_result
+  Model.t Interprocedural.Target.Map.t ->
+  parse_result
 
-val verify_model_syntax : path:Path.t -> source:string -> unit
+exception InvalidModel of string
+
+val verify_model_syntax : path:PyrePath.t -> source:string -> unit
 
 val compute_sources_and_sinks_to_keep
   :  configuration:TaintConfiguration.t ->
   rule_filter:int list option ->
   Sources.Set.t option * Sinks.Set.t option
 
+(* Exposed for model queries. *)
 val create_callable_model_from_annotations
   :  resolution:Analysis.Resolution.t ->
   callable:Interprocedural.Target.callable_t ->
   sources_to_keep:Sources.Set.t option ->
   sinks_to_keep:Sinks.Set.t option ->
   is_obscure:bool ->
-  (T.annotation_kind * T.taint_annotation) list ->
-  (TaintResult.call_model, ModelVerificationError.t) result
+  (Internal.annotation_kind * Internal.taint_annotation) list ->
+  (Model.t, ModelVerificationError.t) result
 
+(* Exposed for model queries. *)
 val create_attribute_model_from_annotations
   :  resolution:Analysis.Resolution.t ->
   name:Ast.Reference.t ->
   sources_to_keep:Sources.Set.t option ->
   sinks_to_keep:Sinks.Set.t option ->
-  T.taint_annotation list ->
-  (TaintResult.call_model, ModelVerificationError.t) result
+  Internal.taint_annotation list ->
+  (Model.t, ModelVerificationError.t) result

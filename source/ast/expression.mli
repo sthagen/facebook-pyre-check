@@ -5,33 +5,50 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-module Substring : sig
+module StringLiteral : sig
   type kind =
-    | Literal
-    | Format
-  [@@deriving compare, eq, sexp, show, hash]
+    | String
+    | Bytes
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   type t = {
     value: string;
     kind: kind;
   }
-  [@@deriving compare, eq, sexp, show, hash]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
-  val is_all_literal : t Node.t list -> bool
+  val location_insensitive_compare : t -> t -> int
+
+  val create : ?bytes:bool -> string -> t
+end
+
+module Constant : sig
+  type t =
+    | NoneLiteral
+    | Ellipsis
+    | False
+    | True
+    | Integer of int
+    | Float of float
+    | Complex of float
+    | String of StringLiteral.t
+  [@@deriving compare, sexp, show, hash, to_yojson]
+
+  val location_insensitive_compare : t -> t -> int
 end
 
 module rec BooleanOperator : sig
   type operator =
     | And
     | Or
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   type t = {
     left: Expression.t;
     operator: operator;
     right: Expression.t;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val pp_boolean_operator : Format.formatter -> operator -> unit
 
@@ -43,10 +60,12 @@ end
 and Call : sig
   module Argument : sig
     type t = {
+      (* NOTE(grievejia): Location here refers to the location of the entire argument, not the
+         location of the argument name itself. *)
       name: Identifier.t Node.t option;
       value: Expression.t;
     }
-    [@@deriving compare, eq, sexp, show, hash, to_yojson]
+    [@@deriving compare, sexp, show, hash, to_yojson]
 
     type kind =
       | SingleStar
@@ -63,7 +82,7 @@ and Call : sig
     callee: Expression.t;
     arguments: Argument.t list;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 end
@@ -80,14 +99,14 @@ and ComparisonOperator : sig
     | LessThanOrEquals
     | NotEquals
     | NotIn
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   type t = {
     left: Expression.t;
     operator: operator;
     right: Expression.t;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val inverse : operator -> operator
 
@@ -106,7 +125,7 @@ and Comprehension : sig
       conditions: Expression.t list;
       async: bool;
     }
-    [@@deriving compare, eq, sexp, show, hash, to_yojson]
+    [@@deriving compare, sexp, show, hash, to_yojson]
 
     val location_insensitive_compare : t -> t -> int
   end
@@ -115,7 +134,7 @@ and Comprehension : sig
     element: 'element;
     generators: Generator.t list;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare
     :  ('element -> 'element -> int) ->
@@ -130,7 +149,7 @@ and Dictionary : sig
       key: Expression.t;
       value: Expression.t;
     }
-    [@@deriving compare, eq, sexp, show, hash, to_yojson]
+    [@@deriving compare, sexp, show, hash, to_yojson]
 
     val location_insensitive_compare : t -> t -> int
   end
@@ -139,7 +158,7 @@ and Dictionary : sig
     entries: Entry.t list;
     keywords: Expression.t list;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 end
@@ -149,7 +168,7 @@ and Lambda : sig
     parameters: Parameter.t list;
     body: Expression.t;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 end
 
 and Name : sig
@@ -159,7 +178,7 @@ and Name : sig
       attribute: Identifier.t;
       special: bool;
     }
-    [@@deriving compare, eq, sexp, show, hash, to_yojson]
+    [@@deriving compare, sexp, show, hash, to_yojson]
 
     val location_insensitive_compare : t -> t -> int
   end
@@ -167,7 +186,7 @@ and Name : sig
   type t =
     | Attribute of Attribute.t
     | Identifier of Identifier.t
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 
@@ -180,9 +199,9 @@ and Parameter : sig
     value: Expression.t option;
     annotation: Expression.t option;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
-  type t = parameter Node.t [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  type t = parameter Node.t [@@deriving compare, sexp, show, hash, to_yojson]
 
   val create
     :  location:Location.t ->
@@ -201,30 +220,18 @@ and Starred : sig
   type t =
     | Once of Expression.t
     | Twice of Expression.t
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 end
 
-and StringLiteral : sig
-  type kind =
-    | String
-    | Bytes
-    | Format of Expression.t list
-    | Mixed of Substring.t Node.t list
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
-
-  type t = {
-    value: string;
-    kind: kind;
-  }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+and Substring : sig
+  type t =
+    | Literal of string Node.t
+    | Format of Expression.t
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
-
-  val create : ?bytes:bool -> ?expressions:Expression.t list -> string -> t
-
-  val create_mixed : Substring.t Node.t list -> t
 end
 
 and Ternary : sig
@@ -233,7 +240,7 @@ and Ternary : sig
     test: Expression.t;
     alternative: Expression.t;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 end
@@ -244,13 +251,13 @@ and UnaryOperator : sig
     | Negative
     | Not
     | Positive
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   type t = {
     operator: operator;
     operand: Expression.t;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 
@@ -264,7 +271,7 @@ and WalrusOperator : sig
     target: Expression.t;
     value: Expression.t;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 end
@@ -275,14 +282,11 @@ and Expression : sig
     | BooleanOperator of BooleanOperator.t
     | Call of Call.t
     | ComparisonOperator of ComparisonOperator.t
-    | Complex of float
+    | Constant of Constant.t
     | Dictionary of Dictionary.t
     | DictionaryComprehension of Dictionary.Entry.t Comprehension.t
-    | Ellipsis
-    | False
-    | Float of float
     | Generator of t Comprehension.t
-    | Integer of int
+    | FormatString of Substring.t list
     | Lambda of Lambda.t
     | List of t list
     | ListComprehension of t Comprehension.t
@@ -290,23 +294,21 @@ and Expression : sig
     | Set of t list
     | SetComprehension of t Comprehension.t
     | Starred of Starred.t
-    | String of StringLiteral.t
     | Ternary of Ternary.t
-    | True
     | Tuple of t list
     | UnaryOperator of UnaryOperator.t
     | WalrusOperator of WalrusOperator.t
     | Yield of t option
     | YieldFrom of t
 
-  and t = expression Node.t [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  and t = expression Node.t [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 end
 
-type t = Expression.t [@@deriving compare, eq, sexp, show, hash, to_yojson]
+type t = Expression.t [@@deriving compare, sexp, show, hash, to_yojson]
 
-type expression = Expression.expression [@@deriving compare, eq, sexp, show, hash, to_yojson]
+type expression = Expression.expression [@@deriving compare, sexp, show, hash, to_yojson]
 
 val location_insensitive_compare : t -> t -> int
 
@@ -315,6 +317,8 @@ val negate : t -> t
 val normalize : t -> t
 
 val is_false : t -> bool
+
+val is_none : t -> bool
 
 val create_name_from_identifiers : Identifier.t Node.t list -> Name.t
 

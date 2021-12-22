@@ -195,16 +195,16 @@ let test_mode _ =
     let actual_mode = Source.mode ~configuration ~local_mode in
     assert_equal actual_mode expected_mode
   in
-  let configuration = Configuration.Analysis.create ~source_path:[] () in
+  let configuration = Configuration.Analysis.create ~source_paths:[] () in
   assert_mode ~configuration None Source.Unsafe;
   assert_mode ~configuration (Some (Node.create_with_default_location Source.Strict)) Source.Strict;
 
-  let configuration = Configuration.Analysis.create ~strict:true ~source_path:[] () in
+  let configuration = Configuration.Analysis.create ~strict:true ~source_paths:[] () in
   assert_mode ~configuration None Source.Strict;
   assert_mode ~configuration (Some (Node.create_with_default_location Source.Unsafe)) Source.Unsafe;
   assert_mode ~configuration (Some (Node.create_with_default_location Source.Strict)) Source.Strict;
 
-  let configuration = Configuration.Analysis.create ~debug:true ~source_path:[] () in
+  let configuration = Configuration.Analysis.create ~debug:true ~source_paths:[] () in
   assert_mode ~configuration None Source.Debug;
   assert_mode ~configuration (Some (Node.create_with_default_location Source.Strict)) Source.Debug;
   assert_mode ~configuration (Some (Node.create_with_default_location Source.Unsafe)) Source.Debug
@@ -224,6 +224,28 @@ let test_qualifier _ =
   assert_equal (SourcePath.qualifier_of_relative "module/__init__.pyi") (qualifier ["module"])
 
 
+let test_extension_suffix _ =
+  let root = PyrePath.create_absolute "/root" in
+  let assert_qualifier_equal ~configuration ~path expected =
+    let actual_qualifier =
+      match SourcePath.create ~configuration (PyrePath.create_relative ~root ~relative:path) with
+      | Some { SourcePath.qualifier; _ } -> qualifier
+      | None -> Reference.create "<UNEXPECTED_NONE>"
+    in
+    assert_equal ~printer:Reference.show (Reference.create expected) actual_qualifier
+  in
+  let configuration =
+    Configuration.Analysis.create
+      ~extensions:
+        [{ Configuration.Extension.suffix = ".cinc"; include_suffix_in_module_qualifier = true }]
+      ~source_paths:[SearchPath.Root root]
+      ()
+  in
+  assert_qualifier_equal ~configuration ~path:"test.py" "test";
+  assert_qualifier_equal ~configuration ~path:"test.pyi" "test";
+  assert_qualifier_equal ~configuration ~path:"test.cinc" "test.cinc"
+
+
 let test_expand_relative_import _ =
   let assert_export ~relative ~from ~expected =
     let from =
@@ -236,7 +258,7 @@ let test_expand_relative_import _ =
       ~cmp:Reference.equal
       ~printer:Reference.show
       (Reference.create expected)
-      (Node.value (SourcePath.expand_relative_import source_path ~from))
+      (SourcePath.expand_relative_import source_path ~from)
   in
   assert_export ~relative:"module/qualifier.py" ~from:"." ~expected:"module";
   assert_export
@@ -252,7 +274,7 @@ let test_expand_relative_import _ =
 let test_ignored_lines _ =
   let assert_ignores source expected =
     assert_equal
-      ~cmp:[%equal: Ignore.t list]
+      ~cmp:[%compare.equal: Ignore.t list]
       ~printer:[%show: Ignore.t list]
       expected
       (Source.ignored_lines_including_format_strings
@@ -309,6 +331,7 @@ let () =
   "source"
   >::: [
          "qualifier" >:: test_qualifier;
+         "extension_suffix" >:: test_extension_suffix;
          "expand_relative_import" >:: test_expand_relative_import;
          "ignored_lines" >:: test_ignored_lines;
        ]

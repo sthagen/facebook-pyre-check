@@ -24,6 +24,7 @@ from logging import Logger
 from pathlib import Path
 from typing import (
     Any,
+    ClassVar,
     Dict,
     Iterable,
     List,
@@ -190,15 +191,20 @@ class SubdirectorySearchPathElement(SearchPathElement):
 class SitePackageSearchPathElement(SearchPathElement):
     site_root: str
     package_name: str
+    is_toplevel_module: bool = False
+
+    def package_path(self) -> str:
+        module_suffix = ".py" if self.is_toplevel_module else ""
+        return self.package_name + module_suffix
 
     def path(self) -> str:
-        return os.path.join(self.site_root, self.package_name)
+        return os.path.join(self.site_root, self.package_path())
 
     def get_root(self) -> str:
         return self.site_root
 
     def command_line_argument(self) -> str:
-        return self.site_root + "$" + self.package_name
+        return self.site_root + "$" + self.package_path()
 
     def expand_global_root(self, global_root: str) -> SearchPathElement:
         # Site package does not participate in root expansion.
@@ -262,7 +268,7 @@ def get_site_roots() -> List[str]:
 
 
 def create_search_paths(
-    json: Union[str, Dict[str, str]], site_roots: Iterable[str]
+    json: Union[str, Dict[str, Union[str, bool]]], site_roots: Iterable[str]
 ) -> List[SearchPathElement]:
     if isinstance(json, str):
         return [SimpleSearchPathElement(json)]
@@ -270,19 +276,24 @@ def create_search_paths(
         if "root" in json and "subdirectory" in json:
             return [
                 SubdirectorySearchPathElement(
-                    root=json["root"], subdirectory=json["subdirectory"]
+                    root=str(json["root"]), subdirectory=str(json["subdirectory"])
                 )
             ]
         if "import_root" in json and "source" in json:
             return [
                 SubdirectorySearchPathElement(
-                    root=json["import_root"], subdirectory=json["source"]
+                    root=str(json["import_root"]), subdirectory=str(json["source"])
                 )
             ]
         elif "site-package" in json:
+            is_toplevel_module = (
+                "is_toplevel_module" in json and json["is_toplevel_module"]
+            )
             return [
                 SitePackageSearchPathElement(
-                    site_root=root, package_name=json["site-package"]
+                    site_root=root,
+                    package_name=str(json["site-package"]),
+                    is_toplevel_module=bool(is_toplevel_module),
                 )
                 for root in site_roots
             ]
@@ -379,17 +390,40 @@ class SharedMemory:
 
 
 @dataclass(frozen=True)
+class IdeFeatures:
+    hover_enabled: Optional[bool] = None
+    DEFAULT_HOVER_ENABLED: ClassVar[bool] = False
+
+    def to_json(self) -> Dict[str, int]:
+        return {
+            **(
+                {"hover_enabled": self.hover_enabled}
+                if self.hover_enabled is not None
+                else {}
+            ),
+        }
+
+    def is_hover_enabled(self) -> bool:
+        return (
+            self.hover_enabled
+            if self.hover_enabled is not None
+            else self.DEFAULT_HOVER_ENABLED
+        )
+
+
+@dataclass(frozen=True)
 class PartialConfiguration:
     autocomplete: Optional[bool] = None
     binary: Optional[str] = None
     buck_builder_binary: Optional[str] = None
     buck_mode: Optional[str] = None
     disabled: Optional[bool] = None
-    do_not_ignore_all_errors_in: Sequence[str] = field(default_factory=list)
+    do_not_ignore_errors_in: Sequence[str] = field(default_factory=list)
     dot_pyre_directory: Optional[Path] = None
     excludes: Sequence[str] = field(default_factory=list)
     extensions: Sequence[ExtensionElement] = field(default_factory=list)
     file_hash: Optional[str] = None
+    ide_features: Optional[IdeFeatures] = None
     ignore_all_errors: Sequence[str] = field(default_factory=list)
     ignore_infer: Sequence[str] = field(default_factory=list)
     isolation_prefix: Optional[str] = None
@@ -436,22 +470,28 @@ class PartialConfiguration:
             arguments.targets if len(arguments.targets) > 0 else None
         )
         python_version_string = arguments.python_version
+        ide_features = (
+            IdeFeatures(hover_enabled=arguments.enable_hover)
+            if arguments.enable_hover is not None
+            else None
+        )
         return PartialConfiguration(
             autocomplete=None,
             binary=arguments.binary,
             buck_builder_binary=arguments.buck_builder_binary,
             buck_mode=arguments.buck_mode,
             disabled=None,
-            do_not_ignore_all_errors_in=[],
+            do_not_ignore_errors_in=arguments.do_not_ignore_errors_in,
             dot_pyre_directory=arguments.dot_pyre_directory,
             excludes=arguments.exclude,
             extensions=[],
             file_hash=None,
+            ide_features=ide_features,
             ignore_all_errors=[],
             ignore_infer=[],
             isolation_prefix=arguments.isolation_prefix,
             logger=arguments.logger,
-            number_of_workers=None,
+            number_of_workers=arguments.number_of_workers,
             oncall=None,
             other_critical_files=[],
             python_version=(
@@ -601,6 +641,20 @@ class PartialConfiguration:
             else:
                 source_directories = None
 
+            ide_features_json = ensure_option_type(
+                configuration_json, "ide_features", dict
+            )
+            if ide_features_json is None:
+                ide_features = None
+            else:
+                ide_features = IdeFeatures(
+                    hover_enabled=ensure_option_type(
+                        ide_features_json, "hover_enabled", bool
+                    ),
+                )
+                for unrecognized_key in ide_features_json:
+                    LOG.warning(f"Unrecognized configuration item: {unrecognized_key}")
+
             partial_configuration = PartialConfiguration(
                 autocomplete=ensure_option_type(
                     configuration_json, "autocomplete", bool
@@ -611,7 +665,7 @@ class PartialConfiguration:
                 ),
                 buck_mode=ensure_option_type(configuration_json, "buck_mode", str),
                 disabled=ensure_option_type(configuration_json, "disabled", bool),
-                do_not_ignore_all_errors_in=ensure_string_list(
+                do_not_ignore_errors_in=ensure_string_list(
                     configuration_json, "do_not_ignore_errors_in"
                 ),
                 dot_pyre_directory=Path(dot_pyre_directory)
@@ -625,6 +679,7 @@ class PartialConfiguration:
                     for json in ensure_list(configuration_json, "extensions")
                 ],
                 file_hash=file_hash,
+                ide_features=ide_features,
                 ignore_all_errors=ensure_string_list(
                     configuration_json, "ignore_all_errors"
                 ),
@@ -714,14 +769,15 @@ class PartialConfiguration:
             buck_builder_binary=buck_builder_binary,
             buck_mode=self.buck_mode,
             disabled=self.disabled,
-            do_not_ignore_all_errors_in=[
+            do_not_ignore_errors_in=[
                 expand_relative_path(root, path)
-                for path in self.do_not_ignore_all_errors_in
+                for path in self.do_not_ignore_errors_in
             ],
             dot_pyre_directory=self.dot_pyre_directory,
             excludes=self.excludes,
             extensions=self.extensions,
             file_hash=self.file_hash,
+            ide_features=self.ide_features,
             ignore_all_errors=[
                 expand_relative_path(root, path) for path in self.ignore_all_errors
             ],
@@ -758,6 +814,17 @@ def merge_partial_configurations(
     def overwrite_base(base: Optional[T], override: Optional[T]) -> Optional[T]:
         return base if override is None else override
 
+    def overwrite_base_ide_features(
+        base: Optional[IdeFeatures], override: Optional[IdeFeatures]
+    ) -> Optional[IdeFeatures]:
+        if override is None:
+            return base
+        if base is None:
+            return override
+        return IdeFeatures(
+            hover_enabled=overwrite_base(base.hover_enabled, override.hover_enabled)
+        )
+
     def prepend_base(base: Sequence[T], override: Sequence[T]) -> Sequence[T]:
         return list(override) + list(base)
 
@@ -781,8 +848,8 @@ def merge_partial_configurations(
         ),
         buck_mode=overwrite_base(base.buck_mode, override.buck_mode),
         disabled=overwrite_base(base.disabled, override.disabled),
-        do_not_ignore_all_errors_in=prepend_base(
-            base.do_not_ignore_all_errors_in, override.do_not_ignore_all_errors_in
+        do_not_ignore_errors_in=prepend_base(
+            base.do_not_ignore_errors_in, override.do_not_ignore_errors_in
         ),
         dot_pyre_directory=overwrite_base(
             base.dot_pyre_directory, override.dot_pyre_directory
@@ -790,6 +857,9 @@ def merge_partial_configurations(
         excludes=prepend_base(base.excludes, override.excludes),
         extensions=prepend_base(base.extensions, override.extensions),
         file_hash=overwrite_base(base.file_hash, override.file_hash),
+        ide_features=overwrite_base_ide_features(
+            base.ide_features, override.ide_features
+        ),
         ignore_all_errors=prepend_base(
             base.ignore_all_errors, override.ignore_all_errors
         ),
@@ -852,10 +922,11 @@ class Configuration:
     buck_builder_binary: Optional[str] = None
     buck_mode: Optional[str] = None
     disabled: bool = False
-    do_not_ignore_all_errors_in: Sequence[str] = field(default_factory=list)
+    do_not_ignore_errors_in: Sequence[str] = field(default_factory=list)
     excludes: Sequence[str] = field(default_factory=list)
     extensions: Sequence[ExtensionElement] = field(default_factory=list)
     file_hash: Optional[str] = None
+    ide_features: Optional[IdeFeatures] = None
     ignore_all_errors: Sequence[str] = field(default_factory=list)
     ignore_infer: Sequence[str] = field(default_factory=list)
     isolation_prefix: Optional[str] = None
@@ -901,10 +972,11 @@ class Configuration:
             buck_builder_binary=partial_configuration.buck_builder_binary,
             buck_mode=partial_configuration.buck_mode,
             disabled=_get_optional_value(partial_configuration.disabled, default=False),
-            do_not_ignore_all_errors_in=partial_configuration.do_not_ignore_all_errors_in,
+            do_not_ignore_errors_in=partial_configuration.do_not_ignore_errors_in,
             excludes=partial_configuration.excludes,
             extensions=partial_configuration.extensions,
             file_hash=partial_configuration.file_hash,
+            ide_features=partial_configuration.ide_features,
             ignore_all_errors=partial_configuration.ignore_all_errors,
             ignore_infer=partial_configuration.ignore_infer,
             isolation_prefix=partial_configuration.isolation_prefix,
@@ -977,7 +1049,7 @@ class Configuration:
             ),
             **({"buck_mode": buck_mode} if buck_mode is not None else {}),
             "disabled": self.disabled,
-            "do_not_ignore_all_errors_in": list(self.do_not_ignore_all_errors_in),
+            "do_not_ignore_errors_in": list(self.do_not_ignore_errors_in),
             "excludes": list(self.excludes),
             "extensions": list(self.extensions),
             "ignore_all_errors": list(self.ignore_all_errors),
@@ -1058,10 +1130,11 @@ class Configuration:
             buck_builder_binary=self.buck_builder_binary,
             buck_mode=self.buck_mode,
             disabled=self.disabled,
-            do_not_ignore_all_errors_in=self.do_not_ignore_all_errors_in,
+            do_not_ignore_errors_in=self.do_not_ignore_errors_in,
             excludes=self.excludes,
             extensions=self.extensions,
             file_hash=self.file_hash,
+            ide_features=self.ide_features,
             ignore_all_errors=self.ignore_all_errors,
             ignore_infer=self.ignore_infer,
             isolation_prefix=self.isolation_prefix,
@@ -1103,7 +1176,7 @@ class Configuration:
         """
         ignore_paths = [
             _expand_global_root(path, global_root=self.project_root)
-            for path in self.do_not_ignore_all_errors_in
+            for path in self.do_not_ignore_errors_in
         ]
         paths = []
         for path in ignore_paths:
@@ -1191,6 +1264,11 @@ class Configuration:
         )
         return default_number_of_workers
 
+    def is_hover_enabled(self) -> bool:
+        if self.ide_features is None:
+            return IdeFeatures.DEFAULT_HOVER_ENABLED
+        return self.ide_features.is_hover_enabled()
+
     def get_valid_extension_suffixes(self) -> List[str]:
         vaild_extensions = []
         for extension in self.extensions:
@@ -1200,7 +1278,7 @@ class Configuration:
                     f"`{extension.suffix}`"
                 )
             else:
-                vaild_extensions.append(extension.suffix)
+                vaild_extensions.append(extension.command_line_argument())
         return vaild_extensions
 
     def get_isolation_prefix_respecting_override(self) -> Optional[str]:

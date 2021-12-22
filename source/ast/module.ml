@@ -111,8 +111,7 @@ let create
     let open UnannotatedGlobal in
     let is_getattr_any
         {
-          UnannotatedDefine.define =
-            { Define.Signature.name = { Node.value = name; _ }; parameters; return_annotation; _ };
+          UnannotatedDefine.define = { Define.Signature.name; parameters; return_annotation; _ };
           _;
         }
       =
@@ -167,46 +166,36 @@ let create
       | TupleAssign _ ->
           Identifier.Map.set sofar ~key:name ~data:Export.(Name GlobalVariable)
     in
-    let collected =
-      Collector.from_source source |> List.fold ~init:Identifier.Map.empty ~f:collect_export
-    in
-    let collected =
-      if Reference.is_empty qualifier then
-        (* We need to pretend None is in the builtins.pyi stub, even though it's missing *)
-        match Identifier.Map.add collected ~key:"None" ~data:Export.(Name GlobalVariable) with
-        | `Duplicate -> collected
-        | `Ok ok -> ok
-      else
-        collected
-    in
-    Map.to_tree collected
+    Collector.from_source source
+    |> List.fold ~init:Identifier.Map.empty ~f:collect_export
+    |> Map.to_tree
   in
   let legacy_aliased_exports =
     let aliased_exports aliases { Node.value; _ } =
       match value with
       | Statement.Import { Import.from = Some from; imports } ->
           let from = SourcePath.expand_relative_import source_path ~from in
-          let export aliases { Import.name = { Node.value = name; _ }; alias } =
+          let export aliases { Node.value = { Import.name; alias }; _ } =
             let alias =
               match alias with
               | None -> name
-              | Some { Node.value = alias; _ } -> Reference.create alias
+              | Some alias -> Reference.create alias
             in
             let name =
               if String.equal (Reference.show alias) "*" then
-                Node.value from
+                from
               else
-                Reference.combine (Node.value from) name
+                Reference.combine from name
             in
             Map.set aliases ~key:alias ~data:name
           in
           List.fold imports ~f:export ~init:aliases
       | Import { Import.from = None; imports } ->
-          let export aliases { Import.name = { Node.value = name; _ }; alias } =
+          let export aliases { Node.value = { Import.name; alias }; _ } =
             let alias =
               match alias with
               | None -> name
-              | Some { Node.value = alias; _ } -> Reference.create alias
+              | Some alias -> Reference.create alias
             in
             let source, target =
               if Reference.is_strict_prefix ~prefix:(Reference.combine qualifier alias) name then

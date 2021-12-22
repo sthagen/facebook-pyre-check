@@ -62,8 +62,15 @@ class FunctionAnnotationInfo:
     annotation_kind: FunctionAnnotationKind
     code_range: CodeRange
 
-    return_info: AnnotationInfo
-    parameter_infos: List[AnnotationInfo]
+    returns: AnnotationInfo
+    parameters: List[AnnotationInfo]
+    is_method_or_classmethod: bool
+
+    def non_self_cls_parameters(self) -> Iterable[AnnotationInfo]:
+        if self.is_method_or_classmethod:
+            yield from self.parameters[1:]
+        else:
+            yield from self.parameters
 
     @property
     def is_annotated(self) -> bool:
@@ -93,12 +100,11 @@ class AnnotationCollector(cst.CSTVisitor):
 
     def returns(self) -> Iterable[AnnotationInfo]:
         for function in self.functions:
-            yield function.return_info
+            yield function.returns
 
     def parameters(self) -> Iterable[AnnotationInfo]:
         for function in self.functions:
-            for parameter in function.parameter_infos:
-                yield parameter
+            yield from function.non_self_cls_parameters()
 
     def in_class_definition(self) -> bool:
         return self.class_definition_depth > 0
@@ -136,31 +142,33 @@ class AnnotationCollector(cst.CSTVisitor):
                     break
         self.function_definition_depth += 1
 
-        if node.returns is None:
-            code_range = self._code_range(node.whitespace_before_colon)
-            return_is_annotated = False
-        else:
-            code_range = self._code_range(node.returns)
-            return_is_annotated = True
-        return_info = AnnotationInfo(node, return_is_annotated, code_range)
+        returns = AnnotationInfo(
+            node,
+            is_annotated=node.returns is not None,
+            code_range=self._code_range(node.name),
+        )
 
-        parameter_infos = []
+        parameters = []
         annotated_parameter_count = 0
         for parameter_info in self._parameter_annotations(node.params.params):
             if parameter_info.is_annotated:
                 annotated_parameter_count += 1
-            parameter_infos.append(parameter_info)
+            parameters.append(parameter_info)
 
         annotation_kind = FunctionAnnotationKind.from_function_data(
-            return_is_annotated,
+            returns.is_annotated,
             annotated_parameter_count,
             self._is_method_or_classmethod(),
             parameters=node.params.params,
         )
-        code_range = self._code_range(node.body)
         self.functions.append(
             FunctionAnnotationInfo(
-                node, annotation_kind, code_range, return_info, parameter_infos
+                node,
+                annotation_kind,
+                self._code_range(node),
+                returns,
+                parameters,
+                self._is_method_or_classmethod(),
             )
         )
 
@@ -212,7 +220,12 @@ class AnnotationCollector(cst.CSTVisitor):
 
     def leave_Module(self, original_node: cst.Module) -> None:
         file_range = self.get_metadata(PositionProvider, original_node)
-        self.line_count = file_range.end.line
+        if original_node.has_trailing_newline:
+            self.line_count = file_range.end.line
+        else:
+            # Seems to be a quirk in LibCST, the module CodeRange still goes 1 over
+            # even when there is no trailing new line in the file.
+            self.line_count = file_range.end.line - 1
 
 
 class StatisticsCollector(cst.CSTVisitor):
@@ -245,6 +258,9 @@ class AnnotationCountCollector(StatisticsCollector, AnnotationCollector):
     def annotated_attributes_count(self) -> int:
         return len([a for a in self.attributes if a.is_annotated])
 
+    def function_count(self) -> int:
+        return len(self.functions)
+
     def partially_annotated_functions_count(self) -> int:
         return len([f for f in self.functions if f.is_partially_annotated])
 
@@ -261,6 +277,7 @@ class AnnotationCountCollector(StatisticsCollector, AnnotationCollector):
             "annotated_parameter_count": self.annotated_parameters_count(),
             "attribute_count": self.attributes_count(),
             "annotated_attribute_count": self.annotated_attributes_count(),
+            "function_count": self.function_count(),
             "partially_annotated_function_count": (
                 self.partially_annotated_functions_count()
             ),
@@ -319,6 +336,9 @@ class StrictCountCollector(StatisticsCollector):
         elif self.is_strict or self.strict_by_default:
             return False
         return True
+
+    def is_strict_module(self) -> bool:
+        return not self.is_unsafe_module()
 
     def visit_Module(self, node: cst.Module) -> None:
         self.is_strict = False

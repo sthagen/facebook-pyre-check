@@ -118,6 +118,14 @@ module Record : sig
         'annotation t ->
         'annotation record_unpackable
 
+      val create_from_concrete_against_concrete
+        :  ?prefix:'annotation list ->
+        ?suffix:'annotation list ->
+        compare_t:('annotation -> 'annotation -> int) ->
+        left:'annotation list ->
+        right:'annotation list ->
+        'annotation t
+
       val create_from_concrete_against_concatenation
         :  ?prefix:'annotation list ->
         ?suffix:'annotation list ->
@@ -446,7 +454,11 @@ val enumeration : t
 
 val float : t
 
-val generator : ?async:bool -> t -> t
+val generator : ?yield_type:t -> ?send_type:t -> ?return_type:t -> unit -> t
+
+val async_generator : ?yield_type:t -> ?send_type:t -> unit -> t
+
+val generator_expression : t -> t
 
 val generic_primitive : t
 
@@ -669,8 +681,6 @@ val is_ellipsis : t -> bool
 
 val is_final : t -> bool
 
-val is_generator : t -> bool
-
 val is_generic_primitive : t -> bool
 
 val is_iterable : t -> bool
@@ -705,6 +715,8 @@ val is_union : t -> bool
 
 val is_falsy : t -> bool
 
+val is_truthy : t -> bool
+
 val contains_any : t -> bool
 
 val contains_unknown : t -> bool
@@ -738,8 +750,6 @@ val contains_variable : t -> bool
 
 val optional_value : t -> t option
 
-val async_generator_value : t -> t option
-
 val awaitable_value : t -> t option
 
 val coroutine_value : t -> t option
@@ -760,6 +770,8 @@ val instantiate
   t
 
 val weaken_literals : t -> t
+
+val weaken_to_arbitrary_literal_if_possible : t -> t
 
 module OrderedTypes : sig
   include module type of struct

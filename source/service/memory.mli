@@ -104,3 +104,20 @@ module Serializer (Value : SerializableValueType) : sig
 
   val store : Value.t -> unit
 end
+
+module type InternerValueType = sig
+  include ValueType
+
+  val to_string : t -> string
+end
+
+(* Provide a unique integer for a given value. *)
+module Interner (Value : InternerValueType) : sig
+  type t = int
+
+  val intern : Value.t -> t
+
+  val unintern : t -> Value.t
+
+  val compare : t -> t -> int
+end

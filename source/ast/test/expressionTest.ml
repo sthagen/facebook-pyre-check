@@ -33,61 +33,72 @@ let test_negate _ =
 
 
 let test_normalize _ =
-  assert_expression_equal (normalize (+Expression.True)) (+Expression.True);
+  assert_expression_equal
+    (normalize (+Expression.Constant Constant.True))
+    (+Expression.Constant Constant.True);
   assert_expression_equal
     (normalize
        (+Expression.BooleanOperator
            {
              BooleanOperator.operator = BooleanOperator.And;
-             left = +Expression.False;
+             left = +Expression.Constant Constant.False;
              right =
                +Expression.UnaryOperator
-                  { UnaryOperator.operator = UnaryOperator.Not; operand = +Expression.True };
+                  {
+                    UnaryOperator.operator = UnaryOperator.Not;
+                    operand = +Expression.Constant Constant.True;
+                  };
            }))
     (+Expression.BooleanOperator
         {
           BooleanOperator.operator = BooleanOperator.And;
-          left = +Expression.False;
-          right = +Expression.False;
+          left = +Expression.Constant Constant.False;
+          right = +Expression.Constant Constant.False;
         });
   assert_expression_equal
     (normalize
        (+Expression.BooleanOperator
            {
              BooleanOperator.operator = BooleanOperator.Or;
-             left = +Expression.False;
-             right = +Expression.False;
+             left = +Expression.Constant Constant.False;
+             right = +Expression.Constant Constant.False;
            }))
     (+Expression.BooleanOperator
         {
           BooleanOperator.operator = BooleanOperator.Or;
-          left = +Expression.False;
-          right = +Expression.False;
+          left = +Expression.Constant Constant.False;
+          right = +Expression.Constant Constant.False;
         });
   assert_expression_equal
     (normalize
        (+Expression.BooleanOperator
            {
              BooleanOperator.operator = BooleanOperator.Or;
-             left = +Expression.False;
+             left = +Expression.Constant Constant.False;
              right = !"right";
            }))
     (+Expression.BooleanOperator
         {
           BooleanOperator.operator = BooleanOperator.Or;
-          left = +Expression.False;
+          left = +Expression.Constant Constant.False;
           right = !"right";
         });
   assert_expression_equal
     (normalize
        (+Expression.UnaryOperator
-           { UnaryOperator.operator = UnaryOperator.Not; operand = +Expression.True }))
-    (+Expression.False);
+           {
+             UnaryOperator.operator = UnaryOperator.Not;
+             operand = +Expression.Constant Constant.True;
+           }))
+    (+Expression.Constant Constant.False);
   assert_expression_equal
     (normalize
        (+Expression.UnaryOperator
-           { UnaryOperator.operator = UnaryOperator.Not; operand = +Expression.False }))
-    (+Expression.True);
+           {
+             UnaryOperator.operator = UnaryOperator.Not;
+             operand = +Expression.Constant Constant.False;
+           }))
+    (+Expression.Constant Constant.True);
   assert_expression_equal
     (normalize
        (+Expression.UnaryOperator
@@ -95,9 +106,12 @@ let test_normalize _ =
              UnaryOperator.operator = UnaryOperator.Not;
              operand =
                +Expression.UnaryOperator
-                  { UnaryOperator.operator = UnaryOperator.Not; operand = +Expression.True };
+                  {
+                    UnaryOperator.operator = UnaryOperator.Not;
+                    operand = +Expression.Constant Constant.True;
+                  };
            }))
-    (+Expression.True);
+    (+Expression.Constant Constant.True);
   assert_expression_equal
     (normalize
        (+Expression.UnaryOperator
@@ -156,10 +170,13 @@ let test_pp _ =
     +Expression.BooleanOperator
        {
          BooleanOperator.operator = BooleanOperator.And;
-         left = +Expression.False;
+         left = +Expression.Constant Constant.False;
          right =
            +Expression.UnaryOperator
-              { UnaryOperator.operator = UnaryOperator.Not; operand = +Expression.True };
+              {
+                UnaryOperator.operator = UnaryOperator.Not;
+                operand = +Expression.Constant Constant.True;
+              };
        }
   in
   assert_pp_equal simple_expression "False and not True";
@@ -189,16 +206,18 @@ let test_pp _ =
             [
               +{
                  Parameter.name = "x";
-                 Parameter.value = Some (+Expression.Integer 1);
+                 Parameter.value = Some (+Expression.Constant (Constant.Integer 1));
                  annotation = None;
                };
               +{
                  Parameter.name = "y";
-                 Parameter.value = Some (+Expression.Integer 2);
+                 Parameter.value = Some (+Expression.Constant (Constant.Integer 2));
                  annotation = None;
                };
             ];
-          Lambda.body = +Expression.Tuple [!"x"; +Expression.String (StringLiteral.create "y")];
+          Lambda.body =
+            +Expression.Tuple
+               [!"x"; +Expression.Constant (Constant.String (StringLiteral.create "y"))];
         })
     {|lambda (x=1, y=2) ((x, "y"))|};
   assert_pp_equal
@@ -212,7 +231,8 @@ let test_pp _ =
                     attribute = "__getitem__";
                     special = false;
                   });
-          arguments = [{ Call.Argument.name = None; value = +Expression.Integer 1 }];
+          arguments =
+            [{ Call.Argument.name = None; value = +Expression.Constant (Constant.Integer 1) }];
         })
     "a.__getitem__(1)";
   assert_pp_equal
@@ -248,7 +268,13 @@ let test_pp _ =
                                  attribute = "__getitem__";
                                  special = true;
                                });
-                       arguments = [{ Call.Argument.name = None; value = +Expression.Integer 1 }];
+                       arguments =
+                         [
+                           {
+                             Call.Argument.name = None;
+                             value = +Expression.Constant (Constant.Integer 1);
+                           };
+                         ];
                      };
               };
             ];
@@ -276,28 +302,39 @@ let test_pp _ =
                               attribute = "__getitem__";
                               special = true;
                             });
-                    arguments = [{ Call.Argument.name = None; value = +Expression.Integer 1 }];
+                    arguments =
+                      [
+                        {
+                          Call.Argument.name = None;
+                          value = +Expression.Constant (Constant.Integer 1);
+                        };
+                      ];
                   };
              attribute = "c";
              special = false;
            }))
     "a.b[1].c";
   assert_pp_equal
-    (+Expression.WalrusOperator { target = !"a"; value = +Expression.Integer 1 })
+    (+Expression.WalrusOperator { target = !"a"; value = +Expression.Constant (Constant.Integer 1) })
     "a := 1";
   assert_pp_equal (parse_single_expression "'string {}'.format(1)") "\"string {}\".format(1)";
   assert_pp_equal
     (+Expression.Dictionary
         {
           Dictionary.entries =
-            [{ Dictionary.Entry.key = +Expression.Integer 1; value = +Expression.Integer 2 }];
+            [
+              {
+                Dictionary.Entry.key = +Expression.Constant (Constant.Integer 1);
+                value = +Expression.Constant (Constant.Integer 2);
+              };
+            ];
           keywords = [];
         })
     "{ 1:2 }";
   assert_pp_equal (+Expression.Yield None) "(yield)";
-  assert_pp_equal (+Expression.Yield (Some (+Expression.Integer 5))) "(yield 5)";
+  assert_pp_equal (+Expression.Yield (Some (+Expression.Constant (Constant.Integer 5)))) "(yield 5)";
   assert_pp_equal
-    (+Expression.YieldFrom (+Expression.List [+Expression.Integer 5]))
+    (+Expression.YieldFrom (+Expression.List [+Expression.Constant (Constant.Integer 5)]))
     "(yield from [5])";
   ()
 
@@ -308,7 +345,7 @@ let test_equality _ =
     let expression_left = Node.create ~location:left value in
     let expression_right = Node.create ~location:right value in
     let assert_bool_equal = assert_equal ~cmp:Bool.equal ~printer:Bool.to_string in
-    assert_bool_equal (Expression.equal expression_left expression_right) equal;
+    assert_bool_equal ([%compare.equal: Expression.t] expression_left expression_right) equal;
     assert_bool_equal (Expression.compare expression_left expression_right = 0) compare_equal;
     assert_bool_equal
       (Expression.hash expression_left = Expression.hash expression_right)
@@ -337,27 +374,39 @@ let test_delocalize _ =
     assert_equal
       ~printer:Expression.show
       ~cmp:location_insensitive_equal
-      (parse_single_expression expected)
-      (parse_single_expression source |> delocalize)
+      expected
+      (delocalize source)
   in
-  assert_delocalized "constant" "constant";
-  assert_delocalized "$local_qualifier$variable" "qualifier.variable";
-  assert_delocalized "$local_base64$b64encode" "base64.b64encode";
-  assert_delocalized "$local_module?qualifier$variable" "module.qualifier.variable";
+  assert_delocalized !"constant" !"constant";
+  assert_delocalized !"$local_qualifier$variable" !"qualifier.variable";
+  assert_delocalized !"$local_base64$b64encode" !"base64.b64encode";
+  assert_delocalized !"$local_module?qualifier$variable" !"module.qualifier.variable";
   assert_delocalized
-    "$local_module_hyphenated?qualifier$variable"
-    "module_hyphenated.qualifier.variable";
+    !"$local_module_hyphenated?qualifier$variable"
+    !"module_hyphenated.qualifier.variable";
 
   (* Don't attempt to delocalize qualified expressions. *)
-  assert_delocalized "qualifier.$local_qualifier$variable" "qualifier.$local_qualifier$variable";
+  assert_delocalized
+    (+Expression.Name
+        (Name.Attribute
+           { base = !"qualifier"; attribute = "$local_qualifier$variable"; special = true }))
+    (+Expression.Name
+        (Name.Attribute
+           { base = !"qualifier"; attribute = "$local_qualifier$variable"; special = true }));
+
   let assert_delocalize_qualified source expected =
     assert_equal
       ~printer:Expression.show
       ~cmp:location_insensitive_equal
-      (parse_single_expression expected)
-      (parse_single_expression source |> delocalize_qualified)
+      expected
+      (delocalize_qualified source)
   in
-  assert_delocalize_qualified "qualifier.$local_qualifier$variable" "qualifier.variable"
+  assert_delocalize_qualified
+    (+Expression.Name
+        (Name.Attribute
+           { base = !"qualifier"; attribute = "$local_qualifier$variable"; special = true }))
+    (+Expression.Name
+        (Name.Attribute { base = !"qualifier"; attribute = "variable"; special = true }))
 
 
 let test_comparison_operator_override _ =
@@ -430,7 +479,15 @@ let test_exists_in_list _ =
 
   (* Qualified *)
   assert_exists
-    [parse_single_expression "qualifier.$local_qualifier$property"]
+    [
+      +Expression.Name
+         (Name.Attribute
+            {
+              Name.Attribute.base = !"qualifier";
+              attribute = "$local_qualifier$property";
+              special = false;
+            });
+    ]
     ~match_prefix:false
     "qualifier.property"
 
@@ -506,7 +563,11 @@ let test_name_to_identifiers _ =
          base =
            ~+(Expression.Name
                 (Name.Attribute
-                   { base = ~+(Expression.Integer 1); attribute = "b"; special = false }));
+                   {
+                     base = ~+(Expression.Constant (Constant.Integer 1));
+                     attribute = "b";
+                     special = false;
+                   }));
          attribute = "c";
          special = false;
        })

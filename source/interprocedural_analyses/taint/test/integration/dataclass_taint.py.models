@@ -2,6 +2,75 @@
 {
   "kind": "issue",
   "data": {
+    "callable":
+      "dataclass_taint.test_class_attr_model_tainted_in_constructor",
+    "callable_line": 108,
+    "code": 5002,
+    "line": 112,
+    "start": 56,
+    "end": 70,
+    "filename": "dataclass_taint.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "root": {
+              "filename": "dataclass_taint.py",
+              "line": 112,
+              "start": 56,
+              "end": 70
+            }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "features": [
+                  { "always-type": "integer" },
+                  { "always-type": "scalar" }
+                ],
+                "leaves": [
+                  {
+                    "name":
+                      "dataclass_taint.DataClassWithClassAttributeTaintedInConstructor.__init__"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "root": {
+              "filename": "dataclass_taint.py",
+              "line": 112,
+              "start": 56,
+              "end": 70
+            }
+          }
+        ]
+      }
+    ],
+    "features": [
+      { "always-type": "integer" },
+      { "always-type": "scalar" },
+      { "always-via": "special_source" }
+    ]
+  }
+}
+{
+  "kind": "issue",
+  "data": {
     "callable": "dataclass_taint.issue_in_dataclass_constructor",
     "callable_line": 38,
     "code": 5002,
@@ -15,14 +84,19 @@
         "name": "forward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "dataclass_taint.py",
               "line": 39,
               "start": 26,
               "end": 40
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_source" } ],
-            "features": [ { "always-via": "special_source" } ]
+            }
           }
         ]
       },
@@ -30,6 +104,18 @@
         "name": "backward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [
+                  { "always-type": "integer" },
+                  { "always-type": "scalar" },
+                  { "always-via": "special_sink" }
+                ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "length": 1,
+                "kind": "Test"
+              }
+            ],
             "call": {
               "position": {
                 "filename": "dataclass_taint.py",
@@ -38,25 +124,173 @@
                 "end": 40
               },
               "resolves_to": [ "dataclass_taint.DataClassWIthInit.__init__" ],
-              "port": "formal(bad)",
-              "length": 1
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" },
-              { "always-via": "special_sink" }
-            ]
+              "port": "formal(bad)"
+            }
           }
         ]
       }
     ],
     "features": [
-      { "always-type": "scalar" },
       { "always-type": "integer" },
+      { "always-type": "scalar" },
       { "always-via": "special_source" },
       { "always-via": "special_sink" }
     ]
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "dataclass_taint.test_class_attr_model_tainted_directly",
+    "callable_line": 89,
+    "code": 5002,
+    "line": 99,
+    "start": 4,
+    "end": 25,
+    "filename": "dataclass_taint.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "root": {
+              "filename": "dataclass_taint.py",
+              "line": 99,
+              "start": 28,
+              "end": 42
+            }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name":
+                      "Obj{dataclass_taint.DataClassWithClassAttributeTaintedDirectly.bad}"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "root": {
+              "filename": "dataclass_taint.py",
+              "line": 99,
+              "start": 4,
+              "end": 25
+            }
+          }
+        ]
+      }
+    ],
+    "features": [ { "always-via": "special_source" } ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable":
+      "Obj{dataclass_taint.DataClassWithClassAttributeTaintedDirectly.bad}",
+    "sinks": [
+      {
+        "port": "formal($global)",
+        "taint": [ { "kinds": [ { "kind": "Test" } ], "decl": null } ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable":
+      "dataclass_taint.DataClassWithClassAttributeTaintedDirectly.__init__",
+    "tito": [
+      {
+        "port": "formal(benign)",
+        "taint": [
+          {
+            "kinds": [
+              { "return_paths": [ "[benign]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
+          }
+        ]
+      },
+      {
+        "port": "formal(bad)",
+        "taint": [
+          {
+            "kinds": [
+              { "return_paths": [ "[bad]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable":
+      "dataclass_taint.DataClassWithClassAttributeTaintedInConstructor.__init__",
+    "sinks": [
+      {
+        "port": "formal(bad)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "features": [
+                  { "always-type": "integer" },
+                  { "always-type": "scalar" }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "decl": null
+          }
+        ]
+      }
+    ],
+    "tito": [
+      {
+        "port": "formal(benign)",
+        "taint": [
+          {
+            "kinds": [
+              { "return_paths": [ "[benign]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
+          }
+        ]
+      },
+      {
+        "port": "formal(bad)",
+        "taint": [
+          {
+            "kinds": [
+              { "return_paths": [ "[bad]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
+          }
+        ]
+      }
+    ],
+    "modes": [ "Obscure" ]
   }
 }
 {
@@ -66,7 +300,7 @@
     "sources": [
       {
         "port": "result",
-        "taint": [ { "decl": null, "leaves": [ { "kind": "Test" } ] } ]
+        "taint": [ { "kinds": [ { "kind": "Test" } ], "decl": null } ]
       }
     ]
   }
@@ -78,7 +312,7 @@
     "sources": [
       {
         "port": "result",
-        "taint": [ { "decl": null, "leaves": [ { "kind": "Test" } ] } ]
+        "taint": [ { "kinds": [ { "kind": "Test" } ], "decl": null } ]
       }
     ]
   }
@@ -90,7 +324,7 @@
     "sinks": [
       {
         "port": "formal($global)",
-        "taint": [ { "decl": null, "leaves": [ { "kind": "Test" } ] } ]
+        "taint": [ { "kinds": [ { "kind": "Test" } ], "decl": null } ]
       }
     ]
   }
@@ -104,18 +338,23 @@
         "port": "formal(bad)",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "always-type": "integer" },
+              { "always-type": "scalar" }
+            ],
             "root": {
               "filename": "builtins.pyi",
               "line": -1,
               "start": -1,
               "end": -1
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" },
-              { "always-via": "special_sink" }
-            ]
+            }
           }
         ]
       }
@@ -125,14 +364,14 @@
         "port": "formal(bad)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[bad]", "depth": 0 }
+            "kinds": [
+              { "return_paths": [ "[bad]" ], "kind": "LocalReturn" }
             ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+            "local_features": [
+              { "always-type": "integer" },
+              { "always-type": "scalar" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -140,8 +379,8 @@
         "port": "formal(self)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
+            "decl": null
           }
         ]
       },
@@ -149,10 +388,10 @@
         "port": "formal(bad)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[bad]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[bad]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       }
@@ -168,12 +407,16 @@
         "port": "formal(bad)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [ { "kind": "UserControlled" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+            "kinds": [
+              {
+                "features": [
+                  { "always-type": "integer" },
+                  { "always-type": "scalar" }
+                ],
+                "kind": "UserControlled"
+              }
+            ],
+            "decl": null
           }
         ]
       },
@@ -181,22 +424,24 @@
         "port": "result[bad]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [
+                  { "always-type": "integer" },
+                  { "always-type": "scalar" }
+                ],
+                "leaves": [
+                  { "name": "dataclass_taint.WeirdDataClass.__init__" }
+                ],
+                "kind": "UserControlled"
+              }
+            ],
             "root": {
               "filename": "builtins.pyi",
               "line": -1,
               "start": -1,
               "end": -1
-            },
-            "leaves": [
-              {
-                "kind": "UserControlled",
-                "name": "dataclass_taint.WeirdDataClass.__init__"
-              }
-            ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+            }
           }
         ]
       }
@@ -206,22 +451,24 @@
         "port": "formal(another)",
         "taint": [
           {
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "Obj{dataclass_taint.WeirdDataClass.bad_sink}" }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "always-type": "integer" },
+              { "always-type": "scalar" }
+            ],
             "root": {
               "filename": "builtins.pyi",
               "line": -1,
               "start": -1,
               "end": -1
-            },
-            "leaves": [
-              {
-                "kind": "Test",
-                "name": "Obj{dataclass_taint.WeirdDataClass.bad_sink}"
-              }
-            ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+            }
           }
         ]
       }
@@ -231,14 +478,14 @@
         "port": "formal(another)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[bad_sink]", "depth": 0 }
+            "kinds": [
+              { "return_paths": [ "[bad_sink]" ], "kind": "LocalReturn" }
             ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+            "local_features": [
+              { "always-type": "integer" },
+              { "always-type": "scalar" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -246,10 +493,10 @@
         "port": "formal(bad_sink)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[bad_sink]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[bad_sink]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -257,14 +504,14 @@
         "port": "formal(bad)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[bad]", "depth": 0 }
+            "kinds": [
+              { "return_paths": [ "[bad]" ], "kind": "LocalReturn" }
             ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+            "local_features": [
+              { "always-type": "integer" },
+              { "always-type": "scalar" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -272,8 +519,8 @@
         "port": "formal(self)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
+            "decl": null
           }
         ]
       },
@@ -281,10 +528,10 @@
         "port": "formal(bad)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[bad]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[bad]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       }
@@ -300,12 +547,16 @@
         "port": "formal(bad)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [ { "kind": "UserControlled" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+            "kinds": [
+              {
+                "features": [
+                  { "always-type": "integer" },
+                  { "always-type": "scalar" }
+                ],
+                "kind": "UserControlled"
+              }
+            ],
+            "decl": null
           }
         ]
       },
@@ -313,22 +564,24 @@
         "port": "result[bad]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [
+                  { "always-type": "integer" },
+                  { "always-type": "scalar" }
+                ],
+                "leaves": [
+                  { "name": "dataclass_taint.WeirdDataClass.__init__" }
+                ],
+                "kind": "UserControlled"
+              }
+            ],
             "root": {
               "filename": "builtins.pyi",
               "line": -1,
               "start": -1,
               "end": -1
-            },
-            "leaves": [
-              {
-                "kind": "UserControlled",
-                "name": "dataclass_taint.WeirdDataClass.__init__"
-              }
-            ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+            }
           }
         ]
       }
@@ -338,22 +591,24 @@
         "port": "formal(another)",
         "taint": [
           {
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "Obj{dataclass_taint.WeirdDataClass.bad_sink}" }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "always-type": "integer" },
+              { "always-type": "scalar" }
+            ],
             "root": {
               "filename": "builtins.pyi",
               "line": -1,
               "start": -1,
               "end": -1
-            },
-            "leaves": [
-              {
-                "kind": "Test",
-                "name": "Obj{dataclass_taint.WeirdDataClass.bad_sink}"
-              }
-            ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+            }
           }
         ]
       },
@@ -361,18 +616,23 @@
         "port": "formal(bad)",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "always-type": "integer" },
+              { "always-type": "scalar" }
+            ],
             "root": {
               "filename": "builtins.pyi",
               "line": -1,
               "start": -1,
               "end": -1
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" },
-              { "always-via": "special_sink" }
-            ]
+            }
           }
         ]
       }
@@ -382,14 +642,14 @@
         "port": "formal(another)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[bad_sink]", "depth": 0 }
+            "kinds": [
+              { "return_paths": [ "[bad_sink]" ], "kind": "LocalReturn" }
             ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+            "local_features": [
+              { "always-type": "integer" },
+              { "always-type": "scalar" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -397,10 +657,10 @@
         "port": "formal(bad_sink)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[bad_sink]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[bad_sink]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -408,14 +668,14 @@
         "port": "formal(bad)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[bad]", "depth": 0 }
+            "kinds": [
+              { "return_paths": [ "[bad]" ], "kind": "LocalReturn" }
             ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+            "local_features": [
+              { "always-type": "integer" },
+              { "always-type": "scalar" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -423,8 +683,8 @@
         "port": "formal(self)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
+            "decl": null
           }
         ]
       },
@@ -432,10 +692,10 @@
         "port": "formal(bad)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[bad]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[bad]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       }
@@ -451,10 +711,10 @@
         "port": "formal(benign)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[benign]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[benign]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -462,10 +722,10 @@
         "port": "formal(bad)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[bad]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[bad]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       }
@@ -481,18 +741,23 @@
         "port": "formal(bad)",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "always-type": "integer" },
+              { "always-type": "scalar" }
+            ],
             "root": {
               "filename": "dataclass_taint.py",
               "line": 35,
               "start": 19,
               "end": 22
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" },
-              { "always-via": "special_sink" }
-            ]
+            }
           }
         ]
       }
@@ -502,14 +767,14 @@
         "port": "formal(bad)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[bad]", "depth": 0 }
+            "kinds": [
+              { "return_paths": [ "[bad]" ], "kind": "LocalReturn" }
             ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+            "local_features": [
+              { "always-type": "integer" },
+              { "always-type": "scalar" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -517,8 +782,8 @@
         "port": "formal(self)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
+            "decl": null
           }
         ]
       },
@@ -526,10 +791,10 @@
         "port": "formal(bad)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[bad]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[bad]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       }
@@ -545,10 +810,10 @@
         "port": "formal(tainted)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[tainted]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[tainted]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -556,10 +821,10 @@
         "port": "formal(not_tainted)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[not_tainted]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[not_tainted]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       }
@@ -575,10 +840,10 @@
         "port": "formal(tainted)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[tainted]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[tainted]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -586,10 +851,10 @@
         "port": "formal(not_tainted)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[not_tainted]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[not_tainted]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       }
@@ -605,12 +870,16 @@
         "port": "formal(bad)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [ { "kind": "UserControlled" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+            "kinds": [
+              {
+                "features": [
+                  { "always-type": "integer" },
+                  { "always-type": "scalar" }
+                ],
+                "kind": "UserControlled"
+              }
+            ],
+            "decl": null
           }
         ]
       },
@@ -618,22 +887,24 @@
         "port": "result[bad]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [
+                  { "always-type": "integer" },
+                  { "always-type": "scalar" }
+                ],
+                "leaves": [
+                  { "name": "dataclass_taint.WeirdDataClass.__init__" }
+                ],
+                "kind": "UserControlled"
+              }
+            ],
             "root": {
               "filename": "dataclass_taint.py",
               "line": 50,
               "start": 23,
-              "end": 26
-            },
-            "leaves": [
-              {
-                "kind": "UserControlled",
-                "name": "dataclass_taint.WeirdDataClass.__init__"
-              }
-            ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+              "end": 31
+            }
           }
         ]
       }
@@ -643,22 +914,24 @@
         "port": "formal(another)",
         "taint": [
           {
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "Obj{dataclass_taint.WeirdDataClass.bad_sink}" }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "always-type": "integer" },
+              { "always-type": "scalar" }
+            ],
             "root": {
               "filename": "dataclass_taint.py",
               "line": 52,
               "start": 8,
-              "end": 26
-            },
-            "leaves": [
-              {
-                "kind": "Test",
-                "name": "Obj{dataclass_taint.WeirdDataClass.bad_sink}"
-              }
-            ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+              "end": 53
+            }
           }
         ]
       }
@@ -668,14 +941,14 @@
         "port": "formal(another)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[bad_sink]", "depth": 0 }
+            "kinds": [
+              { "return_paths": [ "[bad_sink]" ], "kind": "LocalReturn" }
             ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+            "local_features": [
+              { "always-type": "integer" },
+              { "always-type": "scalar" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -683,10 +956,10 @@
         "port": "formal(bad_sink)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[bad_sink]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[bad_sink]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -694,14 +967,14 @@
         "port": "formal(bad)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[bad]", "depth": 0 }
+            "kinds": [
+              { "return_paths": [ "[bad]" ], "kind": "LocalReturn" }
             ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+            "local_features": [
+              { "always-type": "integer" },
+              { "always-type": "scalar" }
+            ],
+            "decl": null
           }
         ]
       },
@@ -709,8 +982,8 @@
         "port": "formal(self)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
+            "decl": null
           }
         ]
       },
@@ -718,10 +991,10 @@
         "port": "formal(bad)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[bad]", "depth": 0 }
-            ]
+            "kinds": [
+              { "return_paths": [ "[bad]" ], "kind": "LocalReturn" }
+            ],
+            "decl": null
           }
         ]
       }
@@ -737,18 +1010,21 @@
         "port": "result[bad]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [ { "always-via": "tito" } ],
+            "tito": [ { "line": 18, "start": 28, "end": 42 } ],
             "root": {
               "filename": "dataclass_taint.py",
               "line": 18,
               "start": 28,
               "end": 42
-            },
-            "tito": [ { "line": 18, "start": 28, "end": 42 } ],
-            "leaves": [ { "kind": "Test", "name": "_test_source" } ],
-            "features": [
-              { "always-via": "tito" },
-              { "always-via": "special_source" }
-            ]
+            }
           }
         ]
       }
@@ -771,20 +1047,25 @@
         "name": "forward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "always-via": "tito" },
+              { "always-via": "broadening" },
+              { "always-via": "issue-broadening" }
+            ],
+            "tito": [ { "line": 18, "start": 28, "end": 42 } ],
             "root": {
               "filename": "dataclass_taint.py",
               "line": 18,
               "start": 28,
               "end": 42
-            },
-            "tito": [ { "line": 18, "start": 28, "end": 42 } ],
-            "leaves": [ { "kind": "Test", "name": "_test_source" } ],
-            "features": [
-              { "always-via": "issue-broadening" },
-              { "always-via": "broadening" },
-              { "always-via": "tito" },
-              { "always-via": "special_source" }
-            ]
+            }
           }
         ]
       },
@@ -792,22 +1073,27 @@
         "name": "backward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "dataclass_taint.py",
               "line": 19,
               "start": 15,
               "end": 22
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       }
     ],
     "features": [
-      { "always-via": "issue-broadening" },
-      { "always-via": "broadening" },
       { "always-via": "tito" },
+      { "always-via": "broadening" },
+      { "always-via": "issue-broadening" },
       { "always-via": "special_source" },
       { "always-via": "special_sink" }
     ]
@@ -822,18 +1108,21 @@
         "port": "result[bad]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [ { "always-via": "tito" } ],
+            "tito": [ { "line": 24, "start": 28, "end": 42 } ],
             "root": {
               "filename": "dataclass_taint.py",
               "line": 24,
               "start": 28,
               "end": 42
-            },
-            "tito": [ { "line": 24, "start": 28, "end": 42 } ],
-            "leaves": [ { "kind": "Test", "name": "_test_source" } ],
-            "features": [
-              { "always-via": "tito" },
-              { "always-via": "special_source" }
-            ]
+            }
           }
         ]
       }
@@ -849,14 +1138,19 @@
         "port": "formal(context)[not_tainted]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "dataclass_taint.py",
               "line": 80,
               "start": 15,
               "end": 34
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       },
@@ -864,14 +1158,19 @@
         "port": "formal(context)[tainted]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "dataclass_taint.py",
               "line": 79,
               "start": 15,
               "end": 30
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       }
@@ -894,19 +1193,23 @@
         "name": "forward",
         "roots": [
           {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name":
+                      "Obj{dataclass_taint.DataClassWithOtherSource.tainted}"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "dataclass_taint.py",
               "line": 79,
               "start": 15,
               "end": 30
-            },
-            "leaves": [
-              {
-                "kind": "Test",
-                "name":
-                  "Obj{dataclass_taint.DataClassWithOtherSource.tainted}"
-              }
-            ]
+            }
           }
         ]
       },
@@ -914,14 +1217,19 @@
         "name": "backward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "dataclass_taint.py",
               "line": 79,
               "start": 15,
               "end": 30
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       }
@@ -938,14 +1246,19 @@
         "port": "formal(context)[not_tainted]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "dataclass_taint.py",
               "line": 68,
               "start": 15,
               "end": 34
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       },
@@ -953,14 +1266,19 @@
         "port": "formal(context)[tainted]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "dataclass_taint.py",
               "line": 67,
               "start": 15,
               "end": 30
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       }
@@ -983,18 +1301,23 @@
         "name": "forward",
         "roots": [
           {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name":
+                      "Obj{dataclass_taint.DataClassWithSource.tainted}"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "dataclass_taint.py",
               "line": 67,
               "start": 15,
               "end": 30
-            },
-            "leaves": [
-              {
-                "kind": "Test",
-                "name": "Obj{dataclass_taint.DataClassWithSource.tainted}"
-              }
-            ]
+            }
           }
         ]
       },
@@ -1002,14 +1325,19 @@
         "name": "backward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "dataclass_taint.py",
               "line": 67,
               "start": 15,
               "end": 30
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       }
@@ -1026,6 +1354,19 @@
         "port": "result[bad]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [
+                  { "always-type": "integer" },
+                  { "always-type": "scalar" }
+                ],
+                "leaves": [
+                  { "name": "dataclass_taint.WeirdDataClass.__init__" }
+                ],
+                "length": 1,
+                "kind": "UserControlled"
+              }
+            ],
             "call": {
               "position": {
                 "filename": "dataclass_taint.py",
@@ -1034,19 +1375,8 @@
                 "end": 43
               },
               "resolves_to": [ "dataclass_taint.WeirdDataClass.__init__" ],
-              "port": "result[bad]",
-              "length": 1
-            },
-            "leaves": [
-              {
-                "kind": "UserControlled",
-                "name": "dataclass_taint.WeirdDataClass.__init__"
-              }
-            ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+              "port": "result[bad]"
+            }
           }
         ]
       }

@@ -8,12 +8,13 @@ import unittest
 from typing import Dict
 
 import libcst as cst
-from libcst.metadata import MetadataWrapper
+from libcst.metadata import CodePosition, CodeRange, MetadataWrapper
 
 from ..statistics_collectors import (
-    FunctionAnnotationKind,
+    AnnotationCollector,
     AnnotationCountCollector,
     FixmeCountCollector,
+    FunctionAnnotationKind,
     IgnoreCountCollector,
     StrictCountCollector,
 )
@@ -21,6 +22,38 @@ from ..statistics_collectors import (
 
 def parse_source(source: str) -> cst.Module:
     return cst.parse_module(textwrap.dedent(source.rstrip()))
+
+
+class AnnotationCollectorTest(unittest.TestCase):
+    def _build_and_visit_annotation_collector(self, source: str) -> AnnotationCollector:
+        source_module = MetadataWrapper(parse_source(source))
+        collector = AnnotationCollector()
+        source_module.visit(collector)
+        return collector
+
+    def test_return_code_range(self) -> None:
+        collector = self._build_and_visit_annotation_collector(
+            """
+            def foobar():
+                pass
+            """
+        )
+        returns = list(collector.returns())
+        self.assertEqual(len(returns), 1)
+        self.assertEqual(
+            returns[0].code_range,
+            CodeRange(CodePosition(2, 4), CodePosition(2, 10)),
+        )
+
+    def test_line_count(self) -> None:
+        source_module = MetadataWrapper(cst.parse_module("# No trailing newline"))
+        collector = AnnotationCollector()
+        source_module.visit(collector)
+        self.assertEqual(collector.line_count, 1)
+        source_module = MetadataWrapper(cst.parse_module("# With trailing newline\n"))
+        collector = AnnotationCollector()
+        source_module.visit(collector)
+        self.assertEqual(collector.line_count, 2)
 
 
 class AnnotationCountCollectorTest(unittest.TestCase):
@@ -45,9 +78,10 @@ class AnnotationCountCollectorTest(unittest.TestCase):
                 "parameter_count": 1,
                 "attribute_count": 0,
                 "annotated_attribute_count": 0,
+                "function_count": 1,
                 "partially_annotated_function_count": 1,
                 "fully_annotated_function_count": 0,
-                "line_count": 4,
+                "line_count": 3,
             },
         )
 
@@ -65,9 +99,10 @@ class AnnotationCountCollectorTest(unittest.TestCase):
                 "parameter_count": 2,
                 "attribute_count": 0,
                 "annotated_attribute_count": 0,
+                "function_count": 1,
                 "partially_annotated_function_count": 1,
                 "fully_annotated_function_count": 0,
-                "line_count": 4,
+                "line_count": 3,
             },
         )
 
@@ -85,9 +120,10 @@ class AnnotationCountCollectorTest(unittest.TestCase):
                 "parameter_count": 0,
                 "attribute_count": 0,
                 "annotated_attribute_count": 0,
+                "function_count": 0,
                 "partially_annotated_function_count": 0,
                 "fully_annotated_function_count": 0,
-                "line_count": 4,
+                "line_count": 3,
             },
         )
 
@@ -106,9 +142,10 @@ class AnnotationCountCollectorTest(unittest.TestCase):
                 "parameter_count": 0,
                 "attribute_count": 2,
                 "annotated_attribute_count": 2,
+                "function_count": 0,
                 "partially_annotated_function_count": 0,
                 "fully_annotated_function_count": 0,
-                "line_count": 5,
+                "line_count": 4,
             },
         )
 
@@ -127,9 +164,10 @@ class AnnotationCountCollectorTest(unittest.TestCase):
                 "parameter_count": 0,
                 "attribute_count": 0,
                 "annotated_attribute_count": 0,
+                "function_count": 1,
                 "partially_annotated_function_count": 0,
                 "fully_annotated_function_count": 0,
-                "line_count": 4,
+                "line_count": 3,
             },
         )
 
@@ -148,9 +186,10 @@ class AnnotationCountCollectorTest(unittest.TestCase):
                 "parameter_count": 1,
                 "attribute_count": 0,
                 "annotated_attribute_count": 0,
+                "function_count": 2,
                 "partially_annotated_function_count": 0,
                 "fully_annotated_function_count": 1,
-                "line_count": 5,
+                "line_count": 4,
             },
         )
 
@@ -163,15 +202,16 @@ class AnnotationCountCollectorTest(unittest.TestCase):
             {
                 "annotated_return_count": 0,
                 "annotated_globals_count": 0,
-                "annotated_parameter_count": 2,
+                "annotated_parameter_count": 1,
                 "return_count": 1,
                 "globals_count": 0,
-                "parameter_count": 2,
+                "parameter_count": 1,
                 "attribute_count": 0,
                 "annotated_attribute_count": 0,
+                "function_count": 1,
                 "partially_annotated_function_count": 1,
                 "fully_annotated_function_count": 0,
-                "line_count": 5,
+                "line_count": 4,
             },
         )
 
@@ -184,15 +224,16 @@ class AnnotationCountCollectorTest(unittest.TestCase):
             {
                 "annotated_return_count": 1,
                 "annotated_globals_count": 0,
-                "annotated_parameter_count": 2,
+                "annotated_parameter_count": 1,
                 "return_count": 1,
                 "globals_count": 0,
-                "parameter_count": 2,
+                "parameter_count": 1,
                 "attribute_count": 0,
                 "annotated_attribute_count": 0,
+                "function_count": 1,
                 "partially_annotated_function_count": 0,
                 "fully_annotated_function_count": 1,
-                "line_count": 5,
+                "line_count": 4,
             },
         )
 
@@ -206,15 +247,16 @@ class AnnotationCountCollectorTest(unittest.TestCase):
             {
                 "annotated_return_count": 0,
                 "annotated_globals_count": 0,
-                "annotated_parameter_count": 2,
+                "annotated_parameter_count": 1,
                 "return_count": 1,
                 "globals_count": 0,
-                "parameter_count": 2,
+                "parameter_count": 1,
                 "attribute_count": 0,
                 "annotated_attribute_count": 0,
+                "function_count": 1,
                 "partially_annotated_function_count": 1,
                 "fully_annotated_function_count": 0,
-                "line_count": 6,
+                "line_count": 5,
             },
         )
 
@@ -232,9 +274,10 @@ class AnnotationCountCollectorTest(unittest.TestCase):
                 "parameter_count": 2,
                 "attribute_count": 0,
                 "annotated_attribute_count": 0,
+                "function_count": 1,
                 "partially_annotated_function_count": 1,
                 "fully_annotated_function_count": 0,
-                "line_count": 4,
+                "line_count": 3,
             },
         )
 
@@ -254,9 +297,10 @@ class AnnotationCountCollectorTest(unittest.TestCase):
                 "parameter_count": 2,
                 "attribute_count": 0,
                 "annotated_attribute_count": 0,
+                "function_count": 1,
                 "partially_annotated_function_count": 1,
                 "fully_annotated_function_count": 0,
-                "line_count": 6,
+                "line_count": 5,
             },
         )
 
@@ -274,9 +318,10 @@ class AnnotationCountCollectorTest(unittest.TestCase):
                 "annotated_parameter_count": 1,
                 "attribute_count": 0,
                 "annotated_attribute_count": 0,
+                "function_count": 1,
                 "partially_annotated_function_count": 0,
                 "fully_annotated_function_count": 1,
-                "line_count": 4,
+                "line_count": 3,
             },
         )
         self.assert_counts(
@@ -296,13 +341,14 @@ class AnnotationCountCollectorTest(unittest.TestCase):
                 "annotated_return_count": 2,
                 "globals_count": 0,
                 "annotated_globals_count": 0,
-                "parameter_count": 4,
-                "annotated_parameter_count": 4,
+                "parameter_count": 2,
+                "annotated_parameter_count": 2,
                 "attribute_count": 0,
                 "annotated_attribute_count": 0,
+                "function_count": 2,
                 "partially_annotated_function_count": 0,
                 "fully_annotated_function_count": 2,
-                "line_count": 11,
+                "line_count": 10,
             },
         )
         # Ensure globals and attributes with literal values are considered annotated.
@@ -325,9 +371,10 @@ class AnnotationCountCollectorTest(unittest.TestCase):
                 "annotated_parameter_count": 0,
                 "attribute_count": 2,
                 "annotated_attribute_count": 2,
+                "function_count": 0,
                 "partially_annotated_function_count": 0,
                 "fully_annotated_function_count": 0,
-                "line_count": 9,
+                "line_count": 8,
             },
         )
 
@@ -342,13 +389,14 @@ class AnnotationCountCollectorTest(unittest.TestCase):
                 "annotated_return_count": 0,
                 "globals_count": 0,
                 "annotated_globals_count": 0,
-                "parameter_count": 1,
-                "annotated_parameter_count": 1,
+                "parameter_count": 0,
+                "annotated_parameter_count": 0,
                 "attribute_count": 0,
                 "annotated_attribute_count": 0,
+                "function_count": 1,
                 "partially_annotated_function_count": 0,
                 "fully_annotated_function_count": 0,
-                "line_count": 4,
+                "line_count": 3,
             },
         )
         self.assert_counts(
@@ -361,13 +409,14 @@ class AnnotationCountCollectorTest(unittest.TestCase):
                 "annotated_return_count": 1,
                 "globals_count": 0,
                 "annotated_globals_count": 0,
-                "parameter_count": 1,
-                "annotated_parameter_count": 1,
+                "parameter_count": 0,
+                "annotated_parameter_count": 0,
                 "attribute_count": 0,
                 "annotated_attribute_count": 0,
+                "function_count": 1,
                 "partially_annotated_function_count": 0,
                 "fully_annotated_function_count": 1,
-                "line_count": 4,
+                "line_count": 3,
             },
         )
         self.assert_counts(
@@ -380,13 +429,14 @@ class AnnotationCountCollectorTest(unittest.TestCase):
                 "annotated_return_count": 0,
                 "globals_count": 0,
                 "annotated_globals_count": 0,
-                "parameter_count": 2,
-                "annotated_parameter_count": 1,
+                "parameter_count": 1,
+                "annotated_parameter_count": 0,
                 "attribute_count": 0,
                 "annotated_attribute_count": 0,
+                "function_count": 1,
                 "partially_annotated_function_count": 0,
                 "fully_annotated_function_count": 0,
-                "line_count": 4,
+                "line_count": 3,
             },
         )
         self.assert_counts(
@@ -399,13 +449,14 @@ class AnnotationCountCollectorTest(unittest.TestCase):
                 "annotated_return_count": 1,
                 "globals_count": 0,
                 "annotated_globals_count": 0,
-                "parameter_count": 2,
-                "annotated_parameter_count": 1,
+                "parameter_count": 1,
+                "annotated_parameter_count": 0,
                 "attribute_count": 0,
                 "annotated_attribute_count": 0,
+                "function_count": 1,
                 "partially_annotated_function_count": 1,
                 "fully_annotated_function_count": 0,
-                "line_count": 4,
+                "line_count": 3,
             },
         )
         self.assert_counts(
@@ -418,13 +469,14 @@ class AnnotationCountCollectorTest(unittest.TestCase):
                 "annotated_return_count": 0,
                 "globals_count": 0,
                 "annotated_globals_count": 0,
-                "parameter_count": 1,
-                "annotated_parameter_count": 1,
+                "parameter_count": 0,
+                "annotated_parameter_count": 0,
                 "attribute_count": 0,
                 "annotated_attribute_count": 0,
+                "function_count": 1,
                 "partially_annotated_function_count": 1,
                 "fully_annotated_function_count": 0,
-                "line_count": 4,
+                "line_count": 3,
             },
         )
 

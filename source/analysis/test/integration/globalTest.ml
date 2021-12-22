@@ -69,7 +69,7 @@ let test_check_with_qualification context =
       def len(s: str) -> int:
           return 1
       def assign() -> int:
-          global_number="a" # type: str
+          global_number: str = "a"
           return len(global_number)
     |}
     [];
@@ -79,7 +79,7 @@ let test_check_with_qualification context =
       def len(s: str) -> int:
         return 1
       def assign_outer() -> None:
-          global_number="a" # type: str
+          global_number: str ="a"
           def assign_inner_access() -> int:
               return len(global_number)
           def assign_inner_global() -> int:
@@ -92,7 +92,7 @@ let test_check_with_qualification context =
       global_number: int = 1
       def derp() -> int:
           def derp_inner() -> None:
-              global_number="a" # type: str
+              global_number: str = "a"
               pass
           return global_number
     |}

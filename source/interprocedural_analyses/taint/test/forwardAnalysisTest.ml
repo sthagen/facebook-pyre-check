@@ -13,12 +13,12 @@ open Taint
 open Interprocedural
 open TestHelper
 
-let assert_taint ?models ~context source expect =
+let assert_taint ?models ?models_source ~context source expect =
   let handle = "qualifier.py" in
   let qualifier = Ast.Reference.create "qualifier" in
   let sources =
-    match models with
-    | Some models -> [handle, source; "models.py", models]
+    match models_source with
+    | Some models_source -> [handle, source; "models.py", models_source]
     | None -> [handle, source]
   in
   let { Test.ScratchProject.BuiltTypeEnvironment.type_environment = environment; _ } =
@@ -37,8 +37,8 @@ let assert_taint ?models ~context source expect =
   models
   >>| Test.trim_extra_indentation
   >>| (fun model_source ->
-        let { Model.models; errors; _ } =
-          Model.parse
+        let { ModelParser.models; errors; _ } =
+          ModelParser.parse
             ~resolution:(TypeCheck.resolution global_resolution (module TypeCheck.DummyContext))
             ~source:model_source
             ~configuration:TaintConfiguration.default
@@ -63,13 +63,14 @@ let assert_taint ?models ~context source expect =
     in
     let forward, _errors, _ =
       ForwardAnalysis.run
+        ?profiler:None
         ~environment
         ~qualifier
         ~define
         ~call_graph_of_define
-        ~existing_model:Taint.Result.empty_model
+        ~existing_model:Model.empty_model
     in
-    let model = { Taint.Result.empty_model with forward } in
+    let model = { Model.empty_model with forward } in
     AnalysisResult.empty_model
     |> AnalysisResult.with_model Taint.Result.kind model
     |> FixpointState.add_predefined FixpointState.Epoch.predefined call_target
@@ -107,6 +108,7 @@ let test_simple_source context =
     ~models:{|
       def models.custom_source() -> TaintSource[Test]: ...
     |}
+    ~models_source:"def custom_source() -> int: ..."
     {|
       def simple_source():
         return models.custom_source()
@@ -959,7 +961,7 @@ let test_parameter_default_values context =
   assert_taint
     ~context
     {|
-      def source_in_default(tainted=_test_source(), benign):
+      def source_in_default(benign, tainted=_test_source()):
         return benign
     |}
     [outcome ~kind:`Function ~returns:[] "qualifier.source_in_default"]
@@ -1026,6 +1028,7 @@ let test_composed_models context =
       def models.composed_model(x: TaintSink[Test], y, z) -> TaintSource[UserControlled]: ...
       def models.composed_model(x, y: TaintSink[Demo], z: TaintInTaintOut): ...
     |}
+    ~models_source:"def composed_model(x, y, z): ..."
     {|
     |}
     [
@@ -1051,6 +1054,11 @@ let test_tito_side_effects context =
       def models.change_arg1(arg0: TaintInTaintOut[Updates[arg1]], arg1): ...
       def qualifier.MyList.append(self, arg: TaintInTaintOut[Updates[self]]): ...
     |}
+    ~models_source:
+      {|
+      def change_arg0(arg0, arg1): ...
+      def change_arg1(arg0, arg1): ...
+      |}
     {|
       def test_from_1_to_0():
         x = 0

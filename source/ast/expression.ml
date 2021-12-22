@@ -9,34 +9,106 @@ open Core
 open Sexplib.Std
 open Pyre
 
-module Substring = struct
+module StringLiteral = struct
   type kind =
-    | Literal
-    | Format
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+    | String
+    | Bytes
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   type t = {
     value: string;
     kind: kind;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
-  let is_all_literal =
-    List.for_all ~f:(fun { Node.value = { kind; _ }; _ } -> equal_kind kind Literal)
+  let create ?(bytes = false) value =
+    let kind =
+      if bytes then
+        Bytes
+      else
+        String
+    in
+    { value; kind }
+
+
+  let location_insensitive_compare_kind left right =
+    match left, right with
+    | String, String
+    | Bytes, Bytes ->
+        0
+    | String, _ -> -1
+    | Bytes, _ -> 1
+
+
+  let location_insensitive_compare left right =
+    match String.compare left.value right.value with
+    | x when not (Int.equal x 0) -> x
+    | _ -> location_insensitive_compare_kind left.kind right.kind
+end
+
+module Constant = struct
+  type t =
+    | NoneLiteral
+    | Ellipsis
+    | False
+    | True
+    | Integer of int
+    | Float of float
+    | Complex of float
+    | String of StringLiteral.t
+  [@@deriving compare, sexp, show, hash, to_yojson]
+
+  let location_insensitive_compare left right =
+    match left, right with
+    | NoneLiteral, NoneLiteral
+    | Ellipsis, Ellipsis
+    | False, False
+    | True, True ->
+        0
+    | Integer left, Integer right -> Int.compare left right
+    | Float left, Float right
+    | Complex left, Complex right ->
+        Float.compare left right
+    | String left, String right -> StringLiteral.compare left right
+    | NoneLiteral, _ -> -1
+    | Ellipsis, _ -> -1
+    | False, _ -> -1
+    | True, _ -> -1
+    | Integer _, _ -> -1
+    | Float _, _ -> -1
+    | Complex _, _ -> -1
+    | String _, _ -> 1
+
+
+  let pp formatter = function
+    | String { StringLiteral.value; kind } ->
+        let bytes =
+          match kind with
+          | StringLiteral.Bytes -> "b"
+          | _ -> ""
+        in
+        Format.fprintf formatter "%s\"%s\"" bytes value
+    | Ellipsis -> Format.fprintf formatter "..."
+    | Float float_value -> Format.fprintf formatter "%f" float_value
+    | Complex float_value -> Format.fprintf formatter "%fj" float_value
+    | False -> Format.fprintf formatter "%s" "False"
+    | Integer integer -> Format.fprintf formatter "%d" integer
+    | NoneLiteral -> Format.fprintf formatter "None"
+    | True -> Format.fprintf formatter "%s" "True"
 end
 
 module rec BooleanOperator : sig
   type operator =
     | And
     | Or
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   type t = {
     left: Expression.t;
     operator: operator;
     right: Expression.t;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val pp_boolean_operator : Format.formatter -> operator -> unit
 
@@ -47,14 +119,14 @@ end = struct
   type operator =
     | And
     | Or
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   type t = {
     left: Expression.t;
     operator: operator;
     right: Expression.t;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   let pp_boolean_operator formatter operator =
     Format.fprintf
@@ -82,10 +154,12 @@ end
 and Call : sig
   module Argument : sig
     type t = {
+      (* NOTE(grievejia): Location here refers to the location of the entire argument, not the
+         location of the argument name itself. *)
       name: Identifier.t Node.t option;
       value: Expression.t;
     }
-    [@@deriving compare, eq, sexp, show, hash, to_yojson]
+    [@@deriving compare, sexp, show, hash, to_yojson]
 
     type kind =
       | SingleStar
@@ -102,7 +176,7 @@ and Call : sig
     callee: Expression.t;
     arguments: Argument.t list;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 end = struct
@@ -111,7 +185,7 @@ end = struct
       name: Identifier.t Node.t option;
       value: Expression.t;
     }
-    [@@deriving compare, eq, sexp, show, hash, to_yojson]
+    [@@deriving compare, sexp, show, hash, to_yojson]
 
     type kind =
       | SingleStar
@@ -143,7 +217,7 @@ end = struct
     callee: Expression.t;
     arguments: Argument.t list;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   let location_insensitive_compare left right =
     match Expression.location_insensitive_compare left.callee right.callee with
@@ -163,14 +237,14 @@ and ComparisonOperator : sig
     | LessThanOrEquals
     | NotEquals
     | NotIn
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   type t = {
     left: Expression.t;
     operator: operator;
     right: Expression.t;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val inverse : operator -> operator
 
@@ -191,14 +265,14 @@ end = struct
     | LessThanOrEquals
     | NotEquals
     | NotIn
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   type t = {
     left: Expression.t;
     operator: operator;
     right: Expression.t;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   let inverse = function
     | Equals -> NotEquals
@@ -282,7 +356,7 @@ and Comprehension : sig
       conditions: Expression.t list;
       async: bool;
     }
-    [@@deriving compare, eq, sexp, show, hash, to_yojson]
+    [@@deriving compare, sexp, show, hash, to_yojson]
 
     val location_insensitive_compare : t -> t -> int
   end
@@ -291,7 +365,7 @@ and Comprehension : sig
     element: 'element;
     generators: Generator.t list;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare
     :  ('element -> 'element -> int) ->
@@ -306,7 +380,7 @@ end = struct
       conditions: Expression.t list;
       async: bool;
     }
-    [@@deriving compare, eq, sexp, show, hash, to_yojson]
+    [@@deriving compare, sexp, show, hash, to_yojson]
 
     let location_insensitive_compare left right =
       match Expression.location_insensitive_compare left.target right.target with
@@ -329,7 +403,7 @@ end = struct
     element: 'element;
     generators: Generator.t list;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   let location_insensitive_compare compare_element left right =
     match compare_element left.element right.element with
@@ -343,7 +417,7 @@ and Dictionary : sig
       key: Expression.t;
       value: Expression.t;
     }
-    [@@deriving compare, eq, sexp, show, hash, to_yojson]
+    [@@deriving compare, sexp, show, hash, to_yojson]
 
     val location_insensitive_compare : t -> t -> int
   end
@@ -352,7 +426,7 @@ and Dictionary : sig
     entries: Entry.t list;
     keywords: Expression.t list;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 end = struct
@@ -361,7 +435,7 @@ end = struct
       key: Expression.t;
       value: Expression.t;
     }
-    [@@deriving compare, eq, sexp, show, hash, to_yojson]
+    [@@deriving compare, sexp, show, hash, to_yojson]
 
     let location_insensitive_compare left right =
       match Expression.location_insensitive_compare left.key right.key with
@@ -373,7 +447,7 @@ end = struct
     entries: Entry.t list;
     keywords: Expression.t list;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   let location_insensitive_compare left right =
     match List.compare Entry.location_insensitive_compare left.entries right.entries with
@@ -386,7 +460,7 @@ and Lambda : sig
     parameters: Parameter.t list;
     body: Expression.t;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 end = struct
@@ -394,7 +468,7 @@ end = struct
     parameters: Parameter.t list;
     body: Expression.t;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   let location_insensitive_compare left right =
     match List.compare Parameter.location_insensitive_compare left.parameters right.parameters with
@@ -409,7 +483,7 @@ and Name : sig
       attribute: Identifier.t;
       special: bool;
     }
-    [@@deriving compare, eq, sexp, show, hash, to_yojson]
+    [@@deriving compare, sexp, show, hash, to_yojson]
 
     val location_insensitive_compare : t -> t -> int
   end
@@ -417,7 +491,7 @@ and Name : sig
   type t =
     | Attribute of Attribute.t
     | Identifier of Identifier.t
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 
@@ -429,7 +503,7 @@ end = struct
       attribute: Identifier.t;
       special: bool;
     }
-    [@@deriving compare, eq, sexp, show, hash, to_yojson]
+    [@@deriving compare, sexp, show, hash, to_yojson]
 
     let location_insensitive_compare left right =
       match Expression.location_insensitive_compare left.base right.base with
@@ -443,7 +517,7 @@ end = struct
   type t =
     | Attribute of Attribute.t
     | Identifier of Identifier.t
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   let location_insensitive_compare left right =
     match left, right with
@@ -464,9 +538,9 @@ and Parameter : sig
     value: Expression.t option;
     annotation: Expression.t option;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
-  type t = parameter Node.t [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  type t = parameter Node.t [@@deriving compare, sexp, show, hash, to_yojson]
 
   val create
     :  location:Location.t ->
@@ -485,9 +559,9 @@ end = struct
     value: Expression.t option;
     annotation: Expression.t option;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
-  type t = parameter Node.t [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  type t = parameter Node.t [@@deriving compare, sexp, show, hash, to_yojson]
 
   let create ~location ?value ?annotation ~name () =
     { Node.location; value = { name; value; annotation } }
@@ -513,14 +587,14 @@ and Starred : sig
   type t =
     | Once of Expression.t
     | Twice of Expression.t
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 end = struct
   type t =
     | Once of Expression.t
     | Twice of Expression.t
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   let location_insensitive_compare left right =
     match left, right with
@@ -531,86 +605,25 @@ end = struct
     | Twice _, Once _ -> 1
 end
 
-and StringLiteral : sig
-  type kind =
-    | String
-    | Bytes
-    | Format of Expression.t list
-    | Mixed of Substring.t Node.t list
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
-
-  type t = {
-    value: string;
-    kind: kind;
-  }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
-
-  val create : ?bytes:bool -> ?expressions:Expression.t list -> string -> t
-
-  val create_mixed : Substring.t Node.t list -> t
+and Substring : sig
+  type t =
+    | Literal of string Node.t
+    | Format of Expression.t
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 end = struct
-  type kind =
-    | String
-    | Bytes
-    | Format of Expression.t list
-    | Mixed of Substring.t Node.t list
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
-
-  type t = {
-    value: string;
-    kind: kind;
-  }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
-
-  let create ?(bytes = false) ?expressions value =
-    let kind =
-      if bytes then
-        Bytes
-      else
-        match expressions with
-        | Some expressions -> Format expressions
-        | _ -> String
-    in
-    { value; kind }
-
-
-  let create_mixed pieces =
-    (* Default to literal string so subsequent pre-processing logic can be simplier. *)
-    match pieces with
-    | [] -> { value = ""; kind = String }
-    | [{ Node.value = { Substring.kind = Literal; value }; _ }] -> { value; kind = String }
-    | _ ->
-        let value =
-          pieces
-          |> List.map ~f:(fun { Node.value = { Substring.value; _ }; _ } -> value)
-          |> String.concat ~sep:""
-        in
-        if Substring.is_all_literal pieces then
-          { value; kind = String }
-        else
-          { value; kind = Mixed pieces }
-
-
-  let location_insensitive_compare_kind left right =
-    match left, right with
-    | String, String
-    | Bytes, Bytes ->
-        0
-    | Format left, Format right -> List.compare Expression.location_insensitive_compare left right
-    | Mixed left, Mixed right ->
-        List.compare (Node.location_insensitive_compare Substring.compare) left right
-    | String, _ -> -1
-    | Bytes, _ -> -1
-    | Format _, _ -> -1
-    | Mixed _, _ -> 1
-
+  type t =
+    | Literal of string Node.t
+    | Format of Expression.t
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   let location_insensitive_compare left right =
-    match String.compare left.value right.value with
-    | x when not (Int.equal x 0) -> x
-    | _ -> location_insensitive_compare_kind left.kind right.kind
+    match left, right with
+    | Literal left, Literal right -> Node.location_insensitive_compare String.compare left right
+    | Format left, Format right -> Expression.location_insensitive_compare left right
+    | Literal _, _ -> -1
+    | Format _, _ -> 1
 end
 
 and Ternary : sig
@@ -619,7 +632,7 @@ and Ternary : sig
     test: Expression.t;
     alternative: Expression.t;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 end = struct
@@ -628,7 +641,7 @@ end = struct
     test: Expression.t;
     alternative: Expression.t;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   let location_insensitive_compare left right =
     match Expression.location_insensitive_compare left.target right.target with
@@ -645,13 +658,13 @@ and UnaryOperator : sig
     | Negative
     | Not
     | Positive
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   type t = {
     operator: operator;
     operand: Expression.t;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val pp_unary_operator : Format.formatter -> operator -> unit
 
@@ -664,13 +677,13 @@ end = struct
     | Negative
     | Not
     | Positive
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   type t = {
     operator: operator;
     operand: Expression.t;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   let pp_unary_operator formatter operator =
     Format.fprintf
@@ -713,7 +726,7 @@ and WalrusOperator : sig
     target: Expression.t;
     value: Expression.t;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 end = struct
@@ -721,7 +734,7 @@ end = struct
     target: Expression.t;
     value: Expression.t;
   }
-  [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  [@@deriving compare, sexp, show, hash, to_yojson]
 
   let location_insensitive_compare left right =
     match Expression.location_insensitive_compare left.target right.target with
@@ -735,14 +748,11 @@ and Expression : sig
     | BooleanOperator of BooleanOperator.t
     | Call of Call.t
     | ComparisonOperator of ComparisonOperator.t
-    | Complex of float
+    | Constant of Constant.t
     | Dictionary of Dictionary.t
     | DictionaryComprehension of Dictionary.Entry.t Comprehension.t
-    | Ellipsis
-    | False
-    | Float of float
     | Generator of t Comprehension.t
-    | Integer of int
+    | FormatString of Substring.t list
     | Lambda of Lambda.t
     | List of t list
     | ListComprehension of t Comprehension.t
@@ -750,16 +760,14 @@ and Expression : sig
     | Set of t list
     | SetComprehension of t Comprehension.t
     | Starred of Starred.t
-    | String of StringLiteral.t
     | Ternary of Ternary.t
-    | True
     | Tuple of t list
     | UnaryOperator of UnaryOperator.t
     | WalrusOperator of WalrusOperator.t
     | Yield of t option
     | YieldFrom of t
 
-  and t = expression Node.t [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  and t = expression Node.t [@@deriving compare, sexp, show, hash, to_yojson]
 
   val location_insensitive_compare : t -> t -> int
 
@@ -774,14 +782,11 @@ end = struct
     | BooleanOperator of BooleanOperator.t
     | Call of Call.t
     | ComparisonOperator of ComparisonOperator.t
-    | Complex of float
+    | Constant of Constant.t
     | Dictionary of Dictionary.t
     | DictionaryComprehension of Dictionary.Entry.t Comprehension.t
-    | Ellipsis
-    | False
-    | Float of float
     | Generator of t Comprehension.t
-    | Integer of int
+    | FormatString of Substring.t list
     | Lambda of Lambda.t
     | List of t list
     | ListComprehension of t Comprehension.t
@@ -789,16 +794,14 @@ end = struct
     | Set of t list
     | SetComprehension of t Comprehension.t
     | Starred of Starred.t
-    | String of StringLiteral.t
     | Ternary of Ternary.t
-    | True
     | Tuple of t list
     | UnaryOperator of UnaryOperator.t
     | WalrusOperator of WalrusOperator.t
     | Yield of t option
     | YieldFrom of t
 
-  and t = expression Node.t [@@deriving compare, eq, sexp, show, hash, to_yojson]
+  and t = expression Node.t [@@deriving compare, sexp, show, hash, to_yojson]
 
   let _ = show (* shadowed below *)
 
@@ -810,19 +813,17 @@ end = struct
     | Call left, Call right -> Call.location_insensitive_compare left right
     | ComparisonOperator left, ComparisonOperator right ->
         ComparisonOperator.location_insensitive_compare left right
-    | Complex left, Complex right -> Float.compare left right
+    | Constant left, Constant right -> Constant.compare left right
     | Dictionary left, Dictionary right -> Dictionary.location_insensitive_compare left right
     | DictionaryComprehension left, DictionaryComprehension right ->
         Comprehension.location_insensitive_compare
           Dictionary.Entry.location_insensitive_compare
           left
           right
-    | Ellipsis, Ellipsis -> 0
-    | False, False -> 0
-    | Float left, Float right -> Float.compare left right
     | Generator left, Generator right ->
         Comprehension.location_insensitive_compare location_insensitive_compare left right
-    | Integer left, Integer right -> Int.compare left right
+    | FormatString left, FormatString right ->
+        List.compare Substring.location_insensitive_compare left right
     | Lambda left, Lambda right -> Lambda.location_insensitive_compare left right
     | List left, List right -> List.compare location_insensitive_compare left right
     | ListComprehension left, ListComprehension right ->
@@ -832,9 +833,7 @@ end = struct
     | SetComprehension left, SetComprehension right ->
         Comprehension.location_insensitive_compare location_insensitive_compare left right
     | Starred left, Starred right -> Starred.location_insensitive_compare left right
-    | String left, String right -> StringLiteral.location_insensitive_compare left right
     | Ternary left, Ternary right -> Ternary.location_insensitive_compare left right
-    | True, True -> 0
     | Tuple left, Tuple right -> List.compare location_insensitive_compare left right
     | UnaryOperator left, UnaryOperator right ->
         UnaryOperator.location_insensitive_compare left right
@@ -846,14 +845,11 @@ end = struct
     | BooleanOperator _, _ -> -1
     | Call _, _ -> -1
     | ComparisonOperator _, _ -> -1
-    | Complex _, _ -> -1
+    | Constant _, _ -> -1
     | Dictionary _, _ -> -1
     | DictionaryComprehension _, _ -> -1
-    | Ellipsis, _ -> -1
-    | False, _ -> -1
-    | Float _, _ -> -1
     | Generator _, _ -> -1
-    | Integer _, _ -> -1
+    | FormatString _, _ -> -1
     | Lambda _, _ -> -1
     | List _, _ -> -1
     | ListComprehension _, _ -> -1
@@ -861,9 +857,7 @@ end = struct
     | Set _, _ -> -1
     | SetComprehension _, _ -> -1
     | Starred _, _ -> -1
-    | String _, _ -> -1
     | Ternary _, _ -> -1
-    | True, _ -> -1
     | Tuple _, _ -> -1
     | UnaryOperator _, _ -> -1
     | WalrusOperator _, _ -> -1
@@ -1025,16 +1019,13 @@ end = struct
               Format.fprintf formatter "%a[%a]" pp_expression_t base pp_argument_list arguments
           | _ -> Format.fprintf formatter "%a(%a)" pp_expression_t callee pp_argument_list arguments
           )
-      | String { StringLiteral.value; kind } -> (
-          let bytes =
-            match kind with
-            | StringLiteral.Bytes -> "b"
-            | _ -> ""
+      | FormatString substrings ->
+          let pp_substring formatter = function
+            | Substring.Literal { Node.value; _ } -> Format.fprintf formatter "\"%s\"" value
+            | Substring.Format expression ->
+                Format.fprintf formatter "f\"{%a}\"" pp_expression_t expression
           in
-          match kind with
-          | StringLiteral.Format expressions ->
-              Format.fprintf formatter "f\"%s\"(%a)" value pp_expression_list expressions
-          | _ -> Format.fprintf formatter "%s\"%s\"" bytes value)
+          List.iter substrings ~f:(pp_substring formatter)
       | ComparisonOperator { ComparisonOperator.left; operator; right } ->
           Format.fprintf
             formatter
@@ -1045,17 +1036,12 @@ end = struct
             operator
             pp_expression_t
             right
-      | Ellipsis -> Format.fprintf formatter "..."
-      | Float float_value
-      | Complex float_value ->
-          Format.fprintf formatter "%f" float_value
+      | Constant constant -> Format.fprintf formatter "%a" Constant.pp constant
       | Dictionary { Dictionary.entries; keywords } ->
           Format.fprintf formatter "{ %a%a }" pp_dictionary entries pp_keywords keywords
       | DictionaryComprehension { Comprehension.element; generators } ->
           Format.fprintf formatter "{ %a: %a }" pp_dictionary_entry element pp_generators generators
-      | False -> Format.fprintf formatter "%s" "False"
       | Generator generator -> Format.fprintf formatter "%a" pp_basic_comprehension generator
-      | Integer integer -> Format.fprintf formatter "%d" integer
       | Lambda { Lambda.parameters; body } ->
           Format.fprintf
             formatter
@@ -1075,7 +1061,6 @@ end = struct
           Format.fprintf formatter "set(%a)" pp_basic_comprehension set_comprehension
       | Starred starred -> Format.fprintf formatter "%a" pp_starred starred
       | Ternary ternary -> Format.fprintf formatter "%a" pp_ternary ternary
-      | True -> Format.fprintf formatter "%s" "True"
       | Tuple tuple -> Format.fprintf formatter "(%a)" pp_expression_list tuple
       | UnaryOperator { UnaryOperator.operator; operand } ->
           Format.fprintf
@@ -1149,8 +1134,8 @@ let rec normalize { Node.location; value } =
         | ComparisonOperator { ComparisonOperator.left; operator; right } ->
             ComparisonOperator
               { ComparisonOperator.left; operator = ComparisonOperator.inverse operator; right }
-        | False -> True
-        | True -> False
+        | Constant Constant.False -> Constant Constant.True
+        | Constant Constant.True -> Constant Constant.False
         | UnaryOperator { UnaryOperator.operator = UnaryOperator.Not; operand = { Node.value; _ } }
           ->
             value
@@ -1169,7 +1154,13 @@ let rec normalize { Node.location; value } =
 
 let is_false { Node.value; _ } =
   match value with
-  | False -> true
+  | Constant Constant.False -> true
+  | _ -> false
+
+
+let is_none { Node.value; _ } =
+  match value with
+  | Constant Constant.NoneLiteral -> true
   | _ -> false
 
 

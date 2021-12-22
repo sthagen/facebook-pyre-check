@@ -438,9 +438,31 @@ let test_tuple_literal_access context =
   assert_type_errors
     {|
       def foo() -> int:
+        x = (0, "one", 2)
+        return x[-1]
+    |}
+    [];
+  assert_type_errors
+    {|
+      def foo() -> int:
+        x = (0, "one", 2)
+        return x[-2]
+    |}
+    ["Incompatible return type [7]: Expected `int` but got `str`."];
+  assert_type_errors
+    {|
+      def foo() -> int:
         i = 0
         x = (0, "one", 2)
         return x[i]
+    |}
+    [];
+  assert_type_errors
+    {|
+      def foo() -> int:
+        i = -2
+        x = (0, "one", 2.)
+        return x[-3]
     |}
     [];
 
@@ -633,11 +655,11 @@ let test_unpacking context =
   assert_type_errors
     {|
       from typing import Tuple
-      from pyre_extensions import TypeVarTuple
+      from pyre_extensions import TypeVarTuple, Unpack
 
       Ts = TypeVarTuple("Ts")
 
-      def foo(x: int, xs: Tuple[str, *Ts, bool]) -> Tuple[int, str, *Ts, bool]:
+      def foo(x: int, xs: Tuple[str, Unpack[Ts], bool]) -> Tuple[int, str, Unpack[Ts], bool]:
         y = (x, *xs)
         reveal_type(y)
         return y
@@ -646,11 +668,11 @@ let test_unpacking context =
   assert_type_errors
     {|
       from typing import Tuple
-      from pyre_extensions import TypeVarTuple
+      from pyre_extensions import TypeVarTuple, Unpack
 
       Ts = TypeVarTuple("Ts")
 
-      def foo(xs: Tuple[str, *Ts, bool]) -> None:
+      def foo(xs: Tuple[str, Unpack[Ts], bool]) -> None:
         y = ( *xs, *(2, 3), *xs)
         reveal_type(y)
     |}

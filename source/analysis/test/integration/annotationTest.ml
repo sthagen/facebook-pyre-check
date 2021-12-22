@@ -501,14 +501,6 @@ let test_check_illegal_annotation_target context =
     {|
       class Bar: ...
       class Foo:
-        def foo(self) -> None:
-          Bar(): int = 1
-    |}
-    ["Illegal annotation target [35]: Target `Bar()` cannot be annotated."];
-  assert_type_errors
-    {|
-      class Bar: ...
-      class Foo:
         def foo(self, x: Bar) -> None:
           self.a: int = 1
           x.a: int = 1
@@ -1486,10 +1478,110 @@ let test_final_type context =
     |} [];
   assert_type_errors
     {|
+      from typing import Final, List
+      x: List[Final[int]] = [3]
+    |}
+    [
+      "Incompatible variable type [9]: x is declared to have type `List[Final[int]]` but is used \
+       as type `List[int]`.";
+      "Invalid type [31]: Expression `List[Final[int]]` is not a valid type. Final cannot be \
+       nested.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Final
+
+      def foo(x: Final[int]) -> None:
+        pass
+    |}
+    ["Invalid type [31]: Parameter `x` cannot be annotated with Final."];
+  assert_type_errors
+    {|
       from typing import Final
       x: Final[str] = 3
     |}
-    ["Incompatible variable type [9]: x is declared to have type `str` but is used as type `int`."]
+    ["Incompatible variable type [9]: x is declared to have type `str` but is used as type `int`."];
+  assert_type_errors
+    {|
+      from typing import Final
+
+      class Foo:
+        uninitialized_attribute: Final[int]
+        attribute: Final[int]
+
+        def __init__(self) -> None:
+          self.attribute = 1
+    |}
+    [
+      "Uninitialized attribute [13]: Attribute `uninitialized_attribute` is declared in class \
+       `Foo` to have type `int` but is never initialized.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Final
+
+      class Foo:
+        attribute: Final[int] = 1
+
+      class Bar(Foo):
+        attribute = 2
+
+      def test(foo: Foo) -> int:
+        foo.attribute = 2
+        return foo.attribute
+    |}
+    [
+      "Invalid assignment [41]: Cannot reassign final attribute `attribute`.";
+      "Invalid assignment [41]: Cannot reassign final attribute `foo.attribute`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Final
+
+      def foo() -> int:
+        x: Final[int] = 1
+        return x
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Final
+
+      def foo() -> None:
+        x: Final[int] = 1
+        x = 2
+    |}
+    ["Invalid assignment [41]: Cannot reassign final attribute `x`."];
+  assert_type_errors
+    {|
+      from typing import Final
+      x: Final[int] = 3
+
+      def foo() -> None:
+        global x
+        x = 2
+    |}
+    ["Invalid assignment [41]: Cannot reassign final attribute `x`."];
+  assert_type_errors
+    {|
+      from typing import Final, List
+      x: Final[List[int]] = [3]
+
+      def foo() -> None:
+        global x
+        x.append(4)
+    |}
+    [];
+  assert_type_errors
+    {|
+      from typing import Final
+      x: Final[int] = 3
+
+      def foo() -> int:
+        return x
+    |}
+    [];
+  ()
 
 
 let test_check_invalid_inheritance context =
@@ -1522,6 +1614,15 @@ let test_check_invalid_inheritance context =
       "Invalid inheritance [39]: `test.D (resolves to Dict[str, Union[D, str]])` is not a valid \
        parent class.";
     ];
+  assert_type_errors
+    {|
+      from typing import List, Tuple
+
+      class Foo(List[int]): ...
+
+      class Bar(Tuple[int, int]): ...
+     |}
+    [];
   ()
 
 
@@ -1734,6 +1835,23 @@ let test_check_literal_assignment context =
       "Incompatible variable type [9]: literal_string is declared to have type `Foo[str]` but is \
        used as type `Foo[typing_extensions.Literal['bar']]`.";
     ];
+  ()
+
+
+let test_check_pyre_extensions_generic context =
+  let assert_type_errors = assert_type_errors ~context in
+  assert_type_errors
+    {|
+      from pyre_extensions import Generic
+      from typing import TypeVar
+
+      T = TypeVar("T")
+
+      # Pyre should not complain about the `pyre_extensions` Generic not being
+      # subscriptable.
+      class Foo(Generic[T]): ...
+    |}
+    [];
   ()
 
 
@@ -2770,7 +2888,7 @@ let test_check_broadcast context =
 
       Ts = TypeVarTuple("Ts")
 
-      def foo(x: Tuple[*Ts]) -> Tuple[L[1], *Broadcast[Tuple[*Ts], Tuple[L[2], L[3]]]]: ...
+      def foo(x: Tuple[Unpack[Ts]]) -> Tuple[L[1], Unpack[Broadcast[Tuple[Unpack[Ts]], Tuple[L[2], L[3]]]]]: ...
 
       res1 = foo((1, 3))
       res2 = foo((3, 3))
@@ -2798,8 +2916,8 @@ let test_check_broadcast context =
       Qs = TypeVarTuple("Qs")
 
 
-      class NewTensor(Generic[DType, *Ts]):
-        def __add__(self: NewTensor[DType, *Rs], other: NewTensor[DType, *Qs]) -> NewTensor[DType, *Broadcast[Tuple[*Rs], Tuple[*Qs]]]: ...
+      class NewTensor(Generic[DType, Unpack[Ts]]):
+        def __add__(self: NewTensor[DType, Unpack[Rs]], other: NewTensor[DType, Unpack[Qs]]) -> NewTensor[DType, Unpack[Broadcast[Tuple[Unpack[Rs]], Tuple[Unpack[Qs]]]]]: ...
 
       t1: NewTensor[int, L[1], L[2], L[3]]
       t2: NewTensor[int, L[2], L[3]]
@@ -2868,13 +2986,13 @@ let test_check_broadcast context =
       Ts = TypeVarTuple("Ts")
       Rs = TypeVarTuple("Rs")
 
-      class Foo(Generic[T, *Ts]):
-        def bar(self: Foo[T, *Rs]) -> Foo[T, *Broadcast[Tuple[*Rs], Tuple[L[1], L[2]]], str]: ...
+      class Foo(Generic[T, Unpack[Ts]]):
+        def bar(self: Foo[T, Unpack[Rs]]) -> Foo[T, Unpack[Broadcast[Tuple[Unpack[Rs]], Tuple[L[1], L[2]]]], str]: ...
 
         @overload
-        def foo(self, *other: *Broadcast[Tuple[L[3], T], Tuple[*Ts]]) -> None: ...
+        def foo(self, *other: Unpack[Broadcast[Tuple[L[3], T], Tuple[Unpack[Ts]]]]) -> None: ...
         @overload
-        def foo(self, *other: *Broadcast[Tuple[L[2], T], Tuple[*Ts]]) -> None: ...
+        def foo(self, *other: Unpack[Broadcast[Tuple[L[2], T], Tuple[Unpack[Ts]]]]) -> None: ...
         def foo(self, *other: Any) -> None:
           return
 
@@ -2895,6 +3013,34 @@ let test_check_broadcast context =
        `pyre_extensions.BroadcastError[Tuple[typing_extensions.Literal[2], \
        typing_extensions.Literal[3]], Tuple[typing_extensions.Literal[3], \
        typing_extensions.Literal[3]]]`.";
+    ];
+  assert_default_type_errors
+    {|
+      from pyre_extensions import Broadcast, Unpack
+      from typing import Tuple, TypeVar
+
+      N1 = TypeVar("N1", bound=int)
+      N2 = TypeVar("N2", bound=int)
+      N3 = TypeVar("N3", bound=int)
+      N4 = TypeVar("N4", bound=int)
+
+      def foo(x: Tuple[N1, N2], y: Tuple[N3, N4]) -> Tuple[Unpack[Broadcast[Tuple[N1, N2], Tuple[N3, N4]]]]: ...
+
+      def main() -> None:
+        y1 = foo((1, 3), (4, 1))
+        reveal_type(y1)
+
+        y2 = foo((1, 3), (4, 99))
+        reveal_type(y2)
+    |}
+    [
+      "Revealed type [-1]: Revealed type for `y1` is `Tuple[typing_extensions.Literal[4], \
+       typing_extensions.Literal[3]]`.";
+      "Broadcast error [2001]: Broadcast error at expression `test.foo((1, 3), (4, 99))`; types \
+       `Tuple[typing_extensions.Literal[1], typing_extensions.Literal[3]]` and \
+       `Tuple[typing_extensions.Literal[4], typing_extensions.Literal[99]]` cannot be broadcasted \
+       together.";
+      "Revealed type [-1]: Revealed type for `y2` is `typing.Any`.";
     ];
   ()
 
@@ -3152,7 +3298,7 @@ let test_check_compose context =
       class Tensor(Generic[Unpack[Ts]]): ...
 
       class Linear(Generic[In, Out]):
-        def __call__(self, input: Tensor[*Ts, In]) -> Tensor[*Ts, Out]: ...
+        def __call__(self, input: Tensor[Unpack[Ts], In]) -> Tensor[Unpack[Ts], Out]: ...
 
       x: Compose[
         Compose[
@@ -3189,16 +3335,16 @@ let test_check_compose context =
 
       class Tensor(Generic[Unpack[Ts]]): ...
 
-      class Sequential(Generic[*Ts]):
-        def __init__(self, *layers: *Ts) -> None: ...
-        __call__: Compose[*Ts] = ...
+      class Sequential(Generic[Unpack[Ts]]):
+        def __init__(self, *layers: Unpack[Ts]) -> None: ...
+        __call__: Compose[Unpack[Ts]] = ...
 
       class Linear(Generic[In, Out]):
         def __init__(self, x: In, y: Out) -> None: ...
-        def __call__(self, input: Tensor[DType, *Ts, In]) -> Tensor[DType, *Ts, Out]: ...
+        def __call__(self, input: Tensor[DType, Unpack[Ts], In]) -> Tensor[DType, Unpack[Ts], Out]: ...
 
       class Foo:
-        def __call__(self, x: Tensor[DType, *Ts, L[20]]) -> Tensor[DType, *Ts, L[30]]: ...
+        def __call__(self, x: Tensor[DType, Unpack[Ts], L[20]]) -> Tensor[DType, Unpack[Ts], L[30]]: ...
 
       layer: Compose[Foo, Foo]
       x = (1, "hi")
@@ -3228,15 +3374,15 @@ let test_check_compose context =
 
       class Tensor(Generic[Unpack[Ts]]): ...
 
-      class Sequential(Generic[*Ts]):
-        def __init__(self, *layers: *Ts) -> None: ...
-        __call__: Compose[*Ts] = ...
+      class Sequential(Generic[Unpack[Ts]]):
+        def __init__(self, *layers: Unpack[Ts]) -> None: ...
+        __call__: Compose[Unpack[Ts]] = ...
 
       class Linear(Generic[In, Out]):
         def __init__(self, x: In, y: Out) -> None: ...
-        def __call__(self, input: Tensor[DType, *Ts, In]) -> Tensor[DType, *Ts, Out]: ...
+        def __call__(self, input: Tensor[DType, Unpack[Ts], In]) -> Tensor[DType, Unpack[Ts], Out]: ...
 
-      def bar(x: Tensor[DType, *Rs, L[40]]) -> Tensor[DType, *Rs, L[50]]: ...
+      def bar(x: Tensor[DType, Unpack[Rs], L[40]]) -> Tensor[DType, Unpack[Rs], L[50]]: ...
 
       layer = Sequential(
         Linear(10, 20),
@@ -3330,13 +3476,13 @@ let test_check_compose context =
 
       class Tensor(Generic[Unpack[Ts]]): ...
 
-      class Sequential(Generic[*Ts]):
-        def __init__(self, *layers: *Ts) -> None: ...
-        __call__: Compose[*Ts] = ...
+      class Sequential(Generic[Unpack[Ts]]):
+        def __init__(self, *layers: Unpack[Ts]) -> None: ...
+        __call__: Compose[Unpack[Ts]] = ...
 
       class Linear(Generic[In, Out]):
         def __init__(self, x: In, y: Out) -> None: ...
-        def __call__(self, input: Tensor[DType, *Ts, In]) -> Tensor[DType, *Ts, Out]: ...
+        def __call__(self, input: Tensor[DType, Unpack[Ts], In]) -> Tensor[DType, Unpack[Ts], Out]: ...
 
       layer = Sequential(
                 Sequential(
@@ -3381,13 +3527,13 @@ let test_check_compose context =
 
       class Tensor(Generic[Unpack[Ts]]): ...
 
-      class Sequential(Generic[*Ts]):
-        def __init__(self, *layers: *Ts) -> None: ...
-        __call__: Compose[*Ts] = ...
+      class Sequential(Generic[Unpack[Ts]]):
+        def __init__(self, *layers: Unpack[Ts]) -> None: ...
+        __call__: Compose[Unpack[Ts]] = ...
 
       class Linear(Generic[In, Out]):
         def __init__(self, x: In, y: Out) -> None: ...
-        def __call__(self, input: Tensor[DType, *Ts, In]) -> Tensor[DType, *Ts, Out]: ...
+        def __call__(self, input: Tensor[DType, Unpack[Ts], In]) -> Tensor[DType, Unpack[Ts], Out]: ...
 
       def foo(x: Callable[[T], T2]) -> Callable[[T], T2]: ...
       x = Sequential(Linear(10, 20), Linear(20, 30))
@@ -3561,7 +3707,7 @@ let test_check_product context =
       from typing_extensions import Literal as L
       from typing import Tuple
 
-      x: Product[*Tuple[Tuple[L[2]], ...]]
+      x: Product[Unpack[Tuple[Tuple[L[2]], ...]]]
       reveal_type(x)
     |}
     [
@@ -3598,8 +3744,8 @@ let test_check_product context =
       DType = TypeVar("DType")
       Ts = TypeVarTuple("Ts")
 
-      class Tensor(Generic[DType, *Ts]): ...
-      def flatten(input: Tensor[DType, *Ts]) -> Tensor[DType, Product[*Ts]]: ...
+      class Tensor(Generic[DType, Unpack[Ts]]): ...
+      def flatten(input: Tensor[DType, Unpack[Ts]]) -> Tensor[DType, Product[Unpack[Ts]]]: ...
 
       x: Tensor[int, L[2], L[3], L[4]]
       result = flatten(x)
@@ -3623,8 +3769,8 @@ let test_check_product context =
       DType = TypeVar("DType")
       Ts = TypeVarTuple("Ts")
 
-      class Tensor(Generic[DType, *Ts]): ...
-      def foo(input: Tensor[DType, *Ts]) -> Tensor[DType, Product[*Broadcast[Tuple[*Ts], Tuple[L[2], L[1]]]]]: ...
+      class Tensor(Generic[DType, Unpack[Ts]]): ...
+      def foo(input: Tensor[DType, Unpack[Ts]]) -> Tensor[DType, Product[Unpack[Broadcast[Tuple[Unpack[Ts]], Tuple[L[2], L[1]]]]]]: ...
 
       x: Tensor[int, L[2], L[3]]
       result = foo(x)
@@ -3662,6 +3808,7 @@ let () =
          "check_invalid_inheritance" >:: test_check_invalid_inheritance;
          "check_invalid_generic_inheritance" >:: test_check_invalid_generic_inheritance;
          "check_literal_assignment" >:: test_check_literal_assignment;
+         "check_pyre_extensions_generic" >:: test_check_pyre_extensions_generic;
          "check_safe_cast" >:: test_check_safe_cast;
          "check_annotation_with_any" >:: test_check_annotation_with_any;
          "check_typevar_arithmetic" >:: test_check_typevar_arithmetic;

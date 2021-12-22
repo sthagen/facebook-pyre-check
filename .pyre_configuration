@@ -28,6 +28,9 @@
       "site-package": "graphql"
     },
     {
+      "site-package": "intervaltree"
+    },
+    {
       "site-package": "libcst"
     },
     {
@@ -50,5 +53,5 @@
     "."
   ],
   "strict": true,
-  "version": "0.0.101628593794"
+  "version": "0.0.101640088603"
 }

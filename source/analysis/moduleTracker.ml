@@ -72,7 +72,8 @@ let remove_source_path ~configuration ~removed existing_files =
   remove [] existing_files
 
 
-let find_files ({ Configuration.Analysis.source_path; search_path; excludes; _ } as configuration) =
+let find_files ({ Configuration.Analysis.source_paths; search_paths; excludes; _ } as configuration)
+  =
   let visited_directories = String.Hash_set.create () in
   let visited_files = String.Hash_set.create () in
   let valid_suffixes = ".py" :: ".pyi" :: Configuration.Analysis.extension_suffixes configuration in
@@ -103,10 +104,10 @@ let find_files ({ Configuration.Analysis.source_path; search_path; excludes; _ }
   in
   let search_roots =
     List.append
-      (List.map ~f:SearchPath.to_path source_path)
-      (List.map ~f:SearchPath.to_path search_path)
+      (List.map ~f:SearchPath.to_path source_paths)
+      (List.map ~f:SearchPath.to_path search_paths)
   in
-  List.map search_roots ~f:(fun root -> Path.list ~file_filter ~directory_filter ~root ())
+  List.map search_roots ~f:(fun root -> PyrePath.list ~file_filter ~directory_filter ~root ())
   |> List.concat
 
 
@@ -148,6 +149,7 @@ let create_submodule_refcounts module_to_files =
 
 let create configuration =
   let timer = Timer.start () in
+  Log.info "Building module tracker...";
   let module_to_files = create_module_to_files configuration in
   let submodule_refcounts = create_submodule_refcounts module_to_files in
   Statistics.performance ~name:"module tracker built" ~timer ~phase_name:"Module tracking" ();
@@ -200,10 +202,10 @@ let explicit_module_count { module_to_files; _ } = Hashtbl.length module_to_file
 
 module FileSystemEvent = struct
   type t =
-    | Update of Path.t
-    | Remove of Path.t
+    | Update of PyrePath.t
+    | Remove of PyrePath.t
 
-  let create path = if Path.file_exists path then Update path else Remove path
+  let create path = if PyrePath.file_exists path then Update path else Remove path
 end
 
 module IncrementalExplicitUpdate = struct
@@ -237,7 +239,7 @@ let update_explicit_modules ~configuration ~paths module_to_files =
     | FileSystemEvent.Update path -> (
         match SourcePath.create ~configuration path with
         | None ->
-            Log.warning "`%a` not found in search path." Path.pp path;
+            Log.warning "`%a` not found in search path." PyrePath.pp path;
             None
         | Some ({ SourcePath.qualifier; _ } as source_path) -> (
             match Hashtbl.find tracker qualifier with
@@ -259,7 +261,7 @@ let update_explicit_modules ~configuration ~paths module_to_files =
     | FileSystemEvent.Remove path -> (
         match SourcePath.create ~configuration path with
         | None ->
-            Log.warning "`%a` not found in search path." Path.pp path;
+            Log.warning "`%a` not found in search path." PyrePath.pp path;
             None
         | Some ({ SourcePath.qualifier; _ } as source_path) -> (
             Hashtbl.find tracker qualifier
@@ -346,7 +348,7 @@ let update_explicit_modules ~configuration ~paths module_to_files =
     Hashtbl.data table
   in
   (* Since `process_filesystem_event` is not idempotent, we don't want duplicated filesystem events *)
-  List.dedup_and_sort ~compare:Path.compare paths
+  List.dedup_and_sort ~compare:PyrePath.compare paths
   |> List.map ~f:FileSystemEvent.create
   |> List.filter_map ~f:(process_filesystem_event ~configuration module_to_files)
   |> merge_updates

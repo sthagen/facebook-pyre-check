@@ -6,7 +6,6 @@
  *)
 
 open Core
-open Pyre
 
 let default_python_major_version = 3
 
@@ -26,9 +25,9 @@ module Buck = struct
     isolation_prefix: string option;
     targets: string list;
     (* This is the buck root of the source directory, i.e. output of `buck root`. *)
-    source_root: Path.t;
+    source_root: PyrePath.t;
     (* This is the root of directory where built artifacts will be placed. *)
-    artifact_root: Path.t;
+    artifact_root: PyrePath.t;
   }
   [@@deriving sexp, compare, hash]
 
@@ -52,8 +51,8 @@ module Buck = struct
     let result =
       [
         "targets", `List (List.map targets ~f:(fun target -> `String target));
-        "source_root", `String (Path.absolute source_root);
-        "artifact_root", `String (Path.absolute artifact_root);
+        "source_root", `String (PyrePath.absolute source_root);
+        "artifact_root", `String (PyrePath.absolute artifact_root);
       ]
     in
     let result =
@@ -167,46 +166,12 @@ module SharedMemory = struct
       }
 end
 
-module Features = struct
-  type t = {
-    click_to_fix: bool;
-    go_to_definition: bool;
-    hover: bool;
-  }
-  [@@deriving yojson, show]
-
-  let default = { click_to_fix = false; go_to_definition = false; hover = false }
-
-  let create feature_string =
-    feature_string
-    >>| (fun feature_string ->
-          let json_string = Yojson.Safe.from_string feature_string in
-          let default_from_string string =
-            let { click_to_fix; go_to_definition; hover } = default in
-            match string with
-            | "click_to_fix" -> click_to_fix
-            | "go_to_definition" -> go_to_definition
-            | "hover" -> hover
-            | _ -> false
-          in
-          let parse_feature string =
-            match Yojson.Safe.Util.member string json_string with
-            | `Bool value -> value
-            | _ -> default_from_string string
-          in
-          let click_to_fix = parse_feature "click_to_fix" in
-          let go_to_definition = parse_feature "go_to_definition" in
-          let hover = parse_feature "hover" in
-          { click_to_fix; go_to_definition; hover })
-    |> Option.value ~default
-end
-
 module Extension = struct
   type t = {
     suffix: string;
     include_suffix_in_module_qualifier: bool;
   }
-  [@@deriving show, eq, sexp, compare, hash]
+  [@@deriving show, sexp, compare, hash]
 
   let to_yojson { suffix; include_suffix_in_module_qualifier } =
     `Assoc
@@ -254,54 +219,51 @@ module Analysis = struct
   }
   [@@deriving show]
 
+  type constraint_solving_style =
+    | FunctionCallLevel
+    | ExpressionLevel
+  [@@deriving show]
+
+  let default_constraint_solving_style = FunctionCallLevel
+
   type t = {
-    configuration_file_hash: string option;
     parallel: bool;
     analyze_external_sources: bool;
-    filter_directories: Path.t list option;
-    ignore_all_errors: Path.t list option;
+    filter_directories: PyrePath.t list option;
+    ignore_all_errors: PyrePath.t list option;
     number_of_workers: int;
-    local_root: Path.t;
+    local_root: PyrePath.t;
     debug: bool;
-    project_root: Path.t;
-    source_path: SearchPath.t list;
-    search_path: SearchPath.t list;
-    taint_model_paths: Path.t list;
-    expected_version: string option;
+    project_root: PyrePath.t;
+    source_paths: SearchPath.t list;
+    search_paths: SearchPath.t list;
+    taint_model_paths: PyrePath.t list;
     strict: bool;
     show_error_traces: bool;
     excludes: Str.regexp list; [@opaque]
     extensions: Extension.t list;
     store_type_check_resolution: bool;
     incremental_style: incremental_style;
-    include_hints: bool;
-    perform_autocompletion: bool;
-    features: Features.t;
-    log_directory: Path.t;
+    log_directory: PyrePath.t;
     python_major_version: int;
     python_minor_version: int;
     python_micro_version: int;
     shared_memory: shared_memory;
+    enable_type_comments: bool;
+    constraint_solving_style: constraint_solving_style;
   }
   [@@deriving show]
 
-  let equal first second =
-    [%compare.equal: string option] first.expected_version second.expected_version
-    && Bool.equal first.strict second.strict
-
-
   let create
-      ?configuration_file_hash
       ?(parallel = true)
       ?(analyze_external_sources = false)
       ?filter_directories
       ?ignore_all_errors
       ?(number_of_workers = 4)
-      ?(local_root = Path.current_working_directory ())
-      ?(project_root = Path.create_absolute "/")
-      ?(search_path = [])
+      ?(local_root = PyrePath.current_working_directory ())
+      ?(project_root = PyrePath.create_absolute "/")
+      ?(search_paths = [])
       ?(taint_model_paths = [])
-      ?expected_version
       ?(strict = false)
       ?(debug = false)
       ?(show_error_traces = false)
@@ -309,9 +271,6 @@ module Analysis = struct
       ?(extensions = [])
       ?(store_type_check_resolution = true)
       ?(incremental_style = Shallow)
-      ?(include_hints = false)
-      ?(perform_autocompletion = false)
-      ?(features = Features.default)
       ?log_directory
       ?(python_major_version = default_python_major_version)
       ?(python_minor_version = default_python_minor_version)
@@ -319,11 +278,12 @@ module Analysis = struct
       ?(shared_memory_heap_size = default_shared_memory_heap_size)
       ?(shared_memory_dependency_table_power = default_shared_memory_dependency_table_power)
       ?(shared_memory_hash_table_power = default_shared_memory_hash_table_power)
-      ~source_path
+      ?(enable_type_comments = true)
+      ?(constraint_solving_style = default_constraint_solving_style)
+      ~source_paths
       ()
     =
     {
-      configuration_file_hash;
       parallel;
       analyze_external_sources;
       filter_directories;
@@ -332,29 +292,25 @@ module Analysis = struct
       local_root;
       debug;
       project_root;
-      source_path;
-      search_path;
+      source_paths;
+      search_paths;
       taint_model_paths;
-      expected_version;
       strict;
       show_error_traces;
       excludes =
         List.map excludes ~f:(fun exclude_regex ->
             Str.global_substitute
               (Str.regexp_string "${SOURCE_DIRECTORY}")
-              (fun _ -> Path.absolute local_root)
+              (fun _ -> PyrePath.absolute local_root)
               exclude_regex
             |> Str.regexp);
       extensions;
       store_type_check_resolution;
       incremental_style;
-      include_hints;
-      perform_autocompletion;
-      features;
       log_directory =
         (match log_directory with
-        | Some directory -> Path.create_absolute directory
-        | None -> Path.append local_root ~element:".pyre");
+        | Some directory -> PyrePath.create_absolute directory
+        | None -> PyrePath.append local_root ~element:".pyre");
       python_major_version;
       python_minor_version;
       python_micro_version;
@@ -364,31 +320,30 @@ module Analysis = struct
           dependency_table_power = shared_memory_dependency_table_power;
           hash_table_power = shared_memory_hash_table_power;
         };
+      enable_type_comments;
+      constraint_solving_style;
     }
 
 
   let log_directory { log_directory; _ } = log_directory
 
-  let search_path { source_path; search_path; _ } =
+  let search_paths { source_paths; search_paths; _ } =
     (* Have an ordering of search_path > source_path with the parser. search_path precedes
      * local_root due to the possibility of having a subdirectory of the root in the search path. *)
-    search_path @ source_path
+    search_paths @ source_paths
 
 
   let extension_suffixes { extensions; _ } = List.map ~f:Extension.suffix extensions
 
   let find_extension { extensions; _ } path =
     List.find extensions ~f:(fun extension ->
-        String.is_suffix ~suffix:(Extension.suffix extension) (Path.absolute path))
-
-
-  let features { features; _ } = features
+        String.is_suffix ~suffix:(Extension.suffix extension) (PyrePath.absolute path))
 end
 
 module Server = struct
   type load_parameters = {
-    shared_memory_path: Path.t;
-    changed_files_path: Path.t option;
+    shared_memory_path: PyrePath.t;
+    changed_files_path: PyrePath.t option;
   }
 
   type load =
@@ -403,8 +358,8 @@ module Server = struct
     | Load of load
 
   type socket_path = {
-    path: Path.t;
-    link: Path.t;
+    path: PyrePath.t;
+    link: PyrePath.t;
   }
 
   type t = {
@@ -412,9 +367,9 @@ module Server = struct
     socket: socket_path;
     json_socket: socket_path;
     adapter_socket: socket_path;
-    lock_path: Path.t;
-    pid_path: Path.t;
-    log_path: Path.t;
+    lock_path: PyrePath.t;
+    pid_path: PyrePath.t;
+    log_path: PyrePath.t;
     daemonize: bool;
     saved_state_action: saved_state_action option;
     (* Analysis configuration *)
@@ -431,14 +386,14 @@ end
 
 module StaticAnalysis = struct
   type t = {
-    result_json_path: Path.t option;
-    dump_call_graph: Path.t option;
+    result_json_path: PyrePath.t option;
+    dump_call_graph: PyrePath.t option;
     verify_models: bool;
     (* Analysis configuration *)
     configuration: Analysis.t;
     rule_filter: int list option;
     find_missing_flows: string option;
-    dump_model_query_results: Path.t option;
+    dump_model_query_results: PyrePath.t option;
     use_cache: bool;
     maximum_trace_length: int option;
     maximum_tito_depth: int option;

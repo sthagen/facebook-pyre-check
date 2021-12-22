@@ -15,6 +15,18 @@
         "name": "forward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [
+                  { "always-type": "bool" },
+                  { "always-type": "scalar" },
+                  { "always-via": "special_source" }
+                ],
+                "leaves": [ { "name": "_test_source" } ],
+                "length": 1,
+                "kind": "Test"
+              }
+            ],
             "call": {
               "position": {
                 "filename": "features.py",
@@ -23,15 +35,8 @@
                 "end": 39
               },
               "resolves_to": [ "features.async_tuple_of_bools" ],
-              "port": "result[0]",
-              "length": 1
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_source" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "bool" },
-              { "always-via": "special_source" }
-            ]
+              "port": "result[0]"
+            }
           }
         ]
       },
@@ -39,21 +44,26 @@
         "name": "backward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "features.py",
               "line": 95,
               "start": 15,
               "end": 16
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       }
     ],
     "features": [
-      { "always-type": "scalar" },
       { "always-type": "bool" },
+      { "always-type": "scalar" },
       { "always-via": "special_source" },
       { "always-via": "special_sink" }
     ]
@@ -75,6 +85,18 @@
         "name": "forward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [
+                  { "always-type": "bool" },
+                  { "always-type": "scalar" },
+                  { "always-via": "special_source" }
+                ],
+                "leaves": [ { "name": "_test_source" } ],
+                "length": 1,
+                "kind": "Test"
+              }
+            ],
             "call": {
               "position": {
                 "filename": "features.py",
@@ -83,15 +105,8 @@
                 "end": 34
               },
               "resolves_to": [ "features.return_tuple_of_bools" ],
-              "port": "result[0]",
-              "length": 1
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_source" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "bool" },
-              { "always-via": "special_source" }
-            ]
+              "port": "result[0]"
+            }
           }
         ]
       },
@@ -99,21 +114,26 @@
         "name": "backward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "features.py",
               "line": 79,
               "start": 15,
               "end": 16
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       }
     ],
     "features": [
-      { "always-type": "scalar" },
       { "always-type": "bool" },
+      { "always-type": "scalar" },
       { "always-via": "special_source" },
       { "always-via": "special_sink" }
     ]
@@ -135,20 +155,26 @@
         "name": "forward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "always-via": "obscure:model" },
+              { "always-type": "bool" },
+              { "always-type": "scalar" },
+              { "always-via": "tito" }
+            ],
+            "tito": [ { "line": 59, "start": 13, "end": 14 } ],
             "root": {
               "filename": "features.py",
               "line": 58,
               "start": 8,
               "end": 22
-            },
-            "tito": [ { "line": 59, "start": 13, "end": 14 } ],
-            "leaves": [ { "kind": "Test", "name": "_test_source" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "bool" },
-              { "always-via": "special_source" },
-              { "always-via": "obscure" }
-            ]
+            }
           }
         ]
       },
@@ -156,24 +182,30 @@
         "name": "backward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "features.py",
               "line": 60,
               "start": 15,
               "end": 16
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       }
     ],
     "features": [
-      { "always-type": "scalar" },
+      { "always-via": "obscure:model" },
       { "always-type": "bool" },
+      { "always-type": "scalar" },
+      { "always-via": "tito" },
       { "always-via": "special_source" },
-      { "always-via": "special_sink" },
-      { "always-via": "obscure" }
+      { "always-via": "special_sink" }
     ]
   }
 }
@@ -193,6 +225,21 @@
         "name": "forward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "length": 1,
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "always-via": "obscure:model" },
+              { "always-type": "bool" },
+              { "always-type": "scalar" },
+              { "always-via": "tito" }
+            ],
+            "tito": [ { "line": 69, "start": 22, "end": 23 } ],
             "call": {
               "position": {
                 "filename": "features.py",
@@ -201,17 +248,8 @@
                 "end": 32
               },
               "resolves_to": [ "features.returns_tainted_object" ],
-              "port": "result",
-              "length": 1
-            },
-            "tito": [ { "line": 69, "start": 22, "end": 23 } ],
-            "leaves": [ { "kind": "Test", "name": "_test_source" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "bool" },
-              { "always-via": "special_source" },
-              { "always-via": "obscure" }
-            ]
+              "port": "result"
+            }
           }
         ]
       },
@@ -219,24 +257,30 @@
         "name": "backward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "features.py",
               "line": 70,
               "start": 15,
               "end": 30
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       }
     ],
     "features": [
-      { "always-type": "scalar" },
+      { "always-via": "obscure:model" },
       { "always-type": "bool" },
+      { "always-type": "scalar" },
+      { "always-via": "tito" },
       { "always-via": "special_source" },
-      { "always-via": "special_sink" },
-      { "always-via": "obscure" }
+      { "always-via": "special_sink" }
     ]
   }
 }
@@ -256,18 +300,23 @@
         "name": "forward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "always-type": "bool" },
+              { "always-type": "scalar" }
+            ],
             "root": {
               "filename": "features.py",
               "line": 103,
               "start": 8,
               "end": 22
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_source" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "bool" },
-              { "always-via": "special_source" }
-            ]
+            }
           }
         ]
       },
@@ -275,21 +324,26 @@
         "name": "backward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "features.py",
               "line": 105,
               "start": 15,
               "end": 23
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       }
     ],
     "features": [
-      { "always-type": "scalar" },
       { "always-type": "bool" },
+      { "always-type": "scalar" },
       { "always-via": "special_source" },
       { "always-via": "special_sink" }
     ]
@@ -311,18 +365,23 @@
         "name": "forward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "always-type": "bool" },
+              { "always-type": "scalar" }
+            ],
             "root": {
               "filename": "features.py",
               "line": 103,
               "start": 8,
               "end": 22
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_source" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "bool" },
-              { "always-via": "special_source" }
-            ]
+            }
           }
         ]
       },
@@ -330,21 +389,26 @@
         "name": "backward",
         "roots": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "features.py",
               "line": 104,
               "start": 15,
               "end": 23
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_sink" } ],
-            "features": [ { "always-via": "special_sink" } ]
+            }
           }
         ]
       }
     ],
     "features": [
-      { "always-type": "scalar" },
       { "always-type": "bool" },
+      { "always-type": "scalar" },
       { "always-via": "special_source" },
       { "always-via": "special_sink" }
     ]
@@ -359,18 +423,23 @@
         "port": "result[0]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "always-type": "bool" },
+              { "always-type": "scalar" }
+            ],
             "root": {
               "filename": "features.py",
               "line": 90,
               "start": 11,
               "end": 25
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_source" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "bool" },
-              { "always-via": "special_source" }
-            ]
+            }
           }
         ]
       },
@@ -378,18 +447,23 @@
         "port": "result[1]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "always-type": "bool" },
+              { "always-type": "scalar" }
+            ],
             "root": {
               "filename": "features.py",
               "line": 90,
               "start": 27,
               "end": 41
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_source" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "bool" },
-              { "always-via": "special_source" }
-            ]
+            }
           }
         ]
       }
@@ -405,9 +479,14 @@
         "port": "formal(x)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ],
-            "features": [ { "via": "dynamic_feature" } ]
+            "kinds": [
+              {
+                "features": [ { "via": "dynamic_feature" } ],
+                "return_paths": [ "" ],
+                "kind": "LocalReturn"
+              }
+            ],
+            "decl": null
           }
         ]
       }
@@ -423,12 +502,17 @@
         "port": "formal(o)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+            "kinds": [
+              {
+                "features": [
+                  { "always-type": "integer" },
+                  { "always-type": "scalar" }
+                ],
+                "return_paths": [ "" ],
+                "kind": "LocalReturn"
+              }
+            ],
+            "decl": null
           }
         ]
       }
@@ -444,8 +528,8 @@
         "port": "formal(y)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ]
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
+            "decl": null
           }
         ]
       },
@@ -453,12 +537,17 @@
         "port": "formal(x)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+            "kinds": [
+              {
+                "features": [
+                  { "always-type": "integer" },
+                  { "always-type": "scalar" }
+                ],
+                "return_paths": [ "" ],
+                "kind": "LocalReturn"
+              }
+            ],
+            "decl": null
           }
         ]
       }
@@ -474,12 +563,17 @@
         "port": "formal(named_parameter)",
         "taint": [
           {
-            "decl": null,
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "integer" }
-            ]
+            "kinds": [
+              {
+                "features": [
+                  { "always-type": "integer" },
+                  { "always-type": "scalar" }
+                ],
+                "return_paths": [ "" ],
+                "kind": "LocalReturn"
+              }
+            ],
+            "decl": null
           }
         ]
       }
@@ -495,18 +589,23 @@
         "port": "result[0]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "always-type": "bool" },
+              { "always-type": "scalar" }
+            ],
             "root": {
               "filename": "features.py",
               "line": 74,
               "start": 11,
               "end": 25
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_source" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "bool" },
-              { "always-via": "special_source" }
-            ]
+            }
           }
         ]
       },
@@ -514,18 +613,23 @@
         "port": "result[1]",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [
+              { "always-type": "bool" },
+              { "always-type": "scalar" }
+            ],
             "root": {
               "filename": "features.py",
               "line": 74,
               "start": 27,
               "end": 41
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_source" } ],
-            "features": [
-              { "always-type": "scalar" },
-              { "always-type": "bool" },
-              { "always-via": "special_source" }
-            ]
+            }
           }
         ]
       }
@@ -541,14 +645,19 @@
         "port": "result",
         "taint": [
           {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
             "root": {
               "filename": "features.py",
               "line": 64,
               "start": 11,
               "end": 25
-            },
-            "leaves": [ { "kind": "Test", "name": "_test_source" } ],
-            "features": [ { "always-via": "special_source" } ]
+            }
           }
         ]
       }
@@ -564,14 +673,17 @@
         "port": "formal(o)",
         "taint": [
           {
-            "decl": null,
-            "tito": [ { "line": 46, "start": 15, "end": 16 } ],
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ],
-            "features": [
-              { "always-type": "scalar" },
+            "kinds": [
+              { "return_paths": [ "" ], "length": 1, "kind": "LocalReturn" }
+            ],
+            "local_features": [
+              { "always-via": "obscure:model" },
               { "always-type": "integer" },
-              { "always-via": "obscure" }
-            ]
+              { "always-type": "scalar" },
+              { "always-via": "tito" }
+            ],
+            "tito": [ { "line": 46, "start": 15, "end": 16 } ],
+            "decl": null
           }
         ]
       }
@@ -587,14 +699,16 @@
         "port": "formal(o)",
         "taint": [
           {
-            "decl": null,
-            "tito": [ { "line": 23, "start": 15, "end": 16 } ],
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 1 } ],
-            "features": [
-              { "always-type": "scalar" },
+            "kinds": [
+              { "return_paths": [ "" ], "length": 1, "kind": "LocalReturn" }
+            ],
+            "local_features": [
               { "always-type": "integer" },
+              { "always-type": "scalar" },
               { "always-via": "tito" }
-            ]
+            ],
+            "tito": [ { "line": 23, "start": 15, "end": 16 } ],
+            "decl": null
           }
         ]
       }
@@ -610,14 +724,16 @@
         "port": "formal(o)",
         "taint": [
           {
-            "decl": null,
-            "tito": [ { "line": 27, "start": 15, "end": 16 } ],
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 1 } ],
-            "features": [
-              { "always-type": "scalar" },
+            "kinds": [
+              { "return_paths": [ "" ], "length": 1, "kind": "LocalReturn" }
+            ],
+            "local_features": [
               { "always-type": "integer" },
+              { "always-type": "scalar" },
               { "always-via": "tito" }
-            ]
+            ],
+            "tito": [ { "line": 27, "start": 15, "end": 16 } ],
+            "decl": null
           }
         ]
       }
@@ -633,14 +749,14 @@
         "port": "formal(o)",
         "taint": [
           {
-            "decl": null,
-            "tito": [ { "line": 40, "start": 19, "end": 20 } ],
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 0 } ],
-            "features": [
-              { "type": "scalar" },
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
+            "local_features": [
               { "type": "integer" },
+              { "type": "scalar" },
               { "via": "tito" }
-            ]
+            ],
+            "tito": [ { "line": 40, "start": 19, "end": 20 } ],
+            "decl": null
           }
         ]
       }
@@ -656,10 +772,12 @@
         "port": "formal(o)",
         "taint": [
           {
-            "decl": null,
+            "kinds": [
+              { "return_paths": [ "" ], "length": 1, "kind": "LocalReturn" }
+            ],
+            "local_features": [ { "always-via": "tito" } ],
             "tito": [ { "line": 31, "start": 18, "end": 19 } ],
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 1 } ],
-            "features": [ { "always-via": "tito" } ]
+            "decl": null
           }
         ]
       }
@@ -675,14 +793,16 @@
         "port": "formal(o)",
         "taint": [
           {
-            "decl": null,
-            "tito": [ { "line": 35, "start": 33, "end": 34 } ],
-            "leaves": [ { "kind": "LocalReturn", "name": "", "depth": 1 } ],
-            "features": [
-              { "always-type": "scalar" },
+            "kinds": [
+              { "return_paths": [ "" ], "length": 1, "kind": "LocalReturn" }
+            ],
+            "local_features": [
               { "always-type": "integer" },
+              { "always-type": "scalar" },
               { "always-via": "tito" }
-            ]
+            ],
+            "tito": [ { "line": 35, "start": 33, "end": 34 } ],
+            "decl": null
           }
         ]
       }
@@ -698,20 +818,19 @@
         "port": "formal(o)",
         "taint": [
           {
-            "decl": null,
+            "kinds": [
+              { "return_paths": [ "[0]", "[1]" ], "kind": "LocalReturn" }
+            ],
+            "local_features": [
+              { "type": "integer" },
+              { "type": "scalar" },
+              { "via": "tito" }
+            ],
             "tito": [
               { "line": 84, "start": 19, "end": 20 },
               { "line": 84, "start": 34, "end": 35 }
             ],
-            "leaves": [
-              { "kind": "LocalReturn", "name": "[1]", "depth": 0 },
-              { "kind": "LocalReturn", "name": "[0]", "depth": 0 }
-            ],
-            "features": [
-              { "type": "scalar" },
-              { "type": "integer" },
-              { "via": "tito" }
-            ]
+            "decl": null
           }
         ]
       }
