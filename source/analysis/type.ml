@@ -1,5 +1,5 @@
 (*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -704,6 +704,45 @@ module Record = struct
                     } )
               in
               Some { prefix_pairs; middle_pair; suffix_pairs })
+
+
+    let drop_prefix ~length = function
+      | Concrete elements ->
+          Concrete (List.drop elements length) |> Option.some_if (length <= List.length elements)
+      | Concatenation ({ prefix; middle = UnboundedElements _; _ } as concatenation) ->
+          (* We can drop indefinitely many elements after the concrete prefix because the middle
+             element is an unbounded tuple. *)
+          Concatenation { concatenation with prefix = List.drop prefix length } |> Option.some
+      | Concatenation ({ prefix; middle = Variadic _ | Broadcast _; _ } as concatenation) ->
+          (* Variadic or Broadcast middle element may be empty, so we cannot drop any elements past
+             the concrete prefix. *)
+          List.drop prefix length
+          |> Option.some_if (length <= List.length prefix)
+          >>| fun new_prefix -> Concatenation { concatenation with prefix = new_prefix }
+
+
+    let index ~python_index = function
+      | Concrete elements ->
+          let index =
+            if python_index < 0 then List.length elements + python_index else python_index
+          in
+          List.nth elements index
+      | Concatenation { prefix; middle; suffix } -> (
+          let result =
+            if python_index >= 0 then
+              List.nth prefix python_index
+            else
+              List.nth suffix (python_index + List.length suffix)
+          in
+          match middle with
+          | UnboundedElements unbounded ->
+              (* We can index indefinitely many elements in the unbounded tuple. *)
+              result |> Option.value ~default:unbounded |> Option.some
+          | Variadic _
+          | Broadcast _ ->
+              (* Variadic or Broadcast middle element may be empty, so we cannot index any elements
+                 past the concrete prefix. *)
+              result)
   end
 
   module Callable = struct
@@ -3302,6 +3341,8 @@ module OrderedTypes = struct
 
   let union_upper_bound = function
     | Concrete concretes -> union concretes
+    | Concatenation { prefix; middle = UnboundedElements unbounded; suffix } ->
+        union (unbounded :: (prefix @ suffix))
     | Concatenation _ -> object_primitive
 
 
@@ -3543,6 +3584,50 @@ module OrderedTypes = struct
     | Concrete dimensions -> Tuple (Concrete (prefix @ dimensions @ suffix))
     | Concatenation { prefix = new_prefix; middle; suffix = new_suffix } ->
         Tuple (Concatenation { prefix = prefix @ new_prefix; middle; suffix = new_suffix @ suffix })
+
+
+  let coalesce_ordered_types ordered_types =
+    let concatenate_ordered_types = function
+      | [] -> Some (Concrete [])
+      | head :: tail ->
+          let concatenate sofar next = sofar >>= fun left -> concatenate ~left ~right:next in
+          List.fold tail ~f:concatenate ~init:(Some head)
+    in
+    let is_concrete = function
+      | Concrete _ -> true
+      | _ -> false
+    in
+    let separated_prefixes_and_suffixes =
+      List.concat_map ordered_types ~f:(function
+          | Concatenation { prefix; middle; suffix } ->
+              [Concrete prefix; Concatenation { prefix = []; middle; suffix = [] }; Concrete suffix]
+          | Concrete _ as concrete -> [concrete])
+    in
+    let concrete_tuples_prefix, rest =
+      List.split_while separated_prefixes_and_suffixes ~f:is_concrete
+    in
+    let concrete_tuples_suffix, middle_items =
+      List.rev rest |> List.split_while ~f:is_concrete |> fun (xs, ys) -> List.rev xs, List.rev ys
+    in
+    match middle_items with
+    | _ :: _ :: _ ->
+        (* There are multiple unpacked tuples. Coalesce them into a single tuple with a common
+           iterable type so that we can compare it to an expected tuple type. *)
+        let extract_common_type = function
+          | Concrete items -> Some (union items)
+          | Concatenation { middle = UnboundedElements item_type; prefix; suffix } ->
+              union (item_type :: (prefix @ suffix)) |> Option.some
+          | Concatenation { middle = Variadic _ | Broadcast _; _ } -> None
+        in
+        List.map middle_items ~f:extract_common_type
+        |> Option.all
+        >>| union
+        >>| (fun item_type ->
+              concrete_tuples_prefix
+              @ [Concatenation (Concatenation.create_from_unbounded_element item_type)]
+              @ concrete_tuples_suffix)
+        >>= concatenate_ordered_types
+    | _ -> concatenate_ordered_types ordered_types
 end
 
 module TypeOperation = struct

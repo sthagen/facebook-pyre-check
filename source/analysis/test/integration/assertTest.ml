@@ -1,5 +1,5 @@
 (*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -18,9 +18,8 @@ let test_check_assert context =
           pass
     |}
     [
-      "Incompatible parameter type [6]: "
-      ^ "Expected `typing.Sized` for 1st positional only parameter to call `len` but got "
-      ^ "`typing.Optional[str]`.";
+      "Incompatible parameter type [6]: In call `len`, for 1st positional only parameter expected \
+       `Sized` but got `Optional[str]`.";
     ];
   assert_type_errors
     {|
@@ -270,9 +269,8 @@ let test_check_all context =
           return ','.join(x)
     |}
     [
-      "Incompatible parameter type [6]: Expected `typing.Iterable[typing_extensions.Literal[str]]` \
-       for 1st positional only parameter to call `str.join` but got \
-       `typing.Iterable[typing.Optional[str]]`.";
+      "Incompatible parameter type [6]: In call `str.join`, for 1st positional only parameter \
+       expected `Iterable[typing_extensions.Literal[str]]` but got `Iterable[Optional[str]]`.";
     ];
   assert_type_errors
     {|
@@ -302,8 +300,8 @@ let test_check_all context =
         return {}
     |}
     [
-      "Incompatible return type [7]: Expected `typing.Dict[int, Variable[_T]]` but got \
-       `typing.Dict[typing.Optional[int], Variable[_T]]`.";
+      "Incompatible return type [7]: Expected `Dict[int, Variable[_T]]` but got \
+       `Dict[Optional[int], Variable[_T]]`.";
     ]
 
 

@@ -1,5 +1,5 @@
 (*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -37,9 +37,17 @@ type module_reference =
   | ImplicitModule of Reference.t
 [@@deriving compare, sexp, show, hash]
 
+type class_origin =
+  | ClassType of Type.t
+  | ClassInUnion of {
+      unions: Type.t list;
+      index: int;
+    }
+[@@deriving compare, sexp, show, hash]
+
 type origin =
   | Class of {
-      class_type: Type.t;
+      class_origin: class_origin;
       parent_source_path: SourcePath.t option;
     }
   | Module of module_reference
@@ -102,9 +110,9 @@ and invalid_argument =
       expression: Expression.t option;
       annotation: Type.t;
     }
-  | TupleVariadicVariable of {
+  | VariableArgumentsWithUnpackableType of {
       variable: Type.OrderedTypes.t;
-      mismatch: SignatureSelectionTypes.mismatch_with_tuple_variadic_type_variable;
+      mismatch: SignatureSelectionTypes.mismatch_with_unpackable_type;
     }
 
 and precondition_mismatch =

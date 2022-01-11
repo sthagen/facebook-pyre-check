@@ -1,5 +1,5 @@
 (*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -60,23 +60,41 @@ module Argument : sig
       kind: Ast.Expression.Call.Argument.kind;
       resolved: Type.t;
     }
+    [@@deriving compare, show]
   end
 end
 
-type argument =
-  | Argument of Argument.WithPosition.t
+type matched_argument =
+  | MatchedArgument of {
+      argument: Argument.WithPosition.t;
+      index_into_starred_tuple: int option;
+    }
   | Default
+[@@deriving compare, show]
+
+val make_matched_argument
+  :  ?index_into_starred_tuple:int ->
+  Argument.WithPosition.t ->
+  matched_argument
 
 type reasons = {
   arity: SignatureSelectionTypes.reason list;
   annotation: SignatureSelectionTypes.reason list;
 }
+[@@deriving compare, show]
+
+val empty_reasons : reasons
+
+val location_insensitive_compare_reasons : reasons -> reasons -> int
 
 module ParameterArgumentMapping : sig
   type t = {
-    parameter_argument_mapping: argument list Type.Callable.Parameter.Map.t;
+    parameter_argument_mapping: matched_argument list Type.Callable.Parameter.Map.t;
     reasons: reasons;
   }
+  [@@deriving compare]
+
+  val pp : Format.formatter -> t -> unit
 end
 
 type ranks = {
@@ -87,11 +105,12 @@ type ranks = {
 
 type signature_match = {
   callable: Type.Callable.t;
-  parameter_argument_mapping: argument list Type.Callable.Parameter.Map.t;
+  parameter_argument_mapping: matched_argument list Type.Callable.Parameter.Map.t;
   constraints_set: TypeConstraints.t list;
   ranks: ranks;
   reasons: reasons;
 }
+[@@deriving compare, show]
 
 module SignatureSelection : sig
   val get_parameter_argument_mapping

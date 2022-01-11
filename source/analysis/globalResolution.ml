@@ -1,5 +1,5 @@
 (*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -215,6 +215,9 @@ let global ({ dependency; _ } as resolution) reference =
   | "__name__"
   | "__package__" ->
       let annotation = Annotation.create_immutable Type.string in
+      Some { AttributeResolution.Global.annotation; undecorated_signature = None; problem = None }
+  | "__path__" ->
+      let annotation = Type.list Type.string |> Annotation.create_immutable in
       Some { AttributeResolution.Global.annotation; undecorated_signature = None; problem = None }
   | "__dict__" ->
       let annotation =

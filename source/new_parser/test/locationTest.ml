@@ -1,5 +1,5 @@
 (*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -3536,6 +3536,79 @@ let test_type_comments _ =
                  captures = [];
                  unbound_names = [];
                  body = [node ~start:(3, 2) ~stop:(3, 6) Statement.Pass];
+               });
+        ];
+    assert_parsed
+      "def foo(x):  # type: (int) -> List[derp]\n  pass"
+      ~expected:
+        [
+          node
+            ~start:(1, 0)
+            ~stop:(2, 6)
+            (Statement.Define
+               {
+                 signature =
+                   {
+                     name = !&"foo";
+                     parameters =
+                       [
+                         node
+                           ~start:(1, 8)
+                           ~stop:(1, 9)
+                           {
+                             Parameter.name = "x";
+                             value = None;
+                             annotation =
+                               Some
+                                 (node
+                                    ~start:(1, 0)
+                                    ~stop:(2, 2)
+                                    (Expression.Name (Name.Identifier "int")));
+                           };
+                       ];
+                     decorators = [];
+                     return_annotation =
+                       Some
+                         (node
+                            ~start:(1, 0)
+                            ~stop:(2, 2)
+                            (Expression.Call
+                               {
+                                 callee =
+                                   node
+                                     ~start:(1, 9)
+                                     ~stop:(1, 13)
+                                     (Expression.Name
+                                        (Name.Attribute
+                                           {
+                                             base =
+                                               node
+                                                 ~start:(1, 9)
+                                                 ~stop:(1, 13)
+                                                 (Expression.Name (Name.Identifier "List"));
+                                             attribute = "__getitem__";
+                                             special = true;
+                                           }));
+                                 arguments =
+                                   [
+                                     {
+                                       Call.Argument.name = None;
+                                       value =
+                                         node
+                                           ~start:(1, 14)
+                                           ~stop:(1, 18)
+                                           (Expression.Name (Name.Identifier "derp"));
+                                     };
+                                   ];
+                               }));
+                     async = false;
+                     generator = false;
+                     parent = None;
+                     nesting_define = None;
+                   };
+                 captures = [];
+                 unbound_names = [];
+                 body = [node ~start:(2, 2) ~stop:(2, 6) Statement.Pass];
                });
         ];
     ()

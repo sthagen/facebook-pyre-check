@@ -1,5 +1,5 @@
 (*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -209,8 +209,11 @@ let errors_from_not_found
               | _ -> normal
             in
             [Some location, kind]
-        | MismatchWithTupleVariadicTypeVariable { variable; mismatch } ->
-            [None, Error.InvalidArgument (TupleVariadicVariable { variable; mismatch })]
+        | MismatchWithUnpackableType { variable; mismatch } ->
+            [
+              ( None,
+                Error.InvalidArgument (VariableArgumentsWithUnpackableType { variable; mismatch }) );
+            ]
       in
       List.concat_map mismatches ~f:convert_to_error
   | MissingArgument parameter -> [None, Error.MissingArgument { callee; parameter }]
@@ -1047,7 +1050,7 @@ module State (Context : Context) = struct
                        origin =
                          Error.Class
                            {
-                             class_type = resolved_base;
+                             class_origin = ClassType resolved_base;
                              parent_source_path = source_path_of_parent_module resolved_base;
                            };
                      })
@@ -1106,6 +1109,17 @@ module State (Context : Context) = struct
                        typechecked. *)
                     errors
                   else
+                    let class_origin =
+                      match resolved_base with
+                      | Type.Union [Type.NoneType; _]
+                      | Union [_; Type.NoneType] ->
+                          Error.ClassType target
+                      | Union unions ->
+                          List.findi ~f:(fun _ element -> Type.equal element target) unions
+                          >>| (fun (index, _) -> Error.ClassInUnion { unions; index })
+                          |> Option.value ~default:(Error.ClassType target)
+                      | _ -> Error.ClassType target
+                    in
                     emit_error
                       ~errors
                       ~location
@@ -1116,7 +1130,7 @@ module State (Context : Context) = struct
                              origin =
                                Error.Class
                                  {
-                                   class_type = target;
+                                   class_origin;
                                    parent_source_path = source_path_of_parent_module target;
                                  };
                            })
@@ -1427,7 +1441,8 @@ module State (Context : Context) = struct
                        {
                          attribute = name;
                          origin =
-                           Error.Class { class_type = target; parent_source_path = class_module };
+                           Error.Class
+                             { class_origin = ClassType target; parent_source_path = class_module };
                        }))
           | _ -> None
         in
@@ -3996,7 +4011,8 @@ module State (Context : Context) = struct
                                      {
                                        attribute = AnnotatedAttribute.public_name attribute;
                                        origin =
-                                         Error.Class { class_type = parent; parent_source_path };
+                                         Error.Class
+                                           { class_origin = ClassType parent; parent_source_path };
                                      })
                         | _ -> errors
                       in

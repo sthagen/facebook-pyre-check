@@ -1,5 +1,5 @@
 (*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -2140,6 +2140,12 @@ let test_resolve_exports context =
     ["foo.py", ""]
     ~reference:!&"foo.__package__"
     ~expected:(Some (resolved_attribute !&"foo" "__package__" ~export:GlobalVariable));
+  (* FIXME(grievejia): This is not 100% correct. `__path__` only exists if the containing module is
+     `__init__`. *)
+  assert_resolved
+    ["foo.py", ""]
+    ~reference:!&"foo.__path__"
+    ~expected:(Some (resolved_attribute !&"foo" "__path__" ~export:GlobalVariable));
   assert_resolved
     ["foo.py", ""]
     ~reference:!&"foo.__dict__"

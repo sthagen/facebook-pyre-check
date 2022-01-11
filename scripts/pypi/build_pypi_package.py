@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -285,6 +285,7 @@ def build_pypi_package(
     dependencies = [
         line.strip()
         for line in (pyre_directory / "requirements.txt").read_text().split("\n")
+        if len(line) > 0
     ]
     with tempfile.TemporaryDirectory() as build_root:
         build_path = Path(build_root)

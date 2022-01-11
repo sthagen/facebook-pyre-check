@@ -1,5 +1,5 @@
 (*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -87,8 +87,8 @@ let test_scheduling context =
         expect_string(1)
     |}
     [
-      "Incompatible parameter type [6]: "
-      ^ "Expected `str` for 1st positional only parameter to call `expect_string` but got `int`.";
+      "Incompatible parameter type [6]: In call `expect_string`, for 1st positional only parameter \
+       expected `str` but got `int`.";
     ];
   assert_type_errors
     {|
@@ -103,8 +103,8 @@ let test_scheduling context =
         expect_string(1)
     |}
     [
-      "Incompatible parameter type [6]: "
-      ^ "Expected `str` for 1st positional only parameter to call `expect_string` but got `int`.";
+      "Incompatible parameter type [6]: In call `expect_string`, for 1st positional only parameter \
+       expected `str` but got `int`.";
     ]
 
 
@@ -156,9 +156,8 @@ let test_check_excepts context =
             use("error")
     |}
     [
-      "Incompatible parameter type [6]: Expected `int` for 1st positional only parameter to call \
-       `use` "
-      ^ "but got `str`.";
+      "Incompatible parameter type [6]: In call `use`, for 1st positional only parameter expected \
+       `int` but got `str`.";
     ]
 
 
@@ -211,7 +210,7 @@ let test_check_ternary context =
         x: int
         return y if x else 5
     |}
-    ["Incompatible return type [7]: Expected `int` but got `typing.Optional[int]`."];
+    ["Incompatible return type [7]: Expected `int` but got `Optional[int]`."];
   assert_type_errors
     {|
       from builtins import int_to_str
@@ -347,10 +346,10 @@ let test_check_nested context =
         int_to_int(1.0)
     |}
     [
-      "Incompatible parameter type [6]: "
-      ^ "Expected `int` for 1st positional only parameter to call `int_to_int` but got `float`.";
-      "Incompatible parameter type [6]: "
-      ^ "Expected `int` for 1st positional only parameter to call `int_to_int` but got `float`.";
+      "Incompatible parameter type [6]: In call `int_to_int`, for 1st positional only parameter \
+       expected `int` but got `float`.";
+      "Incompatible parameter type [6]: In call `int_to_int`, for 1st positional only parameter \
+       expected `int` but got `float`.";
     ];
   assert_type_errors
     {|
@@ -374,8 +373,7 @@ let test_check_nested context =
        other than `Any`.";
       "Missing parameter annotation [2]: Parameter `noun` must have a type other than `Any`.";
       "Missing parameter annotation [2]: Parameter `verb` must have a type other than `Any`.";
-      "Incompatible return type [7]: Expected `Derp.Word` but got "
-      ^ "implicit return value of `None`.";
+      "Incompatible return type [7]: Expected `Word` but got implicit return value of `None`.";
     ];
   assert_type_errors
     ~handle:"shadowing.py"
@@ -384,8 +382,8 @@ let test_check_nested context =
       shadowing('asdf')
     |}
     [
-      "Incompatible parameter type [6]: "
-      ^ "Expected `int` for 1st positional only parameter to call `shadowing` but got `str`.";
+      "Incompatible parameter type [6]: In call `shadowing`, for 1st positional only parameter \
+       expected `int` but got `str`.";
     ];
 
   assert_type_errors
@@ -498,10 +496,10 @@ let test_check_nested context =
             int_to_int("hi")
     |}
     [
-      "Incompatible parameter type [6]: "
-      ^ "Expected `int` for 1st positional only parameter to call `int_to_int` but got `float`.";
-      "Incompatible parameter type [6]: "
-      ^ "Expected `int` for 1st positional only parameter to call `int_to_int` but got `str`.";
+      "Incompatible parameter type [6]: In call `int_to_int`, for 1st positional only parameter \
+       expected `int` but got `float`.";
+      "Incompatible parameter type [6]: In call `int_to_int`, for 1st positional only parameter \
+       expected `int` but got `str`.";
     ]
 
 

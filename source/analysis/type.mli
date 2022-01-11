@@ -1,5 +1,5 @@
 (*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -166,6 +166,10 @@ module Record : sig
       :  'annotation record ->
       'annotation record ->
       'annotation ordered_type_split option
+
+    val drop_prefix : length:int -> 'annotation record -> 'annotation record option
+
+    val index : python_index:int -> 'annotation record -> 'annotation option
   end
 
   module Callable : sig
@@ -802,6 +806,8 @@ module OrderedTypes : sig
     type_t Concatenation.t option
 
   val broadcast : type_t -> type_t -> type_t
+
+  val coalesce_ordered_types : type_t record list -> type_t record option
 end
 
 val split : t -> t * Parameter.t list

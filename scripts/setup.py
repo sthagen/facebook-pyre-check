@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -32,10 +32,10 @@ DEPENDENCIES = [
     "yojson.1.7.0",
     "ppx_deriving_yojson.3.6.1",
     "ounit.2.2.4",
-    "menhir.20210419",
-    "lwt.5.4.2",
+    "menhir.20211230",
+    "lwt.5.5.0",
     "ounit2-lwt.2.2.4",
-    "pyre-ast.0.1.7",
+    "pyre-ast.0.1.8",
 ]
 
 

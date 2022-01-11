@@ -1,5 +1,5 @@
 (*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -46,9 +46,17 @@ type module_reference =
   | ImplicitModule of Reference.t
 [@@deriving compare, sexp, show, hash]
 
+type class_origin =
+  | ClassType of Type.t
+  | ClassInUnion of {
+      unions: Type.t list;
+      index: int;
+    }
+[@@deriving compare, sexp, show, hash]
+
 type origin =
   | Class of {
-      class_type: Type.t;
+      class_origin: class_origin;
       parent_source_path: SourcePath.t option;
     }
   | Module of module_reference
@@ -111,9 +119,9 @@ and invalid_argument =
       expression: Expression.t option;
       annotation: Type.t;
     }
-  | TupleVariadicVariable of {
+  | VariableArgumentsWithUnpackableType of {
       variable: Type.OrderedTypes.t;
-      mismatch: SignatureSelectionTypes.mismatch_with_tuple_variadic_type_variable;
+      mismatch: SignatureSelectionTypes.mismatch_with_unpackable_type;
     }
 
 and precondition_mismatch =
@@ -678,6 +686,110 @@ let weaken_literals kind =
   | _ -> kind
 
 
+module SimplificationMap = struct
+  (* (Lazy) suffix trie for references. Lazy only for leaf nodes. *)
+  type node =
+    | LazyLeaf of { to_be_expanded: Identifier.t list }
+    | Node of { children: node Identifier.Map.t }
+
+  type t = Reference.t Reference.Map.t
+
+  let pp fmt map =
+    let pp_one ~key ~data = Format.fprintf fmt "\n  %a -> %a" Reference.pp key Reference.pp data in
+    Reference.Map.iteri ~f:pp_one map
+
+
+  let show map = Format.asprintf "%a" pp map
+
+  let create references =
+    let empty_trie = Node { children = Identifier.Map.empty } in
+    let add_to_suffix_trie trie reference =
+      let rec add sofar node =
+        match sofar, node with
+        | [], _ -> node
+        | _, LazyLeaf { to_be_expanded } when List.equal Identifier.equal sofar to_be_expanded ->
+            node
+        | _, LazyLeaf { to_be_expanded } -> empty_trie |> add to_be_expanded |> add sofar
+        | head :: remaining, Node { children } ->
+            let updated_children =
+              Identifier.Map.update children head ~f:(fun existing ->
+                  match existing with
+                  | None -> LazyLeaf { to_be_expanded = remaining }
+                  | Some child -> add remaining child)
+            in
+            Node { children = updated_children }
+      in
+      let reference_reversed_as_list = Reference.reverse reference |> Reference.as_list in
+      add reference_reversed_as_list trie
+    in
+    (* Idea is that the leaves we could avoid expanding correspond to simplifications. *)
+    let extract_simplifications_from_suffix_trie trie =
+      let rec extract suffix node collected =
+        match node with
+        | LazyLeaf { to_be_expanded = [] } -> collected
+        | LazyLeaf { to_be_expanded } ->
+            let shortened = Reference.create_from_list suffix in
+            let dropped = List.rev to_be_expanded |> Reference.create_from_list in
+            (Reference.combine dropped shortened, shortened) :: collected
+        | Node { children } ->
+            Identifier.Map.fold children ~init:collected ~f:(fun ~key ~data ->
+                extract (key :: suffix) data)
+      in
+      extract [] trie []
+    in
+    List.fold references ~init:empty_trie ~f:add_to_suffix_trie
+    |> extract_simplifications_from_suffix_trie
+    |> Reference.Map.of_alist_exn
+end
+
+let simplify_mismatch ({ actual; expected; _ } as mismatch) =
+  let collect_references annotation =
+    let module CollectIdentifiers = Type.Transform.Make (struct
+      type state = Identifier.t list
+
+      let visit_children_before _ _ = true
+
+      let visit_children_after = false
+
+      let visit sofar annotation =
+        let updated =
+          match annotation with
+          | Type.Parametric { name; _ }
+          | Variable { variable = name; _ }
+          | Primitive name ->
+              name :: sofar
+          | _ -> sofar
+        in
+        { Type.Transform.transformed_annotation = annotation; new_state = updated }
+    end)
+    in
+    fst (CollectIdentifiers.visit [] annotation) |> List.map ~f:Reference.create
+  in
+  let references = collect_references actual @ collect_references expected in
+  let simplification_map = SimplificationMap.create references in
+  let simplified_expected = Type.dequalify simplification_map expected in
+  let simplified_actual = Type.dequalify simplification_map actual in
+  { mismatch with expected = simplified_expected; actual = simplified_actual }
+
+
+let simplify_kind kind =
+  let simplify_incompatible_type incompatible_type =
+    { incompatible_type with mismatch = simplify_mismatch incompatible_type.mismatch }
+  in
+  match kind with
+  | IncompatibleAttributeType details ->
+      IncompatibleAttributeType
+        { details with incompatible_type = simplify_incompatible_type details.incompatible_type }
+  | IncompatibleParameterType details ->
+      IncompatibleParameterType { details with mismatch = simplify_mismatch details.mismatch }
+  | IncompatibleReturnType details ->
+      IncompatibleReturnType { details with mismatch = simplify_mismatch details.mismatch }
+  | IncompatibleVariableType details ->
+      IncompatibleVariableType
+        { details with incompatible_type = simplify_incompatible_type details.incompatible_type }
+  | _ -> kind
+
+
 let rec messages ~concise ~signature location kind =
   let {
     Location.WithPath.start = { Location.line = start_line; _ };
@@ -722,6 +834,7 @@ let rec messages ~concise ~signature location kind =
   in
   let pp_identifier = Identifier.pp_sanitized in
   let kind = weaken_literals kind in
+  let kind = simplify_kind kind in
   match kind with
   | AnalysisFailure (UnexpectedUndefinedType annotation) when concise ->
       [Format.asprintf "Terminating analysis - type `%s` not defined." annotation]
@@ -868,24 +981,18 @@ let rec messages ~concise ~signature location kind =
           | _ -> "anonymous call"
         in
         if concise then
-          Format.asprintf "%s param" (ordinal position)
+          Format.asprintf "For %s param" (ordinal position)
         else
-          Format.asprintf "%s %s to %s" (ordinal position) parameter callee
+          Format.asprintf "In %s, for %s %s" callee (ordinal position) parameter
       in
       match Option.map ~f:Reference.as_list callee with
       | Some ["int"; "__add__"]
       | Some ["int"; "__sub__"]
       | Some ["int"; "__mul__"]
       | Some ["int"; "__floordiv__"] ->
-          Format.asprintf "Expected `int` for %s but got `%a`." target pp_type actual :: trace
+          Format.asprintf "%s expected `int` but got `%a`." target pp_type actual :: trace
       | _ ->
-          Format.asprintf
-            "Expected `%a` for %s but got `%a`."
-            pp_type
-            expected
-            target
-            pp_type
-            actual
+          Format.asprintf "%s expected `%a` but got `%a`." target pp_type expected pp_type actual
           :: trace)
   | IncompatibleConstructorAnnotation _ when concise -> ["`__init__` should return `None`."]
   | IncompatibleConstructorAnnotation annotation ->
@@ -1047,21 +1154,21 @@ let rec messages ~concise ~signature location kind =
               (if require_string_keys then " with string keys" else "");
           ]
       | ConcreteVariable _ -> ["Variable argument must be an iterable."]
-      | TupleVariadicVariable { variable; mismatch = ConstraintFailure _ } ->
+      | VariableArgumentsWithUnpackableType { variable; mismatch = ConstraintFailure _ } ->
           [
             Format.asprintf
               "Variable argument conflicts with constraints on `%a`."
               Type.OrderedTypes.pp_concise
               variable;
           ]
-      | TupleVariadicVariable { variable; mismatch = NotBoundedTuple _ } ->
+      | VariableArgumentsWithUnpackableType { variable; mismatch = NotUnpackableType _ } ->
           [
             Format.asprintf
-              "Variable argument for `%a` must be a bounded tuple."
+              "Unpacked argument `%a` must have an unpackable type."
               Type.OrderedTypes.pp_concise
               variable;
           ]
-      | TupleVariadicVariable { variable; mismatch = CannotConcatenate _ } ->
+      | VariableArgumentsWithUnpackableType { variable; mismatch = CannotConcatenate _ } ->
           [
             Format.asprintf
               "Concatenating multiple variadic tuples for variable `%a` is not yet supported."
@@ -1087,7 +1194,8 @@ let rec messages ~concise ~signature location kind =
               pp_type
               annotation;
           ]
-      | TupleVariadicVariable { variable; mismatch = ConstraintFailure ordered_types } ->
+      | VariableArgumentsWithUnpackableType { variable; mismatch = ConstraintFailure ordered_types }
+        ->
           [
             Format.asprintf
               "Argument types `%a` are not compatible with expected variadic elements `%a`."
@@ -1096,18 +1204,17 @@ let rec messages ~concise ~signature location kind =
               (Type.Record.OrderedTypes.pp_concise ~pp_type)
               variable;
           ]
-      | TupleVariadicVariable { variable; mismatch = NotBoundedTuple { expression; annotation } } ->
+      | VariableArgumentsWithUnpackableType
+          { mismatch = NotUnpackableType { expression; annotation }; _ } ->
           [
             Format.asprintf
-              "Variable argument%s has type `%a` but must be a definite tuple to be included in \
-               variadic type variable `%a`."
+              "Unpacked argument%s must have an unpackable type but has type `%a`."
               (show_sanitized_optional_expression expression)
               pp_type
-              annotation
-              (Type.Record.OrderedTypes.pp_concise ~pp_type)
-              variable;
+              annotation;
           ]
-      | TupleVariadicVariable { variable; mismatch = CannotConcatenate unconcatenatable } ->
+      | VariableArgumentsWithUnpackableType
+          { variable; mismatch = CannotConcatenate unconcatenatable } ->
           let unconcatenatable =
             List.map
               unconcatenatable
@@ -2140,18 +2247,21 @@ let rec messages ~concise ~signature location kind =
         match origin with
         | Class
             {
-              class_type =
-                ( Callable { kind; _ }
-                (* TODO(T64161566): Don't pretend these are just Callables *)
-                | Parametric
-                    { name = "BoundMethod"; parameters = [Single (Callable { kind; _ }); Single _] }
-                  );
+              class_origin =
+                ClassType
+                  ( Callable { kind; _ }
+                  (* TODO(T64161566): Don't pretend these are just Callables *)
+                  | Parametric
+                      {
+                        name = "BoundMethod";
+                        parameters = [Single (Callable { kind; _ }); Single _];
+                      } );
               _;
             } -> (
             match kind with
             | Anonymous -> "Anonymous callable"
             | Named name -> Format.asprintf "Callable `%a`" pp_reference name)
-        | Class { class_type = annotation; _ } ->
+        | Class { class_origin = ClassType annotation; _ } ->
             let annotation, _ = Type.split annotation in
             let name =
               if Type.is_optional_primitive annotation then
@@ -2160,6 +2270,13 @@ let rec messages ~concise ~signature location kind =
                 Format.asprintf "`%a`" pp_type annotation
             in
             name
+        | Class { class_origin = ClassInUnion { unions; index }; _ } ->
+            Format.asprintf
+              "Item `%a` of `%a`"
+              pp_type
+              (fst (Type.split (List.nth_exn unions index)))
+              pp_type
+              (Type.Union unions)
         | Module module_reference ->
             let name =
               match module_reference with
@@ -2170,7 +2287,10 @@ let rec messages ~concise ~signature location kind =
       in
       match origin with
       | Class
-          { class_type; parent_source_path = Some { SourcePath.relative; is_stub = true; _ }; _ }
+          {
+            class_origin = ClassType class_type;
+            parent_source_path = Some { SourcePath.relative; is_stub = true; _ };
+          }
         when not (Type.is_optional_primitive class_type) ->
           let stub_trace =
             Format.asprintf
@@ -2476,7 +2596,8 @@ let due_to_analysis_limitations { kind; _ } =
   | InvalidArgument (Keyword { annotation = actual; _ })
   | InvalidArgument (ConcreteVariable { annotation = actual; _ })
   | InvalidArgument
-      (TupleVariadicVariable { mismatch = NotBoundedTuple { annotation = actual; _ }; _ })
+      (VariableArgumentsWithUnpackableType
+        { mismatch = NotUnpackableType { annotation = actual; _ }; _ })
   | InvalidException { annotation = actual; _ }
   | InvalidType (InvalidType { annotation = actual; _ })
   | InvalidType (FinalNested actual)
@@ -2490,7 +2611,7 @@ let due_to_analysis_limitations { kind; _ } =
       is_due_to_analysis_limitations left_operand || is_due_to_analysis_limitations right_operand
   | UnsupportedOperand (Unary { operand; _ }) -> is_due_to_analysis_limitations operand
   | Top -> true
-  | UndefinedAttribute { origin = Class { class_type = annotation; _ }; _ } ->
+  | UndefinedAttribute { origin = Class { class_origin = ClassType annotation; _ }; _ } ->
       Type.contains_unknown annotation
   | AnalysisFailure _
   | BroadcastError _
@@ -2502,7 +2623,7 @@ let due_to_analysis_limitations { kind; _ } =
   | IncompatibleAsyncGeneratorReturnType _
   | IncompatibleConstructorAnnotation _
   | InconsistentOverride { override = StrengthenedPrecondition (NotFound _); _ }
-  | InvalidArgument (TupleVariadicVariable _)
+  | InvalidArgument (VariableArgumentsWithUnpackableType _)
   | InvalidDecoration _
   | InvalidMethodSignature _
   | InvalidTypeParameters _
@@ -2755,7 +2876,7 @@ let less_or_equal ~resolution left right =
   | UndefinedAttribute left, UndefinedAttribute right
     when Identifier.equal_sanitized left.attribute right.attribute -> (
       match left.origin, right.origin with
-      | Class { class_type = left; _ }, Class { class_type = right; _ } ->
+      | Class { class_origin = ClassType left; _ }, Class { class_origin = ClassType right; _ } ->
           GlobalResolution.less_or_equal resolution ~left ~right
       | Module (ImplicitModule left), Module (ImplicitModule right)
       | ( Module (ExplicitModule { SourcePath.qualifier = left; _ }),
@@ -3140,12 +3261,12 @@ let join ~resolution left right =
         DuplicateTypeVariables { variable = left; base = ProtocolBase }
     | ( UndefinedAttribute
           {
-            origin = Class { class_type = left; parent_source_path = left_module };
+            origin = Class { class_origin = ClassType left; parent_source_path = left_module };
             attribute = left_attribute;
           },
         UndefinedAttribute
           {
-            origin = Class { class_type = right; parent_source_path = right_module };
+            origin = Class { class_origin = ClassType right; parent_source_path = right_module };
             attribute = right_attribute;
           } )
       when Identifier.equal_sanitized left_attribute right_attribute
@@ -3153,7 +3274,7 @@ let join ~resolution left right =
         let annotation = GlobalResolution.join resolution left right in
         UndefinedAttribute
           {
-            origin = Class { class_type = annotation; parent_source_path = left_module };
+            origin = Class { class_origin = ClassType annotation; parent_source_path = left_module };
             attribute = left_attribute;
           }
     | ( UndefinedAttribute { origin = Module (ImplicitModule left); attribute = left_attribute },
@@ -3377,8 +3498,11 @@ let join_at_define ~resolution errors =
     | { kind = MissingParameterAnnotation { name; _ }; _ }
     | { kind = MissingReturnAnnotation { name; _ }; _ } ->
         add_error_to_map (Reference.show_sanitized name)
-    | { kind = UndefinedAttribute { attribute; origin = Class { class_type = annotation; _ } }; _ }
-      ->
+    | {
+     kind =
+       UndefinedAttribute { attribute; origin = Class { class_origin = ClassType annotation; _ } };
+     _;
+    } ->
         (* Only error once per define on accesses or assigns to an undefined class attribute. *)
         add_error_to_map (attribute ^ Type.show annotation)
     | _ -> error :: errors
@@ -3446,7 +3570,7 @@ let filter ~resolution errors =
       | IncompatibleReturnType { mismatch = { actual; _ }; _ }
       | IncompatibleVariableType { incompatible_type = { mismatch = { actual; _ }; _ }; _ }
       | TypedDictionaryInvalidOperation { mismatch = { actual; _ }; _ }
-      | UndefinedAttribute { origin = Class { class_type = actual; _ }; _ } ->
+      | UndefinedAttribute { origin = Class { class_origin = ClassType actual; _ }; _ } ->
           let is_subclass_of_mock annotation =
             try
               match annotation with
@@ -3506,20 +3630,26 @@ let filter ~resolution errors =
     let is_callable_attribute_error { kind; _ } =
       (* TODO(T53616545): Remove once our decorators are more expressive. *)
       match kind with
-      | UndefinedAttribute { origin = Class { class_type = Callable _; _ }; attribute = "command" }
-        ->
+      | UndefinedAttribute
+          { origin = Class { class_origin = ClassType (Callable _); _ }; attribute = "command" } ->
           true
       (* We also need to filter errors for common mocking patterns. *)
       | UndefinedAttribute
           {
-            origin = Class { class_type = Callable _ | Parametric { name = "BoundMethod"; _ }; _ };
+            origin =
+              Class
+                {
+                  class_origin = ClassType (Callable _ | Parametric { name = "BoundMethod"; _ });
+                  _;
+                };
             attribute =
               ( "assert_not_called" | "assert_called_once" | "assert_called_once_with"
               | "reset_mock" | "assert_has_calls" | "assert_any_call" );
           } ->
           true
       | UndefinedAttribute
-          { origin = Class { class_type = Callable { kind = Named name; _ }; _ }; _ } ->
+          { origin = Class { class_origin = ClassType (Callable { kind = Named name; _ }); _ }; _ }
+        ->
           String.equal (Reference.last name) "patch"
       | _ -> false
     in
@@ -3737,17 +3867,17 @@ let dequalify
           (Keyword { expression; annotation = dequalify annotation; require_string_keys })
     | InvalidArgument (ConcreteVariable { expression; annotation }) ->
         InvalidArgument (ConcreteVariable { expression; annotation = dequalify annotation })
-    | InvalidArgument (TupleVariadicVariable { variable; mismatch }) ->
+    | InvalidArgument (VariableArgumentsWithUnpackableType { variable; mismatch }) ->
         let mismatch =
           match mismatch with
-          | NotBoundedTuple { expression; annotation } ->
-              SignatureSelectionTypes.NotBoundedTuple
+          | NotUnpackableType { expression; annotation } ->
+              SignatureSelectionTypes.NotUnpackableType
                 { expression; annotation = dequalify annotation }
           | _ ->
               (* TODO(T45656387): Implement dequalify for ordered_types *)
               mismatch
         in
-        InvalidArgument (TupleVariadicVariable { variable; mismatch })
+        InvalidArgument (VariableArgumentsWithUnpackableType { variable; mismatch })
     | InvalidException { expression; annotation } ->
         InvalidException { expression; annotation = dequalify annotation }
     | InvalidMethodSignature ({ annotation; _ } as kind) ->
@@ -3933,7 +4063,7 @@ let dequalify
     | UndefinedAttribute { attribute; origin } ->
         let origin : origin =
           match origin with
-          | Class { class_type; parent_source_path } ->
+          | Class { class_origin = ClassType class_type; parent_source_path } ->
               let annotation =
                 (* Don't dequalify optionals because we special case their display. *)
                 if Type.is_optional_primitive class_type then
@@ -3941,7 +4071,13 @@ let dequalify
                 else
                   dequalify class_type
               in
-              Class { class_type = annotation; parent_source_path }
+              Class { class_origin = ClassType annotation; parent_source_path }
+          | Class { class_origin = ClassInUnion { unions; index }; parent_source_path } ->
+              Class
+                {
+                  class_origin = ClassInUnion { unions = List.map ~f:dequalify unions; index };
+                  parent_source_path;
+                }
           | Module (ExplicitModule source_path) -> Module (ExplicitModule source_path)
           | Module (ImplicitModule module_name) ->
               Module (ImplicitModule (dequalify_reference module_name))
@@ -4001,89 +4137,3 @@ let create_mismatch ~resolution ~actual ~expected ~covariant =
     actual;
     due_to_invariance = GlobalResolution.is_invariance_mismatch resolution ~left ~right;
   }
-
-
-module SimplificationMap = struct
-  (* (Lazy) suffix trie for references. Lazy only for leaf nodes. *)
-  type node =
-    | LazyLeaf of { to_be_expanded: Identifier.t list }
-    | Node of { children: node Identifier.Map.t }
-
-  type t = Reference.t Reference.Map.t
-
-  let pp fmt map =
-    let pp_one ~key ~data = Format.fprintf fmt "\n  %a -> %a" Reference.pp key Reference.pp data in
-    Reference.Map.iteri ~f:pp_one map
-
-
-  let show map = Format.asprintf "%a" pp map
-
-  let create references =
-    let empty_trie = Node { children = Identifier.Map.empty } in
-    let add_to_suffix_trie trie reference =
-      let rec add sofar node =
-        match sofar, node with
-        | [], _ -> node
-        | _, LazyLeaf { to_be_expanded } when List.equal Identifier.equal sofar to_be_expanded ->
-            node
-        | _, LazyLeaf { to_be_expanded } -> empty_trie |> add to_be_expanded |> add sofar
-        | head :: remaining, Node { children } ->
-            let updated_children =
-              Identifier.Map.update children head ~f:(fun existing ->
-                  match existing with
-                  | None -> LazyLeaf { to_be_expanded = remaining }
-                  | Some child -> add remaining child)
-            in
-            Node { children = updated_children }
-      in
-      let reference_reversed_as_list = Reference.reverse reference |> Reference.as_list in
-      add reference_reversed_as_list trie
-    in
-    (* Idea is that the leaves we could avoid expanding correspond to simplifications. *)
-    let extract_simplifications_from_suffix_trie trie =
-      let rec extract suffix node collected =
-        match node with
-        | LazyLeaf { to_be_expanded = [] } -> collected
-        | LazyLeaf { to_be_expanded } ->
-            let shortened = Reference.create_from_list suffix in
-            let dropped = List.rev to_be_expanded |> Reference.create_from_list in
-            (Reference.combine dropped shortened, shortened) :: collected
-        | Node { children } ->
-            Identifier.Map.fold children ~init:collected ~f:(fun ~key ~data ->
-                extract (key :: suffix) data)
-      in
-      extract [] trie []
-    in
-    List.fold references ~init:empty_trie ~f:add_to_suffix_trie
-    |> extract_simplifications_from_suffix_trie
-    |> Reference.Map.of_alist_exn
-end
-
-let simplify_mismatch ({ actual; expected; _ } as mismatch) =
-  let collect_references annotation =
-    let module CollectIdentifiers = Type.Transform.Make (struct
-      type state = Identifier.t list
-
-      let visit_children_before _ _ = true
-
-      let visit_children_after = false
-
-      let visit sofar annotation =
-        let updated =
-          match annotation with
-          | Type.Parametric { name; _ }
-          | Variable { variable = name; _ }
-          | Primitive name ->
-              name :: sofar
-          | _ -> sofar
-        in
-        { Type.Transform.transformed_annotation = annotation; new_state = updated }
-    end)
-    in
-    fst (CollectIdentifiers.visit [] annotation) |> List.map ~f:Reference.create
-  in
-  let references = collect_references actual @ collect_references expected in
-  let simplification_map = SimplificationMap.create references in
-  let simplified_expected = Type.dequalify simplification_map expected in
-  let simplified_actual = Type.dequalify simplification_map actual in
-  { mismatch with expected = simplified_expected; actual = simplified_actual }

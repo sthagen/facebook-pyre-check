@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -79,9 +79,20 @@ class CoverageTest(unittest.TestCase):
 
                 return 5
             """,
-            # TODO(T107184386): Pyre would actually type-check lines 2 and 3.
-            expected_covered=[],
-            expected_uncovered=[0, 1, 2, 3, 4, 5],
+            expected_covered=[2, 3],
+            expected_uncovered=[0, 1, 4, 5],
+        )
+        self.assert_coverage_equal(
+            """
+            level0: None = None
+            def level1():
+                def level2() -> None:
+                    def level3():
+                        def level4() -> None:
+                            def level5(): ...
+            """,
+            expected_covered=[0, 2, 4],
+            expected_uncovered=[1, 3, 5],
         )
 
     def contains_uncovered_lines(self, file_content: str, strict_default: bool) -> bool:

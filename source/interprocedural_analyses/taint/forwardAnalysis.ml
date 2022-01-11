@@ -1,5 +1,5 @@
 (*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -292,8 +292,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         accumulated_tito
       =
       let breadcrumbs =
-        BackwardTaint.accumulated_breadcrumbs tito_taint
-        |> Features.BreadcrumbSet.add (Features.tito ())
+        BackwardTaint.joined_breadcrumbs tito_taint |> Features.BreadcrumbSet.add (Features.tito ())
       in
       let taint_to_propagate =
         if collapse_tito then

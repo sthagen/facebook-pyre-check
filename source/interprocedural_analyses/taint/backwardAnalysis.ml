@@ -1,5 +1,5 @@
 (*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -302,7 +302,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       get_taint access_path initial_state |> BackwardState.Tree.join global_sink
     in
     let convert_tito_path_to_taint ~kind (tito_path, tito_taint) argument_taint =
-      let breadcrumbs = BackwardTaint.accumulated_breadcrumbs tito_taint in
+      let breadcrumbs = BackwardTaint.joined_breadcrumbs tito_taint in
       let tito_depth =
         BackwardTaint.fold TraceLength.Self tito_taint ~f:TraceLength.join ~init:TraceLength.bottom
       in

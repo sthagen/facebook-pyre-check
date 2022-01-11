@@ -1,5 +1,5 @@
 (*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -5446,6 +5446,16 @@ let test_populate_unbound_names _ =
         derp
     |}
     ~expected:[!&"foo", ["derp", location (4, 2) (4, 6)]];
+
+  (* TODO(T109357540): Invalid locations for Python2 unbound names *)
+  assert_unbound_names
+    {|
+      #!/usr/bin/env python2
+      def foo(): # type: (...) -> List[derp]
+        pass
+    |}
+    ~expected:[toplevel_name, ["List", location (1, 9) (1, 13); "derp", location (1, 14) (1, 18)]];
+
   (* TODO(T80454071): This should raise an error about `nonexistent_inside_quotes`. *)
   assert_unbound_names
     {|
@@ -5457,6 +5467,7 @@ let test_populate_unbound_names _ =
       ) -> None: ...
     |}
     ~expected:[toplevel_name, ["nonexistent_outside_quotes", location (6, 12) (6, 38)]];
+
   (* Recursive alias reference should not be considered unbound. *)
   assert_unbound_names
     {|
@@ -5464,6 +5475,13 @@ let test_populate_unbound_names _ =
        Tree = Union[int, Tuple["Tree", "Tree"]]
     |}
     ~expected:[];
+
+  assert_unbound_names
+    {|
+      def foo() -> str:
+        return __path__
+    |}
+    ~expected:[!&"foo", []];
   ()
 
 

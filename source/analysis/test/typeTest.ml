@@ -1,5 +1,5 @@
 (*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -5269,6 +5269,161 @@ let test_split_ordered_types _ =
   ()
 
 
+let test_coalesce_ordered_types _ =
+  let variadic = Type.Variable.Variadic.Tuple.create "Ts" in
+  let assert_coalesce ordered_types expected =
+    let aliases ?replace_unbound_parameters_with_any:_ = function
+      | "Ts" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic))
+      | _ -> None
+    in
+    let parse_ordered_type type_ =
+      match
+        Type.create ~aliases (parse_single_expression ~preprocess:true ("typing.Tuple" ^ type_))
+      with
+      | Type.Tuple ordered_type -> ordered_type
+      | _ -> failwith "expected tuple elements"
+    in
+    let ordered_types = List.map ordered_types ~f:parse_ordered_type in
+    let expected = expected >>| parse_ordered_type in
+    assert_equal
+      ~printer:[%show: Type.t Type.OrderedTypes.record option]
+      expected
+      (Type.OrderedTypes.coalesce_ordered_types ordered_types)
+  in
+  assert_coalesce ["[int, str]"; "[bool, bool]"] (Some "[int, str, bool, bool]");
+  assert_coalesce
+    ["[int, str]"; "[int, ...]"; "[bool, bool]"]
+    (Some "[int, str, pyre_extensions.Unpack[typing.Tuple[int, ...]], bool, bool]");
+  assert_coalesce
+    ["[int, str]"; "[pyre_extensions.Unpack[Ts]]"; "[bool, bool]"]
+    (Some "[int, str, pyre_extensions.Unpack[Ts], bool, bool]");
+  assert_coalesce ["[int, ...]"; "[pyre_extensions.Unpack[Ts]]"] None;
+  assert_coalesce ["[int, ...]"; "[int, ...]"] (Some "[int, ...]");
+  assert_coalesce ["[int, ...]"; "[str, ...]"] (Some "[typing.Union[int, str], ...]");
+  assert_coalesce
+    [
+      "[int, int]";
+      "[int, str, pyre_extensions.Unpack[typing.Tuple[int, ...]], bool, bool]";
+      "[bool, bool]";
+      "[int, str, pyre_extensions.Unpack[typing.Tuple[str, ...]], bool, bool]";
+      "[bool, bool]";
+      "[int, str, pyre_extensions.Unpack[typing.Tuple[str, ...]], bool, bool]";
+      "[bool, bool]";
+    ]
+    (Some
+       "[int, int, int, str, pyre_extensions.Unpack[typing.Tuple[typing.Union[int, bool, str], \
+        ...]], bool, bool, bool, bool]");
+  ()
+
+
+let test_drop_prefix_ordered_type _ =
+  let open Type.OrderedTypes in
+  let assert_drop_prefix ~length actual expected_tuple =
+    let variadic = Type.Variable.Variadic.Tuple.create "Ts" in
+    let aliases ?replace_unbound_parameters_with_any:_ = function
+      | "Ts" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic))
+      | _ -> None
+    in
+    let extract_ordered_type string =
+      match parse_single_expression string |> Type.create ~aliases with
+      | Type.Tuple ordered_type -> ordered_type
+      | _ -> failwith "expected tuple"
+    in
+    assert_equal
+      ~cmp:[%equal: Type.t record option]
+      ~printer:[%show: Type.t record option]
+      (expected_tuple >>| extract_ordered_type)
+      (extract_ordered_type actual |> Type.OrderedTypes.drop_prefix ~length)
+  in
+  assert_drop_prefix ~length:0 "typing.Tuple[int, str]" (Some "typing.Tuple[int, str]");
+  assert_drop_prefix ~length:2 "typing.Tuple[int, str]" (Some "typing.Tuple[()]");
+  assert_drop_prefix ~length:2 "typing.Tuple[int, str, bool, int]" (Some "typing.Tuple[bool, int]");
+  assert_drop_prefix ~length:3 "typing.Tuple[int, str]" None;
+  assert_drop_prefix
+    ~length:0
+    "typing.Tuple[int, str, pyre_extensions.Unpack[typing.Tuple[int, ...]]]"
+    (Some "typing.Tuple[int, str, pyre_extensions.Unpack[typing.Tuple[int, ...]]]");
+  assert_drop_prefix
+    ~length:1
+    "typing.Tuple[int, str, pyre_extensions.Unpack[typing.Tuple[int, ...]], str]"
+    (Some "typing.Tuple[str, pyre_extensions.Unpack[typing.Tuple[int, ...]], str]");
+  assert_drop_prefix
+    ~length:2
+    "typing.Tuple[int, str, pyre_extensions.Unpack[typing.Tuple[int, ...]]]"
+    (Some "typing.Tuple[int, ...]");
+  assert_drop_prefix
+    ~length:2
+    "typing.Tuple[int, str, pyre_extensions.Unpack[Ts]]"
+    (Some "typing.Tuple[pyre_extensions.Unpack[Ts]]");
+  assert_drop_prefix
+    ~length:3
+    "typing.Tuple[int, str, pyre_extensions.Unpack[typing.Tuple[int, ...]]]"
+    (Some "typing.Tuple[int, ...]");
+  assert_drop_prefix ~length:3 "typing.Tuple[int, str, pyre_extensions.Unpack[Ts]]" None;
+  ()
+
+
+let test_index_ordered_type _ =
+  let assert_index ~python_index tuple expected =
+    let variadic = Type.Variable.Variadic.Tuple.create "Ts" in
+    let aliases ?replace_unbound_parameters_with_any:_ = function
+      | "Ts" -> Some (Type.VariableAlias (Type.Variable.TupleVariadic variadic))
+      | _ -> None
+    in
+    let extract_ordered_type string =
+      match parse_single_expression string |> Type.create ~aliases with
+      | Type.Tuple ordered_type -> ordered_type
+      | _ -> failwith "expected tuple"
+    in
+    assert_equal
+      ~cmp:[%equal: Type.t option]
+      ~printer:[%show: Type.t option]
+      (expected >>| parse_single_expression >>| Type.create ~aliases)
+      (extract_ordered_type tuple |> Type.OrderedTypes.index ~python_index)
+  in
+  assert_index ~python_index:0 "typing.Tuple[int, str]" (Some "int");
+  assert_index ~python_index:1 "typing.Tuple[int, str]" (Some "str");
+  assert_index ~python_index:(-1) "typing.Tuple[int, str]" (Some "str");
+  assert_index ~python_index:(-2) "typing.Tuple[int, str]" (Some "int");
+  assert_index ~python_index:2 "typing.Tuple[int, str]" None;
+  assert_index ~python_index:(-3) "typing.Tuple[int, str]" None;
+  assert_index
+    ~python_index:0
+    "typing.Tuple[int, str, pyre_extensions.Unpack[typing.Tuple[bool, ...]]]"
+    (Some "int");
+  assert_index
+    ~python_index:2
+    "typing.Tuple[int, str, pyre_extensions.Unpack[typing.Tuple[bool, ...]]]"
+    (Some "bool");
+  assert_index
+    ~python_index:99
+    "typing.Tuple[int, str, pyre_extensions.Unpack[typing.Tuple[bool, ...]]]"
+    (Some "bool");
+  assert_index
+    ~python_index:(-1)
+    "typing.Tuple[int, str, pyre_extensions.Unpack[typing.Tuple[bool, ...]], str]"
+    (Some "str");
+  assert_index
+    ~python_index:(-2)
+    "typing.Tuple[int, str, pyre_extensions.Unpack[typing.Tuple[bool, ...]], str]"
+    (Some "bool");
+  assert_index
+    ~python_index:(-99)
+    "typing.Tuple[int, str, pyre_extensions.Unpack[typing.Tuple[bool, ...]], str]"
+    (Some "bool");
+  assert_index
+    ~python_index:1
+    "typing.Tuple[int, str, pyre_extensions.Unpack[Ts], bool]"
+    (Some "str");
+  assert_index
+    ~python_index:(-1)
+    "typing.Tuple[int, str, pyre_extensions.Unpack[Ts], bool]"
+    (Some "bool");
+  assert_index ~python_index:2 "typing.Tuple[int, str, pyre_extensions.Unpack[Ts], bool]" None;
+  assert_index ~python_index:(-2) "typing.Tuple[int, str, pyre_extensions.Unpack[Ts], bool]" None;
+  ()
+
+
 let test_zip_variables_with_parameters _ =
   let unary = Type.Variable.Unary.create "T" in
   let unary2 = Type.Variable.Unary.create "T2" in
@@ -5658,7 +5813,11 @@ let test_zip_on_two_parameter_lists _ =
 
 let test_union_upper_bound _ =
   let assert_union_upper_bound map expected =
-    assert_equal ~cmp:Type.equal (Type.OrderedTypes.union_upper_bound map) expected
+    assert_equal
+      ~printer:Type.show
+      ~cmp:Type.equal
+      (Type.OrderedTypes.union_upper_bound map)
+      expected
   in
   assert_union_upper_bound
     (Concrete [Type.integer; Type.string; Type.bool])
@@ -5676,6 +5835,16 @@ let test_union_upper_bound _ =
           ~suffix:[Type.string]
           variadic))
     Type.object_primitive;
+  assert_union_upper_bound
+    (Type.OrderedTypes.create_unbounded_concatenation Type.integer)
+    Type.integer;
+  assert_union_upper_bound
+    (Concatenation
+       (Type.OrderedTypes.Concatenation.create_from_unbounded_element
+          ~prefix:[Type.integer]
+          ~suffix:[Type.bool]
+          Type.string))
+    (Type.union [Type.integer; Type.string; Type.bool]);
   ()
 
 
@@ -6276,6 +6445,9 @@ let () =
          "concatenation_from_unpack_expression" >:: test_concatenation_from_unpack_expression;
          "broadcast" >:: test_broadcast;
          "split_ordered_types" >:: test_split_ordered_types;
+         "coalesce_ordered_types" >:: test_coalesce_ordered_types;
+         "drop_prefix_ordered_type" >:: test_drop_prefix_ordered_type;
+         "index_ordered_type" >:: test_index_ordered_type;
          "zip_variables_with_parameters" >:: test_zip_variables_with_parameters;
          "zip_on_two_parameter_lists" >:: test_zip_on_two_parameter_lists;
          "union_upper_bound" >:: test_union_upper_bound;

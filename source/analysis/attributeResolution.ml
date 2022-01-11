@@ -1,5 +1,5 @@
 (*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -66,40 +66,104 @@ module Argument = struct
       kind: Ast.Expression.Call.Argument.kind;
       resolved: Type.t;
     }
+    [@@deriving compare, show]
   end
 end
 
-type argument =
-  | Argument of Argument.WithPosition.t
+type matched_argument =
+  | MatchedArgument of {
+      argument: Argument.WithPosition.t;
+      index_into_starred_tuple: int option;
+    }
   | Default
+[@@deriving compare, show]
+
+let make_matched_argument ?index_into_starred_tuple argument =
+  MatchedArgument { argument; index_into_starred_tuple }
+
 
 type ranks = {
   arity: int;
   annotation: int;
   position: int;
 }
+[@@deriving compare, show]
 
 type reasons = {
   arity: SignatureSelectionTypes.reason list;
   annotation: SignatureSelectionTypes.reason list;
 }
+[@@deriving compare, show]
+
+type extracted_ordered_type = {
+  ordered_type: Type.OrderedTypes.t;
+  argument: Argument.WithPosition.t;
+  item_type_for_error: Type.t;
+}
+
+let location_insensitive_compare_reasons
+    { arity = left_arity; annotation = left_annotation }
+    { arity = right_arity; annotation = right_annotation }
+  =
+  match
+    List.compare SignatureSelectionTypes.location_insensitive_compare_reason left_arity right_arity
+  with
+  | x when not (Int.equal x 0) -> x
+  | _ ->
+      List.compare
+        SignatureSelectionTypes.location_insensitive_compare_reason
+        left_annotation
+        right_annotation
+
 
 let empty_reasons = { arity = []; annotation = [] }
 
 module ParameterArgumentMapping = struct
   type t = {
-    parameter_argument_mapping: argument list Type.Callable.Parameter.Map.t;
+    parameter_argument_mapping: matched_argument list Type.Callable.Parameter.Map.t;
     reasons: reasons;
   }
+  [@@deriving compare]
+
+  let pp format { parameter_argument_mapping; reasons } =
+    Format.fprintf
+      format
+      "ParameterArgumentMapping { parameter_argument_mapping: %s; reasons: %a }"
+      ([%show: (Type.Callable.Parameter.parameter * matched_argument list) list]
+         (Map.to_alist parameter_argument_mapping))
+      pp_reasons
+      reasons
 end
 
 type signature_match = {
   callable: Type.Callable.t;
-  parameter_argument_mapping: argument list Type.Callable.Parameter.Map.t;
+  parameter_argument_mapping: matched_argument list Type.Callable.Parameter.Map.t;
   constraints_set: TypeConstraints.t list;
   ranks: ranks;
   reasons: reasons;
 }
+[@@deriving compare]
+
+let pp_signature_match
+    format
+    { callable; parameter_argument_mapping; constraints_set; ranks; reasons }
+  =
+  Format.fprintf
+    format
+    "{ callable = %a; parameter_argument_mapping = %s; constraints_set = %s; ranks = %a; reasons = \
+     %a }"
+    Type.Callable.pp
+    callable
+    ([%show: (Type.Callable.Parameter.parameter * matched_argument list) list]
+       (Map.to_alist parameter_argument_mapping))
+    ([%show: TypeConstraints.t list] constraints_set)
+    pp_ranks
+    ranks
+    pp_reasons
+    reasons
+
+
+let show_signature_match = Format.asprintf "%a" pp_signature_match
 
 let create_uninstantiated_method ?(accessed_via_metaclass = false) callable =
   { UninstantiatedAnnotation.accessed_via_metaclass; kind = Attribute (Callable callable) }
@@ -768,6 +832,14 @@ let callable_call_special_cases
 
 
 module SignatureSelection = struct
+  (** Return a mapping from each parameter to the arguments that may be assigned to it. Also include
+      any error reasons when there are too many or too few arguments.
+
+      Parameters such as `*args: int` and `**kwargs: str` may have any number of arguments assigned
+      to them.
+
+      Other parameters such as named parameters (`x: int`), positional-only, or keyword-only
+      parameters will have zero or one argument mapped to them. *)
   let get_parameter_argument_mapping ~all_parameters ~parameters ~self_argument arguments =
     let open Type.Callable in
     let all_arguments = arguments in
@@ -853,7 +925,9 @@ module SignatureSelection = struct
       | ( ({ kind = Named _; _ } as argument) :: arguments_tail,
           (Parameter.Keywords _ as parameter) :: _ ) ->
           (* Labeled argument, keywords parameter *)
-          let parameter_argument_mapping = update_mapping parameter (Argument argument) in
+          let parameter_argument_mapping =
+            update_mapping parameter (make_matched_argument argument)
+          in
           consume
             ~arguments:arguments_tail
             ~parameters
@@ -877,7 +951,7 @@ module SignatureSelection = struct
           let parameter_argument_mapping, reasons =
             match matching_parameter with
             | Some matching_parameter ->
-                update_mapping matching_parameter (Argument argument), reasons
+                update_mapping matching_parameter (make_matched_argument argument), reasons
             | None ->
                 ( parameter_argument_mapping,
                   { reasons with arity = UnexpectedKeyword name.value :: arity } )
@@ -891,7 +965,9 @@ module SignatureSelection = struct
       | ( ({ kind = SingleStar; _ } as argument) :: arguments_tail,
           (Parameter.Variable _ as parameter) :: _ ) ->
           (* (Double) starred argument, (double) starred parameter *)
-          let parameter_argument_mapping = update_mapping parameter (Argument argument) in
+          let parameter_argument_mapping =
+            update_mapping parameter (make_matched_argument argument)
+          in
           consume
             ~arguments:arguments_tail
             ~parameters
@@ -918,7 +994,9 @@ module SignatureSelection = struct
           (Parameter.Variable _ as parameter) :: _ ) ->
           (* Unlabeled argument, starred parameter *)
           let parameter_argument_mapping_with_reasons =
-            let parameter_argument_mapping = update_mapping parameter (Argument argument) in
+            let parameter_argument_mapping =
+              update_mapping parameter (make_matched_argument argument)
+            in
             { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
           in
           consume ~arguments:arguments_tail ~parameters parameter_argument_mapping_with_reasons
@@ -928,7 +1006,9 @@ module SignatureSelection = struct
       | ({ kind = DoubleStar; _ } as argument) :: _, parameter :: parameters_tail
       | ({ kind = SingleStar; _ } as argument) :: _, parameter :: parameters_tail ->
           (* Double starred or starred argument, parameter *)
-          let parameter_argument_mapping = update_mapping parameter (Argument argument) in
+          let parameter_argument_mapping =
+            update_mapping parameter (make_matched_argument argument)
+          in
           consume
             ~arguments
             ~parameters:parameters_tail
@@ -941,7 +1021,9 @@ module SignatureSelection = struct
           { parameter_argument_mapping_with_reasons with reasons }
       | ({ kind = Positional; _ } as argument) :: arguments_tail, parameter :: parameters_tail ->
           (* Unlabeled argument, parameter *)
-          let parameter_argument_mapping = update_mapping parameter (Argument argument) in
+          let parameter_argument_mapping =
+            update_mapping parameter (make_matched_argument argument)
+          in
           consume
             ~arguments:arguments_tail
             ~parameters:parameters_tail
@@ -954,6 +1036,8 @@ module SignatureSelection = struct
     |> consume ~arguments ~parameters
 
 
+  (** Check all arguments against the respective parameter types. Return a signature match
+      containing constraints from the above compatibility checks and any mismatch errors. *)
   let check_arguments_against_parameters
       ~order
       ~resolve_mutable_literals
@@ -992,26 +1076,30 @@ module SignatureSelection = struct
               _;
             },
           [
-            Argument
+            MatchedArgument
               {
-                expression =
-                  Some
-                    {
-                      value =
-                        Lambda
-                          {
-                            body = lambda_body;
-                            parameters =
-                              [
-                                {
-                                  value =
-                                    { name = lambda_parameter; value = None; annotation = None };
-                                  _;
-                                };
-                              ];
-                          };
-                      _;
-                    };
+                argument =
+                  {
+                    expression =
+                      Some
+                        {
+                          value =
+                            Lambda
+                              {
+                                body = lambda_body;
+                                parameters =
+                                  [
+                                    {
+                                      value =
+                                        { name = lambda_parameter; value = None; annotation = None };
+                                      _;
+                                    };
+                                  ];
+                              };
+                          _;
+                        };
+                    _;
+                  };
                 _;
               };
           ] )
@@ -1020,23 +1108,115 @@ module SignatureSelection = struct
           Some (annotation, parameter_variable, return_variable, lambda_parameter, lambda_body)
       | _ -> None
     in
-    let update ~key ~data ({ reasons = { arity; _ } as reasons; _ } as signature_match) =
+    let check_arguments_and_update_signature_match
+        ~parameter
+        ~arguments
+        ({ reasons = { arity; _ } as reasons; _ } as signature_match)
+      =
+      let check_argument_and_set_constraints_and_reasons
+          ~position
+          ~argument_location
+          ~name
+          ~argument_annotation
+          ~parameter_annotation
+          ({ constraints_set; reasons = { annotation; _ } as reasons; _ } as signature_match)
+        =
+        let reasons_with_mismatch =
+          let mismatch =
+            let location = name >>| Node.location |> Option.value ~default:argument_location in
+            {
+              actual = argument_annotation;
+              expected = parameter_annotation;
+              name = Option.map name ~f:Node.value;
+              position;
+            }
+            |> Node.create ~location
+            |> fun mismatch -> Mismatches [Mismatch mismatch]
+          in
+          { reasons with annotation = mismatch :: annotation }
+        in
+        let updated_constraints_set =
+          TypeOrder.OrderedConstraintsSet.add
+            constraints_set
+            ~new_constraint:
+              (LessOrEqual { left = argument_annotation; right = parameter_annotation })
+            ~order
+        in
+        if ConstraintsSet.potentially_satisfiable updated_constraints_set then
+          { signature_match with constraints_set = updated_constraints_set }
+        else
+          { signature_match with constraints_set; reasons = reasons_with_mismatch }
+      in
+      let extract_iterable_item_type ~synthetic_variable ~generic_iterable_type resolved =
+        let iterable_constraints =
+          if Type.is_unbound resolved then
+            ConstraintsSet.impossible
+          else
+            TypeOrder.OrderedConstraintsSet.add
+              ConstraintsSet.empty
+              ~new_constraint:(LessOrEqual { left = resolved; right = generic_iterable_type })
+              ~order
+        in
+        TypeOrder.OrderedConstraintsSet.solve iterable_constraints ~order
+        >>| fun solution ->
+        ConstraintsSet.Solution.instantiate_single_variable solution synthetic_variable
+        |> Option.value ~default:Type.Any
+      in
       let bind_arguments_to_variadic ~expected ~arguments =
         let extract_ordered_types arguments =
           let extracted, errors =
-            let arguments =
-              List.map arguments ~f:(function
-                  | Argument argument -> argument
-                  | Default -> failwith "Variable parameters do not have defaults")
-            in
-            let extract { Argument.WithPosition.kind; resolved; expression; _ } =
+            let extract
+                ( ({ Argument.WithPosition.kind; resolved; expression; _ } as argument),
+                  index_into_starred_tuple )
+              =
               match kind with
               | SingleStar -> (
-                  match resolved with
-                  | Type.Tuple ordered_types -> Either.First ordered_types
-                  (* We don't support unpacking unbounded tuples yet. *)
-                  | annotation -> Either.Second { expression; annotation })
-              | _ -> Either.First (Type.OrderedTypes.Concrete [resolved])
+                  match resolved, index_into_starred_tuple with
+                  | Type.Tuple ordered_type, Some index_into_starred_tuple ->
+                      Type.OrderedTypes.drop_prefix ~length:index_into_starred_tuple ordered_type
+                      >>| (fun ordered_type ->
+                            Either.First
+                              {
+                                ordered_type;
+                                argument;
+                                item_type_for_error =
+                                  Type.OrderedTypes.union_upper_bound ordered_type;
+                              })
+                      |> Option.value ~default:(Either.Second { expression; annotation = resolved })
+                  | Type.Tuple ordered_type, None ->
+                      Either.First
+                        {
+                          ordered_type;
+                          argument;
+                          item_type_for_error = Type.OrderedTypes.union_upper_bound ordered_type;
+                        }
+                  | _, _ -> (
+                      let synthetic_variable = Type.Variable.Unary.create "$_T" in
+                      let generic_iterable_type =
+                        Type.iterable (Type.Variable synthetic_variable)
+                      in
+                      match
+                        extract_iterable_item_type
+                          ~synthetic_variable
+                          ~generic_iterable_type
+                          resolved
+                      with
+                      | Some item_type ->
+                          Either.First
+                            {
+                              ordered_type =
+                                Type.OrderedTypes.create_unbounded_concatenation item_type;
+                              argument;
+                              item_type_for_error = item_type;
+                            }
+                      | _ -> Either.Second { expression; annotation = resolved }))
+              | _ ->
+                  Either.First
+                    {
+                      ordered_type = Type.OrderedTypes.Concrete [resolved];
+                      argument;
+                      item_type_for_error = resolved;
+                    }
             in
             List.rev arguments |> List.partition_map ~f:extract
           in
@@ -1046,31 +1226,23 @@ module SignatureSelection = struct
               Error
                 (Mismatches
                    [
-                     MismatchWithTupleVariadicTypeVariable
-                       { variable = expected; mismatch = NotBoundedTuple not_bounded_tuple };
+                     MismatchWithUnpackableType
+                       { variable = expected; mismatch = NotUnpackableType not_bounded_tuple };
                    ])
         in
         let concatenate extracted =
-          let concatenated =
-            match extracted with
-            | [] -> Some (Type.OrderedTypes.Concrete [])
-            | head :: tail ->
-                let concatenate sofar next =
-                  sofar >>= fun left -> Type.OrderedTypes.concatenate ~left ~right:next
-                in
-                List.fold tail ~f:concatenate ~init:(Some head)
-          in
-          match concatenated with
-          | Some concatenated -> Ok concatenated
+          let ordered_types = List.map extracted ~f:(fun { ordered_type; _ } -> ordered_type) in
+          match Type.OrderedTypes.coalesce_ordered_types ordered_types with
+          | Some concatenated -> Ok (concatenated, extracted)
           | None ->
               Error
                 (Mismatches
                    [
-                     MismatchWithTupleVariadicTypeVariable
-                       { variable = expected; mismatch = CannotConcatenate extracted };
+                     MismatchWithUnpackableType
+                       { variable = expected; mismatch = CannotConcatenate ordered_types };
                    ])
         in
-        let solve concatenated =
+        let solve (concatenated, extracted_ordered_types) =
           let updated_constraints_set =
             TypeOrder.OrderedConstraintsSet.add
               signature_match.constraints_set
@@ -1080,27 +1252,88 @@ module SignatureSelection = struct
           if ConstraintsSet.potentially_satisfiable updated_constraints_set then
             Ok updated_constraints_set
           else
-            Error
-              (Mismatches
-                 [
-                   MismatchWithTupleVariadicTypeVariable
-                     { variable = expected; mismatch = ConstraintFailure concatenated };
-                 ])
+            let expected_concatenation_type =
+              match expected with
+              | Concatenation concatenation -> Some concatenation
+              | _ -> None
+            in
+            match
+              expected_concatenation_type
+              >>= Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation
+            with
+            | Some expected_item_type ->
+                (* The expected type is `*args: *Tuple[X, ...]`. Raise an individual error for each
+                   argument that was passed. *)
+                let make_mismatch
+                    {
+                      argument = { Argument.WithPosition.position; expression; kind; _ };
+                      item_type_for_error;
+                      _;
+                    }
+                  =
+                  let name =
+                    match kind with
+                    | Named name -> Some name
+                    | _ -> None
+                  in
+                  let location =
+                    Option.first_some (name >>| Node.location) (expression >>| Node.location)
+                    |> Option.value ~default:Location.any
+                  in
+                  let is_mismatch =
+                    TypeOrder.OrderedConstraintsSet.add
+                      signature_match.constraints_set
+                      ~new_constraint:
+                        (LessOrEqual { left = item_type_for_error; right = expected_item_type })
+                      ~order
+                    |> ConstraintsSet.potentially_satisfiable
+                    |> not
+                  in
+                  {
+                    actual = item_type_for_error;
+                    expected = expected_item_type;
+                    name = name >>| Node.value;
+                    position;
+                  }
+                  |> Node.create ~location
+                  |> fun mismatch -> Mismatch mismatch |> Option.some_if is_mismatch
+                in
+                Error (Mismatches (List.filter_map extracted_ordered_types ~f:make_mismatch))
+            | None ->
+                (* The expected type is different from `*args: *Tuple[X, ...]`, such as `*Ts` or
+                   more complicated unbounded tuples. It may require a prefix or suffix of
+                   arguments. Since we cannot express that clearly by raising individual errors, we
+                   raise a combined error about the arguments. *)
+                Error
+                  (Mismatches
+                     [
+                       MismatchWithUnpackableType
+                         { variable = expected; mismatch = ConstraintFailure concatenated };
+                     ])
         in
         let make_signature_match = function
           | Ok constraints_set -> { signature_match with constraints_set }
           | Error error ->
               { signature_match with reasons = { reasons with arity = error :: arity } }
         in
+        let arguments =
+          List.map arguments ~f:(function
+              | MatchedArgument { argument; index_into_starred_tuple } ->
+                  argument, index_into_starred_tuple
+              | Default -> failwith "Variable parameters do not have defaults")
+        in
         let open Result in
         extract_ordered_types arguments >>= concatenate >>= solve |> make_signature_match
       in
-      match key, data with
+      match parameter, arguments with
       | Parameter.Variable (Concatenation concatenation), arguments ->
           bind_arguments_to_variadic
             ~expected:(Type.OrderedTypes.Concatenation concatenation)
             ~arguments
-      | Parameter.Variable _, []
+      | Parameter.Variable (Concrete parameter_annotation), arguments ->
+          bind_arguments_to_variadic
+            ~expected:(Type.OrderedTypes.create_unbounded_concatenation parameter_annotation)
+            ~arguments
       | Parameter.Keywords _, [] ->
           (* Parameter was not matched, but empty is acceptable for variable arguments and keyword
              arguments. *)
@@ -1117,63 +1350,32 @@ module SignatureSelection = struct
       | PositionalOnly { annotation = parameter_annotation; _ }, arguments
       | KeywordOnly { annotation = parameter_annotation; _ }, arguments
       | Named { annotation = parameter_annotation; _ }, arguments
-      | Variable (Concrete parameter_annotation), arguments
       | Keywords parameter_annotation, arguments -> (
-          let set_constraints_and_reasons
-              ~position
-              ~argument_location
-              ~name
-              ~argument_annotation
-              ({ constraints_set; reasons = { annotation; _ }; _ } as signature_match)
-            =
-            let reasons_with_mismatch =
-              let mismatch =
-                let location = name >>| Node.location |> Option.value ~default:argument_location in
-                {
-                  actual = argument_annotation;
-                  expected = parameter_annotation;
-                  name = Option.map name ~f:Node.value;
-                  position;
-                }
-                |> Node.create ~location
-                |> fun mismatch -> Mismatches [Mismatch mismatch]
-              in
-              { reasons with annotation = mismatch :: annotation }
-            in
-            let updated_constraints_set =
-              TypeOrder.OrderedConstraintsSet.add
-                constraints_set
-                ~new_constraint:
-                  (LessOrEqual { left = argument_annotation; right = parameter_annotation })
-                ~order
-            in
-            if ConstraintsSet.potentially_satisfiable updated_constraints_set then
-              { signature_match with constraints_set = updated_constraints_set }
-            else
-              { signature_match with constraints_set; reasons = reasons_with_mismatch }
-          in
-          let rec check signature_match = function
+          let rec check ~arguments signature_match =
+            match arguments with
             | [] -> signature_match
             | Default :: tail ->
                 (* Parameter default value was used. Assume it is correct. *)
-                check signature_match tail
-            | Argument { expression; position; kind; resolved } :: tail -> (
+                check signature_match ~arguments:tail
+            | MatchedArgument
+                { argument = { expression; position; kind; resolved }; index_into_starred_tuple }
+              :: tail -> (
                 let argument_location =
                   expression >>| Node.location |> Option.value ~default:Location.any
                 in
-                let set_constraints_and_reasons argument_annotation =
-                  let name =
-                    match kind with
-                    | Named name -> Some name
-                    | _ -> None
-                  in
-                  set_constraints_and_reasons
+                let name =
+                  match kind with
+                  | Named name -> Some name
+                  | _ -> None
+                in
+                let check_argument argument_annotation =
+                  check_argument_and_set_constraints_and_reasons
                     ~position
                     ~argument_location
                     ~argument_annotation
+                    ~parameter_annotation
                     ~name
                     signature_match
-                  |> fun signature_match -> check signature_match tail
                 in
                 let add_annotation_error
                     ({ reasons = { annotation; _ }; _ } as signature_match)
@@ -1184,46 +1386,66 @@ module SignatureSelection = struct
                     reasons = { reasons with annotation = error :: annotation };
                   }
                 in
-                let solution_based_extraction ~create_error ~synthetic_variable ~solve_against =
-                  let signature_with_error =
-                    { expression; annotation = resolved }
-                    |> Node.create ~location:argument_location
-                    |> create_error
-                    |> add_annotation_error signature_match
+                let update_signature_match_for_iterable ~create_error ~resolved iterable_item_type =
+                  let argument_location =
+                    expression >>| Node.location |> Option.value ~default:Location.any
                   in
-                  let iterable_constraints =
-                    if Type.is_unbound resolved then
-                      ConstraintsSet.impossible
-                    else
-                      TypeOrder.OrderedConstraintsSet.add
-                        ConstraintsSet.empty
-                        ~new_constraint:(LessOrEqual { left = resolved; right = solve_against })
-                        ~order
-                  in
-                  match TypeOrder.OrderedConstraintsSet.solve iterable_constraints ~order with
-                  | None -> signature_with_error
-                  | Some solution ->
-                      ConstraintsSet.Solution.instantiate_single_variable
-                        solution
-                        synthetic_variable
-                      |> Option.value ~default:Type.Any
-                      |> set_constraints_and_reasons
+                  match iterable_item_type with
+                  | Some iterable_item_type ->
+                      check_argument_and_set_constraints_and_reasons
+                        ~position
+                        ~argument_location
+                        ~argument_annotation:iterable_item_type
+                        ~parameter_annotation
+                        ~name
+                        signature_match
+                      |> check ~arguments:tail
+                  | None ->
+                      let argument_location =
+                        expression >>| Node.location |> Option.value ~default:Location.any
+                      in
+                      { expression; annotation = resolved }
+                      |> Node.create ~location:argument_location
+                      |> create_error
+                      |> add_annotation_error signature_match
                 in
                 match kind with
                 | DoubleStar ->
                     let create_error error = InvalidKeywordArgument error in
                     let synthetic_variable = Type.Variable.Unary.create "$_T" in
-                    let solve_against =
+                    let generic_iterable_type =
                       Type.parametric
                         "typing.Mapping"
                         [Single Type.string; Single (Type.Variable synthetic_variable)]
                     in
-                    solution_based_extraction ~create_error ~synthetic_variable ~solve_against
-                | SingleStar ->
-                    let create_error error = InvalidVariableArgument error in
-                    let synthetic_variable = Type.Variable.Unary.create "$_T" in
-                    let solve_against = Type.iterable (Type.Variable synthetic_variable) in
-                    solution_based_extraction ~create_error ~synthetic_variable ~solve_against
+                    extract_iterable_item_type ~synthetic_variable ~generic_iterable_type resolved
+                    |> update_signature_match_for_iterable ~create_error ~resolved
+                | SingleStar -> (
+                    let signature_match_for_single_element =
+                      match parameter, index_into_starred_tuple, resolved with
+                      | ( (PositionalOnly _ | Named _),
+                          Some index_into_starred_tuple,
+                          Type.Tuple ordered_type ) ->
+                          Type.OrderedTypes.index
+                            ~python_index:index_into_starred_tuple
+                            ordered_type
+                          >>| check_argument
+                          >>| check ~arguments:tail
+                      | _ -> None
+                    in
+                    match signature_match_for_single_element with
+                    | Some signature_match_for_single_element -> signature_match_for_single_element
+                    | None ->
+                        let create_error error = InvalidVariableArgument error in
+                        let synthetic_variable = Type.Variable.Unary.create "$_T" in
+                        let generic_iterable_type =
+                          Type.iterable (Type.Variable synthetic_variable)
+                        in
+                        extract_iterable_item_type
+                          ~synthetic_variable
+                          ~generic_iterable_type
+                          resolved
+                        |> update_signature_match_for_iterable ~create_error ~resolved)
                 | Named _
                 | Positional -> (
                     let argument_annotation, weakening_error =
@@ -1247,11 +1469,11 @@ module SignatureSelection = struct
                     in
                     match weakening_error with
                     | Some weakening_error -> add_annotation_error signature_match weakening_error
-                    | None -> argument_annotation |> set_constraints_and_reasons))
+                    | None -> argument_annotation |> check_argument |> check ~arguments:tail))
           in
-          match is_generic_lambda key arguments with
+          match is_generic_lambda parameter arguments with
           | Some _ -> signature_match (* Handle this later in `special_case_lambda_parameter` *)
-          | None -> List.rev arguments |> check signature_match)
+          | None -> check ~arguments:(List.rev arguments) signature_match)
     in
     let check_if_solution_exists
         ({ constraints_set; reasons = { annotation; _ } as reasons; callable; _ } as
@@ -1313,8 +1535,12 @@ module SignatureSelection = struct
     in
     let special_case_lambda_parameter ({ parameter_argument_mapping; _ } as signature_match) =
       (* Special case: `Callable[[ParamVar], ReturnVar]` with `lambda parameter: body` *)
-      let update ~key ~data ({ constraints_set; _ } as signature_match) =
-        match is_generic_lambda key data with
+      let check_lambda_argument_and_update_signature_match
+          ~parameter
+          ~arguments
+          ({ constraints_set; _ } as signature_match)
+        =
+        match is_generic_lambda parameter arguments with
         | None -> signature_match
         | Some (annotation, parameter_variable, _, lambda_parameter, lambda_body) -> (
             (* Infer the parameter type using existing constraints. *)
@@ -1366,7 +1592,11 @@ module SignatureSelection = struct
                 in
                 { signature_match with constraints_set = updated_constraints })
       in
-      Map.fold ~init:signature_match ~f:update parameter_argument_mapping
+      Map.fold
+        ~init:signature_match
+        ~f:(fun ~key ~data ->
+          check_lambda_argument_and_update_signature_match ~parameter:key ~arguments:data)
+        parameter_argument_mapping
     in
     let signature_match =
       {
@@ -1377,12 +1607,17 @@ module SignatureSelection = struct
         reasons;
       }
     in
-    Map.fold ~init:signature_match ~f:update parameter_argument_mapping
+    Map.fold
+      ~init:signature_match
+      ~f:(fun ~key ~data ->
+        check_arguments_and_update_signature_match ~parameter:key ~arguments:data)
+      parameter_argument_mapping
     |> special_case_dictionary_constructor
     |> special_case_lambda_parameter
     |> check_if_solution_exists
 
 
+  (** Check arguments against the given callable signature and returning possible signature matches. *)
   let rec check_arguments_against_signature
       ~order
       ~resolve_mutable_literals
@@ -1416,6 +1651,13 @@ module SignatureSelection = struct
     | Undefined -> [base_signature_match]
     | ParameterVariadicTypeVariable { head; variable }
       when Type.Variable.Variadic.Parameters.is_free variable -> (
+        (* Handle callables where an early parameter binds a ParamSpec and later parameters expect
+           the corresponding arguments.
+
+           For example, when a function like `def foo(f: Callable[P, R], *args: P.args, **kwargs:
+           P.kwargs) -> None` is called as `foo(add, 1, 2)`, first solve for the free variable `P`
+           using the callable argument `add` and then use the solution to get concrete types for
+           `P.args` and `P.kwargs`. *)
         let front, back =
           let is_labeled = function
             | { Argument.WithPosition.kind = Named _; _ } -> true
@@ -1472,6 +1714,9 @@ module SignatureSelection = struct
         | [] -> [head_signature]
         | nonempty -> nonempty)
     | ParameterVariadicTypeVariable { head; variable } -> (
+        (* The ParamSpec variable `P` is in scope, so the only valid arguments are `*args` and
+           `**kwargs` that have "type" `P.args` and `P.kwargs` respectively. If the ParamSpec has a
+           `head` prefix of parameters, check for any prefix arguments. *)
         let combines_into_variable ~positional_component ~keyword_component =
           Type.Variable.Variadic.Parameters.Components.combine
             { positional_component; keyword_component }
@@ -1499,34 +1744,8 @@ module SignatureSelection = struct
             ])
 
 
-  let calculate_rank ({ reasons = { arity; annotation; _ }; _ } as signature_match) =
-    let open SignatureSelectionTypes in
-    let arity_rank = List.length arity in
-    let positions, annotation_rank =
-      let count_unique (positions, count) = function
-        | Mismatches mismatches ->
-            let count_unique_mismatches (positions, count) mismatch =
-              match mismatch with
-              | Mismatch { Node.value = { position; _ }; _ } when not (Set.mem positions position)
-                ->
-                  Set.add positions position, count + 1
-              | Mismatch _ -> positions, count
-              | _ -> positions, count + 1
-            in
-            List.fold ~init:(positions, count) mismatches ~f:count_unique_mismatches
-        | _ -> positions, count + 1
-      in
-      List.fold ~init:(Int.Set.empty, 0) ~f:count_unique annotation
-    in
-    let position_rank =
-      Int.Set.min_elt positions >>| Int.neg |> Option.value ~default:Int.min_value
-    in
-    {
-      signature_match with
-      ranks = { arity = arity_rank; annotation = annotation_rank; position = position_rank };
-    }
-
-
+  (** Given a signature match for a callable, solve for any type variables and instantiate the
+      return annotation. *)
   let instantiate_return_annotation
       ?(skip_marking_escapees = false)
       ~order
@@ -1631,6 +1850,40 @@ module SignatureSelection = struct
     NotFound { closest_return_annotation = default_return_annotation; reason = None }
 
 
+  let calculate_rank ({ reasons = { arity; annotation; _ }; _ } as signature_match) =
+    let open SignatureSelectionTypes in
+    let arity_rank = List.length arity in
+    let positions, annotation_rank =
+      let count_unique (positions, count) = function
+        | Mismatches mismatches ->
+            let count_unique_mismatches (positions, count) mismatch =
+              match mismatch with
+              | Mismatch { Node.value = { position; _ }; _ } when not (Set.mem positions position)
+                ->
+                  Set.add positions position, count + 1
+              | Mismatch _ -> positions, count
+              | _ -> positions, count + 1
+            in
+            List.fold ~init:(positions, count) mismatches ~f:count_unique_mismatches
+        | _ -> positions, count + 1
+      in
+      List.fold ~init:(Int.Set.empty, 0) ~f:count_unique annotation
+    in
+    let position_rank =
+      Int.Set.min_elt positions >>| Int.neg |> Option.value ~default:Int.min_value
+    in
+    {
+      signature_match with
+      ranks = { arity = arity_rank; annotation = annotation_rank; position = position_rank };
+    }
+
+
+  (** Find the signature that is "closest" to what the user intended. Essentially, sort signatures
+      on the number of arity mismatches, number of annotation mismatches, and the earliest mismatch
+      position.
+
+      TODO(T109092235): Clean up the rank calculation to more clearly reflect that we want to do
+      `maximum_by (arity, annotation, position)`. *)
   let find_closest_signature signature_matches =
     let get_arity_rank { ranks = { arity; _ }; _ } = arity in
     let get_annotation_rank { ranks = { annotation; _ }; _ } = annotation in
@@ -3763,7 +4016,7 @@ class base class_metadata_environment dependency =
                     let arguments =
                       let resolve argument_index argument =
                         let expression, kind = Ast.Expression.Call.Argument.unpack argument in
-                        let make_argument resolved =
+                        let make_matched_argument resolved =
                           { Argument.kind; expression = Some expression; resolved }
                         in
                         let error = AnnotatedAttribute.CouldNotResolveArgument { argument_index } in
@@ -3772,7 +4025,7 @@ class base class_metadata_environment dependency =
                          Node.value = Expression.Expression.Constant Expression.Constant.NoneLiteral;
                          _;
                         } ->
-                            Ok (make_argument Type.NoneType)
+                            Ok (make_matched_argument Type.NoneType)
                         | { Node.value = Expression.Expression.Name name; _ } ->
                             Expression.name_to_reference name
                             >>| Reference.delocalize
@@ -3780,7 +4033,7 @@ class base class_metadata_environment dependency =
                                   (unannotated_global_environment class_metadata_environment)
                                   ?dependency
                             >>= resolver
-                            >>| make_argument
+                            >>| make_matched_argument
                             |> Result.of_option
                                  ~error:
                                    (AnnotatedAttribute.InvalidDecorator { index; reason = error })
@@ -3789,7 +4042,7 @@ class base class_metadata_environment dependency =
                             if Type.is_untyped resolved || Type.contains_unknown resolved then
                               make_error error
                             else
-                              Ok (make_argument resolved)
+                              Ok (make_matched_argument resolved)
                       in
                       List.mapi arguments ~f:resolve |> Result.all
                     in
