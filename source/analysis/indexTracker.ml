@@ -16,8 +16,6 @@ module IndexKey = struct
 
   let compare = compare
 
-  type out = t
-
   let from_string = Int.of_string
 end
 
@@ -51,8 +49,6 @@ module OrderIndexValue = struct
   let prefix = Prefix.make ()
 
   let description = "Order indices"
-
-  let unmarshall value = Marshal.from_string value 0
 end
 
 module OrderAnnotationValue = struct
@@ -61,9 +57,6 @@ module OrderAnnotationValue = struct
   let prefix = Prefix.make ()
 
   let description = "Order annotations"
-
-  (* Strings are not marshalled by shared memory *)
-  let unmarshall value = value
 end
 
 module OrderIndices = Memory.WithCache.Make (SharedMemoryKeys.StringKey) (OrderIndexValue)

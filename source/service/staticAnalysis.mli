@@ -10,10 +10,16 @@ open Ast
 open Statement
 open Interprocedural
 
+module Cache : sig
+  type t
+
+  val load : scheduler:Scheduler.t -> configuration:Configuration.Analysis.t -> enabled:bool -> t
+end
+
 val type_check
   :  scheduler:Scheduler.t ->
   configuration:Configuration.Analysis.t ->
-  use_cache:bool ->
+  cache:Cache.t ->
   TypeEnvironment.t
 
 val parse_and_save_decorators_to_skip : inline_decorators:bool -> Configuration.Analysis.t -> unit
@@ -26,7 +32,7 @@ val record_and_merge_call_graph
   DependencyGraph.callgraph
 
 type found_callable = {
-  callable: Target.callable_t;
+  callable: Target.t;
   define: Define.t Node.t;
   is_internal: bool;
 }
@@ -36,31 +42,41 @@ val regular_and_filtered_callables
   :  configuration:Configuration.Analysis.t ->
   resolution:GlobalResolution.t ->
   source:Source.t ->
-  found_callable list * Target.callable_t list
+  found_callable list * Target.t list
 
 (* The boolean indicated whether the callable is internal or not. *)
-type callable_with_dependency_information = Target.callable_t * bool
+type callable_with_dependency_information = Target.t * bool
 
 type initial_callables = {
   callables_with_dependency_information: callable_with_dependency_information list;
-  stubs: Target.callable_t list;
+  stubs: Target.t list;
   filtered_callables: Target.Set.t;
 }
 
 val fetch_initial_callables
   :  scheduler:Scheduler.t ->
   configuration:Configuration.Analysis.t ->
+  cache:Cache.t ->
   environment:TypeEnvironment.ReadOnly.t ->
   qualifiers:Reference.t list ->
-  use_cache:bool ->
   initial_callables
+
+val build_class_hierarchy_graph
+  :  scheduler:Scheduler.t ->
+  cache:Cache.t ->
+  environment:TypeEnvironment.ReadOnly.t ->
+  qualifiers:Reference.t list ->
+  ClassHierarchyGraph.t
+
+val build_class_intervals : ClassHierarchyGraph.t -> unit
 
 val analyze
   :  scheduler:Scheduler.t ->
   analysis:AnalysisKind.abstract ->
   static_analysis_configuration:Configuration.StaticAnalysis.t ->
+  cache:Cache.t ->
   filename_lookup:(Reference.t -> string option) ->
-  environment:TypeEnvironment.ReadOnly.t ->
+  environment:TypeEnvironment.t ->
   qualifiers:Reference.t list ->
   initial_callables:initial_callables ->
   initial_models:AnalysisResult.model_t Target.Map.t ->

@@ -30,6 +30,7 @@ open Hack_core
  *****************************************************************************)
 
 exception Worker_exited_abnormally of int * Unix.process_status
+exception Worker_exception of string * Printexc.raw_backtrace
 exception Worker_oomed
 exception Worker_busy
 exception Worker_killed
@@ -129,6 +130,11 @@ and 'a slave = {
 
 }
 
+module Response = struct
+  type 'a t =
+    | Success of { result: 'a; stats: Measure.record_data }
+    | Failure of { exn: string; backtrace: Printexc.raw_backtrace }
+end
 
 
 (*****************************************************************************
@@ -139,7 +145,12 @@ and 'a slave = {
 let slave_main ic oc =
   let start_user_time = ref 0.0 in
   let start_system_time = ref 0.0 in
-  let send_result data =
+  let send_response response =
+    let s = Marshal.to_string response [Marshal.Closures] in
+    Daemon.output_string oc s;
+    Daemon.flush oc
+  in
+  let send_result result =
     let tm = Unix.times () in
     let end_user_time = tm.Unix.tms_utime +. tm.Unix.tms_cutime in
     let end_system_time = tm.Unix.tms_stime +. tm.Unix.tms_cstime in
@@ -147,9 +158,8 @@ let slave_main ic oc =
     Measure.sample "worker_system_time" (end_system_time -. !start_system_time);
 
     let stats = Measure.serialize (Measure.pop_global ()) in
-    let s = Marshal.to_string (data,stats) [Marshal.Closures] in
-    Daemon.output_string oc s;
-    Daemon.flush oc in
+    send_response (Response.Success { result; stats })
+  in
   try
     Measure.push_global ();
     let Request do_process = Daemon.from_channel ic in
@@ -161,13 +171,13 @@ let slave_main ic oc =
   with
   | End_of_file ->
       exit 1
-  | SharedMem.Out_of_shared_memory ->
+  | SharedMemory.Out_of_shared_memory ->
       Exit_status.(exit Out_of_shared_memory)
-  | SharedMem.Hash_table_full ->
+  | SharedMemory.Hash_table_full ->
       Exit_status.(exit Hash_table_full)
-  | SharedMem.Heap_full ->
+  | SharedMemory.Heap_full ->
       Exit_status.(exit Heap_full)
-  | SharedMem.Sql_assertion_failure err_num ->
+  | SharedMemory.Sql_assertion_failure err_num ->
       let exit_code = match err_num with
         | 11 -> Exit_status.Sql_corrupt
         | 14 -> Exit_status.Sql_cantopen
@@ -175,15 +185,10 @@ let slave_main ic oc =
         | _ -> Exit_status.Sql_assertion_failure
       in
       Exit_status.exit exit_code
-  | e ->
-      let error_backtrace = Printexc.get_backtrace () in
-      let error_str = Printexc.to_string e in
-      Printf.printf "Exception: %s\n" error_str;
-      EventLogger.log_if_initialized (fun () ->
-          EventLogger.worker_exception error_str
-        );
-      Printf.printf "Potential backtrace:\n%s" error_backtrace;
-      exit 2
+  | exn ->
+      let backtrace = Printexc.get_raw_backtrace () in
+      send_response (Response.Failure { exn = Base.Exn.to_string exn; backtrace });
+      exit 0
 
 let win32_worker_main restore state (ic, oc) =
   restore state;
@@ -224,7 +229,7 @@ let unix_worker_main restore state (ic, oc) =
     assert false
   with End_of_file -> exit 0
 
-type 'a entry_state = 'a * Gc.control * SharedMem.handle
+type 'a entry_state = 'a * Gc.control * SharedMemory.handle
 type 'a entry = ('a entry_state, request, void) Daemon.entry
 
 let entry_counter = ref 0
@@ -232,7 +237,7 @@ let register_entry_point ~restore =
   incr entry_counter;
   let restore (st, gc_control, heap_handle) =
     restore st;
-    SharedMem.connect heap_handle;
+    SharedMemory.connect heap_handle;
     Gc.set gc_control in
   let name = Printf.sprintf "slave_%d" !entry_counter in
   Daemon.register_entry_point
@@ -264,13 +269,13 @@ let make_one spawn id =
  * the workload is wrapped in the call_wrapper. *)
 let make ~saved_state ~entry ~nbr_procs ~gc_control ~heap_handle =
   let spawn _log_fd =
-    Unix.clear_close_on_exec heap_handle.SharedMem.h_fd;
+    Unix.clear_close_on_exec heap_handle.SharedMemory.h_fd;
     let handle =
       Daemon.spawn
         (Daemon.null_fd (), Unix.stdout, Unix.stderr)
         entry
         (saved_state, gc_control, heap_handle) in
-    Unix.set_close_on_exec heap_handle.SharedMem.h_fd;
+    Unix.set_close_on_exec heap_handle.SharedMemory.h_fd;
     handle
   in
   let made_workers = ref [] in
@@ -297,13 +302,17 @@ let call w (type a) (type b) (f : a -> b) (x : a) : b handle =
   (* Prepare ourself to read answer from the slave. *)
   let result () : b =
     match Unix.waitpid [Unix.WNOHANG] slave_pid with
-    | 0, _ | _, Unix.WEXITED 0 ->
-        let res : b * Measure.record_data = Daemon.input_value inc in
-        if w.prespawned = None then Daemon.close h;
-        Measure.merge ~from:(Measure.deserialize (snd res)) ();
-        fst res
+    | 0, _ | _, Unix.WEXITED 0 -> (
+        let result : b Response.t = Daemon.input_value inc in
+        match result with
+        | Response.Success { result; stats } ->
+          if w.prespawned = None then Daemon.close h;
+          Measure.merge ~from:(Measure.deserialize stats) ();
+          result
+        | Response.Failure { exn; backtrace } ->
+          raise (Worker_exception (exn, backtrace)))
     | _, Unix.WEXITED i when i = Exit_status.(exit_code Out_of_shared_memory) ->
-        raise SharedMem.Out_of_shared_memory
+        raise SharedMemory.Out_of_shared_memory
     | _, exit_status ->
         raise (Worker_exited_abnormally (slave_pid, exit_status))
   in
@@ -413,3 +422,7 @@ let kill w =
     | None -> ()
     | Some handle -> Daemon.kill_and_wait handle
   end
+
+let exception_backtrace = function
+  | Worker_exception (_, backtrace) -> backtrace
+  | _ -> Printexc.get_raw_backtrace ()

@@ -14,14 +14,6 @@ JSON: str = "json"
 SARIF: str = "sarif"
 
 
-class IncrementalStyle(enum.Enum):
-    SHALLOW = "shallow"
-    FINE_GRAINED = "fine_grained"
-
-    def __str__(self) -> str:
-        return self.value
-
-
 class ProfileOutput(enum.Enum):
     TRACE_EVENT: str = "trace_event"
     COLD_START_PHASES: str = "cold_start_phases"
@@ -49,7 +41,6 @@ class CommandArguments:
     debug: bool = False
     sequential: bool = False
     strict: bool = False
-    additional_checks: List[str] = field(default_factory=list)
     show_error_traces: bool = False
     output: str = TEXT
     enable_profiling: bool = False
@@ -59,15 +50,12 @@ class CommandArguments:
     log_identifier: Optional[str] = None
     logger: Optional[str] = None
     targets: List[str] = field(default_factory=list)
-    use_buck_builder: Optional[bool] = None
-    use_buck_source_database: Optional[bool] = None
     source_directories: List[str] = field(default_factory=list)
     do_not_ignore_errors_in: List[str] = field(default_factory=list)
     buck_mode: Optional[str] = None
     no_saved_state: bool = False
     search_path: List[str] = field(default_factory=list)
     binary: Optional[str] = None
-    buck_builder_binary: Optional[str] = None
     exclude: List[str] = field(default_factory=list)
     typeshed: Optional[str] = None
     save_initial_state_to: Optional[str] = None
@@ -75,8 +63,6 @@ class CommandArguments:
     changed_files_path: Optional[str] = None
     saved_state_project: Optional[str] = None
     dot_pyre_directory: Optional[Path] = None
-    features: Optional[str] = None
-    use_command_v2: Optional[bool] = None
     isolation_prefix: Optional[str] = None
     python_version: Optional[str] = None
     shared_memory_heap_size: Optional[int] = None
@@ -84,6 +70,8 @@ class CommandArguments:
     shared_memory_hash_table_power: Optional[int] = None
     number_of_workers: Optional[int] = None
     enable_hover: Optional[bool] = None
+    enable_go_to_definition: Optional[bool] = None
+    use_buck2: Optional[bool] = None
 
 
 @dataclass(frozen=True)
@@ -159,7 +147,15 @@ class StatisticsArguments:
     filter_paths: List[str] = field(default_factory=list)
     log_identifier: Optional[str] = None
     log_results: bool = False
-    print_aggregates: bool = False
+    aggregate: bool = False
+    print_summary: bool = False
+
+
+@dataclass(frozen=True)
+class CoverageArguments:
+    working_directory: str
+    paths: List[str] = field(default_factory=list)
+    print_summary: bool = False
 
 
 @dataclass(frozen=True)

@@ -11,11 +11,12 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Optional, Dict, List, Union, Sequence, Set, IO, Iterator, Any
+from typing import Any, Dict, IO, Iterator, List, Optional, Sequence, Set, Union
 
 from typing_extensions import Protocol
 
 from .. import configuration as configuration_module, find_directories
+from ..configuration import search_path
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
@@ -43,14 +44,41 @@ class RemoteLogging:
 
 @dataclasses.dataclass(frozen=True)
 class SimpleSourcePath:
-    elements: Sequence[configuration_module.SearchPathElement] = dataclasses.field(
-        default_factory=list
-    )
+    elements: Sequence[search_path.Element] = dataclasses.field(default_factory=list)
 
     def serialize(self) -> Dict[str, object]:
         return {
             "kind": "simple",
             "paths": [element.command_line_argument() for element in self.elements],
+        }
+
+    def get_checked_directory_allowlist(self) -> Set[str]:
+        return {element.path() for element in self.elements}
+
+    def cleanup(self) -> None:
+        pass
+
+
+@dataclasses.dataclass(frozen=True)
+class WithUnwatchedDependencySourcePath:
+    change_indicator_root: Path
+    unwatched_dependency: configuration_module.UnwatchedDependency
+    elements: Sequence[search_path.Element] = dataclasses.field(default_factory=list)
+
+    def serialize(self) -> Dict[str, object]:
+        return {
+            "kind": "with_unwatched_dependency",
+            "paths": [element.command_line_argument() for element in self.elements],
+            "unwatched_dependency": {
+                "change_indicator": {
+                    "root": str(self.change_indicator_root),
+                    "relative": self.unwatched_dependency.change_indicator,
+                },
+                "files": {
+                    "root": self.unwatched_dependency.files.root,
+                    "checksum_path": self.unwatched_dependency.files.checksum_path,
+                },
+            },
         }
 
     def get_checked_directory_allowlist(self) -> Set[str]:
@@ -68,6 +96,7 @@ class BuckSourcePath:
     targets: Sequence[str] = dataclasses.field(default_factory=list)
     mode: Optional[str] = None
     isolation_prefix: Optional[str] = None
+    use_buck2: bool = False
 
     def serialize(self) -> Dict[str, object]:
         mode = self.mode
@@ -81,6 +110,7 @@ class BuckSourcePath:
                 if isolation_prefix is None
                 else {"isolation_prefix": isolation_prefix}
             ),
+            "use_buck2": self.use_buck2,
             "source_root": str(self.source_root),
             "artifact_root": str(self.artifact_root),
         }
@@ -92,7 +122,7 @@ class BuckSourcePath:
         shutil.rmtree(str(self.artifact_root), ignore_errors=True)
 
 
-SourcePath = Union[SimpleSourcePath, BuckSourcePath]
+SourcePath = Union[SimpleSourcePath, WithUnwatchedDependencySourcePath, BuckSourcePath]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -123,7 +153,7 @@ class BaseArguments:
         configuration_module.SharedMemory()
     )
     remote_logging: Optional[RemoteLogging] = None
-    search_paths: Sequence[configuration_module.SearchPathElement] = dataclasses.field(
+    search_paths: Sequence[search_path.Element] = dataclasses.field(
         default_factory=list
     )
 
@@ -191,30 +221,62 @@ def find_buck_root(
     )
 
 
+def find_buck2_root(
+    base: Path,
+    stop_search_after: Optional[int] = None,
+) -> Optional[Path]:
+    # Buck2 uses project root instead of cell root as its base directory.
+    # This is essentially what `buck2 root --kind project` does.
+    return find_directories.find_outermost_directory_containing_file(
+        base, ".buckconfig", stop_search_after
+    )
+
+
+def _get_global_or_local_root(
+    configuration: configuration_module.Configuration,
+) -> Path:
+    global_root = Path(configuration.project_root)
+    relative_local_root = configuration.relative_local_root
+    return (
+        (global_root / relative_local_root)
+        if relative_local_root is not None
+        else global_root
+    )
+
+
 def get_source_path(
     configuration: configuration_module.Configuration, artifact_root_name: str
 ) -> SourcePath:
     source_directories = configuration.source_directories
     targets = configuration.targets
+    buck_mode = configuration.buck_mode.get() if configuration.buck_mode else None
 
     if source_directories is not None and targets is None:
         elements: Sequence[
-            configuration_module.SearchPathElement
-        ] = configuration.get_source_directories()
+            search_path.Element
+        ] = configuration.expand_and_get_existent_source_directories()
         if len(elements) == 0:
             LOG.warning("Pyre did not find an existent source directory.")
-        return SimpleSourcePath(elements)
+
+        unwatched_dependency = configuration.get_existent_unwatched_dependency()
+        if unwatched_dependency is not None:
+            return WithUnwatchedDependencySourcePath(
+                change_indicator_root=_get_global_or_local_root(configuration),
+                unwatched_dependency=unwatched_dependency,
+                elements=elements,
+            )
+        else:
+            return SimpleSourcePath(elements)
 
     if targets is not None and source_directories is None:
         if len(targets) == 0:
             LOG.warning("Pyre did not find any targets to check.")
 
-        search_base = Path(configuration.project_root)
-        relative_local_root = configuration.relative_local_root
-        if relative_local_root is not None:
-            search_base = search_base / relative_local_root
-
-        source_root = find_buck_root(search_base)
+        use_buck2 = configuration.use_buck2
+        search_base = _get_global_or_local_root(configuration)
+        source_root = (
+            find_buck2_root(search_base) if use_buck2 else find_buck_root(search_base)
+        )
         if source_root is None:
             raise configuration_module.InvalidConfiguration(
                 "Cannot find a buck root for the specified targets. "
@@ -226,8 +288,9 @@ def get_source_path(
             artifact_root=configuration.dot_pyre_directory / artifact_root_name,
             checked_directory=search_base,
             targets=targets,
-            mode=configuration.buck_mode,
+            mode=buck_mode,
             isolation_prefix=configuration.isolation_prefix,
+            use_buck2=use_buck2,
         )
 
     if source_directories is not None and targets is not None:

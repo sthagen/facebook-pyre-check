@@ -7,13 +7,31 @@
 
 open Ast
 
-type incompatible_model_error_reason =
-  | UnexpectedPositionalOnlyParameter of string
-  | UnexpectedPositionalParameter of string
-  | UnexpectedNamedParameter of string
-  | UnexpectedStarredParameter
-  | UnexpectedDoubleStarredParameter
-[@@deriving sexp, compare]
+module IncompatibleModelError : sig
+  type reason =
+    | UnexpectedPositionalOnlyParameter of {
+        name: string;
+        position: int;
+        valid_positions: int list;
+      }
+    | UnexpectedNamedParameter of string
+    | UnexpectedStarredParameter
+    | UnexpectedDoubleStarredParameter
+    | InvalidNamedParameterPosition of {
+        name: string;
+        position: int;
+        valid_positions: int list;
+      }
+  [@@deriving sexp, compare]
+
+  type t = {
+    reason: reason;
+    overload: Type.t Type.Callable.overload option;
+  }
+  [@@deriving sexp, compare]
+
+  val strip_overload : t -> t
+end
 
 type kind =
   | ParseError
@@ -26,7 +44,7 @@ type kind =
   | IncompatibleModelError of {
       name: string;
       callable_type: Type.Callable.t;
-      reasons: incompatible_model_error_reason list;
+      errors: IncompatibleModelError.t list;
     }
   | ImportedFunctionModel of {
       name: Reference.t;

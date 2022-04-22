@@ -91,7 +91,7 @@ let handle_request ~properties ~state request =
     let origin =
       match exn with
       | Buck.Raw.BuckError _
-      | Buck.Builder.JsonError _
+      | Buck.Interface.JsonError _
       | Buck.Builder.LinkTreeConstructionError _ ->
           "buck"
       | Watchman.ConnectionError _
@@ -234,7 +234,7 @@ let initialize_server_state
     let error_table =
       let table = Ast.Reference.Table.create () in
       let add_error error =
-        let key = Analysis.AnalysisError.path error in
+        let key = Analysis.AnalysisError.module_reference error in
         Hashtbl.add_multi table ~key ~data:error
       in
       List.iter errors ~f:add_error;
@@ -404,7 +404,7 @@ let initialize_server_state
                 let open Lwt.Infix in
                 BuildSystem.Initializer.load build_system_initializer
                 >>= fun build_system ->
-                let loaded_state = ServerState.load ~build_system () in
+                let loaded_state = ServerState.load ~configuration ~build_system () in
                 Log.info "Processing recent updates not included in saved state...";
                 Statistics.event ~name:"saved state success" ();
                 Request.IncrementalUpdate (List.map changed_files ~f:PyrePath.absolute)
@@ -648,7 +648,7 @@ let start_server_and_wait ?event_channel ~configuration start_options =
                 "Cannot build the project: %s.\n%s"
                 description
                 (String.concat ~sep:"\n" (List.append reproduce_message additional_messages)) )
-        | Buck.Builder.JsonError message ->
+        | Buck.Interface.JsonError message ->
             ( ServerEvent.ErrorKind.Pyre,
               Format.sprintf
                 "Cannot build the project because Buck returns malformed JSON: %s"
@@ -658,6 +658,12 @@ let start_server_and_wait ?event_channel ~configuration start_options =
               Format.sprintf
                 "Cannot build the project because Pyre encounters a fatal error while constructing \
                  a link tree: %s"
+                message )
+        | ChecksumMap.LoadError message ->
+            ( ServerEvent.ErrorKind.Pyre,
+              Format.sprintf
+                "Cannot build the project because Pyre encounters a fatal error while loading \
+                 external wheel: %s"
                 message )
         | Watchman.ConnectionError message ->
             ServerEvent.ErrorKind.Watchman, Format.sprintf "Watchman connection error: %s" message

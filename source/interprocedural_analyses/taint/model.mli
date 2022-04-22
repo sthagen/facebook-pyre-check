@@ -85,7 +85,7 @@ val remove_obscureness : t -> t
 
 val remove_sinks : t -> t
 
-val add_obscure_sink : resolution:Resolution.t -> call_target:[< Target.t ] -> t -> t
+val add_obscure_sink : resolution:Resolution.t -> call_target:Target.t -> t -> t
 
 val join : t -> t -> t
 
@@ -105,5 +105,12 @@ module WithTarget : sig
   type nonrec t = {
     model: t;
     target: Target.t;
+  }
+end
+
+module WithCallTarget : sig
+  type nonrec t = {
+    model: t;
+    call_target: CallGraph.CallTarget.t;
   }
 end

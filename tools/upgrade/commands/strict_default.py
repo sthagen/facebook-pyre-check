@@ -10,15 +10,14 @@ from typing import Optional
 
 from ....client.find_directories import (
     CONFIGURATION_FILE,
-    LOCAL_CONFIGURATION_FILE,
     find_global_and_local_root,
+    LOCAL_CONFIGURATION_FILE,
 )
 from .. import UserError
 from ..configuration import Configuration
-from ..errors import Errors
-from ..filesystem import LocalMode, add_local_mode, path_exists
+from ..filesystem import LocalMode, path_exists
 from ..repository import Repository
-from .command import CommandArguments, ErrorSuppressingCommand
+from .command import CommandArguments, ErrorSource, ErrorSuppressingCommand
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -87,7 +86,7 @@ class StrictDefault(ErrorSuppressingCommand):
         parser.add_argument(
             "--fixme-threshold",
             type=int,
-            default=0,
+            default=None,
             help="Mark file as unsafe if fixme count exceeds threshold.",
         )
 
@@ -112,23 +111,11 @@ class StrictDefault(ErrorSuppressingCommand):
         LOG.info("Processing %s", configuration.get_directory())
         configuration.add_strict()
         configuration.write()
-        all_errors = configuration.get_errors()
 
-        # Early exit if adding strict did not result in new errors.
-        if len(all_errors) == 0:
-            self._commit_changes()
-            return
-
-        # Suppress new errors, or add local mode where threshold is exceeded.
-        for path, errors in all_errors.paths_to_errors.items():
-            errors = list(errors)
-            error_count = len(errors)
-            if error_count > self._fixme_threshold:
-                add_local_mode(path, LocalMode.UNSAFE)
-            else:
-                self._apply_suppressions(Errors(errors))
-
-        # Re-suppress and apply lint after changing local modes.
-        self._suppress_errors(configuration)
-
+        self._get_and_suppress_errors(
+            configuration,
+            error_source=ErrorSource.GENERATE,
+            fixme_threshold=self._fixme_threshold,
+            fixme_threshold_fallback_mode=LocalMode.UNSAFE,
+        )
         self._commit_changes()

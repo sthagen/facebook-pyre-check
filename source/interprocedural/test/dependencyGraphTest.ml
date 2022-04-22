@@ -49,7 +49,7 @@ let create_call_graph ?(update_environment_with = []) ~context source_text =
         errors
       |> failwith
   in
-  CallGraph.create_callgraph ~use_shared_memory:false ~environment ~source
+  CallGraph.create_callgraph ~store_shared_memory:false ~environment ~source
 
 
 let create_callable = function
@@ -444,7 +444,7 @@ let test_type_collection context =
         |}
     ~handle:"test1.py"
     ~expected:
-      [5, 1, "$local_0$a.foo.(...)", "test1.A.foo"; 5, 3, "$local_0$a.foo.(...)", "test1.B.foo"];
+      [4, 1, "$local_0$a.foo.(...)", "test1.A.foo"; 4, 3, "$local_0$a.foo.(...)", "test1.B.foo"];
   assert_type_collection
     {|
        class A:
@@ -460,7 +460,7 @@ let test_type_collection context =
            a = B().foo().foo()
     |}
     ~handle:"test2.py"
-    ~expected:[5, 0, "$local_0$a.foo.(...).foo.(...)", "test2.A.foo"]
+    ~expected:[4, 0, "$local_0$a.foo.(...).foo.(...)", "test2.A.foo"]
 
 
 let test_method_overrides context =
@@ -536,7 +536,7 @@ let test_strongly_connected_components context =
     let source, environment = setup ~context ~handle source in
     let partitions =
       let edges =
-        CallGraph.create_callgraph ~use_shared_memory:false ~environment ~source
+        CallGraph.create_callgraph ~store_shared_memory:false ~environment ~source
         |> DependencyGraph.from_callgraph
       in
       DependencyGraph.partition ~edges
@@ -659,8 +659,8 @@ let test_prune_callables _ =
     let callgraph =
       List.map callgraph ~f:(fun (key, values) ->
           ( Target.create_method (Reference.create key),
-            List.map values ~f:(fun value -> (create (Reference.create value) :> Target.t)) ))
-      |> Target.CallableMap.of_alist_exn
+            List.map values ~f:(fun value -> create (Reference.create value)) ))
+      |> Target.Map.of_alist_exn
     in
     let overrides =
       List.map overrides ~f:(fun (key, values) ->
@@ -682,7 +682,7 @@ let test_prune_callables _ =
     in
     assert_equal
       ~cmp:(List.equal Target.equal)
-      ~printer:(List.to_string ~f:Target.show)
+      ~printer:(List.to_string ~f:Target.show_pretty)
       (List.map expected_callables ~f:(fun callable ->
            Target.create_method (Reference.create callable)))
       actual_callables;
@@ -692,7 +692,11 @@ let test_prune_callables _ =
              Target.equal left_key right_key && List.equal Target.equal left_values right_values))
       ~printer:
         (List.to_string ~f:(fun (key, values) ->
-             Format.sprintf "%s: %s" (Target.show key) (List.to_string values ~f:Target.show)))
+             Format.asprintf
+               "%a: %s"
+               Target.pp_pretty
+               key
+               (List.to_string values ~f:Target.show_pretty)))
       (List.map expected_dependencies ~f:(fun (key, values) ->
            ( create (Reference.create key),
              List.map values ~f:(fun value -> create (Reference.create value)) )))

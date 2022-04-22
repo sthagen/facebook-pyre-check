@@ -4,7 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from builtins import _test_sink, _test_source
-from typing import Any, Dict, Generic, Iterable, Mapping, Optional, TypeVar, cast
+from typing import Any, cast, Dict, Generic, Iterable, Mapping, Optional, TypeVar, Union
 
 
 def dictionary_source():
@@ -64,6 +64,11 @@ def update_tainted_dictionary():
     tainted_dictionary.update({"a": _test_source()})
 
 
+def update_tainted_dictionary_sink(x):
+    tainted_dictionary.update({"a": x})
+    _test_sink(tainted_dictionary)
+
+
 def update_dictionary_indirectly(arg):
     tainted_dictionary.update(arg)
 
@@ -73,7 +78,80 @@ def indirect_flow_from_source_to_global_dictionary():
 
 
 def update_parameter(arg):
-    arg.update({"a": _test_source})
+    arg.update({"a": _test_source()})
+
+
+def dict_update_arg():
+    x = {"a": _test_source(), "b": "safe"}
+    x.update({"a": "safe"})
+    return x["a"]
+
+
+def dict_update_whole_dict():
+    x = {"a": _test_source(), "b": "safe"}
+    x.update({"a": "safe"})
+    return x
+
+
+def dict_update_sinks(x, y, z):
+    d = {"a": x, "b": y}
+    d.update({"a": "safe", "c": z})
+    _test_sink(d["a"])
+    _test_sink(d["b"])
+    _test_sink(d["c"])
+    return
+
+
+def dict_update_sinks_cycle(x):
+    # TODO(T111619575): Support cycle in update.
+    d = {"b": x}
+    d.update({"a": d["b"], "b": "safe"})
+    _test_sink(d["a"])
+
+
+def dict_update_cycle():
+    d = {"b": _test_source()}
+    d.update({"a": d["b"], "b": "safe"})
+    return d
+
+
+def dict_update_taint():
+    x = {"a": "safe", "b": "safe"}
+    x.update({"a": _test_source()})
+    return x
+
+
+def dict_update_multiple():
+    x = {
+        "a": _test_source(),
+        "b": "safe",
+        "c": _test_source(),
+        "d": "safe",
+        "e": _test_source(),
+    }
+    x.update(
+        {
+            "a": "safe",
+            "b": _test_source(),
+            "c": _test_source(),
+            "d": "safe",
+        }
+    )
+    return x
+
+
+def big_dict_update_arg():
+    x = {k: "safe" for k in range(100)}
+    x["a"] = _test_source()
+    x.update({"a": "safe"})
+    return x
+
+
+def dict_only_key_of_parameter_sink(x: Dict[str, Any]):
+    d = {}
+    d.update({"a": x["A"]})
+    _test_sink(d)
+    _test_sink(d["a"])
 
 
 def flow_through_keywords():
@@ -266,3 +344,45 @@ def test_items_backward_values(x, y):
 def test_with_issue_in_dict_items_comprehension():
     sources = {"k": _test_source()}
     return {k: v for k, v in sources.items()}
+
+
+def test_dict_sanitize_get(d: Dict):
+    _test_sink(d.get(_test_source()))
+
+
+def test_dict_sanitize_getitem(d: Dict):
+    _test_sink(d[_test_source()])
+
+
+def test_mapping_sanitize_get(d: Mapping):
+    _test_sink(d.get(_test_source()))
+
+
+def test_mapping_sanitize_getitem(d: Mapping):
+    _test_sink(d[_test_source()])
+
+
+def taint_dict_keys(request):
+    service_id = request.service_id
+    service_type = request.type_
+    oncall = request.oncall
+    kvs: Dict[str, Union[str, Optional[int]]] = {
+        "1": service_id,
+        "2": service_type.value,
+        "3": oncall,
+    }
+    _test_sink(
+        f"""
+            SELECT
+            {", ".join(kvs.keys())}
+            FROM
+            WHERE service_id = %s
+        """
+    )
+    return kvs
+
+
+def taint_dict_keys_false_positive():
+    request = _test_source()
+    # TODO(T116671305): Should not have an issue here
+    taint_dict_keys(request)

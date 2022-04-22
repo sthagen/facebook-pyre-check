@@ -6,18 +6,13 @@
 import dataclasses
 import os
 import sys
-import time
 from typing import Callable, Dict, Optional
 
 from pyre_extensions import ParameterSpecification
 from pyre_extensions.type_variable_operators import Concatenate
 from typing_extensions import Protocol
 
-from .. import (
-    configuration as configuration_module,
-    statistics_logger,
-    version,
-)
+from .. import configuration as configuration_module, statistics_logger, timer, version
 from . import commands
 
 TParams = ParameterSpecification("TParams")
@@ -78,7 +73,7 @@ def log_usage_with_additional_info(command_name: str) -> _DecoratorWithDynamicLo
             *args: TParams.args,
             **kwargs: TParams.kwargs
         ) -> commands.ExitCode:
-            start_time: float = time.time()
+            command_timer: timer.Timer = timer.Timer()
 
             def log_success(
                 exit_code: int, additional_logging: Dict[str, Optional[str]]
@@ -88,7 +83,7 @@ def log_usage_with_additional_info(command_name: str) -> _DecoratorWithDynamicLo
                     configuration=configuration,
                     integers={
                         "exit_code": exit_code,
-                        "runtime": int((time.time() - start_time) * 1000),
+                        "runtime": int(command_timer.stop_in_millisecond()),
                     },
                     normals={**auxiliary_info, **additional_logging},
                 )
@@ -101,7 +96,7 @@ def log_usage_with_additional_info(command_name: str) -> _DecoratorWithDynamicLo
                     configuration=configuration,
                     integers={
                         "exit_code": exit_code,
-                        "runtime": int((time.time() - start_time) * 1000),
+                        "runtime": int(command_timer.stop_in_millisecond()),
                     },
                     normals={
                         **auxiliary_info,

@@ -966,10 +966,450 @@ let test_match_args context =
   ()
 
 
+let test_dataclass_transform context =
+  let assert_equivalent_attributes = assert_equivalent_attributes ~context in
+  assert_equivalent_attributes
+    {|
+      @__dataclass_transform__
+      def mytransform():
+        ...
+
+      @mytransform
+      class Foo:
+        x: int
+    |}
+    [
+      {|
+        class Foo:
+          x: int
+          def __init__(self, x: int) -> None:
+            self.x = x
+          def __eq__(self, o: object) -> bool:
+            pass
+      |};
+    ];
+  assert_equivalent_attributes
+    {|
+      @__dataclass_transform__
+      def mytransform():
+        ...
+
+      @mytransform()
+      class Foo:
+        x: int
+    |}
+    [
+      {|
+        class Foo:
+          x: int
+          def __init__(self, x: int) -> None:
+            self.x = x
+          def __eq__(self, o: object) -> bool:
+            pass
+      |};
+    ];
+  assert_equivalent_attributes
+    {|
+      @__dataclass_transform__
+      def mytransform():
+        ...
+
+      @mytransform(eq=False)
+      class Foo:
+        x: int
+    |}
+    [
+      {|
+        class Foo:
+          x: int
+          def __init__(self, x: int) -> None:
+            self.x = x
+      |};
+    ];
+  assert_equivalent_attributes
+    {|
+      @__dataclass_transform__
+      def mytransform():
+        ...
+
+      @mytransform(order=True)
+      class Foo:
+        x: int
+    |}
+    [
+      {|
+        class Foo:
+          x: int
+          def __init__(self, x: int) -> None:
+            self.x = x
+          def __eq__(self, o: object) -> bool:
+            pass
+          def __lt__(self, o: object) -> bool:
+            pass
+          def __le__(self, o: object) -> bool:
+            pass
+          def __gt__(self, o: object) -> bool:
+            pass
+          def __ge__(self, o: object) -> bool:
+            pass
+      |};
+    ];
+  assert_equivalent_attributes
+    {|
+      @__dataclass_transform__
+      def mytransform():
+        ...
+
+      @mytransform(init=False)
+      class Foo:
+        x: int
+    |}
+    [
+      {|
+        class Foo:
+          x: int
+          def __eq__(self, o: object) -> bool:
+            pass
+      |};
+    ];
+  assert_equivalent_attributes
+    {|
+      @__dataclass_transform__(eq_default=False)
+      def mytransform():
+        ...
+
+      @mytransform()
+      class Foo:
+        x: int
+    |}
+    [
+      {|
+        class Foo:
+          x: int
+          def __init__(self, x: int) -> None:
+            self.x = x
+      |};
+    ];
+  assert_equivalent_attributes
+    {|
+      @__dataclass_transform__(eq_default=False)
+      def mytransform():
+        ...
+
+      @mytransform(eq=True)
+      class Foo:
+        x: int
+    |}
+    [
+      {|
+        class Foo:
+          x: int
+          def __init__(self, x: int) -> None:
+            self.x = x
+          def __eq__(self, o: object) -> bool:
+            pass
+      |};
+    ];
+  assert_equivalent_attributes
+    {|
+      @__dataclass_transform__(eq_default=False)
+      def mytransform():
+        ...
+
+      @mytransform(order=True)
+      class Foo:
+        x: int
+    |}
+    [
+      {|
+        class Foo:
+          x: int
+          def __init__(self, x: int) -> None:
+            self.x = x
+          def __lt__(self, o: object) -> bool:
+            pass
+          def __le__(self, o: object) -> bool:
+            pass
+          def __gt__(self, o: object) -> bool:
+            pass
+          def __ge__(self, o: object) -> bool:
+            pass
+      |};
+    ];
+  assert_equivalent_attributes
+    {|
+      @__dataclass_transform__(eq_default=False)
+      def mytransform():
+        ...
+
+      @mytransform(init=False)
+      class Foo:
+        x: int
+    |}
+    [{|
+        class Foo:
+          x: int
+      |}];
+  assert_equivalent_attributes
+    {|
+      @__dataclass_transform__(order_default=True)
+      def mytransform():
+        ...
+
+      @mytransform()
+      class Foo:
+        x: int
+    |}
+    [
+      {|
+        class Foo:
+          x: int
+          def __init__(self, x: int) -> None:
+            self.x = x
+          def __eq__(self, o: object) -> bool:
+            pass
+          def __lt__(self, o: object) -> bool:
+            pass
+          def __le__(self, o: object) -> bool:
+            pass
+          def __gt__(self, o: object) -> bool:
+            pass
+          def __ge__(self, o: object) -> bool:
+            pass
+      |};
+    ];
+  assert_equivalent_attributes
+    {|
+      @__dataclass_transform__(order_default=True)
+      def mytransform():
+        ...
+
+      @mytransform(eq=False)
+      class Foo:
+        x: int
+    |}
+    [
+      {|
+        class Foo:
+          x: int
+          def __init__(self, x: int) -> None:
+            self.x = x
+          def __lt__(self, o: object) -> bool:
+            pass
+          def __le__(self, o: object) -> bool:
+            pass
+          def __gt__(self, o: object) -> bool:
+            pass
+          def __ge__(self, o: object) -> bool:
+            pass
+      |};
+    ];
+  assert_equivalent_attributes
+    {|
+      @__dataclass_transform__(order_default=True)
+      def mytransform():
+        ...
+
+      @mytransform(order=False)
+      class Foo:
+        x: int
+    |}
+    [
+      {|
+        class Foo:
+          x: int
+          def __init__(self, x: int) -> None:
+            self.x = x
+          def __eq__(self, o: object) -> bool:
+            pass
+      |};
+    ];
+  assert_equivalent_attributes
+    {|
+      @__dataclass_transform__(order_default=True)
+      def mytransform():
+        ...
+
+      @mytransform(init=False)
+      class Foo:
+        x: int
+    |}
+    [
+      {|
+        class Foo:
+          x: int
+          def __eq__(self, o: object) -> bool:
+            pass
+          def __lt__(self, o: object) -> bool:
+            pass
+          def __le__(self, o: object) -> bool:
+            pass
+          def __gt__(self, o: object) -> bool:
+            pass
+          def __ge__(self, o: object) -> bool:
+            pass
+      |};
+    ];
+  assert_equivalent_attributes
+    {|
+      def myfield(
+        *,
+        default: Optional[Any] = ...,
+        default_factory: Optional[Callable[[], Any]] = ...,
+        factory: Optional[Callable[[], Any]] = ...,
+        init: bool = True,
+      ):
+        ...
+
+      @__dataclass_transform__(field_descriptors=(myfield,))
+      def mytransform():
+        ...
+
+      @mytransform
+      class Foo:
+        x1: int = myfield(init=False)
+        x2: int = myfield(init=True)
+        x3: int = myfield(init=True, default=1)
+        x4: int = myfield(init=True, default_factory=foo)
+        x5: int = myfield(init=True, factory=foo)
+    |}
+    [
+      {|
+        class Foo:
+          x1: int = myfield(init=False)
+          x2: int = myfield(init=True)
+          x3: int = myfield(init=True, default=1)
+          x4: int = myfield(init=True, default_factory=foo)
+          x5: int = myfield(init=True, factory=foo)
+          def __init__(self, x2: int, x3: int = 1, x4: int = foo(), x5: int = foo()) -> None:
+            self.x2 = x2
+            self.x3 = x3
+            self.x4 = x4
+            self.x5 = x5
+          def __eq__(self, o: object) -> bool:
+            pass
+      |};
+    ];
+  assert_equivalent_attributes
+    {|
+      @__dataclass_transform__
+      class Bar:
+        ...
+
+      class Foo(Bar):
+        x: int
+    |}
+    [
+      {|
+        class Foo:
+          x: int
+          def __init__(self, x: int) -> None:
+            self.x = x
+          def __eq__(self, o: object) -> bool:
+            pass
+      |};
+    ];
+  assert_equivalent_attributes
+    {|
+      @__dataclass_transform__
+      class Bar:
+        def __init_subclass__(
+            cls,
+            *,
+            init: bool = True,
+            frozen: bool = False,
+            eq: bool = True,
+            order: bool = False,
+        ) -> None:
+          pass
+
+      class Foo(Bar, eq=False, order=True):
+        x: int
+    |}
+    [
+      {|
+        class Foo:
+          x: int
+          def __init__(self, x: int) -> None:
+            self.x = x
+          def __lt__(self, o: object) -> bool:
+            pass
+          def __le__(self, o: object) -> bool:
+            pass
+          def __gt__(self, o: object) -> bool:
+            pass
+          def __ge__(self, o: object) -> bool:
+            pass
+      |};
+    ];
+  assert_equivalent_attributes
+    {|
+      @__dataclass_transform__(eq_default=False, order_default=True)
+      class Bar:
+        def __init_subclass__(
+            cls,
+            *,
+            init: bool = True,
+            frozen: bool = False,
+            eq: bool = False,
+            order: bool = True,
+        ) -> None:
+          pass
+
+      class Foo(Bar):
+        x: int
+    |}
+    [
+      {|
+        class Foo:
+          x: int
+          def __init__(self, x: int) -> None:
+            self.x = x
+          def __lt__(self, o: object) -> bool:
+            pass
+          def __le__(self, o: object) -> bool:
+            pass
+          def __gt__(self, o: object) -> bool:
+            pass
+          def __ge__(self, o: object) -> bool:
+            pass
+      |};
+    ];
+  assert_equivalent_attributes
+    {|
+      @__dataclass_transform__(eq_default=False, order_default=True)
+      class Bar:
+        def __init_subclass__(
+            cls,
+            *,
+            init: bool = True,
+            frozen: bool = False,
+            eq: bool = False,
+            order: bool = True,
+        ) -> None:
+          pass
+
+      class Foo(Bar, eq=True, order=False):
+        x: int
+    |}
+    [
+      {|
+        class Foo:
+          x: int
+          def __init__(self, x: int) -> None:
+            self.x = x
+          def __eq__(self, o: object) -> bool:
+            pass
+      |};
+    ];
+  ()
+
+
 let () =
   "dataClass"
   >::: [
          "transform_environment" >: test_case ~length:Long test_transform_environment;
          "match_args" >:: test_match_args;
+         "dataclass_transform" >:: test_dataclass_transform;
        ]
   |> Test.run

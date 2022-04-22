@@ -5,27 +5,18 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-type t =
-  | NamedSource of string
-  | NamedSink of string
-[@@deriving compare, eq]
-
-module Set : sig
-  include Stdlib.Set.S with type elt = t
-
-  val pp : Format.formatter -> t -> unit
-
-  val show : t -> string
-
-  val filter_sources : t -> t
-
-  val filter_sinks : t -> t
+module Source : sig
+  type t = Named of string [@@deriving compare, eq, hash, sexp, show]
 end
 
-val pp_kind
-  :  formatter:Format.formatter ->
-  pp_base:(Format.formatter -> 'a -> unit) ->
-  local:Set.t ->
-  global:Set.t ->
-  base:'a ->
-  unit
+module SourceSet : Data_structures.SerializableSet.S with type elt = Source.t
+
+module Sink : sig
+  type t = Named of string [@@deriving compare, eq, hash, sexp, show]
+end
+
+module SinkSet : Data_structures.SerializableSet.S with type elt = Sink.t
+
+type t =
+  | Source of Source.t
+  | Sink of Sink.t

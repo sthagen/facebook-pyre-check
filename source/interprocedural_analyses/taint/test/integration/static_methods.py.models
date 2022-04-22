@@ -60,7 +60,15 @@
     "features": [
       { "always-via": "special_source" },
       { "always-via": "special_sink" }
-    ]
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "static_methods.test",
+      "index": 0,
+      "parameter": "formal(source)"
+    },
+    "master_handle":
+      "static_methods.run_test:5002:0:Call|static_methods.test|0|formal(source):e6558cd7986087b61e1685d8bafe03e4"
   }
 }
 {
@@ -72,6 +80,8 @@
         "port": "formal(oops)",
         "taint": [
           {
+            "caller_interval": { "lower": 2, "upper": 3 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],

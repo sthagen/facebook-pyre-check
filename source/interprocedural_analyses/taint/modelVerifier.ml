@@ -45,7 +45,7 @@ let containing_source ~resolution reference =
   |> AstEnvironment.ReadOnly.get_processed_source ast_environment
 
 
-let class_definitions ~resolution reference =
+let class_summaries ~resolution reference =
   match ClassDefinitionsCache.get reference with
   | Some result -> result
   | None ->
@@ -85,7 +85,7 @@ let find_method_definitions ~resolution ?(predicate = fun _ -> true) name =
     | _ -> None
   in
   Reference.prefix name
-  >>= class_definitions ~resolution
+  >>= class_summaries ~resolution
   >>= List.hd
   >>| (fun definition -> definition.Node.value.Class.body)
   >>| List.filter_map ~f:get_matching_define
@@ -141,7 +141,7 @@ let resolve_global ~resolution name =
 
 
 type parameter_requirements = {
-  anonymous_parameters_count: int;
+  anonymous_parameters_positions: Int.Set.t;
   parameter_set: String.Set.t;
   has_star_parameter: bool;
   has_star_star_parameter: bool;
@@ -151,10 +151,11 @@ let create_parameters_requirements ~type_parameters =
   let get_parameters_requirements requirements type_parameter =
     let open Type.Callable.RecordParameter in
     match type_parameter with
-    | PositionalOnly _ ->
+    | PositionalOnly { index; _ } ->
         {
           requirements with
-          anonymous_parameters_count = requirements.anonymous_parameters_count + 1;
+          anonymous_parameters_positions =
+            Int.Set.add requirements.anonymous_parameters_positions index;
         }
     | Named { name; _ }
     | KeywordOnly { name; _ } ->
@@ -165,7 +166,7 @@ let create_parameters_requirements ~type_parameters =
   in
   let init =
     {
-      anonymous_parameters_count = 0;
+      anonymous_parameters_positions = Int.Set.empty;
       parameter_set = String.Set.empty;
       has_star_parameter = false;
       has_star_star_parameter = false;
@@ -187,41 +188,44 @@ let demangle_class_attribute name =
 
 let model_verification_error ~path ~location kind = { ModelVerificationError.kind; path; location }
 
-let model_compatible
-    ~path
-    ~location
-    ~callable_name
-    ~callable_type
-    ~type_parameters
-    ~normalized_model_parameters
-  =
-  let open Result in
-  let parameter_requirements = create_parameters_requirements ~type_parameters in
+let verify_model_syntax ~path ~location ~callable_name ~normalized_model_parameters =
+  (* Ensure that the parameter's default value is either not present or `...` to catch common errors
+     when declaring models. *)
+  let check_default_value (_, _, original) =
+    match Node.value original with
+    | { Parameter.value = None; _ }
+    | { Parameter.value = Some { Node.value = Expression.Constant Constant.Ellipsis; _ }; _ } ->
+        None
+    | { Parameter.value = Some expression; name; _ } ->
+        Some
+          (model_verification_error
+             ~path
+             ~location
+             (InvalidDefaultValue { callable_name = Reference.show callable_name; name; expression }))
+  in
+  List.find_map normalized_model_parameters ~f:check_default_value
+  |> function
+  | Some error -> Error error
+  | None -> Ok ()
+
+
+let verify_imported_model ~path ~location ~callable_name ~callable_annotation =
+  match callable_annotation with
+  | Some { Type.Callable.kind = Type.Callable.Named actual_name; _ }
+    when not (Reference.equal callable_name actual_name) ->
+      Error
+        (model_verification_error
+           ~path
+           ~location
+           (ImportedFunctionModel { name = callable_name; actual_name }))
+  | _ -> Ok ()
+
+
+let model_compatible_errors ~callable_overload ~normalized_model_parameters =
+  let open ModelVerificationError in
   (* Once a requirement has been satisfied, it is removed from requirement object. At the end, we
      check whether there remains unsatisfied requirements. *)
-  let validate_model_parameter errors_and_requirements (model_parameter, _, original) =
-    (* Ensure that the parameter's default value is either not present or `...` to catch common
-       errors when declaring models. *)
-    let errors_and_requirements =
-      match Node.value original with
-      | { Parameter.value = Some expression; name; _ } ->
-          if
-            not
-              ([%compare.equal: Expression.expression]
-                 (Node.value expression)
-                 (Expression.Constant Constant.Ellipsis))
-          then
-            Error
-              (model_verification_error
-                 ~path
-                 ~location
-                 (InvalidDefaultValue { callable_name; name; expression }))
-          else
-            errors_and_requirements
-      | _ -> errors_and_requirements
-    in
-    errors_and_requirements
-    >>| fun (errors, requirements) ->
+  let validate_model_parameter position (errors, requirements) (model_parameter, _, _) =
     match model_parameter with
     | AccessPath.Root.LocalResult
     | AccessPath.Root.Variable _ ->
@@ -229,24 +233,35 @@ let model_compatible
           ("LocalResult|Variable won't be generated by AccessPath.Root.normalize_parameters, "
           ^ "and they cannot be compared with type_parameters.")
     | AccessPath.Root.PositionalParameter { name; positional_only = true; _ } ->
-        let { anonymous_parameters_count; _ } = requirements in
-        if anonymous_parameters_count >= 1 then
-          errors, { requirements with anonymous_parameters_count = anonymous_parameters_count - 1 }
+        if Int.Set.mem requirements.anonymous_parameters_positions position then
+          errors, requirements
         else
-          ModelVerificationError.UnexpectedPositionalOnlyParameter name :: errors, requirements
-    | AccessPath.Root.PositionalParameter { name; _ }
+          ( IncompatibleModelError.UnexpectedPositionalOnlyParameter
+              {
+                name;
+                position;
+                valid_positions = Int.Set.elements requirements.anonymous_parameters_positions;
+              }
+            :: errors,
+            requirements )
+    | AccessPath.Root.PositionalParameter { name; positional_only = false; _ }
     | AccessPath.Root.NamedParameter { name } ->
         let name = Identifier.sanitized name in
         if String.is_prefix name ~prefix:"__" then (* It is an positional only parameter. *)
-          let { anonymous_parameters_count; has_star_parameter; _ } = requirements in
-          if anonymous_parameters_count >= 1 then
-            ( errors,
-              { requirements with anonymous_parameters_count = anonymous_parameters_count - 1 } )
-          else if has_star_parameter then
+          if Int.Set.mem requirements.anonymous_parameters_positions position then
+            errors, requirements
+          else if requirements.has_star_parameter then
             (* If all positional only parameter quota is used, it might be covered by a `*args` *)
             errors, requirements
           else
-            ModelVerificationError.UnexpectedPositionalOnlyParameter name :: errors, requirements
+            ( IncompatibleModelError.UnexpectedPositionalOnlyParameter
+                {
+                  name;
+                  position;
+                  valid_positions = Int.Set.elements requirements.anonymous_parameters_positions;
+                }
+              :: errors,
+              requirements )
         else
           let { parameter_set; has_star_parameter; has_star_star_parameter; _ } = requirements in
           (* Consume an required or optional named parameter. *)
@@ -261,59 +276,74 @@ let model_compatible
             | PositionalParameter _ -> errors, requirements
             | _ -> UnexpectedNamedParameter name :: errors, requirements
           else
-            ModelVerificationError.UnexpectedNamedParameter name :: errors, requirements
+            IncompatibleModelError.UnexpectedNamedParameter name :: errors, requirements
     | AccessPath.Root.StarParameter _ ->
         if requirements.has_star_parameter then
           errors, requirements
         else
-          ModelVerificationError.UnexpectedStarredParameter :: errors, requirements
+          IncompatibleModelError.UnexpectedStarredParameter :: errors, requirements
     | AccessPath.Root.StarStarParameter _ ->
         if requirements.has_star_star_parameter then
           errors, requirements
         else
-          ModelVerificationError.UnexpectedDoubleStarredParameter :: errors, requirements
+          IncompatibleModelError.UnexpectedDoubleStarredParameter :: errors, requirements
   in
-  let errors_and_requirements =
-    List.fold_left
-      normalized_model_parameters
-      ~f:validate_model_parameter
-      ~init:(Result.Ok ([], parameter_requirements))
-  in
-  errors_and_requirements
-  >>= fun (errors, _) ->
-  if List.is_empty errors then
-    Result.Ok ()
-  else
-    Result.Error
-      (model_verification_error
-         ~path
-         ~location
-         (IncompatibleModelError { name = callable_name; callable_type; reasons = errors }))
+  match callable_overload with
+  | { Type.Callable.parameters = Type.Callable.Defined type_parameters; _ } ->
+      let parameter_requirements = create_parameters_requirements ~type_parameters in
+      let errors, _ =
+        List.foldi
+          normalized_model_parameters
+          ~f:validate_model_parameter
+          ~init:([], parameter_requirements)
+      in
+      List.map
+        ~f:(fun reason -> { IncompatibleModelError.reason; overload = Some callable_overload })
+        errors
+  | _ -> []
 
 
-let verify_signature ~path ~location ~normalized_model_parameters ~name callable_annotation =
+let verify_signature
+    ~path
+    ~location
+    ~normalized_model_parameters
+    ~name:callable_name
+    callable_annotation
+  =
+  let open Result in
+  verify_model_syntax ~path ~location ~callable_name ~normalized_model_parameters
+  >>= fun () ->
+  verify_imported_model ~path ~location ~callable_name ~callable_annotation
+  >>= fun () ->
   match callable_annotation with
-  | Some
-      ({
-         Type.Callable.implementation =
-           { Type.Callable.parameters = Type.Callable.Defined implementation_parameters; _ };
-         kind;
-         overloads = [];
-         _;
-       } as callable) -> (
-      match kind with
-      | Type.Callable.Named actual_name when not (Reference.equal name actual_name) ->
-          Error
-            (model_verification_error ~path ~location (ImportedFunctionModel { name; actual_name }))
-      | _ ->
-          model_compatible
-            ~path
-            ~location
-            ~callable_name:(Reference.show name)
-            ~callable_type:callable
-            ~type_parameters:implementation_parameters
-            ~normalized_model_parameters)
-  | _ -> Result.Ok ()
+  | Some ({ Type.Callable.implementation; overloads; _ } as callable) ->
+      let errors =
+        model_compatible_errors ~callable_overload:implementation ~normalized_model_parameters
+      in
+      let errors =
+        if (not (List.is_empty errors)) && not (List.is_empty overloads) then
+          (* We might be refering to a parameter defined in an overload. *)
+          let errors_in_overloads =
+            List.map overloads ~f:(fun callable_overload ->
+                model_compatible_errors ~callable_overload ~normalized_model_parameters)
+          in
+          if List.find ~f:List.is_empty errors_in_overloads |> Option.is_some then
+            []
+          else
+            errors @ List.concat errors_in_overloads
+        else
+          List.map ~f:ModelVerificationError.IncompatibleModelError.strip_overload errors
+      in
+      if not (List.is_empty errors) then
+        Error
+          (model_verification_error
+             ~path
+             ~location
+             (IncompatibleModelError
+                { name = Reference.show callable_name; callable_type = callable; errors }))
+      else
+        Ok ()
+  | _ -> Ok ()
 
 
 let verify_global ~path ~location ~resolution ~name =
@@ -343,7 +373,7 @@ let verify_global ~path ~location ~resolution ~name =
         Reference.prefix name
         >>| Reference.show
         >>| (fun class_name -> Type.Primitive class_name)
-        >>= GlobalResolution.class_definition global_resolution
+        >>= GlobalResolution.class_summary global_resolution
         >>| Node.value
       in
       match class_summary, global with
@@ -357,9 +387,9 @@ let verify_global ~path ~location ~resolution ~name =
             Identifier.SerializableMap.mem attribute_name attributes
             || Identifier.SerializableMap.mem attribute_name constructor_attributes
           then
-            Result.Ok ()
+            Ok ()
           else
-            Result.Error
+            Error
               (model_verification_error
                  ~path
                  ~location
@@ -371,13 +401,13 @@ let verify_global ~path ~location ~resolution ~name =
           let module_resolved = resolve_global ~resolution (Reference.create module_name) in
           match module_resolved with
           | Some _ ->
-              Result.Error
+              Error
                 (model_verification_error
                    ~path
                    ~location
                    (MissingSymbol { module_name; symbol_name = Reference.show name }))
           | None ->
-              Result.Error
+              Error
                 (model_verification_error
                    ~path
                    ~location

@@ -5,75 +5,6 @@
     "callable": "overrides.testB",
     "callable_line": 109,
     "code": 5002,
-    "line": 111,
-    "start": 14,
-    "end": 15,
-    "filename": "overrides.py",
-    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
-    "traces": [
-      {
-        "name": "forward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "features": [ { "always-via": "special_source" } ],
-                "leaves": [ { "name": "_test_source" } ],
-                "length": 1,
-                "kind": "Test"
-              }
-            ],
-            "call": {
-              "position": {
-                "filename": "overrides.py",
-                "line": 110,
-                "start": 8,
-                "end": 19
-              },
-              "resolves_to": [ "overrides.B.methodB", "overrides.D.methodB" ],
-              "port": "result"
-            }
-          }
-        ]
-      },
-      {
-        "name": "backward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink" } ],
-                "length": 1,
-                "kind": "Test"
-              }
-            ],
-            "call": {
-              "position": {
-                "filename": "overrides.py",
-                "line": 111,
-                "start": 14,
-                "end": 15
-              },
-              "resolves_to": [ "overrides.D.methodA" ],
-              "port": "formal(arg)"
-            }
-          }
-        ]
-      }
-    ],
-    "features": [
-      { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ]
-  }
-}
-{
-  "kind": "issue",
-  "data": {
-    "callable": "overrides.testB",
-    "callable_line": 109,
-    "code": 5002,
     "line": 112,
     "start": 20,
     "end": 21,
@@ -84,6 +15,8 @@
         "name": "forward",
         "roots": [
           {
+            "receiver_interval": { "lower": 5, "upper": 12 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_source" } ],
@@ -134,16 +67,24 @@
     "features": [
       { "always-via": "special_source" },
       { "always-via": "special_sink" }
-    ]
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "overrides.B.classMethod",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "overrides.testB:5002:0:Call|overrides.B.classMethod|0|formal(arg):42ef7d7a7344b2f9d5f1045e588277d3"
   }
 }
 {
   "kind": "issue",
   "data": {
-    "callable": "overrides.testBase",
-    "callable_line": 77,
+    "callable": "overrides.testB",
+    "callable_line": 109,
     "code": 5002,
-    "line": 79,
+    "line": 111,
     "start": 14,
     "end": 15,
     "filename": "overrides.py",
@@ -153,6 +94,8 @@
         "name": "forward",
         "roots": [
           {
+            "receiver_interval": { "lower": 5, "upper": 12 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_source" } ],
@@ -164,7 +107,7 @@
             "call": {
               "position": {
                 "filename": "overrides.py",
-                "line": 78,
+                "line": 110,
                 "start": 8,
                 "end": 19
               },
@@ -178,6 +121,8 @@
         "name": "backward",
         "roots": [
           {
+            "receiver_interval": { "lower": 5, "upper": 12 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -189,11 +134,11 @@
             "call": {
               "position": {
                 "filename": "overrides.py",
-                "line": 79,
+                "line": 111,
                 "start": 14,
                 "end": 15
               },
-              "resolves_to": [ "overrides.A.methodA", "overrides.D.methodA" ],
+              "resolves_to": [ "overrides.D.methodA" ],
               "port": "formal(arg)"
             }
           }
@@ -203,7 +148,15 @@
     "features": [
       { "always-via": "special_source" },
       { "always-via": "special_sink" }
-    ]
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "overrides.C.methodA",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "overrides.testB:5002:0:Call|overrides.C.methodA|0|formal(arg):11ff9fd3d2c724202b6ea0cd0be5f2fb"
   }
 }
 {
@@ -222,6 +175,8 @@
         "name": "forward",
         "roots": [
           {
+            "receiver_interval": { "lower": 2, "upper": 13 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_source" } ],
@@ -272,7 +227,96 @@
     "features": [
       { "always-via": "special_source" },
       { "always-via": "special_sink" }
-    ]
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "overrides.Base.classMethod",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "overrides.testBase:5002:0:Call|overrides.Base.classMethod|0|formal(arg):6304845a214712032ec8b09f3d1a2f41"
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "overrides.testBase",
+    "callable_line": 77,
+    "code": 5002,
+    "line": 79,
+    "start": 14,
+    "end": 15,
+    "filename": "overrides.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "receiver_interval": { "lower": 2, "upper": 13 },
+            "is_self_call": false,
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "length": 1,
+                "kind": "Test"
+              }
+            ],
+            "call": {
+              "position": {
+                "filename": "overrides.py",
+                "line": 78,
+                "start": 8,
+                "end": 19
+              },
+              "resolves_to": [ "overrides.B.methodB", "overrides.D.methodB" ],
+              "port": "result"
+            }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "receiver_interval": { "lower": 2, "upper": 13 },
+            "is_self_call": false,
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "length": 1,
+                "kind": "Test"
+              }
+            ],
+            "call": {
+              "position": {
+                "filename": "overrides.py",
+                "line": 79,
+                "start": 14,
+                "end": 15
+              },
+              "resolves_to": [ "overrides.A.methodA", "overrides.D.methodA" ],
+              "port": "formal(arg)"
+            }
+          }
+        ]
+      }
+    ],
+    "features": [
+      { "always-via": "special_source" },
+      { "always-via": "special_sink" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "overrides.Base.methodA",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "overrides.testBase:5002:0:Call|overrides.Base.methodA|0|formal(arg):d582808863ca13f526636f4be61b3798"
   }
 }
 {
@@ -291,6 +335,8 @@
         "name": "forward",
         "roots": [
           {
+            "receiver_interval": { "lower": 6, "upper": 11 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_source" } ],
@@ -311,6 +357,8 @@
             }
           },
           {
+            "receiver_interval": { "lower": 6, "upper": 11 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_source" } ],
@@ -336,6 +384,8 @@
         "name": "backward",
         "roots": [
           {
+            "receiver_interval": { "lower": 6, "upper": 11 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -361,7 +411,15 @@
     "features": [
       { "always-via": "special_source" },
       { "always-via": "special_sink" }
-    ]
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "overrides.C.methodA",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "overrides.testC:5002:0:Call|overrides.C.methodA|0|formal(arg):00a5a4693306bd5bdaf6271b2eb334c9"
   }
 }
 {
@@ -380,6 +438,8 @@
         "name": "forward",
         "roots": [
           {
+            "receiver_interval": { "lower": 7, "upper": 10 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_source" } ],
@@ -405,6 +465,8 @@
         "name": "backward",
         "roots": [
           {
+            "receiver_interval": { "lower": 7, "upper": 10 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -430,7 +492,15 @@
     "features": [
       { "always-via": "special_source" },
       { "always-via": "special_sink" }
-    ]
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "overrides.D.methodA",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "overrides.testD:5002:0:Call|overrides.D.methodA|0|formal(arg):8b6e6664ece15ea2f6a4cfa900d281ea"
   }
 }
 {
@@ -449,6 +519,8 @@
         "name": "forward",
         "roots": [
           {
+            "receiver_interval": { "lower": 5, "upper": 12 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_source" } ],
@@ -499,7 +571,15 @@
     "features": [
       { "always-via": "special_source" },
       { "always-via": "special_sink" }
-    ]
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "overrides.B.classMethod",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "overrides.testStaticB:5002:0:Call|overrides.B.classMethod|0|formal(arg):f2a01ecb9eb94ec06558f106bda300c4"
   }
 }
 {
@@ -573,6 +653,8 @@
         "port": "formal(arg)",
         "taint": [
           {
+            "caller_interval": { "lower": 3, "upper": 4 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -635,6 +717,8 @@
         "port": "formal(arg)",
         "taint": [
           {
+            "caller_interval": { "lower": 5, "upper": 12 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -663,6 +747,8 @@
         "port": "result",
         "taint": [
           {
+            "caller_interval": { "lower": 5, "upper": 12 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_source" } ],
@@ -719,6 +805,8 @@
         "port": "formal(arg)",
         "taint": [
           {
+            "caller_interval": { "lower": 5, "upper": 12 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -747,6 +835,8 @@
         "port": "formal(arg)",
         "taint": [
           {
+            "caller_interval": { "lower": 3, "upper": 10 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -786,6 +876,8 @@
         "port": "result",
         "taint": [
           {
+            "caller_interval": { "lower": 5, "upper": 12 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_source" } ],
@@ -848,6 +940,8 @@
         "port": "formal(arg)",
         "taint": [
           {
+            "caller_interval": { "lower": 7, "upper": 10 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -921,6 +1015,8 @@
         "port": "formal(arg)",
         "taint": [
           {
+            "caller_interval": { "lower": 7, "upper": 10 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -960,6 +1056,8 @@
         "port": "result",
         "taint": [
           {
+            "caller_interval": { "lower": 7, "upper": 10 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_source" } ],
@@ -1041,6 +1139,8 @@
         "port": "formal(arg)",
         "taint": [
           {
+            "caller_interval": { "lower": 3, "upper": 4 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -1105,6 +1205,8 @@
         "port": "formal(arg)",
         "taint": [
           {
+            "caller_interval": { "lower": 5, "upper": 12 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -1133,6 +1235,8 @@
         "port": "result",
         "taint": [
           {
+            "caller_interval": { "lower": 5, "upper": 12 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_source" } ],
@@ -1259,6 +1363,8 @@
         "port": "formal(arg)",
         "taint": [
           {
+            "caller_interval": { "lower": 7, "upper": 10 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -1287,6 +1393,8 @@
         "port": "result",
         "taint": [
           {
+            "caller_interval": { "lower": 7, "upper": 10 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_source" } ],
@@ -1315,6 +1423,8 @@
         "port": "formal(arg)",
         "taint": [
           {
+            "caller_interval": { "lower": 15, "upper": 16 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],

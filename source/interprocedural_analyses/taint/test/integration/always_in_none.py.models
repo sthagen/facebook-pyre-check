@@ -80,6 +80,8 @@
         "name": "forward",
         "roots": [
           {
+            "receiver_interval": { "lower": 2, "upper": 3 },
+            "is_self_call": false,
             "kinds": [
               {
                 "leaves": [
@@ -99,6 +101,8 @@
             }
           },
           {
+            "receiver_interval": { "lower": 2, "upper": 3 },
+            "is_self_call": false,
             "kinds": [
               {
                 "leaves": [
@@ -140,6 +144,14 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "always_in_none.test:5002:0:Call|_test_sink|0|formal(arg):1168c6477767d16ce96c21f36d6fcbba"
   }
 }

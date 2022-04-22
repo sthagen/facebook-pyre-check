@@ -14,7 +14,7 @@ module T = struct
     kind: string;
     label: string;
   }
-  [@@deriving compare, show]
+  [@@deriving compare, hash, sexp, show]
 
   type t =
     | Attach
@@ -31,12 +31,12 @@ module T = struct
     (* Special marker to designate modifying the state the parameter passed in. *)
     | Transform of {
         (* Invariant: concatenation of local @ global is non-empty. *)
-        sanitize_local: SanitizeTransform.Set.t;
-        sanitize_global: SanitizeTransform.Set.t;
+        local: TaintTransforms.t;
+        global: TaintTransforms.t;
         (* Invariant: not a transform. *)
         base: t;
       }
-  [@@deriving compare]
+  [@@deriving compare, hash, sexp]
 
   let rec pp formatter = function
     | Attach -> Format.fprintf formatter "Attach"
@@ -48,13 +48,8 @@ module T = struct
     | ParametricSink { sink_name; subkind } -> Format.fprintf formatter "%s[%s]" sink_name subkind
     | ParameterUpdate index -> Format.fprintf formatter "ParameterUpdate%d" index
     | AddFeatureToArgument -> Format.fprintf formatter "AddFeatureToArgument"
-    | Transform { sanitize_local; sanitize_global; base } ->
-        SanitizeTransform.pp_kind
-          ~formatter
-          ~pp_base:pp
-          ~local:sanitize_local
-          ~global:sanitize_global
-          ~base
+    | Transform { local; global; base } ->
+        TaintTransforms.pp_kind ~formatter ~pp_base:pp ~local ~global ~base
 
 
   let equal = [%compare.equal: t]
@@ -70,13 +65,9 @@ let ignore_kind_at_call = function
 
 
 let apply_call = function
-  | Transform { sanitize_local; sanitize_global; base } ->
+  | Transform { local; global; base } ->
       Transform
-        {
-          sanitize_local = SanitizeTransform.Set.empty;
-          sanitize_global = SanitizeTransform.Set.union sanitize_local sanitize_global;
-          base;
-        }
+        { local = TaintTransforms.empty; global = TaintTransforms.merge ~local ~global; base }
   | sink -> sink
 
 
@@ -93,10 +84,25 @@ module Set = struct
 
   let to_sanitize_transforms_exn set =
     let to_transform = function
-      | NamedSink name -> SanitizeTransform.NamedSink name
+      | NamedSink name -> SanitizeTransform.Sink.Named name
       | sink -> Format.asprintf "cannot sanitize the sink `%a`" T.pp sink |> failwith
     in
-    set |> elements |> List.map ~f:to_transform |> SanitizeTransform.Set.of_list
+    set |> elements |> List.map ~f:to_transform |> SanitizeTransform.SinkSet.of_list
+
+
+  let is_singleton set =
+    (* The only way to implement this in O(1) is with `for_all` or `exists`. *)
+    (not (is_empty set))
+    &&
+    let count = ref 0 in
+    for_all
+      (fun _ ->
+        incr count;
+        !count = 1)
+      set
+
+
+  let as_singleton set = if is_singleton set then Some (choose set) else None
 end
 
 module Map = struct
@@ -131,24 +137,26 @@ let discard_transforms = function
   | sink -> sink
 
 
-let discard_sanitize_transforms =
-  (* For now, we only have sanitize taint transforms. *)
-  discard_transforms
+let discard_sanitize_transforms = function
+  | Transform { base; local; global } ->
+      let local = TaintTransforms.discard_sanitize_transforms local in
+      let global = TaintTransforms.discard_sanitize_transforms global in
+      if TaintTransforms.is_empty local && TaintTransforms.is_empty global then
+        base
+      else
+        Transform { base; local; global }
+  | sink -> sink
 
 
 let extract_sanitized_sinks_from_transforms transforms =
-  let extract transform sinks =
-    match transform with
-    | SanitizeTransform.NamedSink name -> Set.add (NamedSink name) sinks
-    | _ -> sinks
-  in
-  SanitizeTransform.Set.fold extract transforms Set.empty
+  let extract (SanitizeTransform.Sink.Named name) sinks = Set.add (NamedSink name) sinks in
+  SanitizeTransform.SinkSet.fold extract transforms Set.empty
 
 
 let extract_sanitize_transforms = function
-  | Transform { sanitize_local; sanitize_global; _ } ->
-      SanitizeTransform.Set.union sanitize_local sanitize_global
-  | _ -> SanitizeTransform.Set.empty
+  | Transform { local; global; _ } ->
+      TaintTransforms.merge ~local ~global |> TaintTransforms.get_sanitize_transforms
+  | _ -> SanitizeTransformSet.empty
 
 
 let rec extract_partial_sink = function
@@ -157,32 +165,109 @@ let rec extract_partial_sink = function
   | _ -> None
 
 
+let rec base_as_sanitizer = function
+  | NamedSink name
+  | ParametricSink { sink_name = name; _ } ->
+      Some (SanitizeTransform.Sink (SanitizeTransform.Sink.Named name))
+  | Transform { base; _ } -> base_as_sanitizer base
+  | Attach
+  | AddFeatureToArgument
+  | PartialSink _
+  | TriggeredPartialSink _
+  | LocalReturn
+  | ParameterUpdate _ ->
+      None
+
+
+(* We should only apply sink sanitizers on tito. *)
+let should_preserve_sanitize_sinks = function
+  | LocalReturn
+  | Transform { base = LocalReturn; _ } ->
+      true
+  | _ -> false
+
+
 let apply_sanitize_transforms transforms sink =
   match sink with
   | Attach
   | AddFeatureToArgument ->
-      sink
+      Some sink
   | PartialSink _
   | TriggeredPartialSink _
   | LocalReturn
   | NamedSink _
   | ParametricSink _
-  | ParameterUpdate _ ->
-      Transform
-        { sanitize_local = transforms; sanitize_global = SanitizeTransform.Set.empty; base = sink }
-  | Transform { sanitize_local; sanitize_global; base } ->
-      let transforms = SanitizeTransform.Set.diff transforms sanitize_global in
-      Transform
-        {
-          sanitize_local = SanitizeTransform.Set.union sanitize_local transforms;
-          sanitize_global;
-          base;
-        }
+  | ParameterUpdate _ -> (
+      match
+        TaintTransforms.of_sanitize_transforms
+          ~preserve_sanitize_sources:true
+          ~preserve_sanitize_sinks:(should_preserve_sanitize_sinks sink)
+          ~base:(base_as_sanitizer sink)
+          transforms
+      with
+      | None -> None
+      | Some local when TaintTransforms.is_empty local -> Some sink
+      | Some local -> Some (Transform { local; global = TaintTransforms.empty; base = sink }))
+  | Transform { local; global; base } -> (
+      match
+        TaintTransforms.add_sanitize_transforms
+          ~preserve_sanitize_sources:true
+          ~preserve_sanitize_sinks:(should_preserve_sanitize_sinks sink)
+          ~base:(base_as_sanitizer base)
+          ~local
+          ~global
+          transforms
+      with
+      | None -> None
+      | Some local -> Some (Transform { local; global; base }))
 
 
-let apply_sanitize_sink_transforms transforms sink =
+let apply_transforms transforms order sink =
   match sink with
+  | Attach
+  | AddFeatureToArgument ->
+      Some sink
+  | PartialSink _
+  | TriggeredPartialSink _
   | LocalReturn
-  | Transform { base = LocalReturn; _ } ->
-      apply_sanitize_transforms transforms sink
-  | _ -> sink
+  | NamedSink _
+  | ParametricSink _
+  | ParameterUpdate _ -> (
+      match
+        TaintTransforms.add_transforms
+          ~preserve_sanitize_sources:true
+          ~preserve_sanitize_sinks:(should_preserve_sanitize_sinks sink)
+          ~base:(base_as_sanitizer sink)
+          ~local:TaintTransforms.empty
+          ~global:TaintTransforms.empty
+          ~order:TaintTransforms.Order.Backward
+          ~to_add:transforms
+          ~to_add_order:order
+      with
+      | None -> None
+      | Some local when TaintTransforms.is_empty local -> Some sink
+      | Some local -> Some (Transform { local; global = TaintTransforms.empty; base = sink }))
+  | Transform { local; global; base } -> (
+      match
+        TaintTransforms.add_transforms
+          ~preserve_sanitize_sources:true
+          ~preserve_sanitize_sinks:(should_preserve_sanitize_sinks base)
+          ~base:(base_as_sanitizer base)
+          ~local
+          ~global
+          ~order:TaintTransforms.Order.Backward
+          ~to_add:transforms
+          ~to_add_order:order
+      with
+      | None -> None
+      | Some local -> Some (Transform { local; global; base }))
+
+
+let get_named_transforms = function
+  | Transform { local; global; _ } ->
+      TaintTransforms.merge ~local ~global |> TaintTransforms.get_named_transforms
+  | _ -> []
+
+
+let contains_sanitize_transforms sink sanitize_transforms =
+  SanitizeTransformSet.subset sanitize_transforms (extract_sanitize_transforms sink)

@@ -45,7 +45,10 @@ module CallInfo = struct
 
   type t =
     (* User-specified taint on a model. *)
-    | Declaration of { leaf_name_provided: bool }
+    | Declaration of {
+        (* If not provided, the leaf name set is set as the callee when taint is propagated. *)
+        leaf_name_provided: bool;
+      }
     (* Leaf taint at the callsite of a tainted model, i.e the start or end of the trace. *)
     | Origin of Location.WithModule.t
     (* Taint propagated from a call. *)
@@ -65,9 +68,7 @@ module CallInfo = struct
         Format.fprintf
           formatter
           "CallSite(callees=[%s], location=%a, port=%s)"
-          (String.concat
-             ~sep:", "
-             (List.map ~f:Interprocedural.Target.external_target_name callees))
+          (String.concat ~sep:", " (List.map ~f:Interprocedural.Target.external_name callees))
           Location.WithModule.pp
           location
           port
@@ -82,7 +83,7 @@ module CallInfo = struct
       (fun
         (_ : AccessPath.Root.t)
         (_ : Abstract.TreeDomain.Label.path)
-        (_ : Interprocedural.Target.non_override_t)
+        (_ : Interprocedural.Target.t)
       -> true)
 
 
@@ -94,7 +95,7 @@ module CallInfo = struct
           Interprocedural.DependencyGraph.expand_callees callees
           |> List.filter ~f:(!has_significant_summary port path)
         in
-        CallSite { location; callees = (callees :> Interprocedural.Target.t list); port; path }
+        CallSite { location; callees; port; path }
     | _ -> trace
 
 
@@ -107,8 +108,7 @@ module CallInfo = struct
     | CallSite { location; callees; port; path } ->
         let callee_json =
           callees
-          |> List.map ~f:(fun callable ->
-                 `String (Interprocedural.Target.external_target_name callable))
+          |> List.map ~f:(fun callable -> `String (Interprocedural.Target.external_name callable))
         in
         let location_json = location_with_module_to_json ~filename_lookup location in
         let port_json = AccessPath.create port path |> AccessPath.to_json in
@@ -166,6 +166,159 @@ module TraceLength = Abstract.SimpleDomain.Make (struct
   let show length = if Int.equal length max_int then "<bottom>" else string_of_int length
 end)
 
+(* This should be associated with every call site *)
+module CallInfoIntervals = struct
+  type call_info_intervals = {
+    (* The interval of the class that literally contains this call site *)
+    caller_interval: Interprocedural.ClassInterval.t;
+    (* The interval of the receiver object for this call site *)
+    receiver_interval: Interprocedural.ClassInterval.t;
+    (* Whether this call site is a call on `self` *)
+    is_self_call: bool;
+  }
+
+  (* If we are not sure if a call is on `self`, then we should treat it as a call not on `self`,
+     such that SAPP will not intersect class intervals. *)
+  let top =
+    {
+      caller_interval = Interprocedural.ClassInterval.top;
+      receiver_interval = Interprocedural.ClassInterval.top;
+      is_self_call = false;
+    }
+
+
+  let is_top { caller_interval; receiver_interval; is_self_call } =
+    Interprocedural.ClassInterval.is_top caller_interval
+    && Interprocedural.ClassInterval.is_top receiver_interval
+    && is_self_call == false
+
+
+  let to_json { caller_interval; receiver_interval; is_self_call } =
+    let list = ["is_self_call", `Bool is_self_call] in
+    let list =
+      if Interprocedural.ClassInterval.is_top receiver_interval then
+        list
+      else (* Output for SAPP to use *)
+        ( "receiver_interval",
+          `Assoc
+            [
+              "lower", `Int (Interprocedural.ClassInterval.lower_bound_exn receiver_interval);
+              "upper", `Int (Interprocedural.ClassInterval.upper_bound_exn receiver_interval);
+            ] )
+        :: list
+    in
+    let list =
+      if
+        Interprocedural.ClassInterval.is_empty caller_interval
+        || Interprocedural.ClassInterval.is_top caller_interval
+      then
+        list
+      else (* Output for debug purposes *)
+        ( "caller_interval",
+          `Assoc
+            [
+              "lower", `Int (Interprocedural.ClassInterval.lower_bound_exn caller_interval);
+              "upper", `Int (Interprocedural.ClassInterval.upper_bound_exn caller_interval);
+            ] )
+        :: list
+    in
+    list
+
+
+  include Abstract.SimpleDomain.Make (struct
+    let name = "intervals at call sites"
+
+    type t = call_info_intervals
+
+    let bottom =
+      {
+        caller_interval = Interprocedural.ClassInterval.bottom;
+        receiver_interval = Interprocedural.ClassInterval.bottom;
+        is_self_call = true;
+      }
+
+
+    let pp formatter { caller_interval; receiver_interval; is_self_call } =
+      Format.fprintf
+        formatter
+        "@[caller_interval: [%a] receiver_interval: [%a] is_self_call: [%b]@]"
+        Interprocedural.ClassInterval.pp_interval
+        caller_interval
+        Interprocedural.ClassInterval.pp_interval
+        receiver_interval
+        is_self_call
+
+
+    let show = Format.asprintf "%a" pp
+
+    let less_or_equal
+        ~left:
+          {
+            caller_interval = caller_interval_left;
+            receiver_interval = receiver_interval_left;
+            is_self_call = is_self_call_left;
+          }
+        ~right:
+          {
+            caller_interval = caller_interval_right;
+            receiver_interval = receiver_interval_right;
+            is_self_call = is_self_call_right;
+          }
+      =
+      Interprocedural.ClassInterval.less_or_equal
+        ~left:caller_interval_left
+        ~right:caller_interval_right
+      && Interprocedural.ClassInterval.less_or_equal
+           ~left:receiver_interval_left
+           ~right:receiver_interval_right
+      && not ((not is_self_call_left) && is_self_call_right)
+
+
+    let join
+        {
+          caller_interval = caller_interval_left;
+          receiver_interval = receiver_interval_left;
+          is_self_call = is_self_call_left;
+        }
+        {
+          caller_interval = caller_interval_right;
+          receiver_interval = receiver_interval_right;
+          is_self_call = is_self_call_right;
+        }
+      =
+      {
+        caller_interval =
+          Interprocedural.ClassInterval.join caller_interval_left caller_interval_right;
+        receiver_interval =
+          Interprocedural.ClassInterval.join receiver_interval_left receiver_interval_right;
+        (* The result of joining two calls is a call on `self` iff. both calls are on `self`. *)
+        is_self_call = is_self_call_left && is_self_call_right;
+      }
+
+
+    let meet
+        {
+          caller_interval = caller_interval_left;
+          receiver_interval = receiver_interval_left;
+          is_self_call = is_self_call_left;
+        }
+        {
+          caller_interval = caller_interval_right;
+          receiver_interval = receiver_interval_right;
+          is_self_call = is_self_call_right;
+        }
+      =
+      {
+        caller_interval =
+          Interprocedural.ClassInterval.meet caller_interval_left caller_interval_right;
+        receiver_interval =
+          Interprocedural.ClassInterval.meet receiver_interval_left receiver_interval_right;
+        (* The result of meeting two calls is a call on `self` iff. one of the calls is on `self`. *)
+        is_self_call = is_self_call_left || is_self_call_right;
+      }
+  end)
+end
+
 (* Represents a frame, i.e a single hop between functions. *)
 module Frame = struct
   module Slots = struct
@@ -218,6 +371,10 @@ module Frame = struct
 
   let add_propagated_breadcrumb breadcrumb =
     transform Features.BreadcrumbSet.Element Add ~f:breadcrumb
+
+
+  let add_propagated_breadcrumbs breadcrumbs =
+    transform Features.BreadcrumbSet.Self Add ~f:breadcrumbs
 
 
   let product_pp = pp (* shadow *)
@@ -279,18 +436,22 @@ module type TAINT_DOMAIN = sig
 
   val sanitize : kind_set -> t -> t
 
-  val apply_sanitize_transforms : SanitizeTransform.Set.t -> t -> t
+  val apply_sanitize_transforms : SanitizeTransformSet.t -> t -> t
 
-  (* Apply sanitize transforms only to the special `LocalReturn` sink. *)
-  val apply_sanitize_sink_transforms : SanitizeTransform.Set.t -> t -> t
+  val apply_transforms : TaintTransforms.t -> TaintTransforms.Order.t -> t -> t
 
   (* Add trace info at call-site *)
   val apply_call
-    :  Location.WithModule.t ->
-    callees:Interprocedural.Target.t list ->
+    :  resolution:Analysis.Resolution.t ->
+    location:Location.WithModule.t ->
+    callee:Interprocedural.Target.t option ->
+    arguments:Ast.Expression.Call.Argument.t list ->
     port:AccessPath.Root.t ->
     path:Abstract.TreeDomain.Label.path ->
     element:t ->
+    is_self_call:bool ->
+    caller_class_interval:Interprocedural.ClassInterval.t ->
+    receiver_class_interval:Interprocedural.ClassInterval.t ->
     t
 
   (* Return the taint with only essential elements. *)
@@ -317,13 +478,19 @@ module type KIND_ARG = sig
 
   val discard_subkind : t -> t
 
-  val discard_transforms : t -> t
+  val discard_sanitize_transforms : t -> t
 
-  val apply_sanitize_transforms : SanitizeTransform.Set.t -> t -> t
+  val apply_sanitize_transforms : SanitizeTransformSet.t -> t -> t option
 
-  val apply_sanitize_sink_transforms : SanitizeTransform.Set.t -> t -> t
+  val apply_transforms : TaintTransforms.t -> TaintTransforms.Order.t -> t -> t option
 
-  module Set : Stdlib.Set.S with type elt = t
+  module Set : sig
+    include Stdlib.Set.S with type elt = t
+
+    val pp : Format.formatter -> t -> unit
+
+    val show : t -> string
+  end
 end
 
 (* Represents a map from a taint kind (`Sources.t` or `Sinks.t`) to a frame. *)
@@ -352,9 +519,10 @@ module MakeLocalTaint (Kind : KIND_ARG) = struct
       | Breadcrumb : Features.BreadcrumbSet.t slot
       | FirstIndex : Features.FirstIndexSet.t slot
       | FirstField : Features.FirstFieldSet.t slot
+      | CallInfoIntervals : CallInfoIntervals.t slot
 
     (* Must be consistent with above variants *)
-    let slots = 5
+    let slots = 6
 
     let slot_name (type a) (slot : a slot) =
       match slot with
@@ -363,6 +531,7 @@ module MakeLocalTaint (Kind : KIND_ARG) = struct
       | Breadcrumb -> "Breadcrumb"
       | FirstIndex -> "FirstIndex"
       | FirstField -> "FirstField"
+      | CallInfoIntervals -> "CallInfoIntervals"
 
 
     let slot_domain (type a) (slot : a slot) =
@@ -372,11 +541,14 @@ module MakeLocalTaint (Kind : KIND_ARG) = struct
       | Breadcrumb -> (module Features.BreadcrumbSet : Abstract.Domain.S with type t = a)
       | FirstIndex -> (module Features.FirstIndexSet : Abstract.Domain.S with type t = a)
       | FirstField -> (module Features.FirstFieldSet : Abstract.Domain.S with type t = a)
+      | CallInfoIntervals -> (module CallInfoIntervals : Abstract.Domain.S with type t = a)
 
 
     let strict (type a) (slot : a slot) =
       match slot with
-      | Kinds -> true
+      | Kinds
+      | CallInfoIntervals ->
+          true
       | _ -> false
   end
 
@@ -387,8 +559,12 @@ module MakeLocalTaint (Kind : KIND_ARG) = struct
    * They can refer to the sets in `Frame` or in `LocalTaint`. *)
 
   let singleton kind frame =
-    bottom
-    |> update Slots.Kinds (KindTaintDomain.singleton kind frame)
+    (* Initialize strict slots first *)
+    create
+      [
+        Abstract.Domain.Part (KindTaintDomain.KeyValue, (kind, frame));
+        Abstract.Domain.Part (CallInfoIntervals.Self, CallInfoIntervals.top);
+      ]
     |> update Slots.Breadcrumb Features.BreadcrumbSet.empty
 
 
@@ -557,7 +733,16 @@ end = struct
         |> List.map ~f:add_kind
       in
       let json = cons_if_non_empty "kinds" kinds json in
-
+      let json =
+        let call_info_intervals =
+          LocalTaintDomain.get LocalTaintDomain.Slots.CallInfoIntervals local_taint
+        in
+        if CallInfoIntervals.is_top call_info_intervals then
+          json
+        else
+          let call_info_intervals = CallInfoIntervals.to_json call_info_intervals in
+          List.append call_info_intervals json
+      in
       `Assoc json
     in
     (* Expand overrides into actual callables and dedup *)
@@ -711,32 +896,56 @@ end = struct
         KindTaintDomain.Key
         Filter
         ~f:(fun kind ->
-          let kind = kind |> Kind.discard_transforms |> Kind.discard_subkind in
+          let kind = kind |> Kind.discard_sanitize_transforms |> Kind.discard_subkind in
           not (Kind.Set.mem kind sanitized_kinds))
         taint
 
 
   let apply_sanitize_transforms transforms taint =
-    if SanitizeTransform.Set.is_empty transforms then
+    if SanitizeTransformSet.is_empty transforms then
       taint
     else
-      transform KindTaintDomain.Key Map ~f:(Kind.apply_sanitize_transforms transforms) taint
+      transform KindTaintDomain.Key FilterMap ~f:(Kind.apply_sanitize_transforms transforms) taint
 
 
-  let apply_sanitize_sink_transforms transforms taint =
-    if SanitizeTransform.Set.is_empty transforms then
+  let apply_transforms transforms order taint =
+    if TaintTransforms.is_empty transforms then
       taint
     else
-      transform KindTaintDomain.Key Map ~f:(Kind.apply_sanitize_sink_transforms transforms) taint
+      transform KindTaintDomain.Key FilterMap ~f:(Kind.apply_transforms transforms order) taint
 
 
-  let apply_call location ~callees ~port ~path ~element:taint =
+  let apply_call
+      ~resolution
+      ~location
+      ~callee
+      ~arguments
+      ~port
+      ~path
+      ~element:taint
+      ~is_self_call
+      ~caller_class_interval
+      ~receiver_class_interval
+    =
+    let callees =
+      match callee with
+      | Some callee -> [callee]
+      | None -> []
+    in
     let apply (call_info, local_taint) =
       let local_taint =
         local_taint
         |> LocalTaintDomain.transform KindTaintDomain.Key Filter ~f:(fun kind ->
                not (Kind.ignore_kind_at_call kind))
         |> LocalTaintDomain.transform KindTaintDomain.Key Map ~f:Kind.apply_call
+      in
+      let via_features_breadcrumbs =
+        LocalTaintDomain.fold
+          Features.ViaFeatureSet.Element
+          ~f:Features.ViaFeatureSet.add
+          ~init:Features.ViaFeatureSet.bottom
+          local_taint
+        |> Features.expand_via_features ~resolution ~callees ~arguments
       in
       let local_breadcrumbs = LocalTaintDomain.get LocalTaintDomain.Slots.Breadcrumb local_taint in
       let local_first_indices =
@@ -748,7 +957,7 @@ end = struct
         |> LocalTaintDomain.update
              LocalTaintDomain.Slots.TitoPosition
              Features.TitoPositionSet.bottom
-        |> LocalTaintDomain.update LocalTaintDomain.Slots.Breadcrumb Features.BreadcrumbSet.empty
+        |> LocalTaintDomain.update LocalTaintDomain.Slots.Breadcrumb via_features_breadcrumbs
         |> LocalTaintDomain.update LocalTaintDomain.Slots.FirstIndex Features.FirstIndexSet.bottom
         |> LocalTaintDomain.update LocalTaintDomain.Slots.FirstField Features.FirstFieldSet.bottom
       in
@@ -769,6 +978,52 @@ end = struct
              ~f:(Features.FirstFieldSet.sequence_join local_first_fields)
       in
       let local_taint = LocalTaintDomain.transform Frame.Self Map ~f:apply_frame local_taint in
+      let local_taint =
+        match callee with
+        | None
+        | Some (Interprocedural.Target.Object _)
+        | Some (Interprocedural.Target.Function _) ->
+            LocalTaintDomain.update
+              LocalTaintDomain.Slots.CallInfoIntervals
+              {
+                CallInfoIntervals.caller_interval = caller_class_interval;
+                receiver_interval = receiver_class_interval;
+                is_self_call;
+              }
+              local_taint
+        | Some (Interprocedural.Target.Method _)
+        | Some (Interprocedural.Target.Override _) ->
+            let open Interprocedural in
+            let { CallInfoIntervals.caller_interval = callee_class_interval; _ } =
+              LocalTaintDomain.get LocalTaintDomain.Slots.CallInfoIntervals local_taint
+            in
+            if is_self_call then
+              let new_interval = ClassInterval.meet callee_class_interval caller_class_interval in
+              if ClassInterval.is_empty new_interval then
+                LocalTaintDomain.bottom
+              else
+                LocalTaintDomain.update
+                  LocalTaintDomain.Slots.CallInfoIntervals
+                  {
+                    CallInfoIntervals.caller_interval = new_interval;
+                    receiver_interval = receiver_class_interval;
+                    is_self_call;
+                  }
+                  local_taint
+            else
+              let new_interval = ClassInterval.meet callee_class_interval receiver_class_interval in
+              if ClassInterval.is_empty new_interval then
+                LocalTaintDomain.bottom
+              else
+                LocalTaintDomain.update
+                  LocalTaintDomain.Slots.CallInfoIntervals
+                  {
+                    CallInfoIntervals.caller_interval = caller_class_interval;
+                    receiver_interval = receiver_class_interval;
+                    is_self_call;
+                  }
+                  local_taint
+      in
       match call_info with
       | CallInfo.Origin _
       | CallInfo.CallSite _ ->
@@ -786,7 +1041,7 @@ end = struct
             else
               let open Features in
               let make_leaf_name callee =
-                LeafName.{ leaf = Interprocedural.Target.external_target_name callee; port = None }
+                LeafName.{ leaf = Interprocedural.Target.external_name callee; port = None }
                 |> LeafNameInterned.intern
               in
               List.map ~f:make_leaf_name callees |> Features.LeafNameSet.of_list
@@ -840,9 +1095,30 @@ module MakeTaintTree (Taint : TAINT_DOMAIN) () = struct
       (Taint)
       ()
 
-  let apply_call location ~callees ~port taint_tree =
+  let apply_call
+      ~resolution
+      ~location
+      ~callee
+      ~arguments
+      ~port
+      ~is_self_call
+      ~caller_class_interval
+      ~receiver_class_interval
+      taint_tree
+    =
     let transform_path (path, tip) =
-      path, Taint.apply_call location ~callees ~port ~path ~element:tip
+      ( path,
+        Taint.apply_call
+          ~resolution
+          ~location
+          ~callee
+          ~arguments
+          ~port
+          ~path
+          ~element:tip
+          ~is_self_call
+          ~caller_class_interval
+          ~receiver_class_interval )
     in
     transform Path Map ~f:transform_path taint_tree
 
@@ -930,17 +1206,17 @@ module MakeTaintTree (Taint : TAINT_DOMAIN) () = struct
 
 
   let apply_sanitize_transforms transforms taint =
-    if SanitizeTransform.Set.is_empty transforms then
+    if SanitizeTransformSet.is_empty transforms then
       taint
     else
       transform Taint.Self Map ~f:(Taint.apply_sanitize_transforms transforms) taint
 
 
-  let apply_sanitize_sink_transforms transforms taint =
-    if SanitizeTransform.Set.is_empty transforms then
+  let apply_transforms transforms order taint =
+    if TaintTransforms.is_empty transforms then
       taint
     else
-      transform Taint.Self Map ~f:(Taint.apply_sanitize_sink_transforms transforms) taint
+      transform Taint.Self Map ~f:(Taint.apply_transforms transforms order) taint
 end
 
 module MakeTaintEnvironment (Taint : TAINT_DOMAIN) () = struct
@@ -1049,7 +1325,7 @@ module MakeTaintEnvironment (Taint : TAINT_DOMAIN) () = struct
 
 
   let apply_sanitize_transforms transforms taint =
-    if SanitizeTransform.Set.is_empty transforms then
+    if SanitizeTransformSet.is_empty transforms then
       taint
     else
       transform Taint.Self Map ~f:(Taint.apply_sanitize_transforms transforms) taint
@@ -1074,65 +1350,97 @@ let local_return_frame =
 (* Special sink as it needs the return access path *)
 let local_return_taint = BackwardTaint.singleton Sinks.LocalReturn local_return_frame
 
-module Sanitize = struct
-  type sanitize_sources =
-    | AllSources
-    | SpecificSources of Sources.Set.t
-  [@@deriving show, eq]
-
-  type sanitize_sinks =
-    | AllSinks
-    | SpecificSinks of Sinks.Set.t
-  [@@deriving show, eq]
-
-  type sanitize_tito =
-    | AllTito
-    | SpecificTito of {
-        sanitized_tito_sources: Sources.Set.t;
-        sanitized_tito_sinks: Sinks.Set.t;
-      }
-  [@@deriving show, eq]
-
-  type sanitize = {
-    sources: sanitize_sources option;
-    sinks: sanitize_sinks option;
-    tito: sanitize_tito option;
-  }
+module MakeSanitizeKinds (Kind : KIND_ARG) = struct
+  type set =
+    | All
+    | Specific of Kind.Set.t
   [@@deriving show, eq]
 
   include Abstract.SimpleDomain.Make (struct
-    type t = sanitize
+    type t = set option [@@deriving show]
 
-    let name = "sanitize"
+    let name = Format.sprintf "sanitize %ss" Kind.name
 
-    let bottom = { sources = None; sinks = None; tito = None }
+    let bottom = None
 
     let less_or_equal ~left ~right =
       if phys_equal left right then
         true
       else
-        (match left.sources, right.sources with
+        match left, right with
         | None, _ -> true
         | Some _, None -> false
-        | Some AllSources, Some AllSources -> true
-        | Some AllSources, Some (SpecificSources _) -> false
-        | Some (SpecificSources _), Some AllSources -> true
-        | Some (SpecificSources left), Some (SpecificSources right) -> Sources.Set.subset left right)
-        && (match left.sinks, right.sinks with
-           | None, _ -> true
-           | Some _, None -> false
-           | Some AllSinks, Some AllSinks -> true
-           | Some AllSinks, Some (SpecificSinks _) -> false
-           | Some (SpecificSinks _), Some AllSinks -> true
-           | Some (SpecificSinks left), Some (SpecificSinks right) -> Sinks.Set.subset left right)
-        &&
-        match left.tito, right.tito with
+        | Some All, Some All -> true
+        | Some All, Some (Specific _) -> false
+        | Some (Specific _), Some All -> true
+        | Some (Specific left), Some (Specific right) -> Kind.Set.subset left right
+
+
+    let join left right =
+      if phys_equal left right then
+        left
+      else
+        match left, right with
+        | None, Some _ -> right
+        | Some _, None -> left
+        | Some All, _
+        | _, Some All ->
+            Some All
+        | Some (Specific left_sources), Some (Specific right_sources) ->
+            Some (Specific (Kind.Set.union left_sources right_sources))
+        | None, None -> None
+
+
+    let meet a b = if less_or_equal ~left:b ~right:a then b else a
+  end)
+
+  let all = Some All
+
+  let equal = [%equal: set option]
+
+  let to_json set =
+    let label = Format.sprintf "%ss" Kind.name in
+    match set with
+    | Some All -> [label, `String "All"]
+    | Some (Specific set) ->
+        [
+          ( label,
+            let to_string name = `String name in
+            `List (set |> Kind.Set.elements |> List.map ~f:Kind.show |> List.map ~f:to_string) );
+        ]
+    | None -> []
+end
+
+module SanitizeSources = MakeSanitizeKinds (Sources)
+module SanitizeSinks = MakeSanitizeKinds (Sinks)
+
+module SanitizeTito = struct
+  type set =
+    | All
+    | Specific of {
+        sanitized_tito_sources: Sources.Set.t;
+        sanitized_tito_sinks: Sinks.Set.t;
+      }
+  [@@deriving show, eq]
+
+  include Abstract.SimpleDomain.Make (struct
+    type t = set option [@@deriving show]
+
+    let name = "sanitize tito"
+
+    let bottom = None
+
+    let less_or_equal ~left ~right =
+      if phys_equal left right then
+        true
+      else
+        match left, right with
         | None, _ -> true
         | Some _, None -> false
-        | Some AllTito, Some AllTito -> true
-        | Some AllTito, Some (SpecificTito _) -> false
-        | Some (SpecificTito _), Some AllTito -> true
-        | Some (SpecificTito left), Some (SpecificTito right) ->
+        | Some All, Some All -> true
+        | Some All, Some (Specific _) -> false
+        | Some (Specific _), Some All -> true
+        | Some (Specific left), Some (Specific right) ->
             Sources.Set.subset left.sanitized_tito_sources right.sanitized_tito_sources
             && Sinks.Set.subset left.sanitized_tito_sinks right.sanitized_tito_sinks
 
@@ -1141,47 +1449,83 @@ module Sanitize = struct
       if phys_equal left right then
         left
       else
-        let sources =
-          match left.sources, right.sources with
-          | None, Some _ -> right.sources
-          | Some _, None -> left.sources
-          | Some AllSources, _
-          | _, Some AllSources ->
-              Some AllSources
-          | Some (SpecificSources left_sources), Some (SpecificSources right_sources) ->
-              Some (SpecificSources (Sources.Set.union left_sources right_sources))
-          | None, None -> None
-        in
-        let sinks =
-          match left.sinks, right.sinks with
-          | None, Some _ -> right.sinks
-          | Some _, None -> left.sinks
-          | Some AllSinks, _
-          | _, Some AllSinks ->
-              Some AllSinks
-          | Some (SpecificSinks left_sinks), Some (SpecificSinks right_sinks) ->
-              Some (SpecificSinks (Sinks.Set.union left_sinks right_sinks))
-          | None, None -> None
-        in
-        let tito =
-          match left.tito, right.tito with
-          | None, Some tito
-          | Some tito, None ->
-              Some tito
-          | Some AllTito, _
-          | _, Some AllTito ->
-              Some AllTito
-          | Some (SpecificTito left), Some (SpecificTito right) ->
-              Some
-                (SpecificTito
-                   {
-                     sanitized_tito_sources =
-                       Sources.Set.union left.sanitized_tito_sources right.sanitized_tito_sources;
-                     sanitized_tito_sinks =
-                       Sinks.Set.union left.sanitized_tito_sinks right.sanitized_tito_sinks;
-                   })
-          | None, None -> None
-        in
+        match left, right with
+        | None, Some tito
+        | Some tito, None ->
+            Some tito
+        | Some All, _
+        | _, Some All ->
+            Some All
+        | Some (Specific left), Some (Specific right) ->
+            Some
+              (Specific
+                 {
+                   sanitized_tito_sources =
+                     Sources.Set.union left.sanitized_tito_sources right.sanitized_tito_sources;
+                   sanitized_tito_sinks =
+                     Sinks.Set.union left.sanitized_tito_sinks right.sanitized_tito_sinks;
+                 })
+        | None, None -> None
+
+
+    let meet a b = if less_or_equal ~left:b ~right:a then b else a
+  end)
+
+  let all = Some All
+
+  let equal = [%equal: set option]
+
+  let to_json set =
+    let to_string name = `String name in
+    let sources_to_json sources =
+      `List (sources |> Sources.Set.elements |> List.map ~f:Sources.show |> List.map ~f:to_string)
+    in
+    let sinks_to_json sinks =
+      `List (sinks |> Sinks.Set.elements |> List.map ~f:Sinks.show |> List.map ~f:to_string)
+    in
+    match set with
+    | Some All -> ["tito", `String "All"]
+    | Some (Specific { sanitized_tito_sources; sanitized_tito_sinks }) ->
+        [
+          "tito_sources", sources_to_json sanitized_tito_sources;
+          "tito_sinks", sinks_to_json sanitized_tito_sinks;
+        ]
+    | None -> []
+end
+
+module Sanitize = struct
+  type sanitize = {
+    sources: SanitizeSources.t;
+    sinks: SanitizeSinks.t;
+    tito: SanitizeTito.t;
+  }
+  [@@deriving show, eq]
+
+  include Abstract.SimpleDomain.Make (struct
+    type t = sanitize
+
+    let name = "sanitize"
+
+    let bottom =
+      { sources = SanitizeSources.bottom; sinks = SanitizeSinks.bottom; tito = SanitizeTito.bottom }
+
+
+    let less_or_equal ~left ~right =
+      if phys_equal left right then
+        true
+      else
+        SanitizeSources.less_or_equal ~left:left.sources ~right:right.sources
+        && SanitizeSinks.less_or_equal ~left:left.sinks ~right:right.sinks
+        && SanitizeTito.less_or_equal ~left:left.tito ~right:right.tito
+
+
+    let join left right =
+      if phys_equal left right then
+        left
+      else
+        let sources = SanitizeSources.join left.sources right.sources in
+        let sinks = SanitizeSinks.join left.sinks right.sinks in
+        let tito = SanitizeTito.join left.tito right.tito in
         { sources; sinks; tito }
 
 
@@ -1190,7 +1534,7 @@ module Sanitize = struct
     let show = show_sanitize
   end)
 
-  let all = { sources = Some AllSources; sinks = Some AllSinks; tito = Some AllTito }
+  let all = { sources = SanitizeSources.all; sinks = SanitizeSinks.all; tito = SanitizeTito.all }
 
   let empty = bottom
 
@@ -1199,35 +1543,9 @@ module Sanitize = struct
   let equal = equal_sanitize
 
   let to_json { sources; sinks; tito } =
-    let to_string name = `String name in
-    let sources_to_json sources =
-      `List (sources |> Sources.Set.elements |> List.map ~f:Sources.show |> List.map ~f:to_string)
-    in
-    let sinks_to_json sinks =
-      `List (sinks |> Sinks.Set.elements |> List.map ~f:Sinks.show |> List.map ~f:to_string)
-    in
-    let sources_json =
-      match sources with
-      | Some AllSources -> ["sources", `String "All"]
-      | Some (SpecificSources sources) -> ["sources", sources_to_json sources]
-      | None -> []
-    in
-    let sinks_json =
-      match sinks with
-      | Some AllSinks -> ["sinks", `String "All"]
-      | Some (SpecificSinks sinks) -> ["sinks", sinks_to_json sinks]
-      | None -> []
-    in
-    let tito_json =
-      match tito with
-      | Some AllTito -> ["tito", `String "All"]
-      | Some (SpecificTito { sanitized_tito_sources; sanitized_tito_sinks }) ->
-          [
-            "tito_sources", sources_to_json sanitized_tito_sources;
-            "tito_sinks", sinks_to_json sanitized_tito_sinks;
-          ]
-      | None -> []
-    in
+    let sources_json = SanitizeSources.to_json sources in
+    let sinks_json = SanitizeSinks.to_json sinks in
+    let tito_json = SanitizeTito.to_json tito in
     `Assoc (sources_json @ sinks_json @ tito_json)
 end
 

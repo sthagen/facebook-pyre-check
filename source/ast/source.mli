@@ -21,13 +21,12 @@ type local_mode =
   | PlaceholderStub
 [@@deriving compare, show, sexp, hash]
 
-module Metadata : sig
+module TypecheckFlags : sig
   type t = {
     local_mode: local_mode Node.t option;
     unused_local_modes: local_mode Node.t list;
     ignore_codes: int list;
     ignore_lines: Ignore.t list;
-    raw_hash: int;
   }
   [@@deriving compare, show, hash, sexp]
 
@@ -38,7 +37,6 @@ module Metadata : sig
     ?unused_local_modes:local_mode Node.t list ->
     ?ignore_codes:int list ->
     ?ignore_lines:Ignore.t list ->
-    ?raw_hash:int ->
     unit ->
     t
 
@@ -46,7 +44,7 @@ module Metadata : sig
 end
 
 type t = {
-  metadata: Metadata.t;
+  typecheck_flags: TypecheckFlags.t;
   source_path: SourcePath.t;
   top_level_unbound_names: Statement.Define.NameAccess.t list;
   statements: Statement.t list;
@@ -62,13 +60,13 @@ val ignored_lines_including_format_strings
 val create_from_source_path
   :  ?collect_format_strings_with_ignores:
        (ignore_line_map:Ignore.t list Int.Map.t -> t -> (Expression.t * Ignore.t list) list) ->
-  metadata:Metadata.t ->
+  typecheck_flags:TypecheckFlags.t ->
   source_path:SourcePath.t ->
   Statement.t list ->
   t
 
 val create
-  :  ?metadata:Metadata.t ->
+  :  ?typecheck_flags:TypecheckFlags.t ->
   ?relative:string ->
   ?is_external:bool ->
   ?priority:int ->

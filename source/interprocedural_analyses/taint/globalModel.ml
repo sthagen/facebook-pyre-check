@@ -7,26 +7,30 @@
 
 open Core
 open Ast
+open Analysis
 open Expression
 open Pyre
 open Domains
+module CallGraph = Interprocedural.CallGraph
 
 type t = {
-  models: Model.WithTarget.t list;
+  models: Model.WithCallTarget.t list;
+  resolution: Resolution.t;
   location: Location.WithModule.t;
+  interval: Interprocedural.ClassInterval.t;
 }
 
 let get_global_targets ~call_graph ~expression =
   match Node.value expression with
   | Expression.Name (Name.Identifier identifier) ->
-      Interprocedural.CallGraph.DefineCallGraph.resolve_identifier
+      CallGraph.DefineCallGraph.resolve_identifier
         call_graph
         ~location:(Node.location expression)
         ~identifier
       >>| (fun { global_targets } -> global_targets)
       |> Option.value ~default:[]
   | Expression.Name (Name.Attribute { attribute; _ }) ->
-      Interprocedural.CallGraph.DefineCallGraph.resolve_attribute_access
+      CallGraph.DefineCallGraph.resolve_attribute_access
         call_graph
         ~location:(Node.location expression)
         ~attribute
@@ -35,53 +39,75 @@ let get_global_targets ~call_graph ~expression =
   | _ -> []
 
 
-let from_expression ~resolution ~call_graph ~qualifier ~expression =
-  let fetch_model target =
+let from_expression ~resolution ~call_graph ~qualifier ~expression ~interval =
+  let fetch_model ({ CallGraph.CallTarget.target; _ } as call_target) =
     let model = CallModel.at_callsite ~resolution ~call_target:target ~arguments:[] in
-    { Model.WithTarget.model; target }
+    { Model.WithCallTarget.model; call_target }
   in
   let models = get_global_targets ~call_graph ~expression |> List.map ~f:fetch_model in
-  let location = Node.location expression |> Location.with_module ~qualifier in
-  { models; location }
+  let location = Node.location expression |> Location.with_module ~module_reference:qualifier in
+  { models; resolution; location; interval }
 
 
 let global_root =
   AccessPath.Root.PositionalParameter { position = 0; name = "$global"; positional_only = false }
 
 
-let get_source { models; location } =
+let get_source { models; resolution; location; interval } =
   let to_source
       existing
-      { Model.WithTarget.target; model = { Model.forward = { Model.Forward.source_taint }; _ }; _ }
+      {
+        Model.WithCallTarget.call_target = { target; _ };
+        model = { Model.forward = { Model.Forward.source_taint }; _ };
+        _;
+      }
     =
     ForwardState.read ~root:AccessPath.Root.LocalResult ~path:[] source_taint
-    |> ForwardState.Tree.apply_call location ~callees:[target] ~port:AccessPath.Root.LocalResult
+    |> ForwardState.Tree.apply_call
+         ~resolution
+         ~location
+         ~callee:(Some target)
+         ~arguments:[]
+         ~port:AccessPath.Root.LocalResult
+         ~is_self_call:false
+         ~caller_class_interval:interval
+         ~receiver_class_interval:Interprocedural.ClassInterval.top
     |> ForwardState.Tree.join existing
   in
   List.fold ~init:ForwardState.Tree.bottom ~f:to_source models
 
 
-let get_sink { models; location } =
-  let to_sink
-      existing
+let get_sinks { models; resolution; location; interval } =
+  let to_sink_tree_with_identifier
       {
-        Model.WithTarget.target;
+        Model.WithCallTarget.call_target = { target; _ } as call_target;
         model = { Model.backward = { Model.Backward.sink_taint; _ }; _ };
         _;
       }
     =
-    BackwardState.read ~root:global_root ~path:[] sink_taint
-    |> BackwardState.Tree.apply_call location ~callees:[target] ~port:AccessPath.Root.LocalResult
-    |> BackwardState.Tree.join existing
+    let sink_tree =
+      BackwardState.read ~root:global_root ~path:[] sink_taint
+      |> BackwardState.Tree.apply_call
+           ~resolution
+           ~location
+           ~callee:(Some target)
+           ~arguments:[]
+           ~port:AccessPath.Root.LocalResult
+           ~is_self_call:false
+           ~caller_class_interval:interval
+           ~receiver_class_interval:Interprocedural.ClassInterval.top
+    in
+    { Issue.SinkTreeWithHandle.sink_tree; handle = Issue.SinkHandle.make_global ~call_target }
   in
-  List.fold ~init:BackwardState.Tree.bottom ~f:to_sink models
+  List.map ~f:to_sink_tree_with_identifier models |> Issue.SinkTreeWithHandle.filter_bottom
 
 
 let get_tito { models; _ } =
   let to_tito
       existing
       {
-        Model.WithTarget.model = { Model.backward = { Model.Backward.taint_in_taint_out; _ }; _ };
+        Model.WithCallTarget.model =
+          { Model.backward = { Model.Backward.taint_in_taint_out; _ }; _ };
         _;
       }
     =
@@ -94,7 +120,7 @@ let get_tito { models; _ } =
 let get_sanitize { models; _ } =
   let get_sanitize
       existing
-      { Model.WithTarget.model = { Model.sanitizers = { global = sanitize; _ }; _ }; _ }
+      { Model.WithCallTarget.model = { Model.sanitizers = { global = sanitize; _ }; _ }; _ }
     =
     Sanitize.join sanitize existing
   in
@@ -102,7 +128,7 @@ let get_sanitize { models; _ } =
 
 
 let get_modes { models; _ } =
-  let get_modes existing { Model.WithTarget.model = { Model.modes; _ }; _ } =
+  let get_modes existing { Model.WithCallTarget.model = { Model.modes; _ }; _ } =
     Model.ModeSet.join modes existing
   in
   List.fold ~init:Model.ModeSet.empty ~f:get_modes models
@@ -110,13 +136,13 @@ let get_modes { models; _ } =
 
 let is_sanitized { models; _ } =
   let is_sanitized_model
-      { Model.WithTarget.model = { Model.sanitizers = { global = sanitize; _ }; _ }; _ }
+      { Model.WithCallTarget.model = { Model.sanitizers = { global = sanitize; _ }; _ }; _ }
     =
     match sanitize with
     | {
-     sources = Some Sanitize.AllSources;
-     sinks = Some Sanitize.AllSinks;
-     tito = Some Sanitize.AllTito;
+     sources = Some SanitizeSources.All;
+     sinks = Some SanitizeSinks.All;
+     tito = Some SanitizeTito.All;
     } ->
         true
     | _ -> false

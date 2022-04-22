@@ -25,3 +25,11 @@ val parse_sink
   ?subkind:string ->
   string ->
   (Sinks.t, string) result
+
+val parse_transform : allowed:TaintTransform.t list -> string -> (TaintTransform.t, string) result
+
+val parse_tito
+  :  allowed_transforms:TaintTransform.t list ->
+  ?subkind:string ->
+  string ->
+  (Sinks.t, string) result

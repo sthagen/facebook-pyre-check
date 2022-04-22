@@ -4,7 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 # flake8: noqa
-from builtins import _test_sink, _test_source, _user_controlled, _cookies, _rce, _sql
+from builtins import _cookies, _rce, _sql, _test_sink, _test_source, _user_controlled
 from typing import Sequence, TypeVar
 
 
@@ -219,6 +219,10 @@ def sanitize_b_source_tito(x):
     return x
 
 
+def sanitize_test_source_tito(x):
+    return x
+
+
 def combine_sanitize_a_source_b_source_in_sink_trace(x):
     y = sanitize_b_source_tito(x)
     propagation_of_sanitize_a_source_in_sink_trace(y)
@@ -318,6 +322,29 @@ def no_issue_fixpoint_sanitize():
     # Sinks: {TestA, NotSource[A]@TestB}
     x = no_issue_fixpoint_sanitize_sources()
     no_issue_fixpoint_sanitize_sinks(x)
+
+
+def partial_issue_sources():
+    if 1 > 2:
+        x = a_source()
+        return sanitize_a_sink_tito(x)
+    else:
+        return a_source()
+
+
+def partial_issue_sinks(x):
+    if 1 > 2:
+        a_sink(x)
+    else:
+        y = sanitize_a_source_tito(x)
+        a_sink(y)
+
+
+def partial_issue_sanitize():
+    # Sources: {NotSink[TestA]@TestA, TestA}
+    # Sinks: {TestA, NotSource[testA]@TestA}
+    x = partial_issue_sources()
+    partial_issue_sinks(x)
 
 
 def sanitize_test_a_source_attribute():
@@ -860,3 +887,36 @@ def propagation_of_rce_with_sanitize_all_parameters_no_cookies_sql_tito(x):
 
 def sanitize_all_parameters_with_user_declared_sink(x):
     return x
+
+
+# Frame linking test
+
+
+def sink_taint_sanitize_a(arg):
+    arg = sanitize_a_source_tito(arg)
+    _rce(arg)
+
+
+def sink_taint_sanitize_a_sanitize_b(arg):
+    arg = sanitize_b_source_tito(arg)
+    sink_taint_sanitize_a(arg)
+
+
+def sink_taint_sanitize_a_sanitize_b_santize_test(arg):
+    arg = sanitize_test_source_tito(arg)
+    sink_taint_sanitize_a_sanitize_b(arg)
+
+
+def sink_taint_sanitize_b(arg):
+    arg = sanitize_b_source_tito(arg)
+    _rce(arg)
+
+
+def sink_taint_sanitize_b_sanitize_a(arg):
+    arg = sanitize_a_source_tito(arg)
+    sink_taint_sanitize_b(arg)
+
+
+def sink_taint_sanitize_b_sanitize_a_santize_test(arg):
+    arg = sanitize_test_source_tito(arg)
+    sink_taint_sanitize_b_sanitize_a(arg)

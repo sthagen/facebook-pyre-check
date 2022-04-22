@@ -9,14 +9,14 @@ open Core
 open Ast
 open Analysis
 
-let module_of_path ~configuration ~module_tracker path =
-  match ModuleTracker.lookup_path ~configuration module_tracker path with
+let module_of_path ~module_tracker path =
+  match ModuleTracker.ReadOnly.lookup_path module_tracker path with
   | ModuleTracker.PathLookup.Found { SourcePath.qualifier; _ } -> Some qualifier
   | _ -> None
 
 
-let instantiate_path ~build_system ~configuration ~ast_environment qualifier =
-  match AstEnvironment.ReadOnly.get_real_path ~configuration ast_environment qualifier with
+let instantiate_path ~build_system ~ast_environment qualifier =
+  match AstEnvironment.ReadOnly.get_real_path ast_environment qualifier with
   | None -> None
   | Some artifact_path ->
       let path =
@@ -34,13 +34,13 @@ let instantiate_path ~build_system ~configuration ~ast_environment qualifier =
 
 let instantiate_error
     ~build_system
-    ~configuration:({ Configuration.Analysis.show_error_traces; _ } as configuration)
+    ~configuration:{ Configuration.Analysis.show_error_traces; _ }
     ~ast_environment
     error
   =
   AnalysisError.instantiate
     ~show_error_traces
-    ~lookup:(instantiate_path ~build_system ~configuration ~ast_environment)
+    ~lookup:(instantiate_path ~build_system ~ast_environment)
     error
 
 
@@ -69,8 +69,8 @@ let process_display_type_error_request
                  NOTE (grievejia): It is possible for the type errors to differ. We may need to
                  reconsider how this is handled in the future. *)
               module_of_path
-                ~configuration
-                ~module_tracker:(TypeEnvironment.module_tracker type_environment)
+                ~module_tracker:
+                  (TypeEnvironment.module_tracker type_environment |> ModuleTracker.read_only)
                 artifact_path
         in
         List.filter_map paths ~f:get_module_for_source_path

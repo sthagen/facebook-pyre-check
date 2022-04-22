@@ -82,8 +82,6 @@ module CalleeValue = struct
   let prefix = Prefix.make ()
 
   let description = "Reference List"
-
-  let unmarshall value = Marshal.from_string value 0
 end
 
 module CallerKey = struct
@@ -92,8 +90,6 @@ module CallerKey = struct
   let to_string caller = sexp_of_caller caller |> Sexp.to_string
 
   let compare = compare_caller
-
-  type out = caller
 
   let from_string caller = Sexp.of_string caller |> caller_of_sexp
 end
@@ -213,7 +209,7 @@ module DefaultBuilder : Builder = struct
           |> Option.value ~default:[]
       | _ -> []
     in
-    let key = Location.with_module ~qualifier (Node.location callee) in
+    let key = Location.with_module ~module_reference:qualifier (Node.location callee) in
     Hashtbl.set table ~key ~data:callees
 
 
@@ -267,7 +263,7 @@ module DefaultBuilder : Builder = struct
     in
     List.iter attributes ~f:register;
     if not (List.is_empty !property_callables) then
-      let key = Location.with_module ~qualifier location in
+      let key = Location.with_module ~module_reference:qualifier location in
       Hashtbl.set table ~key ~data:!property_callables
 
 

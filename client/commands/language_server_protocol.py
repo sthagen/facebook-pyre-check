@@ -9,13 +9,7 @@ import enum
 import logging
 import urllib
 from pathlib import Path
-from typing import (
-    Iterable,
-    Optional,
-    List,
-    Type,
-    TypeVar,
-)
+from typing import Iterable, List, Optional, Type, TypeVar
 
 import dataclasses_json
 
@@ -138,6 +132,35 @@ class MessageType(SerializationSafeIntEnum):
     LOG = 4
 
 
+class SymbolKind(SerializationSafeIntEnum):
+    FILE = 1
+    MODULE = 2
+    NAMESPACE = 3
+    PACKAGE = 4
+    CLASS = 5
+    METHOD = 6
+    PROPERTY = 7
+    FIELD = 8
+    CONSTRUCTOR = 9
+    ENUM = 10
+    INTERFACE = 11
+    FUNCTION = 12
+    VARIABLE = 13
+    CONSTANT = 14
+    STRING = 15
+    NUMBER = 16
+    BOOLEAN = 17
+    ARRAY = 18
+    OBJECT = 19
+    KEY = 20
+    NULL = 21
+    ENUMMEMBER = 22
+    STRUCT = 23
+    EVENT = 24
+    OPERATOR = 25
+    TYPEPARAMETER = 26
+
+
 @dataclasses.dataclass(frozen=True)
 class DocumentUri:
     scheme: str
@@ -190,6 +213,9 @@ class Position:
     line: int
     character: int
 
+    def to_lsp_position(self) -> "LspPosition":
+        return LspPosition(self.line - 1, self.character)
+
 
 @dataclasses_json.dataclass_json(
     letter_case=dataclasses_json.LetterCase.CAMEL,
@@ -214,6 +240,22 @@ class LspPosition:
 class Range:
     start: Position
     end: Position
+
+    def to_lsp_range(self) -> "LspRange":
+        return LspRange(
+            start=self.start.to_lsp_position(),
+            end=self.end.to_lsp_position(),
+        )
+
+
+@dataclasses_json.dataclass_json(
+    letter_case=dataclasses_json.LetterCase.CAMEL,
+    undefined=dataclasses_json.Undefined.EXCLUDE,
+)
+@dataclasses.dataclass(frozen=True)
+class LspRange:
+    start: LspPosition
+    end: LspPosition
 
 
 @dataclasses_json.dataclass_json(
@@ -336,6 +378,7 @@ class TextDocumentSyncOptions:
 class ServerCapabilities:
     text_document_sync: Optional[TextDocumentSyncOptions] = None
     hover_provider: Optional[bool] = None
+    definition_provider: Optional[bool] = None
 
 
 @dataclasses_json.dataclass_json(
@@ -531,3 +574,79 @@ class TypeCoverageResult:
     covered_percent: float
     uncovered_ranges: List[Diagnostic]
     default_message: str
+
+
+@dataclasses_json.dataclass_json(
+    letter_case=dataclasses_json.LetterCase.CAMEL,
+    undefined=dataclasses_json.Undefined.EXCLUDE,
+)
+@dataclasses.dataclass(frozen=True)
+class DefinitionTextDocumentParameters:
+    text_document: TextDocumentIdentifier
+    position: LspPosition
+
+    @staticmethod
+    def from_json_rpc_parameters(
+        parameters: json_rpc.Parameters,
+    ) -> "DefinitionTextDocumentParameters":
+        return _parse_parameters(parameters, target=DefinitionTextDocumentParameters)
+
+
+@dataclasses_json.dataclass_json(
+    letter_case=dataclasses_json.LetterCase.CAMEL,
+    undefined=dataclasses_json.Undefined.EXCLUDE,
+)
+@dataclasses.dataclass(frozen=True)
+class PyreDefinitionResponse:
+    """Contains one possible definition for a symbol."""
+
+    path: str
+    range: Range
+
+    def to_lsp_definition_response(
+        self,
+    ) -> "LspDefinitionResponse":
+        return LspDefinitionResponse(uri=self.path, range=self.range.to_lsp_range())
+
+
+@dataclasses_json.dataclass_json(
+    letter_case=dataclasses_json.LetterCase.CAMEL,
+    undefined=dataclasses_json.Undefined.EXCLUDE,
+)
+@dataclasses.dataclass(frozen=True)
+class LspDefinitionResponse:
+    """Contains one possible definition for a symbol."""
+
+    uri: str
+    range: LspRange
+
+
+@dataclasses_json.dataclass_json(
+    letter_case=dataclasses_json.LetterCase.CAMEL,
+    undefined=dataclasses_json.Undefined.EXCLUDE,
+)
+@dataclasses.dataclass(frozen=True)
+class DocumentSymbolsTextDocumentParameters:
+    text_document: TextDocumentIdentifier
+
+    @staticmethod
+    def from_json_rpc_parameters(
+        parameters: json_rpc.Parameters,
+    ) -> "DocumentSymbolsTextDocumentParameters":
+        return _parse_parameters(
+            parameters, target=DocumentSymbolsTextDocumentParameters
+        )
+
+
+@dataclasses_json.dataclass_json(
+    letter_case=dataclasses_json.LetterCase.CAMEL,
+    undefined=dataclasses_json.Undefined.EXCLUDE,
+)
+@dataclasses.dataclass(frozen=True)
+class DocumentSymbolsResponse:
+    """Contains one possible definition for a symbol."""
+
+    name: str
+    detail: Optional[str]
+    kind: SymbolKind
+    range: LspRange

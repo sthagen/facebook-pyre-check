@@ -9,7 +9,8 @@ from typing import Iterable, Tuple
 
 import testslide
 
-from ... import configuration, command_arguments
+from ... import command_arguments, configuration
+from ...configuration import search_path
 from ...tests import setup
 from .. import backend_arguments
 from ..analyze import Arguments, create_analyze_arguments
@@ -33,7 +34,7 @@ class ArgumentTest(testslide.TestCase):
                     log_path="/log",
                     global_root="/project",
                     source_paths=backend_arguments.SimpleSourcePath(
-                        [configuration.SimpleSearchPathElement("source")]
+                        [search_path.SimpleElement("source")]
                     ),
                 ),
                 dump_call_graph="/call-graph",
@@ -135,16 +136,10 @@ class ArgumentTest(testslide.TestCase):
                         parallel=True,
                         python_version=analyze_configuration.get_python_version(),
                         search_paths=[
-                            configuration.SimpleSearchPathElement(
-                                str(root_path / "search")
-                            )
+                            search_path.SimpleElement(str(root_path / "search"))
                         ],
                         source_paths=backend_arguments.SimpleSourcePath(
-                            [
-                                configuration.SimpleSearchPathElement(
-                                    str(root_path / "local/src")
-                                )
-                            ]
+                            [search_path.SimpleElement(str(root_path / "local/src"))]
                         ),
                     ),
                     dump_call_graph="/call-graph",

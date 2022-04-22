@@ -82,8 +82,8 @@ let order_and_environment ~context source =
   |> fun order -> order, environment
 
 
-let class_definition environment =
-  GlobalResolution.create environment |> GlobalResolution.class_definition
+let class_summary environment =
+  GlobalResolution.create environment |> GlobalResolution.class_summary
 
 
 let parse_annotation environment =
@@ -532,12 +532,7 @@ let test_connect_type_order context =
       ]
   in
   let ast_environment = ScratchProject.build_ast_environment project in
-  let _, update_result =
-    update_environments
-      ~ast_environment
-      ~configuration:(ScratchProject.configuration_of project)
-      ColdStart
-  in
+  let _, update_result = update_environments ~ast_environment ColdStart in
   let environment = AnnotatedGlobalEnvironment.UpdateResult.read_only update_result in
   let order = class_hierarchy environment in
   let assert_successors annotation successors =
@@ -573,7 +568,7 @@ let test_populate context =
 
   (* Check custom class definitions. *)
   let global_resolution = GlobalResolution.create environment in
-  assert_is_some (GlobalResolution.class_definition global_resolution (Primitive "typing.Optional"));
+  assert_is_some (GlobalResolution.class_summary global_resolution (Primitive "typing.Optional"));
 
   (* Check type aliases. *)
   let environment =
@@ -1026,20 +1021,18 @@ let test_supertypes_type_order context =
   assert_equal ["test.foo"; "object"] (ClassHierarchy.successors order "test.bar")
 
 
-let test_class_definition context =
-  let is_defined environment annotation =
-    class_definition environment annotation |> Option.is_some
-  in
+let test_class_summary context =
+  let is_defined environment annotation = class_summary environment annotation |> Option.is_some in
   let environment = populate ~context ["baz.py", {|
       class baz(): pass
     |}] in
   assert_true (is_defined environment (Type.Primitive "baz.baz"));
   assert_true (is_defined environment (Type.parametric "baz.baz" [Single Type.integer]));
-  assert_is_some (class_definition environment (Type.Primitive "baz.baz"));
+  assert_is_some (class_summary environment (Type.Primitive "baz.baz"));
   assert_false (is_defined environment (Type.Primitive "bar.bar"));
   assert_false (is_defined environment (Type.parametric "bar.bar" [Single Type.integer]));
-  assert_is_none (class_definition environment (Type.Primitive "bar.bar"));
-  let any = class_definition environment Type.object_primitive |> value |> Node.value in
+  assert_is_none (class_summary environment (Type.Primitive "bar.bar"));
+  let any = class_summary environment Type.object_primitive |> value |> Node.value in
   assert_equal any.ClassSummary.name !&"object"
 
 
@@ -1141,12 +1134,7 @@ let test_connect_annotations_to_top context =
       ]
   in
   let ast_environment = ScratchProject.build_ast_environment project in
-  let _, update_result =
-    update_environments
-      ~ast_environment
-      ~configuration:(ScratchProject.configuration_of project)
-      ColdStart
-  in
+  let _, update_result = update_environments ~ast_environment ColdStart in
   let order = class_hierarchy (AnnotatedGlobalEnvironment.UpdateResult.read_only update_result) in
   assert_equal (ClassHierarchy.least_upper_bound order "test.One" "test.Two") ["object"]
 
@@ -1169,12 +1157,7 @@ let test_deduplicate context =
       ]
   in
   let ast_environment = ScratchProject.build_ast_environment project in
-  let _, update_result =
-    update_environments
-      ~ast_environment
-      ~configuration:(ScratchProject.configuration_of project)
-      ColdStart
-  in
+  let _, update_result = update_environments ~ast_environment ColdStart in
   let (module Handler) =
     class_hierarchy (AnnotatedGlobalEnvironment.UpdateResult.read_only update_result)
   in
@@ -1220,12 +1203,7 @@ let test_remove_extra_edges_to_object context =
       ]
   in
   let ast_environment = ScratchProject.build_ast_environment project in
-  let _, update_result =
-    update_environments
-      ~ast_environment
-      ~configuration:(ScratchProject.configuration_of project)
-      ColdStart
-  in
+  let _, update_result = update_environments ~ast_environment ColdStart in
   let (module Handler) =
     class_hierarchy (AnnotatedGlobalEnvironment.UpdateResult.read_only update_result)
   in
@@ -1303,11 +1281,9 @@ let test_update_and_compute_dependencies context =
         let path = PyrePath.create_relative ~root:local_root ~relative:"source.py" in
         let ast_environment = AnnotatedGlobalEnvironment.ast_environment environment in
         let module_tracker = AstEnvironment.module_tracker ast_environment in
-        ModuleTracker.update ~configuration ~paths:[path] module_tracker
+        ModuleTracker.update ~paths:[path] module_tracker
         |> (fun updates -> AstEnvironment.Update updates)
-        |> update_environments
-             ~ast_environment
-             ~configuration:(ScratchProject.configuration_of project)
+        |> update_environments ~ast_environment
       in
       AnnotatedGlobalEnvironment.UpdateResult.all_triggered_dependencies update_result
       |> List.fold
@@ -1371,7 +1347,7 @@ let () =
          "less_or_equal_type_order" >:: test_less_or_equal_type_order;
          "meet_type_order" >:: test_meet_type_order;
          "supertypes_type_order" >:: test_supertypes_type_order;
-         "class_definition" >:: test_class_definition;
+         "class_summary" >:: test_class_summary;
          "modules" >:: test_modules;
          "populate" >:: test_populate;
          "register_aliases" >:: test_register_aliases;

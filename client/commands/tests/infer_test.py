@@ -7,32 +7,34 @@ import dataclasses
 import tempfile
 import textwrap
 from pathlib import Path
-from typing import Any, Iterable, Tuple, Dict, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import testslide
 
-from ... import configuration, command_arguments
+from ... import command_arguments, configuration
+from ...configuration import search_path
 from ...tests import setup
 from .. import backend_arguments
 from ..infer import (
+    AnnotateModuleInPlace,
     Arguments,
+    AttributeAnnotation,
     create_infer_arguments,
     create_module_annotations,
-    should_annotate_in_place,
+    FunctionAnnotation,
+    GlobalAnnotation,
+    MethodAnnotation,
+    ModuleAnnotations,
     RawAnnotationLocation,
-    RawGlobalAnnotation,
     RawAttributeAnnotation,
-    RawParameter,
     RawDefineAnnotation,
+    RawGlobalAnnotation,
     RawInferOutput,
     RawInferOutputForPath,
+    RawParameter,
+    should_annotate_in_place,
     StubGenerationOptions,
     TypeAnnotation,
-    FunctionAnnotation,
-    MethodAnnotation,
-    GlobalAnnotation,
-    AttributeAnnotation,
-    ModuleAnnotations,
 )
 
 
@@ -54,7 +56,7 @@ class ArgumentTest(testslide.TestCase):
                     log_path="/log",
                     global_root="/project",
                     source_paths=backend_arguments.SimpleSourcePath(
-                        [configuration.SimpleSearchPathElement("source")]
+                        [search_path.SimpleElement("source")]
                     ),
                 ),
                 ignore_infer=["/ignore"],
@@ -130,16 +132,10 @@ class InferTest(testslide.TestCase):
                         parallel=True,
                         python_version=infer_configuration.get_python_version(),
                         search_paths=[
-                            configuration.SimpleSearchPathElement(
-                                str(root_path / "search")
-                            )
+                            search_path.SimpleElement(str(root_path / "search"))
                         ],
                         source_paths=backend_arguments.SimpleSourcePath(
-                            [
-                                configuration.SimpleSearchPathElement(
-                                    str(root_path / "local/src")
-                                )
-                            ]
+                            [search_path.SimpleElement(str(root_path / "local/src"))]
                         ),
                     ),
                     ignore_infer=[str(root_path / "ignores")],
@@ -725,6 +721,7 @@ class TypeAnnotationTest(testslide.TestCase):
         expected: str,
         qualifier: str = "foo",
         prefix: str = "",
+        runtime_defined: bool = True,
         **stub_generation_options_kwargs: Any,
     ) -> None:
         actual = TypeAnnotation(
@@ -733,6 +730,7 @@ class TypeAnnotationTest(testslide.TestCase):
             options=StubGenerationOptions(
                 **stub_generation_options_kwargs,
             ),
+            runtime_defined=runtime_defined,
         ).to_stub(prefix=prefix)
         self.assertEqual(actual, expected)
 
@@ -779,6 +777,13 @@ class TypeAnnotationTest(testslide.TestCase):
             "typing.Union[foo.A[bar.B], bar.C[foo.B]]",
             '"typing.Union[foo.A[bar.B], bar.C[foo.B]]"',
             quote_annotations=True,
+        )
+
+    def test_sanitize__runtime_defined(self) -> None:
+        self.assert_to_stub(
+            "foo.A",
+            '"A"',
+            runtime_defined=False,
         )
 
     def test_to_stub_with_prefix(self) -> None:
@@ -1145,6 +1150,58 @@ class StubGenerationTest(testslide.TestCase):
             """,
         )
 
+        self._assert_stubs(
+            {
+                "defines": [
+                    {
+                        "return": "test.TestA",
+                        "name": "f",
+                        "parent": "test.TestA",
+                        "parameters": [
+                            {
+                                "name": "self",
+                                "annotation": None,
+                                "value": None,
+                                "index": 0,
+                            },
+                            {
+                                "name": "input",
+                                "annotation": "test.TestA",
+                                "value": None,
+                                "index": 0,
+                            },
+                        ],
+                        "async": False,
+                    },
+                    {
+                        "return": "typing.Union[typing.Dict[str, int], str]",
+                        "name": "g",
+                        "parent": "test.TestA",
+                        "parameters": [
+                            {
+                                "name": "self",
+                                "annotation": None,
+                                "value": None,
+                                "index": 0,
+                            },
+                            {
+                                "name": "input",
+                                "annotation": "int",
+                                "value": None,
+                                "index": 0,
+                            },
+                        ],
+                        "async": False,
+                    },
+                ],
+            },
+            """\
+            class TestA:
+                def f(self, input: "TestA") -> "TestA": ...
+                def g(self, input: int) -> typing.Union[typing.Dict[str, int], str]: ...
+            """,
+        )
+
     def test_stubs_globals(self) -> None:
         self._assert_stubs(
             {
@@ -1185,6 +1242,22 @@ class StubGenerationTest(testslide.TestCase):
             """\
             """,
             annotate_attributes=False,
+        )
+        self._assert_stubs(
+            {
+                "attributes": [
+                    {
+                        "annotation": "test.test",
+                        "name": "attribute_name",
+                        "parent": "test.test",
+                    }
+                ],
+            },
+            """\
+            class test:
+                attribute_name: "test" = ...
+            """,
+            annotate_attributes=True,
         )
 
     def test_stubs_no_typing_import(self) -> None:
@@ -1291,4 +1364,190 @@ class StubGenerationTest(testslide.TestCase):
             def with_params(x: int, y, z: Union[int, str]) -> None: ...
             """,
             simple_annotations=True,
+        )
+
+
+class StubApplicationTest(testslide.TestCase):
+    def _normalize(self, block_string: str) -> str:
+        return (
+            textwrap.dedent(block_string)
+            .strip()
+            .replace("@_GENERATED", "@" + "generated")
+        )
+
+    def _assert_in_place(
+        self,
+        stub_file_contents: str,
+        code_file_contents: str,
+        expected_annotated_code_file_contents: Optional[str],
+    ) -> None:
+        options = StubGenerationOptions(
+            annotate_attributes=True,
+            use_future_annotations=False,
+            dequalify=False,
+            quote_annotations=False,
+            simple_annotations=False,
+        )
+        annotated_code = AnnotateModuleInPlace._annotated_code(
+            code_path="code_path.py",
+            stub=self._normalize(stub_file_contents),
+            code=self._normalize(code_file_contents),
+            options=options,
+        )
+        expected_code = (
+            self._normalize(expected_annotated_code_file_contents)
+            if expected_annotated_code_file_contents is not None
+            else None
+        )
+        self.assertEqual(expected_code, annotated_code)
+
+    def test_apply_functions(self) -> None:
+        self._assert_in_place(
+            """
+            def foo(x: int) -> None: ...
+            """,
+            """
+            def foo(x):
+                pass
+            """,
+            """
+            def foo(x: int) -> None:
+                pass
+            """,
+        )
+        self._assert_in_place(
+            """
+            def incomplete_stubs(x: int, y) -> None: ...
+            """,
+            """
+            def incomplete_stubs(x, y: int):
+                pass
+            """,
+            """
+            def incomplete_stubs(x: int, y: int) -> None:
+                pass
+            """,
+        )
+        self._assert_in_place(
+            """
+            def incomplete_stubs_with_stars(x: int, *args, **kwargs) -> None: ...
+            """,
+            """
+            def incomplete_stubs_with_stars(x, *args: P.args, **kwargs: P.kwargs):
+                pass
+            """,
+            """
+            def incomplete_stubs_with_stars(x: int, *args: P.args, **kwargs: P.kwargs) -> None:
+                pass
+            """,
+        )
+
+    def test_apply_globals(self) -> None:
+        self._assert_in_place(
+            """
+            a: int = ...
+            """,
+            """
+            a = 1 + 1
+            """,
+            """
+            a: int = 1 + 1
+            """,
+        )
+
+        self._assert_in_place(
+            """
+            a: int = ...
+            b: int = ...
+            """,
+            """
+            a = b = 1 + 1
+            """,
+            """
+            a: int
+            b: int
+
+            a = b = 1 + 1
+            """,
+        )
+
+        self._assert_in_place(
+            """
+            _: str = ...
+            a: str = ...
+            """,
+            """
+            _, a = "string".split("")
+            """,
+            """
+            a: str
+
+            _, a = "string".split("")
+            """,
+        )
+
+    def test_forward_references(self) -> None:
+        self._assert_in_place(
+            """
+            class Foo:
+                def method(self) -> Foo: ...
+            """,
+            """
+            class Foo:
+                def method(self):
+                    return self
+            """,
+            """
+            class Foo:
+                def method(self) -> "Foo":
+                    return self
+            """,
+        )
+
+        self._assert_in_place(
+            """
+            def foo() -> Foo: ...
+            """,
+            """
+            def foo():
+                return Foo()
+
+            class Foo:
+                pass
+            """,
+            """
+            def foo() -> "Foo":
+                return Foo()
+
+            class Foo:
+                pass
+            """,
+        )
+
+    def test_generated(self) -> None:
+        self._assert_in_place(
+            """
+            def foo() -> None: ...
+            """,
+            """
+            # not generated
+            def foo():
+                return
+            """,
+            """
+            # not generated
+            def foo() -> None:
+                return
+            """,
+        )
+        self._assert_in_place(
+            """
+            def foo() -> None: ...
+            """,
+            """
+            # @_GENERATED
+            def foo():
+                return
+            """,
+            None,
         )

@@ -18,8 +18,8 @@
             "kinds": [
               {
                 "features": [
-                  { "always-via": "tito" },
-                  { "always-via": "special_source" }
+                  { "always-via": "special_source" },
+                  { "always-via": "tito" }
                 ],
                 "leaves": [ { "name": "_test_source" } ],
                 "length": 1,
@@ -67,10 +67,18 @@
     "features": [
       { "has": "first-field" },
       { "first-field": "bad" },
-      { "always-via": "tito" },
       { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ]
+      { "always-via": "special_sink" },
+      { "always-via": "tito" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "named_tuples.issue_with_bad:5002:0:Call|_test_sink|0|formal(arg):e89e0d97d39ad4c9aeffa0299b935629"
   }
 }
 {
@@ -92,8 +100,8 @@
             "kinds": [
               {
                 "features": [
-                  { "always-via": "tito" },
-                  { "always-via": "special_source" }
+                  { "always-via": "special_source" },
+                  { "always-via": "tito" }
                 ],
                 "leaves": [ { "name": "_test_source" } ],
                 "length": 1,
@@ -141,10 +149,93 @@
     "features": [
       { "has": "first-field" },
       { "first-field": "bad" },
-      { "always-via": "tito" },
       { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ]
+      { "always-via": "special_sink" },
+      { "always-via": "tito" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "named_tuples.issue_with_inherited_named_tuple:5002:0:Call|_test_sink|0|formal(arg):7cc3bcce733ca7e014d258073ca4480f"
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "named_tuples.issue_with_named_tuple_with_tainted_attribute",
+    "callable_line": 76,
+    "code": 5002,
+    "line": 77,
+    "start": 39,
+    "end": 53,
+    "filename": "named_tuples.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "root": {
+              "filename": "named_tuples.py",
+              "line": 77,
+              "start": 39,
+              "end": 53
+            }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name":
+                      "Obj{named_tuples.NamedTupleWithTaintedAttribute.bad}"
+                  }
+                ],
+                "length": 1,
+                "kind": "Test"
+              }
+            ],
+            "call": {
+              "position": {
+                "filename": "named_tuples.py",
+                "line": 77,
+                "start": 39,
+                "end": 53
+              },
+              "resolves_to": [
+                "named_tuples.NamedTupleWithTaintedAttribute.__init__"
+              ],
+              "port": "formal(bad)"
+            }
+          }
+        ]
+      }
+    ],
+    "features": [ { "always-via": "special_source" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "named_tuples.NamedTupleWithTaintedAttribute.__init__",
+      "index": 0,
+      "parameter": "formal(bad)"
+    },
+    "master_handle":
+      "named_tuples.issue_with_named_tuple_with_tainted_attribute:5002:0:Call|named_tuples.NamedTupleWithTaintedAttribute.__init__|0|formal(bad):977049b125c3b118003728cf9b7cfb27"
   }
 }
 {
@@ -166,8 +257,8 @@
             "kinds": [
               {
                 "features": [
-                  { "always-via": "tito" },
-                  { "always-via": "special_source" }
+                  { "always-via": "special_source" },
+                  { "always-via": "tito" }
                 ],
                 "leaves": [ { "name": "_test_source" } ],
                 "length": 1,
@@ -215,9 +306,29 @@
     "features": [
       { "has": "first-field" },
       { "first-field": "bad" },
-      { "always-via": "tito" },
       { "always-via": "special_source" },
-      { "always-via": "special_sink" }
+      { "always-via": "special_sink" },
+      { "always-via": "tito" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "named_tuples.issue_with_old_school_named_tuples:5002:0:Call|_test_sink|0|formal(arg):7c43f1a34913fb7584197322a7b4c82d"
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "Obj{named_tuples.NamedTupleWithTaintedAttribute.bad}",
+    "sinks": [
+      {
+        "port": "formal($global)",
+        "taint": [ { "kinds": [ { "kind": "Test" } ], "decl": null } ]
+      }
     ]
   }
 }
@@ -253,6 +364,51 @@
         ]
       },
       {
+        "port": "formal(self)",
+        "taint": [
+          {
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
+            "decl": null
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "Ovr{named_tuples.NamedTupleWithTaintedAttribute::__init__}",
+    "sinks": [
+      {
+        "port": "formal(bad)",
+        "taint": [
+          {
+            "caller_interval": { "lower": 6, "upper": 7 },
+            "is_self_call": false,
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name":
+                      "Obj{named_tuples.NamedTupleWithTaintedAttribute.bad}"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "root": {
+              "filename": "builtins.pyi",
+              "line": -1,
+              "start": -1,
+              "end": -1
+            }
+          }
+        ]
+      }
+    ],
+    "tito": [
+      {
         "port": "formal(bad)",
         "taint": [
           {
@@ -264,21 +420,25 @@
         ]
       },
       {
-        "port": "formal(self)",
-        "taint": [
-          {
-            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
-            "decl": null
-          }
-        ]
-      },
-      {
         "port": "formal(benign)",
         "taint": [
           {
             "kinds": [
               { "return_paths": [ "[benign]" ], "kind": "LocalReturn" }
             ],
+            "local_features": [
+              { "always-type": "integer" },
+              { "always-type": "scalar" }
+            ],
+            "decl": null
+          }
+        ]
+      },
+      {
+        "port": "formal(self)",
+        "taint": [
+          {
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
             "decl": null
           }
         ]
@@ -314,32 +474,10 @@
         ]
       },
       {
-        "port": "formal(bad)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": [ "[bad]" ], "kind": "LocalReturn" }
-            ],
-            "decl": null
-          }
-        ]
-      },
-      {
         "port": "formal(self)",
         "taint": [
           {
             "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
-            "decl": null
-          }
-        ]
-      },
-      {
-        "port": "formal(benign)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": [ "[benign]" ], "kind": "LocalReturn" }
-            ],
             "decl": null
           }
         ]
@@ -351,6 +489,34 @@
   "kind": "model",
   "data": {
     "callable": "Ovr{typing.NamedTuple::__init__}",
+    "sinks": [
+      {
+        "port": "formal(bad)",
+        "taint": [
+          {
+            "caller_interval": { "lower": 6, "upper": 7 },
+            "is_self_call": false,
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name":
+                      "Obj{named_tuples.NamedTupleWithTaintedAttribute.bad}"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "root": {
+              "filename": "builtins.pyi",
+              "line": -1,
+              "start": -1,
+              "end": -1
+            }
+          }
+        ]
+      }
+    ],
     "tito": [
       {
         "port": "formal(bad)",
@@ -376,32 +542,10 @@
         ]
       },
       {
-        "port": "formal(bad)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": [ "[bad]" ], "kind": "LocalReturn" }
-            ],
-            "decl": null
-          }
-        ]
-      },
-      {
         "port": "formal(self)",
         "taint": [
           {
             "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
-            "decl": null
-          }
-        ]
-      },
-      {
-        "port": "formal(benign)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": [ "[benign]" ], "kind": "LocalReturn" }
-            ],
             "decl": null
           }
         ]
@@ -441,6 +585,51 @@
         ]
       },
       {
+        "port": "formal(self)",
+        "taint": [
+          {
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
+            "decl": null
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "named_tuples.NamedTupleWithTaintedAttribute.__init__",
+    "sinks": [
+      {
+        "port": "formal(bad)",
+        "taint": [
+          {
+            "caller_interval": { "lower": 6, "upper": 7 },
+            "is_self_call": false,
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name":
+                      "Obj{named_tuples.NamedTupleWithTaintedAttribute.bad}"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "root": {
+              "filename": "named_tuples.py",
+              "line": 71,
+              "start": 0,
+              "end": 0
+            }
+          }
+        ]
+      }
+    ],
+    "tito": [
+      {
         "port": "formal(bad)",
         "taint": [
           {
@@ -452,21 +641,25 @@
         ]
       },
       {
-        "port": "formal(self)",
-        "taint": [
-          {
-            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
-            "decl": null
-          }
-        ]
-      },
-      {
         "port": "formal(benign)",
         "taint": [
           {
             "kinds": [
               { "return_paths": [ "[benign]" ], "kind": "LocalReturn" }
             ],
+            "local_features": [
+              { "always-type": "integer" },
+              { "always-type": "scalar" }
+            ],
+            "decl": null
+          }
+        ]
+      },
+      {
+        "port": "formal(self)",
+        "taint": [
+          {
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
             "decl": null
           }
         ]
@@ -502,32 +695,10 @@
         ]
       },
       {
-        "port": "formal(bad)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": [ "[bad]" ], "kind": "LocalReturn" }
-            ],
-            "decl": null
-          }
-        ]
-      },
-      {
         "port": "formal(self)",
         "taint": [
           {
             "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
-            "decl": null
-          }
-        ]
-      },
-      {
-        "port": "formal(benign)",
-        "taint": [
-          {
-            "kinds": [
-              { "return_paths": [ "[benign]" ], "kind": "LocalReturn" }
-            ],
             "decl": null
           }
         ]

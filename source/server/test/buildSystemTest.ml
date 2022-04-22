@@ -265,53 +265,57 @@ let test_update context =
 
 let test_buck_renormalize context =
   (* Count how many times target renormalization has happened. *)
-  let query_counter = ref 0 in
-  let assert_query_counter expected =
-    assert_equal ~ctxt:context ~cmp:Int.equal ~printer:Int.to_string expected !query_counter
+  let normalize_counter = ref 0 in
+  let assert_normalize_counter expected =
+    assert_equal ~ctxt:context ~cmp:Int.equal ~printer:Int.to_string expected !normalize_counter
   in
 
+  let source_root = bracket_tmpdir context |> PyrePath.create_absolute in
+  let foo_source = PyrePath.create_relative ~root:source_root ~relative:"foo.py" in
+  File.create foo_source ~content:"" |> File.write;
   let get_buck_build_system () =
-    let raw =
-      let query ?isolation_prefix:_ _ =
-        incr query_counter;
-        Lwt.return "{}"
+    let interface =
+      let normalize_targets targets =
+        incr normalize_counter;
+        Lwt.return (List.map targets ~f:Buck.Target.of_string)
       in
-      let build ?isolation_prefix:_ _ = Lwt.return {| { "sources": {}, "dependencies": {} } |} in
-      Buck.Raw.create_for_testing ~query ~build ()
+      let construct_build_map targets =
+        Lwt.return
+          {
+            Buck.Interface.BuildResult.targets;
+            build_map = Buck.(BuildMap.(create (Partial.of_alist_exn ["foo.py", "foo.py"])));
+          }
+      in
+      Buck.Interface.create_for_testing ~normalize_targets ~construct_build_map ()
     in
-    let source_root = bracket_tmpdir context |> PyrePath.create_absolute in
     let artifact_root = bracket_tmpdir context |> PyrePath.create_absolute in
-    {
-      Configuration.Buck.mode = None;
-      isolation_prefix = None;
-      targets = ["//foo:target"];
-      source_root;
-      artifact_root;
-    }
-    |> BuildSystem.Initializer.buck ~raw
+    let builder = Buck.Builder.create ~source_root ~artifact_root interface in
+    BuildSystem.Initializer.buck ~builder ~artifact_root ~targets:["//foo:target"] ()
     |> BuildSystem.Initializer.run
   in
   let open Lwt.Infix in
   get_buck_build_system ()
   >>= fun buck_build_system ->
   (* Normalization will happen once upon initialization. *)
-  assert_query_counter 1;
+  assert_normalize_counter 1;
 
   (* Normalization won't happen if no target file changes. *)
   BuildSystem.update buck_build_system []
   >>= fun _ ->
-  assert_query_counter 1;
-  BuildSystem.update buck_build_system [PyrePath.create_absolute "/foo/derp.py"]
+  assert_normalize_counter 1;
+  BuildSystem.update buck_build_system [foo_source]
   >>= fun _ ->
-  assert_query_counter 1;
+  assert_normalize_counter 1;
 
   (* Normalization will happen if target file has changes. *)
-  BuildSystem.update buck_build_system [PyrePath.create_absolute "/foo/TARGETS"]
+  BuildSystem.update
+    buck_build_system
+    [PyrePath.create_relative ~root:source_root ~relative:"bar/TARGETS"]
   >>= fun _ ->
-  assert_query_counter 2;
-  BuildSystem.update buck_build_system [PyrePath.create_absolute "/foo/BUCK"]
+  assert_normalize_counter 2;
+  BuildSystem.update buck_build_system [PyrePath.create_relative ~root:source_root ~relative:"BUCK"]
   >>= fun _ ->
-  assert_query_counter 3;
+  assert_normalize_counter 3;
   Lwt.return_unit
 
 
@@ -328,44 +332,32 @@ let test_buck_update context =
   let artifact_root = bracket_tmpdir context |> PyrePath.create_absolute in
 
   let get_buck_build_system () =
-    let source_database_path =
-      let root = bracket_tmpdir context |> PyrePath.create_absolute in
-      PyrePath.create_relative ~root ~relative:"foo_target_sourcedb.json"
-    in
-    let raw =
+    let interface =
       (* Here's the set up: we have 2 files, `foo/bar.py` and `foo/baz.py`. If `is_rebuild` is
          false, we'll only include `foo/bar.py` in the target. If `is_rebuild` is true, we'll
          include both files. The `is_rebuild` flag is initially false but will be set to true after
          the first build. This setup emulates an incremental Buck update where the user edits the
          TARGET file to include another source in the target. *)
       let is_rebuild = ref false in
-      let query ?isolation_prefix:_ _ = Lwt.return {| { "//foo:target": ["//foo:target"] } |} in
-      let build ?isolation_prefix:_ _ =
-        let content =
+      let normalize_targets targets = Lwt.return (List.map targets ~f:Buck.Target.of_string) in
+      let construct_build_map targets =
+        let build_mappings =
           if !is_rebuild then
-            {| {
-                 "sources": { "bar.py": "foo/bar.py", "baz.py": "foo/baz.py" },
-                 "dependencies": {}
-               }
-            |}
-          else
-            {| { "sources": { "bar.py": "foo/bar.py" }, "dependencies": {} } |}
+            ["bar.py", "foo/bar.py"; "baz.py", "foo/baz.py"]
+          else (
+            is_rebuild := true;
+            ["bar.py", "foo/bar.py"])
         in
-        File.create source_database_path ~content |> File.write;
-        is_rebuild := true;
-        Format.asprintf {| { "//foo:bar#source-db": "%a" } |} PyrePath.pp source_database_path
-        |> Lwt.return
+        Lwt.return
+          {
+            Buck.Interface.BuildResult.targets;
+            build_map = Buck.(BuildMap.(create (Partial.of_alist_exn build_mappings)));
+          }
       in
-      Buck.Raw.create_for_testing ~query ~build ()
+      Buck.Interface.create_for_testing ~normalize_targets ~construct_build_map ()
     in
-    {
-      Configuration.Buck.mode = None;
-      isolation_prefix = None;
-      targets = ["//foo:target"];
-      source_root;
-      artifact_root;
-    }
-    |> BuildSystem.Initializer.buck ~raw
+    let builder = Buck.Builder.create ~source_root ~artifact_root interface in
+    BuildSystem.Initializer.buck ~builder ~artifact_root ~targets:["//foo:target"] ()
     |> BuildSystem.Initializer.run
   in
   let open Lwt.Infix in
@@ -409,53 +401,44 @@ let test_buck_update context =
   Lwt.return_unit
 
 
+let assert_paths_no_order ~context ~expected actual =
+  let compare = [%compare: PyrePath.t] in
+  assert_equal
+    ~ctxt:context
+    ~cmp:[%compare.equal: PyrePath.t list]
+    ~printer:(fun paths -> List.map paths ~f:PyrePath.show |> String.concat ~sep:" ")
+    (List.sort ~compare expected)
+    (List.sort ~compare actual)
+
+
 let test_buck_update_without_rebuild context =
-  let assert_paths_no_order ~expected actual =
-    let compare = [%compare: PyrePath.t] in
-    assert_equal
-      ~ctxt:context
-      ~cmp:[%compare.equal: PyrePath.t list]
-      ~printer:(fun paths -> List.map paths ~f:PyrePath.show |> String.concat ~sep:" ")
-      (List.sort ~compare expected)
-      (List.sort ~compare actual)
-  in
+  let assert_paths_no_order = assert_paths_no_order ~context in
   let source_root = bracket_tmpdir context |> PyrePath.create_absolute in
   let artifact_root = bracket_tmpdir context |> PyrePath.create_absolute in
 
   let get_buck_build_system () =
-    let source_database_path =
-      let root = bracket_tmpdir context |> PyrePath.create_absolute in
-      PyrePath.create_relative ~root ~relative:"foo_target_sourcedb.json"
-    in
-    let raw =
+    let interface =
       let is_rebuild = ref false in
-      let query ?isolation_prefix:_ _ = Lwt.return {| { "//foo:target": ["//foo:target"] } |} in
-      let build ?isolation_prefix:_ _ =
-        if not !is_rebuild then (
-          let content =
-            {| {
-                 "sources": { "bar.py": "foo/bar.py", "baz.py": "foo/baz.py" },
-                 "dependencies": {}
-               }
-            |}
-          in
-          File.create source_database_path ~content |> File.write;
-          is_rebuild := true;
-          Format.asprintf {| { "//foo:bar#source-db": "%a" } |} PyrePath.pp source_database_path
-          |> Lwt.return)
-        else
-          assert_failure "`buck build` is not expected to be invoked again after the initial build"
+      let normalize_targets targets = Lwt.return (List.map targets ~f:Buck.Target.of_string) in
+      let construct_build_map targets =
+        let build_mappings =
+          if not !is_rebuild then (
+            is_rebuild := true;
+            ["bar.py", "foo/bar.py"; "baz.py", "foo/baz.py"])
+          else
+            assert_failure
+              "Build map construction is not expected to be invoked again after the initial build"
+        in
+        Lwt.return
+          {
+            Buck.Interface.BuildResult.targets;
+            build_map = Buck.(BuildMap.(create (Partial.of_alist_exn build_mappings)));
+          }
       in
-      Buck.Raw.create_for_testing ~query ~build ()
+      Buck.Interface.create_for_testing ~normalize_targets ~construct_build_map ()
     in
-    {
-      Configuration.Buck.mode = None;
-      isolation_prefix = None;
-      targets = ["//foo:target"];
-      source_root;
-      artifact_root;
-    }
-    |> BuildSystem.Initializer.buck ~raw
+    let builder = Buck.Builder.create ~source_root ~artifact_root interface in
+    BuildSystem.Initializer.buck ~builder ~artifact_root ~targets:["//foo:target"] ()
     |> BuildSystem.Initializer.run
   in
   let open Lwt.Infix in
@@ -474,6 +457,100 @@ let test_buck_update_without_rebuild context =
   Lwt.return_unit
 
 
+let test_unwatched_dependency_no_failure_on_initialize context =
+  let bucket_root = bracket_tmpdir context |> PyrePath.create_absolute in
+  let bucket = "BUCKET" in
+  let wheel_root = bracket_tmpdir context |> PyrePath.create_absolute in
+  let checksum_path = "CHECKSUM" in
+  let open Lwt.Infix in
+  let test_initializer =
+    BuildSystem.Initializer.track_unwatched_dependency
+      {
+        Configuration.UnwatchedDependency.change_indicator =
+          { Configuration.ChangeIndicator.root = bucket_root; relative = bucket };
+        files = { Configuration.UnwatchedFiles.root = wheel_root; checksum_path };
+      }
+  in
+  BuildSystem.Initializer.run test_initializer
+  >>= fun build_system ->
+  (* Initialization should not crash, even when the checksum path does not exist *)
+  let bucket_path = PyrePath.create_relative ~root:bucket_root ~relative:bucket in
+  Lwt.catch
+    (fun () ->
+      (* Update should crash, if the checksum path does not exist *)
+      BuildSystem.update build_system [bucket_path]
+      >>= fun _ -> assert_failure "should not reach here")
+    (function
+      | ChecksumMap.LoadError _ -> Lwt.return_unit
+      | _ -> assert_failure "wrong exception raised")
+
+
+let test_unwatched_dependency_update context =
+  let assert_paths_no_order = assert_paths_no_order ~context in
+  let bucket_root = bracket_tmpdir context |> PyrePath.create_absolute in
+  let bucket = "BUCKET" in
+  let bucket_path = PyrePath.create_relative ~root:bucket_root ~relative:bucket in
+  let wheel_root = bracket_tmpdir context |> PyrePath.create_absolute in
+  let checksum_path = "CHECKSUM" in
+  let checksum_full_path = PyrePath.create_relative ~root:wheel_root ~relative:checksum_path in
+  let content =
+    {|
+      {
+        "a.py": "checksum0",
+        "b/c.py": "checksum1",
+        "d/e/f.pyi": "checksum2"
+      }
+    |}
+  in
+  File.create checksum_full_path ~content |> File.write;
+  let open Lwt.Infix in
+  let instagram_initializer =
+    BuildSystem.Initializer.track_unwatched_dependency
+      {
+        Configuration.UnwatchedDependency.change_indicator =
+          { Configuration.ChangeIndicator.root = bucket_root; relative = bucket };
+        files = { Configuration.UnwatchedFiles.root = wheel_root; checksum_path };
+      }
+  in
+  BuildSystem.Initializer.run instagram_initializer
+  >>= fun build_system ->
+  let test_path = PyrePath.create_absolute "/some/source/file.py" in
+  (* Normal update does not yield additional changed paths. *)
+  BuildSystem.update build_system [test_path]
+  >>= fun updated ->
+  assert_paths_no_order updated ~expected:[];
+
+  (* Touching the change indicator but not the checksum file does not yield additional changed
+     paths. *)
+  BuildSystem.update build_system [bucket_path]
+  >>= fun updated ->
+  assert_paths_no_order updated ~expected:[];
+
+  (* Checksum file update will lead to additional changed paths. *)
+  let content =
+    {|
+      {
+        "a.py": "checksum3",
+        "d/e/f.pyi": "checksum2",
+        "g.py": "checksum4"
+      }
+    |}
+  in
+  File.create checksum_full_path ~content |> File.write;
+  BuildSystem.update build_system [test_path; bucket_path]
+  >>= fun updated ->
+  assert_paths_no_order
+    updated
+    ~expected:
+      [
+        PyrePath.create_relative ~root:wheel_root ~relative:"a.py";
+        PyrePath.create_relative ~root:wheel_root ~relative:"b/c.py";
+        PyrePath.create_relative ~root:wheel_root ~relative:"g.py";
+      ];
+
+  Lwt.return_unit
+
+
 let () =
   "build_system_test"
   >::: [
@@ -484,5 +561,8 @@ let () =
          "buck_renormalize" >:: OUnitLwt.lwt_wrapper test_buck_renormalize;
          "buck_update" >:: OUnitLwt.lwt_wrapper test_buck_update;
          "buck_update_without_rebuild" >:: OUnitLwt.lwt_wrapper test_buck_update_without_rebuild;
+         "unwatched_dependency_no_failure_on_initialize"
+         >:: OUnitLwt.lwt_wrapper test_unwatched_dependency_no_failure_on_initialize;
+         "unwatched_dependency_update" >:: OUnitLwt.lwt_wrapper test_unwatched_dependency_update;
        ]
   |> Test.run

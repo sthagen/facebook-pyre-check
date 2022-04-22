@@ -7,7 +7,6 @@
 
 open Core
 module Set = Caml.Set
-open Memory
 
 (* Deliberately left abstract to prevent calls to DependencyKey.Transaction.add from outside this
    module *)
@@ -44,15 +43,13 @@ module DependencyKey : sig
     module Transaction : sig
       type t
 
-      val empty : scheduler:Scheduler.t -> configuration:Configuration.Analysis.t -> t
+      val empty : scheduler:Scheduler.t -> t
 
       val add : t -> RegisteredSet.t transaction_element -> t
 
       val execute : t -> update:(unit -> 'a) -> 'a * RegisteredSet.t
 
       val scheduler : t -> Scheduler.t
-
-      val configuration : t -> Configuration.Analysis.t
     end
   end
 
@@ -87,18 +84,17 @@ module DependencyKind : sig
 end
 
 module DependencyTrackedTableWithCache
-    (Key : KeyType)
+    (Key : Memory.KeyType)
     (DependencyKey : DependencyKey.S)
-    (Value : ComparableValueType) : sig
+    (Value : Memory.ComparableValueType) : sig
   include
-    WithCache.S
-      with type t = Value.t
+    Memory.WithCache.S
+      with type value = Value.t
        and type key = Key.t
-       and type key_out = Key.out
        and module KeySet = Set.Make(Key)
        and module KeyMap = MyMap.Make(Key)
 
-  val get : ?dependency:DependencyKey.registered -> key -> t option
+  val get : ?dependency:DependencyKey.registered -> key -> value option
 
   val mem : ?dependency:DependencyKey.registered -> key -> bool
 
@@ -118,18 +114,17 @@ module DependencyTrackedTableWithCache
 end
 
 module DependencyTrackedTableNoCache
-    (Key : KeyType)
+    (Key : Memory.KeyType)
     (DependencyKey : DependencyKey.S)
-    (Value : ComparableValueType) : sig
+    (Value : Memory.ComparableValueType) : sig
   include
-    NoCache.S
-      with type t = Value.t
+    Memory.NoCache.S
+      with type value = Value.t
        and type key = Key.t
-       and type key_out = Key.out
        and module KeySet = Set.Make(Key)
        and module KeyMap = MyMap.Make(Key)
 
-  val get : ?dependency:DependencyKey.registered -> key -> t option
+  val get : ?dependency:DependencyKey.registered -> key -> value option
 
   val mem : ?dependency:DependencyKey.registered -> key -> bool
 

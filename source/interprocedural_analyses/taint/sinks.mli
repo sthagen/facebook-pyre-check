@@ -25,12 +25,12 @@ type t =
   | AddFeatureToArgument
   | Transform of {
       (* Invariant: concatenation of local @ global is non-empty. *)
-      sanitize_local: SanitizeTransform.Set.t;
-      sanitize_global: SanitizeTransform.Set.t;
+      local: TaintTransforms.t;
+      global: TaintTransforms.t;
       (* Invariant: not a transform. *)
       base: t;
     }
-[@@deriving compare, show]
+[@@deriving compare, hash, sexp, show]
 
 val equal : t -> t -> bool
 
@@ -47,7 +47,9 @@ module Set : sig
 
   val show : t -> string
 
-  val to_sanitize_transforms_exn : t -> SanitizeTransform.Set.t
+  val to_sanitize_transforms_exn : t -> SanitizeTransform.SinkSet.t
+
+  val as_singleton : t -> elt option
 end
 
 module Map : sig
@@ -64,13 +66,16 @@ val discard_transforms : t -> t
 
 val discard_sanitize_transforms : t -> t
 
-val extract_sanitized_sinks_from_transforms : SanitizeTransform.Set.t -> Set.t
+val extract_sanitized_sinks_from_transforms : SanitizeTransform.SinkSet.t -> Set.t
 
-val extract_sanitize_transforms : t -> SanitizeTransform.Set.t
+val extract_sanitize_transforms : t -> SanitizeTransformSet.t
 
 val extract_partial_sink : t -> partial_sink option
 
-val apply_sanitize_transforms : SanitizeTransform.Set.t -> t -> t
+val apply_sanitize_transforms : SanitizeTransformSet.t -> t -> t option
 
-(* Apply sanitize transforms only to the special `LocalReturn` sink. *)
-val apply_sanitize_sink_transforms : SanitizeTransform.Set.t -> t -> t
+val apply_transforms : TaintTransforms.t -> TaintTransforms.Order.t -> t -> t option
+
+val get_named_transforms : t -> TaintTransform.t list
+
+val contains_sanitize_transforms : t -> SanitizeTransformSet.t -> bool

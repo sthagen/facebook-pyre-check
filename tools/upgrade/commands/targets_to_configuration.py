@@ -15,14 +15,14 @@ from typing_extensions import Final
 from ..configuration import Configuration
 from ..errors import Errors
 from ..filesystem import (
-    LocalMode,
-    Target,
     add_local_mode,
     find_directories,
     find_files,
     find_targets,
     get_filesystem,
+    LocalMode,
     remove_non_pyre_ignores,
+    Target,
 )
 from ..repository import Repository
 from .command import CommandArguments, ErrorSuppressingCommand
@@ -284,7 +284,7 @@ class TargetsToConfiguration(ErrorSuppressingCommand):
             )
             strict_codemod.run()
         else:
-            self._suppress_errors(configuration)
+            self._get_and_suppress_errors(configuration)
 
     def _gather_directories(self, subdirectory: Path) -> List[Path]:
         configurations = find_files(subdirectory, ".pyre_configuration.local")

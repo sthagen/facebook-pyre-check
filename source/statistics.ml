@@ -79,31 +79,6 @@ let format_as_json ~integers ~normals () =
 
 
 let sample ?(integers = []) ?(normals = []) ?(metadata = true) () =
-  let server_configuration_metadata =
-    match Configuration.Server.get_global () with
-    | Some { Configuration.Server.socket = { path = socket_path; _ }; saved_state_action; _ } ->
-        let saved_state_metadata =
-          match saved_state_action with
-          | Some
-              (Configuration.Server.Load
-                (Configuration.Server.LoadFromFiles
-                  { Configuration.Server.shared_memory_path; changed_files_path })) ->
-              let changed =
-                match changed_files_path with
-                | Some changed -> ["changed_files_path", PyrePath.absolute changed]
-                | None -> []
-              in
-              ("shared_memory_path", PyrePath.absolute shared_memory_path) :: changed
-          | Some
-              (Configuration.Server.Load (Configuration.Server.LoadFromProject { project_name; _ }))
-            ->
-              ["saved_state_project", project_name]
-          | Some (Configuration.Server.Save project) -> ["save_state_to", project]
-          | None -> []
-        in
-        ("socket_path", PyrePath.absolute socket_path) :: saved_state_metadata
-    | None -> []
-  in
   let normals =
     if metadata then
       [
@@ -114,7 +89,6 @@ let sample ?(integers = []) ?(normals = []) ?(metadata = true) () =
         "identifier", GlobalState.global_state.log_identifier;
         "project_root", GlobalState.global_state.project_root;
       ]
-      @ server_configuration_metadata
       @ normals
     else
       normals
@@ -187,10 +161,9 @@ let performance
     ?(normals = [])
     ()
   =
-  let time_span = Timer.stop timer in
-  let time_in_seconds = Time.Span.to_sec time_span in
-  let integer_time_in_microseconds = Time.Span.to_us time_span |> Int.of_float in
-  Log.log ~section "%s: %.2fs" (String.capitalize name) time_in_seconds;
+  let time_in_seconds = Timer.stop_in_sec timer in
+  let integer_time_in_microseconds = time_in_seconds *. 1e6 |> Int.of_float in
+  Log.log ~section "%s: %.3fs" (String.capitalize name) time_in_seconds;
   Profiling.log_performance_event (fun () ->
       let tags =
         List.map ~f:(fun (name, value) -> name, string_of_int value) integers
@@ -259,7 +232,6 @@ let log_exception caught_exception ~fatal ~origin =
 let buck_event ?(flush = false) ?(integers = []) ?(normals = []) () =
   let default_normals =
     [
-      "buck_builder_type", "new_server";
       "host", GlobalState.hostname;
       "user", GlobalState.username;
       "project_root", GlobalState.global_state.project_root;

@@ -15,7 +15,11 @@ module Error = AnalysisError
    remove the used codes from the map of unused ignores. Since the hash tables are initialized with
    only the sources we're considering, this is sufficient to determine all ignored errors and unused
    ignores. *)
-let ignore ~qualifier { Source.metadata = { Source.Metadata.ignore_lines; _ }; _ } errors =
+let ignore
+    ~qualifier
+    { Source.typecheck_flags = { Source.TypecheckFlags.ignore_lines; _ }; _ }
+    errors
+  =
   let unused_ignores, ignore_lookup =
     let unused_ignores = Location.Table.create () in
     let ignore_lookup = Int.Table.create () in
@@ -74,7 +78,8 @@ let ignore ~qualifier { Source.metadata = { Source.Metadata.ignore_lines; _ }; _
   let unused_ignore_errors =
     let to_error unused_ignore =
       {
-        Error.location = Location.with_module ~qualifier (Ignore.location unused_ignore);
+        Error.location =
+          Location.with_module ~module_reference:qualifier (Ignore.location unused_ignore);
         kind = Error.UnusedIgnore (Ignore.codes unused_ignore);
         signature =
           {
@@ -91,7 +96,8 @@ let ignore ~qualifier { Source.metadata = { Source.Metadata.ignore_lines; _ }; _
 let add_local_mode_errors
     ~define
     {
-      Source.metadata = { Source.Metadata.unused_local_modes; local_mode = actual_mode; _ };
+      Source.typecheck_flags =
+        { Source.TypecheckFlags.unused_local_modes; local_mode = actual_mode; _ };
       source_path = { SourcePath.qualifier; _ };
       _;
     }
@@ -101,7 +107,7 @@ let add_local_mode_errors
     match actual_mode with
     | Some actual_mode ->
         Error.create
-          ~location:(Location.with_module ~qualifier (Node.location unused_mode))
+          ~location:(Location.with_module ~module_reference:qualifier (Node.location unused_mode))
           ~kind:(Error.UnusedLocalMode { unused_mode; actual_mode })
           ~define
         :: errors
@@ -115,7 +121,7 @@ let add_local_mode_errors
 let filter_errors
     ~configuration
     ~global_resolution
-    ~metadata:{ Source.Metadata.local_mode; ignore_codes; _ }
+    ~typecheck_flags:{ Source.TypecheckFlags.local_mode; ignore_codes; _ }
     errors_by_define
   =
   let mode = Source.mode ~configuration ~local_mode in
@@ -128,15 +134,15 @@ let filter_errors
   |> Error.join_at_source ~resolution:global_resolution
 
 
-(* TODO: Take `Source.Metadata.t` instead of `Source.t` to prevent this function from relying on the
-   actual AST. *)
+(* TODO: Take `Source.TypecheckFlags.t` instead of `Source.t` to prevent this function from relying
+   on the actual AST. *)
 let run_on_source
     ~configuration
     ~global_resolution
-    ~source:({ Source.metadata; source_path = { SourcePath.qualifier; _ }; _ } as source)
+    ~source:({ Source.typecheck_flags; source_path = { SourcePath.qualifier; _ }; _ } as source)
     errors_by_define
   =
-  filter_errors ~configuration ~global_resolution ~metadata errors_by_define
+  filter_errors ~configuration ~global_resolution ~typecheck_flags errors_by_define
   |> add_local_mode_errors ~define:(Source.top_level_define_node source) source
   |> ignore ~qualifier source
   |> List.map
@@ -145,10 +151,15 @@ let run_on_source
 
 
 let run ~scheduler ~configuration ~environment sources =
+  let timer = Timer.start () in
   let number_of_sources = List.length sources in
   Log.log ~section:`Progress "Postprocessing %d sources..." number_of_sources;
+  let ast_environment = TypeEnvironment.ReadOnly.ast_environment environment in
+  let global_resolution = TypeEnvironment.ReadOnly.global_resolution environment in
+  let unannotated_global_environment =
+    GlobalResolution.unannotated_global_environment global_resolution
+  in
   let map _ modules =
-    let ast_environment = TypeEnvironment.ReadOnly.ast_environment environment in
     let run_on_module module_name =
       match AstEnvironment.ReadOnly.get_raw_source ast_environment module_name with
       | None -> []
@@ -162,7 +173,7 @@ let run ~scheduler ~configuration ~environment sources =
       | Some (Result.Error { AstEnvironment.ParserError.message; location; _ }) ->
           let location_with_module =
             {
-              Location.WithModule.path = module_name;
+              Location.WithModule.module_reference = module_name;
               start = Location.start location;
               stop = Location.stop location;
             }
@@ -183,9 +194,9 @@ let run ~scheduler ~configuration ~environment sources =
       | Some
           (Result.Ok
             {
-              Source.metadata =
+              Source.typecheck_flags =
                 {
-                  Source.Metadata.local_mode = Some { Node.value = Source.Declare; _ };
+                  Source.TypecheckFlags.local_mode = Some { Node.value = Source.Declare; _ };
                   unused_local_modes = [];
                   _;
                 };
@@ -193,11 +204,7 @@ let run ~scheduler ~configuration ~environment sources =
             }) ->
           []
       | Some (Result.Ok source) ->
-          let global_resolution = TypeEnvironment.ReadOnly.global_resolution environment in
           let errors_by_define =
-            let unannotated_global_environment =
-              GlobalResolution.unannotated_global_environment global_resolution
-            in
             UnannotatedGlobalEnvironment.ReadOnly.all_defines_in_module
               unannotated_global_environment
               module_name
@@ -216,10 +223,10 @@ let run ~scheduler ~configuration ~environment sources =
     Scheduler.map_reduce
       scheduler
       ~policy:
-        (Scheduler.Policy.fixed_chunk_size
-           ~minimum_chunk_size:10
-           ~minimum_chunks_per_worker:2
-           ~preferred_chunk_size:250
+        (Scheduler.Policy.fixed_chunk_count
+           ~minimum_chunks_per_worker:1
+           ~minimum_chunk_size:100
+           ~preferred_chunks_per_worker:5
            ())
       ~initial:(0, [])
       ~map
@@ -227,4 +234,5 @@ let run ~scheduler ~configuration ~environment sources =
       ~inputs:sources
       ()
   in
+  Statistics.performance ~name:"check_Postprocessing" ~phase_name:"Postprocessing" ~timer ();
   errors

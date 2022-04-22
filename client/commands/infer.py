@@ -24,7 +24,7 @@ from libcst.codemod import CodemodContext
 
 from .. import command_arguments, configuration as configuration_module, log
 from ..libcst_vendored_visitors import ApplyTypeAnnotationsVisitor
-from . import commands, remote_logging, backend_arguments, start
+from . import backend_arguments, commands, remote_logging, start
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
@@ -301,6 +301,7 @@ class AnnotationFixer(libcst.CSTTransformer):
         qualifier: str,
         quote_annotations: bool = False,
         dequalify_all: bool = False,
+        runtime_defined: bool = True,
     ) -> str:
         """
         Transform raw annotations in an attempt to reduce incorrectly-imported
@@ -345,6 +346,8 @@ class AnnotationFixer(libcst.CSTTransformer):
         except libcst._exceptions.ParserSyntaxError:
             pass
 
+        if not runtime_defined:
+            return f'"{annotation}"'
         return annotation
 
 
@@ -371,17 +374,20 @@ class TypeAnnotation:
     annotation: Optional[str]
     qualifier: str
     options: StubGenerationOptions
+    runtime_defined: bool
 
     @staticmethod
     def from_raw(
         annotation: Optional[str],
         options: StubGenerationOptions,
         qualifier: str,
+        runtime_defined: bool = True,
     ) -> "TypeAnnotation":
         return TypeAnnotation(
             annotation=annotation,
             qualifier=qualifier,
             options=options,
+            runtime_defined=runtime_defined,
         )
 
     @staticmethod
@@ -401,6 +407,7 @@ class TypeAnnotation:
                 qualifier=self.qualifier,
                 quote_annotations=self.options.quote_annotations,
                 dequalify_all=self.options.dequalify,
+                runtime_defined=self.runtime_defined,
             )
             if self.options.simple_annotations and not TypeAnnotation.is_simple(
                 sanitized
@@ -484,11 +491,14 @@ class ModuleAnnotations:
         infer_output: RawInferOutputForPath,
         options: StubGenerationOptions,
     ) -> "ModuleAnnotations":
-        def type_annotation(annotation: Optional[str]) -> TypeAnnotation:
+        def type_annotation(
+            annotation: Optional[str], parent_class: Optional[str] = None
+        ) -> TypeAnnotation:
             return TypeAnnotation.from_raw(
                 annotation,
                 qualifier=infer_output.qualifier,
                 options=options,
+                runtime_defined=parent_class != annotation if parent_class else True,
             )
 
         return ModuleAnnotations(
@@ -503,7 +513,7 @@ class ModuleAnnotations:
                 AttributeAnnotation(
                     parent=attribute.parent,
                     name=attribute.name,
-                    annotation=type_annotation(attribute.annotation),
+                    annotation=type_annotation(attribute.annotation, attribute.parent),
                 )
                 for attribute in infer_output.attribute_annotations
             ]
@@ -530,11 +540,13 @@ class ModuleAnnotations:
                 MethodAnnotation(
                     parent=define.parent,
                     name=define.name,
-                    return_annotation=type_annotation(define.return_),
+                    return_annotation=type_annotation(define.return_, define.parent),
                     parameters=[
                         Parameter(
                             name=parameter.name,
-                            annotation=type_annotation(parameter.annotation),
+                            annotation=type_annotation(
+                                parameter.annotation, define.parent
+                            ),
                             value=parameter.value,
                         )
                         for parameter in define.parameters
@@ -634,14 +646,18 @@ class AnnotateModuleInPlace:
 
     @staticmethod
     def _annotated_code(
+        code_path: str,
         stub: str,
         code: str,
         options: StubGenerationOptions,
-    ) -> str:
+    ) -> Optional[str]:
         """
         Merge inferred annotations from stubs with source code to get
         annotated code.
         """
+        if "@" "generated" in code:
+            LOG.warning(f"Skipping generated file {code_path}")
+            return
         context = CodemodContext()
         ApplyTypeAnnotationsVisitor.store_stub_in_context(
             context=context,
@@ -659,18 +675,18 @@ class AnnotateModuleInPlace:
         code_path: str,
         options: StubGenerationOptions,
     ) -> None:
-        "Merge a stub file of inferred annotations with a code file inplace."
+        "Merge a stub file of inferred annotations with a code file in place."
         try:
-            with open(stub_path) as stub_file, open(code_path) as code_file:
-                stub = stub_file.read()
-                code = code_file.read()
-                annotated_code = AnnotateModuleInPlace._annotated_code(
-                    stub=stub,
-                    code=code,
-                    options=options,
-                )
-            with open(code_path, "w") as code_file:
-                code_file.write(annotated_code)
+            stub = Path(stub_path).read_text()
+            code = Path(code_path).read_text()
+            annotated_code = AnnotateModuleInPlace._annotated_code(
+                code_path=code_path,
+                stub=stub,
+                code=code,
+                options=options,
+            )
+            if annotated_code is not None:
+                Path(code_path).write_text(annotated_code)
             LOG.info(f"Annotated {code_path}")
         except Exception as error:
             LOG.warning(f"Failed to annotate {code_path}")

@@ -43,12 +43,13 @@ module type PreviousEnvironment = sig
 
   val ast_environment : t -> AstEnvironment.t
 
+  val configuration : t -> Configuration.Analysis.t
+
   val read_only : t -> ReadOnly.t
 
   val update_this_and_all_preceding_environments
     :  t ->
     scheduler:Scheduler.t ->
-    configuration:Configuration.Analysis.t ->
     AstEnvironment.trigger ->
     UpdateResult.t
 end
@@ -96,12 +97,13 @@ module type S = sig
 
   val ast_environment : t -> AstEnvironment.t
 
+  val configuration : t -> Configuration.Analysis.t
+
   val read_only : t -> ReadOnly.t
 
   val update_this_and_all_preceding_environments
     :  t ->
     scheduler:Scheduler.t ->
-    configuration:Configuration.Analysis.t ->
     AstEnvironment.trigger ->
     UpdateResult.t
 end
@@ -140,7 +142,7 @@ module EnvironmentTable = struct
 
     val serialize_value : Value.t -> string
 
-    val show_key : Key.out -> string
+    val show_key : Key.t -> string
 
     val equal_value : Value.t -> Value.t -> bool
   end
@@ -158,7 +160,7 @@ module EnvironmentTable = struct
       keys:KeySet.t ->
       SharedMemoryKeys.DependencyKey.Transaction.t
 
-    val get : ?dependency:SharedMemoryKeys.DependencyKey.registered -> key -> t option
+    val get : ?dependency:SharedMemoryKeys.DependencyKey.registered -> key -> value option
 
     val mem : ?dependency:SharedMemoryKeys.DependencyKey.registered -> key -> bool
   end
@@ -184,23 +186,36 @@ module EnvironmentTable = struct
 
     val ast_environment : t -> AstEnvironment.t
 
+    val configuration : t -> Configuration.Analysis.t
+
     val read_only : t -> ReadOnly.t
 
     val update_this_and_all_preceding_environments
       :  t ->
       scheduler:Scheduler.t ->
-      configuration:Configuration.Analysis.t ->
       AstEnvironment.trigger ->
       UpdateResult.t
   end
 
-  module Make
-      (In : In)
-      (Table : Table with type t = In.Value.t and type key = In.Key.t and type key_out = In.Key.out) =
+  module Make (In : In) (Table : Table with type value = In.Value.t and type key = In.Key.t) =
   struct
     let _ = Table.mem
 
     module In = In
+
+    type t = { upstream_environment: In.PreviousEnvironment.t }
+
+    let create ast_environment =
+      { upstream_environment = In.PreviousEnvironment.create ast_environment }
+
+
+    let ast_environment { upstream_environment } =
+      In.PreviousEnvironment.ast_environment upstream_environment
+
+
+    let configuration { upstream_environment } =
+      In.PreviousEnvironment.configuration upstream_environment
+
 
     module ReadOnly = struct
       type t = { upstream_environment: In.PreviousEnvironment.ReadOnly.t }
@@ -223,20 +238,17 @@ module EnvironmentTable = struct
         In.PreviousEnvironment.ReadOnly.unannotated_global_environment upstream_environment
     end
 
+    let read_only { upstream_environment } =
+      { ReadOnly.upstream_environment = In.PreviousEnvironment.read_only upstream_environment }
+
+
     module UpdateResult = UpdateResult.Make (In.PreviousEnvironment) (ReadOnly)
-
-    let read_only previous_update_result =
-      {
-        ReadOnly.upstream_environment =
-          In.PreviousEnvironment.UpdateResult.read_only previous_update_result;
-      }
-
 
     module TriggerMap = Map.Make (struct
       type t = In.trigger [@@deriving sexp, compare]
     end)
 
-    let update_only_this_environment ~scheduler ~configuration upstream_update =
+    let update_only_this_environment ~scheduler this_environment upstream_update =
       Log.log ~section:`Environment "Updating %s Environment" In.Value.description;
       let update ~names_to_update () =
         let register () =
@@ -266,7 +278,7 @@ module EnvironmentTable = struct
         in
         ()
       in
-      match configuration with
+      match configuration this_environment with
       | { Configuration.Analysis.incremental_style = FineGrained; _ } ->
           let triggered_dependencies =
             let name = Format.sprintf "TableUpdate(%s)" In.Value.description in
@@ -295,9 +307,7 @@ module EnvironmentTable = struct
                     |> List.map ~f:In.convert_trigger
                     |> Table.KeySet.of_list
                   in
-                  let transaction =
-                    SharedMemoryKeys.DependencyKey.Transaction.empty ~scheduler ~configuration
-                  in
+                  let transaction = SharedMemoryKeys.DependencyKey.Transaction.empty ~scheduler in
                   if In.lazy_incremental then
                     Table.add_pessimistic_transaction ~keys transaction
                     |> SharedMemoryKeys.DependencyKey.Transaction.execute ~update:(fun () -> ())
@@ -321,7 +331,7 @@ module EnvironmentTable = struct
           {
             UpdateResult.triggered_dependencies;
             upstream = upstream_update;
-            read_only = read_only upstream_update;
+            read_only = read_only this_environment;
           }
       | _ ->
           let _ =
@@ -341,36 +351,20 @@ module EnvironmentTable = struct
           {
             UpdateResult.triggered_dependencies = SharedMemoryKeys.DependencyKey.RegisteredSet.empty;
             upstream = upstream_update;
-            read_only = read_only upstream_update;
+            read_only = read_only this_environment;
           }
 
 
-    type t = { upstream_environment: In.PreviousEnvironment.t }
-
-    let create ast_environment =
-      { upstream_environment = In.PreviousEnvironment.create ast_environment }
-
-
-    let ast_environment { upstream_environment } =
-      In.PreviousEnvironment.ast_environment upstream_environment
-
-
-    let read_only { upstream_environment } =
-      { ReadOnly.upstream_environment = In.PreviousEnvironment.read_only upstream_environment }
-
-
     let update_this_and_all_preceding_environments
-        { upstream_environment }
+        ({ upstream_environment } as this_environment)
         ~scheduler
-        ~configuration
         ast_environment_trigger
       =
       In.PreviousEnvironment.update_this_and_all_preceding_environments
         upstream_environment
         ~scheduler
-        ~configuration
         ast_environment_trigger
-      |> update_only_this_environment ~scheduler ~configuration
+      |> update_only_this_environment this_environment ~scheduler
   end
 
   module WithCache (In : In) =

@@ -8,7 +8,17 @@
 open Core
 
 (* Analyze command uses the same exit code scheme as check command. *)
-module ExitStatus = CheckCommand.ExitStatus
+module ExitStatus = struct
+  type t =
+    | CheckStatus of CheckCommand.ExitStatus.t
+    | PysaStatus of Taint.ExitStatus.t
+
+  let exit_code = function
+    (* 1-9 are reserved for CheckCommand.ExitStatus *)
+    | CheckStatus status -> CheckCommand.ExitStatus.exit_code status
+    (* 10-19 are reserved for Taint.ExitStatus *)
+    | PysaStatus status -> Taint.ExitStatus.exit_code status
+end
 
 module AnalyzeConfiguration = struct
   type t = {
@@ -119,11 +129,6 @@ module AnalyzeConfiguration = struct
         repository_root = _;
       }
     =
-    let source_paths =
-      match source_paths with
-      | Configuration.SourcePaths.Simple source_paths -> source_paths
-      | Buck { Configuration.Buck.artifact_root; _ } -> [SearchPath.Root artifact_root]
-    in
     let configuration =
       Configuration.Analysis.create
         ~parallel
@@ -140,6 +145,7 @@ module AnalyzeConfiguration = struct
         ~show_error_traces:false
         ~excludes
         ~extensions
+        ~store_type_errors:false
         ~incremental_style:Configuration.Analysis.Shallow
         ~log_directory:(PyrePath.absolute log_path)
         ~python_major_version:major
@@ -149,7 +155,7 @@ module AnalyzeConfiguration = struct
         ~shared_memory_dependency_table_power:dependency_table_power
         ~shared_memory_hash_table_power:hash_table_power
         ~enable_type_comments
-        ~source_paths
+        ~source_paths:(Configuration.SourcePaths.to_search_paths source_paths)
         ()
     in
     {
@@ -194,75 +200,88 @@ let run_taint_analysis
   =
   let run () =
     Scheduler.with_scheduler ~configuration ~f:(fun scheduler ->
-        let analysis_kind = TaintAnalysis.abstract_kind in
-        Interprocedural.FixpointAnalysis.initialize_configuration
-          ~static_analysis_configuration
-          analysis_kind;
-
-        (* Collect decorators to skip before type-checking because decorator inlining happens in an
-           early phase of type-checking and needs to know which decorators to skip. *)
-        Service.StaticAnalysis.parse_and_save_decorators_to_skip ~inline_decorators configuration;
-        let environment = Service.StaticAnalysis.type_check ~scheduler ~configuration ~use_cache in
-
-        let qualifiers =
-          Analysis.TypeEnvironment.module_tracker environment
-          |> Analysis.ModuleTracker.tracked_explicit_modules
-        in
-
-        let initial_callables =
-          Service.StaticAnalysis.fetch_initial_callables
-            ~scheduler
-            ~configuration
-            ~environment:(Analysis.TypeEnvironment.read_only environment)
-            ~qualifiers
-            ~use_cache
-        in
-
-        let initialized_models =
-          let { Service.StaticAnalysis.callables_with_dependency_information; stubs; _ } =
-            initial_callables
-          in
-          Interprocedural.FixpointAnalysis.initialize_models
-            analysis_kind
+        try
+          let analysis_kind = TaintAnalysis.abstract_kind in
+          Interprocedural.FixpointAnalysis.initialize_configuration
             ~static_analysis_configuration
-            ~scheduler
-            ~environment:(Analysis.TypeEnvironment.read_only environment)
-            ~callables:(List.map callables_with_dependency_information ~f:fst)
-            ~stubs
-        in
+            analysis_kind;
 
-        let environment = Analysis.TypeEnvironment.read_only environment in
-        let ast_environment = Analysis.TypeEnvironment.ReadOnly.ast_environment environment in
+          (* Collect decorators to skip before type-checking because decorator inlining happens in
+             an early phase of type-checking and needs to know which decorators to skip. *)
+          Service.StaticAnalysis.parse_and_save_decorators_to_skip ~inline_decorators configuration;
+          let cache =
+            Service.StaticAnalysis.Cache.load ~scheduler ~configuration ~enabled:use_cache
+          in
+          let environment = Service.StaticAnalysis.type_check ~scheduler ~configuration ~cache in
 
-        let { Interprocedural.AnalysisResult.InitializedModels.initial_models; skip_overrides } =
-          Interprocedural.AnalysisResult.InitializedModels.get_models_including_generated_models
-            initialized_models
-            ~updated_environment:(Some environment)
-        in
-        let filename_lookup path_reference =
-          match
-            Server.RequestHandler.instantiate_path
-              ~build_system
+          let qualifiers =
+            Analysis.TypeEnvironment.module_tracker environment
+            |> Analysis.ModuleTracker.read_only
+            |> Analysis.ModuleTracker.ReadOnly.tracked_explicit_modules
+          in
+
+          let read_only_environment = Analysis.TypeEnvironment.read_only environment in
+          let class_hierarchy_graph =
+            Service.StaticAnalysis.build_class_hierarchy_graph
+              ~scheduler
+              ~cache
+              ~environment:read_only_environment
+              ~qualifiers
+          in
+          let _ = Service.StaticAnalysis.build_class_intervals class_hierarchy_graph in
+          let initial_callables =
+            Service.StaticAnalysis.fetch_initial_callables
+              ~scheduler
               ~configuration
-              ~ast_environment
-              path_reference
-          with
-          | None -> None
-          | Some full_path ->
-              let root = Option.value repository_root ~default:configuration.local_root in
-              PyrePath.get_relative_to_root ~root ~path:(PyrePath.create_absolute full_path)
-        in
-        Service.StaticAnalysis.analyze
-          ~scheduler
-          ~analysis:analysis_kind
-          ~static_analysis_configuration
-          ~filename_lookup
-          ~environment
-          ~qualifiers
-          ~initial_callables
-          ~initial_models
-          ~skip_overrides
-          ())
+              ~cache
+              ~environment:read_only_environment
+              ~qualifiers
+          in
+
+          let { Interprocedural.AnalysisResult.initial_models; skip_overrides } =
+            let { Service.StaticAnalysis.callables_with_dependency_information; stubs; _ } =
+              initial_callables
+            in
+            Interprocedural.FixpointAnalysis.initialize_models
+              analysis_kind
+              ~static_analysis_configuration
+              ~scheduler
+              ~environment:(Analysis.TypeEnvironment.read_only environment)
+              ~callables:(List.map callables_with_dependency_information ~f:fst)
+              ~stubs
+          in
+          let ast_environment =
+            environment
+            |> Analysis.TypeEnvironment.read_only
+            |> Analysis.TypeEnvironment.ReadOnly.ast_environment
+          in
+          let filename_lookup path_reference =
+            match
+              Server.RequestHandler.instantiate_path ~build_system ~ast_environment path_reference
+            with
+            | None -> None
+            | Some full_path ->
+                let root = Option.value repository_root ~default:configuration.local_root in
+                PyrePath.get_relative_to_root ~root ~path:(PyrePath.create_absolute full_path)
+          in
+          Service.StaticAnalysis.analyze
+            ~scheduler
+            ~analysis:analysis_kind
+            ~static_analysis_configuration
+            ~cache
+            ~filename_lookup
+            ~environment
+            ~qualifiers
+            ~initial_callables
+            ~initial_models
+            ~skip_overrides
+            ()
+        with
+        | exn ->
+            (* The backtrace is lost if the exception is caught at the top level, because of `Lwt`.
+             * Let's print the exception here to ease debugging. *)
+            Log.log_exception "Taint analysis failed." exn (Worker.exception_backtrace exn);
+            raise exn)
   in
   with_performance_tracking run
 
@@ -287,7 +306,7 @@ let run_analyze analyze_configuration =
         ~inline_decorators
         ~repository_root
         ();
-      Lwt.return ExitStatus.Ok)
+      Lwt.return (ExitStatus.CheckStatus CheckCommand.ExitStatus.Ok))
 
 
 let run_analyze configuration_file =
@@ -297,7 +316,7 @@ let run_analyze configuration_file =
     with
     | Result.Error message ->
         Log.error "%s" message;
-        ExitStatus.PyreError
+        ExitStatus.CheckStatus CheckCommand.ExitStatus.PyreError
     | Result.Ok
         ({
            AnalyzeConfiguration.base =
@@ -322,7 +341,9 @@ let run_analyze configuration_file =
           ~memory_profiling_output
           ();
         Lwt_main.run
-          (Lwt.catch (fun () -> run_analyze analyze_configuration) CheckCommand.on_exception)
+          (Lwt.catch
+             (fun () -> run_analyze analyze_configuration)
+             (fun exn -> Lwt.return (ExitStatus.CheckStatus (CheckCommand.on_exception exn))))
   in
   Statistics.flush ();
   exit (ExitStatus.exit_code exit_status)

@@ -25,15 +25,14 @@ let assert_taint ?models ?models_source ~context source expect =
     let project = Test.ScratchProject.setup ~context sources in
     Test.ScratchProject.build_type_environment project
   in
+  let read_only_environment = TypeEnvironment.read_only environment in
   let source =
     AstEnvironment.ReadOnly.get_processed_source
       (TypeEnvironment.ast_environment environment |> AstEnvironment.read_only)
       qualifier
     |> fun option -> Option.value_exn option
   in
-  let global_resolution =
-    TypeEnvironment.read_only environment |> TypeEnvironment.ReadOnly.global_resolution
-  in
+  let global_resolution = TypeEnvironment.ReadOnly.global_resolution read_only_environment in
   models
   >>| Test.trim_extra_indentation
   >>| (fun model_source ->
@@ -44,7 +43,7 @@ let assert_taint ?models ?models_source ~context source expect =
             ~configuration:TaintConfiguration.default
             ~callables:None
             ~stubs:(Target.HashSet.create ())
-            Target.Map.empty
+            ()
         in
         assert_bool "Error while parsing models." (List.is_empty errors);
         Target.Map.map models ~f:(AnalysisResult.make_model Taint.Result.kind)
@@ -57,14 +56,15 @@ let assert_taint ?models ?models_source ~context source expect =
   let analyze_and_store_in_order define =
     let call_target = Target.create define in
     let () = Log.log ~section:`Taint "Analyzing %a" Target.pp call_target in
-    let environment = TypeEnvironment.read_only environment in
     let call_graph_of_define =
-      CallGraph.call_graph_of_define ~environment ~define:(Ast.Node.value define)
+      CallGraph.call_graph_of_define
+        ~environment:read_only_environment
+        ~define:(Ast.Node.value define)
     in
     let forward, _errors, _ =
       ForwardAnalysis.run
         ?profiler:None
-        ~environment
+        ~environment:read_only_environment
         ~qualifier
         ~define
         ~call_graph_of_define
@@ -76,7 +76,7 @@ let assert_taint ?models ?models_source ~context source expect =
     |> FixpointState.add_predefined FixpointState.Epoch.predefined call_target
   in
   let () = List.iter ~f:analyze_and_store_in_order defines in
-  List.iter ~f:(check_expectation ~environment:(TypeEnvironment.read_only environment)) expect;
+  List.iter ~f:(check_expectation ~environment:read_only_environment) expect;
   TypeEnvironment.invalidate environment [qualifier]
 
 
@@ -91,7 +91,7 @@ let test_no_model context =
       [outcome ~kind:`Function "does_not_exist"]
   in
   assert_raises
-    (OUnitTest.OUnit_failure "model not found for `Function (\"does_not_exist\")")
+    (OUnitTest.OUnit_failure "model not found for (Function \"does_not_exist\")")
     assert_no_model
 
 
@@ -165,7 +165,7 @@ let test_hardcoded_source context =
     ~models:
       {|
       django.http.Request.GET: TaintSource[UserControlled] = ...
-      def dict.__getitem__(self: TaintInTaintOut, k): ...
+      def dict.__getitem__(self: TaintInTaintOut, __k): ...
     |}
     {|
       def get_field(request: django.http.Request):
@@ -192,7 +192,7 @@ let test_hardcoded_source context =
     ~models:
       {|
       os.environ: TaintSource[UserControlled] = ...
-      def dict.__getitem__(self: TaintInTaintOut, k): ...
+      def dict.__getitem__(self: TaintInTaintOut, __k): ...
     |}
     {|
       def get_environment_variable_with_getitem():
@@ -1014,7 +1014,11 @@ let test_construction context =
         return d
     |}
     [
-      outcome ~kind:`Method ~returns:[] ~tito_parameters:["capture"] "qualifier.Data.__init__";
+      outcome
+        ~kind:`Method
+        ~returns:[]
+        ~tito_parameters:[{ name = "capture"; sinks = [Sinks.LocalReturn] }]
+        "qualifier.Data.__init__";
       outcome ~kind:`Function ~returns:[Sources.NamedSource "Test"] "qualifier.test_capture";
       outcome ~kind:`Function ~returns:[] "qualifier.test_no_capture";
     ]
@@ -1040,7 +1044,7 @@ let test_composed_models context =
             { name = "x"; sinks = [Taint.Sinks.NamedSink "Test"] };
             { name = "y"; sinks = [Taint.Sinks.NamedSink "Demo"] };
           ]
-        ~tito_parameters:["z"]
+        ~tito_parameters:[{ name = "z"; sinks = [Sinks.LocalReturn] }]
         "models.composed_model";
     ]
 
@@ -1102,8 +1106,122 @@ let test_tito_side_effects context =
         "qualifier.test_from_1_to_0_nested";
       outcome ~kind:`Function ~returns:[] "qualifier.test_from_1_to_0_nested_distinct";
       outcome ~kind:`Function ~returns:[Sources.NamedSource "Test"] "qualifier.test_weak_assign";
-      outcome ~kind:`Method ~tito_parameters:["arg updates parameter 0"] "qualifier.MyList.append";
+      outcome
+        ~kind:`Method
+        ~tito_parameters:[{ name = "arg"; sinks = [Sinks.ParameterUpdate 0] }]
+        "qualifier.MyList.append";
       outcome ~kind:`Function ~returns:[Sources.NamedSource "Test"] "qualifier.test_list_append";
+    ]
+
+
+let test_taint_in_taint_out_transform context =
+  assert_taint
+    ~context
+    ~models:
+      {|
+      def models.test_transform(arg: TaintInTaintOut[Transform[TestTransform]]): ...
+    |}
+    ~models_source:{|
+      def test_transform(arg): ...
+    |}
+    {|
+      def simple_source():
+        return _test_source()
+
+      def taint_with_tito_transform():
+        x = simple_source()
+        y = models.test_transform(x)
+        return y
+    |}
+    [
+      outcome
+        ~kind:`Function
+        ~returns:
+          [
+            Sources.Transform
+              {
+                local = TaintTransforms.of_named_transforms [TaintTransform.Named "TestTransform"];
+                global = TaintTransforms.empty;
+                base = Sources.NamedSource "Test";
+              };
+          ]
+        "qualifier.taint_with_tito_transform";
+    ];
+  assert_taint
+    ~context
+    ~models:
+      {|
+      def models.test_transform(arg: TaintInTaintOut[Transform[TestTransform]]): ...
+      def models.demo_transform(arg: TaintInTaintOut[Transform[DemoTransform]]): ...
+    |}
+    ~models_source:{|
+      def test_transform(arg): ...
+      def demo_transform(arg): ...
+    |}
+    {|
+      def simple_source():
+        return _test_source()
+
+      def taint_with_tito_transform():
+        x = simple_source()
+        y = models.test_transform(x)
+        return y
+
+      def taint_transforming_transform():
+        x = taint_with_tito_transform()
+        y = models.demo_transform(x)
+        return y
+    |}
+    [
+      outcome
+        ~kind:`Function
+        ~returns:
+          [
+            Sources.Transform
+              {
+                local = TaintTransforms.of_named_transforms [TaintTransform.Named "DemoTransform"];
+                global = TaintTransforms.of_named_transforms [TaintTransform.Named "TestTransform"];
+                base = Sources.NamedSource "Test";
+              };
+          ]
+        "qualifier.taint_transforming_transform";
+    ];
+  assert_taint
+    ~context
+    ~models:
+      {|
+      def models.test_transform(arg: TaintInTaintOut[Transform[TestTransform]]): ...
+      def models.demo_transform(arg: TaintInTaintOut[Transform[DemoTransform]]): ...
+    |}
+    ~models_source:{|
+      def test_transform(arg): ...
+      def demo_transform(arg): ...
+    |}
+    {|
+      def simple_source():
+        return _test_source()
+
+      def taint_with_two_tito_transform():
+        x = simple_source()
+        y = models.test_transform(x)
+        z = models.demo_transform(y)
+        return z
+    |}
+    [
+      outcome
+        ~kind:`Function
+        ~returns:
+          [
+            Sources.Transform
+              {
+                local =
+                  TaintTransforms.of_named_transforms
+                    [TaintTransform.Named "DemoTransform"; TaintTransform.Named "TestTransform"];
+                global = TaintTransforms.empty;
+                base = Sources.NamedSource "Test";
+              };
+          ]
+        "qualifier.taint_with_two_tito_transform";
     ]
 
 
@@ -1129,11 +1247,11 @@ let () =
     "starred", test_starred;
     "string", test_string;
     "taint_in_taint_out_application", test_taint_in_taint_out_application;
+    "taint_in_taint_out_transform", test_taint_in_taint_out_transform;
     "ternary", test_ternary;
     "tito_side_effects", test_tito_side_effects;
     "tuple", test_tuple;
     "unary", test_unary;
-    "union", test_taint_in_taint_out_application;
     "walrus", test_walrus;
     "yield", test_yield;
   ]

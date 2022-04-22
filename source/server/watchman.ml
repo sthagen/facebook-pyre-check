@@ -150,6 +150,7 @@ end
 module Filter = struct
   type t = {
     base_names: string list;
+    whole_names: string list;
     suffixes: string list;
   }
   [@@deriving sexp, compare, hash]
@@ -172,8 +173,27 @@ module Filter = struct
       | Configuration.SourcePaths.Buck _ ->
           let set = Set.add set "TARGETS" in
           Set.add set "BUCK"
-      | Configuration.SourcePaths.Simple _ -> set)
+      | Configuration.SourcePaths.Simple _
+      | Configuration.SourcePaths.WithUnwatchedDependency _ ->
+          set)
       |> Set.to_list
+    in
+    let whole_names =
+      match source_paths with
+      | Configuration.SourcePaths.WithUnwatchedDependency
+          {
+            unwatched_dependency =
+              {
+                Configuration.UnwatchedDependency.change_indicator =
+                  { Configuration.ChangeIndicator.relative; _ };
+                _;
+              };
+            _;
+          } ->
+          (* Change indicator file needs to be watched, since we rely on it to detect changes in
+             unwatched dependencies. *)
+          [relative]
+      | _ -> []
     in
     let extension_of = function
       | CriticalFile.BaseName _
@@ -192,19 +212,24 @@ module Filter = struct
       |> List.fold ~init:set ~f:String.Set.add
       |> fun set -> Set.add set "py" |> fun set -> Set.add set "pyi" |> Set.to_list
     in
-    { base_names; suffixes }
+    { base_names; whole_names; suffixes }
 
 
-  let watchman_expression_of { base_names; suffixes; _ } =
+  let watchman_expression_of { base_names; whole_names; suffixes } =
     let base_names =
-      List.map base_names ~f:(fun base_name -> `List [`String "match"; `String base_name])
+      List.map base_names ~f:(fun base_name ->
+          `List [`String "match"; `String base_name; `String "basename"])
+    in
+    let whole_names =
+      List.map whole_names ~f:(fun base_name ->
+          `List [`String "match"; `String base_name; `String "wholename"])
     in
     let suffixes = List.map suffixes ~f:(fun suffix -> `List [`String "suffix"; `String suffix]) in
     `List
       [
         `String "allof";
         `List [`String "type"; `String "f"];
-        `List (`String "anyof" :: List.append suffixes base_names);
+        `List (`String "anyof" :: List.concat [suffixes; base_names; whole_names]);
       ]
 end
 
@@ -223,51 +248,83 @@ module Subscriber = struct
     initial_clock: string;
   }
 
+  let send_request ~connection request =
+    let open Lwt.Infix in
+    Raw.Connection.send connection request >>= fun () -> Raw.Connection.receive connection ()
+
+
+  let create_subscribe_request ~root ~filter () =
+    `List
+      [
+        `String "subscribe";
+        `String (PyrePath.absolute root);
+        `String "pyre_file_change_subscription";
+        `Assoc
+          [
+            "empty_on_fresh_instance", `Bool true;
+            "expression", Filter.watchman_expression_of filter;
+            "fields", `List [`String "name"];
+          ];
+      ]
+
+
+  let create_watch_project_rquest ~root () =
+    `List [`String "watch-project"; `String (PyrePath.absolute root)]
+
+
+  let handle_subscribe_response = function
+    | Raw.Response.Error message -> raise (SubscriptionError message)
+    | Raw.Response.EndOfStream ->
+        raise (SubscriptionError "Cannot get the initial response from `watchman subscribe`")
+    | Raw.Response.Ok initial_response -> (
+        match Yojson.Safe.Util.member "error" initial_response with
+        | `Null -> (
+            match Yojson.Safe.Util.member "clock" initial_response with
+            | `String initial_clock -> Lwt.return initial_clock
+            | _ as error ->
+                let message =
+                  Format.sprintf
+                    "Cannot determinte the initial clock from response %s"
+                    (Yojson.Safe.to_string error)
+                in
+                raise (SubscriptionError message))
+        | _ as error ->
+            let message =
+              Format.sprintf
+                "Subscription rejected by watchman. Response: %s"
+                (Yojson.Safe.to_string error)
+            in
+            raise (SubscriptionError message))
+
+
+  let handle_watch_project_response = function
+    | Raw.Response.Error message -> raise (SubscriptionError message)
+    | Raw.Response.EndOfStream ->
+        raise (SubscriptionError "Cannot get the initial response from `watchman watch-project`")
+    | Raw.Response.Ok initial_response -> (
+        match Yojson.Safe.Util.member "error" initial_response with
+        | `Null -> Lwt.return_unit
+        | _ as error ->
+            let message =
+              Format.sprintf
+                "Watch-project request rejected by watchman. Response: %s"
+                (Yojson.Safe.to_string error)
+            in
+            raise (SubscriptionError message))
+
+
   let subscribe ({ Setting.raw; root; filter } as setting) =
     let open Lwt.Infix in
     Raw.open_connection raw
     >>= fun connection ->
     let do_subscribe () =
-      let request =
-        `List
-          [
-            `String "subscribe";
-            `String (PyrePath.absolute root);
-            `String "pyre_file_change_subscription";
-            `Assoc
-              [
-                "empty_on_fresh_instance", `Bool true;
-                "expression", Filter.watchman_expression_of filter;
-                "fields", `List [`String "name"];
-              ];
-          ]
-      in
-      Raw.Connection.send connection request
+      Log.info "Request watchman subscription at %a" PyrePath.pp root;
+      send_request ~connection (create_watch_project_rquest ~root ())
+      >>= handle_watch_project_response
       >>= fun () ->
-      Raw.Connection.receive connection ()
-      >>= function
-      | Raw.Response.Error message -> raise (SubscriptionError message)
-      | Raw.Response.EndOfStream ->
-          raise (SubscriptionError "Cannot get the initial response from `watchman subscribe`")
-      | Raw.Response.Ok initial_response -> (
-          match Yojson.Safe.Util.member "error" initial_response with
-          | `Null -> (
-              match Yojson.Safe.Util.member "clock" initial_response with
-              | `String initial_clock -> Lwt.return { setting; connection; initial_clock }
-              | _ as error ->
-                  let message =
-                    Format.sprintf
-                      "Cannot determinte the initial clock from response %s"
-                      (Yojson.Safe.to_string error)
-                  in
-                  raise (SubscriptionError message))
-          | _ as error ->
-              let message =
-                Format.sprintf
-                  "Subscription rejected by watchman. Response: %s"
-                  (Yojson.Safe.to_string error)
-              in
-              raise (SubscriptionError message))
+      send_request ~connection (create_subscribe_request ~root ~filter ())
+      >>= handle_subscribe_response
+      >>= fun initial_clock -> Lwt.return { setting; connection; initial_clock }
     in
     Lwt.catch do_subscribe (fun exn ->
         (* Make sure the connection is properly shut down when an exception is raised. *)

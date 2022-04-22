@@ -14,7 +14,7 @@ module T = struct
     line: int;
     column: int;
   }
-  [@@deriving compare, sexp, hash, to_yojson]
+  [@@deriving compare, eq, sexp, hash, to_yojson]
 
   (* These are not filtered: our backend is broken if any locations appear in errors. *)
   let any_position = { line = -1; column = -1 }
@@ -64,6 +64,21 @@ module T = struct
   let column { start = { column; _ }; _ } = column
 
   let stop_column { stop = { column; _ }; _ } = column
+
+  let contains
+      ~location:
+        {
+          start = { column = start_column; line = start_line };
+          stop = { column = stop_column; line = stop_line };
+        }
+      { line; column }
+    =
+    (* Location ranges are left-inclusive, right-exclusive. *)
+    let greater_or_equal_to_start =
+      line > start_line || (line = start_line && column >= start_column)
+    in
+    let less_than_stop = line < stop_line || (line = stop_line && column < stop_column) in
+    greater_or_equal_to_start && less_than_stop
 end
 
 include T
@@ -100,22 +115,22 @@ end
 module WithModule = struct
   module T = struct
     type t = {
-      path: Reference.t;
+      module_reference: Reference.t;
       start: position;
       stop: position;
     }
-    [@@deriving compare, sexp, hash, to_yojson]
+    [@@deriving compare, eq, sexp, hash, to_yojson]
 
-    let any = { path = Reference.empty; start = any_position; stop = any_position }
+    let any = { module_reference = Reference.empty; start = any_position; stop = any_position }
 
     let line { start = { line; _ }; _ } = line
 
-    let pp format { path; start; stop } =
+    let pp format { module_reference; start; stop } =
       Format.fprintf
         format
         "%a:%d:%d-%d:%d"
         Reference.pp
-        path
+        module_reference
         start.line
         start.column
         stop.line
@@ -124,8 +139,8 @@ module WithModule = struct
 
     let show location = Format.asprintf "%a" pp location
 
-    let instantiate ~lookup { path; start; stop } =
-      let path = Option.value (lookup path) ~default:"*" in
+    let instantiate ~lookup { module_reference; start; stop } =
+      let path = Option.value (lookup module_reference) ~default:"*" in
       { WithPath.path; start; stop }
   end
 
@@ -135,6 +150,6 @@ end
 
 let with_path ~path { start; stop } = { WithPath.path; start; stop }
 
-let with_module ~qualifier { start; stop } = { WithModule.path = qualifier; start; stop }
+let with_module ~module_reference { start; stop } = { WithModule.module_reference; start; stop }
 
 let strip_module { WithModule.start; stop; _ } = { start; stop }

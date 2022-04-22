@@ -1829,7 +1829,7 @@ let defines
     let visit_children = function
       | { Node.value = Statement.Define _; _ } -> include_nested
       | { Node.value = Class _; _ } -> include_methods
-      | _ -> false
+      | _ -> true
 
 
     let predicate = function
@@ -1856,12 +1856,7 @@ let count_defines source =
   let module Visitor = Visit.MakeStatementVisitor (struct
     type t = int
 
-    let visit_children = function
-      | { Node.value = Statement.Define _; _ }
-      | { Node.value = Class _; _ } ->
-          true
-      | _ -> false
-
+    let visit_children _ = true
 
     let statement _ count = function
       | { Node.value = Statement.Class _; _ } ->
@@ -2879,8 +2874,6 @@ let expand_sqlalchemy_declarative_base ({ Source.statements; _ } as source) =
           with
           | Some "sqlalchemy.ext.declarative.declarative_base", Some class_name_reference ->
               declarative_base_class_declaration ~base_module:"sqlalchemy" class_name_reference
-          | Some "sqlalchemy_1_4.ext.declarative.declarative_base", Some class_name_reference ->
-              declarative_base_class_declaration ~base_module:"sqlalchemy_1_4" class_name_reference
           | _ -> value)
       | _ -> value
     in
@@ -3555,6 +3548,114 @@ let populate_unbound_names source =
   { source with Source.top_level_unbound_names; statements }
 
 
+let replace_union_shorthand_in_annotation_expression =
+  let rec transform_expression ({ Node.value; location } as expression) =
+    let union_value arguments =
+      Expression.Call
+        {
+          callee =
+            {
+              Node.location;
+              value =
+                Name
+                  (Name.Attribute
+                     {
+                       base =
+                         {
+                           Node.location;
+                           value =
+                             Name
+                               (Name.Attribute
+                                  {
+                                    base =
+                                      { Node.location; value = Name (Name.Identifier "typing") };
+                                    attribute = "Union";
+                                    special = false;
+                                  });
+                         };
+                       attribute = "__getitem__";
+                       special = true;
+                     });
+            };
+          arguments;
+        }
+    in
+    let value =
+      match value with
+      | Expression.Call
+          {
+            callee = { Node.value = Name (Name.Attribute { base; attribute = "__or__"; _ }); _ };
+            arguments;
+          } ->
+          let base_argument = { Call.Argument.value = base; name = None } in
+          let transform_argument ({ Call.Argument.value; _ } as argument) =
+            { argument with Call.Argument.value = transform_expression value }
+          in
+          let to_expression_list sofar { Call.Argument.value; _ } =
+            match Node.value value with
+            | Expression.Call
+                {
+                  callee =
+                    {
+                      Node.value =
+                        Name
+                          (Name.Attribute
+                            {
+                              base =
+                                {
+                                  value =
+                                    Name
+                                      (Name.Attribute
+                                        {
+                                          base = { Node.value = Name (Name.Identifier "typing"); _ };
+                                          attribute = "Union";
+                                          special = false;
+                                        });
+                                  _;
+                                };
+                              _;
+                            });
+                      _;
+                    };
+                  arguments =
+                    [{ Call.Argument.name = None; value = { Node.value = Tuple argument_list; _ } }];
+                } ->
+                List.concat [sofar; argument_list] |> List.rev
+            | _ -> value :: sofar
+          in
+          let arguments =
+            List.concat [[base_argument]; arguments]
+            |> List.map ~f:transform_argument
+            |> List.fold ~init:[] ~f:to_expression_list
+            |> List.rev
+            |> fun argument_list ->
+            [
+              {
+                Call.Argument.value = { Node.value = Expression.Tuple argument_list; location };
+                name = None;
+              };
+            ]
+          in
+          union_value arguments
+      | Expression.Call
+          {
+            callee = { value = Name (Name.Attribute { attribute = "__getitem__"; _ }); _ } as callee;
+            arguments;
+          } ->
+          let arguments =
+            List.map arguments ~f:(fun ({ Call.Argument.value; _ } as argument) ->
+                { argument with value = transform_expression value })
+          in
+          Expression.Call { callee; arguments }
+      | Tuple arguments -> Tuple (List.map ~f:transform_expression arguments)
+      | List arguments -> List (List.map ~f:transform_expression arguments)
+      | _ -> value
+    in
+    { expression with Node.value }
+  in
+  transform_expression
+
+
 let replace_union_shorthand source =
   let module Transform = Transform.Make (struct
     type t = unit
@@ -3563,124 +3664,12 @@ let replace_union_shorthand source =
 
     let transform_children state _ = state, true
 
-    let transform_shorthand_union_expression =
-      let rec transform_expression ({ Node.value; location } as expression) =
-        let union_value arguments =
-          Expression.Call
-            {
-              callee =
-                {
-                  Node.location;
-                  value =
-                    Name
-                      (Name.Attribute
-                         {
-                           base =
-                             {
-                               Node.location;
-                               value =
-                                 Name
-                                   (Name.Attribute
-                                      {
-                                        base =
-                                          { Node.location; value = Name (Name.Identifier "typing") };
-                                        attribute = "Union";
-                                        special = false;
-                                      });
-                             };
-                           attribute = "__getitem__";
-                           special = true;
-                         });
-                };
-              arguments;
-            }
-        in
-        let value =
-          match value with
-          | Expression.Call
-              {
-                callee = { Node.value = Name (Name.Attribute { base; attribute = "__or__"; _ }); _ };
-                arguments;
-              } ->
-              let base_argument = { Call.Argument.value = base; name = None } in
-              let transform_argument ({ Call.Argument.value; _ } as argument) =
-                { argument with Call.Argument.value = transform_expression value }
-              in
-              let to_expression_list sofar { Call.Argument.value; _ } =
-                match Node.value value with
-                | Expression.Call
-                    {
-                      callee =
-                        {
-                          Node.value =
-                            Name
-                              (Name.Attribute
-                                {
-                                  base =
-                                    {
-                                      value =
-                                        Name
-                                          (Name.Attribute
-                                            {
-                                              base =
-                                                { Node.value = Name (Name.Identifier "typing"); _ };
-                                              attribute = "Union";
-                                              special = false;
-                                            });
-                                      _;
-                                    };
-                                  _;
-                                });
-                          _;
-                        };
-                      arguments =
-                        [
-                          {
-                            Call.Argument.name = None;
-                            value = { Node.value = Tuple argument_list; _ };
-                          };
-                        ];
-                    } ->
-                    List.concat [sofar; argument_list] |> List.rev
-                | _ -> value :: sofar
-              in
-              let arguments =
-                List.concat [[base_argument]; arguments]
-                |> List.map ~f:transform_argument
-                |> List.fold ~init:[] ~f:to_expression_list
-                |> List.rev
-                |> fun argument_list ->
-                [
-                  {
-                    Call.Argument.value = { Node.value = Expression.Tuple argument_list; location };
-                    name = None;
-                  };
-                ]
-              in
-              union_value arguments
-          | Expression.Call
-              {
-                callee =
-                  { value = Name (Name.Attribute { attribute = "__getitem__"; _ }); _ } as callee;
-                arguments;
-              } ->
-              let arguments =
-                List.map arguments ~f:(fun ({ Call.Argument.value; _ } as argument) ->
-                    { argument with value = transform_expression value })
-              in
-              Expression.Call { callee; arguments }
-          | Tuple arguments -> Tuple (List.map ~f:transform_expression arguments)
-          | List arguments -> List (List.map ~f:transform_expression arguments)
-          | _ -> value
-        in
-        { expression with Node.value }
-      in
-      transform_expression
-
-
     let statement _ ({ Node.value; _ } as statement) =
       let transform_assign ~assign:({ Assign.annotation; _ } as assign) =
-        { assign with Assign.annotation = annotation >>| transform_shorthand_union_expression }
+        {
+          assign with
+          Assign.annotation = annotation >>| replace_union_shorthand_in_annotation_expression;
+        }
       in
       let transform_define
           ~define:({ Define.signature = { parameters; return_annotation; _ }; _ } as define)
@@ -3691,7 +3680,8 @@ let replace_union_shorthand source =
             Node.value =
               {
                 parameter with
-                Parameter.annotation = annotation >>| transform_shorthand_union_expression;
+                Parameter.annotation =
+                  annotation >>| replace_union_shorthand_in_annotation_expression;
               };
           }
         in
@@ -3699,7 +3689,8 @@ let replace_union_shorthand source =
           {
             define.signature with
             parameters = List.map parameters ~f:parameter;
-            return_annotation = return_annotation >>| transform_shorthand_union_expression;
+            return_annotation =
+              return_annotation >>| replace_union_shorthand_in_annotation_expression;
           }
         in
         { define with signature }
@@ -3718,7 +3709,10 @@ let replace_union_shorthand source =
 
     let expression _ expression =
       let transform_argument ({ Call.Argument.value; _ } as argument) =
-        { argument with Call.Argument.value = transform_shorthand_union_expression value }
+        {
+          argument with
+          Call.Argument.value = replace_union_shorthand_in_annotation_expression value;
+        }
       in
       let value =
         match Node.value expression with

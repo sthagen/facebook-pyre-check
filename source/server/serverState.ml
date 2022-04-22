@@ -48,8 +48,6 @@ module StoredConfiguration = Memory.Serializer (struct
     let prefix = Prefix.make ()
 
     let description = "Configuration"
-
-    let unmarshall value = Marshal.from_string value 0
   end
 
   let serialize = Fn.id
@@ -66,8 +64,6 @@ module ServerErrors = Memory.Serializer (struct
     let prefix = Prefix.make ()
 
     let description = "All errors"
-
-    let unmarshall value = Marshal.from_string value 0
   end
 
   let serialize = Hashtbl.to_alist
@@ -77,8 +73,8 @@ end)
 
 let load_stored_configuration = StoredConfiguration.load
 
-let load ~build_system () =
-  let module_tracker = Analysis.ModuleTracker.SharedMemory.load () in
+let load ~configuration ~build_system () =
+  let module_tracker = Analysis.ModuleTracker.Serializer.from_stored_layouts ~configuration () in
   let ast_environment = Analysis.AstEnvironment.load module_tracker in
   let type_environment =
     Analysis.AnnotatedGlobalEnvironment.create ast_environment |> Analysis.TypeEnvironment.create
@@ -91,7 +87,7 @@ let load ~build_system () =
 let store ~path ~configuration { type_environment; error_table; build_system; _ } =
   Memory.SharedMemory.collect `aggressive;
   Analysis.TypeEnvironment.module_tracker type_environment
-  |> Analysis.ModuleTracker.SharedMemory.store;
+  |> Analysis.ModuleTracker.Serializer.store_layouts;
   Analysis.TypeEnvironment.ast_environment type_environment |> Analysis.AstEnvironment.store;
   StoredConfiguration.store configuration;
   ServerErrors.store error_table;

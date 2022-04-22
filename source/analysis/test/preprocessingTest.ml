@@ -20,11 +20,11 @@ let legacy_parse ~handle source =
   let lines = String.split (Test.trim_extra_indentation source) ~on:'\n' in
   match Parser.parse ~relative:handle lines with
   | Result.Ok statements ->
-      let metadata =
+      let typecheck_flags =
         let qualifier = SourcePath.qualifier_of_relative handle in
-        Source.Metadata.parse ~qualifier lines
+        Source.TypecheckFlags.parse ~qualifier lines
       in
-      Source.create ~metadata ~relative:handle statements
+      Source.create ~typecheck_flags ~relative:handle statements
   | Result.Error { Parser.Error.location = { Location.start = { Location.line; column }; _ }; _ } ->
       let error =
         Format.asprintf
@@ -2981,7 +2981,7 @@ let test_defines _ =
       orelse = [];
     }
   in
-  assert_defines [+Statement.If if_define] [create_toplevel [+Statement.If if_define]];
+  assert_defines [+Statement.If if_define] [create_toplevel [+Statement.If if_define]; define];
 
   (* Note: Defines are returned in reverse order. *)
   let define_foo = create_define "foo" in
@@ -3465,14 +3465,6 @@ let test_sqlalchemy_declarative_base _ =
     |}
     {|
       class Base(metaclass=sqlalchemy.ext.declarative.DeclarativeMeta):
-        pass
-    |};
-  assert_expand
-    {|
-      Base = sqlalchemy_1_4.ext.declarative.declarative_base()
-    |}
-    {|
-      class Base(metaclass=sqlalchemy_1_4.ext.declarative.DeclarativeMeta):
         pass
     |};
   ()
@@ -5447,14 +5439,13 @@ let test_populate_unbound_names _ =
     |}
     ~expected:[!&"foo", ["derp", location (4, 2) (4, 6)]];
 
-  (* TODO(T109357540): Invalid locations for Python2 unbound names *)
   assert_unbound_names
     {|
       #!/usr/bin/env python2
       def foo(): # type: (...) -> List[derp]
         pass
     |}
-    ~expected:[toplevel_name, ["List", location (1, 9) (1, 13); "derp", location (1, 14) (1, 18)]];
+    ~expected:[toplevel_name, ["List", location (3, 0) (4, 2); "derp", location (3, 0) (4, 2)]];
 
   (* TODO(T80454071): This should raise an error about `nonexistent_inside_quotes`. *)
   assert_unbound_names

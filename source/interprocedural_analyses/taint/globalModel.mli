@@ -16,11 +16,12 @@ val from_expression
   call_graph:CallGraph.DefineCallGraph.t ->
   qualifier:Reference.t ->
   expression:Expression.t ->
+  interval:ClassInterval.t ->
   t
 
 val get_source : t -> Domains.ForwardState.Tree.t
 
-val get_sink : t -> Domains.BackwardState.Tree.t
+val get_sinks : t -> Issue.SinkTreeWithHandle.t list
 
 val get_tito : t -> Domains.BackwardState.Tree.t
 
@@ -29,3 +30,5 @@ val get_sanitize : t -> Domains.Sanitize.t
 val get_modes : t -> Model.ModeSet.t
 
 val is_sanitized : t -> bool
+
+val global_root : AccessPath.Root.t

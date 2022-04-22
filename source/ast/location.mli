@@ -38,6 +38,8 @@ val column : t -> int
 
 val stop_column : t -> int
 
+val contains : location:t -> position -> bool
+
 val pp_start : Format.formatter -> t -> unit
 
 val pp_line_and_column : Format.formatter -> t -> unit
@@ -67,11 +69,11 @@ end
 
 module WithModule : sig
   type t = {
-    path: Reference.t;
+    module_reference: Reference.t;
     start: position;
     stop: position;
   }
-  [@@deriving compare, sexp, hash, to_yojson]
+  [@@deriving compare, eq, sexp, hash, to_yojson]
 
   val any : t
 
@@ -88,6 +90,6 @@ end
 
 val with_path : path:string -> t -> WithPath.t
 
-val with_module : qualifier:Reference.t -> t -> WithModule.t
+val with_module : module_reference:Reference.t -> t -> WithModule.t
 
 val strip_module : WithModule.t -> t

@@ -17,6 +17,10 @@
 
 exception Worker_exited_abnormally of int * Unix.process_status
 
+(** Worker exited with the given exception, as a string (because marshal-ing on
+ * exceptions is not safe). *)
+exception Worker_exception of string * Printexc.raw_backtrace
+
 (** Worker killed by Out Of Memory. *)
 exception Worker_oomed
 
@@ -56,7 +60,7 @@ val make:
   entry       : 'a entry ->
   nbr_procs   : int ->
   gc_control  : Gc.control ->
-  heap_handle : SharedMem.handle ->
+  heap_handle : SharedMemory.handle ->
   t list
 
 (* Call in a sub-process (CAREFUL, GLOBALS ARE COPIED) *)
@@ -80,3 +84,5 @@ val kill: t -> unit
 
 (* Return the id of the worker to which the current process belong. 0 means the master process *)
 val current_worker_id: unit -> int
+
+val exception_backtrace: exn -> Printexc.raw_backtrace

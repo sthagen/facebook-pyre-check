@@ -8,9 +8,10 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional, Iterable, List
+from typing import Iterable, List, Optional
 
 from .. import (
+    command_arguments,
     configuration as configuration_module,
     coverage_collector as collector,
     log,
@@ -58,20 +59,42 @@ def collect_coverage_for_paths(
     return result
 
 
+def _print_summary(data: List[collector.FileCoverage]) -> None:
+    for file_data in data:
+        path = file_data.filepath
+        covered_lines = len(file_data.covered_lines)
+        uncovered_lines = len(file_data.uncovered_lines)
+        total_lines = covered_lines + uncovered_lines
+        if total_lines > 0:
+            coverage_rate = round(
+                covered_lines * 100.0 / (covered_lines + uncovered_lines), 2
+            )
+        else:
+            coverage_rate = 100.00
+        LOG.warning(f"{path}: {coverage_rate}% lines are type checked")
+
+
 def run_coverage(
     configuration: configuration_module.Configuration,
     working_directory: str,
-    roots: List[str],
+    paths: List[str],
+    print_summary: bool,
 ) -> commands.ExitCode:
     working_directory_path = Path(working_directory)
-    if roots:
-        root_paths = [to_absolute_path(root, working_directory_path) for root in roots]
+    if paths:
+        absolute_paths = [
+            to_absolute_path(path, working_directory_path) for path in paths
+        ]
     else:
-        root_paths = [find_root_path(configuration, working_directory_path)]
-    module_paths = statistics.find_paths_to_parse(configuration, root_paths)
+        absolute_paths = [find_root_path(configuration, working_directory_path)]
+    module_paths = statistics.find_paths_to_parse(configuration, absolute_paths)
     data = collect_coverage_for_paths(
         module_paths, working_directory, strict_default=configuration.strict
     )
+    if print_summary:
+        _print_summary(data)
+        return commands.ExitCode.SUCCESS
+
     log.stdout.write(json.dumps([dataclasses.asdict(entry) for entry in data]))
     return commands.ExitCode.SUCCESS
 
@@ -79,11 +102,15 @@ def run_coverage(
 @remote_logging.log_usage(command_name="coverage")
 def run(
     configuration: configuration_module.Configuration,
-    working_directory: str,
-    roots: List[str],
+    coverage_arguments: command_arguments.CoverageArguments,
 ) -> commands.ExitCode:
     try:
-        return run_coverage(configuration, working_directory, roots)
+        return run_coverage(
+            configuration,
+            coverage_arguments.working_directory,
+            coverage_arguments.paths,
+            coverage_arguments.print_summary,
+        )
     except Exception as error:
         raise commands.ClientException(
             f"Exception occurred during pyre coverage: {error}"

@@ -19,7 +19,7 @@ import tempfile
 from argparse import Namespace
 from contextlib import contextmanager
 from logging import Logger
-from typing import Tuple, Generator, Optional
+from typing import Generator, Optional, Tuple
 from zipfile import ZipFile
 
 
@@ -164,7 +164,7 @@ class Repository:
     def __iter__(self) -> "Repository":
         return self
 
-    def __next__(self):
+    def __next__(self) -> str:
         self._current_commit = self._commits_list.__next__()
         LOG.info("Moving to commit named: %s" % self._current_commit)
 
@@ -226,7 +226,6 @@ def run_integration_test(
                     "--logging-sections",
                     "server",
                     "start",
-                    "--incremental-style=fine_grained",
                 )
                 for commit in repository:
                     (actual_error, expected_error) = repository.get_pyre_errors()

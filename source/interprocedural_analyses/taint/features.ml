@@ -28,8 +28,6 @@ struct
     let prefix = Prefix.make ()
 
     let description = T.name
-
-    let unmarshall value = Marshal.from_string value 0
   end
 
   include Memory.Interner (Value)
@@ -39,6 +37,21 @@ struct
   let pp formatter id = id |> unintern |> T.pp formatter
 
   let show id = id |> unintern |> T.show
+end
+
+module MakeAbstractSetFromInterner (Interner : sig
+  val name : string
+
+  val show : int -> string
+end) =
+struct
+  include Abstract.SetDomain.MakeWithSet (struct
+    include Data_structures.PatriciaTreeSet.PatriciaTreeIntSet
+
+    let show_element = Interner.show
+
+    let element_name = Interner.name
+  end)
 end
 
 module First (Kind : sig
@@ -67,7 +80,7 @@ end)
 module FirstIndexInterned = MakeInterner (FirstIndex)
 
 module FirstIndexSet = struct
-  include Abstract.SetDomain.Make (FirstIndexInterned)
+  include MakeAbstractSetFromInterner (FirstIndexInterned)
 
   let number_regexp = Str.regexp "[0-9]+"
 
@@ -102,7 +115,7 @@ end)
 module FirstFieldInterned = MakeInterner (FirstField)
 
 module FirstFieldSet = struct
-  include Abstract.SetDomain.Make (FirstFieldInterned)
+  include MakeAbstractSetFromInterner (FirstFieldInterned)
 
   let add_first field fields =
     if is_bottom fields then
@@ -155,7 +168,7 @@ module LeafName = struct
 end
 
 module LeafNameInterned = MakeInterner (LeafName)
-module LeafNameSet = Abstract.SetDomain.Make (LeafNameInterned)
+module LeafNameSet = MakeAbstractSetFromInterner (LeafNameInterned)
 
 module Breadcrumb = struct
   let name = "breadcrumbs"
@@ -239,7 +252,16 @@ module Breadcrumb = struct
 end
 
 module BreadcrumbInterned = MakeInterner (Breadcrumb)
-module BreadcrumbSet = Abstract.OverUnderSetDomain.Make (BreadcrumbInterned)
+
+module BreadcrumbSet = Abstract.OverUnderSetDomain.MakeWithSet (struct
+  include Data_structures.BitSetPatriciaTreeIntSet.Make (struct
+    let common_integers = TaintAnalysisFeatureStats.common_breadcrumbs
+  end)
+
+  let show_element = BreadcrumbInterned.show
+
+  let element_name = BreadcrumbInterned.name
+end)
 
 module ViaFeature = struct
   let name = "via features"
@@ -301,8 +323,7 @@ module ViaFeature = struct
   let via_type_of_breadcrumb ?tag ~resolution ~argument =
     let feature =
       argument
-      >>| Resolution.resolve_expression resolution
-      >>| snd
+      >>| Interprocedural.CallResolution.resolve_ignoring_untracked ~resolution
       >>| Type.weaken_literals
       |> Option.value ~default:Type.Top
       |> Type.show
@@ -408,6 +429,14 @@ let broadening = memoize_breadcrumb_interned Breadcrumb.Broadening
 
 let issue_broadening = memoize_breadcrumb_interned Breadcrumb.IssueBroadening
 
+let string_concat_left_hand_side =
+  memoize_breadcrumb_interned (Breadcrumb.SimpleVia "string_concat_lhs")
+
+
+let string_concat_right_hand_side =
+  memoize_breadcrumb_interned (Breadcrumb.SimpleVia "string_concat_rhs")
+
+
 let memoize_breadcrumb_set breadcrumbs =
   memoize
     (lazy
@@ -429,43 +458,9 @@ let issue_broadening_set =
 
 let type_bool_scalar_set = memoize_breadcrumb_set [Breadcrumb.Type "scalar"; Breadcrumb.Type "bool"]
 
-let type_breadcrumbs ~resolution annotation =
-  let matches_at_leaves ~f annotation =
-    let rec matches_at_leaves ~f annotation =
-      match annotation with
-      | Type.Any
-      | Type.Bottom ->
-          false
-      | Type.Union [Type.NoneType; annotation]
-      | Type.Union [annotation; Type.NoneType]
-      | Type.Parametric { name = "typing.Awaitable"; parameters = [Single annotation] } ->
-          matches_at_leaves ~f annotation
-      | Type.Tuple (Concatenation concatenation) ->
-          Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation concatenation
-          >>| (fun element -> matches_at_leaves ~f element)
-          |> Option.value ~default:(f annotation)
-      | Type.Tuple (Type.OrderedTypes.Concrete annotations) ->
-          List.for_all annotations ~f:(matches_at_leaves ~f)
-      | annotation -> f annotation
-    in
-    annotation >>| matches_at_leaves ~f |> Option.value ~default:false
-  in
-  let is_boolean =
-    matches_at_leaves annotation ~f:(fun left ->
-        GlobalResolution.less_or_equal resolution ~left ~right:Type.bool)
-  in
-  let is_integer =
-    matches_at_leaves annotation ~f:(fun left ->
-        GlobalResolution.less_or_equal resolution ~left ~right:Type.integer)
-  in
-  let is_float =
-    matches_at_leaves annotation ~f:(fun left ->
-        GlobalResolution.less_or_equal resolution ~left ~right:Type.float)
-  in
-  let is_enumeration =
-    matches_at_leaves annotation ~f:(fun left ->
-        GlobalResolution.less_or_equal resolution ~left ~right:Type.enumeration)
-  in
+let type_breadcrumbs
+    { Interprocedural.CallGraph.ReturnType.is_boolean; is_integer; is_float; is_enumeration }
+  =
   let is_scalar = is_boolean || is_integer || is_float || is_enumeration in
   let add_if condition breadcrumb features =
     if condition then
@@ -478,3 +473,42 @@ let type_breadcrumbs ~resolution annotation =
   |> add_if is_boolean type_bool
   |> add_if is_integer type_integer
   |> add_if is_enumeration type_enumeration
+
+
+let expand_via_features ~resolution ~callees ~arguments via_features =
+  let expand_via_feature via_feature breadcrumbs =
+    let match_all_arguments_to_parameter parameter =
+      AccessPath.match_actuals_to_formals arguments [parameter]
+      |> List.filter_map ~f:(fun (argument, matches) ->
+             if not (List.is_empty matches) then
+               Some argument
+             else
+               None)
+    in
+    let match_argument_to_parameter parameter =
+      match match_all_arguments_to_parameter parameter with
+      | [] -> None
+      | argument :: _ -> Some argument.value
+    in
+    match via_feature with
+    | ViaFeature.ViaValueOf { parameter; tag } ->
+        let arguments = match_all_arguments_to_parameter parameter in
+        BreadcrumbSet.add (ViaFeature.via_value_of_breadcrumb ?tag ~arguments) breadcrumbs
+    | ViaFeature.ViaTypeOf { parameter; tag } ->
+        let breadcrumb =
+          match callees with
+          | [Interprocedural.Target.Object object_target] ->
+              ViaFeature.via_type_of_breadcrumb_for_object ?tag ~resolution ~object_target
+          | _ ->
+              ViaFeature.via_type_of_breadcrumb
+                ?tag
+                ~resolution
+                ~argument:(match_argument_to_parameter parameter)
+        in
+        BreadcrumbSet.add breadcrumb breadcrumbs
+  in
+  ViaFeatureSet.fold
+    ViaFeatureSet.Element
+    ~f:expand_via_feature
+    ~init:BreadcrumbSet.empty
+    via_features

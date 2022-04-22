@@ -12,25 +12,177 @@ open Statement
 open Expression
 open Pyre
 
+module ReturnType = struct
+  type t = {
+    is_boolean: bool;
+    is_integer: bool;
+    is_float: bool;
+    is_enumeration: bool;
+  }
+  [@@deriving compare, eq]
+
+  let pp formatter { is_boolean; is_integer; is_float; is_enumeration } =
+    let add_if condition tag tags =
+      if condition then
+        tag :: tags
+      else
+        tags
+    in
+    []
+    |> add_if is_enumeration "enum"
+    |> add_if is_float "float"
+    |> add_if is_integer "int"
+    |> add_if is_boolean "bool"
+    |> String.concat ~sep:"|"
+    |> Format.fprintf formatter "{%s}"
+
+
+  let show = Format.asprintf "%a" pp
+
+  let none = { is_boolean = false; is_integer = false; is_float = false; is_enumeration = false }
+
+  let any = none
+
+  let bool = { is_boolean = true; is_integer = false; is_float = false; is_enumeration = false }
+
+  let integer = { is_boolean = false; is_integer = true; is_float = true; is_enumeration = false }
+
+  let from_annotation ~resolution annotation =
+    let matches_at_leaves ~f annotation =
+      let rec matches_at_leaves ~f annotation =
+        match annotation with
+        | Type.Any
+        | Type.Bottom ->
+            false
+        | Type.Union [Type.NoneType; annotation]
+        | Type.Union [annotation; Type.NoneType]
+        | Type.Parametric { name = "typing.Awaitable"; parameters = [Single annotation] } ->
+            matches_at_leaves ~f annotation
+        | Type.Tuple (Concatenation concatenation) ->
+            Type.OrderedTypes.Concatenation.extract_sole_unbounded_annotation concatenation
+            >>| (fun element -> matches_at_leaves ~f element)
+            |> Option.value ~default:(f annotation)
+        | Type.Tuple (Type.OrderedTypes.Concrete annotations) ->
+            List.for_all annotations ~f:(matches_at_leaves ~f)
+        | annotation -> f annotation
+      in
+      matches_at_leaves ~f annotation
+    in
+    try
+      let is_boolean =
+        matches_at_leaves annotation ~f:(fun left ->
+            GlobalResolution.less_or_equal resolution ~left ~right:Type.bool)
+      in
+      let is_integer =
+        matches_at_leaves annotation ~f:(fun left ->
+            GlobalResolution.less_or_equal resolution ~left ~right:Type.integer)
+      in
+      let is_float =
+        matches_at_leaves annotation ~f:(fun left ->
+            GlobalResolution.less_or_equal resolution ~left ~right:Type.float)
+      in
+      let is_enumeration =
+        matches_at_leaves annotation ~f:(fun left ->
+            GlobalResolution.less_or_equal resolution ~left ~right:Type.enumeration)
+      in
+      { is_boolean; is_integer; is_float; is_enumeration }
+    with
+    | Analysis.ClassHierarchy.Untracked untracked_type ->
+        Log.warning
+          "Found untracked type `%s` when checking the return type `%a` of a call. The return type \
+           will NOT be considered a scalar, which could lead to missing breadcrumbs."
+          untracked_type
+          Type.pp
+          annotation;
+        none
+
+
+  (* Try to infer the return type from the callable type, otherwise lazily fallback
+   * to the resolved return type. *)
+  let from_callable_with_fallback ~resolution ~callable_type ~return_type =
+    let annotation =
+      match callable_type with
+      | Type.Callable { implementation = { annotation; _ }; overloads = []; _ }
+        when Type.Variable.all_variables_are_resolved annotation ->
+          annotation
+      | _ -> Lazy.force return_type
+    in
+    from_annotation ~resolution:(Resolution.global_resolution resolution) annotation
+end
+
 module CallTarget = struct
   type t = {
     target: Target.t;
     implicit_self: bool;
     implicit_dunder_call: bool;
     collapse_tito: bool;
+    index: int;
+    return_type: ReturnType.t option;
+    receiver_type: Type.t option;
   }
   [@@deriving compare, eq, show { with_path = false }]
 
-  let create ?(implicit_self = false) ?(implicit_dunder_call = false) ?(collapse_tito = true) target
+  let target { target; _ } = target
+
+  let equal_ignoring_indices left right = equal left { right with index = left.index }
+
+  let dedup_and_sort targets =
+    targets
+    |> List.sort ~compare
+    |> List.remove_consecutive_duplicates ~which_to_keep:`First ~equal:equal_ignoring_indices
+
+
+  let create
+      ?(implicit_self = false)
+      ?(implicit_dunder_call = false)
+      ?(collapse_tito = true)
+      ?(index = 0)
+      ?(return_type = Some ReturnType.any)
+      ?receiver_type
+      target
     =
-    { target; implicit_self; implicit_dunder_call; collapse_tito }
+    {
+      target;
+      implicit_self;
+      implicit_dunder_call;
+      collapse_tito;
+      index;
+      return_type;
+      receiver_type;
+    }
+
+
+  let equal_ignoring_types
+      {
+        target = target_left;
+        implicit_self = implicit_self_left;
+        implicit_dunder_call = implicit_dunder_call_left;
+        collapse_tito = collapse_tito_left;
+        index = index_left;
+        return_type = _;
+        receiver_type = _;
+      }
+      {
+        target = target_right;
+        implicit_self = implicit_self_right;
+        implicit_dunder_call = implicit_dunder_call_right;
+        collapse_tito = collapse_tito_right;
+        index = index_right;
+        return_type = _;
+        receiver_type = _;
+      }
+    =
+    Target.equal target_left target_right
+    && implicit_self_left == implicit_self_right
+    && implicit_dunder_call_left == implicit_dunder_call_right
+    && collapse_tito_left == collapse_tito_right
+    && index_left == index_right
 end
 
 module HigherOrderParameter = struct
   type t = {
     index: int;
     call_targets: CallTarget.t list;
-    return_type: Type.t;
   }
   [@@deriving eq, show { with_path = false }]
 
@@ -46,16 +198,21 @@ module HigherOrderParameter = struct
     | None, None -> None
 
 
-  let all_targets { call_targets; _ } =
-    List.map ~f:(fun { CallTarget.target; _ } -> target) call_targets
+  let all_targets { call_targets; _ } = List.map ~f:CallTarget.target call_targets
+
+  let equal_ignoring_types
+      { index = index_left; call_targets = call_targets_left }
+      { index = index_right; call_targets = call_targets_right }
+    =
+    index_left == index_right
+    && List.equal CallTarget.equal_ignoring_types call_targets_left call_targets_right
 end
 
 module CallCallees = struct
   type t = {
     call_targets: CallTarget.t list;
-    new_targets: Target.t list;
-    init_targets: Target.t list;
-    return_type: Type.t;
+    new_targets: CallTarget.t list;
+    init_targets: CallTarget.t list;
     higher_order_parameter: HigherOrderParameter.t option;
     unresolved: bool;
   }
@@ -67,18 +224,16 @@ module CallCallees = struct
       ?(init_targets = [])
       ?higher_order_parameter
       ?(unresolved = false)
-      ~return_type
       ()
     =
-    { call_targets; new_targets; init_targets; return_type; higher_order_parameter; unresolved }
+    { call_targets; new_targets; init_targets; higher_order_parameter; unresolved }
 
 
-  let create_unresolved return_type =
+  let unresolved =
     {
       call_targets = [];
       new_targets = [];
       init_targets = [];
-      return_type;
       higher_order_parameter = None;
       unresolved = true;
     }
@@ -101,7 +256,6 @@ module CallCallees = struct
         call_targets = left_call_targets;
         new_targets = left_new_targets;
         init_targets = left_init_targets;
-        return_type;
         higher_order_parameter = left_higher_order_parameter;
         unresolved = left_unresolved;
       }
@@ -109,7 +263,6 @@ module CallCallees = struct
         call_targets = right_call_targets;
         new_targets = right_new_targets;
         init_targets = right_init_targets;
-        return_type = _;
         higher_order_parameter = right_higher_order_parameter;
         unresolved = right_unresolved;
       }
@@ -121,51 +274,69 @@ module CallCallees = struct
       HigherOrderParameter.join left_higher_order_parameter right_higher_order_parameter
     in
     let unresolved = left_unresolved || right_unresolved in
-    { call_targets; new_targets; init_targets; return_type; higher_order_parameter; unresolved }
+    { call_targets; new_targets; init_targets; higher_order_parameter; unresolved }
 
 
-  let deduplicate
-      { call_targets; new_targets; init_targets; return_type; higher_order_parameter; unresolved }
-    =
-    let call_targets = List.dedup_and_sort ~compare:CallTarget.compare call_targets in
-    let new_targets = List.dedup_and_sort ~compare:Target.compare new_targets in
-    let init_targets = List.dedup_and_sort ~compare:Target.compare init_targets in
+  let deduplicate { call_targets; new_targets; init_targets; higher_order_parameter; unresolved } =
+    let call_targets = CallTarget.dedup_and_sort call_targets in
+    let new_targets = CallTarget.dedup_and_sort new_targets in
+    let init_targets = CallTarget.dedup_and_sort init_targets in
     let higher_order_parameter =
       match higher_order_parameter with
-      | Some { HigherOrderParameter.index; call_targets; return_type } ->
-          Some
-            {
-              HigherOrderParameter.index;
-              call_targets = List.dedup_and_sort ~compare:CallTarget.compare call_targets;
-              return_type;
-            }
+      | Some { HigherOrderParameter.index; call_targets } ->
+          Some { HigherOrderParameter.index; call_targets = CallTarget.dedup_and_sort call_targets }
       | None -> None
     in
-    { call_targets; new_targets; init_targets; return_type; higher_order_parameter; unresolved }
+    { call_targets; new_targets; init_targets; higher_order_parameter; unresolved }
 
 
   let all_targets { call_targets; new_targets; init_targets; higher_order_parameter; _ } =
-    List.map ~f:(fun { CallTarget.target; _ } -> target) call_targets
+    call_targets
     |> List.rev_append new_targets
     |> List.rev_append init_targets
+    |> List.map ~f:CallTarget.target
     |> List.rev_append
          (higher_order_parameter >>| HigherOrderParameter.all_targets |> Option.value ~default:[])
+
+
+  let equal_ignoring_types
+      {
+        call_targets = call_targets_left;
+        new_targets = new_targets_left;
+        init_targets = init_targets_left;
+        higher_order_parameter = higher_order_parameter_left;
+        unresolved = unresolved_left;
+      }
+      {
+        call_targets = call_targets_right;
+        new_targets = new_targets_right;
+        init_targets = init_targets_right;
+        higher_order_parameter = higher_order_parameter_right;
+        unresolved = unresolved_right;
+      }
+    =
+    List.equal CallTarget.equal_ignoring_types call_targets_left call_targets_right
+    && List.equal CallTarget.equal_ignoring_types new_targets_left new_targets_right
+    && List.equal CallTarget.equal_ignoring_types init_targets_left init_targets_right
+    && Option.equal
+         HigherOrderParameter.equal_ignoring_types
+         higher_order_parameter_left
+         higher_order_parameter_right
+    && unresolved_left == unresolved_right
 end
 
 module AttributeAccessCallees = struct
   type t = {
-    property_targets: Target.t list;
-    global_targets: Target.t list;
-    return_type: Type.t;
+    property_targets: CallTarget.t list;
+    global_targets: CallTarget.t list;
     is_attribute: bool;
   }
   [@@deriving eq, show { with_path = false }]
 
-  let deduplicate { property_targets; global_targets; return_type; is_attribute } =
+  let deduplicate { property_targets; global_targets; is_attribute } =
     {
-      property_targets = List.dedup_and_sort ~compare:Target.compare property_targets;
-      global_targets = List.dedup_and_sort ~compare:Target.compare global_targets;
-      return_type;
+      property_targets = CallTarget.dedup_and_sort property_targets;
+      global_targets = CallTarget.dedup_and_sort global_targets;
       is_attribute;
     }
 
@@ -174,40 +345,71 @@ module AttributeAccessCallees = struct
       {
         property_targets = left_property_targets;
         global_targets = left_global_targets;
-        return_type;
         is_attribute = left_is_attribute;
       }
       {
         property_targets = right_property_targets;
         global_targets = right_global_targets;
-        return_type = _;
         is_attribute = right_is_attribute;
       }
     =
     {
       property_targets = List.rev_append left_property_targets right_property_targets;
       global_targets = List.rev_append left_global_targets right_global_targets;
-      return_type;
       is_attribute = left_is_attribute || right_is_attribute;
     }
 
 
   let all_targets { property_targets; global_targets; _ } =
-    List.rev_append property_targets global_targets
+    List.rev_append property_targets global_targets |> List.map ~f:CallTarget.target
+
+
+  let equal_ignoring_types
+      {
+        property_targets = property_targets_left;
+        global_targets = global_targets_left;
+        is_attribute = is_attribute_left;
+      }
+      {
+        property_targets = property_targets_right;
+        global_targets = global_targets_right;
+        is_attribute = is_attribute_right;
+      }
+    =
+    List.equal CallTarget.equal_ignoring_types property_targets_left property_targets_right
+    && List.equal CallTarget.equal_ignoring_types global_targets_left global_targets_right
+    && is_attribute_left == is_attribute_right
+
+
+  let empty = { property_targets = []; global_targets = []; is_attribute = true }
+
+  let is_empty attribute_access_callees = equal attribute_access_callees empty
 end
 
 module IdentifierCallees = struct
-  type t = { global_targets: Target.t list } [@@deriving eq, show { with_path = false }]
+  type t = { global_targets: CallTarget.t list } [@@deriving eq, show { with_path = false }]
 
-  let deduplicate { global_targets } =
-    { global_targets = List.dedup_and_sort ~compare:Target.compare global_targets }
-
+  let deduplicate { global_targets } = { global_targets = CallTarget.dedup_and_sort global_targets }
 
   let join { global_targets = left_global_targets } { global_targets = right_global_targets } =
     { global_targets = List.rev_append left_global_targets right_global_targets }
 
 
-  let all_targets { global_targets } = global_targets
+  let all_targets { global_targets } = List.map ~f:CallTarget.target global_targets
+end
+
+module FormatStringCallees = struct
+  type t = { call_targets: CallTarget.t list } [@@deriving eq, show { with_path = false }]
+
+  let deduplicate { call_targets } =
+    { call_targets = List.dedup_and_sort ~compare:CallTarget.compare call_targets }
+
+
+  let join { call_targets = left_call_targets } { call_targets = right_call_targets } =
+    { call_targets = List.rev_append left_call_targets right_call_targets }
+
+
+  let all_targets { call_targets } = List.map ~f:CallTarget.target call_targets
 end
 
 module ExpressionCallees = struct
@@ -215,25 +417,47 @@ module ExpressionCallees = struct
     call: CallCallees.t option;
     attribute_access: AttributeAccessCallees.t option;
     identifier: IdentifierCallees.t option;
+    format_string: FormatStringCallees.t option;
   }
   [@@deriving eq, show { with_path = false }]
 
-  let from_call callees = { call = Some callees; attribute_access = None; identifier = None }
+  let from_call callees =
+    { call = Some callees; attribute_access = None; identifier = None; format_string = None }
+
+
+  let from_call_with_empty_attribute callees =
+    {
+      call = Some callees;
+      attribute_access = Some AttributeAccessCallees.empty;
+      identifier = None;
+      format_string = None;
+    }
+
 
   let from_attribute_access properties =
-    { call = None; attribute_access = Some properties; identifier = None }
+    { call = None; attribute_access = Some properties; identifier = None; format_string = None }
 
 
   let from_identifier identifier =
-    { call = None; attribute_access = None; identifier = Some identifier }
+    { call = None; attribute_access = None; identifier = Some identifier; format_string = None }
+
+
+  let from_format_string format_string =
+    { call = None; attribute_access = None; identifier = None; format_string = Some format_string }
 
 
   let join
-      { call = left_call; attribute_access = left_attribute_access; identifier = left_identifier }
+      {
+        call = left_call;
+        attribute_access = left_attribute_access;
+        identifier = left_identifier;
+        format_string = left_format_string;
+      }
       {
         call = right_call;
         attribute_access = right_attribute_access;
         identifier = right_identifier;
+        format_string = right_format_string;
       }
     =
     {
@@ -241,18 +465,21 @@ module ExpressionCallees = struct
       attribute_access =
         Option.merge ~f:AttributeAccessCallees.join left_attribute_access right_attribute_access;
       identifier = Option.merge ~f:IdentifierCallees.join left_identifier right_identifier;
+      format_string =
+        Option.merge ~f:FormatStringCallees.join left_format_string right_format_string;
     }
 
 
-  let deduplicate { call; attribute_access; identifier } =
+  let deduplicate { call; attribute_access; identifier; format_string } =
     {
       call = call >>| CallCallees.deduplicate;
       attribute_access = attribute_access >>| AttributeAccessCallees.deduplicate;
       identifier = identifier >>| IdentifierCallees.deduplicate;
+      format_string = format_string >>| FormatStringCallees.deduplicate;
     }
 
 
-  let all_targets { call; attribute_access; identifier } =
+  let all_targets { call; attribute_access; identifier; format_string } =
     let call_targets = call >>| CallCallees.all_targets |> Option.value ~default:[] in
     let attribute_access_targets =
       attribute_access >>| AttributeAccessCallees.all_targets |> Option.value ~default:[]
@@ -260,7 +487,47 @@ module ExpressionCallees = struct
     let identifier_targets =
       identifier >>| IdentifierCallees.all_targets |> Option.value ~default:[]
     in
-    call_targets |> List.rev_append attribute_access_targets |> List.rev_append identifier_targets
+    let format_string_targets =
+      format_string >>| FormatStringCallees.all_targets |> Option.value ~default:[]
+    in
+    call_targets
+    |> List.rev_append attribute_access_targets
+    |> List.rev_append identifier_targets
+    |> List.rev_append format_string_targets
+
+
+  let is_empty_attribute_access_callees = function
+    | {
+        call = None;
+        attribute_access = Some some_attribute_access;
+        identifier = None;
+        format_string = None;
+      } ->
+        AttributeAccessCallees.is_empty some_attribute_access
+    | _ -> false
+
+
+  let equal_ignoring_types
+      {
+        call = call_left;
+        attribute_access = attribute_access_left;
+        identifier = identifier_left;
+        format_string = format_string_left;
+      }
+      {
+        call = call_right;
+        attribute_access = attribute_access_right;
+        identifier = identifier_right;
+        format_string = format_string_right;
+      }
+    =
+    Option.equal CallCallees.equal_ignoring_types call_left call_right
+    && Option.equal
+         AttributeAccessCallees.equal_ignoring_types
+         attribute_access_left
+         attribute_access_right
+    && Option.equal IdentifierCallees.equal identifier_left identifier_right
+    && Option.equal FormatStringCallees.equal format_string_left format_string_right
 end
 
 module LocationCallees = struct
@@ -283,6 +550,15 @@ module LocationCallees = struct
   let all_targets = function
     | Singleton raw_callees -> ExpressionCallees.all_targets raw_callees
     | Compound map -> String.Map.Tree.data map |> List.concat_map ~f:ExpressionCallees.all_targets
+
+
+  let equal_ignoring_types location_callees_left location_callees_right =
+    match location_callees_left, location_callees_right with
+    | Singleton callees_left, Singleton callees_right ->
+        ExpressionCallees.equal_ignoring_types callees_left callees_right
+    | Compound map_left, Compound map_right ->
+        String.Map.Tree.equal ExpressionCallees.equal_ignoring_types map_left map_right
+    | _ -> false
 end
 
 module UnprocessedLocationCallees = struct
@@ -352,52 +628,71 @@ module DefineCallGraph = struct
   let resolve_identifier call_graph ~location ~identifier =
     resolve_expression call_graph ~location ~expression_identifier:identifier
     >>= fun { identifier; _ } -> identifier
+
+
+  let format_string_expression_identifier = "$__str__$"
+
+  let resolve_format_string call_graph ~location =
+    resolve_expression
+      call_graph
+      ~location
+      ~expression_identifier:format_string_expression_identifier
+    >>= fun { format_string; _ } -> format_string
+
+
+  let equal_ignoring_types call_graph_left call_graph_right =
+    Location.Map.equal LocationCallees.equal_ignoring_types call_graph_left call_graph_right
 end
 
-let defining_attribute ~resolution parent_type attribute =
-  let global_resolution = Resolution.global_resolution resolution in
-  Type.split parent_type
-  |> fst
-  |> Type.primitive_name
-  >>= fun class_name ->
-  GlobalResolution.attribute_from_class_name
-    ~transitive:true
-    ~resolution:global_resolution
-    ~name:attribute
-    ~instantiated:parent_type
-    class_name
-  >>= fun instantiated_attribute ->
-  if Annotated.Attribute.defined instantiated_attribute then
-    Some instantiated_attribute
-  else
-    Resolution.fallback_attribute ~resolution ~name:attribute class_name
+(* Produce call targets with a textual order index.
+ *
+ * The index is the number of times a given function or method was previously called,
+ * respecting the execution flow.
+ *
+ * ```
+ * def f():
+ *   a = source_with_hop() # index=0
+ *   sink_with_hop(x=a) # index=0
+ *   sink_with_hop(y=a) # index=1
+ *   b = source_with_hop() # index=1
+ *   sink_with_hop(z=a) # index=2
+ * ```
+ *)
+module CallTargetIndexer = struct
+  type t = {
+    indices: int Target.HashMap.t;
+    mutable seen_targets: Target.Set.t;
+  }
+
+  let create () = { indices = Target.HashMap.create (); seen_targets = Target.Set.empty }
+
+  let generate_fresh_indices indexer =
+    Target.Set.iter (Target.HashMap.incr indexer.indices) indexer.seen_targets;
+    indexer.seen_targets <- Target.Set.empty
 
 
-let rec resolve_ignoring_optional ~resolution expression =
-  let resolve_expression_to_type expression =
-    match Resolution.resolve_expression_to_type resolution expression, Node.value expression with
-    | ( Type.Callable ({ Type.Callable.kind = Anonymous; _ } as callable),
-        Expression.Name (Name.Identifier function_name) )
-      when function_name |> String.is_prefix ~prefix:"$local_" ->
-        (* Treat nested functions as named callables. *)
-        Type.Callable { callable with kind = Named (Reference.create function_name) }
-    | annotation, _ -> annotation
-  in
-  let annotation =
-    match Node.value expression with
-    | Expression.Name (Name.Attribute { base; attribute; _ }) -> (
-        let base_type =
-          resolve_ignoring_optional ~resolution base
-          |> fun annotation -> Type.optional_value annotation |> Option.value ~default:annotation
-        in
-        match defining_attribute ~resolution base_type attribute with
-        | Some _ -> Resolution.resolve_attribute_access resolution ~base_type ~attribute
-        | None -> resolve_expression_to_type expression
-        (* Lookup the base_type for the attribute you were interested in *))
-    | _ -> resolve_expression_to_type expression
-  in
-  Type.optional_value annotation |> Option.value ~default:annotation
-
+  let create_target
+      indexer
+      ~implicit_self
+      ~implicit_dunder_call
+      ~collapse_tito
+      ~return_type
+      ?receiver_type
+      original_target
+    =
+    let target_for_index = Target.override_to_method original_target in
+    let index = Target.HashMap.find indexer.indices target_for_index |> Option.value ~default:0 in
+    indexer.seen_targets <- Target.Set.add target_for_index indexer.seen_targets;
+    {
+      CallTarget.target = original_target;
+      implicit_self;
+      implicit_dunder_call;
+      collapse_tito;
+      index;
+      return_type;
+      receiver_type;
+    }
+end
 
 type callee_kind =
   | Method of { is_direct_call: bool }
@@ -430,10 +725,10 @@ let rec callee_kind ~resolution callee callee_type =
   | Type.Callable _ -> (
       match Node.value callee with
       | Expression.Name (Name.Attribute { base; _ }) ->
-          let parent_type = resolve_ignoring_optional ~resolution base in
+          let parent_type = CallResolution.resolve_ignoring_optional ~resolution base in
           let is_class () =
             parent_type
-            |> GlobalResolution.class_definition (Resolution.global_resolution resolution)
+            |> GlobalResolution.class_summary (Resolution.global_resolution resolution)
             |> Option.is_some
           in
           if Type.is_meta parent_type then
@@ -498,8 +793,28 @@ let compute_indirect_targets ~resolution ~receiver_type implementation_target =
         (* case c *)
         let keep_subtypes candidate =
           let candidate_type = get_class_type candidate in
-          GlobalResolution.less_or_equal global_resolution ~left:candidate_type ~right:receiver_type
+          try
+            GlobalResolution.less_or_equal
+              global_resolution
+              ~left:candidate_type
+              ~right:receiver_type
+          with
+          | Analysis.ClassHierarchy.Untracked untracked_type ->
+              Log.warning
+                "Found untracked type `%s` when comparing `%a` and `%a`. The class `%a` will be \
+                 considered a subclass of `%a`, which could lead to false positives."
+                untracked_type
+                Type.pp
+                candidate_type
+                Type.pp
+                receiver_type
+                Type.pp
+                candidate_type
+                Type.pp
+                receiver_type;
+              true
         in
+
         let override_targets =
           let create_override_target class_name =
             let method_name = Reference.last implementation_target in
@@ -534,9 +849,7 @@ let collapse_tito ~resolution ~callee ~callable_type =
             (Expression.Name
                (Name.Attribute { base = callee; attribute = "__call__"; special = true }))
         in
-        Resolution.resolve_expression resolution to_simulate
-        |> snd
-        |> function
+        match CallResolution.resolve_ignoring_untracked ~resolution to_simulate with
         | Type.Callable { Type.Callable.implementation; _ } ->
             Type.Callable.Overload.return_annotation implementation
         | _ -> Type.Top
@@ -547,6 +860,7 @@ let collapse_tito ~resolution ~callee ~callable_type =
 
 let rec resolve_callees_from_type
     ~resolution
+    ~call_indexer
     ?(dunder_call = false)
     ?receiver_type
     ~return_type
@@ -559,6 +873,9 @@ let rec resolve_callees_from_type
   in
   match callable_type with
   | Type.Callable { kind = Named name; _ } -> (
+      let return_type =
+        ReturnType.from_callable_with_fallback ~resolution ~callable_type ~return_type
+      in
       match receiver_type with
       | Some receiver_type ->
           let targets =
@@ -569,15 +886,17 @@ let rec resolve_callees_from_type
           let targets =
             List.map
               ~f:(fun target ->
-                {
-                  CallTarget.target;
-                  implicit_self = true;
-                  implicit_dunder_call = dunder_call;
-                  collapse_tito;
-                })
+                CallTargetIndexer.create_target
+                  call_indexer
+                  ~implicit_self:true
+                  ~implicit_dunder_call:dunder_call
+                  ~collapse_tito
+                  ~return_type:(Some return_type)
+                  ~receiver_type
+                  target)
               targets
           in
-          CallCallees.create ~call_targets:targets ~return_type ()
+          CallCallees.create ~call_targets:targets ()
       | None ->
           let target =
             match callee_kind with
@@ -587,20 +906,22 @@ let rec resolve_callees_from_type
           CallCallees.create
             ~call_targets:
               [
-                {
-                  CallTarget.target;
-                  implicit_self = false;
-                  implicit_dunder_call = dunder_call;
-                  collapse_tito;
-                };
+                CallTargetIndexer.create_target
+                  call_indexer
+                  ~implicit_self:false
+                  ~implicit_dunder_call:dunder_call
+                  ~collapse_tito
+                  ~return_type:(Some return_type)
+                  ?receiver_type
+                  target;
               ]
-            ~return_type
             ())
-  | Type.Callable { kind = Anonymous; _ } -> CallCallees.create_unresolved return_type
+  | Type.Callable { kind = Anonymous; _ } -> CallCallees.unresolved
   | Type.Parametric { name = "BoundMethod"; parameters = [Single callable; Single receiver_type] }
     ->
       resolve_callees_from_type
         ~resolution
+        ~call_indexer
         ~receiver_type
         ~return_type
         ~callee_kind
@@ -610,6 +931,7 @@ let rec resolve_callees_from_type
       let first_targets =
         resolve_callees_from_type
           ~resolution
+          ~call_indexer
           ~callee_kind
           ?receiver_type
           ~return_type
@@ -619,64 +941,81 @@ let rec resolve_callees_from_type
       List.fold elements ~init:first_targets ~f:(fun combined_targets new_target ->
           resolve_callees_from_type
             ~resolution
+            ~call_indexer
             ?receiver_type
             ~return_type
             ~callee_kind
             ~collapse_tito
             new_target
           |> CallCallees.join combined_targets)
-  | Type.Parametric { name = "type"; _ } ->
-      resolve_constructor_callee ~resolution ~return_type callable_type
-      |> Option.value ~default:(CallCallees.create_unresolved return_type)
+  | Type.Parametric { name = "type"; parameters = [Single class_type] } ->
+      resolve_constructor_callee ~resolution ~call_indexer class_type
+      |> Option.value ~default:CallCallees.unresolved
   | callable_type -> (
       (* Handle callable classes. `typing.Type` interacts specially with __call__, so we choose to
          ignore it for now to make sure our constructor logic via `cls()` still works. *)
       match
-        Resolution.resolve_attribute_access
-          resolution
+        CallResolution.resolve_attribute_access_ignoring_untracked
+          ~resolution
           ~base_type:callable_type
           ~attribute:"__call__"
       with
       | Type.Any
       | Type.Top ->
-          CallCallees.create_unresolved return_type
+          CallCallees.unresolved
       (* Callable protocol. *)
-      | Type.Callable { kind = Anonymous; _ } ->
+      | Type.Callable { kind = Anonymous; _ } as resolved_dunder_call ->
           Type.primitive_name callable_type
           >>| (fun primitive_callable_name ->
+                let return_type =
+                  ReturnType.from_callable_with_fallback
+                    ~resolution
+                    ~callable_type:resolved_dunder_call
+                    ~return_type
+                in
                 let target =
-                  `Method { Target.class_name = primitive_callable_name; method_name = "__call__" }
+                  Target.Method
+                    { Target.class_name = primitive_callable_name; method_name = "__call__" }
                 in
                 CallCallees.create
                   ~call_targets:
                     [
-                      {
-                        CallTarget.target;
-                        implicit_self = true;
-                        implicit_dunder_call = true;
-                        collapse_tito;
-                      };
+                      CallTargetIndexer.create_target
+                        call_indexer
+                        ~implicit_self:true
+                        ~implicit_dunder_call:true
+                        ~collapse_tito
+                        ~return_type:(Some return_type)
+                        ?receiver_type
+                        target;
                     ]
-                  ~return_type
                   ())
-          |> Option.value ~default:(CallCallees.create_unresolved return_type)
+          |> Option.value ~default:CallCallees.unresolved
       | annotation ->
           if not dunder_call then
             resolve_callees_from_type
               ~resolution
+              ~call_indexer
               ~return_type
               ~dunder_call:true
               ~callee_kind
               ~collapse_tito
               annotation
           else
-            CallCallees.create_unresolved return_type)
+            CallCallees.unresolved)
 
 
-and resolve_constructor_callee ~resolution ~return_type class_type =
+and resolve_constructor_callee ~resolution ~call_indexer class_type =
+  let meta_type = Type.meta class_type in
   match
-    ( Resolution.resolve_attribute_access resolution ~base_type:class_type ~attribute:"__new__",
-      Resolution.resolve_attribute_access resolution ~base_type:class_type ~attribute:"__init__" )
+    ( CallResolution.resolve_attribute_access_ignoring_untracked
+        ~resolution
+        ~base_type:meta_type
+        ~attribute:"__new__",
+      CallResolution.resolve_attribute_access_ignoring_untracked
+        ~resolution
+        ~base_type:meta_type
+        ~attribute:"__init__" )
   with
   | Type.Any, _
   | Type.Top, _
@@ -687,8 +1026,9 @@ and resolve_constructor_callee ~resolution ~return_type class_type =
       let new_callees =
         resolve_callees_from_type
           ~resolution
-          ~receiver_type:class_type
-          ~return_type
+          ~call_indexer
+          ~receiver_type:meta_type
+          ~return_type:(lazy class_type)
           ~callee_kind:(Method { is_direct_call = true })
           ~collapse_tito:true
           new_callable_type
@@ -696,29 +1036,32 @@ and resolve_constructor_callee ~resolution ~return_type class_type =
       let init_callees =
         resolve_callees_from_type
           ~resolution
-          ~receiver_type:class_type
-          ~return_type
+          ~call_indexer
+          ~receiver_type:meta_type
+          ~return_type:(lazy Type.none)
           ~callee_kind:(Method { is_direct_call = true })
           ~collapse_tito:true
           init_callable_type
       in
-      let new_targets =
-        List.map ~f:(fun { CallTarget.target; _ } -> target) new_callees.call_targets
+      (* Technically, `object.__new__` returns `object` and `C.__init__` returns None.
+       * In practice, we actually want to use the class type. *)
+      let return_type =
+        ReturnType.from_annotation ~resolution:(Resolution.global_resolution resolution) class_type
       in
-      let init_targets =
-        List.map ~f:(fun { CallTarget.target; _ } -> target) init_callees.call_targets
+      let set_return_type call_target =
+        { call_target with CallTarget.return_type = Some return_type }
       in
       Some
         (CallCallees.create
-           ~new_targets
-           ~init_targets
+           ~new_targets:(List.map ~f:set_return_type new_callees.call_targets)
+           ~init_targets:(List.map ~f:set_return_type init_callees.call_targets)
            ~unresolved:(new_callees.unresolved || init_callees.unresolved)
-           ~return_type
            ())
 
 
 let resolve_callee_from_defining_expression
     ~resolution
+    ~call_indexer
     ~callee:{ Node.value = callee; _ }
     ~return_type
     ~implementing_class
@@ -735,6 +1078,7 @@ let resolve_callee_from_defining_expression
       >>| fun undecorated_signature ->
       resolve_callees_from_type
         ~resolution
+        ~call_indexer
         ~return_type
         ~callee_kind:Function
         ~collapse_tito:true
@@ -775,15 +1119,17 @@ let resolve_callee_from_defining_expression
             Type.Callable
               {
                 Type.Callable.kind = Named name;
-                implementation = { annotation = Type.Any; parameters = Type.Callable.Defined [] };
+                implementation =
+                  { annotation = Lazy.force return_type; parameters = Type.Callable.Defined [] };
                 overloads = [];
               }
           in
           Some
             (resolve_callees_from_type
                ~resolution
-               ~receiver_type:implementing_class
+               ~call_indexer
                ~return_type
+               ~receiver_type:implementing_class
                ~callee_kind:(Method { is_direct_call = false })
                ~collapse_tito:true
                callable_type)
@@ -838,7 +1184,7 @@ let redirect_special_calls ~resolution call =
   | None -> Annotated.Call.redirect_special_calls ~resolution call
 
 
-let resolve_recognized_callees ~resolution ~callee ~return_type ~callee_type =
+let resolve_recognized_callees ~resolution ~call_indexer ~callee ~return_type ~callee_type =
   (* Special treatment for a set of hardcoded decorators returning callable classes. *)
   match Node.value callee, callee_type with
   | ( _,
@@ -848,14 +1194,24 @@ let resolve_recognized_callees ~resolution ~callee ~return_type ~callee_type =
           parameters = [Single (Parametric { name; _ }); Single implementing_class];
         } )
     when Set.mem Recognized.allowlisted_callable_class_decorators name ->
-      resolve_callee_from_defining_expression ~resolution ~callee ~return_type ~implementing_class
+      resolve_callee_from_defining_expression
+        ~resolution
+        ~call_indexer
+        ~callee
+        ~return_type
+        ~implementing_class
   | Expression.Name (Name.Attribute { base; _ }), Parametric { name; _ }
     when Set.mem Recognized.allowlisted_callable_class_decorators name ->
       (* Because of the special class, we don't get a bound method & lose the self argument for
          non-classmethod LRU cache wrappers. Reconstruct self in this case. *)
-      resolve_ignoring_optional ~resolution base
+      CallResolution.resolve_ignoring_optional ~resolution base
       |> fun implementing_class ->
-      resolve_callee_from_defining_expression ~resolution ~callee ~return_type ~implementing_class
+      resolve_callee_from_defining_expression
+        ~resolution
+        ~call_indexer
+        ~callee
+        ~return_type
+        ~implementing_class
   | Expression.Name name, _
     when is_all_names (Node.value callee)
          && Type.Set.mem SpecialCallResolution.recognized_callable_target_types callee_type ->
@@ -863,24 +1219,34 @@ let resolve_recognized_callees ~resolution ~callee ~return_type ~callee_type =
       >>| Reference.show
       >>| fun name ->
       let collapse_tito = collapse_tito ~resolution ~callee ~callable_type:callee_type in
+      let return_type =
+        ReturnType.from_annotation
+          ~resolution:(Resolution.global_resolution resolution)
+          (Lazy.force return_type)
+      in
       CallCallees.create
         ~call_targets:
           [
-            {
-              CallTarget.target = `Function name;
-              implicit_self = false;
-              implicit_dunder_call = false;
-              collapse_tito;
-            };
+            CallTargetIndexer.create_target
+              call_indexer
+              ~implicit_self:false
+              ~implicit_dunder_call:false
+              ~collapse_tito
+              ~return_type:(Some return_type)
+              (Target.Function name);
           ]
-        ~return_type
         ()
   | _ -> None
 
 
-let resolve_callee_ignoring_decorators ~resolution ~collapse_tito callee =
+let resolve_callee_ignoring_decorators ~resolution ~call_indexer ~collapse_tito ~return_type callee =
   let global_resolution = Resolution.global_resolution resolution in
   let open UnannotatedGlobalEnvironment in
+  let return_type () =
+    ReturnType.from_annotation
+      ~resolution:(Resolution.global_resolution resolution)
+      (Lazy.force return_type)
+  in
   match Node.value callee with
   | Expression.Name name when is_all_names (Node.value callee) -> (
       (* Resolving expressions that do not reference local variables or parameters. *)
@@ -891,12 +1257,13 @@ let resolve_callee_ignoring_decorators ~resolution ~collapse_tito callee =
             { export = ResolvedReference.Exported (Module.Export.Name.Define _); remaining = []; _ })
         ->
           Some
-            {
-              CallTarget.target = `Function (Reference.show name);
-              implicit_self = false;
-              implicit_dunder_call = false;
-              collapse_tito;
-            }
+            (CallTargetIndexer.create_target
+               call_indexer
+               ~implicit_self:false
+               ~implicit_dunder_call:false
+               ~return_type:(Some (return_type ()))
+               ~collapse_tito
+               (Target.Function (Reference.show name)))
       | Some
           (ResolvedReference.ModuleAttribute
             {
@@ -907,7 +1274,7 @@ let resolve_callee_ignoring_decorators ~resolution ~collapse_tito callee =
               _;
             }) -> (
           let class_name = Reference.create ~prefix:from name |> Reference.show in
-          GlobalResolution.class_definition global_resolution (Type.Primitive class_name)
+          GlobalResolution.class_summary global_resolution (Type.Primitive class_name)
           >>| Node.value
           >>| ClassSummary.attributes
           >>= Identifier.SerializableMap.find_opt attribute
@@ -915,20 +1282,21 @@ let resolve_callee_ignoring_decorators ~resolution ~collapse_tito callee =
           >>= function
           | { kind = Method { static; _ }; _ } ->
               Some
-                {
-                  CallTarget.target = `Method { Target.class_name; method_name = attribute };
-                  implicit_self = not static;
-                  implicit_dunder_call = false;
-                  collapse_tito;
-                }
+                (CallTargetIndexer.create_target
+                   call_indexer
+                   ~implicit_self:(not static)
+                   ~implicit_dunder_call:false
+                   ~collapse_tito
+                   ~return_type:(Some (return_type ()))
+                   (Target.Method { Target.class_name; method_name = attribute }))
           | _ -> None)
       | _ -> None)
   | Expression.Name (Name.Attribute { base; attribute; _ }) -> (
       (* Resolve `base.attribute` by looking up the type of `base`. *)
-      match resolve_ignoring_optional ~resolution base with
+      match CallResolution.resolve_ignoring_optional ~resolution base with
       | Type.Primitive class_name
       | Type.Parametric { name = "type"; parameters = [Single (Type.Primitive class_name)] } -> (
-          GlobalResolution.class_definition global_resolution (Type.Primitive class_name)
+          GlobalResolution.class_summary global_resolution (Type.Primitive class_name)
           >>| Node.value
           >>| ClassSummary.attributes
           >>= Identifier.SerializableMap.find_opt attribute
@@ -936,22 +1304,23 @@ let resolve_callee_ignoring_decorators ~resolution ~collapse_tito callee =
           >>= function
           | { kind = Method _; _ } ->
               Some
-                {
-                  CallTarget.target = `Method { Target.class_name; method_name = attribute };
-                  implicit_self = true;
-                  implicit_dunder_call = false;
-                  collapse_tito;
-                }
+                (CallTargetIndexer.create_target
+                   call_indexer
+                   ~implicit_self:true
+                   ~implicit_dunder_call:false
+                   ~return_type:(Some (return_type ()))
+                   ~collapse_tito
+                   (Target.Method { Target.class_name; method_name = attribute }))
           | _ -> None)
       | _ -> None)
   | _ -> None
 
 
-let resolve_regular_callees ~resolution ~return_type ~callee =
-  let callee_type = resolve_ignoring_optional ~resolution callee in
+let resolve_regular_callees ~resolution ~call_indexer ~return_type ~callee =
+  let callee_type = CallResolution.resolve_ignoring_optional ~resolution callee in
   let recognized_callees =
-    resolve_recognized_callees ~resolution ~callee ~return_type ~callee_type
-    |> Option.value ~default:(CallCallees.create_unresolved return_type)
+    resolve_recognized_callees ~resolution ~call_indexer ~callee ~return_type ~callee_type
+    |> Option.value ~default:CallCallees.unresolved
   in
   if CallCallees.is_partially_resolved recognized_callees then
     recognized_callees
@@ -959,90 +1328,130 @@ let resolve_regular_callees ~resolution ~return_type ~callee =
     let callee_kind = callee_kind ~resolution callee callee_type in
     let collapse_tito = collapse_tito ~resolution ~callee ~callable_type:callee_type in
     let calleees_from_type =
-      resolve_callees_from_type ~resolution ~return_type ~callee_kind ~collapse_tito callee_type
+      resolve_callees_from_type
+        ~resolution
+        ~call_indexer
+        ~return_type
+        ~callee_kind
+        ~collapse_tito
+        callee_type
     in
     if CallCallees.is_partially_resolved calleees_from_type then
       calleees_from_type
     else
-      resolve_callee_ignoring_decorators ~resolution ~collapse_tito callee
-      >>| (fun target -> CallCallees.create ~call_targets:[target] ~return_type ())
-      |> Option.value ~default:(CallCallees.create_unresolved return_type)
+      resolve_callee_ignoring_decorators
+        ~resolution
+        ~call_indexer
+        ~return_type
+        ~collapse_tito
+        callee
+      >>| (fun target -> CallCallees.create ~call_targets:[target] ())
+      |> Option.value ~default:CallCallees.unresolved
 
 
-let resolve_callees ~resolution ~call =
-  let { Call.callee; arguments } = redirect_special_calls ~resolution call in
-  let return_type =
-    Expression.Call call
-    |> Node.create_with_default_location
-    |> Resolution.resolve_expression_to_type resolution
-  in
+let resolve_callees ~resolution ~call_indexer ~call:({ Call.callee; arguments } as call) =
   let higher_order_parameter =
     let get_higher_order_function_targets index { Call.Argument.value = argument; _ } =
-      match resolve_regular_callees ~resolution ~return_type:Type.none ~callee:argument with
+      let return_type =
+        lazy
+          (Expression.Call { callee = argument; arguments = [] }
+          |> Node.create_with_default_location
+          |> CallResolution.resolve_ignoring_untracked ~resolution)
+      in
+      match resolve_regular_callees ~resolution ~call_indexer ~return_type ~callee:argument with
       | { CallCallees.call_targets = _ :: _ as regular_targets; _ } ->
-          let return_type =
-            Expression.Call { callee = argument; arguments = [] }
-            |> Node.create_with_default_location
-            |> Resolution.resolve_expression_to_type resolution
-          in
-          Some { HigherOrderParameter.index; call_targets = regular_targets; return_type }
+          Some { HigherOrderParameter.index; call_targets = regular_targets }
       | _ -> None
     in
     List.find_mapi arguments ~f:get_higher_order_function_targets
   in
-  let regular_callees = resolve_regular_callees ~resolution ~return_type ~callee in
+  (* Resolving the return type can be costly, hence we prefer the annotation on the callee when
+     possible. When that does not work, we fallback to a full resolution of the call expression
+     (done lazily). *)
+  let return_type =
+    lazy
+      (Expression.Call call
+      |> Node.create_with_default_location
+      |> CallResolution.resolve_ignoring_untracked ~resolution)
+  in
+  let regular_callees = resolve_regular_callees ~resolution ~call_indexer ~return_type ~callee in
   { regular_callees with higher_order_parameter }
 
 
-let get_property_defining_parents ~resolution ~base_annotation ~attribute =
+let get_defining_attributes ~resolution ~base_annotation ~attribute =
   let rec get_defining_parents annotation =
     match annotation with
     | Type.Union annotations
     | Type.Variable { Type.Variable.Unary.constraints = Type.Variable.Explicit annotations; _ } ->
         List.concat_map annotations ~f:get_defining_parents
-    | _ -> (
-        match defining_attribute ~resolution annotation attribute with
-        | Some property when Annotated.Attribute.property property ->
-            [Annotated.Attribute.parent property |> Reference.create |> Option.some]
-        | _ -> [None])
+    | _ -> [CallResolution.defining_attribute ~resolution annotation attribute]
   in
   base_annotation |> strip_meta |> strip_optional |> get_defining_parents
 
 
 type attribute_access_properties = {
-  property_targets: Target.t list;
+  property_targets: CallTarget.t list;
   is_attribute: bool;
 }
 
-let resolve_attribute_access_properties ~resolution ~base_annotation ~attribute ~setter =
-  let defining_parents = get_property_defining_parents ~resolution ~base_annotation ~attribute in
-  let property_of_parent = function
-    | None -> []
-    | Some parent ->
-        let property_targets =
-          if Type.is_meta base_annotation then
-            [Target.create_method (Reference.create ~prefix:parent attribute)]
-          else
-            let callee = Reference.create ~prefix:parent attribute in
-            compute_indirect_targets ~resolution ~receiver_type:base_annotation callee
+let resolve_attribute_access_properties
+    ~resolution
+    ~call_indexer
+    ~base_annotation
+    ~attribute
+    ~setter
+  =
+  let property_targets_of_attribute property =
+    let return_type =
+      if setter then
+        ReturnType.none
+      else
+        Annotated.Attribute.annotation property
+        |> Annotation.annotation
+        |> ReturnType.from_annotation ~resolution:(Resolution.global_resolution resolution)
+    in
+    let parent = Annotated.Attribute.parent property |> Reference.create in
+    let property_targets =
+      if Type.is_meta base_annotation then
+        [Target.create_method (Reference.create ~prefix:parent attribute)]
+      else
+        let callee = Reference.create ~prefix:parent attribute in
+        compute_indirect_targets ~resolution ~receiver_type:base_annotation callee
+    in
+    let property_targets =
+      if setter then
+        let to_setter target =
+          match target with
+          | Target.Override { Target.class_name; method_name } ->
+              Target.Override { Target.class_name; method_name = method_name ^ "$setter" }
+          | Target.Method { Target.class_name; method_name } ->
+              Target.Method { Target.class_name; method_name = method_name ^ "$setter" }
+          | _ -> target
         in
-        if setter then
-          let to_setter target =
-            match target with
-            | `OverrideTarget { Target.class_name; method_name } ->
-                `OverrideTarget { Target.class_name; method_name = method_name ^ "$setter" }
-            | `Method { Target.class_name; method_name } ->
-                `Method { Target.class_name; method_name = method_name ^ "$setter" }
-            | _ -> target
-          in
-          List.map property_targets ~f:to_setter
-        else
-          property_targets
+        List.map property_targets ~f:to_setter
+      else
+        property_targets
+    in
+    List.map
+      ~f:
+        (CallTargetIndexer.create_target
+           call_indexer
+           ~implicit_self:true
+           ~implicit_dunder_call:false
+           ~collapse_tito:true
+           ~return_type:(Some return_type))
+      property_targets
   in
-  let property_targets = List.concat_map ~f:property_of_parent defining_parents in
-  let is_attribute =
-    List.exists ~f:Option.is_none defining_parents || List.is_empty defining_parents
+  let attributes = get_defining_attributes ~resolution ~base_annotation ~attribute in
+  let properties, non_properties =
+    List.partition_map
+      ~f:(function
+        | Some property when Annotated.Attribute.property property -> Either.First property
+        | attribute -> Either.Second attribute)
+      attributes
   in
+  let property_targets = List.concat_map ~f:property_targets_of_attribute properties in
+  let is_attribute = (not (List.is_empty non_properties)) || List.is_empty attributes in
   { property_targets; is_attribute }
 
 
@@ -1118,40 +1527,54 @@ let resolve_attribute_access_global_targets ~resolution ~base_annotation ~base ~
       find_targets [] base_annotation
 
 
-let resolve_attribute_access ~resolution ~base ~attribute ~special ~setter =
-  let base_annotation = resolve_ignoring_optional ~resolution base in
+let resolve_attribute_access ~resolution ~call_indexer ~base ~attribute ~special ~setter =
+  let base_annotation = CallResolution.resolve_ignoring_optional ~resolution base in
 
   let { property_targets; is_attribute } =
-    resolve_attribute_access_properties ~resolution ~base_annotation ~attribute ~setter
+    resolve_attribute_access_properties
+      ~resolution
+      ~call_indexer
+      ~base_annotation
+      ~attribute
+      ~setter
   in
 
   let global_targets =
     resolve_attribute_access_global_targets ~resolution ~base_annotation ~base ~attribute ~special
     |> List.map ~f:Target.create_object
     |> List.filter ~f:FixpointState.has_model
+    |> List.map
+         ~f:
+           (CallTargetIndexer.create_target
+              call_indexer
+              ~implicit_self:false
+              ~implicit_dunder_call:false
+              ~return_type:None
+              ~collapse_tito:true)
   in
 
-  match property_targets, global_targets, is_attribute with
-  | [], [], true -> None
-  | _ ->
-      let return_type =
-        if setter then
-          Type.none
-        else
-          Expression.Name (Name.Attribute { Name.Attribute.base; attribute; special })
-          |> Node.create_with_default_location
-          |> Resolution.resolve_expression_to_type resolution
-      in
-      Some { AttributeAccessCallees.property_targets; global_targets; return_type; is_attribute }
+  { AttributeAccessCallees.property_targets; global_targets; is_attribute }
 
 
-let resolve_identifier ~resolution ~identifier =
+let resolve_identifier ~resolution ~call_indexer ~identifier =
   Expression.Name (Name.Identifier identifier)
   |> Node.create_with_default_location
   |> as_global_reference ~resolution
   >>| Target.create_object
   |> Option.filter ~f:FixpointState.has_model
-  >>| fun global -> { IdentifierCallees.global_targets = [global] }
+  >>| fun global ->
+  {
+    IdentifierCallees.global_targets =
+      [
+        CallTargetIndexer.create_target
+          call_indexer
+          ~implicit_self:false
+          ~implicit_dunder_call:false
+          ~return_type:None
+          ~collapse_tito:true
+          global;
+      ];
+  }
 
 
 (* This is a bit of a trick. The only place that knows where the local annotation map keys is the
@@ -1166,6 +1589,8 @@ module DefineCallGraphFixpoint (Context : sig
   val parent : Reference.t option
 
   val callees_at_location : UnprocessedLocationCallees.t Location.Table.t
+
+  val call_indexer : CallTargetIndexer.t
 end) =
 struct
   type assignment_target = { location: Location.t }
@@ -1175,11 +1600,14 @@ struct
     assignment_target: assignment_target option;
   }
 
+  let call_indexer = Context.call_indexer
+
   module NodeVisitor = struct
     type nonrec t = visitor_t
 
     let expression_visitor ({ resolution; assignment_target } as state) { Node.value; location } =
-      let register_targets ~expression_identifier callees =
+      CallTargetIndexer.generate_fresh_indices call_indexer;
+      let register_targets ~expression_identifier ?(location = location) callees =
         Location.Table.update Context.callees_at_location location ~f:(function
             | None -> UnprocessedLocationCallees.singleton ~expression_identifier ~callees
             | Some existing_callees ->
@@ -1188,7 +1616,8 @@ struct
       let () =
         match value with
         | Expression.Call call ->
-            resolve_callees ~resolution ~call
+            let call = redirect_special_calls ~resolution call in
+            resolve_callees ~resolution ~call_indexer ~call
             |> ExpressionCallees.from_call
             |> register_targets ~expression_identifier:(call_identifier call)
         | Expression.Name (Name.Attribute { Name.Attribute.base; attribute; special }) ->
@@ -1198,22 +1627,55 @@ struct
                   Location.equal assignment_target_location location
               | None -> false
             in
-            resolve_attribute_access ~resolution ~base ~attribute ~special ~setter
-            >>| ExpressionCallees.from_attribute_access
-            >>| register_targets ~expression_identifier:attribute
-            |> ignore
+            resolve_attribute_access ~resolution ~call_indexer ~base ~attribute ~special ~setter
+            |> ExpressionCallees.from_attribute_access
+            |> register_targets ~expression_identifier:attribute
         | Expression.Name (Name.Identifier identifier) ->
-            resolve_identifier ~resolution ~identifier
+            resolve_identifier ~resolution ~call_indexer ~identifier
             >>| ExpressionCallees.from_identifier
             >>| register_targets ~expression_identifier:identifier
             |> ignore
         | Expression.ComparisonOperator comparison -> (
             match ComparisonOperator.override ~location comparison with
             | Some { Node.value = Expression.Call call; _ } ->
-                resolve_callees ~resolution ~call
+                let call = redirect_special_calls ~resolution call in
+                resolve_callees ~resolution ~call_indexer ~call
                 |> ExpressionCallees.from_call
                 |> register_targets ~expression_identifier:(call_identifier call)
             | _ -> ())
+        | Expression.FormatString substrings ->
+            List.iter substrings ~f:(function
+                | Substring.Literal _ -> ()
+                | Substring.Format ({ Node.location = expression_location; _ } as expression) ->
+                    let { CallCallees.call_targets; _ } =
+                      let callee =
+                        let method_name =
+                          Annotated.Call.resolve_stringify_call ~resolution expression
+                        in
+                        {
+                          Node.value =
+                            Expression.Name
+                              (Name.Attribute
+                                 { base = expression; attribute = method_name; special = false });
+                          location = expression_location;
+                        }
+                      in
+                      CallTargetIndexer.generate_fresh_indices call_indexer;
+                      resolve_regular_callees
+                        ~resolution
+                        ~call_indexer
+                        ~return_type:(lazy Type.string)
+                        ~callee
+                    in
+
+                    if not (List.is_empty call_targets) then
+                      let callees =
+                        ExpressionCallees.from_format_string { FormatStringCallees.call_targets }
+                      in
+                      register_targets
+                        ~expression_identifier:DefineCallGraph.format_string_expression_identifier
+                        ~location:expression_location
+                        callees)
         | _ -> ()
       in
       (* Special-case `getattr()` and `setattr()` for the taint analysis. *)
@@ -1238,10 +1700,15 @@ struct
                   { Call.Argument.value = _; _ };
                 ];
             } ->
-            resolve_attribute_access ~resolution ~base ~attribute ~special:false ~setter:false
-            >>| ExpressionCallees.from_attribute_access
-            >>| register_targets ~expression_identifier:attribute
-            |> ignore
+            resolve_attribute_access
+              ~resolution
+              ~call_indexer
+              ~base
+              ~attribute
+              ~special:false
+              ~setter:false
+            |> ExpressionCallees.from_attribute_access
+            |> register_targets ~expression_identifier:attribute
         | Expression.Call
             {
               callee =
@@ -1271,10 +1738,15 @@ struct
                   { Call.Argument.value = _; name = None };
                 ];
             } ->
-            resolve_attribute_access ~resolution ~base:self ~attribute ~special:true ~setter:true
-            >>| ExpressionCallees.from_attribute_access
-            >>| register_targets ~expression_identifier:attribute
-            |> ignore
+            resolve_attribute_access
+              ~resolution
+              ~call_indexer
+              ~base:self
+              ~attribute
+              ~special:true
+              ~setter:true
+            |> ExpressionCallees.from_attribute_access
+            |> register_targets ~expression_identifier:attribute
         | _ -> ()
       in
       state
@@ -1370,6 +1842,8 @@ let call_graph_of_define
     let parent = parent
 
     let callees_at_location = callees_at_location
+
+    let call_indexer = CallTargetIndexer.create ()
   end)
   in
   (* Handle parameters. *)
@@ -1400,6 +1874,13 @@ let call_graph_of_define
                ( location,
                  LocationCallees.Compound
                    (Core.String.Map.Tree.map ~f:ExpressionCallees.deduplicate unprocessed_callees) ))
+    |> List.filter ~f:(fun (_, callees) ->
+           match callees with
+           | LocationCallees.Singleton singleton ->
+               not (ExpressionCallees.is_empty_attribute_access_callees singleton)
+           | LocationCallees.Compound compound ->
+               Core.String.Map.Tree.exists compound ~f:(fun callees ->
+                   not (ExpressionCallees.is_empty_attribute_access_callees callees)))
     |> Location.Map.of_alist_exn
   in
   Statistics.performance
@@ -1416,56 +1897,40 @@ let call_graph_of_define
 module SharedMemory = struct
   include
     Memory.WithCache.Make
-      (Target.CallableKey)
+      (Target.SharedMemoryKey)
       (struct
         type t = LocationCallees.t Location.Map.Tree.t
 
         let prefix = Prefix.make ()
 
         let description = "call graphs of defines"
-
-        let unmarshall value = Marshal.from_string value 0
       end)
 
   let add ~callable ~call_graph = add callable (Location.Map.to_tree call_graph)
 
   let get ~callable = get callable >>| Location.Map.of_tree
 
-  let get_or_compute ~callable ~environment ~define =
-    match get ~callable with
-    | Some map -> map
-    | None ->
-        let call_graph = call_graph_of_define ~environment ~define in
-        add ~callable ~call_graph;
-        call_graph
-
-
   let remove callables = KeySet.of_list callables |> remove_batch
 end
 
-let create_callgraph ?(use_shared_memory = false) ~environment ~source =
+let create_callgraph ~store_shared_memory ~environment ~source =
   let fold_defines dependencies = function
     | { Node.value = define; _ } when Define.is_overloaded_function define -> dependencies
     | define ->
-        let call_graph_of_define =
-          if use_shared_memory then
-            SharedMemory.get_or_compute
-              ~callable:(Target.create define)
-              ~environment
-              ~define:(Node.value define)
-          else
-            call_graph_of_define ~environment ~define:(Node.value define)
+        let call_graph_of_define = call_graph_of_define ~environment ~define:(Node.value define) in
+        let () =
+          if store_shared_memory then
+            SharedMemory.add ~callable:(Target.create define) ~call_graph:call_graph_of_define
         in
         let non_object_target = function
-          | `Object _ -> false
+          | Target.Object _ -> false
           | _ -> true
         in
         Location.Map.data call_graph_of_define
         |> List.concat_map ~f:LocationCallees.all_targets
         |> List.filter ~f:non_object_target
         |> List.dedup_and_sort ~compare:Target.compare
-        |> fun callees ->
-        Target.CallableMap.set dependencies ~key:(Target.create define) ~data:callees
+        |> fun callees -> Target.Map.set dependencies ~key:(Target.create define) ~data:callees
   in
   Preprocessing.defines ~include_nested:true ~include_toplevels:true source
-  |> List.fold ~init:Target.CallableMap.empty ~f:fold_defines
+  |> List.fold ~init:Target.Map.empty ~f:fold_defines

@@ -8,7 +8,6 @@
 open Core
 module Hashtbl = Caml.Hashtbl
 module Set = Caml.Set
-open Memory
 
 module EncodedDependency = struct
   type t = int [@@deriving compare, sexp]
@@ -83,15 +82,13 @@ module DependencyKey = struct
     module Transaction : sig
       type t
 
-      val empty : scheduler:Scheduler.t -> configuration:Configuration.Analysis.t -> t
+      val empty : scheduler:Scheduler.t -> t
 
       val add : t -> RegisteredSet.t transaction_element -> t
 
       val execute : t -> update:(unit -> 'a) -> 'a * RegisteredSet.t
 
       val scheduler : t -> Scheduler.t
-
-      val configuration : t -> Configuration.Analysis.t
     end
   end
 
@@ -135,10 +132,9 @@ module DependencyKey = struct
       type t = {
         elements: RegisteredSet.t transaction_element list;
         scheduler: Scheduler.t;
-        configuration: Configuration.Analysis.t;
       }
 
-      let empty ~scheduler ~configuration = { elements = []; scheduler; configuration }
+      let empty ~scheduler = { elements = []; scheduler }
 
       let add ({ elements = existing; _ } as transaction) element =
         { transaction with elements = element :: existing }
@@ -152,8 +148,6 @@ module DependencyKey = struct
 
 
       let scheduler { scheduler; _ } = scheduler
-
-      let configuration { configuration; _ } = configuration
     end
   end
 end
@@ -166,9 +160,9 @@ end
 
 module DependencyTracking = struct
   module type TableType = sig
-    include NoCache.S
+    include Memory.NoCache.S
 
-    module Value : ComparableValueType with type t = t
+    module Value : Memory.ComparableValueType with type t = value
   end
 
   module Make (DependencyKey : DependencyKey.S) (Table : TableType) = struct
@@ -209,7 +203,7 @@ module DependencyTracking = struct
 
     let deprecate_keys = Table.oldify_batch
 
-    let dependencies_since_last_deprecate keys ~scheduler:_ ~configuration:_ =
+    let dependencies_since_last_deprecate keys ~scheduler:_ =
       let add_dependencies init keys =
         let add_dependency sofar key =
           let value_has_changed, presence_has_changed =
@@ -243,12 +237,11 @@ module DependencyTracking = struct
 
     let add_to_transaction transaction ~keys =
       let scheduler = DependencyKey.Transaction.scheduler transaction in
-      let configuration = DependencyKey.Transaction.configuration transaction in
       DependencyKey.Transaction.add
         transaction
         {
           before = (fun () -> deprecate_keys keys);
-          after = (fun () -> dependencies_since_last_deprecate keys ~scheduler ~configuration);
+          after = (fun () -> dependencies_since_last_deprecate keys ~scheduler);
         }
 
 
@@ -263,11 +256,11 @@ module DependencyTracking = struct
 end
 
 module DependencyTrackedTableWithCache
-    (Key : KeyType)
+    (Key : Memory.KeyType)
     (DependencyKey : DependencyKey.S)
-    (Value : ComparableValueType) =
+    (Value : Memory.ComparableValueType) =
 struct
-  module Table = WithCache.Make (Key) (Value)
+  module Table = Memory.WithCache.Make (Key) (Value)
   include Table
 
   include
@@ -280,11 +273,11 @@ struct
 end
 
 module DependencyTrackedTableNoCache
-    (Key : KeyType)
+    (Key : Memory.KeyType)
     (DependencyKey : DependencyKey.S)
-    (Value : ComparableValueType) =
+    (Value : Memory.ComparableValueType) =
 struct
-  module Table = NoCache.Make (Key) (Value)
+  module Table = Memory.NoCache.Make (Key) (Value)
   include Table
 
   include

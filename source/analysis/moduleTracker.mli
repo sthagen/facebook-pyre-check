@@ -10,14 +10,7 @@ module IncrementalUpdate : sig
     | NewExplicit of Ast.SourcePath.t
     | NewImplicit of Ast.Reference.t
     | Delete of Ast.Reference.t
-  [@@deriving sexp, compare, eq]
-end
-
-module ModuleLookup : sig
-  type t =
-    | Explicit of Ast.SourcePath.t
-    | Implicit of Ast.Reference.t
-  [@@deriving sexp, compare, eq]
+  [@@deriving show, sexp, compare, eq]
 end
 
 module PathLookup : sig
@@ -25,40 +18,47 @@ module PathLookup : sig
     | Found of Ast.SourcePath.t
     | ShadowedBy of Ast.SourcePath.t
     | NotFound
-  [@@deriving sexp, compare]
+  [@@deriving show, sexp, compare]
 end
 
 type t
 
 val create : Configuration.Analysis.t -> t
 
-val lookup : t -> Ast.Reference.t -> ModuleLookup.t option
-
-val lookup_source_path : t -> Ast.Reference.t -> Ast.SourcePath.t option
-
-val lookup_path : configuration:Configuration.Analysis.t -> t -> PyrePath.t -> PathLookup.t
+(* This function returns all SourcePaths that are tracked, including the shadowed ones. *)
+val all_source_paths : t -> Ast.SourcePath.t list
 
 val source_paths : t -> Ast.SourcePath.t list
 
-(* This function returns all SourcePaths that are tracked, including the shadowed ones *)
-val all_source_paths : t -> Ast.SourcePath.t list
+val configuration : t -> Configuration.Analysis.t
 
-(* This function returns all explicit modules (i.e. those backed up by a source path) that are
-   tracked *)
-val tracked_explicit_modules : t -> Ast.Reference.t list
+val update : paths:PyrePath.t list -> t -> IncrementalUpdate.t list
 
-val is_module_tracked : t -> Ast.Reference.t -> bool
+module Serializer : sig
+  val store_layouts : t -> unit
 
-val explicit_module_count : t -> int
-
-val update
-  :  configuration:Configuration.Analysis.t ->
-  paths:PyrePath.t list ->
-  t ->
-  IncrementalUpdate.t list
-
-module SharedMemory : sig
-  val store : t -> unit
-
-  val load : unit -> t
+  val from_stored_layouts : configuration:Configuration.Analysis.t -> unit -> t
 end
+
+module ReadOnly : sig
+  type t
+
+  val configuration : t -> Configuration.Analysis.t
+
+  val lookup_source_path : t -> Ast.Reference.t -> Ast.SourcePath.t option
+
+  val lookup_path : t -> PyrePath.t -> PathLookup.t
+
+  val source_paths : t -> Ast.SourcePath.t list
+
+  (* This function returns all explicit modules (i.e. those backed up by a source path) that are
+     tracked *)
+  val tracked_explicit_modules : t -> Ast.Reference.t list
+
+  val is_module_tracked : t -> Ast.Reference.t -> bool
+
+  (* Either `Ok (raw_code)` or `Error (message)` *)
+  val get_raw_code : t -> Ast.SourcePath.t -> (string, string) Result.t
+end
+
+val read_only : t -> ReadOnly.t

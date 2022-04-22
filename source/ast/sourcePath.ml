@@ -42,7 +42,16 @@ let qualifier_of_relative relative =
   | _ ->
       let qualifier =
         let reversed_elements =
-          Filename.parts relative |> (* Strip current directory. *) List.tl_exn |> List.rev
+          let strip_stub_suffix name =
+            (* Stub packages have their directories named as `XXX-stubs`. See PEP 561. *)
+            match String.chop_suffix name ~suffix:"-stubs" with
+            | Some result -> result
+            | None -> name
+          in
+          Filename.parts relative
+          |> (* Strip current directory. *) List.tl_exn
+          |> List.map ~f:strip_stub_suffix
+          |> List.rev
         in
         let last_without_suffix =
           let last = List.hd_exn reversed_elements in
@@ -121,6 +130,10 @@ let create ~configuration:({ Configuration.Analysis.excludes; _ } as configurati
   | _, None when String.is_suffix ~suffix:".pyi" absolute_path -> create path
   | _ -> None
 
+
+let qualifier { qualifier; _ } = qualifier
+
+let is_in_project { is_external; _ } = not is_external
 
 let create_for_testing ~relative ~is_external ~priority =
   let qualifier = qualifier_of_relative relative in

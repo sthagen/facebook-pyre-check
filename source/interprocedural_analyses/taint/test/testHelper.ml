@@ -40,7 +40,7 @@ type expectation = {
   define_name: string;
   source_parameters: parameter_source_taint list;
   sink_parameters: parameter_taint list;
-  tito_parameters: string list;
+  tito_parameters: parameter_taint list;
   returns: Sources.t list;
   errors: error_expectation list;
   obscure: bool option;
@@ -182,28 +182,12 @@ let check_expectation
     Domains.SanitizeRootMap.to_alist sanitizers.roots
     |> List.fold ~init:String.Map.empty ~f:extract_parameter_sanitize
   in
-  let extract_tito_parameter_name (root, taint) positions =
-    let kinds =
-      Domains.BackwardState.Tree.fold Domains.BackwardTaint.kind taint ~f:List.cons ~init:[]
-    in
-    let get_tito_name parameter_name = function
-      | Sinks.Attach -> parameter_name
-      | Sinks.LocalReturn -> parameter_name
-      | Sinks.ParameterUpdate n -> Format.sprintf "%s updates parameter %d" parameter_name n
-      | _ -> failwith "not a tito sink"
-    in
-    match AccessPath.Root.parameter_name root with
-    | Some name ->
-        List.fold kinds ~init:positions ~f:(fun positions kind ->
-            String.Set.add positions (get_tito_name name kind))
-    | _ -> positions
-  in
-  let taint_in_taint_out_names =
+  let parameter_taint_in_taint_out_map =
     Domains.BackwardState.fold
       Domains.BackwardState.KeyValue
       backward.taint_in_taint_out
-      ~f:extract_tito_parameter_name
-      ~init:String.Set.empty
+      ~f:extract_sinks_by_parameter_name
+      ~init:String.Map.empty
   in
   let print_list ~show list =
     list |> List.map ~f:show |> String.concat ~sep:", " |> Format.asprintf "[%s]"
@@ -358,13 +342,15 @@ let check_expectation
     ~f:check_each_source_parameter
     expected_parameter_sources
     parameter_source_taint_map;
-  let expected_tito = tito_parameters |> String.Set.of_list in
+  let expected_tito =
+    List.map ~f:(fun { name; sinks } -> name, sinks) tito_parameters |> String.Map.of_alist_exn
+  in
   assert_equal
-    ~cmp:String.Set.equal
-    ~printer:(fun set -> Sexp.to_string [%message (set : String.Set.t)])
-    ~msg:(Format.sprintf "Define %s Tito positions" define_name)
-    expected_tito
-    taint_in_taint_out_names;
+    (Map.length expected_tito)
+    (Map.length parameter_taint_in_taint_out_map)
+    ~printer:Int.to_string
+    ~msg:(Format.sprintf "Define %s: List of tito parameters differ in length." define_name);
+  String.Map.iter2 ~f:check_each_sink expected_tito parameter_taint_in_taint_out_map;
 
   (* Check sanitizers *)
   assert_equal
@@ -394,7 +380,7 @@ let check_expectation
   let actual_errors =
     FixpointState.get_result callable
     |> AnalysisResult.get_result Taint.Result.kind
-    >>| List.map ~f:Flow.generate_error
+    >>| List.map ~f:Issue.to_error
     |> Option.value ~default:[]
   in
   let actual_errors =
@@ -448,12 +434,12 @@ let run_with_taint_models tests ~name =
         ~configuration:TaintConfiguration.default
         ~callables:None
         ~stubs:(Interprocedural.Target.HashSet.create ())
-        Target.Map.empty
+        ()
     in
     assert_bool
       (Format.sprintf
-         "The models shouldn't have any parsing errors: %s."
-         (List.to_string errors ~f:ModelVerificationError.display))
+         "The models shouldn't have any parsing errors:\n%s."
+         (List.map errors ~f:ModelVerificationError.display |> String.concat ~sep:"\n"))
       (List.is_empty errors);
     Target.Map.map models ~f:(AnalysisResult.make_model Taint.Result.kind)
     |> Interprocedural.FixpointAnalysis.record_initial_models ~callables:[] ~stubs:[]
@@ -518,8 +504,7 @@ let initialize
        |> List.map ~f:(fun error ->
               AnalysisError.instantiate
                 ~show_error_traces:false
-                ~lookup:
-                  (AstEnvironment.ReadOnly.get_real_path_relative ~configuration ast_environment)
+                ~lookup:(AstEnvironment.ReadOnly.get_real_path_relative ast_environment)
                 error
               |> AnalysisError.Instantiated.description)
        |> String.concat ~sep:"\n"
@@ -545,26 +530,23 @@ let initialize
   in
   let callables = List.map ~f:fst callables in
   let stubs = List.map ~f:fst stubs in
-  let callable_targets = (callables :> Target.t list) in
-  let stub_targets = (stubs :> Target.t list) in
-  let initial_models, skip_overrides =
-    let inferred_models = ClassModels.infer ~environment in
+  let user_models, skip_overrides =
     match models with
-    | None -> inferred_models, Ast.Reference.Set.empty
+    | None -> Target.Map.empty, Ast.Reference.Set.empty
     | Some source ->
         let { ModelParser.models; errors; skip_overrides; queries = rules } =
           ModelParser.parse
             ~resolution
             ~source:(Test.trim_extra_indentation source)
             ~configuration:taint_configuration
-            ~callables:(Some (Target.HashSet.of_list callable_targets))
-            ~stubs:(Target.HashSet.of_list stub_targets)
-            inferred_models
+            ~callables:(Some (Target.HashSet.of_list callables))
+            ~stubs:(Target.HashSet.of_list stubs)
+            ()
         in
         assert_bool
           (Format.sprintf
-             "The models shouldn't have any parsing errors: %s."
-             (List.to_string errors ~f:ModelVerificationError.display))
+             "The models shouldn't have any parsing errors:\n%s."
+             (List.map errors ~f:ModelVerificationError.display |> String.concat ~sep:"\n"))
           (List.is_empty errors);
 
         let models =
@@ -577,9 +559,10 @@ let initialize
             ~models
             ~callables:
               (List.filter_map (List.rev_append stubs callables) ~f:(function
-                  | `Function _ as callable -> Some (callable :> Target.callable_t)
-                  | `Method _ as callable -> Some (callable :> Target.callable_t)))
-            ~stubs:(Target.HashSet.of_list stub_targets)
+                  | Target.Function _ as callable -> Some callable
+                  | Target.Method _ as callable -> Some callable
+                  | _ -> None))
+            ~stubs:(Target.HashSet.of_list stubs)
             ~environment
         in
         let remove_sinks models = Target.Map.map ~f:Model.remove_sinks models in
@@ -593,7 +576,7 @@ let initialize
             in
             Target.Map.set models ~key:callable ~data:model
           in
-          stub_targets
+          stubs
           |> List.filter ~f:(fun stub ->
                  Target.Map.find models stub >>| Model.is_obscure |> Option.value ~default:true)
           |> List.fold ~init:models ~f:add_obscure_sink
@@ -606,6 +589,14 @@ let initialize
         in
         models, skip_overrides
   in
+  let inferred_models = ClassModels.infer ~environment ~user_models in
+  let initial_models =
+    Target.Map.merge inferred_models user_models ~f:(fun ~key:_ -> function
+      | `Both (left, right) -> Some (Model.join left right)
+      | `Left model
+      | `Right model ->
+          Some model)
+  in
   (* Overrides must be done first, as they influence the call targets. *)
   let overrides =
     let overrides =
@@ -616,8 +607,8 @@ let initialize
     DependencyGraph.from_overrides overrides
   in
 
-  let targets = List.rev_append (Target.Map.keys overrides) callable_targets in
-  let callables_to_analyze = List.rev_append stub_targets targets in
+  let targets = List.rev_append (Target.Map.keys overrides) callables in
+  let callables_to_analyze = targets in
   let initial_models_callables = Target.Map.keys initial_models in
   (* Initialize models *)
   let () = TaintConfiguration.register taint_configuration in
@@ -636,4 +627,7 @@ let initialize
       ~call_graph:DependencyGraph.empty_callgraph
       ~source
   in
+  let class_hierarchy_graph = ClassHierarchyGraph.from_source ~environment ~source in
+  Interprocedural.ClassInterval.compute_intervals class_hierarchy_graph
+  |> Interprocedural.ClassInterval.SharedMemory.store;
   { callgraph; overrides; callables_to_analyze; initial_models_callables; environment }

@@ -62,7 +62,9 @@ let assert_backward ~resolution precondition statement postcondition =
   assert_state_equal
     (create postcondition)
     (List.fold_right
-       ~f:(fun statement state -> State.backward ~statement_key:Cfg.exit_index state ~statement)
+       ~f:(fun statement state ->
+         State.backward ~statement_key:Cfg.exit_index state ~statement
+         |> State.widen_resolution_with_snapshots)
        ~init:(create precondition)
        parsed)
 
@@ -80,9 +82,9 @@ let test_backward_resolution_handling context =
   assert_backward
     ["x", Type.Primitive "B"; "y", Type.Primitive "C"]
     "x = y = z"
-    ["x", Type.Primitive "B"; "y", Type.Primitive "C"; "z", Type.Primitive "B"];
+    ["x", Type.Primitive "B"; "y", Type.Primitive "C"; "z", Type.Bottom];
   assert_backward ["a", Type.integer] "a, b = c, d" ["a", Type.integer; "c", Type.integer];
-  assert_backward ["a", Type.Top; "b", Type.integer] "a = b" ["a", Type.Top; "b", Type.integer];
+  assert_backward ["a", Type.Top; "b", Type.integer] "a = b" ["b", Type.integer];
 
   (* Tuples *)
   assert_backward
@@ -242,6 +244,44 @@ module Setup = struct
     | None -> failwith ("Could not find target define " ^ target)
 end
 
+let assert_json_equal ~context ~expected result =
+  let expected = Yojson.Safe.from_string expected in
+  assert_equal ~ctxt:context ~printer:Yojson.Safe.pretty_to_string expected result
+
+
+let access_by_field_name field body =
+  match body with
+  | `Assoc list -> List.Assoc.find ~equal:String.equal list field |> Option.value ~default:`Null
+  | _ ->
+      failwith
+        (Format.asprintf
+           "TEST FAIL: ERROR ACCESSING FIELD %s IN JSON %s"
+           field
+           (Yojson.Safe.pretty_to_string body))
+
+
+let access_by_path field_path body =
+  let rec go path_so_far body_so_far =
+    match path_so_far with
+    | [] -> body_so_far
+    | field_name :: rest_of_path ->
+        body_so_far |> access_by_field_name field_name |> go rest_of_path
+  in
+  go field_path body
+
+
+let option_to_json string_option =
+  string_option |> Option.map ~f:(Format.asprintf "\"%s\"") |> Option.value ~default:"null"
+
+
+let check_inference_results ?(field_path = []) ~context ~target ~expected code =
+  code
+  |> Setup.run_inference_exn ~context ~target
+  |> LocalResult.to_yojson
+  |> access_by_path field_path
+  |> assert_json_equal ~context ~expected
+
+
 let test_should_analyze_define context =
   let check ~should_analyze ~target code =
     let _, global_resolution, _, source = Setup.get_environment_data ~context code in
@@ -284,42 +324,9 @@ let test_should_analyze_define context =
   ()
 
 
-let assert_json_equal ~context ~expected result =
-  let expected = Yojson.Safe.from_string expected in
-  assert_equal ~ctxt:context ~printer:Yojson.Safe.pretty_to_string expected result
-
-
-let access_by_field_name field body =
-  match body with
-  | `Assoc list -> List.Assoc.find ~equal:String.equal list field |> Option.value ~default:`Null
-  | _ ->
-      failwith
-        (Format.asprintf
-           "TEST FAIL: ERROR ACCESSING FIELD %s IN JSON %s"
-           field
-           (Yojson.Safe.pretty_to_string body))
-
-
-let access_by_path field_path body =
-  let rec go path_so_far body_so_far =
-    match path_so_far with
-    | [] -> body_so_far
-    | field_name :: rest_of_path ->
-        body_so_far |> access_by_field_name field_name |> go rest_of_path
-  in
-  go field_path body
-
-
-let check_inference_results ?(field_path = []) ~context ~target ~expected code =
-  code
-  |> Setup.run_inference_exn ~context ~target
-  |> LocalResult.to_yojson
-  |> access_by_path field_path
-  |> assert_json_equal ~context ~expected
-
-
 let test_inferred_returns context =
   let check_inference_results = check_inference_results ~field_path:["define"; "return"] ~context in
+  (* None *)
   check_inference_results
     {|
       def foo():
@@ -327,6 +334,37 @@ let test_inferred_returns context =
     |}
     ~target:"test.foo"
     ~expected:{|"None"|};
+  check_inference_results
+    {|
+      def foo():
+          return
+    |}
+    ~target:"test.foo"
+    ~expected:{|"None"|};
+  check_inference_results
+    {|
+      def foo():
+          return None
+    |}
+    ~target:"test.foo"
+    ~expected:{|"None"|};
+  check_inference_results
+    {|
+      def foo():
+          x = undefined
+    |}
+    ~target:"test.foo"
+    ~expected:{|"None"|};
+  check_inference_results
+    {|
+      def foo(b: bool):
+          if b:
+            return 1
+    |}
+    ~target:"test.foo"
+    ~expected:{|"typing.Optional[int]"|};
+
+  (* Locals *)
   check_inference_results
     {|
       def foo(x: int):
@@ -344,30 +382,6 @@ let test_inferred_returns context =
     ~expected:{|"int"|};
   check_inference_results
     {|
-      def foo():
-          return
-    |}
-    ~target:"test.foo"
-    ~expected:{|"None"|};
-  check_inference_results
-    {|
-      def foo():
-          return None
-    |}
-    ~target:"test.foo"
-    ~expected:{|"None"|};
-  check_inference_results
-    {|
-      def foo(b: bool):
-          if b:
-              return "hello"
-          else:
-              return 0
-    |}
-    ~target:"test.foo"
-    ~expected:{|"typing.Union[int, str]"|};
-  check_inference_results
-    {|
       def other() -> int:
           return 1
 
@@ -380,11 +394,73 @@ let test_inferred_returns context =
     ~expected:{|"int"|};
   check_inference_results
     {|
-      def foo():
-          x = undefined
+      def foo(b: bool):
+          if b:
+              return "hello"
+          else:
+              return 0
     |}
     ~target:"test.foo"
-    ~expected:{|"None"|};
+    ~expected:{|"typing.Union[int, str]"|};
+  check_inference_results
+    {|
+    def foo():
+        if 1 > 2:
+            x = 2
+        else:
+            assert not True
+        return x
+    |}
+    ~target:"test.foo"
+    ~expected:{|"int"|};
+
+  (* Tuples *)
+  check_inference_results
+    {|
+      def foo():
+          return ("", "", "", "")
+    |}
+    ~target:"test.foo"
+    ~expected:{|"typing.Tuple[str, ...]"|};
+  check_inference_results
+    {|
+      def foo():
+          return ("", "", "", 2)
+    |}
+    ~target:"test.foo"
+    ~expected:{|"typing.Tuple[str, str, str, int]"|};
+
+  (* Callables *)
+  check_inference_results
+    {|
+      def foo():
+          def bar(x: int) -> str:
+              return ""
+          return bar
+    |}
+    ~target:"test.foo"
+    ~expected:{|"typing.Callable[[int], str]"|};
+  check_inference_results
+    {|
+      def foo():
+          def bar(x: int, y: str) -> bool:
+              pass
+          return [bar]
+    |}
+    ~target:"test.foo"
+    ~expected:{|"typing.List[typing.Callable[[int, str], bool]]"|};
+
+  (* Self *)
+  check_inference_results
+    {|
+      class Test(object):
+          def ret_self(self):
+              return self
+    |}
+    ~target:"test.Test.ret_self"
+    ~expected:{|"test.Test"|};
+
+  (* Unknown *)
   check_inference_results
     {|
       def foo(a):
@@ -402,23 +478,15 @@ let test_inferred_returns context =
     ~expected:{|null|};
   check_inference_results
     {|
-    def foo():
-        if 1 > 2:
-            x = 2
-        else:
-            assert not True
-        return x
+      class A:
+          @abstractmethod
+          def foo():
+              pass
     |}
-    ~target:"test.foo"
-    ~expected:{|"int"|};
-  check_inference_results
-    {|
-      class Test(object):
-          def ret_self(self):
-              return self
-    |}
-    ~target:"test.Test.ret_self"
-    ~expected:{|"test.Test"|};
+    ~target:"test.A.foo"
+    ~expected:{|null|};
+
+  (* Weakened literals and containers *)
   check_inference_results
     {|
       def foo():
@@ -426,6 +494,44 @@ let test_inferred_returns context =
     |}
     ~target:"test.foo"
     ~expected:{|"typing.List[int]"|};
+  check_inference_results
+    {|
+      def foo():
+          return 1
+    |}
+    ~target:"test.foo"
+    ~expected:{|"int"|};
+  check_inference_results
+    {|
+      def foo(y: bool):
+          x = {}
+          if y:
+              x["a"] = 1
+          return x
+    |}
+    ~target:"test.foo"
+    ~expected:{|"typing.Dict[str, int]"|};
+  check_inference_results
+    {|
+      def foo():
+          y = {}
+          list = [1, 2, 3]
+          for num in list:
+              y["a"] = num
+          return y
+    |}
+    ~target:"test.foo"
+    ~expected:{|"typing.Dict[str, int]"|};
+  check_inference_results
+    {|
+        def foo():
+            x = []
+            x.append("")
+            x.append(1)
+            return x
+    |}
+    ~target:"test.foo"
+    ~expected:{|"typing.List[typing.Union[int, str]]"|};
   (* TODO(T84365830): Implement support for empty containers. *)
   check_inference_results
     {|
@@ -459,83 +565,7 @@ let test_inferred_returns context =
     |}
     ~target:"test.foo"
     ~expected:{|"typing.Dict[str, typing.Any]"|};
-  check_inference_results
-    {|
-      def foo(y: bool):
-          x = {}
-          if y:
-              x["a"] = 1
-          return x
-    |}
-    ~target:"test.foo"
-    ~expected:{|"typing.Dict[str, int]"|};
-  check_inference_results
-    {|
-      def foo():
-          y = {}
-          list = [1, 2, 3]
-          for num in list:
-              y["a"] = num
-          return y
-    |}
-    ~target:"test.foo"
-    ~expected:{|"typing.Dict[str, int]"|};
-  check_inference_results
-    {|
-        def foo():
-            x = []
-            x.append("")
-            x.append(1)
-            return x
-    |}
-    ~target:"test.foo"
-    ~expected:{|"typing.List[typing.Union[int, str]]"|};
-  check_inference_results
-    {|
-      class A:
-          @abstractmethod
-          def foo():
-              pass
-    |}
-    ~target:"test.A.foo"
-    ~expected:{|null|};
-  check_inference_results
-    {|
-      def foo():
-          return ("", "", "", "")
-    |}
-    ~target:"test.foo"
-    ~expected:{|"typing.Tuple[str, ...]"|};
-  check_inference_results
-    {|
-      def foo():
-          return ("", "", "", 2)
-    |}
-    ~target:"test.foo"
-    ~expected:{|"typing.Tuple[str, str, str, int]"|};
-  check_inference_results
-    {|
-      def foo():
-          def bar(x: int) -> str:
-              return ""
-          return bar
-    |}
-    ~target:"test.foo"
-    ~expected:{|"typing.Callable[[int], str]"|};
-  check_inference_results
-    {|
-      def foo():
-          def bar(x: int, y: str) -> bool:
-              pass
-          return [bar]
-    |}
-    ~target:"test.foo"
-    ~expected:{|"typing.List[typing.Callable[[int, str], bool]]"|};
   ()
-
-
-let option_to_json string_option =
-  string_option |> Option.map ~f:(Format.asprintf "\"%s\"") |> Option.value ~default:"null"
 
 
 let test_inferred_function_parameters context =
@@ -565,25 +595,11 @@ let test_inferred_function_parameters context =
     |}
       default
   in
-  check_inference_results
-    {|
-      def foo(x: typing.Any) -> None:
-          x = 5
-    |}
-    ~target:"test.foo"
-    ~expected:(single_parameter "int");
+  (* From Return Annotation *)
   check_inference_results
     {|
       def foo(x) -> int:
           return x
-    |}
-    ~target:"test.foo"
-    ~expected:(single_parameter "int");
-  check_inference_results
-    {|
-      def foo(x) -> None:
-          y = 1
-          x = y
     |}
     ~target:"test.foo"
     ~expected:(single_parameter "int");
@@ -595,11 +611,76 @@ let test_inferred_function_parameters context =
     |}
     ~target:"test.foo"
     ~expected:(single_parameter "int");
+  (* TODO(T84365830): Ensure we correctly qualify inferred parameter types. *)
+  check_inference_results
+    {|
+      from typing import Optional
+      def foo(x) -> Optional[str]:
+          return x
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter "typing.Optional[str]");
+
+  (* Explicit Any and Default Value *)
+  check_inference_results
+    {|
+      def foo(x: typing.Any) -> None:
+          x = 5
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter "int");
+  check_inference_results
+    {|
+      def foo(x = 5) -> int:
+          return x
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter ~default:"5" "int");
+  check_inference_results
+    {|
+      def foo(x = 5) -> None:
+          return
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter ~default:"5" "int");
+  check_inference_results
+    {|
+      def foo(x: typing.Any = 5) -> None:
+          pass
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter ~default:"5" "int");
+  check_inference_results
+    {|
+      def foo(x = None) -> None:
+          x = 1
+          return
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter ~default:"None" "typing.Optional[int]");
+
+  (* Assignments *)
+  check_inference_results
+    {|
+      def foo(x) -> None:
+          y = 1
+          x = y
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter "int");
   check_inference_results
     {|
       def foo(x) -> int:
           y = 5
           x = y
+          return x
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter "int");
+  check_inference_results
+    {|
+      def foo(x) -> int:
+          x = unknown()
           return x
     |}
     ~target:"test.foo"
@@ -615,104 +696,6 @@ let test_inferred_function_parameters context =
     ~expected:(single_parameter ~name:"y" "int");
   check_inference_results
     {|
-      def foo(x = 5) -> int:
-          return x
-    |}
-    ~target:"test.foo"
-    ~expected:(single_parameter ~default:"5" "int");
-  check_inference_results
-    {|
-      def foo(x: typing.Any = 5) -> None:
-          pass
-    |}
-    ~target:"test.foo"
-    ~expected:(single_parameter ~default:"5" "int");
-  (* TODO(T84365830): Ensure we correctly qualify inferred parameter types. *)
-  check_inference_results
-    {|
-      from typing import Optional
-      def foo(x) -> Optional[str]:
-          return x
-    |}
-    ~target:"test.foo"
-    ~expected:(single_parameter "typing.Optional[str]");
-  check_inference_results
-    {|
-      def foo(y) -> typing.Tuple[int, float]:
-          x = y
-          z = y
-          return (x, z)
-    |}
-    ~target:"test.foo"
-    ~expected:(single_parameter ~name:"y" "int");
-  check_inference_results
-    {|
-      def foo(x) -> typing.Tuple[int, float]:
-          z = y
-          x = y
-          return (x, z)
-    |}
-    ~target:"test.foo"
-    ~expected:(single_parameter "int");
-  (* TODO(T84365830): Handle union with default values *)
-  check_inference_results
-    {|
-      def foo(x = None) -> None:
-          if x:
-              x = ""
-    |}
-    ~target:"test.foo"
-    ~expected:(no_inferences_with_default ~default:"None");
-  check_inference_results
-    {|
-      from typing import Optional
-      def foo(x: Optional[str]):
-          return x
-
-      def bar(x = None) -> None:
-          foo(x)
-    |}
-    ~target:"test.foo"
-    ~expected:no_inferences;
-  check_inference_results
-    {|
-      from typing import Optional
-      def foo(x: Optional[str]):
-          return x
-
-      def bar(x = None) -> None:
-          foo(x)
-    |}
-    ~target:"test.bar"
-    ~expected:(single_parameter ~default:"None" "typing.Optional[str]");
-  (* TODO(T84365830): Support inference on addition. *)
-  check_inference_results
-    {|
-      def foo(x) -> None:
-          x += 1
-    |}
-    ~target:"test.foo"
-    ~expected:no_inferences;
-  (* Ensure analysis doesn't crash when __iadd__ is called with non-simple names. *)
-  check_inference_results
-    {|
-      def foo(x) -> None:
-          x[0] += y[3]
-    |}
-    ~target:"test.foo"
-    ~expected:no_inferences;
-  (* TODO(T84365830): Implement support for partial annotations *)
-  check_inference_results
-    {|
-      from typing import Optional
-      def foo(x) -> None:
-          y: List[Any] = []
-          x = y
-    |}
-    ~target:"test.foo"
-    ~expected:no_inferences;
-  check_inference_results
-    {|
       def foo(x) -> int:
           x = y
           y = z
@@ -720,6 +703,24 @@ let test_inferred_function_parameters context =
     |}
     ~target:"test.foo"
     ~expected:no_inferences;
+
+  (* Self-referential assignments *)
+  check_inference_results
+    {|
+      def foo(x) -> int:
+          y += x
+          return y
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter ~name:"x" "int");
+  check_inference_results
+    {|
+      def foo(x) -> int:
+          x += 1
+          return x
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter ~name:"x" "int");
   check_inference_results
     {|
       def foo(x, y) -> int:
@@ -732,10 +733,39 @@ let test_inferred_function_parameters context =
     ~expected:
       {|
         [
-          { "name": "x", "annotation": "int", "value": null, "index": 0 },
+          { "name": "x", "annotation": null, "value": null, "index": 0 },
           { "name": "y", "annotation": "int", "value": null, "index": 1 }
         ]
       |};
+
+  (* Tuple assignments *)
+  check_inference_results
+    {|
+      def foo(x) -> typing.Tuple[int, float]:
+          y = x
+          z = x
+          return (y, z)
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter ~name:"x" "int");
+  check_inference_results
+    {|
+      def foo(x) -> typing.Tuple[int, str]:
+          y = x
+          z = x
+          return (y, z)
+    |}
+    ~target:"test.foo"
+    ~expected:no_inferences;
+  check_inference_results
+    {|
+      def foo(x) -> typing.Tuple[int, float]:
+          z = y
+          x = y
+          return (x, z)
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter "int");
   (* TODO(T84365830): Handle nested tuples. *)
   check_inference_results
     {|
@@ -751,22 +781,103 @@ let test_inferred_function_parameters context =
           { "name": "z", "annotation": "bool", "value": null, "index": 2 }
         ]
      |};
+
+  (* Infix usage *)
+  (* TODO(T84365830): Addition with integer should imply integer. *)
   check_inference_results
     {|
-      def foo(a, x = 15):
-          b = a.c()
-          b = int(b)
-          if b > x:
-              x = b
+      def foo(x = None) -> None:
+          z = x + 1
+    |}
+    ~target:"test.foo"
+    ~expected:(no_inferences_with_default ~default:"None");
+  check_inference_results
+    {|
+      def foo(x) -> None:
+          x += 1
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter "int");
+
+  (* Call usage *)
+  check_inference_results
+    {|
+      from typing import Optional
+      def foo(x: Optional[str]):
+          return x
+
+      def bar(x = None) -> None:
+          foo(x)
+    |}
+    ~target:"test.bar"
+    ~expected:(single_parameter ~default:"None" "typing.Optional[str]");
+  check_inference_results
+    {|
+      def takes_int(input: int) -> None: ...
+      def takes_str(input: str) -> None: ...
+      def foo(x) -> None:
+          x = 1
+          takes_int(x)
+          x = "string"
+          takes_str(x)
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter "typing.Union[int, str]");
+  check_inference_results
+    {|
+      def takes_int(input: int) -> None: ...
+      def takes_float(input: float) -> None: ...
+      def foo(x) -> None:
+          takes_int(x)
+          takes_float(x)
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter "int");
+  check_inference_results
+    {|
+      def takes_int(input: int) -> None: ...
+      def takes_unknown(input) -> None: ...
+      def foo(x) -> None:
+          takes_int(x)
+          takes_unknown(x)
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter "int");
+  check_inference_results
+    {|
+      def foo(a: int, b: str) -> None:
+          pass
+
+      def bar(a, b) -> None:
+        foo(b=b, a=a)
+    |}
+    ~target:"test.bar"
+    ~expected:
+      {|
+        [
+          { "name": "a", "annotation": "int", "value": null, "index": 0 },
+          { "name": "b", "annotation": "str", "value": null, "index": 1 }
+        ]
+     |};
+  (* Intentionally avoid propagating catch-all annotations *)
+  check_inference_results
+    {|
+      def format( *args: object, **kwargs: object) -> str: ...
+
+      def foo(a, b) -> None:
+        format(a=a, b=b)
     |}
     ~target:"test.foo"
     ~expected:
       {|
         [
           { "name": "a", "annotation": null, "value": null, "index": 0 },
-          { "name": "x", "annotation": "int", "value": "15", "index": 1 }
+          { "name": "b", "annotation": null, "value": null, "index": 1 }
         ]
      |};
+
+  (* Calls with generics *)
+  (* TODO(T84365830): Knowing the return type should inform the parameter type. *)
   check_inference_results
     {|
       from typing import Any, Dict, Optional, TypeVar
@@ -785,6 +896,71 @@ let test_inferred_function_parameters context =
           { "name": "x", "annotation": null, "value": null, "index": 0 }
         ]
      |};
+
+  (* Type refinement calls *)
+  (* Inference logic is aggressive in picking up types that are verifiably possible, and not
+     throwing all of it away if an unknown alternative exists. *)
+  check_inference_results
+    {|
+      def foo(x) -> None:
+          if type(x) is int:
+            return
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter "int");
+  check_inference_results
+    {|
+      def foo(x) -> None:
+          if type(x) is int:
+            return
+          elif type(x) is str:
+            return
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter "typing.Union[int, str]");
+
+  (* Conditionals *)
+  check_inference_results
+    {|
+      def foo(x = None) -> None:
+          if x:
+              x = ""
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter "typing.Optional[str]" ~default:"None");
+  check_inference_results
+    {|
+      def takes_int(input: int) -> None: ...
+      def takes_str(input: str) -> None: ...
+      def ret_bool() -> bool: ...
+      def foo(x) -> None:
+          if ret_bool():
+              takes_int(x)
+          else:
+              takes_str(x)
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter "typing.Union[int, str]");
+
+  (* Containers *)
+  check_inference_results
+    {|
+      def foo(x) -> None:
+          x = []
+          x.append(1)
+    |}
+    ~target:"test.foo"
+    ~expected:(single_parameter "typing.List[int]");
+  (* TODO(T84365830): Implement support for partial annotations *)
+  check_inference_results
+    {|
+      from typing import Optional
+      def foo(x) -> None:
+          y: List[Any] = []
+          x = y
+    |}
+    ~target:"test.foo"
+    ~expected:no_inferences;
   ()
 
 
@@ -802,6 +978,8 @@ let test_inferred_method_parameters context =
       |}
       (option_to_json type_)
   in
+  let no_inferences = single_parameter_method None in
+  (* Overrides *)
   check_inference_results
     {|
       class A:
@@ -822,18 +1000,6 @@ let test_inferred_method_parameters context =
     |}
     ~target:"test.B.foo"
     ~expected:(single_parameter_method (Some "test.A"));
-  let no_inferences = single_parameter_method None in
-  (* Don't override explicit annotations if they clash with parent class *)
-  check_inference_results
-    {|
-      class A:
-          def foo(self, x: int) -> int: ...
-      class B(A):
-          def foo(self, x: str) -> str:
-              return x
-    |}
-    ~target:"test.B.foo"
-    ~expected:no_inferences;
   check_inference_results
     {|
       from typing import Any
@@ -845,44 +1011,6 @@ let test_inferred_method_parameters context =
     |}
     ~target:"test.B.foo"
     ~expected:no_inferences;
-  check_inference_results
-    {|
-      from typing import TypeVar
-      T = TypeVar("T")
-      class A:
-          def foo(self, x: T) -> T: ...
-      class B(A):
-          def foo(self, x):
-              return x
-    |}
-    ~target:"test.B.foo"
-    ~expected:no_inferences;
-  check_inference_results
-    {|
-      class A:
-          def foo(self, x: int) -> int: ...
-      class B(A):
-          def foo(self, x):
-              return x
-      class C(B):
-          def foo(self, x):
-              return x + 1
-    |}
-    ~target:"test.C.foo"
-    ~expected:no_inferences;
-  (* Do not propagate types on `self` *)
-  check_inference_results
-    {|
-      class A:
-          def foo(self: "A") -> str: ...
-      class B(A):
-          def foo(self):
-              return x
-    |}
-    ~target:"test.B.foo"
-    ~expected:{|
-        [{ "name": "self", "annotation": null, "value": null, "index": 0 }]
-     |};
   (* Don't override existing explicit annotations *)
   check_inference_results
     {|
@@ -902,6 +1030,32 @@ let test_inferred_method_parameters context =
           { "name": "z", "annotation": null, "value": null, "index": 3 }
         ]
       |};
+  (* Don't override explicit annotations if they clash with parent class *)
+  check_inference_results
+    {|
+      class A:
+          def foo(self, x: int) -> int: ...
+      class B(A):
+          def foo(self, x: str) -> str:
+              return x
+    |}
+    ~target:"test.B.foo"
+    ~expected:no_inferences;
+  (* Do not propagate types on `self` *)
+  check_inference_results
+    {|
+      class A:
+          def foo(self: "A") -> str: ...
+      class B(A):
+          def foo(self):
+              return x
+    |}
+    ~target:"test.B.foo"
+    ~expected:{|
+        [{ "name": "self", "annotation": null, "value": null, "index": 0 }]
+     |};
+
+  (* Starred arguments *)
   check_inference_results
     {|
       class A:
@@ -924,11 +1078,41 @@ let test_inferred_method_parameters context =
           }
         ]
      |};
+
+  (* Generic overrides *)
+  check_inference_results
+    {|
+      from typing import TypeVar
+      T = TypeVar("T")
+      class A:
+          def foo(self, x: T) -> T: ...
+      class B(A):
+          def foo(self, x):
+              return x
+    |}
+    ~target:"test.B.foo"
+    ~expected:no_inferences;
+
+  (* Multiple override *)
+  check_inference_results
+    {|
+      class A:
+          def foo(self, x: int) -> int: ...
+      class B(A):
+          def foo(self, x):
+              return x
+      class C(B):
+          def foo(self, x):
+              return x + 1
+    |}
+    ~target:"test.C.foo"
+    ~expected:no_inferences;
   ()
 
 
 let test_inferred_globals context =
   let check_inference_results = check_inference_results ~context ~field_path:["globals"] in
+  (* Function call *)
   check_inference_results
     {|
       def foo() -> int:
@@ -961,6 +1145,9 @@ let test_inferred_globals context =
           }
         ]
       |};
+
+  (* Local usage *)
+  (* TODO(T84365830): Implement support for global inference due to local usage. *)
   check_inference_results
     {|
       x = unknown
@@ -969,7 +1156,6 @@ let test_inferred_globals context =
     |}
     ~target:"test.$toplevel"
     ~expected:{|[]|};
-  (* TODO(T84365830): Implement support for global inference due to local usage. *)
   check_inference_results
     {|
       x = unknown
@@ -979,6 +1165,18 @@ let test_inferred_globals context =
     |}
     ~target:"test.$toplevel"
     ~expected:{|[]|};
+
+  (* Containers *)
+  check_inference_results
+    {|
+      foo = []
+    |}
+    ~target:"test.$toplevel"
+    ~expected:{|
+        []
+      |};
+
+  (* None *)
   (* Note: locally-inferred None annotations like this are either widenened into Optional types or
      suppressed by GlobalResult *)
   check_inference_results
@@ -1001,6 +1199,7 @@ let test_inferred_globals context =
 
 let test_inferred_attributes context =
   let check_inference_results = check_inference_results ~context ~field_path:["attributes"] in
+  (* Toplevel *)
   check_inference_results
     {|
       def foo() -> int:
@@ -1037,6 +1236,8 @@ let test_inferred_attributes context =
           }
         ]
       |};
+
+  (* Constructor *)
   check_inference_results
     {|
       class Foo:
@@ -1076,6 +1277,21 @@ let test_inferred_attributes context =
           }
         ]
       |};
+
+  (* Local usage *)
+  (* TODO(T84365830): Implement support for global inference due to local usage. *)
+  check_inference_results
+    {|
+      class Foo:
+        x = unknown()
+
+      def test(f: Foo) -> None:
+        f.x = 1
+    |}
+    ~target:"test.Foo.$class_toplevel"
+    ~expected:{|[]|};
+
+  (* None *)
   (* Note: locally-inferred None annotations like this are either widenened into Optional types or
      suppressed by GlobalResult *)
   check_inference_results

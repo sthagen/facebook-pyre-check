@@ -66,6 +66,17 @@ let test_subscription _ =
     `Assoc
       ["version", `String version_name; "error", `String "RootResolveError: unable to resolve root"]
   in
+  let watch_success_response =
+    `Assoc
+      [
+        "version", `String version_name;
+        "watch", `String (PyrePath.absolute root);
+        "watcher", `String "fake_watcher";
+      ]
+  in
+  let watch_fail_response =
+    `Assoc ["version", `String version_name; "error", `String "watchman::CommandValidationError"]
+  in
   let update_response ?(is_fresh_instance = false) ?(clock = "fake:clock:default") file_names =
     `Assoc
       [
@@ -111,7 +122,7 @@ let test_subscription _ =
         Watchman.Subscriber.Setting.raw = mock_raw;
         root;
         (* We are not going to test these settings so they can be anything. *)
-        filter = { Watchman.Filter.base_names = []; suffixes = [] };
+        filter = { Watchman.Filter.base_names = []; whole_names = []; suffixes = [] };
       }
     in
     Lwt.catch
@@ -128,22 +139,32 @@ let test_subscription _ =
         Lwt.return_unit)
   in
 
-  (* Lack of initial response would raise. *)
+  (* Lack of watch-project response would raise. *)
   assert_updates ~should_raise:true ~expected:[] []
   >>= fun () ->
+  (* Failing watch-project response would raise. *)
+  assert_updates ~should_raise:true ~expected:[] [watch_fail_response]
+  >>= fun () ->
+  (* Lack of initial response would raise. *)
+  assert_updates ~should_raise:true ~expected:[] [watch_success_response]
+  >>= fun () ->
   (* Failing initial response would raise. *)
-  assert_updates ~should_raise:true ~expected:[] [initial_fail_response]
+  assert_updates ~should_raise:true ~expected:[] [watch_success_response; initial_fail_response]
   >>= fun () ->
   (* Missing initial clock would raise. *)
   assert_updates
     ~should_raise:true
     ~expected:[]
-    [`Assoc ["version", `String version_name; "subscribe", `String subscription_name]]
+    [
+      watch_success_response;
+      `Assoc ["version", `String version_name; "subscribe", `String subscription_name];
+    ]
   >>= fun () ->
   (* Non-files update is ok. *)
   assert_updates
     ~expected:[]
     [
+      watch_success_response;
       initial_success_response;
       `Assoc
         [
@@ -159,7 +180,7 @@ let test_subscription _ =
   (* Single file in single update. *)
   assert_updates
     ~expected:[[PyrePath.create_relative ~root ~relative:"foo.py"]]
-    [initial_success_response; update_response ["foo.py"]]
+    [watch_success_response; initial_success_response; update_response ["foo.py"]]
   >>= fun () ->
   (* Multiple files in single update. *)
   assert_updates
@@ -170,7 +191,7 @@ let test_subscription _ =
           PyrePath.create_relative ~root ~relative:"bar/baz.py";
         ];
       ]
-    [initial_success_response; update_response ["foo.py"; "bar/baz.py"]]
+    [watch_success_response; initial_success_response; update_response ["foo.py"; "bar/baz.py"]]
   >>= fun () ->
   (* Single file in multiple updates. *)
   assert_updates
@@ -179,7 +200,12 @@ let test_subscription _ =
         [PyrePath.create_relative ~root ~relative:"foo.py"];
         [PyrePath.create_relative ~root ~relative:"bar/baz.py"];
       ]
-    [initial_success_response; update_response ["foo.py"]; update_response ["bar/baz.py"]]
+    [
+      watch_success_response;
+      initial_success_response;
+      update_response ["foo.py"];
+      update_response ["bar/baz.py"];
+    ]
   >>= fun () ->
   (* Multiple files in multiple updates. *)
   assert_updates
@@ -195,6 +221,7 @@ let test_subscription _ =
         ];
       ]
     [
+      watch_success_response;
       initial_success_response;
       update_response ["foo.py"; "bar/baz.py"];
       update_response ["my/cat.py"; "dog.py"];
@@ -204,6 +231,7 @@ let test_subscription _ =
   assert_updates
     ~expected:[[PyrePath.create_relative ~root ~relative:"foo.py"]]
     [
+      watch_success_response;
       initial_success_response;
       update_response ~clock:initial_clock ~is_fresh_instance:true [];
       update_response ~clock:"fake:clock:1" ["foo.py"];
@@ -213,12 +241,17 @@ let test_subscription _ =
   assert_updates
     ~should_raise:true
     ~expected:[]
-    [initial_success_response; update_response ~clock:"fake:clock:1" ~is_fresh_instance:true []]
+    [
+      watch_success_response;
+      initial_success_response;
+      update_response ~clock:"fake:clock:1" ~is_fresh_instance:true [];
+    ]
   >>= fun () ->
   assert_updates
     ~should_raise:true
     ~expected:[]
     [
+      watch_success_response;
       initial_success_response;
       update_response ~clock:initial_clock ~is_fresh_instance:true [];
       update_response ~clock:"fake:clock:1" ~is_fresh_instance:true [];
@@ -228,6 +261,7 @@ let test_subscription _ =
     ~should_raise:true
     ~expected:[[PyrePath.create_relative ~root ~relative:"foo.py"]]
     [
+      watch_success_response;
       initial_success_response;
       update_response ["foo.py"];
       update_response ~clock:"fake:clock:1" ~is_fresh_instance:true ["bar.py"];
@@ -238,6 +272,7 @@ let test_subscription _ =
     ~should_raise:true
     ~expected:[]
     [
+      watch_success_response;
       initial_success_response;
       Yojson.Safe.Util.combine (update_response ["foo.py"]) (`Assoc ["canceled", `Bool true]);
     ]
@@ -255,7 +290,11 @@ let test_filter_expression context =
       actual
   in
   assert_expression
-    { Watchman.Filter.base_names = ["foo.txt"; "TARGETS"]; suffixes = ["cc"; "cpp"] }
+    {
+      Watchman.Filter.base_names = ["foo.txt"; "TARGETS"];
+      whole_names = ["bar.json"];
+      suffixes = ["cc"; "cpp"];
+    }
     ~expected:
       (`List
         [
@@ -266,8 +305,9 @@ let test_filter_expression context =
               `String "anyof";
               `List [`String "suffix"; `String "cc"];
               `List [`String "suffix"; `String "cpp"];
-              `List [`String "match"; `String "foo.txt"];
-              `List [`String "match"; `String "TARGETS"];
+              `List [`String "match"; `String "foo.txt"; `String "basename"];
+              `List [`String "match"; `String "TARGETS"; `String "basename"];
+              `List [`String "match"; `String "bar.json"; `String "wholename"];
             ];
         ]);
   ()
@@ -275,13 +315,28 @@ let test_filter_expression context =
 
 let test_filter_creation context =
   let assert_filter
-      ~expected:{ Watchman.Filter.base_names = expected_base_names; suffixes = expected_suffixes }
-      { Watchman.Filter.base_names = actual_base_names; suffixes = actual_suffixes }
+      ~expected:
+        {
+          Watchman.Filter.base_names = expected_base_names;
+          whole_names = expected_whole_names;
+          suffixes = expected_suffixes;
+        }
+      {
+        Watchman.Filter.base_names = actual_base_names;
+        whole_names = actual_whole_names;
+        suffixes = actual_suffixes;
+      }
     =
     let cmp = [%compare.equal: string list] in
     let printer contents = Base.Sexp.to_string_hum ([%sexp_of: string list] contents) in
     let sorted = List.sort ~compare:String.compare in
     assert_equal ~ctxt:context ~cmp ~printer (sorted expected_base_names) (sorted actual_base_names);
+    assert_equal
+      ~ctxt:context
+      ~cmp
+      ~printer
+      (sorted expected_whole_names)
+      (sorted actual_whole_names);
     assert_equal ~ctxt:context ~cmp ~printer (sorted expected_suffixes) (sorted actual_suffixes)
   in
 
@@ -296,6 +351,7 @@ let test_filter_creation context =
     ~expected:
       {
         base_names = [".pyre_configuration"; ".pyre_configuration.local"];
+        whole_names = [];
         suffixes = ["py"; "pyi"];
       };
   assert_filter
@@ -307,6 +363,7 @@ let test_filter_creation context =
     ~expected:
       {
         base_names = [".pyre_configuration"; ".pyre_configuration.local"];
+        whole_names = [];
         suffixes = ["py"; "pyi"; "foo"];
       };
   assert_filter
@@ -323,6 +380,7 @@ let test_filter_creation context =
     ~expected:
       {
         base_names = [".pyre_configuration"; ".pyre_configuration.local"; "foo.txt"; "bar.txt"];
+        whole_names = [];
         suffixes = ["py"; "pyi"; "bar"];
       };
   assert_filter
@@ -334,6 +392,7 @@ let test_filter_creation context =
     ~expected:
       {
         base_names = [".pyre_configuration"; ".pyre_configuration.local"];
+        whole_names = [];
         suffixes = ["py"; "pyi"];
       };
   assert_filter
@@ -351,6 +410,36 @@ let test_filter_creation context =
     ~expected:
       {
         base_names = [".pyre_configuration"; ".pyre_configuration.local"; "bar.txt"];
+        whole_names = [];
+        suffixes = ["py"; "pyi"];
+      };
+  assert_filter
+    (from_server_configurations
+       ~critical_files:[]
+       ~extensions:[]
+       ~source_paths:
+         (SourcePaths.WithUnwatchedDependency
+            {
+              sources = [];
+              unwatched_dependency =
+                {
+                  UnwatchedDependency.change_indicator =
+                    {
+                      ChangeIndicator.root = PyrePath.create_absolute "/foo";
+                      relative = "bar/baz.txt";
+                    };
+                  files =
+                    {
+                      UnwatchedFiles.root = PyrePath.create_absolute "/derp";
+                      checksum_path = "anything";
+                    };
+                };
+            })
+       ())
+    ~expected:
+      {
+        base_names = [".pyre_configuration"; ".pyre_configuration.local"];
+        whole_names = ["bar/baz.txt"];
         suffixes = ["py"; "pyi"];
       };
   assert_filter
@@ -362,6 +451,7 @@ let test_filter_creation context =
             {
               Buck.mode = None;
               isolation_prefix = None;
+              use_buck2 = false;
               targets = [];
               source_root = PyrePath.create_absolute "/source";
               artifact_root = PyrePath.create_absolute "/artifact";
@@ -370,6 +460,7 @@ let test_filter_creation context =
     ~expected:
       {
         base_names = [".pyre_configuration"; ".pyre_configuration.local"; "TARGETS"; "BUCK"];
+        whole_names = [];
         suffixes = ["py"; "pyi"];
       };
   ()
@@ -378,7 +469,9 @@ let test_filter_creation context =
 let test_since_query_request context =
   let open Watchman.SinceQuery in
   let root = PyrePath.create_absolute "/fake/root" in
-  let filter = { Watchman.Filter.base_names = [".pyre_configuration"]; suffixes = [".py"] } in
+  let filter =
+    { Watchman.Filter.base_names = [".pyre_configuration"]; whole_names = []; suffixes = [".py"] }
+  in
   let assert_request ~expected request =
     let actual = watchman_request_of request in
     assert_equal
@@ -401,7 +494,7 @@ let test_since_query_request context =
                "expression": [
                  "allof",
                  [ "type", "f" ],
-                 [ "anyof", [ "suffix", ".py" ], [ "match", ".pyre_configuration" ] ]
+                 [ "anyof", [ "suffix", ".py" ], [ "match", ".pyre_configuration", "basename" ] ]
                ],
                "since": "fake:clock"
              }
@@ -424,7 +517,7 @@ let test_since_query_request context =
                "expression": [
                  "allof",
                  [ "type", "f" ],
-                 [ "anyof", [ "suffix", ".py" ], [ "match", ".pyre_configuration" ] ]
+                 [ "anyof", [ "suffix", ".py" ], [ "match", ".pyre_configuration", "basename" ] ]
                ],
                "since": { "scm": { "mergebase-with": "master" } }
              }
@@ -458,7 +551,7 @@ let test_since_query_request context =
                "expression": [
                  "allof",
                  [ "type", "f" ],
-                 [ "anyof", [ "suffix", ".py" ], [ "match", ".pyre_configuration" ] ]
+                 [ "anyof", [ "suffix", ".py" ], [ "match", ".pyre_configuration", "basename" ] ]
                ],
                "since": {
                  "scm": {
@@ -500,7 +593,7 @@ let test_since_query_request context =
                "expression": [
                  "allof",
                  [ "type", "f" ],
-                 [ "anyof", [ "suffix", ".py" ], [ "match", ".pyre_configuration" ] ]
+                 [ "anyof", [ "suffix", ".py" ], [ "match", ".pyre_configuration", "basename" ] ]
                ],
                "since": {
                  "scm": {
@@ -591,7 +684,7 @@ let test_since_query _ =
               ~connection
               {
                 root = PyrePath.create_absolute "/fake/root";
-                filter = { Watchman.Filter.base_names = []; suffixes = [] };
+                filter = { Watchman.Filter.base_names = []; whole_names = []; suffixes = [] };
                 since = Since.Clock "fake:clock";
               }))
       >>= fun _ -> assert_failure "Unexpected success")

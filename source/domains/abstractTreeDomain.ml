@@ -372,6 +372,7 @@ module Make (Config : CONFIG) (Element : ELEMENT) () = struct
 
   (** Compute join of all element components in tree t. *)
   let collapse ?(transform = Fn.id) ~widen_depth { element; children } =
+    let transform e = if Element.is_bottom e then e else transform e in
     let rec collapse_tree { element; children } element_accumulator =
       let element_accumulator = element_join ~widen_depth element_accumulator (transform element) in
       let collapse_child ~key:_ ~data:subtree = collapse_tree subtree in
@@ -869,7 +870,7 @@ module Make (Config : CONFIG) (Element : ELEMENT) () = struct
   let limit_to ?(transform = Fn.id) ~width tree =
     let rec compute_max_depth ~depth leaves_left roots =
       if roots = [] then
-        raise Exit (* tree does not exceed leaf limit *)
+        raise_notrace Exit (* tree does not exceed leaf limit *)
       else if leaves_left < List.length roots then
         depth - 1
       else
@@ -1069,6 +1070,13 @@ module Make (Config : CONFIG) (Element : ELEMENT) () = struct
                 path, element
               else
                 path, Element.bottom)
+            tree
+      | Path, FilterMap ->
+          filter_map_tree_paths
+            ~f:(fun ~path ~element ->
+              match f (path, element) with
+              | Some (path, element) -> path, element
+              | None -> path, Element.bottom)
             tree
       | _, Context (Path, op) ->
           let transform_node ~path ~element =

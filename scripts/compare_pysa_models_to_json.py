@@ -10,7 +10,7 @@ import logging
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Pattern, Set, TypedDict, Tuple
+from typing import Any, Dict, List, Optional, Pattern, Set, Tuple, TypedDict
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -74,6 +74,8 @@ def parse_kinds(taints: List[Dict[str, Any]]) -> Set[str]:
 
     for taint in taints:
         for kind in taint.get("kinds", []):
+            kinds.add(kind["kind"])
+        for kind in taint.get("leaves", []):
             kinds.add(kind["kind"])
 
     return kinds

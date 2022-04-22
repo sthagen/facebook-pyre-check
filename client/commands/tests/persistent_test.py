@@ -6,49 +6,62 @@
 import asyncio
 import json
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Sequence, Iterable, Optional
+from typing import Iterable, Iterator, Optional, Sequence
+from unittest.mock import CallableMixin, patch
 
 import testslide
-from libcst.metadata import CodeRange, CodePosition
+from libcst.metadata import CodePosition, CodeRange
+from tools.pyre.client.commands.language_server_protocol import (
+    SymbolKind,
+)
 
-from ... import json_rpc, error, configuration as configuration_module
+from ... import configuration as configuration_module, error, json_rpc
 from ...coverage_collector import CoveredAndUncoveredLines
 from ...tests import setup
-from .. import language_server_protocol as lsp, start, backend_arguments
+from .. import (
+    async_server_connection,
+    backend_arguments,
+    language_server_protocol as lsp,
+    start,
+)
 from ..async_server_connection import (
-    TextReader,
-    TextWriter,
-    MemoryBytesReader,
-    MemoryBytesWriter,
-    create_memory_text_writer,
-    create_memory_text_reader,
     BackgroundTask,
     BackgroundTaskManager,
+    create_memory_text_reader,
+    create_memory_text_writer,
+    MemoryBytesReader,
+    MemoryBytesWriter,
+    TextReader,
+    TextWriter,
 )
 from ..incremental import InvalidServerResponse
 from ..persistent import (
-    try_initialize,
-    InitializationSuccess,
-    InitializationFailure,
+    CONSECUTIVE_START_ATTEMPT_THRESHOLD,
+    DefinitionLocationQuery,
     InitializationExit,
+    InitializationFailure,
+    InitializationSuccess,
     LocationTypeLookup,
-    PyreServer,
-    PyreServerStartOptions,
-    PyreServerStartOptionsReader,
+    parse_subscription_response,
     PyreQueryHandler,
     PyreQueryState,
+    PyreServer,
+    PyreServerHandler,
+    PyreServerStartOptions,
+    PyreServerStartOptionsReader,
     ServerState,
-    parse_subscription_response,
-    TypeErrorSubscription,
     StatusUpdateSubscription,
     SubscriptionResponse,
+    to_coverage_result,
+    try_initialize,
     type_error_to_diagnostic,
     type_errors_to_diagnostics,
+    TypeCoverageQuery,
+    TypeErrorSubscription,
+    TypesQuery,
     uncovered_range_to_diagnostic,
-    to_coverage_result,
-    PyreServerHandler,
-    CONSECUTIVE_START_ATTEMPT_THRESHOLD,
 )
 
 
@@ -92,20 +105,21 @@ class WaitForeverBackgroundTask(BackgroundTask):
         await asyncio.Event().wait()
 
 
-class PersistentTest(testslide.TestCase):
-    def fake_option_reader(self) -> PyreServerStartOptionsReader:
-        return _create_server_start_options_reader(
-            binary="/not/relevant",
-            server_identifier="not_relevant",
-            start_arguments=start.Arguments(
-                base_arguments=backend_arguments.BaseArguments(
-                    source_paths=backend_arguments.SimpleSourcePath(),
-                    log_path="/log/path",
-                    global_root="/global/root",
-                )
-            ),
-        )
+def _fake_option_reader() -> PyreServerStartOptionsReader:
+    return _create_server_start_options_reader(
+        binary="/not/relevant",
+        server_identifier="not_relevant",
+        start_arguments=start.Arguments(
+            base_arguments=backend_arguments.BaseArguments(
+                source_paths=backend_arguments.SimpleSourcePath(),
+                log_path="/log/path",
+                global_root="/global/root",
+            )
+        ),
+    )
 
+
+class PersistentTest(testslide.TestCase):
     @setup.async_test
     async def test_try_initialize_success(self) -> None:
         input_channel = await _create_input_channel_with_requests(
@@ -135,7 +149,7 @@ class PersistentTest(testslide.TestCase):
         )
         output_channel = create_memory_text_writer()
         result = await try_initialize(
-            input_channel, output_channel, self.fake_option_reader()
+            input_channel, output_channel, _fake_option_reader()
         )
         self.assertIsInstance(result, InitializationSuccess)
 
@@ -146,7 +160,7 @@ class PersistentTest(testslide.TestCase):
         )
         output_channel = create_memory_text_writer()
         result = await try_initialize(
-            input_channel, output_channel, self.fake_option_reader()
+            input_channel, output_channel, _fake_option_reader()
         )
         self.assertIsInstance(result, InitializationFailure)
 
@@ -157,7 +171,7 @@ class PersistentTest(testslide.TestCase):
         )
         output_channel = create_memory_text_writer()
         result = await try_initialize(
-            input_channel, output_channel, self.fake_option_reader()
+            input_channel, output_channel, _fake_option_reader()
         )
         self.assertIsInstance(result, InitializationFailure)
 
@@ -190,7 +204,7 @@ class PersistentTest(testslide.TestCase):
         )
         output_channel = create_memory_text_writer()
         result = await try_initialize(
-            input_channel, output_channel, self.fake_option_reader()
+            input_channel, output_channel, _fake_option_reader()
         )
         self.assertIsInstance(result, InitializationFailure)
 
@@ -201,7 +215,7 @@ class PersistentTest(testslide.TestCase):
         )
         output_channel = create_memory_text_writer()
         result = await try_initialize(
-            input_channel, output_channel, self.fake_option_reader()
+            input_channel, output_channel, _fake_option_reader()
         )
         self.assertIsInstance(result, InitializationExit)
 
@@ -233,7 +247,7 @@ class PersistentTest(testslide.TestCase):
         )
         output_channel = create_memory_text_writer()
         result = await try_initialize(
-            input_channel, output_channel, self.fake_option_reader()
+            input_channel, output_channel, _fake_option_reader()
         )
         self.assertIsInstance(result, InitializationExit)
 
@@ -341,12 +355,12 @@ class PersistentTest(testslide.TestCase):
         )
         self.assertIn(test_path0, server_state.opened_documents)
         self.assertEqual(
-            server.state.query_state.paths_to_be_queried.qsize(),
+            server.state.query_state.queries.qsize(),
             1,
         )
         self.assertEqual(
-            server.state.query_state.paths_to_be_queried.get_nowait(),
-            test_path0,
+            server.state.query_state.queries.get_nowait(),
+            TypesQuery(test_path0),
         )
 
         await server.process_open_request(
@@ -361,12 +375,12 @@ class PersistentTest(testslide.TestCase):
         )
         self.assertIn(test_path1, server_state.opened_documents)
         self.assertEqual(
-            server.state.query_state.paths_to_be_queried.qsize(),
+            server.state.query_state.queries.qsize(),
             1,
         )
         self.assertEqual(
-            server.state.query_state.paths_to_be_queried.get_nowait(),
-            test_path1,
+            server.state.query_state.queries.get_nowait(),
+            TypesQuery(test_path1),
         )
 
         await server.process_close_request(
@@ -378,7 +392,7 @@ class PersistentTest(testslide.TestCase):
         )
         self.assertNotIn(test_path0, server_state.opened_documents)
         self.assertEqual(
-            server.state.query_state.paths_to_be_queried.qsize(),
+            server.state.query_state.queries.qsize(),
             0,
         )
 
@@ -459,10 +473,10 @@ class PersistentTest(testslide.TestCase):
         )
 
         client_messages = [x.decode("utf-8") for x in bytes_writer.items()]
-        self.assertTrue(len(client_messages) >= 4)
+        self.assertTrue(len(client_messages) >= 2)
         # Clear out diagnostics for rebuilding status
         self.assertIn('"diagnostics": []', client_messages[0])
-        self.assertIn('"diagnostics": []', client_messages[2])
+        self.assertIn('"diagnostics": []', client_messages[1])
 
     @setup.async_test
     async def test_open_triggers_pyre_restart(self) -> None:
@@ -595,9 +609,9 @@ class PersistentTest(testslide.TestCase):
             )
         )
         await asyncio.sleep(0)
-        self.assertEqual(server.state.query_state.paths_to_be_queried.qsize(), 1)
+        self.assertEqual(server.state.query_state.queries.qsize(), 1)
         self.assertEqual(
-            server.state.query_state.paths_to_be_queried.get_nowait(), test_path
+            server.state.query_state.queries.get_nowait(), TypesQuery(test_path)
         )
 
     @setup.async_test
@@ -689,9 +703,9 @@ class PersistentTest(testslide.TestCase):
 
         assert_hover_response("```str```")
         self.assertTrue(fake_task_manager.is_task_running())
-        self.assertEqual(server.state.query_state.paths_to_be_queried.qsize(), 1)
+        self.assertEqual(server.state.query_state.queries.qsize(), 1)
         self.assertEqual(
-            server.state.query_state.paths_to_be_queried.get_nowait(), test_path
+            server.state.query_state.queries.get_nowait(), TypesQuery(test_path)
         )
 
         await server.process_hover_request(
@@ -707,7 +721,7 @@ class PersistentTest(testslide.TestCase):
 
         self.assertTrue(fake_task_manager.is_task_running())
         assert_hover_response("")
-        self.assertEqual(server.state.query_state.paths_to_be_queried.qsize(), 0)
+        self.assertEqual(server.state.query_state.queries.qsize(), 0)
 
     def test_type_diagnostics(self) -> None:
         self.assertEqual(
@@ -935,91 +949,155 @@ class PersistentTest(testslide.TestCase):
 
     @setup.async_test
     async def test_type_coverage_request(self) -> None:
-        with tempfile.NamedTemporaryFile(suffix=".py") as tmpfile:
-            tmpfile.write(b"def foo(x):\n  pass\n")
-            tmpfile.flush()
-            test_path = Path(tmpfile.name)
-            bytes_writer = MemoryBytesWriter()
-            fake_pyre_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
-            fake_pyre_query_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
-            server = PyreServer(
-                input_channel=create_memory_text_reader(""),
-                output_channel=TextWriter(bytes_writer),
-                state=ServerState(),
-                pyre_manager=fake_pyre_manager,
-                pyre_query_manager=fake_pyre_query_manager,
-            )
+        test_path = Path("/foo")
+        bytes_writer = MemoryBytesWriter()
+        fake_pyre_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
+        fake_pyre_query_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
+        server = PyreServer(
+            input_channel=create_memory_text_reader(""),
+            output_channel=TextWriter(bytes_writer),
+            state=ServerState(),
+            pyre_manager=fake_pyre_manager,
+            pyre_query_manager=fake_pyre_query_manager,
+        )
 
-            await server.process_type_coverage_request(
-                lsp.TypeCoverageTextDocumentParameters(
-                    text_document=lsp.TextDocumentIdentifier(
-                        uri=lsp.DocumentUri.from_file_path(test_path).unparse(),
-                    )
-                ),
-                request_id=1,
-            )
-            # A diagnostic update is sent via the output channel
-            self.assertEqual(len(bytes_writer.items()), 1)
-            self.assertIn(b"Consider adding type annotations", bytes_writer.items()[0])
-            self.assertNotIn(b"100.0", bytes_writer.items()[0])
+        await server.process_type_coverage_request(
+            lsp.TypeCoverageTextDocumentParameters(
+                text_document=lsp.TextDocumentIdentifier(
+                    uri=lsp.DocumentUri.from_file_path(test_path).unparse(),
+                )
+            ),
+            request_id=1,
+        )
+
+        self.assertEqual(
+            server.state.query_state.queries.get_nowait(),
+            TypeCoverageQuery(1, test_path),
+        )
 
     @setup.async_test
-    async def test_type_coverage_request_strict(self) -> None:
-        with tempfile.NamedTemporaryFile(suffix=".py") as tmpfile:
-            tmpfile.write(b"def foo(x):\n  pass\n")
-            tmpfile.flush()
-            test_path = Path(tmpfile.name)
-            bytes_writer = MemoryBytesWriter()
-            fake_pyre_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
-            fake_pyre_query_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
-            server = PyreServer(
-                input_channel=create_memory_text_reader(""),
-                output_channel=TextWriter(bytes_writer),
-                state=ServerState(strict_default=True),
-                pyre_manager=fake_pyre_manager,
-                pyre_query_manager=fake_pyre_query_manager,
+    async def test_definition(self) -> None:
+        def assert_definition_response(
+            definitions: Sequence[lsp.LspDefinitionResponse],
+        ) -> None:
+            client_messages = memory_bytes_writer.items()
+            expected_response = json_rpc.SuccessResponse(
+                id=42,
+                # pyre-ignore[16]: Pyre does not understand
+                # `dataclasses_json`.
+                result=lsp.LspDefinitionResponse.schema().dump(definitions, many=True),
+            )
+            response_string = json.dumps(expected_response.json())
+            self.assertEqual(
+                client_messages[-1].decode(),
+                f"Content-Length: {len(response_string)}\r\n\r\n" + response_string,
             )
 
-            await server.process_type_coverage_request(
-                lsp.TypeCoverageTextDocumentParameters(
-                    text_document=lsp.TextDocumentIdentifier(
-                        uri=lsp.DocumentUri.from_file_path(test_path).unparse(),
-                    )
+        test_path = Path("/foo.py")
+        not_tracked_path = Path("/not_tracked.py")
+        fake_task_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
+        fake_task_manager2 = BackgroundTaskManager(WaitForeverBackgroundTask())
+        memory_bytes_writer: MemoryBytesWriter = MemoryBytesWriter()
+        server = PyreServer(
+            input_channel=create_memory_text_reader(""),
+            output_channel=TextWriter(memory_bytes_writer),
+            state=ServerState(
+                opened_documents={test_path},
+            ),
+            pyre_manager=fake_task_manager,
+            pyre_query_manager=fake_task_manager2,
+        )
+
+        await fake_task_manager.ensure_task_running()
+
+        await server.process_definition_request(
+            lsp.DefinitionTextDocumentParameters(
+                text_document=lsp.TextDocumentIdentifier(
+                    uri=lsp.DocumentUri.from_file_path(test_path).unparse(),
                 ),
-                request_id=1,
-            )
-            # A diagnostic update is sent via the output channel, with 100% coverage.
-            self.assertEqual(len(bytes_writer.items()), 1)
-            self.assertIn(b"100.0", bytes_writer.items()[0])
+                position=lsp.LspPosition(line=3, character=4),
+            ),
+            request_id=42,
+        )
+        await asyncio.sleep(0)
+
+        self.assertTrue(fake_task_manager.is_task_running())
+        self.assertEqual(len(memory_bytes_writer.items()), 0)
+        self.assertEqual(server.state.query_state.queries.qsize(), 1)
+        self.assertEqual(
+            server.state.query_state.queries.get_nowait(),
+            DefinitionLocationQuery(
+                id=42,
+                path=test_path,
+                position=lsp.LspPosition(line=3, character=4).to_pyre_position(),
+            ),
+        )
+
+        await server.process_definition_request(
+            lsp.DefinitionTextDocumentParameters(
+                text_document=lsp.TextDocumentIdentifier(
+                    uri=lsp.DocumentUri.from_file_path(not_tracked_path).unparse(),
+                ),
+                position=lsp.LspPosition(line=3, character=4),
+            ),
+            request_id=42,
+        )
+        await asyncio.sleep(0)
+
+        self.assertTrue(fake_task_manager.is_task_running())
+        assert_definition_response([])
 
     @setup.async_test
-    async def test_type_coverage_request_exclude(self) -> None:
-        with tempfile.NamedTemporaryFile(prefix="exclude_me", suffix=".py") as tmpfile:
-            tmpfile.write(b"def foo(x):\n  pass\n")
-            tmpfile.flush()
-            test_path = Path(tmpfile.name)
-            bytes_writer = MemoryBytesWriter()
-            fake_pyre_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
-            fake_pyre_query_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
+    async def test_document_symbols_request(self) -> None:
+        self.maxDiff = None
+        with tempfile.NamedTemporaryFile(suffix=".py") as temporary_file:
+            temporary_file.write(b"def foo(x):\n  pass\n")
+            temporary_file.flush()
+            test_path = Path(temporary_file.name)
+            fake_task_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
+            fake_task_manager2 = BackgroundTaskManager(WaitForeverBackgroundTask())
+            memory_bytes_writer: MemoryBytesWriter = MemoryBytesWriter()
             server = PyreServer(
                 input_channel=create_memory_text_reader(""),
-                output_channel=TextWriter(bytes_writer),
-                state=ServerState(excludes=[".*exclude_me.*"]),
-                pyre_manager=fake_pyre_manager,
-                pyre_query_manager=fake_pyre_query_manager,
-            )
-
-            await server.process_type_coverage_request(
-                lsp.TypeCoverageTextDocumentParameters(
-                    text_document=lsp.TextDocumentIdentifier(
-                        uri=lsp.DocumentUri.from_file_path(test_path).unparse(),
-                    )
+                output_channel=TextWriter(memory_bytes_writer),
+                state=ServerState(
+                    opened_documents={test_path},
                 ),
-                request_id=1,
+                pyre_manager=fake_task_manager,
+                pyre_query_manager=fake_task_manager2,
             )
-            # A diagnostic update is sent via the output channel, with 100% coverage.
-            self.assertEqual(len(bytes_writer.items()), 1)
-            self.assertIn(b"file is not type checked", bytes_writer.items()[0])
+            await fake_task_manager.ensure_task_running()
+            await server.process_document_symbols_request(
+                lsp.DocumentSymbolsTextDocumentParameters(
+                    text_document=lsp.TextDocumentIdentifier(uri=test_path.as_uri())
+                ),
+                request_id=42,
+            )
+            await asyncio.sleep(0)
+            self.assertTrue(fake_task_manager.is_task_running())
+
+            client_messages = memory_bytes_writer.items()
+            expected_response = json_rpc.SuccessResponse(
+                id=42,
+                result=[
+                    {
+                        "detail": "",
+                        "name": "foo",
+                        "range": {
+                            "start": {"line": 0, "character": 0},
+                            "end": {"line": 1, "character": 6},
+                        },
+                        "kind": SymbolKind.FUNCTION.value,
+                    }
+                ],
+            )
+            response_string = json.dumps(expected_response.json())
+            actual = client_messages[-1].decode()
+            self.assertRegex(
+                actual, f"Content-Length: {len(response_string)}\r\n\r\n.*"
+            )
+            actual_json = json.loads(actual[actual.index("{") :])
+            self.assertDictEqual(actual_json, expected_response.json())
 
 
 class PyreQueryStateTest(testslide.TestCase):
@@ -1059,6 +1137,26 @@ class PyreQueryStateTest(testslide.TestCase):
             ),
             lsp.HoverResponse(contents=""),
         )
+
+
+@contextmanager
+def patch_connect_in_text_mode(
+    input_channel: TextReader, output_channel: TextWriter
+) -> Iterator[CallableMixin]:
+    with patch.object(async_server_connection, "connect_in_text_mode") as mock:
+
+        class MockedConnection:
+            async def __aenter__(self):
+                return (
+                    input_channel,
+                    output_channel,
+                )
+
+            async def __aexit__(self, exc_type, exc, tb):
+                pass
+
+        mock.return_value = MockedConnection()
+        yield mock
 
 
 class PyreQueryHandlerTest(testslide.TestCase):
@@ -1101,6 +1199,7 @@ class PyreQueryHandlerTest(testslide.TestCase):
             ]
         }
         """
+        bytes_writer = MemoryBytesWriter()
         pyre_query_manager = PyreQueryHandler(
             state=PyreQueryState(path_to_location_type_lookup={}),
             server_start_options_reader=_create_server_start_options_reader(
@@ -1115,15 +1214,17 @@ class PyreQueryHandlerTest(testslide.TestCase):
                 ),
                 ide_features=configuration_module.IdeFeatures(hover_enabled=True),
             ),
+            client_output_channel=TextWriter(bytes_writer),
         )
         memory_bytes_writer = MemoryBytesWriter()
         flat_json = "".join(json_output.splitlines())
         input_channel = create_memory_text_reader(f'["Query", {flat_json}]\n')
         output_channel = TextWriter(memory_bytes_writer)
 
-        result = await pyre_query_manager._query_types(
-            [Path("test.py")], input_channel, output_channel
-        )
+        with patch_connect_in_text_mode(input_channel, output_channel):
+            result = await pyre_query_manager._query_types(
+                [Path("test.py")], Path("fake_socket_path")
+            )
 
         self.assertEqual(
             result,
@@ -1145,6 +1246,7 @@ class PyreQueryHandlerTest(testslide.TestCase):
 
     @setup.async_test
     async def test_query_types__bad_json(self) -> None:
+        bytes_writer = MemoryBytesWriter()
         pyre_query_manager = PyreQueryHandler(
             state=PyreQueryState(),
             server_start_options_reader=_create_server_start_options_reader(
@@ -1159,21 +1261,135 @@ class PyreQueryHandlerTest(testslide.TestCase):
                 ),
                 ide_features=configuration_module.IdeFeatures(hover_enabled=True),
             ),
+            client_output_channel=TextWriter(bytes_writer),
         )
 
         input_channel = create_memory_text_reader("""{ "error": "Oops" }\n""")
         memory_bytes_writer = MemoryBytesWriter()
         output_channel = TextWriter(memory_bytes_writer)
-        result = await pyre_query_manager._query_types(
-            [Path("test.py")], input_channel, output_channel
-        )
+        with patch_connect_in_text_mode(input_channel, output_channel):
+            result = await pyre_query_manager._query_types(
+                [Path("test.py")], Path("fake_socket_path")
+            )
 
         self.assertEqual(result, None)
 
     @setup.async_test
-    async def test_does_not_run_when_hover_is_disabled(self) -> None:
-        pyre_query_handler = PyreQueryHandler(
+    async def test_query_type_coverage(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".py") as tmpfile:
+            tmpfile.write(b"def foo(x):\n  pass\n")
+            tmpfile.flush()
+            test_path = Path(tmpfile.name)
+            bytes_writer = MemoryBytesWriter()
+            server_start_options_reader = _fake_option_reader()
+            pyre_query_manager = PyreQueryHandler(
+                state=PyreQueryState(),
+                server_start_options_reader=server_start_options_reader,
+                client_output_channel=TextWriter(bytes_writer),
+            )
+            strict = False
+            input_channel = create_memory_text_reader(
+                '["Query", {"response": ["test"]}]\n'
+            )
+            memory_bytes_writer = MemoryBytesWriter()
+            output_channel = TextWriter(memory_bytes_writer)
+            with patch_connect_in_text_mode(input_channel, output_channel):
+                result = await pyre_query_manager._query_type_coverage(
+                    test_path, strict, Path("fake_socket_path")
+                )
+            self.assertEqual(len(memory_bytes_writer.items()), 1)
+            self.assertTrue(
+                memory_bytes_writer.items()[0].startswith(
+                    b'["Query", "modules_of_path('
+                )
+            )
+            self.assertTrue(result is not None)
+            self.assertEqual(len(result.uncovered_ranges), 1)
+            self.assertTrue(result.covered_percent < 100.0)
+
+    @setup.async_test
+    async def test_query_type_coverage__bad_json(self) -> None:
+        pyre_query_manager = PyreQueryHandler(
             state=PyreQueryState(),
+            server_start_options_reader=_fake_option_reader(),
+            client_output_channel=TextWriter(MemoryBytesWriter()),
+        )
+        input_channel = create_memory_text_reader('{ "error": "Oops" }\n')
+        output_channel = TextWriter(MemoryBytesWriter())
+        with patch_connect_in_text_mode(input_channel, output_channel):
+            result = await pyre_query_manager._query_type_coverage(
+                Path("test.py"), False, Path("fake_socket_path")
+            )
+        self.assertTrue(result is None)
+
+    @setup.async_test
+    async def test_query_type_coverage__strict(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".py") as tmpfile:
+            tmpfile.write(b"def foo(x):\n  pass\n")
+            tmpfile.flush()
+            test_path = Path(tmpfile.name)
+            pyre_query_manager = PyreQueryHandler(
+                state=PyreQueryState(),
+                server_start_options_reader=_fake_option_reader(),
+                client_output_channel=TextWriter(MemoryBytesWriter()),
+            )
+            strict = True
+            input_channel = create_memory_text_reader(
+                '["Query", {"response": ["test"]}]\n'
+            )
+            output_channel = TextWriter(MemoryBytesWriter())
+            with patch_connect_in_text_mode(input_channel, output_channel):
+                result = await pyre_query_manager._query_type_coverage(
+                    test_path, strict, Path("fake_socket_path")
+                )
+            self.assertTrue(result is not None)
+            self.assertEqual(len(result.uncovered_ranges), 0)
+            self.assertEqual(result.covered_percent, 100.0)
+
+    @setup.async_test
+    async def test_query_type_coverage__not_typechecked(self) -> None:
+        pyre_query_manager = PyreQueryHandler(
+            state=PyreQueryState(),
+            server_start_options_reader=_fake_option_reader(),
+            client_output_channel=TextWriter(MemoryBytesWriter()),
+        )
+        input_channel = create_memory_text_reader('["Query", {"response": []}]\n')
+        output_channel = TextWriter(MemoryBytesWriter())
+        with patch_connect_in_text_mode(input_channel, output_channel):
+            result = await pyre_query_manager._query_type_coverage(
+                Path("test.py"), False, Path("fake_socket_path")
+            )
+        self.assertTrue(result is not None)
+        self.assertEqual(result.covered_percent, 0.0)
+        self.assertEqual(len(result.uncovered_ranges), 1)
+        self.assertEqual(
+            result.uncovered_ranges[0].message, "This file is not type checked by Pyre."
+        )
+
+    @setup.async_test
+    async def test_query_definition_location(self) -> None:
+        json_output = """
+        {
+            "response": [
+                {
+                    "path": "/foo.py",
+                    "range": {
+                        "start": {
+                            "line": 9,
+                            "character": 6
+                        },
+                        "end": {
+                            "line": 10,
+                            "character": 11
+                        }
+                    }
+                }
+            ]
+        }
+        """
+        client_output_writer = MemoryBytesWriter()
+        pyre_query_manager = PyreQueryHandler(
+            state=PyreQueryState(path_to_location_type_lookup={}),
             server_start_options_reader=_create_server_start_options_reader(
                 binary="/bin/pyre",
                 server_identifier="foo",
@@ -1184,35 +1400,54 @@ class PyreQueryHandlerTest(testslide.TestCase):
                         global_root="/global/root",
                     )
                 ),
-                ide_features=configuration_module.IdeFeatures(hover_enabled=False),
+                ide_features=configuration_module.IdeFeatures(hover_enabled=True),
             ),
+            client_output_channel=TextWriter(client_output_writer),
         )
+        memory_bytes_writer = MemoryBytesWriter()
+        flat_json = "".join(json_output.splitlines())
+        input_channel = create_memory_text_reader(f'["Query", {flat_json}]\n')
+        output_channel = TextWriter(memory_bytes_writer)
 
-        # Should complete right away.
-        await pyre_query_handler.run()
-        await asyncio.sleep(0)
-
-        pyre_query_handler = PyreQueryHandler(
-            state=PyreQueryState(),
-            server_start_options_reader=_create_server_start_options_reader(
-                binary="/bin/pyre",
-                server_identifier="foo",
-                start_arguments=start.Arguments(
-                    base_arguments=backend_arguments.BaseArguments(
-                        source_paths=backend_arguments.SimpleSourcePath(),
-                        log_path="/log/path",
-                        global_root="/global/root",
-                    )
+        with patch_connect_in_text_mode(input_channel, output_channel):
+            await pyre_query_manager._query_and_send_definition_location(
+                query=DefinitionLocationQuery(
+                    id=99,
+                    path=Path("bar.py"),
+                    position=lsp.Position(line=42, character=10),
                 ),
-                ide_features=None,
-            ),
+                socket_path=Path("fake_socket_path"),
+            )
+
+        self.assertEqual(
+            memory_bytes_writer.items(),
+            [
+                b'["Query", "location_of_definition(path=\'bar.py\','
+                b' line=42, column=10)"]\n'
+            ],
+        )
+        self.assertEqual(len(client_output_writer.items()), 1)
+        response = client_output_writer.items()[0].splitlines()[2]
+        result = json.loads(response)["result"]
+        self.assertEqual(
+            # pyre-ignore[16]: Pyre does not understand
+            # `dataclasses_json`.
+            lsp.LspDefinitionResponse.schema().load(result, many=True),
+            [
+                lsp.LspDefinitionResponse(
+                    uri="/foo.py",
+                    range=lsp.LspRange(
+                        start=lsp.LspPosition(line=8, character=6),
+                        end=lsp.LspPosition(line=9, character=11),
+                    ),
+                )
+            ],
         )
 
-        # Should complete right away.
-        await pyre_query_handler.run()
-        await asyncio.sleep(0)
-
-        pyre_query_handler = PyreQueryHandler(
+    @setup.async_test
+    async def test_query_definition_location__bad_json(self) -> None:
+        client_output_writer = MemoryBytesWriter()
+        pyre_query_manager = PyreQueryHandler(
             state=PyreQueryState(),
             server_start_options_reader=_create_server_start_options_reader(
                 binary="/bin/pyre",
@@ -1226,10 +1461,22 @@ class PyreQueryHandlerTest(testslide.TestCase):
                 ),
                 ide_features=configuration_module.IdeFeatures(hover_enabled=True),
             ),
+            client_output_channel=TextWriter(client_output_writer),
         )
-        pyre_query_manager = BackgroundTaskManager(pyre_query_handler)
-        await pyre_query_manager.ensure_task_running()
-        await asyncio.sleep(0)
 
-        self.assertTrue(pyre_query_manager.is_task_running())
-        await pyre_query_manager.ensure_task_stop()
+        input_channel = create_memory_text_reader("""{ "error": "Oops" }\n""")
+        memory_bytes_writer = MemoryBytesWriter()
+        output_channel = TextWriter(memory_bytes_writer)
+        with patch_connect_in_text_mode(input_channel, output_channel):
+            await pyre_query_manager._query_and_send_definition_location(
+                query=DefinitionLocationQuery(
+                    id=99,
+                    path=Path("bar.py"),
+                    position=lsp.Position(line=42, character=10),
+                ),
+                socket_path=Path("fake_socket_path"),
+            )
+
+        self.assertEqual(len(client_output_writer.items()), 1)
+        response = client_output_writer.items()[0].splitlines()[2]
+        self.assertEqual(json.loads(response)["result"], [])

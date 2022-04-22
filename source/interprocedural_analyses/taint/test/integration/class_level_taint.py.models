@@ -36,6 +36,8 @@
         "port": "formal(class_sink)",
         "taint": [
           {
+            "receiver_interval": { "lower": 2, "upper": 3 },
+            "is_self_call": false,
             "kinds": [
               {
                 "leaves": [ { "name": "class_level_taint.ClassSink.sink" } ],
@@ -70,6 +72,8 @@
         "name": "forward",
         "roots": [
           {
+            "receiver_interval": { "lower": 4, "upper": 5 },
+            "is_self_call": false,
             "kinds": [
               {
                 "leaves": [
@@ -91,6 +95,8 @@
         "name": "backward",
         "roots": [
           {
+            "receiver_interval": { "lower": 2, "upper": 3 },
+            "is_self_call": false,
             "kinds": [
               {
                 "leaves": [ { "name": "class_level_taint.ClassSink.sink" } ],
@@ -107,6 +113,14 @@
         ]
       }
     ],
-    "features": []
+    "features": [],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "class_level_taint.ClassSink.sink",
+      "index": 0,
+      "parameter": "formal(argument)"
+    },
+    "master_handle":
+      "class_level_taint.test:5002:0:Call|class_level_taint.ClassSink.sink|0|formal(argument):aff1e23735efdd1f0f4a23851bda22e0"
   }
 }

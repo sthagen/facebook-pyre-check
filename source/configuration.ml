@@ -23,6 +23,7 @@ module Buck = struct
   type t = {
     mode: string option;
     isolation_prefix: string option;
+    use_buck2: bool;
     targets: string list;
     (* This is the buck root of the source directory, i.e. output of `buck root`. *)
     source_root: PyrePath.t;
@@ -36,10 +37,11 @@ module Buck = struct
     try
       let mode = optional_string_member "mode" json in
       let isolation_prefix = optional_string_member "isolation_prefix" json in
+      let use_buck2 = bool_member ~default:false "use_buck2" json in
       let targets = string_list_member "targets" json ~default:[] in
       let source_root = path_member "source_root" json in
       let artifact_root = path_member "artifact_root" json in
-      Result.Ok { mode; isolation_prefix; targets; source_root; artifact_root }
+      Result.Ok { mode; isolation_prefix; use_buck2; targets; source_root; artifact_root }
     with
     | Yojson.Safe.Util.Type_error (message, _)
     | Yojson.Safe.Util.Undefined (message, _) ->
@@ -47,9 +49,10 @@ module Buck = struct
     | other_exception -> Result.Error (Exn.to_string other_exception)
 
 
-  let to_yojson { mode; isolation_prefix; targets; source_root; artifact_root } =
+  let to_yojson { mode; isolation_prefix; use_buck2; targets; source_root; artifact_root } =
     let result =
       [
+        "use_buck2", `Bool use_buck2;
         "targets", `List (List.map targets ~f:(fun target -> `String target));
         "source_root", `String (PyrePath.absolute source_root);
         "artifact_root", `String (PyrePath.absolute artifact_root);
@@ -68,9 +71,72 @@ module Buck = struct
     `Assoc result
 end
 
+module ChangeIndicator = struct
+  type t = {
+    root: PyrePath.t;
+    relative: string;
+  }
+  [@@deriving sexp, compare, hash]
+
+  let of_yojson json =
+    let open JsonParsing in
+    try
+      let root = path_member "root" json in
+      let relative = string_member "relative" json in
+      Result.Ok { root; relative }
+    with
+    | Yojson.Safe.Util.Type_error (message, _)
+    | Yojson.Safe.Util.Undefined (message, _) ->
+        Result.Error message
+    | other_exception -> Result.Error (Exn.to_string other_exception)
+
+
+  let to_yojson { root; relative } =
+    `Assoc ["root", `String (PyrePath.absolute root); "relative", `String relative]
+
+
+  let to_path { root; relative } = PyrePath.create_relative ~root ~relative
+end
+
+module UnwatchedFiles = struct
+  type t = {
+    root: PyrePath.t;
+    checksum_path: string;
+  }
+  [@@deriving sexp, compare, hash]
+
+  let of_yojson json =
+    let open JsonParsing in
+    try
+      let root = path_member "root" json in
+      let checksum_path = string_member "checksum_path" json in
+      Result.Ok { root; checksum_path }
+    with
+    | Yojson.Safe.Util.Type_error (message, _)
+    | Yojson.Safe.Util.Undefined (message, _) ->
+        Result.Error message
+    | other_exception -> Result.Error (Exn.to_string other_exception)
+
+
+  let to_yojson { root; checksum_path } =
+    `Assoc ["root", `String (PyrePath.absolute root); "checksum_path", `String checksum_path]
+end
+
+module UnwatchedDependency = struct
+  type t = {
+    change_indicator: ChangeIndicator.t;
+    files: UnwatchedFiles.t;
+  }
+  [@@deriving sexp, compare, hash, yojson]
+end
+
 module SourcePaths = struct
   type t =
     | Simple of SearchPath.t list
+    | WithUnwatchedDependency of {
+        sources: SearchPath.t list;
+        unwatched_dependency: UnwatchedDependency.t;
+      }
     | Buck of Buck.t
   [@@deriving sexp, compare, hash]
 
@@ -82,25 +148,37 @@ module SourcePaths = struct
     in
     let parse_search_path_jsons search_path_jsons =
       try
-        Result.Ok
-          (Simple (List.map search_path_jsons ~f:(fun json -> to_string json |> SearchPath.create)))
+        Result.Ok (List.map search_path_jsons ~f:(fun json -> to_string json |> SearchPath.create))
       with
       | Type_error _ -> parsing_failed ()
     in
+    let open Result in
     match json with
     | `List search_path_jsons ->
         (* Recognize this as a shortcut for simple source paths. *)
         parse_search_path_jsons search_path_jsons
+        >>= fun search_paths -> Result.Ok (Simple search_paths)
     | `Assoc _ -> (
         match member "kind" json with
         | `String "simple" -> (
             match member "paths" json with
-            | `List search_path_jsons -> parse_search_path_jsons search_path_jsons
+            | `List search_path_jsons ->
+                parse_search_path_jsons search_path_jsons
+                >>= fun search_paths -> Result.Ok (Simple search_paths)
             | _ -> parsing_failed ())
         | `String "buck" -> (
             match Buck.of_yojson json with
             | Result.Ok buck -> Result.Ok (Buck buck)
             | Result.Error error -> Result.Error error)
+        | `String "with_unwatched_dependency" -> (
+            match member "paths" json, member "unwatched_dependency" json with
+            | `List search_path_jsons, (`Assoc _ as unwatched_dependency_json) ->
+                parse_search_path_jsons search_path_jsons
+                >>= fun sources ->
+                UnwatchedDependency.of_yojson unwatched_dependency_json
+                >>= fun unwatched_dependency ->
+                Result.Ok (WithUnwatchedDependency { sources; unwatched_dependency })
+            | _, _ -> parsing_failed ())
         | _ -> parsing_failed ())
     | _ -> parsing_failed ()
 
@@ -112,7 +190,21 @@ module SourcePaths = struct
             "kind", `String "simple";
             "paths", [%to_yojson: string list] (List.map search_paths ~f:SearchPath.show);
           ]
+    | WithUnwatchedDependency { sources; unwatched_dependency } ->
+        `Assoc
+          [
+            "kind", `String "with_unwatched_dependency";
+            "paths", [%to_yojson: string list] (List.map sources ~f:SearchPath.show);
+            "unwatched_dependency", UnwatchedDependency.to_yojson unwatched_dependency;
+          ]
     | Buck buck -> Buck.to_yojson buck |> Yojson.Safe.Util.combine (`Assoc ["kind", `String "buck"])
+
+
+  let to_search_paths = function
+    | Simple sources
+    | WithUnwatchedDependency { sources; _ } ->
+        sources
+    | Buck { artifact_root; _ } -> [SearchPath.Root artifact_root]
 end
 
 module RemoteLogging = struct
@@ -243,6 +335,7 @@ module Analysis = struct
     excludes: Str.regexp list; [@opaque]
     extensions: Extension.t list;
     store_type_check_resolution: bool;
+    store_type_errors: bool;
     incremental_style: incremental_style;
     log_directory: PyrePath.t;
     python_major_version: int;
@@ -270,6 +363,7 @@ module Analysis = struct
       ?(excludes = [])
       ?(extensions = [])
       ?(store_type_check_resolution = true)
+      ?(store_type_errors = true)
       ?(incremental_style = Shallow)
       ?log_directory
       ?(python_major_version = default_python_major_version)
@@ -306,6 +400,7 @@ module Analysis = struct
             |> Str.regexp);
       extensions;
       store_type_check_resolution;
+      store_type_errors;
       incremental_style;
       log_directory =
         (match log_directory with
@@ -338,50 +433,6 @@ module Analysis = struct
   let find_extension { extensions; _ } path =
     List.find extensions ~f:(fun extension ->
         String.is_suffix ~suffix:(Extension.suffix extension) (PyrePath.absolute path))
-end
-
-module Server = struct
-  type load_parameters = {
-    shared_memory_path: PyrePath.t;
-    changed_files_path: PyrePath.t option;
-  }
-
-  type load =
-    | LoadFromFiles of load_parameters
-    | LoadFromProject of {
-        project_name: string;
-        metadata: string option;
-      }
-
-  type saved_state_action =
-    | Save of string
-    | Load of load
-
-  type socket_path = {
-    path: PyrePath.t;
-    link: PyrePath.t;
-  }
-
-  type t = {
-    (* Server-specific configuration options *)
-    socket: socket_path;
-    json_socket: socket_path;
-    adapter_socket: socket_path;
-    lock_path: PyrePath.t;
-    pid_path: PyrePath.t;
-    log_path: PyrePath.t;
-    daemonize: bool;
-    saved_state_action: saved_state_action option;
-    (* Analysis configuration *)
-    configuration: Analysis.t;
-  }
-
-  (* Required to appease the compiler. *)
-  let global : t option ref = ref None
-
-  let set_global configuration = global := Some configuration
-
-  let get_global () = !global
 end
 
 module StaticAnalysis = struct

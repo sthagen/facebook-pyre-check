@@ -96,9 +96,56 @@ let comparison_operator =
 
 
 let comprehension ~target ~iter ~ifs ~is_async =
+  let open Ast.Expression in
+  (* PEP-572 disallows assignment expressions in comprehension iterables. `pyre-ast` does not check
+     for that. *)
+  let check_assignment_expression expression =
+    let mapper =
+      let open Ast.Location in
+      let map_walrus_operator
+          ~mapper:_
+          ~location:{ start = { line; column }; stop = { line = end_line; column = end_column } }
+          _
+        =
+        raise
+          (InternalError
+             {
+               Error.line;
+               column;
+               end_line;
+               end_column;
+               message =
+                 "assignment expression cannot be used in a comprehension iterable expression";
+             })
+      in
+      (* The following 4 items are introduced for optimization purpose: avoid recursing into
+         comprehension sub-expressions as they are already checked for assignment expressions upon
+         construction. *)
+      let map_dictionary_comprehension ~mapper:_ ~location comprehension =
+        Ast.Node.create ~location (Expression.DictionaryComprehension comprehension)
+      in
+      let map_generator ~mapper:_ ~location comprehension =
+        Ast.Node.create ~location (Expression.Generator comprehension)
+      in
+      let map_list_comprehension ~mapper:_ ~location comprehension =
+        Ast.Node.create ~location (Expression.ListComprehension comprehension)
+      in
+      let map_set_comprehension ~mapper:_ ~location comprehension =
+        Ast.Node.create ~location (Expression.SetComprehension comprehension)
+      in
+      Mapper.create_default
+        ~map_walrus_operator
+        ~map_dictionary_comprehension
+        ~map_generator
+        ~map_list_comprehension
+        ~map_set_comprehension
+        ()
+    in
+    Mapper.map ~mapper expression
+  in
   {
-    Ast.Expression.Comprehension.Generator.target;
-    iterator = iter;
+    Comprehension.Generator.target;
+    iterator = check_assignment_expression iter;
     conditions = ifs;
     async = is_async;
   }
@@ -601,12 +648,7 @@ let process_function_type_comment
       match parse_function_signature type_comment with
       | Result.Error _ -> Result.Error "Syntax error in function signature type comment"
       | Result.Ok { FunctionSignature.parameter_annotations; return_annotation } -> (
-          let
-          (* NOTE(grievejia): Locations in both `parameter_annotations` and `return_annotation` are
-             all off since they are counted from the start of `type_comment`, not from the start of
-             the entire file. *)
-          open
-            Ast.Expression in
+          let open Ast.Expression in
           let module Node = Ast.Node in
           let parameter_annotations =
             let parameter_count = List.length parameters in
@@ -634,6 +676,13 @@ let process_function_type_comment
               in
               Result.Error message
           | List.Or_unequal_lengths.Ok pairs ->
+              let location_patcher =
+                (* NOTE(grievejia): Locations in both `parameter_annotations` and
+                   `return_annotation` are all off since they are counted from the start of
+                   `type_comment`, not from the start of the entire file. Therefore, we need to
+                   replace them with something more sensible. *)
+                Mapper.create_transformer ~map_location:(fun _ -> comment_location) ()
+              in
               let override_annotation old_annotation new_annotation =
                 (* NOTE(grievejia): Currently we let inline annotations take precedence over comment
                    annotations. *)
@@ -643,7 +692,7 @@ let process_function_type_comment
                     match new_annotation with
                     | None -> None
                     | Some new_annotation ->
-                        Some { new_annotation with Node.location = comment_location })
+                        Some (Mapper.map ~mapper:location_patcher new_annotation))
               in
               let override_parameter ({ Node.value = parameter; location }, new_annotation) =
                 let { Parameter.annotation; _ } = parameter in
@@ -1026,5 +1075,6 @@ let parse_module_exn ?enable_type_comment ~context text =
   | Result.Error error -> raise (Exception error)
 
 
-let parse_expression ~context =
-  PyreAst.Parser.TaglessFinal.parse_expression ~context ~spec:specification
+let parse_expression ~context text =
+  try PyreAst.Parser.TaglessFinal.parse_expression ~context ~spec:specification text with
+  | InternalError error -> Result.Error error

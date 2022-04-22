@@ -23,19 +23,23 @@ module Request = struct
     | Defines of Reference.t list
     | DumpCallGraph
     | Help of string
+    | InlineDecorators of {
+        function_reference: Reference.t;
+        decorators_to_skip: Reference.t list;
+      }
     | IsCompatibleWith of Expression.t * Expression.t
     | LessOrEqual of Expression.t * Expression.t
-    | ModuleOfPath of PyrePath.t
+    | LocationOfDefinition of {
+        path: PyrePath.t;
+        position: Location.position;
+      }
+    | ModulesOfPath of PyrePath.t
     | PathOfModule of Reference.t
     | SaveServerState of PyrePath.t
     | Superclasses of Reference.t list
     | Type of Expression.t
     | TypesInFiles of string list
     | ValidateTaintModels of string option
-    | InlineDecorators of {
-        function_reference: Reference.t;
-        decorators_to_skip: Reference.t list;
-      }
   [@@deriving sexp, compare]
 
   let inline_decorators ?(decorators_to_skip = []) function_reference =
@@ -107,6 +111,28 @@ module Response = struct
     }
     [@@deriving sexp, compare, to_yojson]
 
+    type position = {
+      line: int;
+      character: int;
+    }
+    [@@deriving sexp, compare, to_yojson]
+
+    type range = {
+      start: position;
+      end_: position;
+    }
+    [@@deriving sexp, compare]
+
+    let range_to_yojson { start; end_ } =
+      `Assoc ["start", position_to_yojson start; "end", position_to_yojson end_]
+
+
+    type location_of_definition = {
+      path: string;
+      range: range;
+    }
+    [@@deriving sexp, compare, to_yojson]
+
     type t =
       | Boolean of bool
       | Callees of Analysis.Callgraph.callee list
@@ -116,7 +142,8 @@ module Response = struct
       | Errors of Analysis.AnalysisError.Instantiated.t list
       | FoundAttributes of attribute list
       | FoundDefines of define list
-      | FoundModule of Reference.t
+      | FoundLocationsOfDefinitions of location_of_definition list
+      | FoundModules of Reference.t list
       | FoundPath of string
       | FunctionDefinition of Statement.Define.t
       | Help of string
@@ -203,7 +230,11 @@ module Response = struct
               ]
           in
           `List (List.map defines ~f:define_to_yojson)
-      | FoundModule reference -> `Assoc ["module", `String (Reference.show reference)]
+      | FoundLocationsOfDefinitions locations ->
+          `List (List.map locations ~f:location_of_definition_to_yojson)
+      | FoundModules references ->
+          let reference_to_yojson reference = `String (Reference.show reference) in
+          `List (List.map references ~f:reference_to_yojson)
       | FoundPath path -> `Assoc ["path", `String path]
       | FunctionDefinition define ->
           `Assoc
@@ -263,10 +294,18 @@ let help () =
            given module or class."
     | DumpCallGraph ->
         Some "dump_call_graph(): Returns a comprehensive JSON of caller -> list of callees."
+    | InlineDecorators _ ->
+        Some
+          "inline_decorators(qualified_function_name, optional decorators_to_skip=[decorator1, \
+           decorator2]): Shows the function definition after decorators have been inlined."
     | IsCompatibleWith _ -> None
     | LessOrEqual _ -> Some "less_or_equal(T1, T2): Returns whether T1 is a subtype of T2."
-    | ModuleOfPath _ ->
-        Some "module_of_path(path): Returns the module of a file pointed to by path."
+    | LocationOfDefinition _ ->
+        Some
+          "location_of_definition(path='<absolute path>', line=<line>, character=<character>): \
+           Returns the location of the definition for the symbol at the given line and character."
+    | ModulesOfPath _ ->
+        Some "modules_of_path(path): Returns the modules of a file pointed to by path."
     | PathOfModule _ -> Some "path_of_module(module): Gives an absolute path for `module`."
     | SaveServerState _ ->
         Some "save_server_state('path'): Saves Pyre's serialized state into `path`."
@@ -283,10 +322,6 @@ let help () =
         Some
           "validate_taint_models('optional path'): Validates models and returns errors. Defaults \
            to model path in configuration if no parameter is passed in."
-    | InlineDecorators _ ->
-        Some
-          "inline_decorators(qualified_function_name, optional decorators_to_skip=[decorator1, \
-           decorator2]): Shows the function definition after decorators have been inlined."
     | Help _ -> None
   in
   let path = PyrePath.current_working_directory () in
@@ -302,7 +337,7 @@ let help () =
       DumpCallGraph;
       IsCompatibleWith (empty, empty);
       LessOrEqual (empty, empty);
-      ModuleOfPath path;
+      ModulesOfPath path;
       PathOfModule (Reference.create "");
       SaveServerState path;
       Superclasses [Reference.empty];
@@ -385,6 +420,13 @@ let rec parse_request_exn query =
                  "inline_decorators expects qualified name and optional `decorators_to_skip=[...]`")
       in
       let string argument = argument |> expression |> string_of_expression in
+      let integer argument =
+        let integer_of_expression = function
+          | { Node.value = Expression.Constant (Constant.Integer value); _ } -> value
+          | _ -> raise (InvalidQuery "expected integer")
+        in
+        argument |> expression |> integer_of_expression
+      in
       match String.lowercase name, arguments with
       | "attributes", [name] -> Request.Attributes (reference name)
       | "batch", queries ->
@@ -405,9 +447,16 @@ let rec parse_request_exn query =
       | "dump_call_graph", [] -> Request.DumpCallGraph
       | "dump_class_hierarchy", [] -> Request.Superclasses []
       | "help", _ -> Request.Help (help ())
+      | "inline_decorators", arguments -> parse_inline_decorators arguments
       | "is_compatible_with", [left; right] -> Request.IsCompatibleWith (access left, access right)
       | "less_or_equal", [left; right] -> Request.LessOrEqual (access left, access right)
-      | "module_of_path", [path] -> Request.ModuleOfPath (PyrePath.create_absolute (string path))
+      | "location_of_definition", [path; line; column] ->
+          Request.LocationOfDefinition
+            {
+              path = PyrePath.create_absolute (string path);
+              position = { line = integer line; column = integer column };
+            }
+      | "modules_of_path", [path] -> Request.ModulesOfPath (PyrePath.create_absolute (string path))
       | "path_of_module", [module_access] -> Request.PathOfModule (reference module_access)
       | "save_server_state", [path] ->
           Request.SaveServerState (PyrePath.create_absolute (string path))
@@ -416,7 +465,6 @@ let rec parse_request_exn query =
       | "types", paths -> Request.TypesInFiles (List.map ~f:string paths)
       | "validate_taint_models", [] -> ValidateTaintModels None
       | "validate_taint_models", [argument] -> Request.ValidateTaintModels (Some (string argument))
-      | "inline_decorators", arguments -> parse_inline_decorators arguments
       | _ -> raise (InvalidQuery "unexpected query"))
   | Ok _ when String.equal query "help" -> Help (help ())
   | Ok _ -> raise (InvalidQuery "unexpected query")
@@ -460,7 +508,7 @@ end
 
 let rec process_request ~environment ~build_system ~configuration request =
   let process_request () =
-    let module_tracker = TypeEnvironment.module_tracker environment in
+    let module_tracker = TypeEnvironment.module_tracker environment |> ModuleTracker.read_only in
     let read_only_environment = TypeEnvironment.read_only environment in
     let global_resolution = TypeEnvironment.ReadOnly.global_resolution read_only_environment in
     let order = GlobalResolution.class_hierarchy global_resolution in
@@ -525,8 +573,8 @@ let rec process_request ~environment ~build_system ~configuration request =
         ~init:""
         ~f:(fun sofar (path, error_reason) ->
           let print_reason = function
-            | LookupProcessor.StubShadowing -> " (file shadowed by .pyi stub file)"
-            | LookupProcessor.FileNotFound -> " (file not found)"
+            | LocationBasedLookupProcessor.StubShadowing -> " (file shadowed by .pyi stub file)"
+            | LocationBasedLookupProcessor.FileNotFound -> " (file not found)"
           in
           Format.asprintf
             "%s%s`%s`%s"
@@ -584,7 +632,6 @@ let rec process_request ~environment ~build_system ~configuration request =
           Location.WithModule.instantiate
             ~lookup:
               (AstEnvironment.ReadOnly.get_real_path_relative
-                 ~configuration
                  (TypeEnvironment.ReadOnly.ast_environment read_only_environment))
         in
         let callees =
@@ -598,7 +645,7 @@ let rec process_request ~environment ~build_system ~configuration request =
         let ast_environment = TypeEnvironment.ReadOnly.ast_environment read_only_environment in
         let defines_of_module module_or_class_name =
           let module_name, filter_define =
-            if AstEnvironment.ReadOnly.is_module ast_environment module_or_class_name then
+            if AstEnvironment.ReadOnly.is_module_tracked ast_environment module_or_class_name then
               Some module_or_class_name, fun _ -> false
             else
               let filter
@@ -607,7 +654,7 @@ let rec process_request ~environment ~build_system ~configuration request =
                 not (Option.equal Reference.equal parent (Some module_or_class_name))
               in
               let rec find_module_name current_reference =
-                if AstEnvironment.ReadOnly.is_module ast_environment current_reference then
+                if AstEnvironment.ReadOnly.is_module_tracked ast_environment current_reference then
                   Some current_reference
                 else
                   Reference.prefix current_reference >>= find_module_name
@@ -665,7 +712,6 @@ let rec process_request ~environment ~build_system ~configuration request =
               Location.WithModule.instantiate
                 ~lookup:
                   (AstEnvironment.ReadOnly.get_real_path_relative
-                     ~configuration
                      (TypeEnvironment.ReadOnly.ast_environment read_only_environment))
             in
             Callgraph.get ~caller:(Callgraph.FunctionCaller caller)
@@ -679,9 +725,14 @@ let rec process_request ~environment ~build_system ~configuration request =
           >>| List.map ~f:callees
           |> Option.value ~default:[]
         in
-        let qualifiers = ModuleTracker.tracked_explicit_modules module_tracker in
+        let qualifiers = ModuleTracker.ReadOnly.tracked_explicit_modules module_tracker in
         Single (Base.Callgraph (List.concat_map qualifiers ~f:get_callgraph))
     | Help help_list -> Single (Base.Help help_list)
+    | InlineDecorators { function_reference; decorators_to_skip } ->
+        InlineDecorators.inline_decorators
+          ~environment:(TypeEnvironment.read_only environment)
+          ~decorators_to_skip:(Reference.Set.of_list decorators_to_skip)
+          function_reference
     | IsCompatibleWith (left, right) ->
         (* We need a special version of parse_and_validate to handle the "unknown" type that
            Monkeycheck may send us *)
@@ -694,15 +745,72 @@ let rec process_request ~environment ~build_system ~configuration request =
         in
         GlobalResolution.is_compatible_with global_resolution ~left ~right
         |> fun result -> Single (Base.Compatibility { actual = left; expected = right; result })
-    | ModuleOfPath path ->
-        Error (Format.sprintf "No module found for path `%s`" (PyrePath.show path))
+    | ModulesOfPath path ->
+        let module_of_path path =
+          match ModuleTracker.ReadOnly.lookup_path module_tracker path with
+          | ModuleTracker.PathLookup.Found { SourcePath.qualifier; _ } -> Some qualifier
+          | ShadowedBy _
+          | NotFound ->
+              None
+        in
+        let artifiact_paths = BuildSystem.lookup_artifact build_system path in
+        Single (Base.FoundModules (List.filter_map ~f:module_of_path artifiact_paths))
     | LessOrEqual (left, right) ->
         let left = parse_and_validate left in
         let right = parse_and_validate right in
         GlobalResolution.less_or_equal global_resolution ~left ~right
         |> fun response -> Single (Base.Boolean response)
+    | LocationOfDefinition { path; position } ->
+        let module_of_path path =
+          let relative_path =
+            let { Configuration.Analysis.local_root = root; _ } = configuration in
+            PyrePath.create_relative ~root ~relative:(PyrePath.absolute path)
+          in
+          match
+            BuildSystem.lookup_artifact build_system relative_path
+            |> List.map ~f:(ModuleTracker.ReadOnly.lookup_path module_tracker)
+          with
+          | [ModuleTracker.PathLookup.Found { SourcePath.qualifier; _ }] -> Some qualifier
+          | _ -> None
+        in
+        let open Base in
+        let location_to_location_of_definition
+            Location.WithModule.(
+              {
+                start = { line = start_line; column = start_column };
+                stop = { line = stop_line; column = stop_column };
+                _;
+              } as location_with_module)
+          =
+          let module_to_absolute_path reference =
+            AstEnvironment.ReadOnly.get_real_path
+              (TypeEnvironment.ReadOnly.ast_environment read_only_environment)
+              reference
+            >>| PyrePath.absolute
+          in
+          let Location.WithPath.{ path; _ } =
+            Location.WithModule.instantiate location_with_module ~lookup:module_to_absolute_path
+          in
+          {
+            path;
+            range =
+              {
+                start = { line = start_line; character = start_column };
+                end_ = { line = stop_line; character = stop_column };
+              };
+          }
+        in
+        module_of_path path
+        >>= (fun module_reference ->
+              LocationBasedLookup.location_of_definition
+                ~type_environment:(TypeEnvironment.read_only environment)
+                ~module_reference
+                position)
+        >>| location_to_location_of_definition
+        |> Option.to_list
+        |> fun definitions -> Single (Base.FoundLocationsOfDefinitions definitions)
     | PathOfModule module_name ->
-        ModuleTracker.lookup_source_path module_tracker module_name
+        ModuleTracker.ReadOnly.lookup_source_path module_tracker module_name
         >>= (fun source_path ->
               let path = SourcePath.full_path ~configuration source_path |> PyrePath.absolute in
               Some (Single (Base.FoundPath path)))
@@ -725,6 +833,32 @@ let rec process_request ~environment ~build_system ~configuration request =
         let class_names =
           match class_names with
           | [] ->
+              (* Because of lazy parsing, `UnannotatedGlobalEnvironment.ReadOnly.get_all_classes
+                 only returns all *loaded* classes, which will not include all classes from external
+                 modules if they are not needed for type checking. So, we force them to load. *)
+              let load_all_modules scheduler =
+                let load_modules qualifiers =
+                  let _ =
+                    List.map
+                      qualifiers
+                      ~f:
+                        (UnannotatedGlobalEnvironment.ReadOnly.get_module_metadata
+                           unannotated_global_environment)
+                  in
+                  ()
+                in
+                Scheduler.iter
+                  scheduler
+                  ~policy:
+                    (Scheduler.Policy.fixed_chunk_count
+                       ~minimum_chunks_per_worker:1
+                       ~minimum_chunk_size:100
+                       ~preferred_chunks_per_worker:5
+                       ())
+                  ~f:load_modules
+                  ~inputs:(ModuleTracker.ReadOnly.tracked_explicit_modules module_tracker)
+              in
+              Scheduler.with_scheduler ~configuration ~f:load_all_modules;
               UnannotatedGlobalEnvironment.ReadOnly.all_classes unannotated_global_environment
               |> List.map ~f:Reference.create
           | _ ->
@@ -736,16 +870,19 @@ let rec process_request ~environment ~build_system ~configuration request =
         let annotation = Resolution.resolve_expression_to_type resolution expression in
         Single (Type annotation)
     | TypesInFiles paths ->
-        let annotations =
-          LookupProcessor.find_all_annotations_batch ~environment ~build_system ~configuration paths
-        in
-        let create_result { LookupProcessor.path; types_by_location } =
-          match types_by_location with
+        let find_resolved_types path =
+          match
+            LocationBasedLookupProcessor.find_all_resolved_types_for_path
+              ~environment
+              ~build_system
+              ~configuration
+              path
+          with
           | Result.Ok types ->
               Either.First { Base.path; types = List.map ~f:create_type_at_location types }
           | Result.Error error_reason -> Either.Second (path, error_reason)
         in
-        let results, errors = List.partition_map ~f:create_result annotations in
+        let results, errors = List.partition_map ~f:find_resolved_types paths in
         if List.is_empty errors then
           Single (Base.TypesByPath results)
         else
@@ -770,6 +907,7 @@ let rec process_request ~environment ~build_system ~configuration request =
               ~maximum_trace_length:None
               ~maximum_tito_depth:None
               ~taint_model_paths:paths
+            |> Taint.TaintConfiguration.abort_on_error
           in
           let get_model_errors sources =
             let model_errors (path, source) =
@@ -784,7 +922,7 @@ let rec process_request ~environment ~build_system ~configuration request =
                 ~configuration
                 ~callables:None
                 ~stubs:(Interprocedural.Target.HashSet.create ())
-                Interprocedural.Target.Map.empty
+                ()
               |> fun { Taint.ModelParser.errors; _ } -> errors
             in
             List.concat_map sources ~f:model_errors
@@ -800,11 +938,6 @@ let rec process_request ~environment ~build_system ~configuration request =
             Single (Base.ModelVerificationErrors errors)
         with
         | error -> Error (Exn.to_string error))
-    | InlineDecorators { function_reference; decorators_to_skip } ->
-        InlineDecorators.inline_decorators
-          ~environment:(TypeEnvironment.read_only environment)
-          ~decorators_to_skip:(Reference.Set.of_list decorators_to_skip)
-          function_reference
   in
   try process_request () with
   | ClassHierarchy.Untracked untracked ->

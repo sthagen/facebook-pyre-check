@@ -35,6 +35,8 @@
         "name": "backward",
         "roots": [
           {
+            "receiver_interval": { "lower": 16, "upper": 17 },
+            "is_self_call": false,
             "kinds": [
               {
                 "leaves": [
@@ -53,7 +55,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_source" } ]
+    "features": [ { "always-via": "special_source" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "model_query_transitive_extends.Test2_D.foo",
+      "index": 0,
+      "parameter": "formal(attribute)"
+    },
+    "master_handle":
+      "model_query_transitive_extends.test2_alarm1:5002:0:Call|model_query_transitive_extends.Test2_D.foo|0|formal(attribute):6bcbf812a068cebc047cbcbff953ae6a"
   }
 }
 {
@@ -474,7 +484,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "model_query_transitive_extends.test1_alarm1:5002:0:Call|_test_sink|0|formal(arg):d7076c5599d9346cb254702aca62ca8a"
   }
 }
 {
@@ -526,11 +544,11 @@
                 "leaves": [
                   {
                     "name":
-                      "Obj{model_query_transitive_extends.Test1_C.instance}"
+                      "Obj{model_query_transitive_extends.Test1_C1.instance}"
                   },
                   {
                     "name":
-                      "Obj{model_query_transitive_extends.Test1_C1.instance}"
+                      "Obj{model_query_transitive_extends.Test1_C.instance}"
                   }
                 ],
                 "kind": "Test"
@@ -566,7 +584,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "model_query_transitive_extends.test1_alarm2:5002:0:Call|_test_sink|0|formal(arg):0dba02726232ed3eb66caff54e15ece8"
   }
 }
 {
@@ -618,15 +644,15 @@
                 "leaves": [
                   {
                     "name":
-                      "Obj{model_query_transitive_extends.Test1_C2.attribute}"
-                  },
-                  {
-                    "name":
                       "Obj{model_query_transitive_extends.Test1_C1.attribute}"
                   },
                   {
                     "name":
                       "Obj{model_query_transitive_extends.Test1_C.attribute}"
+                  },
+                  {
+                    "name":
+                      "Obj{model_query_transitive_extends.Test1_C2.attribute}"
                   }
                 ],
                 "kind": "Test"
@@ -662,7 +688,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "model_query_transitive_extends.test1_alarm3:5002:0:Call|_test_sink|0|formal(arg):79cf0abf6a62591d8d4547fb1a0a4f4b"
   }
 }
 {
@@ -714,15 +748,15 @@
                 "leaves": [
                   {
                     "name":
-                      "Obj{model_query_transitive_extends.Test1_C.instance}"
-                  },
-                  {
-                    "name":
                       "Obj{model_query_transitive_extends.Test1_C1.instance}"
                   },
                   {
                     "name":
                       "Obj{model_query_transitive_extends.Test1_C2.instance}"
+                  },
+                  {
+                    "name":
+                      "Obj{model_query_transitive_extends.Test1_C.instance}"
                   }
                 ],
                 "kind": "Test"
@@ -758,7 +792,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "model_query_transitive_extends.test1_alarm4:5002:0:Call|_test_sink|0|formal(arg):4e1e9120bee89ad21dafd2b91c82331d"
   }
 }
 {
@@ -846,7 +888,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "model_query_transitive_extends.test1_alarm5:5002:0:Call|_test_sink|0|formal(arg):35e29f46c439f3c7e95542f60de3cc0c"
   }
 }
 {
@@ -934,7 +984,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "model_query_transitive_extends.test1_alarm6:5002:0:Call|_test_sink|0|formal(arg):8f20433d2d79bad30ba257a0ffc3dc2f"
   }
 }
 {

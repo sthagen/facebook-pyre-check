@@ -38,7 +38,7 @@ let pp format reference = reference |> String.concat ~sep:"." |> Format.fprintf 
 let show reference = Format.asprintf "%a" pp reference
 
 module Map = Map.Make (T)
-module SerializableMap = SerializableMap.Make (T)
+module SerializableMap = Data_structures.SerializableMap.Make (T)
 module Set = Set.Make (T)
 include Hashable.Make (T)
 
@@ -160,3 +160,13 @@ let map_last ~f reference =
   match List.rev reference with
   | [] -> []
   | head :: tail -> f head :: tail |> List.rev
+
+
+let possible_qualifiers reference =
+  let rec recurse reversed sofar =
+    match reversed with
+    | [] -> sofar
+    | [_] -> sofar
+    | _ :: tail -> recurse tail (reverse tail :: sofar)
+  in
+  recurse (reverse reference) []

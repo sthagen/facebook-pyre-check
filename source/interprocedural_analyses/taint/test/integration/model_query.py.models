@@ -4,63 +4,6 @@
   "data": {
     "callable": "model_query.alarm_6",
     "callable_line": 152,
-    "code": 1006,
-    "line": 154,
-    "start": 4,
-    "end": 14,
-    "filename": "model_query.py",
-    "message": "[Test] to [SinkA]",
-    "traces": [
-      {
-        "name": "forward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "features": [ { "always-via": "special_source" } ],
-                "leaves": [ { "name": "_test_source" } ],
-                "kind": "Test"
-              }
-            ],
-            "root": {
-              "filename": "model_query.py",
-              "line": 154,
-              "start": 17,
-              "end": 31
-            }
-          }
-        ]
-      },
-      {
-        "name": "backward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "leaves": [
-                  { "name": "Obj{model_query.AttributeTestClass3.instance}" }
-                ],
-                "kind": "SinkA"
-              }
-            ],
-            "root": {
-              "filename": "model_query.py",
-              "line": 154,
-              "start": 4,
-              "end": 14
-            }
-          }
-        ]
-      }
-    ],
-    "features": [ { "always-via": "special_source" } ]
-  }
-}
-{
-  "kind": "issue",
-  "data": {
-    "callable": "model_query.alarm_6",
-    "callable_line": 152,
     "code": 1008,
     "line": 154,
     "start": 4,
@@ -110,7 +53,78 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_source" } ]
+    "features": [ { "always-via": "special_source" } ],
+    "sink_handle": {
+      "kind": "Global",
+      "callee": "Obj{model_query.AttributeTestClass3.instance}",
+      "index": 0
+    },
+    "master_handle":
+      "model_query.alarm_6:1008:0:Global|Obj{model_query.AttributeTestClass3.instance}|0:093c3aecbbf663d45349e66c87aac171"
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "model_query.alarm_6",
+    "callable_line": 152,
+    "code": 1006,
+    "line": 154,
+    "start": 4,
+    "end": 14,
+    "filename": "model_query.py",
+    "message": "[Test] to [SinkA]",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "root": {
+              "filename": "model_query.py",
+              "line": 154,
+              "start": 17,
+              "end": 31
+            }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "Obj{model_query.AttributeTestClass3.instance}" }
+                ],
+                "kind": "SinkA"
+              }
+            ],
+            "root": {
+              "filename": "model_query.py",
+              "line": 154,
+              "start": 4,
+              "end": 14
+            }
+          }
+        ]
+      }
+    ],
+    "features": [ { "always-via": "special_source" } ],
+    "sink_handle": {
+      "kind": "Global",
+      "callee": "Obj{model_query.AttributeTestClass3.instance}",
+      "index": 0
+    },
+    "master_handle":
+      "model_query.alarm_6:1006:0:Global|Obj{model_query.AttributeTestClass3.instance}|0:2fe4609a4f178a6be9d50be2b68231e2"
   }
 }
 {
@@ -839,7 +853,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "model_query.alarm_1:1001:0:Call|_test_sink|0|formal(arg):a9184d0be2a256b695ec5ce8331dd9c2"
   }
 }
 {
@@ -927,7 +949,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "model_query.alarm_10:1002:0:Call|_test_sink|0|formal(arg):ce3fa9be7b846215e3bb815f7047e579"
   }
 }
 {
@@ -1015,7 +1045,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "model_query.alarm_11:1002:0:Call|_test_sink|0|formal(arg):0840dd54d902986906b8c38fd6d11fb5"
   }
 }
 {
@@ -1103,7 +1141,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "model_query.alarm_12:1002:0:Call|_test_sink|0|formal(arg):bf745cfd45bdbdf218821bfdc731b704"
   }
 }
 {
@@ -1188,7 +1234,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "model_query.alarm_2:1001:0:Call|_test_sink|0|formal(arg):79d7747af82c4fcaf852e8ad561b7833"
   }
 }
 {
@@ -1275,7 +1329,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "model_query.alarm_3:1001:0:Call|_test_sink|0|formal(arg):74a1acc36a855c94819af6d06dd8b1b8"
   }
 }
 {
@@ -1360,7 +1422,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "model_query.alarm_4:1001:0:Call|_test_sink|0|formal(arg):4b0188ca3e78c717e07f7b0f621b7188"
   }
 }
 {
@@ -1406,64 +1476,6 @@
         ]
       }
     ]
-  }
-}
-{
-  "kind": "issue",
-  "data": {
-    "callable": "model_query.alarm_5",
-    "callable_line": 147,
-    "code": 1006,
-    "line": 149,
-    "start": 4,
-    "end": 15,
-    "filename": "model_query.py",
-    "message": "[Test] to [SinkA]",
-    "traces": [
-      {
-        "name": "forward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "leaves": [ { "name": "model_query.alarm_5" } ],
-                "kind": "Test"
-              }
-            ],
-            "root": {
-              "filename": "model_query.py",
-              "line": 147,
-              "start": 36,
-              "end": 42
-            }
-          }
-        ]
-      },
-      {
-        "name": "backward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "leaves": [
-                  {
-                    "name": "Obj{model_query.AttributeTestClass3.attribute}"
-                  }
-                ],
-                "kind": "SinkA"
-              }
-            ],
-            "root": {
-              "filename": "model_query.py",
-              "line": 149,
-              "start": 4,
-              "end": 15
-            }
-          }
-        ]
-      }
-    ],
-    "features": []
   }
 }
 {
@@ -1521,7 +1533,79 @@
         ]
       }
     ],
-    "features": []
+    "features": [],
+    "sink_handle": {
+      "kind": "Global",
+      "callee": "Obj{model_query.AttributeTestClass3.attribute}",
+      "index": 0
+    },
+    "master_handle":
+      "model_query.alarm_5:1007:0:Global|Obj{model_query.AttributeTestClass3.attribute}|0:5e3a7d3bd2f5e607ca68e3dd6c249666"
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "model_query.alarm_5",
+    "callable_line": 147,
+    "code": 1006,
+    "line": 149,
+    "start": 4,
+    "end": 15,
+    "filename": "model_query.py",
+    "message": "[Test] to [SinkA]",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "leaves": [ { "name": "model_query.alarm_5" } ],
+                "kind": "Test"
+              }
+            ],
+            "root": {
+              "filename": "model_query.py",
+              "line": 147,
+              "start": 36,
+              "end": 42
+            }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name": "Obj{model_query.AttributeTestClass3.attribute}"
+                  }
+                ],
+                "kind": "SinkA"
+              }
+            ],
+            "root": {
+              "filename": "model_query.py",
+              "line": 149,
+              "start": 4,
+              "end": 15
+            }
+          }
+        ]
+      }
+    ],
+    "features": [],
+    "sink_handle": {
+      "kind": "Global",
+      "callee": "Obj{model_query.AttributeTestClass3.attribute}",
+      "index": 0
+    },
+    "master_handle":
+      "model_query.alarm_5:1006:0:Global|Obj{model_query.AttributeTestClass3.attribute}|0:355cd4dd56695dd84d05903b9b97f639"
   }
 }
 {
@@ -1585,59 +1669,6 @@
   "data": {
     "callable": "model_query.alarm_7",
     "callable_line": 157,
-    "code": 1003,
-    "line": 159,
-    "start": 4,
-    "end": 22,
-    "filename": "model_query.py",
-    "message": "[SourceC] to [Test]",
-    "traces": [
-      {
-        "name": "forward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "leaves": [
-                  {
-                    "name": "Obj{model_query.AttributeTestClass4.attribute}"
-                  }
-                ],
-                "kind": "SourceC"
-              }
-            ],
-            "root": {
-              "filename": "model_query.py",
-              "line": 159,
-              "start": 11,
-              "end": 22
-            }
-          }
-        ]
-      },
-      {
-        "name": "backward",
-        "roots": [
-          {
-            "kinds": [ { "kind": "Test" } ],
-            "root": {
-              "filename": "model_query.py",
-              "line": 159,
-              "start": 4,
-              "end": 22
-            }
-          }
-        ]
-      }
-    ],
-    "features": []
-  }
-}
-{
-  "kind": "issue",
-  "data": {
-    "callable": "model_query.alarm_7",
-    "callable_line": 157,
     "code": 1004,
     "line": 159,
     "start": 4,
@@ -1683,7 +1714,66 @@
         ]
       }
     ],
-    "features": []
+    "features": [],
+    "sink_handle": { "kind": "Return" },
+    "master_handle":
+      "model_query.alarm_7:1004:0:Return:87bb6daab7f3a120a18ed61deb1b579d"
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "model_query.alarm_7",
+    "callable_line": 157,
+    "code": 1003,
+    "line": 159,
+    "start": 4,
+    "end": 22,
+    "filename": "model_query.py",
+    "message": "[SourceC] to [Test]",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name": "Obj{model_query.AttributeTestClass4.attribute}"
+                  }
+                ],
+                "kind": "SourceC"
+              }
+            ],
+            "root": {
+              "filename": "model_query.py",
+              "line": 159,
+              "start": 11,
+              "end": 22
+            }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "kinds": [ { "kind": "Test" } ],
+            "root": {
+              "filename": "model_query.py",
+              "line": 159,
+              "start": 4,
+              "end": 22
+            }
+          }
+        ]
+      }
+    ],
+    "features": [],
+    "sink_handle": { "kind": "Return" },
+    "master_handle":
+      "model_query.alarm_7:1003:0:Return:7bc53faf9fc59acf138e34e39b897a2f"
   }
 }
 {
@@ -1712,63 +1802,6 @@
         ]
       }
     ]
-  }
-}
-{
-  "kind": "issue",
-  "data": {
-    "callable": "model_query.alarm_8",
-    "callable_line": 162,
-    "code": 1003,
-    "line": 164,
-    "start": 15,
-    "end": 25,
-    "filename": "model_query.py",
-    "message": "[SourceC] to [Test]",
-    "traces": [
-      {
-        "name": "forward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "leaves": [
-                  { "name": "Obj{model_query.AttributeTestClass4.instance}" }
-                ],
-                "kind": "SourceC"
-              }
-            ],
-            "root": {
-              "filename": "model_query.py",
-              "line": 164,
-              "start": 15,
-              "end": 25
-            }
-          }
-        ]
-      },
-      {
-        "name": "backward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink" } ],
-                "kind": "Test"
-              }
-            ],
-            "root": {
-              "filename": "model_query.py",
-              "line": 164,
-              "start": 15,
-              "end": 25
-            }
-          }
-        ]
-      }
-    ],
-    "features": [ { "always-via": "special_sink" } ]
   }
 }
 {
@@ -1825,7 +1858,80 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "model_query.alarm_8:1005:0:Call|_test_sink|0|formal(arg):4e380b4a53b4601356ea46ccf5674f76"
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "model_query.alarm_8",
+    "callable_line": 162,
+    "code": 1003,
+    "line": 164,
+    "start": 15,
+    "end": 25,
+    "filename": "model_query.py",
+    "message": "[SourceC] to [Test]",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "Obj{model_query.AttributeTestClass4.instance}" }
+                ],
+                "kind": "SourceC"
+              }
+            ],
+            "root": {
+              "filename": "model_query.py",
+              "line": 164,
+              "start": 15,
+              "end": 25
+            }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_sink" } ],
+                "leaves": [ { "name": "_test_sink" } ],
+                "kind": "Test"
+              }
+            ],
+            "root": {
+              "filename": "model_query.py",
+              "line": 164,
+              "start": 15,
+              "end": 25
+            }
+          }
+        ]
+      }
+    ],
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "model_query.alarm_8:1003:0:Call|_test_sink|0|formal(arg):bad451ecdee0aed4f2c31393e0723ead"
   }
 }
 {
@@ -1913,7 +2019,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "model_query.alarm_9:1002:0:Call|_test_sink|0|formal(arg):d52b1ec1ba56df50b439b8b37db26f1a"
   }
 }
 {

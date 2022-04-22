@@ -2,7 +2,29 @@
 {
   "kind": "model",
   "data": {
-    "callable": "implicit_sources.bar",
+    "callable": "implicit_sources.bar_dot_format",
+    "sources": [
+      {
+        "port": "result",
+        "taint": [
+          {
+            "kinds": [ { "kind": "IPAddress" } ],
+            "root": {
+              "filename": "implicit_sources.py",
+              "line": 25,
+              "start": 11,
+              "end": 55
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "implicit_sources.bar_format_strings",
     "sources": [
       {
         "port": "result",
@@ -14,6 +36,28 @@
               "line": 15,
               "start": 11,
               "end": 47
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "implicit_sources.bar_percent_format",
+    "sources": [
+      {
+        "port": "result",
+        "taint": [
+          {
+            "kinds": [ { "kind": "IPAddress" } ],
+            "root": {
+              "filename": "implicit_sources.py",
+              "line": 20,
+              "start": 11,
+              "end": 52
             }
           }
         ]
@@ -55,7 +99,7 @@
             "kinds": [ { "kind": "HTMLPattern" }, { "kind": "IPAddress" } ],
             "root": {
               "filename": "implicit_sources.py",
-              "line": 23,
+              "line": 33,
               "start": 11,
               "end": 30
             }

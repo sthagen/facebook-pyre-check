@@ -63,7 +63,7 @@ module BuckBuildSystem = struct
     let create_from_scratch ~builder ~targets () =
       let open Lwt.Infix in
       Buck.Builder.build builder ~targets
-      >>= fun { Buck.Builder.BuildResult.targets = normalized_targets; build_map } ->
+      >>= fun { Buck.Interface.BuildResult.targets = normalized_targets; build_map } ->
       Lwt.return (create ~targets ~builder ~normalized_targets ~build_map ())
 
 
@@ -95,8 +95,6 @@ module BuckBuildSystem = struct
       let prefix = Prefix.make ()
 
       let description = "Buck Builder States"
-
-      let unmarshall value = Marshal.from_string value 0
     end
 
     let serialize = Fn.id
@@ -105,17 +103,6 @@ module BuckBuildSystem = struct
   end
 
   module SavedState = Memory.Serializer (SerializableState)
-
-  let ensure_directory_exist_and_clean path =
-    let result =
-      let open Result in
-      PyrePath.create_directory_recursively path
-      >>= fun () -> PyrePath.remove_contents_of_directory path
-    in
-    match result with
-    | Result.Error message -> raise (Buck.Builder.LinkTreeConstructionError message)
-    | Result.Ok () -> ()
-
 
   (* Both `integers` and `normals` are functions that return a list instead of a list directly,
      since some of the logging may depend on the return value of `f`. *)
@@ -201,7 +188,12 @@ module BuckBuildSystem = struct
             "number_of_user_changed_files", List.length paths;
             "number_of_updated_files", List.length changed_artifacts;
           ])
-        ~normals:(fun _ -> ["event_type", "rebuild"; "event_subtype", incremental_builder.name])
+        ~normals:(fun _ ->
+          [
+            "buck_builder_type", Buck.Builder.identifier_of state.builder;
+            "event_type", "rebuild";
+            "event_subtype", incremental_builder.name;
+          ])
         (fun () ->
           incremental_builder.run state.builder
           >>= fun {
@@ -229,33 +221,26 @@ module BuckBuildSystem = struct
     { update; lookup_source; lookup_artifact; store }
 
 
-  let initialize_from_options
-      ~raw
-      ~buck_options:
-        { Configuration.Buck.mode; isolation_prefix; targets; source_root; artifact_root }
-      ()
-    =
+  let initialize_from_options ~builder targets =
     let open Lwt.Infix in
-    ensure_directory_exist_and_clean artifact_root;
-    let builder = Buck.Builder.create ?mode ?isolation_prefix ~source_root ~artifact_root raw in
     with_logging
       ~integers:(fun { State.build_map; _ } ->
         [
           "number_of_user_changed_files", 0;
           "number_of_updated_files", Buck.BuildMap.artifact_count build_map;
         ])
-      ~normals:(fun _ -> ["event_type", "build"; "event_subtype", "cold_start"])
+      ~normals:(fun _ ->
+        [
+          "buck_builder_type", Buck.Builder.identifier_of builder;
+          "event_type", "build";
+          "event_subtype", "cold_start";
+        ])
       (fun () -> State.create_from_scratch ~builder ~targets ())
     >>= fun initial_state -> Lwt.return (initialize_from_state initial_state)
 
 
-  let initialize_from_saved_state
-      ~raw
-      ~buck_options:{ Configuration.Buck.mode; isolation_prefix; source_root; artifact_root; _ }
-      ()
-    =
+  let initialize_from_saved_state ~builder () =
     let open Lwt.Infix in
-    ensure_directory_exist_and_clean artifact_root;
     (* NOTE (grievejia): For saved state loading, are still using the passed-in `mode`,
        `isolation_prefix`, `source_root`, and `artifact_root`, instead of preserving these options
        in saved state itself. For `source_root` and `artifact_root`, this is actually mandatory
@@ -265,27 +250,80 @@ module BuckBuildSystem = struct
     let { SerializableState.targets; normalized_targets; serialized_build_map } =
       SavedState.load ()
     in
-    let builder = Buck.Builder.create ?mode ?isolation_prefix ~source_root ~artifact_root raw in
     with_logging
       ~integers:(fun { State.build_map; _ } ->
         [
           "number_of_user_changed_files", 0;
           "number_of_updated_files", Buck.BuildMap.artifact_count build_map;
         ])
-      ~normals:(fun _ -> ["event_type", "build"; "event_subtype", "saved_state"])
+      ~normals:(fun _ ->
+        [
+          "buck_builder_type", Buck.Builder.identifier_of builder;
+          "event_type", "build";
+          "event_subtype", "saved_state";
+        ])
       (fun () ->
         let build_map =
           Buck.BuildMap.Partial.of_alist_exn serialized_build_map |> Buck.BuildMap.create
         in
         State.create_from_saved_state ~builder ~targets ~normalized_targets ~build_map ())
     >>= fun initial_state -> Lwt.return (initialize_from_state initial_state)
+end
+
+module TrackUnwatchedDependencyBuildSystem = struct
+  module State = struct
+    type t = {
+      change_indicator_path: PyrePath.t;
+      unwatched_files: Configuration.UnwatchedFiles.t;
+      mutable checksum_map: ChecksumMap.t;
+    }
+  end
+
+  let unwatched_files_may_change ~change_indicator_path paths =
+    List.exists paths ~f:(PyrePath.equal change_indicator_path)
 
 
-  let cleanup artifact_root =
-    match PyrePath.remove_contents_of_directory artifact_root with
-    | Result.Error message ->
-        Log.warning "Encountered error during buck builder cleanup: %s" message
-    | Result.Ok () -> ()
+  let initialize_from_state (state : State.t) =
+    let update paths =
+      let paths =
+        if unwatched_files_may_change ~change_indicator_path:state.change_indicator_path paths then (
+          Log.info "Detecting potential changes in unwatched files...";
+          (* NOTE(grievejia): If checksum map loading fails, there will be no way for us to figure
+             out what has changed in the unwatched directory. Bring down the server immediately to
+             avoid incremental inconsistency. *)
+          let new_checksum_map = ChecksumMap.load_exn state.unwatched_files in
+          let differences = ChecksumMap.difference ~original:state.checksum_map new_checksum_map in
+          state.checksum_map <- new_checksum_map;
+          List.map differences ~f:(fun { ChecksumMap.Difference.path; _ } ->
+              (* TODO (T90174546): Utilizes the info provided by `ChecksumMap.Difference.kind`. *)
+              PyrePath.create_relative ~root:state.unwatched_files.root ~relative:path))
+        else
+          []
+      in
+      Lwt.return paths
+    in
+    let lookup_source path = Some path in
+    let lookup_artifact path = [path] in
+    let store () = () in
+    { update; lookup_source; lookup_artifact; store }
+
+
+  let initialize_from_options
+      { Configuration.UnwatchedDependency.change_indicator; files = unwatched_files }
+    =
+    let change_indicator_path = Configuration.ChangeIndicator.to_path change_indicator in
+    let checksum_map =
+      match ChecksumMap.load unwatched_files with
+      | Result.Ok checksum_map -> checksum_map
+      | Result.Error message ->
+          (* NOTE(grievejia): We do not want a hard crash here, as the initialization may be invoked
+             from a non-server command where incremental check is not needed and therefore the
+             content of the checksum map does not matter. *)
+          Log.warning "Initial checksum map loading failed: %s. Assuming an empty map." message;
+          ChecksumMap.empty
+    in
+    Lwt.return
+      (initialize_from_state { State.change_indicator_path; unwatched_files; checksum_map })
 end
 
 module Initializer = struct
@@ -311,14 +349,47 @@ module Initializer = struct
     }
 
 
-  let buck ~raw ({ Configuration.Buck.artifact_root; _ } as buck_options) =
+  let buck ~builder ~artifact_root ~targets () =
+    let ensure_directory_exist_and_clean path =
+      let result =
+        let open Result in
+        PyrePath.create_directory_recursively path
+        >>= fun () -> PyrePath.remove_contents_of_directory path
+      in
+      match result with
+      | Result.Error message -> raise (Buck.Builder.LinkTreeConstructionError message)
+      | Result.Ok () -> ()
+    in
+    let initialize () =
+      ensure_directory_exist_and_clean artifact_root;
+      BuckBuildSystem.initialize_from_options ~builder targets
+    in
+    let load () =
+      ensure_directory_exist_and_clean artifact_root;
+      BuckBuildSystem.initialize_from_saved_state ~builder ()
+    in
+    let cleanup () =
+      match PyrePath.remove_contents_of_directory artifact_root with
+      | Result.Error message ->
+          Log.warning "Encountered error during buck builder cleanup: %s" message;
+          Lwt.return_unit
+      | Result.Ok () -> Lwt.return_unit
+    in
+    { initialize; load; cleanup }
+
+
+  let track_unwatched_dependency unwatched_dependency =
     {
-      initialize = BuckBuildSystem.initialize_from_options ~raw ~buck_options;
-      load = BuckBuildSystem.initialize_from_saved_state ~raw ~buck_options;
-      cleanup =
+      initialize =
+        (fun () -> TrackUnwatchedDependencyBuildSystem.initialize_from_options unwatched_dependency);
+      load =
         (fun () ->
-          BuckBuildSystem.cleanup artifact_root;
-          Lwt.return_unit);
+          (* NOTE(grievejia): The only state used in this build system is the checksum map. Given
+             that checksum map loading seems to be a fairly cheap thing to do, I think it makes
+             sense to avoid putting it into saved state, and simply re-build the map on each saved
+             state loading. *)
+          TrackUnwatchedDependencyBuildSystem.initialize_from_options unwatched_dependency);
+      cleanup = (fun () -> Lwt.return_unit);
     }
 
 
@@ -328,9 +399,23 @@ end
 let get_initializer source_paths =
   match source_paths with
   | Configuration.SourcePaths.Simple _ -> Initializer.null
-  | Configuration.SourcePaths.Buck buck_options ->
-      let raw = Buck.Raw.create ~additional_log_size:10 () in
-      Initializer.buck ~raw buck_options
+  | Configuration.SourcePaths.WithUnwatchedDependency { unwatched_dependency; _ } ->
+      Initializer.track_unwatched_dependency unwatched_dependency
+  | Configuration.SourcePaths.Buck
+      { Configuration.Buck.mode; isolation_prefix; use_buck2; source_root; artifact_root; targets }
+    ->
+      let builder =
+        match use_buck2 with
+        | false ->
+            let raw = Buck.Raw.create ~additional_log_size:10 () in
+            let interface = Buck.Interface.create ?mode ?isolation_prefix raw in
+            Buck.Builder.create ~source_root ~artifact_root interface
+        | true ->
+            let raw = Buck.Raw.create_v2 ~additional_log_size:10 () in
+            let interface = Buck.Interface.create_v2 ?mode ?isolation_prefix raw in
+            Buck.Builder.create_v2 ~source_root ~artifact_root interface
+      in
+      Initializer.buck ~builder ~artifact_root ~targets ()
 
 
 let with_build_system ~f source_paths =

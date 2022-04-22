@@ -1870,12 +1870,6 @@ let is_ellipsis = function
   | _ -> false
 
 
-let is_final = function
-  | Parametric { name = "typing.Final" | "typing_extensions.Final"; _ } -> true
-  | Primitive ("typing.Final" | "typing_extensions.Final") -> true
-  | _ -> false
-
-
 let is_generic_primitive = function
   | Primitive "typing.Generic" -> true
   | _ -> false
@@ -1995,6 +1989,7 @@ let reverse_substitute name =
   match name with
   | "collections.defaultdict" -> "typing.DefaultDict"
   | "dict" -> "typing.Dict"
+  | "frozenset" -> "typing.FrozenSet"
   | "list" -> "typing.List"
   | "set" -> "typing.Set"
   | "type" -> "typing.Type"
@@ -2082,7 +2077,7 @@ let rec pp format annotation =
   | Literal (Integer literal) -> Format.fprintf format "typing_extensions.Literal[%d]" literal
   | Literal (String (LiteralValue literal)) ->
       Format.fprintf format "typing_extensions.Literal['%s']" literal
-  | Literal (String AnyLiteral) -> Format.fprintf format "typing_extensions.Literal[str]"
+  | Literal (String AnyLiteral) -> Format.fprintf format "typing_extensions.LiteralString"
   | Literal (Bytes literal) -> Format.fprintf format "typing_extensions.Literal[b'%s']" literal
   | Literal (EnumerationMember { enumeration_type; member_name }) ->
       Format.fprintf format "typing_extensions.Literal[%s.%s]" (show enumeration_type) member_name
@@ -2168,7 +2163,7 @@ and pp_concise format annotation =
   | Literal (Integer literal) -> Format.fprintf format "typing_extensions.Literal[%d]" literal
   | Literal (String (LiteralValue literal)) ->
       Format.fprintf format "typing_extensions.Literal['%s']" literal
-  | Literal (String AnyLiteral) -> Format.fprintf format "typing_extensions.Literal[str]"
+  | Literal (String AnyLiteral) -> Format.fprintf format "typing_extensions.LiteralString"
   | Literal (Bytes literal) -> Format.fprintf format "typing_extensions.Literal[b'%s']" literal
   | Literal (EnumerationMember { enumeration_type; member_name }) ->
       Format.fprintf format "typing_extensions.Literal[%s.%s]" (show enumeration_type) member_name
@@ -3211,6 +3206,7 @@ let primitive_substitution_map =
     "typing.DefaultDict", Primitive "collections.defaultdict";
     "typing.Deque", Primitive "collections.deque";
     "typing.Dict", Primitive "dict";
+    "typing.FrozenSet", Primitive "frozenset";
     "typing.List", Primitive "list";
     "typing.OrderedDict", Primitive "collections.OrderedDict";
     "typing.Set", Primitive "set";
@@ -3223,6 +3219,8 @@ let primitive_substitution_map =
     "TSelf", variable "_PathLike";
     (* This inherits from Any, and is expected to act just like Any *)
     "_NotImplementedType", Any;
+    "typing_extensions.LiteralString", Literal (String AnyLiteral);
+    "typing.LiteralString", Literal (String AnyLiteral);
   ]
   |> Identifier.Table.of_alist_exn
 
@@ -4342,7 +4340,24 @@ let contains_literal annotation =
   exists annotation ~predicate
 
 
-let contains_final annotation = exists annotation ~predicate:is_final
+let final_value = function
+  | Parametric
+      { name = "typing.Final" | "typing_extensions.Final"; parameters = [Single parameter] } ->
+      `Ok parameter
+  | Primitive ("typing.Final" | "typing_extensions.Final") -> `NoParameter
+  | _ -> `NotFinal
+
+
+let contains_final annotation =
+  let predicate annotation =
+    match final_value annotation with
+    | `Ok _
+    | `NoParameter ->
+        true
+    | `NotFinal -> false
+  in
+  exists annotation ~predicate
+
 
 let collect annotation ~predicate =
   let module CollectorTransform = Transform.Make (struct
@@ -4577,14 +4592,6 @@ let class_variable annotation = parametric "typing.ClassVar" [Single annotation]
 
 let class_variable_value = function
   | Parametric { name = "typing.ClassVar"; parameters = [Single parameter] } -> Some parameter
-  | _ -> None
-
-
-let final_value = function
-  | Parametric
-      { name = "typing.Final" | "typing_extensions.Final"; parameters = [Single parameter] } ->
-      Some parameter
-  | Primitive ("typing.Final" | "typing_extensions.Final") -> Some Top
   | _ -> None
 
 

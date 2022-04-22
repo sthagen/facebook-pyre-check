@@ -26,8 +26,6 @@ module StringKey = struct
 
   let compare = String.compare
 
-  type out = string
-
   let from_string x = x
 
   module Registry = struct
@@ -58,9 +56,6 @@ module StringValue = struct
   let description = "Test1"
 
   let compare = String.compare
-
-  (* Strings are not marshalled by shared memory *)
-  let unmarshall value = value
 end
 
 module OtherStringValue = struct
@@ -71,9 +66,6 @@ module OtherStringValue = struct
   let description = "Test2"
 
   let compare = String.compare
-
-  (* Strings are not marshalled by shared memory *)
-  let unmarshall value = value
 end
 
 module TableA =
@@ -158,9 +150,7 @@ module UpdateDependencyTest = struct
     let update _ = List.iter specification ~f:setup_new_state in
     let keys = List.map specification ~f:(fun { key; _ } -> key) |> TableB.KeySet.of_list in
     let _, actual =
-      StringDependencyKey.Transaction.empty
-        ~scheduler:(Test.mock_scheduler ())
-        ~configuration:(Configuration.Analysis.create ~source_paths:[] ())
+      StringDependencyKey.Transaction.empty ~scheduler:(Test.mock_scheduler ())
       |> TableA.add_to_transaction ~keys
       |> StringDependencyKey.Transaction.execute ~update
     in

@@ -35,9 +35,7 @@ module type S = sig
   val sequence_join : t -> t -> t
 end
 
-module Make (Element : AbstractSetDomain.ELEMENT) = struct
-  module Set = Set.Make (Element)
-
+module MakeWithSet (Set : AbstractSetDomain.SET) = struct
   type biset =
     | Bottom
     | BiSet of {
@@ -47,17 +45,17 @@ module Make (Element : AbstractSetDomain.ELEMENT) = struct
 
   module rec Base : (BASE with type t := biset) = MakeBase (Domain)
 
-  and Domain : (S with type t = biset and type element = Set.elt) = struct
+  and Domain : (S with type t = biset and type element = Set.element) = struct
     (* Implicitly under <= over at all times. Note that Bottom is different from ({}, {}) since ({},
        {}) is not less or equal to e.g. ({a}, {a}) *)
     type t = biset
 
-    type element = Element.t
+    type element = Set.element
 
     type _ part +=
       | Self : t part
-      | Element : Element.t part
-      | ElementAndUnder : Element.t approximation part
+      | Element : Set.element part
+      | ElementAndUnder : Set.element approximation part
 
     let bottom = Bottom
 
@@ -82,7 +80,7 @@ module Make (Element : AbstractSetDomain.ELEMENT) = struct
 
 
     let show_approximation { element; in_under } =
-      let element_value = Element.show element in
+      let element_value = Set.show_element element in
       if in_under then
         Format.sprintf "%s" element_value
       else
@@ -201,11 +199,12 @@ module Make (Element : AbstractSetDomain.ELEMENT) = struct
     let transform : type a f. a part -> ([ `Transform ], a, f, _) operation -> f:f -> t -> t =
      fun part op ~f set ->
       match part, op, set with
-      | Element, (Expand | Map), Bottom -> set
+      | Element, Map, Bottom -> set
       | Element, Map, BiSet _ ->
           to_approximation set
           |> ListLabels.map ~f:(fun e -> { e with element = f e.element })
           |> of_approximation
+      | Element, Expand, Bottom -> set
       | Element, Expand, BiSet _ ->
           to_approximation set
           |> ListLabels.map ~f:(fun e ->
@@ -218,15 +217,27 @@ module Make (Element : AbstractSetDomain.ELEMENT) = struct
           let over = Set.filter f over in
           let under = Set.filter f under in
           make ~old:set ~over ~under
-      | ElementAndUnder, (Expand | Map), Bottom -> set
+      | Element, FilterMap, Bottom -> set
+      | Element, FilterMap, BiSet _ ->
+          to_approximation set
+          |> ListLabels.filter_map ~f:(fun e ->
+                 match f e.element with
+                 | Some element -> Some { e with element }
+                 | None -> None)
+          |> of_approximation
+      | ElementAndUnder, Map, Bottom -> set
       | ElementAndUnder, Map, BiSet _ ->
           to_approximation set |> ListLabels.map ~f |> of_approximation
+      | ElementAndUnder, Expand, Bottom -> set
       | ElementAndUnder, Expand, BiSet _ ->
           to_approximation set |> ListLabels.map ~f |> ListLabels.flatten |> of_approximation
       | ElementAndUnder, Add, _ -> add_element set f
       | ElementAndUnder, Filter, Bottom -> Bottom
       | ElementAndUnder, Filter, BiSet _ ->
           to_approximation set |> ListLabels.filter ~f |> of_approximation
+      | ElementAndUnder, FilterMap, Bottom -> set
+      | ElementAndUnder, FilterMap, BiSet _ ->
+          to_approximation set |> ListLabels.filter_map ~f |> of_approximation
       | Self, Add, _ ->
           (* Special handling of Add here, as we don't want to use the join of the common
              implementation. *)
@@ -309,12 +320,12 @@ module Make (Element : AbstractSetDomain.ELEMENT) = struct
           f#report Self;
           f#report Element;
           f#report ElementAndUnder
-      | Structure -> [Format.sprintf "OverAndUnderSet(%s)" Element.name]
+      | Structure -> [Format.sprintf "OverAndUnderSet(%s)" Set.element_name]
       | Name part -> (
           match part with
-          | Element -> Format.sprintf "OverAndUnderSet(%s).Element" Element.name
-          | ElementAndUnder -> Format.sprintf "OverAndUnderSet(%s).ElementAndUnder" Element.name
-          | Self -> Format.sprintf "OverAndUnderSet(%s).Self" Element.name
+          | Element -> Format.sprintf "OverAndUnderSet(%s).Element" Set.element_name
+          | ElementAndUnder -> Format.sprintf "OverAndUnderSet(%s).ElementAndUnder" Set.element_name
+          | Self -> Format.sprintf "OverAndUnderSet(%s).Self" Set.element_name
           | _ -> Base.introspect op)
 
 
@@ -376,4 +387,18 @@ module Make (Element : AbstractSetDomain.ELEMENT) = struct
   let _ = Base.fold (* unused module warning work-around *)
 
   include Domain
+end
+
+module Make (Element : AbstractSetDomain.ELEMENT) = struct
+  module Set = struct
+    include Set.Make (Element)
+
+    type element = Element.t
+
+    let show_element = Element.show
+
+    let element_name = Element.name
+  end
+
+  include MakeWithSet (Set)
 end

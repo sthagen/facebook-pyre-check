@@ -58,11 +58,19 @@
       }
     ],
     "features": [
-      { "always-via": "string_concat_lhs" },
-      { "always-via": "tito" },
       { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ]
+      { "always-via": "special_sink" },
+      { "always-via": "string_concat_lhs" },
+      { "always-via": "tito" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "strings.bad_1:5002:0:Call|_test_sink|0|formal(arg):9374fc8a8cb1be75930cf176292d491b"
   }
 }
 {
@@ -124,11 +132,19 @@
       }
     ],
     "features": [
-      { "always-via": "string_concat_rhs" },
-      { "always-via": "tito" },
       { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ]
+      { "always-via": "special_sink" },
+      { "always-via": "string_concat_rhs" },
+      { "always-via": "tito" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "strings.bad_2:5002:0:Call|_test_sink|0|formal(arg):8a88866aec2c37a9b55000f2781ba890"
   }
 }
 {
@@ -210,12 +226,20 @@
       }
     ],
     "features": [
+      { "always-via": "special_source" },
+      { "always-via": "special_sink" },
       { "via": "string_concat_rhs" },
       { "via": "string_concat_lhs" },
-      { "always-via": "tito" },
-      { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ]
+      { "always-via": "tito" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "strings.either:5002:0:Call|_test_sink|0|formal(arg):66d28ba04f85ddfe00f2392ff53ff9a5"
   }
 }
 {
@@ -292,11 +316,19 @@
       }
     ],
     "features": [
-      { "via": "string_concat_lhs" },
-      { "via": "tito" },
       { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ]
+      { "always-via": "special_sink" },
+      { "via": "string_concat_lhs" },
+      { "via": "tito" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "strings.maybe_lhs:5002:0:Call|_test_sink|0|formal(arg):3407bb568c3164f7884d70dd2c73f63d"
   }
 }
 {
@@ -373,11 +405,19 @@
       }
     ],
     "features": [
-      { "via": "string_concat_rhs" },
-      { "via": "tito" },
       { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ]
+      { "always-via": "special_sink" },
+      { "via": "string_concat_rhs" },
+      { "via": "tito" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "strings.maybe_rhs:5002:0:Call|_test_sink|0|formal(arg):a49a7406fb24e2fd499b036831901f9d"
   }
 }
 {
@@ -439,11 +479,19 @@
       }
     ],
     "features": [
-      { "always-via": "string_concat_rhs" },
-      { "always-via": "tito" },
       { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ]
+      { "always-via": "special_sink" },
+      { "always-via": "string_concat_rhs" },
+      { "always-via": "tito" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "strings.through_iadd:5002:0:Call|_test_sink|0|formal(arg):2e73aa579eafd32fe25063c5c69e1bb6"
   }
 }
 {
@@ -493,9 +541,7 @@
         "port": "formal(source)",
         "taint": [
           {
-            "kinds": [
-              { "return_paths": [ "" ], "length": 1, "kind": "LocalReturn" }
-            ],
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
             "local_features": [
               { "always-via": "string_concat_lhs" },
               { "always-via": "tito" }
@@ -517,9 +563,7 @@
         "port": "formal(source)",
         "taint": [
           {
-            "kinds": [
-              { "return_paths": [ "" ], "length": 1, "kind": "LocalReturn" }
-            ],
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
             "local_features": [
               { "always-via": "string_concat_rhs" },
               { "always-via": "tito" }
@@ -549,7 +593,6 @@
               }
             ],
             "local_features": [
-              { "always-via": "obscure:model" },
               { "always-via": "format-string" },
               { "always-via": "tito" }
             ],
@@ -583,7 +626,6 @@
               }
             ],
             "local_features": [
-              { "always-via": "obscure:model" },
               { "always-via": "format-string" },
               { "always-via": "tito" }
             ],
@@ -609,11 +651,8 @@
         "port": "formal(x)",
         "taint": [
           {
-            "kinds": [
-              { "return_paths": [ "" ], "length": 1, "kind": "LocalReturn" }
-            ],
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
             "local_features": [
-              { "always-via": "obscure:model" },
               { "always-via": "format-string" },
               { "always-via": "tito" }
             ],

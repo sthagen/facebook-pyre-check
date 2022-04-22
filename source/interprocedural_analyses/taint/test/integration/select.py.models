@@ -243,7 +243,10 @@
       { "has": "first-index" },
       { "first-index": "payload" },
       { "always-via": "tito" }
-    ]
+    ],
+    "sink_handle": { "kind": "Return" },
+    "master_handle":
+      "select.return_is_RCE:5001:0:Return:75714e82b1119786167df4c408a8f7c4"
   }
 }
 {
@@ -337,7 +340,15 @@
         ]
       }
     ],
-    "features": [ { "has": "first-field" }, { "first-field": "payload" } ]
+    "features": [ { "has": "first-field" }, { "first-field": "payload" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "eval",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "select.view_entry_field:5001:0:Call|eval|0|formal(arg):164dcdb169663c76cefeb4fd4eb5fb86"
   }
 }
 {
@@ -435,7 +446,15 @@
       { "has": "first-index" },
       { "first-index": "payload" },
       { "always-via": "tito" }
-    ]
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "eval",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "select.view_entry_get:5001:0:Call|eval|0|formal(arg):7b1a3d8fd4bd2ae19d8c755f3b339d00"
   }
 }
 {
@@ -540,6 +559,14 @@
       { "first-index": "payload" },
       { "has": "first-field" },
       { "first-field": "GET" }
-    ]
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "eval",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "select.view_entry_index:5001:0:Call|eval|0|formal(arg):d2317d02e768fc9f4945b5d8852e4363"
   }
 }

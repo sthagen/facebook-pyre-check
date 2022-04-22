@@ -11,23 +11,28 @@ import unittest
 from typing import Dict, List, Optional, Tuple
 from unittest.mock import call, patch
 
-from .. import UserError, errors
+from .. import errors, UserError
 from ..ast import UnstableAST
 from ..errors import (
+    _get_unused_ignore_codes,
+    _line_ranges_spanned_by_format_strings,
+    _map_line_to_start_of_range,
+    _relocate_errors,
+    _remove_unused_ignores,
+    _suppress_errors,
     Errors,
+    LineBreakParsingException,
     PartialErrorSuppression,
     SkippingGeneratedFileException,
     SkippingUnparseableFileException,
-    _map_line_to_start_of_range,
-    _get_unused_ignore_codes,
-    _line_ranges_spanned_by_format_strings,
-    _remove_unused_ignores,
-    _relocate_errors,
-    _suppress_errors,
 )
 
 
 unittest.util._MAX_LENGTH = 200
+
+
+def _normalize(input: str) -> str:
+    return textwrap.dedent(input).strip().replace("FIXME", "pyre-fixme")
 
 
 class ErrorsTest(unittest.TestCase):
@@ -205,6 +210,12 @@ class ErrorsTest(unittest.TestCase):
 
         get_unused_ignore_codes.return_value = [1]
         self.assertEqual(
+            _remove_unused_ignores("#  pyre-fixme[1]: Comment", []),
+            "",
+        )
+
+        get_unused_ignore_codes.return_value = [1]
+        self.assertEqual(
             _remove_unused_ignores("# pyre-fixme[2, 3, 4]: Comment", []),
             "# pyre-fixme[2, 3, 4]: Comment",
         )
@@ -237,8 +248,6 @@ class ErrorsTest(unittest.TestCase):
         truncate: bool = False,
         unsafe: bool = False,
     ) -> None:
-        def _normalize(input: str) -> str:
-            return textwrap.dedent(input).strip().replace("FIXME", "pyre-fixme")
 
         self.assertEqual(
             _suppress_errors(
@@ -319,6 +328,22 @@ class ErrorsTest(unittest.TestCase):
         # Skip generated files.
         with self.assertRaises(SkippingGeneratedFileException):
             _suppress_errors("# @" "generated", {})
+
+        # Skip files with unparseable line break blocks.
+        with self.assertRaises(LineBreakParsingException):
+            _suppress_errors(
+                _normalize(
+                    """
+                    def foo() -> None:
+                        line_break = \\
+                            [
+                                param
+                            ]
+                        unrelated_line = 0
+                    """
+                ),
+                {3: [{"code": "1", "description": "description"}]},
+            )
 
         # Do not check for generated files with --unsafe.
         try:
@@ -423,7 +448,41 @@ class ErrorsTest(unittest.TestCase):
             max_line_length=20,
         )
 
-        # Remove unused ignores.
+        # Truncate long comments.
+        self.assertSuppressErrors(
+            {1: [{"code": "1", "description": "description"}]},
+            """
+            def foo() -> None: pass
+            """,
+            """
+            # FIXME[1]: descr...
+            def foo() -> None: pass
+            """,
+            max_line_length=25,
+            truncate=True,
+        )
+
+        self.assertSuppressErrors(
+            {
+                1: [
+                    {
+                        "code": "1",
+                        "description": "this description takes up over four lines \
+                        of content when it is split, given the max line length",
+                    }
+                ]
+            },
+            """
+            def foo() -> None: pass
+            """,
+            """
+            # FIXME[1]: this ...
+            def foo() -> None: pass
+            """,
+            max_line_length=25,
+        )
+
+    def test_suppress_errors__remove_unused(self) -> None:
         self.assertSuppressErrors(
             {1: [{"code": "0", "description": "description"}]},
             """
@@ -615,40 +674,7 @@ class ErrorsTest(unittest.TestCase):
             """,
         )
 
-        # Truncate long comments.
-        self.assertSuppressErrors(
-            {1: [{"code": "1", "description": "description"}]},
-            """
-            def foo() -> None: pass
-            """,
-            """
-            # FIXME[1]: descr...
-            def foo() -> None: pass
-            """,
-            max_line_length=25,
-            truncate=True,
-        )
-
-        self.assertSuppressErrors(
-            {
-                1: [
-                    {
-                        "code": "1",
-                        "description": "this description takes up over four lines \
-                        of content when it is split, given the max line length",
-                    }
-                ]
-            },
-            """
-            def foo() -> None: pass
-            """,
-            """
-            # FIXME[1]: this ...
-            def foo() -> None: pass
-            """,
-            max_line_length=25,
-        )
-
+    def test_suppress_errors__line_breaks(self) -> None:
         # Line breaks without errors.
         self.assertSuppressErrors(
             {},
@@ -713,6 +739,21 @@ class ErrorsTest(unittest.TestCase):
             {3: [{"code": "1", "description": "description"}]},
             """
             def foo() -> None:
+                x: int = \\
+                    1
+            """,
+            """
+            def foo() -> None:
+                x: int = (
+                    # FIXME[1]: description
+                    1)
+            """,
+        )
+
+        self.assertSuppressErrors(
+            {3: [{"code": "1", "description": "description"}]},
+            """
+            def foo() -> None:
                 del \\
                     error
             """,
@@ -751,6 +792,21 @@ class ErrorsTest(unittest.TestCase):
                 assert (test +
                     # FIXME[1]: description
                     test2)
+            """,
+        )
+
+        self.assertSuppressErrors(
+            {3: [{"code": "1", "description": "description"}]},
+            """
+            def foo() -> None:
+                assert test, \\
+                    "message"
+            """,
+            """
+            def foo() -> None:
+                assert (test), (
+                    # FIXME[1]: description
+                    "message")
             """,
         )
 
@@ -799,6 +855,48 @@ class ErrorsTest(unittest.TestCase):
             """,
         )
 
+        self.assertSuppressErrors(
+            {3: [{"code": "1", "description": "description"}]},
+            """
+            def foo() -> None:
+                line_break = \\
+                    trailing_open(
+                        param)
+                unrelated_line = 1
+            """,
+            """
+            def foo() -> None:
+                line_break = (
+                    # FIXME[1]: description
+                    trailing_open(
+                        param))
+                unrelated_line = 1
+            """,
+        )
+
+        self.assertSuppressErrors(
+            {3: [{"code": "1", "description": "description"}]},
+            """
+            def foo() -> None:
+                line_break = \\
+                    trailing_open(
+                        param1,
+                        param2,
+                    )
+                unrelated_line = 1
+            """,
+            """
+            def foo() -> None:
+                line_break = (
+                    # FIXME[1]: description
+                    trailing_open(
+                        param1,
+                        param2,
+                    ))
+                unrelated_line = 1
+            """,
+        )
+
     def test_suppress_errors__long_class_name(self) -> None:
         self.assertSuppressErrors(
             {
@@ -839,6 +937,66 @@ class ErrorsTest(unittest.TestCase):
             from a import c
             # FIXME[21]: description
             from a import d
+            """,
+        )
+
+    def test_suppress_errors__multi_line_string(self) -> None:
+        self.assertSuppressErrors(
+            {5: [{"code": "1", "description": "description"}]},
+            """
+            def foo() -> None:
+                call(\"\"\"\\
+                    some text
+                    more text
+                    \"\"\", problem_arg)
+            """,
+            """
+            def foo() -> None:
+                call(\"\"\"\\
+                    some text
+                    more text
+                    \"\"\", problem_arg)  # FIXME[1]
+            """,
+        )
+
+        self.assertSuppressErrors(
+            {
+                5: [
+                    {"code": "1", "description": "description"},
+                    {"code": "2", "description": "description"},
+                ],
+            },
+            """
+            def foo() -> None:
+                x = (\"\"\"\\
+                some text
+                more text
+                \"\"\", problem)
+            """,
+            """
+            def foo() -> None:
+                x = (\"\"\"\\
+                some text
+                more text
+                \"\"\", problem)  # FIXME[1, 2]
+            """,
+        )
+
+        self.assertSuppressErrors(
+            {5: [{"code": "0", "description": "unused ignore"}]},
+            """
+            def foo() -> None:
+                call(\"\"\"\\
+                    some text
+                    more text
+                    \"\"\", problem_arg)  # FIXME[1]
+            """,
+            """
+            def foo() -> None:
+                call(\"\"\"\\
+                    some text
+                    more text
+                    \"\"\", problem_arg)
             """,
         )
 

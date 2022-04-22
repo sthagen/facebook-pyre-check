@@ -32,8 +32,6 @@ module EdgesValue = struct
 
   let description = "Edges"
 
-  let unmarshall value = Marshal.from_string value 0
-
   let compare = Option.compare compare_edges
 end
 
@@ -105,7 +103,7 @@ let get_parents alias_environment name ~dependency =
     | filtered -> filtered
   in
   match
-    UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
+    UnannotatedGlobalEnvironment.ReadOnly.get_class_summary
       ?dependency
       (unannotated_global_environment alias_environment)
       name
@@ -217,9 +215,7 @@ module ReadOnly = struct
         let extends_placeholder_stub = extends_placeholder_stub read_only ?dependency:None
 
         let contains key =
-          UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
-            unannotated_global_environment
-            key
+          UnannotatedGlobalEnvironment.ReadOnly.get_class_summary unannotated_global_environment key
           |> Option.is_some
       end : ClassHierarchy.Handler)
     in
@@ -254,20 +250,18 @@ let create ast_environment = { edges = Edges.create ast_environment }
 
 let ast_environment { edges } = Edges.ast_environment edges
 
+let configuration { edges } = Edges.configuration edges
+
 let read_only { edges } = Edges.read_only edges
 
 let update_this_and_all_preceding_environments
-    { edges }
+    ({ edges } as this_environment)
     ~scheduler
-    ~configuration:({ Configuration.Analysis.debug; _ } as configuration)
     ast_environment_trigger
   =
+  let { Configuration.Analysis.debug; _ } = configuration this_environment in
   let result =
-    Edges.update_this_and_all_preceding_environments
-      edges
-      ~scheduler
-      ~configuration
-      ast_environment_trigger
+    Edges.update_this_and_all_preceding_environments edges ~scheduler ast_environment_trigger
   in
   let read_only = Edges.UpdateResult.read_only result in
   if debug then

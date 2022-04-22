@@ -7,57 +7,14 @@
 
 open Core
 module Set = Caml.Set
-module SharedMemory = Hack_parallel.Std.SharedMem
+module SharedMemory = Hack_parallel.Std.SharedMemory
 
-module type KeyType = sig
-  include SharedMem.UserKeyType
+module type KeyType = SharedMemory.KeyType
 
-  type out
+module type ValueType = SharedMemory.ValueType
 
-  val from_string : string -> out
-end
-
-module type ValueType = sig
-  include Value.Type
-
-  val unmarshall : string -> t
-end
-
-module NoCache : sig
-  module type S = sig
-    include SharedMemory.NoCache
-
-    type key_out
-  end
-
-  module Make (Key : KeyType) (Value : ValueType) : sig
-    include
-      S
-        with type t = Value.t
-         and type key = Key.t
-         and type key_out = Key.out
-         and module KeySet = Set.Make(Key)
-         and module KeyMap = MyMap.Make(Key)
-  end
-end
-
-module WithCache : sig
-  module type S = sig
-    include SharedMemory.WithCache
-
-    type key_out
-  end
-
-  module Make (Key : KeyType) (Value : ValueType) : sig
-    include
-      S
-        with type t = Value.t
-         and type key = Key.t
-         and type key_out = Key.out
-         and module KeySet = Set.Make(Key)
-         and module KeyMap = MyMap.Make(Key)
-  end
-end
+module NoCache = SharedMemory.NoCache
+module WithCache = SharedMemory.WithCache
 
 val initialize_for_tests : unit -> unit
 
@@ -78,7 +35,7 @@ val load_shared_memory : path:string -> configuration:Configuration.Analysis.t -
 val reset_shared_memory : unit -> unit
 
 module SingletonKey : sig
-  include KeyType with type out = int
+  include KeyType with type t = int
 
   val key : t
 end

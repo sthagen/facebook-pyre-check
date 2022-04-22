@@ -316,6 +316,8 @@
         "port": "result",
         "taint": [
           {
+            "receiver_interval": { "lower": 2, "upper": 3 },
+            "is_self_call": false,
             "kinds": [
               {
                 "leaves": [
@@ -431,9 +433,9 @@
               }
             ],
             "local_features": [
+              { "always-via": "a_feature" },
               { "always-via": "obscure:model" },
-              { "always-via": "tito" },
-              { "always-via": "a_feature" }
+              { "always-via": "tito" }
             ],
             "tito": [ { "line": 64, "start": 35, "end": 49 } ],
             "root": {
@@ -467,11 +469,19 @@
       }
     ],
     "features": [
-      { "always-via": "obscure:model" },
-      { "always-via": "tito" },
-      { "always-via": "special_source" },
       { "always-via": "a_feature" },
-      { "always-via": "special_sink" }
-    ]
+      { "always-via": "special_source" },
+      { "always-via": "special_sink" },
+      { "always-via": "obscure:model" },
+      { "always-via": "tito" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "obscure_models.test_obscure_with_tito:5002:0:Call|_test_sink|0|formal(arg):92ad60b8a716874f6e42658a1c86185f"
   }
 }

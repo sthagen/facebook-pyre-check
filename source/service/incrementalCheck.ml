@@ -23,10 +23,10 @@ let recheck
   let timer = Timer.start () in
   let ast_environment = TypeEnvironment.ast_environment environment in
   let module_tracker = AstEnvironment.module_tracker ast_environment in
-  let module_updates = ModuleTracker.update module_tracker ~configuration ~paths in
-  Scheduler.once_per_worker scheduler ~configuration ~f:SharedMem.invalidate_caches;
-  SharedMem.invalidate_caches ();
-  SharedMem.collect `aggressive;
+  let module_updates = ModuleTracker.update module_tracker ~paths in
+  Scheduler.once_per_worker scheduler ~configuration ~f:SharedMemory.invalidate_caches;
+  SharedMemory.invalidate_caches ();
+  SharedMemory.collect `aggressive;
   (* Repopulate the environment. *)
   Log.info "Repopulating the environment...";
 
@@ -34,7 +34,6 @@ let recheck
     let annotated_global_environment = AnnotatedGlobalEnvironment.create ast_environment in
     AnnotatedGlobalEnvironment.update_this_and_all_preceding_environments
       annotated_global_environment
-      ~configuration
       ~scheduler
       (Update module_updates)
   in
@@ -102,7 +101,7 @@ let recheck
                   unannotated_global_environment_update_result
               in
               match
-                UnannotatedGlobalEnvironment.ReadOnly.get_define
+                UnannotatedGlobalEnvironment.ReadOnly.get_function_definition
                   unannotated_global_environment
                   define_name
               with
@@ -120,7 +119,7 @@ let recheck
         in
 
         recheck_modules, errors, Map.length recheck_functions
-    | _ ->
+    | Shallow ->
         let total_rechecked_functions =
           let unannotated_global_environment_update_result =
             AnnotatedGlobalEnvironment.UpdateResult.unannotated_global_environment_update_result
@@ -173,7 +172,7 @@ let recheck
   (* Associate the new errors with new files *)
   Log.info "Number of new errors = %d" (List.length new_errors);
   List.iter new_errors ~f:(fun error ->
-      let key = AnalysisError.path error in
+      let key = AnalysisError.module_reference error in
       Hashtbl.add_multi errors ~key ~data:error);
 
   Statistics.performance

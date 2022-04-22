@@ -14,41 +14,51 @@ import tempfile
 import traceback
 from pathlib import Path
 from typing import (
-    Union,
-    Optional,
     AsyncIterator,
-    Set,
-    List,
-    Sequence,
-    Dict,
     Callable,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Type,
+    TypeVar,
+    Union,
 )
 
 import dataclasses_json
 from libcst.metadata import CodeRange
+from tools.pyre.client.commands.language_server_protocol import (
+    DocumentSymbolsResponse,
+)
 
 from .. import (
-    log,
-    json_rpc,
-    error,
-    version,
     command_arguments,
     configuration as configuration_module,
+    error,
+    json_rpc,
+    log,
     statistics_logger,
+    timer,
+    version,
 )
 from ..coverage_collector import coverage_collector_for_module, CoveredAndUncoveredLines
 from . import (
+    async_server_connection as connection,
     backend_arguments,
     commands,
-    language_server_protocol as lsp,
-    server_connection,
-    async_server_connection as connection,
-    start,
     incremental,
+    language_server_protocol as lsp,
     location_lookup,
     query,
+    server_connection,
     server_event,
+    start,
     statistics,
+)
+from .find_symbols import (
+    UnparseableError,
+    parse_source_and_collect_symbols,
 )
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -66,6 +76,8 @@ class LSPEvent(enum.Enum):
     NOT_CONFIGURED = "not configured"
     DISCONNECTED = "disconnected"
     SUSPENDED = "suspended"
+    STOPPED = "stopped"
+    COVERED = "covered"
 
 
 def _log_lsp_event(
@@ -193,7 +205,10 @@ def process_initialize_request(
             save=lsp.SaveOptions(include_text=False),
         ),
         **(
-            {"hover_provider": ide_features.is_hover_enabled()}
+            {
+                "hover_provider": ide_features.is_hover_enabled(),
+                "definition_provider": ide_features.is_go_to_definition_enabled(),
+            }
             if ide_features is not None
             else {}
         ),
@@ -388,14 +403,44 @@ TypeInfo = str
 LocationTypeLookup = location_lookup.LocationLookup[TypeInfo]
 
 
+@dataclasses.dataclass(frozen=True)
+class TypeCoverageQuery:
+    id: Union[int, str, None]
+    path: Path
+
+
+@dataclasses.dataclass(frozen=True)
+class TypesQuery:
+    path: Path
+
+
+@dataclasses.dataclass(frozen=True)
+class DefinitionLocationQuery:
+    id: Union[int, str, None]
+    path: Path
+    position: lsp.Position
+
+
+@dataclasses_json.dataclass_json(
+    letter_case=dataclasses_json.LetterCase.CAMEL,
+    undefined=dataclasses_json.Undefined.EXCLUDE,
+)
+@dataclasses.dataclass(frozen=True)
+class DefinitionLocationResponse:
+    response: List[lsp.PyreDefinitionResponse]
+
+
+QueryTypes = Union[TypeCoverageQuery, TypesQuery, DefinitionLocationQuery]
+
+
 @dataclasses.dataclass
 class PyreQueryState:
     # Shared mutable state.
     path_to_location_type_lookup: Dict[Path, LocationTypeLookup] = dataclasses.field(
         default_factory=dict
     )
-    # Queue of paths that the background query manager will look up types for.
-    paths_to_be_queried: "asyncio.Queue[Path]" = dataclasses.field(
+    # Queue of queries.
+    queries: "asyncio.Queue[QueryTypes]" = dataclasses.field(
         default_factory=asyncio.Queue
     )
 
@@ -473,6 +518,28 @@ class PathTypeInfo:
         )
 
 
+async def _send_query_request(
+    output_channel: connection.TextWriter, query_text: str
+) -> None:
+    query_message = json.dumps(["Query", query_text])
+    LOG.debug(f"Sending `{log.truncate(query_message, 400)}`")
+    await output_channel.write(f"{query_message}\n")
+
+
+async def _receive_query_response(
+    input_channel: connection.TextReader,
+) -> Optional[query.Response]:
+    async with _read_server_response(input_channel) as raw_response:
+        LOG.debug(f"Received `{log.truncate(raw_response, 400)}`")
+        try:
+            return query.parse_query_response(raw_response)
+        except query.InvalidQueryResponse as exception:
+            LOG.info(
+                f"Failed to parse json {raw_response} due to exception: {exception}"
+            )
+            return None
+
+
 @dataclasses_json.dataclass_json(
     letter_case=dataclasses_json.LetterCase.CAMEL,
     undefined=dataclasses_json.Undefined.EXCLUDE,
@@ -482,47 +549,50 @@ class QueryTypesResponse:
     response: List[PathTypeInfo]
 
 
-async def _send_query_request(
-    output_channel: connection.TextWriter, query_text: str
-) -> None:
-    query_message = json.dumps(["Query", query_text])
-    LOG.debug(f"Sending `{log.truncate(query_message, 400)}`")
-    await output_channel.write(f"{query_message}\n")
+@dataclasses_json.dataclass_json(
+    letter_case=dataclasses_json.LetterCase.CAMEL,
+    undefined=dataclasses_json.Undefined.EXCLUDE,
+)
+@dataclasses.dataclass(frozen=True)
+class QueryModulesOfPathResponse:
+    response: List[str]
 
 
-async def _receive_query_types_response(
-    input_channel: connection.TextReader,
-) -> Optional[QueryTypesResponse]:
-    async with _read_server_response(input_channel) as raw_response:
-        LOG.debug(f"Received `{log.truncate(raw_response, 400)}`")
-        try:
-            payload = query.parse_query_response(raw_response).payload
-            # pyre-ignore[16]: Pyre does not understand dataclasses-json.
-            return QueryTypesResponse.from_dict(payload)
-        except (
-            KeyError,
-            ValueError,
-            query.InvalidQueryResponse,
-            dataclasses_json.mm.ValidationError,
-        ) as exception:
-            LOG.info(
-                f"Failed to parse json {raw_response} due to exception: {exception}"
-            )
-            return None
+_T = TypeVar("_T")
+
+
+def _interpret_response(
+    response: query.Response, response_type: Type[_T]
+) -> Optional[_T]:
+    try:
+        # pyre-ignore[16]: Pyre doesn't understand dataclasses_json
+        return response_type.from_dict(response.payload)
+    except (
+        KeyError,
+        ValueError,
+        dataclasses_json.mm.ValidationError,
+    ) as exception:
+        LOG.info(
+            f"When interpretting {response.payload} as {response_type.__name__} "
+            f"got: {type(exception).__name__}({exception})"
+        )
+        return None
 
 
 @dataclasses.dataclass
 class ServerState:
     # Immutable States
     client_capabilities: lsp.ClientCapabilities = lsp.ClientCapabilities()
-    strict_default: bool = False
-    excludes: Sequence[str] = dataclasses.field(default_factory=list)
 
     # Mutable States
     consecutive_start_failure: int = 0
+    is_user_notified_on_buck_failure: bool = False
     opened_documents: Set[Path] = dataclasses.field(default_factory=set)
     diagnostics: Dict[Path, List[lsp.Diagnostic]] = dataclasses.field(
         default_factory=dict
+    )
+    last_diagnostic_update_timer: timer.Timer = dataclasses.field(
+        default_factory=timer.Timer
     )
     query_state: PyreQueryState = dataclasses.field(default_factory=PyreQueryState)
 
@@ -575,7 +645,7 @@ class PyreServer:
                 f"Document URI is not a file: {parameters.text_document.uri}"
             )
         self.state.opened_documents.add(document_path)
-        self.state.query_state.paths_to_be_queried.put_nowait(document_path)
+        self.state.query_state.queries.put_nowait(TypesQuery(document_path))
         LOG.info(f"File opened: {document_path}")
 
         # Attempt to trigger a background Pyre server start on each file open
@@ -609,7 +679,7 @@ class PyreServer:
         if document_path not in self.state.opened_documents:
             return
 
-        self.state.query_state.paths_to_be_queried.put_nowait(document_path)
+        self.state.query_state.queries.put_nowait(TypesQuery(document_path))
 
         # Attempt to trigger a background Pyre server start on each file save
         if not self.pyre_manager.is_task_running():
@@ -634,7 +704,7 @@ class PyreServer:
         if document_path not in self.state.opened_documents:
             response = lsp.HoverResponse.empty()
         else:
-            self.state.query_state.paths_to_be_queried.put_nowait(document_path)
+            self.state.query_state.queries.put_nowait(TypesQuery(document_path))
             response = self.state.query_state.hover_response_for_position(
                 Path(document_path), parameters.position
             )
@@ -659,18 +729,73 @@ class PyreServer:
             raise json_rpc.InvalidRequestError(
                 f"Document URI is not a file: {parameters.text_document.uri}"
             )
-        result = path_to_coverage_result(
-            document_path,
-            strict_default=self.state.strict_default,
-            excludes=self.state.excludes,
+        await self.state.query_state.queries.put(
+            TypeCoverageQuery(id=request_id, path=document_path)
         )
+
+    async def process_definition_request(
+        self,
+        parameters: lsp.DefinitionTextDocumentParameters,
+        request_id: Union[int, str, None],
+    ) -> None:
+        document_path = parameters.text_document.document_uri().to_file_path()
+        if document_path is None:
+            raise json_rpc.InvalidRequestError(
+                f"Document URI is not a file: {parameters.text_document.uri}"
+            )
+
+        if document_path not in self.state.opened_documents:
+            await lsp.write_json_rpc(
+                self.output_channel,
+                json_rpc.SuccessResponse(
+                    id=request_id,
+                    # pyre-ignore[16]: Pyre does not understand
+                    # `dataclasses_json`.
+                    result=lsp.LspDefinitionResponse.schema().dump([], many=True),
+                ),
+            )
+            return
+
+        self.state.query_state.queries.put_nowait(
+            DefinitionLocationQuery(
+                id=request_id,
+                path=document_path,
+                position=parameters.position.to_pyre_position(),
+            )
+        )
+
+    async def process_document_symbols_request(
+        self,
+        parameters: lsp.DocumentSymbolsTextDocumentParameters,
+        request_id: Union[int, str, None],
+    ) -> None:
+        document_path = parameters.text_document.document_uri().to_file_path()
+        if document_path is None:
+            raise json_rpc.InvalidRequestError(
+                f"Document URI is not a file: {parameters.text_document.uri}"
+            )
+        if document_path not in self.state.opened_documents:
+            raise json_rpc.InvalidRequestError(
+                f"Document URI has not been opened: {parameters.text_document.uri}"
+            )
+        try:
+            source = document_path.read_text()
+        except Exception:
+            raise json_rpc.InvalidRequestError(
+                f"Document URI is not a readable file: {parameters.text_document.uri}"
+            )
+        try:
+            symbols = parse_source_and_collect_symbols(source)
+        except UnparseableError as e:
+            raise json_rpc.ParseError(e)
+
         await lsp.write_json_rpc(
             self.output_channel,
             json_rpc.SuccessResponse(
                 id=request_id,
                 # pyre-ignore[16]: Pyre does not understand
                 # `dataclasses_json`.
-                result=result.to_dict(),
+                result=DocumentSymbolsResponse.schema().dump(symbols, many=True),
             ),
         )
 
@@ -689,6 +814,18 @@ class PyreServer:
                         json_rpc.SuccessResponse(id=request.id, result=None),
                     )
                     return await self.wait_for_exit()
+                elif request.method == "textDocument/definition":
+                    parameters = request.parameters
+                    if parameters is None:
+                        raise json_rpc.InvalidRequestError(
+                            "Missing parameters for definition method"
+                        )
+                    await self.process_definition_request(
+                        lsp.DefinitionTextDocumentParameters.from_json_rpc_parameters(
+                            parameters
+                        ),
+                        request.id,
+                    )
                 elif request.method == "textDocument/didOpen":
                     parameters = request.parameters
                     if parameters is None:
@@ -746,6 +883,18 @@ class PyreServer:
                         ),
                         request.id,
                     )
+                elif request.method == "textDocument/documentSymbol":
+                    parameters = request.parameters
+                    if parameters is None:
+                        raise json_rpc.InvalidRequestError(
+                            "Mising Parameters for documetn symbols"
+                        )
+                    await self.process_document_symbols_request(
+                        lsp.DocumentSymbolsTextDocumentParameters.from_json_rpc_parameters(
+                            parameters
+                        ),
+                        request.id,
+                    )
                 elif request.id is not None:
                     raise lsp.RequestCancelledError("Request not supported yet")
 
@@ -765,14 +914,19 @@ class StartSuccess:
 
 
 @dataclasses.dataclass(frozen=True)
-class StartFailure:
+class BuckStartFailure:
+    message: str
+
+
+@dataclasses.dataclass(frozen=True)
+class OtherStartFailure:
     message: str
     detail: str
 
 
 async def _start_pyre_server(
     binary_location: str, pyre_arguments: start.Arguments
-) -> Union[StartSuccess, StartFailure]:
+) -> Union[StartSuccess, BuckStartFailure, OtherStartFailure]:
     try:
         with backend_arguments.temporary_argument_file(
             pyre_arguments
@@ -812,18 +966,21 @@ async def _start_pyre_server(
 
         return StartSuccess()
     except server_event.ServerStartException as error:
-        # We know where the exception come from. Let's keep the error details
-        # succinct.
         message = str(error)
         LOG.error(message)
-        return StartFailure(message=message, detail=message)
+        if error.kind == server_event.ErrorKind.BUCK_USER:
+            return BuckStartFailure(message)
+        else:
+            # We know where the exception come from. Let's keep the error details
+            # succinct.
+            return OtherStartFailure(message=message, detail=message)
     except Exception as error:
         # These exceptions are unexpected. Let's keep verbose stack traces to
         # help with post-mortem analyses.
         message = str(error)
         detail = traceback.format_exc()
         LOG.error(f"{detail}")
-        return StartFailure(message=message, detail=detail)
+        return OtherStartFailure(message=message, detail=detail)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -981,25 +1138,18 @@ def file_not_typechecked_coverage_result() -> lsp.TypeCoverageResult:
     )
 
 
-def path_to_coverage_result(
-    path: Path, strict_default: bool, excludes: Sequence[str]
-) -> lsp.TypeCoverageResult:
+def path_to_coverage_result(path: Path, strict_default: bool) -> lsp.TypeCoverageResult:
     module = statistics.parse_path_to_module(path)
     if module is None:
         raise lsp.RequestCancelledError(
             f"Unable to compute coverage information for {path}"
         )
-    if statistics.has_py_extension_and_not_ignored(path, excludes):
-        coverage_collector = coverage_collector_for_module(
-            str(path), module, strict_default
-        )
-        covered_and_uncovered_lines = coverage_collector.covered_and_uncovered_lines()
-        uncovered_ranges = [
-            f.code_range for f in coverage_collector.uncovered_functions()
-        ]
-        return to_coverage_result(covered_and_uncovered_lines, uncovered_ranges)
-    else:
-        return file_not_typechecked_coverage_result()
+    coverage_collector = coverage_collector_for_module(
+        str(path), module, strict_default
+    )
+    covered_and_uncovered_lines = coverage_collector.covered_and_uncovered_lines()
+    uncovered_ranges = [f.code_range for f in coverage_collector.uncovered_functions()]
+    return to_coverage_result(covered_and_uncovered_lines, uncovered_ranges)
 
 
 class PyreQueryHandler(connection.BackgroundTask):
@@ -1007,21 +1157,47 @@ class PyreQueryHandler(connection.BackgroundTask):
         self,
         state: PyreQueryState,
         server_start_options_reader: PyreServerStartOptionsReader,
+        client_output_channel: connection.TextWriter,
     ) -> None:
         self.state = state
         self.server_start_options_reader = server_start_options_reader
+        self.client_output_channel = client_output_channel
+
+    async def _query(
+        self, query_text: str, socket_path: Path
+    ) -> Optional[query.Response]:
+        LOG.info(f"Querying for `{query_text}`")
+        try:
+            async with connection.connect_in_text_mode(socket_path) as (
+                input_channel,
+                output_channel,
+            ):
+                await _send_query_request(output_channel, query_text)
+                return await _receive_query_response(input_channel)
+        except connection.ConnectionFailure:
+            LOG.error(
+                "Could not establish connection with an existing Pyre server "
+                f"at {socket_path}."
+            )
+            return None
+
+    async def _query_and_interpret_response(
+        self, query_text: str, socket_path: Path, response_type: Type[_T]
+    ) -> Optional[_T]:
+        query_response = await self._query(query_text, socket_path)
+        if query_response is None:
+            return None
+        else:
+            return _interpret_response(query_response, response_type)
 
     async def _query_types(
-        self,
-        paths: List[Path],
-        input_channel: connection.TextReader,
-        output_channel: connection.TextWriter,
+        self, paths: List[Path], socket_path: Path
     ) -> Optional[Dict[Path, LocationTypeLookup]]:
         path_string = ", ".join(f"'{path}'" for path in paths)
         query_text = f"types({path_string})"
-        LOG.info(f"Querying for `{query_text}`")
-        await _send_query_request(output_channel, query_text)
-        query_types_response = await _receive_query_types_response(input_channel)
+        query_types_response = await self._query_and_interpret_response(
+            query_text, socket_path, QueryTypesResponse
+        )
 
         if query_types_response is None:
             return None
@@ -1034,40 +1210,125 @@ class PyreQueryHandler(connection.BackgroundTask):
     async def _update_types_for_paths(
         self,
         paths: List[Path],
-        server_start_options: "PyreServerStartOptions",
+        socket_path: Path,
     ) -> None:
-        server_identifier = server_start_options.server_identifier
+        new_path_to_location_type_dict = await self._query_types(paths, socket_path)
+        if new_path_to_location_type_dict is None:
+            return
+        for path, location_type_lookup in new_path_to_location_type_dict.items():
+            self.state.path_to_location_type_lookup[path] = location_type_lookup
+
+    async def _query_modules_of_path(
+        self,
+        path: Path,
+        socket_path: Path,
+    ) -> Optional[QueryModulesOfPathResponse]:
+        return await self._query_and_interpret_response(
+            f"modules_of_path('{path}')", socket_path, QueryModulesOfPathResponse
+        )
+
+    async def _query_is_typechecked(
+        self,
+        path: Path,
+        socket_path: Path,
+    ) -> Optional[bool]:
+        response = await self._query_modules_of_path(path, socket_path)
+        if response is None:
+            return None
+        else:
+            return len(response.response) > 0
+
+    async def _query_type_coverage(
+        self,
+        path: Path,
+        strict_default: bool,
+        socket_path: Path,
+    ) -> Optional[lsp.TypeCoverageResult]:
+        is_typechecked = await self._query_is_typechecked(path, socket_path)
+        if is_typechecked is None:
+            return None
+        elif is_typechecked:
+            return path_to_coverage_result(path, strict_default)
+        else:
+            return file_not_typechecked_coverage_result()
+
+    async def _handle_type_coverage_query(
+        self,
+        query: TypeCoverageQuery,
+        strict_default: bool,
+        socket_path: Path,
+    ) -> None:
+        type_coverage_result = await self._query_type_coverage(
+            query.path,
+            strict_default,
+            socket_path,
+        )
+        if type_coverage_result is not None:
+            await lsp.write_json_rpc(
+                self.client_output_channel,
+                json_rpc.SuccessResponse(
+                    id=query.id,
+                    # pyre-ignore[16]: Pyre does not understand
+                    # `dataclasses_json`.
+                    result=type_coverage_result.to_dict(),
+                ),
+            )
+
+    async def _query_and_send_definition_location(
+        self, query: DefinitionLocationQuery, socket_path: Path
+    ) -> None:
+        path_string = f"'{query.path}'"
+        query_text = (
+            f"location_of_definition(path={path_string},"
+            f" line={query.position.line}, column={query.position.character})"
+        )
+        definition_response = await self._query_and_interpret_response(
+            query_text, socket_path, DefinitionLocationResponse
+        )
+        definitions = (
+            [
+                response.to_lsp_definition_response()
+                for response in definition_response.response
+            ]
+            if definition_response is not None
+            else []
+        )
+        await lsp.write_json_rpc(
+            self.client_output_channel,
+            json_rpc.SuccessResponse(
+                id=query.id,
+                # pyre-ignore[16]: Pyre does not understand
+                # `dataclasses_json`.
+                result=lsp.LspDefinitionResponse.schema().dump(
+                    definitions,
+                    many=True,
+                ),
+            ),
+        )
+
+    async def _run(self, server_start_options: "PyreServerStartOptions") -> None:
         start_arguments = server_start_options.start_arguments
         local_root = start_arguments.base_arguments.relative_local_root
         socket_path = server_connection.get_default_socket_path(
             project_root=Path(start_arguments.base_arguments.global_root),
             relative_local_root=Path(local_root) if local_root else None,
         )
-        try:
-            async with connection.connect_in_text_mode(socket_path) as (
-                input_channel,
-                output_channel,
-            ):
-                new_path_to_location_type_dict = await self._query_types(
-                    paths, input_channel, output_channel
-                )
-        except connection.ConnectionFailure:
-            LOG.error(
-                "Could not establish connection with an existing Pyre server."
-                f" Exiting the Pyre query handler: `{server_identifier}`.",
-            )
-            return None
-
-        if new_path_to_location_type_dict is None:
-            return
-
-        for path, location_type_lookup in new_path_to_location_type_dict.items():
-            self.state.path_to_location_type_lookup[path] = location_type_lookup
-
-    async def _run(self, server_start_options: "PyreServerStartOptions") -> None:
+        strict_default = server_start_options.strict_default
+        type_queries_enabled = (
+            server_start_options.ide_features is not None
+            and server_start_options.ide_features.is_hover_enabled()
+        )
         while True:
-            path = await self.state.paths_to_be_queried.get()
-            await self._update_types_for_paths([path], server_start_options)
+            query = await self.state.queries.get()
+            if isinstance(query, TypesQuery):
+                if type_queries_enabled:
+                    await self._update_types_for_paths([query.path], socket_path)
+            elif isinstance(query, TypeCoverageQuery):
+                await self._handle_type_coverage_query(
+                    query, strict_default, socket_path
+                )
+            elif isinstance(query, DefinitionLocationQuery):
+                await self._query_and_send_definition_location(query, socket_path)
 
     def read_server_start_options(self) -> "PyreServerStartOptions":
         try:
@@ -1082,12 +1343,6 @@ class PyreQueryHandler(connection.BackgroundTask):
         # start options are always up-to-date.
         server_start_options = self.read_server_start_options()
 
-        if (
-            server_start_options.ide_features is None
-            or not server_start_options.ide_features.is_hover_enabled()
-        ):
-            return
-
         try:
             LOG.info(
                 "Running Pyre query manager using"
@@ -1097,6 +1352,64 @@ class PyreQueryHandler(connection.BackgroundTask):
         except Exception:
             LOG.error("Failed to run the Pyre query handler")
             raise
+
+
+def _client_has_status_bar_support(
+    client_capabilities: lsp.ClientCapabilities,
+) -> bool:
+    window_capabilities = client_capabilities.window
+    if window_capabilities is not None:
+        return window_capabilities.status is not None
+    else:
+        return False
+
+
+async def _write_status(
+    output_channel: connection.TextWriter,
+    message: str,
+    short_message: Optional[str] = None,
+    level: lsp.MessageType = lsp.MessageType.INFO,
+) -> None:
+    await lsp.write_json_rpc(
+        output_channel,
+        json_rpc.Request(
+            id=0,  # the value doesn't matter but the existence does
+            method="window/showStatus",
+            parameters=json_rpc.ByNameParameters(
+                {
+                    "type": int(level),
+                    "message": message,
+                    **(
+                        {} if short_message is None else {"shortMessage": short_message}
+                    ),
+                }
+            ),
+        ),
+    )
+
+
+async def _write_notification(
+    output_channel: connection.TextWriter,
+    message: str,
+    short_message: Optional[str] = None,
+    level: lsp.MessageType = lsp.MessageType.INFO,
+) -> None:
+    await lsp.write_json_rpc(
+        output_channel,
+        json_rpc.Request(
+            method="window/showMessage",
+            parameters=json_rpc.ByNameParameters(
+                {
+                    "type": int(level),
+                    "message": (
+                        message
+                        if short_message is None
+                        else f"{short_message}: {message}"
+                    ),
+                }
+            ),
+        ),
+    )
 
 
 class PyreServerHandler(connection.BackgroundTask):
@@ -1117,52 +1430,27 @@ class PyreServerHandler(connection.BackgroundTask):
         self.client_output_channel = client_output_channel
         self.server_state = server_state
 
+    async def show_notification_message_to_client(
+        self,
+        message: str,
+        level: lsp.MessageType = lsp.MessageType.INFO,
+    ) -> None:
+        await _write_notification(self.client_output_channel, message, level=level)
+
     async def show_status_message_to_client(
         self,
         message: str,
         short_message: Optional[str] = None,
         level: lsp.MessageType = lsp.MessageType.INFO,
+        fallback_to_notification: bool = False,
     ) -> None:
-        def clientSupportsStatusBar(
-            client_capabilities: lsp.ClientCapabilities,
-        ) -> bool:
-            window_capabilities = client_capabilities.window
-            if window_capabilities is not None:
-                return window_capabilities.status is not None
-            else:
-                return False
-
-        if clientSupportsStatusBar(self.server_state.client_capabilities):
-            await lsp.write_json_rpc(
-                self.client_output_channel,
-                json_rpc.Request(
-                    id=0,  # the value doesn't matter but the existence does
-                    method="window/showStatus",
-                    parameters=json_rpc.ByNameParameters(
-                        {
-                            "type": int(level),
-                            "message": message,
-                            **(
-                                {}
-                                if short_message is None
-                                else {"shortMessage": short_message}
-                            ),
-                        }
-                    ),
-                ),
+        if _client_has_status_bar_support(self.server_state.client_capabilities):
+            await _write_status(
+                self.client_output_channel, message, short_message, level
             )
-        else:
-            status_message = (
-                message if short_message is None else f"{short_message}: {message}"
-            )
-            await lsp.write_json_rpc(
-                self.client_output_channel,
-                json_rpc.Request(
-                    method="window/showMessage",
-                    parameters=json_rpc.ByNameParameters(
-                        {"type": int(level), "message": status_message}
-                    ),
-                ),
+        elif fallback_to_notification:
+            await _write_notification(
+                self.client_output_channel, message, short_message, level
             )
 
     async def log_and_show_status_message_to_client(
@@ -1170,6 +1458,7 @@ class PyreServerHandler(connection.BackgroundTask):
         message: str,
         short_message: Optional[str] = None,
         level: lsp.MessageType = lsp.MessageType.INFO,
+        fallback_to_notification: bool = False,
     ) -> None:
         log_message = (
             message if short_message is None else f"[{short_message}] {message}"
@@ -1182,7 +1471,9 @@ class PyreServerHandler(connection.BackgroundTask):
             LOG.info(log_message)
         else:
             LOG.debug(log_message)
-        await self.show_status_message_to_client(message, short_message, level)
+        await self.show_status_message_to_client(
+            message, short_message, level, fallback_to_notification
+        )
 
     def update_type_errors(self, type_errors: Sequence[error.Error]) -> None:
         LOG.info(
@@ -1199,10 +1490,19 @@ class PyreServerHandler(connection.BackgroundTask):
     async def clear_type_errors_for_client(self) -> None:
         for path in self.server_state.diagnostics:
             await _publish_diagnostics(self.client_output_channel, path, [])
+        last_update_timer = self.server_state.last_diagnostic_update_timer
+        _log_lsp_event(
+            self.remote_logging,
+            LSPEvent.COVERED,
+            integers={"duration": int(last_update_timer.stop_in_millisecond())},
+        )
+        # Reset the timestamp to avoid duplicate counting
+        last_update_timer.reset()
 
     async def show_type_errors_to_client(self) -> None:
         for path, diagnostics in self.server_state.diagnostics.items():
             await _publish_diagnostics(self.client_output_channel, path, diagnostics)
+        self.server_state.last_diagnostic_update_timer.reset()
 
     async def handle_type_error_subscription(
         self, type_error_subscription: TypeErrorSubscription
@@ -1285,6 +1585,7 @@ class PyreServerHandler(connection.BackgroundTask):
                 "a .py file",
                 short_message="Pyre Stopped",
                 level=lsp.MessageType.ERROR,
+                fallback_to_notification=True,
             )
             await self.clear_type_errors_for_client()
             self.server_state.diagnostics = {}
@@ -1299,7 +1600,9 @@ class PyreServerHandler(connection.BackgroundTask):
         return {
             "binary": server_start_options.binary,
             "log_path": server_start_options.start_arguments.base_arguments.log_path,
-            "global_root": server_start_options.start_arguments.base_arguments.global_root,
+            "global_root": (
+                server_start_options.start_arguments.base_arguments.global_root
+            ),
             **(
                 {}
                 if relative_local_root is None
@@ -1315,8 +1618,8 @@ class PyreServerHandler(connection.BackgroundTask):
             project_root=Path(start_arguments.base_arguments.global_root),
             relative_local_root=Path(local_root) if local_root else None,
         )
-        self.server_state.strict_default = server_start_options.strict_default
-        self.server_state.excludes = server_start_options.excludes
+
+        connection_timer = timer.Timer()
         try:
             async with connection.connect_in_text_mode(socket_path) as (
                 input_channel,
@@ -1327,84 +1630,126 @@ class PyreServerHandler(connection.BackgroundTask):
                     f"`{server_identifier}`.",
                     short_message="Pyre Ready",
                     level=lsp.MessageType.INFO,
+                    fallback_to_notification=True,
                 )
                 self.server_state.consecutive_start_failure = 0
+                self.server_state.is_user_notified_on_buck_failure = False
                 _log_lsp_event(
                     remote_logging=self.remote_logging,
                     event=LSPEvent.CONNECTED,
+                    integers={"duration": int(connection_timer.stop_in_millisecond())},
                     normals={
                         "connected_to": "already_running_server",
                         **self._auxiliary_logging_info(server_start_options),
                     },
                 )
                 await self.subscribe_to_type_error(input_channel, output_channel)
+                return
         except connection.ConnectionFailure:
+            pass
+
+        await self.log_and_show_status_message_to_client(
+            f"Starting a new Pyre server at `{server_identifier}` in "
+            "the background.",
+            short_message="Starting Pyre...",
+            level=lsp.MessageType.WARNING,
+            fallback_to_notification=True,
+        )
+        start_status = await _start_pyre_server(
+            server_start_options.binary, start_arguments
+        )
+        if isinstance(start_status, StartSuccess):
             await self.log_and_show_status_message_to_client(
-                f"Starting a new Pyre server at `{server_identifier}` in "
-                "the background.",
-                short_message="Starting Pyre...",
-                level=lsp.MessageType.WARNING,
+                f"Pyre server at `{server_identifier}` has been initialized.",
+                short_message="Pyre Ready",
+                level=lsp.MessageType.INFO,
+                fallback_to_notification=True,
             )
 
-            start_status = await _start_pyre_server(
-                server_start_options.binary, start_arguments
-            )
-            if isinstance(start_status, StartSuccess):
-                await self.log_and_show_status_message_to_client(
-                    f"Pyre server at `{server_identifier}` has been initialized.",
-                    short_message="Pyre Ready",
-                    level=lsp.MessageType.INFO,
+            async with connection.connect_in_text_mode(socket_path) as (
+                input_channel,
+                output_channel,
+            ):
+                self.server_state.consecutive_start_failure = 0
+                self.server_state.is_user_notified_on_buck_failure = False
+                _log_lsp_event(
+                    remote_logging=self.remote_logging,
+                    event=LSPEvent.CONNECTED,
+                    integers={"duration": int(connection_timer.stop_in_millisecond())},
+                    normals={
+                        "connected_to": "newly_started_server",
+                        **self._auxiliary_logging_info(server_start_options),
+                    },
                 )
-
-                async with connection.connect_in_text_mode(socket_path) as (
-                    input_channel,
-                    output_channel,
-                ):
-                    self.server_state.consecutive_start_failure = 0
-                    _log_lsp_event(
-                        remote_logging=self.remote_logging,
-                        event=LSPEvent.CONNECTED,
-                        normals={
-                            "connected_to": "newly_started_server",
-                            **self._auxiliary_logging_info(server_start_options),
-                        },
-                    )
-                    await self.subscribe_to_type_error(input_channel, output_channel)
-            elif isinstance(start_status, StartFailure):
-                self.server_state.consecutive_start_failure += 1
-                if (
-                    self.server_state.consecutive_start_failure
-                    < CONSECUTIVE_START_ATTEMPT_THRESHOLD
-                ):
-                    _log_lsp_event(
-                        remote_logging=self.remote_logging,
-                        event=LSPEvent.NOT_CONNECTED,
-                        normals={
-                            **self._auxiliary_logging_info(server_start_options),
-                            "exception": str(start_status.detail),
-                        },
-                    )
-                    await self.show_status_message_to_client(
-                        f"Cannot start a new Pyre server at `{server_identifier}`. "
-                        f"{start_status.message}",
-                        short_message="Pyre Stopped",
-                        level=lsp.MessageType.INFO,
-                    )
-                else:
-                    await self.show_status_message_to_client(
-                        f"Pyre server restart at `{server_identifier}` has been "
-                        "failing repeatedly. Disabling The Pyre plugin for now.",
-                        short_message="Pyre Disabled",
-                        level=lsp.MessageType.ERROR,
-                    )
-                    _log_lsp_event(
-                        remote_logging=self.remote_logging,
-                        event=LSPEvent.SUSPENDED,
-                        normals=self._auxiliary_logging_info(server_start_options),
-                    )
-
+                await self.subscribe_to_type_error(input_channel, output_channel)
+        elif isinstance(start_status, BuckStartFailure):
+            # Buck start failures are intentionally not counted towards
+            # `consecutive_start_failure` -- they happen far too often in practice
+            # so we do not want them to trigger suspensions.
+            _log_lsp_event(
+                remote_logging=self.remote_logging,
+                event=LSPEvent.NOT_CONNECTED,
+                integers={"duration": int(connection_timer.stop_in_millisecond())},
+                normals={
+                    **self._auxiliary_logging_info(server_start_options),
+                    "exception": str(start_status.message),
+                },
+            )
+            if not self.server_state.is_user_notified_on_buck_failure:
+                await self.show_notification_message_to_client(
+                    f"Cannot start a new Pyre server at `{server_identifier}` "
+                    "due to Buck failure. If you added or changed a target, "
+                    "make sure the target file is parsable and the owning "
+                    "targets are buildable by Buck. If you removed a target, "
+                    "make sure that target is not explicitly referenced from the "
+                    "Pyre configuration file of the containing project.",
+                    level=lsp.MessageType.ERROR,
+                )
+                self.server_state.is_user_notified_on_buck_failure = True
+            await self.show_status_message_to_client(
+                f"Cannot start a new Pyre server at `{server_identifier}`. "
+                f"{start_status.message}",
+                short_message="Pyre Stopped",
+                level=lsp.MessageType.INFO,
+                fallback_to_notification=False,
+            )
+        elif isinstance(start_status, OtherStartFailure):
+            self.server_state.consecutive_start_failure += 1
+            if (
+                self.server_state.consecutive_start_failure
+                < CONSECUTIVE_START_ATTEMPT_THRESHOLD
+            ):
+                _log_lsp_event(
+                    remote_logging=self.remote_logging,
+                    event=LSPEvent.NOT_CONNECTED,
+                    integers={"duration": int(connection_timer.stop_in_millisecond())},
+                    normals={
+                        **self._auxiliary_logging_info(server_start_options),
+                        "exception": str(start_status.detail),
+                    },
+                )
+                await self.show_status_message_to_client(
+                    f"Cannot start a new Pyre server at `{server_identifier}`. "
+                    f"{start_status.message}",
+                    short_message="Pyre Stopped",
+                    level=lsp.MessageType.INFO,
+                    fallback_to_notification=True,
+                )
             else:
-                raise RuntimeError("Impossible type for `start_status`")
+                await self.show_status_message_to_client(
+                    f"Pyre server restart at `{server_identifier}` has been "
+                    "failing repeatedly. Disabling The Pyre plugin for now.",
+                    short_message="Pyre Disabled",
+                    level=lsp.MessageType.ERROR,
+                    fallback_to_notification=True,
+                )
+                _log_lsp_event(
+                    remote_logging=self.remote_logging,
+                    event=LSPEvent.SUSPENDED,
+                    normals=self._auxiliary_logging_info(server_start_options),
+                )
+        else:
+            raise RuntimeError("Impossible type for `start_status`")
 
     async def run(self) -> None:
         # Re-read server start options on every run, to make sure the server
@@ -1412,6 +1757,7 @@ class PyreServerHandler(connection.BackgroundTask):
         server_start_options = read_server_start_options(
             self.server_start_options_reader, self.remote_logging
         )
+        session_timer = timer.Timer()
         try:
             LOG.info(f"Starting Pyre server from configuration: {server_start_options}")
             await self._run(server_start_options)
@@ -1419,6 +1765,7 @@ class PyreServerHandler(connection.BackgroundTask):
             _log_lsp_event(
                 remote_logging=self.remote_logging,
                 event=LSPEvent.DISCONNECTED,
+                integers={"duration": int(session_timer.stop_in_millisecond())},
                 normals={
                     **self._auxiliary_logging_info(server_start_options),
                     "exception": traceback.format_exc(),
@@ -1461,6 +1808,7 @@ async def run_persistent(
             pyre_query_handler = PyreQueryHandler(
                 state=initial_server_state.query_state,
                 server_start_options_reader=server_start_options_reader,
+                client_output_channel=stdout,
             )
             server = PyreServer(
                 input_channel=stdin,
@@ -1505,9 +1853,24 @@ def run(
     def read_server_start_options() -> PyreServerStartOptions:
         return PyreServerStartOptions.read_from(command_argument, base_directory)
 
-    return asyncio.get_event_loop().run_until_complete(
-        run_persistent(
-            read_server_start_options,
-            remote_logging,
+    command_timer = timer.Timer()
+    error_message: Optional[str] = None
+    try:
+        return asyncio.get_event_loop().run_until_complete(
+            run_persistent(
+                read_server_start_options,
+                remote_logging,
+            )
         )
-    )
+    except Exception as error:
+        error_message = str(error)
+        return 1
+    finally:
+        _log_lsp_event(
+            remote_logging,
+            LSPEvent.STOPPED,
+            integers={"duration": int(command_timer.stop_in_millisecond())},
+            normals={
+                **({"exception": error_message} if error_message is not None else {})
+            },
+        )

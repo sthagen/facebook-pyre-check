@@ -53,7 +53,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "http_request.request_get_flows_to_sink:5002:0:Call|_test_sink|0|formal(arg):499b8db0fa1708141d51a242d13cb6b4"
   }
 }
 {
@@ -110,7 +118,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "http_request.test_trace_has_no_tito:5002:0:Call|_test_sink|0|formal(arg):e8be30e9fe310c91a3720a9b9f634b0d"
   }
 }
 {
@@ -167,7 +183,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "http_request.test_untainted_assign:5002:0:Call|_test_sink|0|formal(arg):718f9623c390cf3eb0a30b8b19fff98e"
   }
 }
 {

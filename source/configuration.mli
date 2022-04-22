@@ -9,6 +9,7 @@ module Buck : sig
   type t = {
     mode: string option;
     isolation_prefix: string option;
+    use_buck2: bool;
     targets: string list;
     (* This is the buck root of the source directory, i.e. output of `buck root`. *)
     source_root: PyrePath.t;
@@ -18,11 +19,43 @@ module Buck : sig
   [@@deriving sexp, compare, hash, yojson]
 end
 
+module ChangeIndicator : sig
+  type t = {
+    root: PyrePath.t;
+    relative: string;
+  }
+  [@@deriving sexp, compare, hash, yojson]
+
+  val to_path : t -> PyrePath.t
+end
+
+module UnwatchedFiles : sig
+  type t = {
+    root: PyrePath.t;
+    checksum_path: string;
+  }
+  [@@deriving sexp, compare, hash, yojson]
+end
+
+module UnwatchedDependency : sig
+  type t = {
+    change_indicator: ChangeIndicator.t;
+    files: UnwatchedFiles.t;
+  }
+  [@@deriving sexp, compare, hash, yojson]
+end
+
 module SourcePaths : sig
   type t =
     | Simple of SearchPath.t list
+    | WithUnwatchedDependency of {
+        sources: SearchPath.t list;
+        unwatched_dependency: UnwatchedDependency.t;
+      }
     | Buck of Buck.t
   [@@deriving sexp, compare, hash, yojson]
+
+  val to_search_paths : t -> SearchPath.t list
 end
 
 module RemoteLogging : sig
@@ -104,6 +137,7 @@ module Analysis : sig
     excludes: Str.regexp list;
     extensions: Extension.t list;
     store_type_check_resolution: bool;
+    store_type_errors: bool;
     incremental_style: incremental_style;
     log_directory: PyrePath.t;
     python_major_version: int;
@@ -131,6 +165,7 @@ module Analysis : sig
     ?excludes:string list ->
     ?extensions:Extension.t list ->
     ?store_type_check_resolution:bool ->
+    ?store_type_errors:bool ->
     ?incremental_style:incremental_style ->
     ?log_directory:string ->
     ?python_major_version:int ->
@@ -152,48 +187,6 @@ module Analysis : sig
   val extension_suffixes : t -> string list
 
   val find_extension : t -> PyrePath.t -> Extension.t option
-end
-
-module Server : sig
-  type load_parameters = {
-    shared_memory_path: PyrePath.t;
-    changed_files_path: PyrePath.t option;
-  }
-
-  type load =
-    | LoadFromFiles of load_parameters
-    | LoadFromProject of {
-        project_name: string;
-        metadata: string option;
-      }
-
-  type saved_state_action =
-    | Save of string
-    | Load of load
-
-  type socket_path = {
-    path: PyrePath.t;
-    (* actual path to socket (OCaml has limits on socket path length) *)
-    link: PyrePath.t; (* symbolic link to path in pyre directory *)
-  }
-
-  type t = {
-    (* Server-specific configuration options *)
-    socket: socket_path;
-    json_socket: socket_path;
-    adapter_socket: socket_path;
-    lock_path: PyrePath.t;
-    pid_path: PyrePath.t;
-    log_path: PyrePath.t;
-    daemonize: bool;
-    saved_state_action: saved_state_action option;
-    (* Analysis configuration *)
-    configuration: Analysis.t;
-  }
-
-  val set_global : t -> unit
-
-  val get_global : unit -> t option
 end
 
 module StaticAnalysis : sig

@@ -14,7 +14,14 @@ open Interprocedural
 open CallGraph
 
 let test_call_graph_of_define context =
-  let assert_call_graph_of_define ?(object_targets = []) ~source ~define_name ~expected () =
+  let assert_call_graph_of_define
+      ?(object_targets = [])
+      ~source
+      ~define_name
+      ~expected
+      ?(cmp = DefineCallGraph.equal)
+      ()
+    =
     let expected =
       let parse_location location =
         let parse_position position =
@@ -53,7 +60,9 @@ let test_call_graph_of_define context =
           ~f:(fun ({ Source.source_path = { SourcePath.qualifier; _ }; _ } as source) ->
             Option.some_if (String.equal (Reference.show qualifier) "test") source)
       in
-      ( List.find_map_exn (Preprocessing.defines test_source) ~f:find_define,
+      ( List.find_map_exn
+          (Preprocessing.defines ~include_nested:true ~include_toplevels:true test_source)
+          ~f:find_define,
         test_source,
         TypeEnvironment.read_only type_environment )
     in
@@ -67,7 +76,7 @@ let test_call_graph_of_define context =
     let overrides = DependencyGraph.create_overrides ~environment ~source:test_source in
     let _ = DependencyGraphSharedMemory.record_overrides overrides in
     assert_equal
-      ~cmp:DefineCallGraph.equal
+      ~cmp
       ~printer:DefineCallGraph.show
       expected
       (CallGraph.call_graph_of_define ~environment ~define);
@@ -88,8 +97,7 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "test.bar")]
-                  ~return_type:Type.Any
+                  ~call_targets:[CallTarget.create (Target.Function "test.bar")]
                   ())) );
       ]
     ();
@@ -114,9 +122,9 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
+                        ~receiver_type:(Type.Primitive "test.C")
                         (Target.create_method (Reference.create "test.C.m"));
                     ]
-                  ~return_type:Type.Any
                   ())) );
       ]
     ();
@@ -129,8 +137,8 @@ let test_call_graph_of_define context =
        else:
          f = baz
        f()
-     def baz(): ...
-     def bar(): ...
+     def baz() -> int: ...
+     def bar() -> bool: ...
       |}
     ~define_name:"test.foo"
     ~expected:
@@ -141,10 +149,13 @@ let test_call_graph_of_define context =
                (CallCallees.create
                   ~call_targets:
                     [
-                      CallTarget.create (`Function "test.bar");
-                      CallTarget.create (`Function "test.baz");
+                      CallTarget.create
+                        ~return_type:(Some ReturnType.bool)
+                        (Target.Function "test.bar");
+                      CallTarget.create
+                        ~return_type:(Some ReturnType.integer)
+                        (Target.Function "test.baz");
                     ]
-                  ~return_type:Type.Any
                   ())) );
         ( "3:5-3:10",
           LocationCallees.Compound
@@ -157,9 +168,10 @@ let test_call_graph_of_define context =
                           [
                             CallTarget.create
                               ~implicit_self:true
-                              (`Method { Target.class_name = "int"; method_name = "__le__" });
+                              ~receiver_type:(Type.literal_integer 1)
+                              ~return_type:(Some ReturnType.bool)
+                              (Target.Method { class_name = "int"; method_name = "__le__" });
                           ]
-                        ~return_type:Type.bool
                         ()) );
                  ( "__gt__",
                    ExpressionCallees.from_call
@@ -168,9 +180,10 @@ let test_call_graph_of_define context =
                           [
                             CallTarget.create
                               ~implicit_self:true
-                              (`Method { Target.class_name = "int"; method_name = "__gt__" });
+                              ~receiver_type:(Type.literal_integer 1)
+                              ~return_type:(Some ReturnType.bool)
+                              (Target.Method { class_name = "int"; method_name = "__gt__" });
                           ]
-                        ~return_type:Type.bool
                         ()) );
                ]) );
       ]
@@ -200,9 +213,10 @@ let test_call_graph_of_define context =
                           [
                             CallTarget.create
                               ~implicit_self:true
-                              (`Method { Target.class_name = "int"; method_name = "__le__" });
+                              ~receiver_type:(Type.literal_integer 1)
+                              ~return_type:(Some ReturnType.bool)
+                              (Target.Method { class_name = "int"; method_name = "__le__" });
                           ]
-                        ~return_type:Type.bool
                         ()) );
                  ( "__gt__",
                    ExpressionCallees.from_call
@@ -211,17 +225,17 @@ let test_call_graph_of_define context =
                           [
                             CallTarget.create
                               ~implicit_self:true
-                              (`Method { Target.class_name = "int"; method_name = "__gt__" });
+                              ~receiver_type:(Type.literal_integer 1)
+                              ~return_type:(Some ReturnType.bool)
+                              (Target.Method { class_name = "int"; method_name = "__gt__" });
                           ]
-                        ~return_type:Type.bool
                         ()) );
                ]) );
         ( "7:2-7:5",
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "test.bar")]
-                  ~return_type:Type.Any
+                  ~call_targets:[CallTarget.create (Target.Function "test.bar")]
                   ())) );
       ]
     ();
@@ -248,9 +262,9 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
+                        ~receiver_type:(Type.Primitive "test.C")
                         (Target.create_method (Reference.create "test.C.m"));
                     ]
-                  ~return_type:Type.Any
                   ())) );
       ]
     ();
@@ -282,9 +296,9 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
+                        ~receiver_type:(Type.Primitive "test.C")
                         (Target.create_override (Reference.create "test.C.m"));
                     ]
-                  ~return_type:Type.Any
                   ())) );
       ]
     ();
@@ -315,12 +329,13 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
+                        ~receiver_type:(Type.Primitive "test.D")
                         (Target.create_method (Reference.create "test.C.m"));
                       CallTarget.create
                         ~implicit_self:true
+                        ~receiver_type:(Type.Primitive "test.D")
                         (Target.create_method (Reference.create "test.E.m"));
                     ]
-                  ~return_type:Type.Any
                   ())) );
       ]
     ();
@@ -344,9 +359,9 @@ let test_call_graph_of_define context =
                       CallTarget.create
                         ~implicit_self:true
                         ~implicit_dunder_call:true
+                        ~receiver_type:(Type.Primitive "test.C")
                         (Target.create_method (Reference.create "test.C.__call__"));
                     ]
-                  ~return_type:Type.Any
                   ())) );
       ]
     ();
@@ -355,7 +370,7 @@ let test_call_graph_of_define context =
       {|
     class C:
       @staticmethod
-      def __call__(a: int): ...
+      def __call__(a: int) -> bool: ...
     def foo(c: C):
        c(1)
     |}
@@ -370,9 +385,9 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_dunder_call:true
+                        ~return_type:(Some ReturnType.bool)
                         (Target.create_method (Reference.create "test.C.__call__"));
                     ]
-                  ~return_type:Type.Any
                   ())) );
       ]
     ();
@@ -380,7 +395,7 @@ let test_call_graph_of_define context =
     ~source:
       {|
     class C:
-      def __call__(self, a: int): ...
+      def __call__(self, a: int) -> bool: ...
     def foo(c: C):
        c.__call__(1)
     |}
@@ -395,9 +410,10 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
+                        ~return_type:(Some ReturnType.bool)
+                        ~receiver_type:(Type.Primitive "test.C")
                         (Target.create_method (Reference.create "test.C.__call__"));
                     ]
-                  ~return_type:Type.Any
                   ())) );
       ]
     ();
@@ -406,7 +422,7 @@ let test_call_graph_of_define context =
       {|
     from typing import Protocol
     class C(Protocol):
-      def __call__(self, a: int): ...
+      def __call__(self, a: int) -> bool: ...
     def foo(c: C):
        c(1)
     |}
@@ -422,9 +438,10 @@ let test_call_graph_of_define context =
                       CallTarget.create
                         ~implicit_self:true
                         ~implicit_dunder_call:true
+                        ~return_type:(Some ReturnType.bool)
+                        ~receiver_type:(Type.Primitive "test.C")
                         (Target.create_method (Reference.create "test.C.__call__"));
                     ]
-                  ~return_type:Type.Any
                   ())) );
       ]
     ();
@@ -443,9 +460,53 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~init_targets:[`Method { Target.class_name = "test.C"; method_name = "__init__" }]
-                  ~new_targets:[`Method { Target.class_name = "object"; method_name = "__new__" }]
-                  ~return_type:(Type.Primitive "test.C")
+                  ~init_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~return_type:(Some ReturnType.any)
+                        ~receiver_type:(Type.meta (Type.Primitive "test.C"))
+                        (Target.Method { class_name = "test.C"; method_name = "__init__" });
+                    ]
+                  ~new_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~return_type:(Some ReturnType.any)
+                        ~receiver_type:(Type.meta (Type.Primitive "test.C"))
+                        (Target.Method { class_name = "object"; method_name = "__new__" });
+                    ]
+                  ())) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:{|
+       def foo(x: str) -> int:
+         return int(x)
+    |}
+    ~define_name:"test.foo"
+    ~expected:
+      [
+        ( "3:9-3:15",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~init_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~return_type:(Some ReturnType.integer)
+                        ~receiver_type:(Type.meta (Type.Primitive "int"))
+                        (Target.Method { class_name = "int"; method_name = "__init__" });
+                    ]
+                  ~new_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~return_type:(Some ReturnType.integer)
+                        ~receiver_type:(Type.meta (Type.Primitive "int"))
+                        (Target.Method { class_name = "object"; method_name = "__new__" });
+                    ]
                   ())) );
       ]
     ();
@@ -464,9 +525,22 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~init_targets:[`Method { Target.class_name = "object"; method_name = "__init__" }]
-                  ~new_targets:[`Method { Target.class_name = "test.C"; method_name = "__new__" }]
-                  ~return_type:(Type.Primitive "test.C")
+                  ~init_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~return_type:(Some ReturnType.any)
+                        ~receiver_type:(Type.meta (Type.Primitive "test.C"))
+                        (Target.Method { class_name = "object"; method_name = "__init__" });
+                    ]
+                  ~new_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~return_type:(Some ReturnType.any)
+                        ~receiver_type:(Type.meta (Type.Primitive "test.C"))
+                        (Target.Method { class_name = "test.C"; method_name = "__new__" });
+                    ]
                   ())) );
       ]
     ();
@@ -486,9 +560,22 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~init_targets:[`Method { Target.class_name = "test.B"; method_name = "__init__" }]
-                  ~new_targets:[`Method { Target.class_name = "object"; method_name = "__new__" }]
-                  ~return_type:(Type.Primitive "test.B")
+                  ~init_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~return_type:(Some ReturnType.any)
+                        ~receiver_type:(Type.meta (Type.Primitive "test.B"))
+                        (Target.Method { class_name = "test.B"; method_name = "__init__" });
+                    ]
+                  ~new_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~return_type:(Some ReturnType.any)
+                        ~receiver_type:(Type.meta (Type.Primitive "test.B"))
+                        (Target.Method { class_name = "object"; method_name = "__new__" });
+                    ]
                   ())) );
       ]
     ();
@@ -508,9 +595,22 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~init_targets:[`Method { Target.class_name = "object"; method_name = "__init__" }]
-                  ~new_targets:[`Method { Target.class_name = "test.B"; method_name = "__new__" }]
-                  ~return_type:(Type.Primitive "test.B")
+                  ~init_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~return_type:(Some ReturnType.any)
+                        ~receiver_type:(Type.meta (Type.Primitive "test.B"))
+                        (Target.Method { class_name = "object"; method_name = "__init__" });
+                    ]
+                  ~new_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~return_type:(Some ReturnType.any)
+                        ~receiver_type:(Type.meta (Type.Primitive "test.B"))
+                        (Target.Method { class_name = "test.B"; method_name = "__new__" });
+                    ]
                   ())) );
       ]
     ();
@@ -533,9 +633,13 @@ let test_call_graph_of_define context =
             (ExpressionCallees.from_attribute_access
                {
                  AttributeAccessCallees.property_targets =
-                   [`Method { Target.class_name = "test.C"; method_name = "p$setter" }];
+                   [
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~return_type:(Some ReturnType.none)
+                       (Target.Method { class_name = "test.C"; method_name = "p$setter" });
+                   ];
                  global_targets = [];
-                 return_type = Type.none;
                  is_attribute = false;
                }) );
         ( "8:8-8:11",
@@ -543,9 +647,13 @@ let test_call_graph_of_define context =
             (ExpressionCallees.from_attribute_access
                {
                  AttributeAccessCallees.property_targets =
-                   [`Method { Target.class_name = "test.C"; method_name = "p" }];
+                   [
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~return_type:(Some ReturnType.integer)
+                       (Target.Method { class_name = "test.C"; method_name = "p" });
+                   ];
                  global_targets = [];
-                 return_type = Type.integer;
                  is_attribute = false;
                }) );
       ]
@@ -568,9 +676,10 @@ let test_call_graph_of_define context =
                (CallCallees.create
                   ~call_targets:
                     [
-                      CallTarget.create (`Method { Target.class_name = "test.C"; method_name = "f" });
+                      CallTarget.create
+                        ~return_type:(Some ReturnType.integer)
+                        (Target.Method { class_name = "test.C"; method_name = "f" });
                     ]
-                  ~return_type:Type.integer
                   ())) );
       ]
     ();
@@ -594,9 +703,10 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
-                        (`Method { Target.class_name = "test.C"; method_name = "f" });
+                        ~return_type:(Some ReturnType.integer)
+                        ~receiver_type:(Type.meta (Type.Primitive "test.C"))
+                        (Target.Method { class_name = "test.C"; method_name = "f" });
                     ]
-                  ~return_type:Type.integer
                   ())) );
       ]
     ();
@@ -616,9 +726,10 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
-                        (`Method { Target.class_name = "int"; method_name = "__gt__" });
+                        ~return_type:(Some ReturnType.bool)
+                        ~receiver_type:(Type.literal_integer 1)
+                        (Target.Method { class_name = "int"; method_name = "__gt__" });
                     ]
-                  ~return_type:Type.bool
                   ())) );
       ]
     ();
@@ -642,9 +753,9 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
-                        (`Method { Target.class_name = "test.C"; method_name = "__repr__" });
+                        ~receiver_type:(Type.Primitive "test.C")
+                        (Target.Method { class_name = "test.C"; method_name = "__repr__" });
                     ]
-                  ~return_type:(Type.Primitive "str")
                   ())) );
       ]
     ();
@@ -664,10 +775,8 @@ let test_call_graph_of_define context =
         ( "7:2-7:15",
           LocationCallees.Singleton
             (ExpressionCallees.from_call
-               (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "test.f")]
-                  ~return_type:(Type.parametric "functools.partial" [Single Type.Any])
-                  ())) );
+               (CallCallees.create ~call_targets:[CallTarget.create (Target.Function "test.f")] ()))
+        );
       ]
     ();
   assert_call_graph_of_define
@@ -689,8 +798,12 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "test.callable_target")]
-                  ~return_type:Type.Any
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~return_type:(Some ReturnType.integer)
+                        (Target.Function "test.callable_target");
+                    ]
                   ())) );
       ]
     ();
@@ -719,10 +832,11 @@ let test_call_graph_of_define context =
                       CallTarget.create
                         ~implicit_self:true
                         ~implicit_dunder_call:true
-                        (`Method
-                          { Target.class_name = "TestCallableTarget"; method_name = "__call__" });
+                        ~return_type:(Some ReturnType.integer)
+                        ~receiver_type:(Type.Primitive "TestCallableTarget")
+                        (Target.Method
+                           { class_name = "TestCallableTarget"; method_name = "__call__" });
                     ]
-                  ~return_type:Type.integer
                   ())) );
       ]
     ();
@@ -741,8 +855,7 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "test.bar")]
-                  ~return_type:Type.Any
+                  ~call_targets:[CallTarget.create (Target.Function "test.bar")]
                   ())) );
       ]
     ();
@@ -767,9 +880,20 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~new_targets:[`Method { Target.class_name = "object"; method_name = "__new__" }]
-                  ~init_targets:[`Method { Target.class_name = "super"; method_name = "__init__" }]
-                  ~return_type:(Type.Primitive "test.C")
+                  ~new_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~receiver_type:(Type.meta (Type.Primitive "super"))
+                        (Target.Method { class_name = "object"; method_name = "__new__" });
+                    ]
+                  ~init_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~receiver_type:(Type.meta (Type.Primitive "super"))
+                        (Target.Method { class_name = "super"; method_name = "__init__" });
+                    ]
                   ())) );
         ( "11:4-11:16",
           LocationCallees.Singleton
@@ -779,9 +903,10 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
-                        (`Method { Target.class_name = "test.C"; method_name = "f" });
+                        ~return_type:(Some ReturnType.integer)
+                        ~receiver_type:(Type.Primitive "test.C")
+                        (Target.Method { class_name = "test.C"; method_name = "f" });
                     ]
-                  ~return_type:Type.integer
                   ())) );
       ]
     ();
@@ -808,9 +933,10 @@ let test_call_graph_of_define context =
                (CallCallees.create
                   ~call_targets:
                     [
-                      CallTarget.create (`Method { Target.class_name = "test.C"; method_name = "f" });
+                      CallTarget.create
+                        ~return_type:(Some ReturnType.integer)
+                        (Target.Method { class_name = "test.C"; method_name = "f" });
                     ]
-                  ~return_type:Type.integer
                   ())) );
       ]
     ();
@@ -841,9 +967,10 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
-                        (`Method { Target.class_name = "test.C"; method_name = "f" });
+                        ~return_type:(Some ReturnType.integer)
+                        ~receiver_type:(Type.meta (Type.Primitive "test.C"))
+                        (Target.Method { class_name = "test.C"; method_name = "f" });
                     ]
-                  ~return_type:Type.integer
                   ())) );
       ]
     ();
@@ -866,13 +993,21 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "test.hof")]
-                  ~return_type:Type.bool
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~return_type:(Some ReturnType.bool)
+                        (Target.Function "test.hof");
+                    ]
                   ~higher_order_parameter:
                     {
                       index = 0;
-                      return_type = Type.integer;
-                      call_targets = [CallTarget.create (`Function "test.bar")];
+                      call_targets =
+                        [
+                          CallTarget.create
+                            ~return_type:(Some ReturnType.integer)
+                            (Target.Function "test.bar");
+                        ];
                     }
                   ())) );
       ]
@@ -904,10 +1039,20 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~new_targets:[`Method { Target.class_name = "object"; method_name = "__new__" }]
+                  ~new_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~receiver_type:(Type.meta (Type.Primitive "test.Builder"))
+                        (Target.Method { class_name = "object"; method_name = "__new__" });
+                    ]
                   ~init_targets:
-                    [`Method { Target.class_name = "test.Builder"; method_name = "__init__" }]
-                  ~return_type:(Type.Primitive "test.Builder")
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~receiver_type:(Type.meta (Type.Primitive "test.Builder"))
+                        (Target.Method { class_name = "test.Builder"; method_name = "__init__" });
+                    ]
                   ())) );
         ( "17:4-17:33",
           LocationCallees.Singleton
@@ -918,10 +1063,10 @@ let test_call_graph_of_define context =
                       CallTarget.create
                         ~implicit_self:true
                         ~collapse_tito:false
-                        (`Method
-                          { Target.class_name = "test.Builder"; method_name = "set_not_saved" });
+                        ~receiver_type:(Type.Primitive "test.Builder")
+                        (Target.Method
+                           { class_name = "test.Builder"; method_name = "set_not_saved" });
                     ]
-                  ~return_type:(Type.Primitive "test.Builder")
                   ())) );
         ( "17:4-17:52",
           LocationCallees.Singleton
@@ -932,9 +1077,9 @@ let test_call_graph_of_define context =
                       CallTarget.create
                         ~implicit_self:true
                         ~collapse_tito:false
-                        (`Method { Target.class_name = "test.Builder"; method_name = "set_saved" });
+                        ~receiver_type:(Type.Primitive "test.Builder")
+                        (Target.Method { class_name = "test.Builder"; method_name = "set_saved" });
                     ]
-                  ~return_type:(Type.Primitive "test.Builder")
                   ())) );
       ]
     ();
@@ -956,8 +1101,12 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "test.f")]
-                  ~return_type:Type.integer
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~return_type:(Some ReturnType.integer)
+                        (Target.Function "test.f");
+                    ]
                   ())) );
       ]
     ();
@@ -984,9 +1133,10 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
-                        (`Method { Target.class_name = "test.C"; method_name = "m" });
+                        ~return_type:(Some ReturnType.integer)
+                        ~receiver_type:(Type.Primitive "test.C")
+                        (Target.Method { class_name = "test.C"; method_name = "m" });
                     ]
-                  ~return_type:Type.integer
                   ())) );
       ]
     ();
@@ -1008,9 +1158,20 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~new_targets:[`Method { Target.class_name = "object"; method_name = "__new__" }]
-                  ~init_targets:[`Method { Target.class_name = "object"; method_name = "__init__" }]
-                  ~return_type:(Type.Primitive "test.C")
+                  ~new_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~receiver_type:(Type.meta (Type.Primitive "test.C"))
+                        (Target.Method { class_name = "object"; method_name = "__new__" });
+                    ]
+                  ~init_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~receiver_type:(Type.meta (Type.Primitive "test.C"))
+                        (Target.Method { class_name = "object"; method_name = "__init__" });
+                    ]
                   ())) );
         ( "8:14-8:21",
           LocationCallees.Singleton
@@ -1020,9 +1181,9 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
-                        (`Method { Target.class_name = "test.C"; method_name = "run" });
+                        ~receiver_type:(Type.Primitive "test.C")
+                        (Target.Method { class_name = "test.C"; method_name = "run" });
                     ]
-                  ~return_type:(Type.Primitive "str")
                   ())) );
       ]
     ();
@@ -1045,14 +1206,11 @@ let test_call_graph_of_define context =
     |}
     ~define_name:"test.foo"
     ~expected:
-      [
-        ( "12:2-12:5",
-          LocationCallees.Singleton
-            (ExpressionCallees.from_call (CallCallees.create_unresolved Type.Any)) );
-      ]
+      ["12:2-12:5", LocationCallees.Singleton (ExpressionCallees.from_call CallCallees.unresolved)]
     ();
 
   assert_call_graph_of_define
+    ~cmp:DefineCallGraph.equal_ignoring_types
     ~source:
       {|
         from contextlib import ContextManager
@@ -1069,27 +1227,27 @@ let test_call_graph_of_define context =
             (String.Map.Tree.of_alist_exn
                [
                  ( "__enter__",
-                   ExpressionCallees.from_call
+                   ExpressionCallees.from_call_with_empty_attribute
                      (CallCallees.create
                         ~call_targets:
                           [
                             CallTarget.create
                               ~implicit_self:true
                               ~collapse_tito:true
-                              (`Method
-                                {
-                                  Target.class_name = "contextlib.ContextManager";
-                                  method_name = "__enter__";
-                                });
+                              ~return_type:(Some ReturnType.integer)
+                              ~receiver_type:
+                                (Type.parametric "contextlib.ContextManager" [Single Type.integer])
+                              (Target.Method
+                                 {
+                                   class_name = "contextlib.ContextManager";
+                                   method_name = "__enter__";
+                                 });
                           ]
-                        ~return_type:Type.integer
                         ()) );
                  ( "to_cm",
                    ExpressionCallees.from_call
                      (CallCallees.create
-                        ~call_targets:[CallTarget.create (`Function "test.to_cm")]
-                        ~return_type:
-                          (Type.parametric "contextlib.ContextManager" [Single Type.integer])
+                        ~call_targets:[CallTarget.create (Target.Function "test.to_cm")]
                         ()) );
                ]) );
       ]
@@ -1117,9 +1275,13 @@ let test_call_graph_of_define context =
             (ExpressionCallees.from_attribute_access
                {
                  AttributeAccessCallees.property_targets =
-                   [`Method { Target.class_name = "test.C"; method_name = "p" }];
+                   [
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~return_type:(Some ReturnType.any)
+                       (Target.Method { class_name = "test.C"; method_name = "p" });
+                   ];
                  global_targets = [];
-                 return_type = Type.Primitive "test.C";
                  is_attribute = false;
                }) );
         ( "11:2-11:7",
@@ -1127,9 +1289,13 @@ let test_call_graph_of_define context =
             (ExpressionCallees.from_attribute_access
                {
                  AttributeAccessCallees.property_targets =
-                   [`Method { Target.class_name = "test.C"; method_name = "p$setter" }];
+                   [
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~return_type:(Some ReturnType.none)
+                       (Target.Method { class_name = "test.C"; method_name = "p$setter" });
+                   ];
                  global_targets = [];
-                 return_type = Type.none;
                  is_attribute = false;
                }) );
       ]
@@ -1156,9 +1322,10 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
-                        (`Method { Target.class_name = "test.C"; method_name = "f" });
+                        ~return_type:(Some ReturnType.integer)
+                        ~receiver_type:(Type.Primitive "test.C")
+                        (Target.Method { class_name = "test.C"; method_name = "f" });
                     ]
-                  ~return_type:Type.integer
                   ())) );
         ( "8:2-8:8",
           LocationCallees.Singleton
@@ -1166,9 +1333,11 @@ let test_call_graph_of_define context =
                (CallCallees.create
                   ~call_targets:
                     [
-                      CallTarget.create (`Method { Target.class_name = "test.C"; method_name = "f" });
+                      CallTarget.create
+                        ~index:1
+                        ~return_type:(Some ReturnType.integer)
+                        (Target.Method { class_name = "test.C"; method_name = "f" });
                     ]
-                  ~return_type:Type.integer
                   ())) );
       ]
     ();
@@ -1182,7 +1351,7 @@ let test_call_graph_of_define context =
 
       class D:
         @property
-        def foo(self) -> int:
+        def foo(self) -> bool:
           ...
 
       class E:
@@ -1201,11 +1370,16 @@ let test_call_graph_of_define context =
                {
                  AttributeAccessCallees.property_targets =
                    [
-                     `Method { Target.class_name = "test.C"; method_name = "foo" };
-                     `Method { Target.class_name = "test.D"; method_name = "foo" };
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~return_type:(Some ReturnType.integer)
+                       (Target.Method { class_name = "test.C"; method_name = "foo" });
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~return_type:(Some ReturnType.bool)
+                       (Target.Method { class_name = "test.D"; method_name = "foo" });
                    ];
                  global_targets = [];
-                 return_type = Type.integer;
                  is_attribute = false;
                }) );
         ( "17:6-17:16",
@@ -1213,9 +1387,14 @@ let test_call_graph_of_define context =
             (ExpressionCallees.from_attribute_access
                {
                  AttributeAccessCallees.property_targets =
-                   [`Method { Target.class_name = "test.C"; method_name = "foo" }];
+                   [
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~index:1
+                       ~return_type:(Some ReturnType.integer)
+                       (Target.Method { class_name = "test.C"; method_name = "foo" });
+                   ];
                  global_targets = [];
-                 return_type = Type.integer;
                  is_attribute = true;
                }) );
       ]
@@ -1247,11 +1426,16 @@ let test_call_graph_of_define context =
                {
                  AttributeAccessCallees.property_targets =
                    [
-                     `Method { Target.class_name = "test.C"; method_name = "foo" };
-                     `Method { Target.class_name = "test.D"; method_name = "foo" };
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~return_type:(Some ReturnType.integer)
+                       (Target.Method { class_name = "test.C"; method_name = "foo" });
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~return_type:(Some ReturnType.integer)
+                       (Target.Method { class_name = "test.D"; method_name = "foo" });
                    ];
                  global_targets = [];
-                 return_type = Type.integer;
                  is_attribute = false;
                }) );
       ]
@@ -1281,9 +1465,12 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
-                        (`Method { Target.class_name = "dict"; method_name = "__getitem__" });
+                        ~receiver_type:
+                          (Type.dictionary
+                             ~key:Type.string
+                             ~value:(Type.meta (Type.Primitive "test.C")))
+                        (Target.Method { class_name = "dict"; method_name = "__getitem__" });
                     ]
-                  ~return_type:(Type.meta (Type.Primitive "test.C"))
                   ())) );
         ( "11:2-11:12",
           LocationCallees.Singleton
@@ -1293,9 +1480,9 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
-                        (`Method { Target.class_name = "test.C"; method_name = "foo" });
+                        ~receiver_type:(Type.meta (Type.Primitive "test.C"))
+                        (Target.Method { class_name = "test.C"; method_name = "foo" });
                     ]
-                  ~return_type:Type.Any
                   ())) );
       ]
     ();
@@ -1315,8 +1502,7 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "$local_test?outer$inner")]
-                  ~return_type:Type.none
+                  ~call_targets:[CallTarget.create (Target.Function "$local_test?outer$inner")]
                   ())) );
       ]
     ();
@@ -1337,8 +1523,7 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "$local_test?Foo?outer$inner")]
-                  ~return_type:Type.none
+                  ~call_targets:[CallTarget.create (Target.Function "$local_test?Foo?outer$inner")]
                   ())) );
       ]
     ();
@@ -1356,17 +1541,33 @@ let test_call_graph_of_define context =
     ~expected:
       [
         ( "7:18-7:23",
-          LocationCallees.Singleton
-            (ExpressionCallees.from_call
-               (CallCallees.create
-                  ~call_targets:
-                    [
-                      CallTarget.create
-                        ~implicit_self:true
-                        (`Method { Target.class_name = "test.C"; method_name = "m" });
-                    ]
-                  ~return_type:(Type.Primitive "str")
-                  ())) );
+          LocationCallees.Compound
+            (String.Map.Tree.of_alist_exn
+               [
+                 ( "$__str__$",
+                   ExpressionCallees.from_format_string
+                     {
+                       FormatStringCallees.call_targets =
+                         [
+                           CallTarget.create
+                             ~implicit_self:true
+                             ~collapse_tito:false
+                             ~receiver_type:Type.string
+                             (Target.Method { class_name = "str"; method_name = "__str__" });
+                         ];
+                     } );
+                 ( "m",
+                   ExpressionCallees.from_call
+                     (CallCallees.create
+                        ~call_targets:
+                          [
+                            CallTarget.create
+                              ~implicit_self:true
+                              ~receiver_type:(Type.Primitive "test.C")
+                              (Target.Method { class_name = "test.C"; method_name = "m" });
+                          ]
+                        ()) );
+               ]) );
       ]
     ();
   assert_call_graph_of_define
@@ -1388,14 +1589,15 @@ let test_call_graph_of_define context =
             (ExpressionCallees.from_attribute_access
                {
                  AttributeAccessCallees.property_targets =
-                   [`Method { Target.class_name = "test.C"; method_name = "attribute" }];
+                   [
+                     CallTarget.create
+                       ~implicit_self:true
+                       (Target.Method { class_name = "test.C"; method_name = "attribute" });
+                   ];
                  global_targets = [];
-                 return_type = Type.Top;
                  is_attribute = false;
                }) );
-        ( "8:9-8:22",
-          LocationCallees.Singleton
-            (ExpressionCallees.from_call (CallCallees.create_unresolved Type.Any)) );
+        "8:9-8:22", LocationCallees.Singleton (ExpressionCallees.from_call CallCallees.unresolved);
       ]
     ();
   assert_call_graph_of_define
@@ -1418,15 +1620,13 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "test.foo")]
-                  ~return_type:Type.none
+                  ~call_targets:[CallTarget.create (Target.Function "test.foo")]
                   ())) );
         ( "10:4-10:10",
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "test.bar")]
-                  ~return_type:Type.none
+                  ~call_targets:[CallTarget.create (Target.Function "test.bar")]
                   ())) );
       ]
     ();
@@ -1450,21 +1650,32 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~new_targets:[`Method { Target.class_name = "object"; method_name = "__new__" }]
-                  ~init_targets:[`Method { Target.class_name = "object"; method_name = "__init__" }]
-                  ~return_type:(Type.Primitive "Exception")
+                  ~new_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~receiver_type:(Type.meta (Type.Primitive "Exception"))
+                        (Target.Method { class_name = "object"; method_name = "__new__" });
+                    ]
+                  ~init_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~receiver_type:(Type.meta (Type.Primitive "Exception"))
+                        (Target.Method { class_name = "object"; method_name = "__init__" });
+                    ]
                   ())) );
         ( "10:4-10:10",
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "test.bar")]
-                  ~return_type:Type.none
+                  ~call_targets:[CallTarget.create (Target.Function "test.bar")]
                   ())) );
       ]
     ();
   (* TODO(T105570363): Resolve calls with mixed function and methods. *)
   assert_call_graph_of_define
+    ~cmp:DefineCallGraph.equal_ignoring_types
     ~source:
       {|
       class Foo:
@@ -1486,100 +1697,39 @@ let test_call_graph_of_define context =
             (String.Map.Tree.of_alist_exn
                [
                  ( "__iter__",
-                   ExpressionCallees.from_call
+                   ExpressionCallees.from_call_with_empty_attribute
                      (CallCallees.create
                         ~call_targets:
                           [
                             CallTarget.create
                               ~implicit_self:true
-                              (`Method { Target.class_name = "list"; method_name = "__iter__" });
+                              (Target.Method { class_name = "list"; method_name = "__iter__" });
                           ]
-                        ~return_type:
-                          (Type.iterator
-                             (Type.Union
-                                [
-                                  Type.Callable
-                                    {
-                                      kind = Anonymous;
-                                      implementation =
-                                        { annotation = Type.none; parameters = Defined [] };
-                                      overloads = [];
-                                    };
-                                  Type.Callable
-                                    {
-                                      kind = Named !&"test.baz";
-                                      implementation =
-                                        {
-                                          annotation = Type.none;
-                                          parameters =
-                                            Defined
-                                              [
-                                                Named
-                                                  {
-                                                    name = "self";
-                                                    annotation = Type.Top;
-                                                    default = false;
-                                                  };
-                                              ];
-                                        };
-                                      overloads = [];
-                                    };
-                                ]))
                         ()) );
                  ( "__next__",
-                   ExpressionCallees.from_call
+                   ExpressionCallees.from_call_with_empty_attribute
                      (CallCallees.create
                         ~call_targets:
                           [
                             CallTarget.create
                               ~implicit_self:true
-                              (`Method
-                                { Target.class_name = "typing.Iterator"; method_name = "__next__" });
+                              (Target.Method
+                                 { class_name = "typing.Iterator"; method_name = "__next__" });
                           ]
-                        ~return_type:
-                          (Type.Union
-                             [
-                               Type.Callable
-                                 {
-                                   kind = Anonymous;
-                                   implementation =
-                                     { annotation = Type.none; parameters = Defined [] };
-                                   overloads = [];
-                                 };
-                               Type.Callable
-                                 {
-                                   kind = Named !&"test.baz";
-                                   implementation =
-                                     {
-                                       annotation = Type.none;
-                                       parameters =
-                                         Defined
-                                           [
-                                             Named
-                                               {
-                                                 name = "self";
-                                                 annotation = Type.Top;
-                                                 default = false;
-                                               };
-                                           ];
-                                     };
-                                   overloads = [];
-                                 };
-                             ])
                         ()) );
                ]) );
         ( "11:4-11:7",
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "test.baz")]
-                  ~return_type:Type.none
+                  ~call_targets:[CallTarget.create (Target.Function "test.baz")]
                   ~unresolved:true
                   ())) );
       ]
     ();
   (* TODO(T105570363): Resolve calls with mixed function and constructors. *)
   assert_call_graph_of_define
+    ~cmp:DefineCallGraph.equal_ignoring_types
     ~source:
       {|
       class Foo:
@@ -1600,100 +1750,32 @@ let test_call_graph_of_define context =
             (String.Map.Tree.of_alist_exn
                [
                  ( "__iter__",
-                   ExpressionCallees.from_call
+                   ExpressionCallees.from_call_with_empty_attribute
                      (CallCallees.create
                         ~call_targets:
                           [
                             CallTarget.create
                               ~implicit_self:true
-                              (`Method { Target.class_name = "list"; method_name = "__iter__" });
+                              (Target.Method { class_name = "list"; method_name = "__iter__" });
                           ]
-                        ~return_type:
-                          (Type.iterator
-                             (Type.Union
-                                [
-                                  Type.Callable
-                                    {
-                                      kind = Anonymous;
-                                      implementation =
-                                        {
-                                          annotation = Type.Primitive "test.Foo";
-                                          parameters = Defined [];
-                                        };
-                                      overloads = [];
-                                    };
-                                  Type.Callable
-                                    {
-                                      kind = Named !&"test.bar";
-                                      implementation =
-                                        {
-                                          annotation = Type.none;
-                                          parameters =
-                                            Defined
-                                              [
-                                                Named
-                                                  {
-                                                    name = "self";
-                                                    annotation = Type.Top;
-                                                    default = false;
-                                                  };
-                                              ];
-                                        };
-                                      overloads = [];
-                                    };
-                                ]))
                         ()) );
                  ( "__next__",
-                   ExpressionCallees.from_call
+                   ExpressionCallees.from_call_with_empty_attribute
                      (CallCallees.create
                         ~call_targets:
                           [
                             CallTarget.create
                               ~implicit_self:true
-                              (`Method
-                                { Target.class_name = "typing.Iterator"; method_name = "__next__" });
+                              (Target.Method
+                                 { class_name = "typing.Iterator"; method_name = "__next__" });
                           ]
-                        ~return_type:
-                          (Type.Union
-                             [
-                               Type.Callable
-                                 {
-                                   kind = Anonymous;
-                                   implementation =
-                                     {
-                                       annotation = Type.Primitive "test.Foo";
-                                       parameters = Defined [];
-                                     };
-                                   overloads = [];
-                                 };
-                               Type.Callable
-                                 {
-                                   kind = Named !&"test.bar";
-                                   implementation =
-                                     {
-                                       annotation = Type.none;
-                                       parameters =
-                                         Defined
-                                           [
-                                             Named
-                                               {
-                                                 name = "self";
-                                                 annotation = Type.Top;
-                                                 default = false;
-                                               };
-                                           ];
-                                     };
-                                   overloads = [];
-                                 };
-                             ])
                         ()) );
                ]) );
         ( "10:4-10:7",
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "test.bar")]
-                  ~return_type:Type.none
+                  ~call_targets:[CallTarget.create (Target.Function "test.bar")]
                   ~unresolved:true
                   ())) );
       ]
@@ -1716,8 +1798,8 @@ let test_call_graph_of_define context =
         return Timer()
 
       @timer("bar")
-      def foo(x: int) -> None:
-        pass
+      def foo(x: int) -> int:
+        return x
 
       def caller() -> None:
         foo(1)
@@ -1729,8 +1811,12 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "test.foo")]
-                  ~return_type:Type.none
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~return_type:(Some ReturnType.integer)
+                        (Target.Function "test.foo");
+                    ]
                   ())) );
       ]
     ();
@@ -1752,8 +1838,8 @@ let test_call_graph_of_define context =
 
       class Foo:
         @timer("bar")
-        def bar(self, x: int) -> None:
-          pass
+        def bar(self, x: int) -> int:
+          return x
 
       def caller(foo: Foo) -> None:
         foo.bar(1)
@@ -1769,9 +1855,10 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
-                        (`Method { Target.class_name = "test.Foo"; method_name = "bar" });
+                        ~return_type:(Some ReturnType.integer)
+                        ~receiver_type:(Type.Primitive "test.Foo")
+                        (Target.Method { class_name = "test.Foo"; method_name = "bar" });
                     ]
-                  ~return_type:Type.none
                   ())) );
       ]
     ();
@@ -1790,8 +1877,8 @@ let test_call_graph_of_define context =
         return Timer()
 
       @timer("bar")
-      def foo(x: int) -> None:
-        pass
+      def foo(x: int) -> int:
+        return x
 
       def caller() -> None:
         foo(1)
@@ -1803,8 +1890,12 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "test.foo")]
-                  ~return_type:Type.none
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~return_type:(Some ReturnType.integer)
+                        (Target.Function "test.foo");
+                    ]
                   ())) );
       ]
     ();
@@ -1823,8 +1914,8 @@ let test_call_graph_of_define context =
 
       class Foo:
         @timer("bar")
-        def bar(self, x: int) -> None:
-          pass
+        def bar(self, x: int) -> int:
+          return x
 
       def caller(foo: Foo) -> None:
         foo.bar(1)
@@ -1840,9 +1931,9 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
-                        (`Method { Target.class_name = "test.Foo"; method_name = "bar" });
+                        ~return_type:(Some ReturnType.integer)
+                        (Target.Method { class_name = "test.Foo"; method_name = "bar" });
                     ]
-                  ~return_type:Type.none
                   ())) );
       ]
     ();
@@ -1854,8 +1945,8 @@ let test_call_graph_of_define context =
         pass
 
       @timer("bar")
-      def foo(x: int) -> None:
-        pass
+      def foo(x: int) -> int:
+        return x
 
       def caller() -> None:
         foo(1)
@@ -1867,8 +1958,7 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "test.foo")]
-                  ~return_type:Type.Any
+                  ~call_targets:[CallTarget.create (Target.Function "test.foo")]
                   ())) );
       ]
     ();
@@ -1880,8 +1970,8 @@ let test_call_graph_of_define context =
 
       class Foo:
         @timer("bar")
-        def bar(self, x: int) -> None:
-          pass
+        def bar(self, x: int) -> int:
+          return x
 
       def caller(foo: Foo) -> None:
         foo.bar(1)
@@ -1897,9 +1987,8 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
-                        (`Method { Target.class_name = "test.Foo"; method_name = "bar" });
+                        (Target.Method { class_name = "test.Foo"; method_name = "bar" });
                     ]
-                  ~return_type:Type.Any
                   ())) );
       ]
     ();
@@ -1923,8 +2012,8 @@ let test_call_graph_of_define context =
       class Foo:
         @classmethod
         @timer("bar")
-        def bar(cls, x: int) -> None:
-          pass
+        def bar(cls, x: int) -> int:
+          return x
 
       def caller() -> None:
         Foo.bar(1)
@@ -1940,9 +2029,9 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
-                        (`Method { Target.class_name = "test.Foo"; method_name = "bar" });
+                        ~return_type:(Some ReturnType.integer)
+                        (Target.Method { class_name = "test.Foo"; method_name = "bar" });
                     ]
-                  ~return_type:Type.none
                   ())) );
       ]
     ();
@@ -1965,8 +2054,8 @@ let test_call_graph_of_define context =
       class Foo:
         @staticmethod
         @timer("bar")
-        def bar(x: int) -> None:
-          pass
+        def bar(x: int) -> int:
+          return x
 
       def caller() -> None:
         Foo.bar(1)
@@ -1981,9 +2070,9 @@ let test_call_graph_of_define context =
                   ~call_targets:
                     [
                       CallTarget.create
-                        (`Method { Target.class_name = "test.Foo"; method_name = "bar" });
+                        ~return_type:(Some ReturnType.integer)
+                        (Target.Method { class_name = "test.Foo"; method_name = "bar" });
                     ]
-                  ~return_type:Type.none
                   ())) );
       ]
     ();
@@ -2006,8 +2095,8 @@ let test_call_graph_of_define context =
       class Foo:
         @classmethod
         @timer("bar")
-        def bar(cls, x: int) -> None:
-          pass
+        def bar(cls, x: int) -> int:
+          return x
 
         @classmethod
         def caller(cls) -> None:
@@ -2024,9 +2113,9 @@ let test_call_graph_of_define context =
                     [
                       CallTarget.create
                         ~implicit_self:true
-                        (`Method { Target.class_name = "test.Foo"; method_name = "bar" });
+                        ~return_type:(Some ReturnType.integer)
+                        (Target.Method { class_name = "test.Foo"; method_name = "bar" });
                     ]
-                  ~return_type:Type.none
                   ())) );
       ]
     ();
@@ -2046,8 +2135,8 @@ let test_call_graph_of_define context =
         return Timer()
 
       @timer(1) # Intended type error here.
-      def foo(x: int) -> None:
-        pass
+      def foo(x: int) -> int:
+        return x
 
       def caller() -> None:
         foo(1)
@@ -2059,8 +2148,7 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "test.foo")]
-                  ~return_type:Type.Any
+                  ~call_targets:[CallTarget.create (Target.Function "test.foo")]
                   ())) );
       ]
     ();
@@ -2084,10 +2172,8 @@ let test_call_graph_of_define context =
         ( "10:6-10:24",
           LocationCallees.Singleton
             (ExpressionCallees.from_call
-               (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "print")]
-                  ~return_type:Type.none
-                  ())) );
+               (CallCallees.create ~call_targets:[CallTarget.create (Target.Function "print")] ()))
+        );
       ]
     ();
   (* Detecting a __call__ picked up via __getattr__ redirection *)
@@ -2115,19 +2201,18 @@ let test_call_graph_of_define context =
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
-                  ~call_targets:[CallTarget.create (`Function "print")]
-                  ~return_type:Type.none
+                  ~call_targets:[CallTarget.create (Target.Function "print")]
                   ~higher_order_parameter:
                     {
                       index = 0;
-                      return_type = Type.Any;
                       call_targets =
                         [
                           CallTarget.create
                             ~implicit_self:true
                             ~implicit_dunder_call:true
-                            (`Method
-                              { Target.class_name = "test.CallableClass"; method_name = "__call__" });
+                            ~receiver_type:(Type.Primitive "test.CallableClass")
+                            (Target.Method
+                               { class_name = "test.CallableClass"; method_name = "__call__" });
                         ];
                     }
                   ())) );
@@ -2135,7 +2220,7 @@ let test_call_graph_of_define context =
     ();
 
   assert_call_graph_of_define
-    ~object_targets:[`Object "test.Token.token"]
+    ~object_targets:[Target.Object "test.Token.token"]
     ~source:
       {|
       class Token:
@@ -2152,14 +2237,14 @@ let test_call_graph_of_define context =
             (ExpressionCallees.from_attribute_access
                {
                  AttributeAccessCallees.property_targets = [];
-                 global_targets = [`Object "test.Token.token"];
-                 return_type = Type.Primitive "str";
+                 global_targets =
+                   [CallTarget.create ~return_type:None (Target.Object "test.Token.token")];
                  is_attribute = true;
                }) );
       ]
     ();
   assert_call_graph_of_define
-    ~object_targets:[`Object "test.A.attribute"; `Object "test.C.attribute"]
+    ~object_targets:[Target.Object "test.A.attribute"; Target.Object "test.C.attribute"]
     ~source:
       {|
       from typing import Union
@@ -2184,14 +2269,17 @@ let test_call_graph_of_define context =
             (ExpressionCallees.from_attribute_access
                {
                  AttributeAccessCallees.property_targets = [];
-                 global_targets = [`Object "test.A.attribute"; `Object "test.C.attribute"];
-                 return_type = Type.Primitive "str";
+                 global_targets =
+                   [
+                     CallTarget.create ~return_type:None (Target.Object "test.A.attribute");
+                     CallTarget.create ~return_type:None (Target.Object "test.C.attribute");
+                   ];
                  is_attribute = true;
                }) );
       ]
     ();
   assert_call_graph_of_define
-    ~object_targets:[`Object "test.Token.token"]
+    ~object_targets:[Target.Object "test.Token.token"]
     ~source:
       {|
       from typing import Optional
@@ -2213,14 +2301,14 @@ let test_call_graph_of_define context =
             (ExpressionCallees.from_attribute_access
                {
                  AttributeAccessCallees.property_targets = [];
-                 global_targets = [`Object "test.Token.token"];
-                 return_type = Type.Top;
+                 global_targets =
+                   [CallTarget.create ~return_type:None (Target.Object "test.Token.token")];
                  is_attribute = true;
                }) );
       ]
     ();
   assert_call_graph_of_define
-    ~object_targets:[`Object "test.Token.token"]
+    ~object_targets:[Target.Object "test.Token.token"]
     ~source:
       {|
       class Token:
@@ -2239,22 +2327,21 @@ let test_call_graph_of_define context =
                  ( "getattr",
                    ExpressionCallees.from_call
                      (CallCallees.create
-                        ~call_targets:[CallTarget.create (`Function "getattr")]
-                        ~return_type:Type.Any
+                        ~call_targets:[CallTarget.create (Target.Function "getattr")]
                         ()) );
                  ( "token",
                    ExpressionCallees.from_attribute_access
                      {
                        AttributeAccessCallees.property_targets = [];
-                       global_targets = [`Object "test.Token.token"];
-                       return_type = Type.Primitive "str";
+                       global_targets =
+                         [CallTarget.create ~return_type:None (Target.Object "test.Token.token")];
                        is_attribute = true;
                      } );
                ]) );
       ]
     ();
   assert_call_graph_of_define
-    ~object_targets:[`Object "test.Token.token"]
+    ~object_targets:[Target.Object "test.Token.token"]
     ~source:
       {|
       class Token:
@@ -2276,24 +2363,22 @@ let test_call_graph_of_define context =
                         ~call_targets:
                           [
                             CallTarget.create
-                              (`Method
-                                { Target.class_name = "object"; method_name = "__setattr__" });
+                              (Target.Method { class_name = "object"; method_name = "__setattr__" });
                           ]
-                        ~return_type:Type.none
                         ()) );
                  ( "token",
                    ExpressionCallees.from_attribute_access
                      {
                        AttributeAccessCallees.property_targets = [];
-                       global_targets = [`Object "test.Token.token"];
-                       return_type = Type.none;
+                       global_targets =
+                         [CallTarget.create ~return_type:None (Target.Object "test.Token.token")];
                        is_attribute = true;
                      } );
                ]) );
       ]
     ();
   assert_call_graph_of_define
-    ~object_targets:[`Object "test.x"]
+    ~object_targets:[Target.Object "test.x"]
     ~source:{|
       x = "x"
 
@@ -2306,33 +2391,1049 @@ let test_call_graph_of_define context =
         ( "5:9-5:10",
           LocationCallees.Singleton
             (ExpressionCallees.from_identifier
-               { IdentifierCallees.global_targets = [`Object "test.x"] }) );
+               {
+                 IdentifierCallees.global_targets =
+                   [CallTarget.create ~return_type:None (Target.Object "test.x")];
+               }) );
+      ]
+    ();
+  let source =
+    {|
+      class A:
+        def __str__(self):
+          return "A"
+
+      class B:
+        def __repr__(self):
+          return "B"
+
+      class C:
+        def __str__(self):
+          return "C"
+        def __repr__(self):
+          return "C"
+
+      class D:
+        def foo():
+          pass
+
+      def foo():
+        a = A()
+        b = B()
+        c = C()
+        d = D()
+        return f"{a}hello{b}world{c}{d}"
+
+      def bar(x: typing.Union[A, B, C, D]):
+        return f"{x}"
+    |}
+  in
+  let () =
+    assert_call_graph_of_define
+      ~source
+      ~define_name:"test.foo"
+      ~expected:
+        [
+          ( "21:6-21:9",
+            LocationCallees.Singleton
+              (ExpressionCallees.from_call
+                 (CallCallees.create
+                    ~init_targets:
+                      [
+                        CallTarget.create
+                          ~implicit_self:true
+                          ~receiver_type:(Type.meta (Type.Primitive "test.A"))
+                          (Target.Method { class_name = "object"; method_name = "__init__" });
+                      ]
+                    ~new_targets:
+                      [
+                        CallTarget.create
+                          ~implicit_self:true
+                          ~receiver_type:(Type.meta (Type.Primitive "test.A"))
+                          (Target.Method { class_name = "object"; method_name = "__new__" });
+                      ]
+                    ())) );
+          ( "22:6-22:9",
+            LocationCallees.Singleton
+              (ExpressionCallees.from_call
+                 (CallCallees.create
+                    ~init_targets:
+                      [
+                        CallTarget.create
+                          ~implicit_self:true
+                          ~index:1
+                          ~receiver_type:(Type.meta (Type.Primitive "test.B"))
+                          (Target.Method { class_name = "object"; method_name = "__init__" });
+                      ]
+                    ~new_targets:
+                      [
+                        CallTarget.create
+                          ~implicit_self:true
+                          ~index:1
+                          ~receiver_type:(Type.meta (Type.Primitive "test.B"))
+                          (Target.Method { class_name = "object"; method_name = "__new__" });
+                      ]
+                    ())) );
+          ( "23:6-23:9",
+            LocationCallees.Singleton
+              (ExpressionCallees.from_call
+                 (CallCallees.create
+                    ~init_targets:
+                      [
+                        CallTarget.create
+                          ~implicit_self:true
+                          ~index:2
+                          ~receiver_type:(Type.meta (Type.Primitive "test.C"))
+                          (Target.Method { class_name = "object"; method_name = "__init__" });
+                      ]
+                    ~new_targets:
+                      [
+                        CallTarget.create
+                          ~implicit_self:true
+                          ~index:2
+                          ~receiver_type:(Type.meta (Type.Primitive "test.C"))
+                          (Target.Method { class_name = "object"; method_name = "__new__" });
+                      ]
+                    ())) );
+          ( "24:6-24:9",
+            LocationCallees.Singleton
+              (ExpressionCallees.from_call
+                 (CallCallees.create
+                    ~init_targets:
+                      [
+                        CallTarget.create
+                          ~implicit_self:true
+                          ~index:3
+                          ~receiver_type:(Type.meta (Type.Primitive "test.D"))
+                          (Target.Method { class_name = "object"; method_name = "__init__" });
+                      ]
+                    ~new_targets:
+                      [
+                        CallTarget.create
+                          ~implicit_self:true
+                          ~index:3
+                          ~receiver_type:(Type.meta (Type.Primitive "test.D"))
+                          (Target.Method { class_name = "object"; method_name = "__new__" });
+                      ]
+                    ())) );
+          ( "25:12-25:13",
+            LocationCallees.Singleton
+              (ExpressionCallees.from_format_string
+                 {
+                   FormatStringCallees.call_targets =
+                     [
+                       CallTarget.create
+                         ~implicit_self:true
+                         ~receiver_type:(Type.Primitive "test.A")
+                         (Target.Method { class_name = "test.A"; method_name = "__str__" });
+                     ];
+                 }) );
+          ( "25:20-25:21",
+            LocationCallees.Singleton
+              (ExpressionCallees.from_format_string
+                 {
+                   FormatStringCallees.call_targets =
+                     [
+                       CallTarget.create
+                         ~implicit_self:true
+                         ~receiver_type:(Type.Primitive "test.B")
+                         (Target.Method { class_name = "test.B"; method_name = "__repr__" });
+                     ];
+                 }) );
+          ( "25:28-25:29",
+            LocationCallees.Singleton
+              (ExpressionCallees.from_format_string
+                 {
+                   FormatStringCallees.call_targets =
+                     [
+                       CallTarget.create
+                         ~implicit_self:true
+                         ~receiver_type:(Type.Primitive "test.C")
+                         (Target.Method { class_name = "test.C"; method_name = "__str__" });
+                     ];
+                 }) );
+          ( "25:31-25:32",
+            LocationCallees.Singleton
+              (ExpressionCallees.from_format_string
+                 {
+                   FormatStringCallees.call_targets =
+                     [
+                       CallTarget.create
+                         ~implicit_self:true
+                         ~receiver_type:(Type.Primitive "test.D")
+                         (Target.Method { class_name = "object"; method_name = "__repr__" });
+                     ];
+                 }) );
+        ]
+      ()
+  in
+  assert_call_graph_of_define
+    ~source
+    ~define_name:"test.bar"
+    ~expected:
+      [
+        ( "28:12-28:13",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_format_string
+               {
+                 FormatStringCallees.call_targets =
+                   [
+                     (* TODO(T112028293): Properly resolve `__str__` calls on union-typed variables *)
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~receiver_type:(Type.Primitive "test.B")
+                       (Target.Method { class_name = "object"; method_name = "__str__" });
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~receiver_type:(Type.Primitive "test.D")
+                       (Target.Method { class_name = "object"; method_name = "__str__" });
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~receiver_type:(Type.Primitive "test.A")
+                       (Target.Method { class_name = "test.A"; method_name = "__str__" });
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~receiver_type:(Type.Primitive "test.C")
+                       (Target.Method { class_name = "test.C"; method_name = "__str__" });
+                   ];
+               }) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:
+      {|
+      def foo(a: int, b: float, c: str, d: typing.List[int], e):
+        w = [1, 2, 3]
+        x = 1
+        y = "str"
+        z = 2.3
+        return f"{a}{b}{c}{d}{w}{x}{y}{z}{e}"
+    |}
+    ~define_name:"test.foo"
+    ~expected:
+      [
+        ( "7:12-7:13",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_format_string
+               {
+                 FormatStringCallees.call_targets =
+                   [
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~receiver_type:Type.integer
+                       (Target.Method { class_name = "int"; method_name = "__str__" });
+                   ];
+               }) );
+        ( "7:15-7:16",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_format_string
+               {
+                 FormatStringCallees.call_targets =
+                   [
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~receiver_type:Type.float
+                       (Target.Method { class_name = "object"; method_name = "__repr__" });
+                   ];
+               }) );
+        ( "7:18-7:19",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_format_string
+               {
+                 FormatStringCallees.call_targets =
+                   [
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~collapse_tito:false
+                       ~receiver_type:Type.string
+                       (Target.Method { class_name = "str"; method_name = "__str__" });
+                   ];
+               }) );
+        ( "7:21-7:22",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_format_string
+               {
+                 FormatStringCallees.call_targets =
+                   [
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~index:1
+                       ~receiver_type:(Type.list Type.integer)
+                       (Target.Method { class_name = "object"; method_name = "__repr__" });
+                   ];
+               }) );
+        ( "7:24-7:25",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_format_string
+               {
+                 FormatStringCallees.call_targets =
+                   [
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~index:2
+                       ~receiver_type:(Type.list Type.integer)
+                       (Target.Method { class_name = "object"; method_name = "__repr__" });
+                   ];
+               }) );
+        ( "7:27-7:28",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_format_string
+               {
+                 FormatStringCallees.call_targets =
+                   [
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~index:1
+                       ~receiver_type:(Type.literal_integer 1)
+                       (Target.Method { class_name = "int"; method_name = "__str__" });
+                   ];
+               }) );
+        ( "7:30-7:31",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_format_string
+               {
+                 FormatStringCallees.call_targets =
+                   [
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~index:1
+                       ~receiver_type:(Type.literal_string "str")
+                       (Target.Method { class_name = "str"; method_name = "__str__" });
+                   ];
+               }) );
+        ( "7:33-7:34",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_format_string
+               {
+                 FormatStringCallees.call_targets =
+                   [
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~index:3
+                       ~receiver_type:Type.float
+                       (Target.Method { class_name = "object"; method_name = "__repr__" });
+                   ];
+               }) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:{|
+      def foo(x: object):
+        return f"{x}"
+    |}
+    ~define_name:"test.foo"
+    ~expected:
+      [
+        ( "3:12-3:13",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_format_string
+               {
+                 FormatStringCallees.call_targets =
+                   [
+                     (* TODO(T112761296): Probably wrong call resolution *)
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~receiver_type:Type.object_primitive
+                       (Target.Method { class_name = "object"; method_name = "__repr__" });
+                   ];
+               }) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:{|
+      def foo(x: Any):
+        return f"{x}"
+    |}
+    ~define_name:"test.foo"
+    ~expected:[] (* TODO(T112761296): Probably wrong call resolution *)
+    ();
+  assert_call_graph_of_define
+    ~cmp:DefineCallGraph.equal_ignoring_types
+    ~source:{|
+      def foo(e: Exception):
+        f"{e}"
+        f"{type(e)}"
+    |}
+    ~define_name:"test.foo"
+    ~expected:
+      [
+        ( "3:5-3:6",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_format_string
+               {
+                 FormatStringCallees.call_targets =
+                   [
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~receiver_type:(Type.Primitive "Exception")
+                       (Target.Method { class_name = "BaseException"; method_name = "__str__" });
+                   ];
+               }) );
+        ( "4:5-4:12",
+          LocationCallees.Compound
+            (String.Map.Tree.of_alist_exn
+               [
+                 ( "$__str__$",
+                   ExpressionCallees.from_format_string
+                     {
+                       FormatStringCallees.call_targets =
+                         [
+                           (* TODO(T112761296): Probably wrong call resolution *)
+                           CallTarget.create
+                             (Target.Method
+                                { class_name = "BaseException"; method_name = "__repr__" });
+                         ];
+                     } );
+                 ( "type",
+                   ExpressionCallees.from_call
+                     (CallCallees.create
+                        ~new_targets:
+                          [
+                            CallTarget.create
+                              ~implicit_self:true
+                              ~receiver_type:(Type.meta (Type.Primitive "type"))
+                              (Target.Method { class_name = "type"; method_name = "__new__" });
+                          ]
+                        ~init_targets:
+                          [
+                            CallTarget.create
+                              ~implicit_self:true
+                              ~receiver_type:(Type.meta (Type.Primitive "type"))
+                              (Target.Method { class_name = "type"; method_name = "__init__" });
+                          ]
+                        ()) );
+               ]) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:
+      {|
+      def foo(error_type: typing.Union[str, typing.Type[Exception]]):
+        return f"{error_type}"
+    |}
+    ~define_name:"test.foo"
+    ~expected:
+      [
+        ( "3:12-3:22",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_format_string
+               {
+                 FormatStringCallees.call_targets =
+                   [
+                     (* TODO(T112761296): Wrong call resolution *)
+                     CallTarget.create (Target.Function "BaseException.__str__");
+                     CallTarget.create
+                       ~implicit_self:true
+                       ~receiver_type:Type.string
+                       (Target.Method { class_name = "str"; method_name = "__str__" });
+                   ];
+               }) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:
+      {|
+      def foo(error_type: typing.Type[Exception]):
+        return f"{error_type}"
+    |}
+    ~define_name:"test.foo"
+    ~expected:
+      [
+        ( "3:12-3:22",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_format_string
+               {
+                 FormatStringCallees.call_targets =
+                   [
+                     (* TODO(T112761296): Wrong call resolution *)
+                     CallTarget.create
+                       (Target.Method { class_name = "BaseException"; method_name = "__repr__" });
+                   ];
+               }) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~cmp:DefineCallGraph.equal_ignoring_types
+    ~source:
+      {|
+      class A:
+        def __str__(self):
+          return "A"
+      class B:
+        pass
+      def foo(x: typing.Union[A, B]):
+        f"{x.__class__}"
+    |}
+    ~define_name:"test.foo"
+    ~expected:
+      [
+        ( "8:5-8:16",
+          LocationCallees.Compound
+            (String.Map.Tree.of_alist_exn
+               [
+                 ( "$__str__$",
+                   ExpressionCallees.from_format_string
+                     {
+                       FormatStringCallees.call_targets =
+                         [
+                           (* TODO(T112761296): Probably wrong call resolution *)
+                           CallTarget.create (Target.Function "object.__str__");
+                           CallTarget.create (Target.Function "test.A.__str__");
+                         ];
+                     } );
+                 ( "__class__",
+                   ExpressionCallees.from_attribute_access
+                     {
+                       AttributeAccessCallees.property_targets =
+                         [
+                           CallTarget.create
+                             ~implicit_self:true
+                             (Target.Method { class_name = "object"; method_name = "__class__" });
+                         ];
+                       global_targets = [];
+                       is_attribute = false;
+                     } );
+               ]) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~cmp:DefineCallGraph.equal_ignoring_types
+    ~source:
+      {|
+      class A:
+        def __str__(self):
+          return "A"
+      def foo(x: A):
+        f"{x.__class__}"
+    |}
+    ~define_name:"test.foo"
+    ~expected:
+      [
+        ( "6:5-6:16",
+          LocationCallees.Compound
+            (String.Map.Tree.of_alist_exn
+               [
+                 ( "$__str__$",
+                   ExpressionCallees.from_format_string
+                     {
+                       FormatStringCallees.call_targets =
+                         [
+                           (* TODO(T112761296): Probably wrong call resolution *)
+                           CallTarget.create
+                             (Target.Method { class_name = "object"; method_name = "__repr__" });
+                         ];
+                     } );
+                 ( "__class__",
+                   ExpressionCallees.from_attribute_access
+                     {
+                       AttributeAccessCallees.property_targets =
+                         [
+                           CallTarget.create
+                             ~implicit_self:true
+                             (Target.Method { class_name = "object"; method_name = "__class__" });
+                         ];
+                       global_targets = [];
+                       is_attribute = false;
+                     } );
+               ]) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~cmp:DefineCallGraph.equal_ignoring_types
+    ~source:{|
+      def foo(e: Exception):
+        return str(e) + "hello"
+    |}
+    ~define_name:"test.foo"
+    ~expected:
+      [
+        ( "3:9-3:15",
+          LocationCallees.Compound
+            (String.Map.Tree.of_alist_exn
+               [
+                 "__add__", ExpressionCallees.from_attribute_access AttributeAccessCallees.empty;
+                 ( "__str__",
+                   ExpressionCallees.from_call
+                     (CallCallees.create
+                        ~call_targets:
+                          [
+                            CallTarget.create
+                              ~implicit_self:true
+                              (Target.Method
+                                 { class_name = "BaseException"; method_name = "__str__" });
+                          ]
+                        ()) );
+               ]) );
+        ( "3:9-3:25",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        (Target.Method { class_name = "str"; method_name = "__add__" });
+                    ]
+                  ())) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:
+      {|
+     def foo():
+         pass
+
+     def bar():
+         pass
+
+     def baz():
+         foo()
+         foo()
+         bar()
+         foo()
+         bar()
+  |}
+    ~define_name:"test.baz"
+    ~expected:
+      [
+        ( "9:4-9:9",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:[CallTarget.create ~index:0 (Target.Function "test.foo")]
+                  ())) );
+        ( "10:4-10:9",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:[CallTarget.create ~index:1 (Target.Function "test.foo")]
+                  ())) );
+        ( "11:4-11:9",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:[CallTarget.create ~index:0 (Target.Function "test.bar")]
+                  ())) );
+        ( "12:4-12:9",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:[CallTarget.create ~index:2 (Target.Function "test.foo")]
+                  ())) );
+        ( "13:4-13:9",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:[CallTarget.create ~index:1 (Target.Function "test.bar")]
+                  ())) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:
+      {|
+     def foo(x=None, y=None):
+         pass
+
+     def bar():
+         foo(foo(), foo(foo()))
+  |}
+    ~define_name:"test.bar"
+    ~expected:
+      [
+        ( "6:4-6:26",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:[CallTarget.create ~index:3 (Target.Function "test.foo")]
+                  ())) );
+        ( "6:8-6:13",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:[CallTarget.create ~index:0 (Target.Function "test.foo")]
+                  ())) );
+        ( "6:15-6:25",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:[CallTarget.create ~index:2 (Target.Function "test.foo")]
+                  ())) );
+        ( "6:19-6:24",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:[CallTarget.create ~index:1 (Target.Function "test.foo")]
+                  ())) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:
+      {|
+      from typing import Union
+
+      class A:
+          def foo():
+              pass
+
+      class B(A):
+          pass
+
+      class C(A):
+          pass
+
+      def test(x: Union[B, C]):
+          x.foo()
+          if isinstance(x, C):
+              x.foo()
+          else:
+              x.foo()
+
+          if isinstance(x, B):
+              x.foo()
+  |}
+    ~define_name:"test.test"
+    ~expected:
+      [
+        ( "15:4-15:11",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~index:0
+                        ~receiver_type:(Type.Primitive "test.B")
+                        (Target.Method { class_name = "test.A"; method_name = "foo" });
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~index:0
+                        ~receiver_type:(Type.Primitive "test.C")
+                        (Target.Method { class_name = "test.A"; method_name = "foo" });
+                    ]
+                  ())) );
+        ( "16:7-16:23",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~index:0
+                        ~return_type:(Some ReturnType.bool)
+                        (Target.Function "isinstance");
+                    ]
+                  ())) );
+        ( "17:8-17:15",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:
+                          true
+                          (* Assigned index is 2 instead of 1, because we use the control flow graph
+                             traversal order. *)
+                        ~index:2
+                        ~receiver_type:(Type.Primitive "test.C")
+                        (Target.Method { class_name = "test.A"; method_name = "foo" });
+                    ]
+                  ())) );
+        ( "19:8-19:15",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~index:1
+                        ~receiver_type:(Type.Primitive "test.B")
+                        (Target.Method { class_name = "test.A"; method_name = "foo" });
+                    ]
+                  ())) );
+        ( "21:7-21:23",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      (* Assigned index is 2 instead of 1, because we visit the if statement twice. *)
+                      CallTarget.create
+                        ~index:2
+                        ~return_type:(Some ReturnType.bool)
+                        (Target.Function "isinstance");
+                    ]
+                  ())) );
+        ( "22:8-22:15",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~index:3
+                        ~receiver_type:(Type.Primitive "test.B")
+                        (Target.Method { class_name = "test.A"; method_name = "foo" });
+                    ]
+                  ())) );
+      ]
+    ();
+  (* Test the return type when using type variables. *)
+  assert_call_graph_of_define
+    ~source:
+      {|
+       import typing
+
+       def bar(l: typing.List[int]):
+         return l.__iter__().__next__()
+      |}
+    ~define_name:"test.bar"
+    ~expected:
+      [
+        ( "5:9-5:21",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~return_type:(Some ReturnType.any)
+                        ~receiver_type:(Type.list Type.integer)
+                        (Target.Method { class_name = "list"; method_name = "__iter__" });
+                    ]
+                  ())) );
+        ( "5:9-5:32",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~return_type:(Some ReturnType.integer)
+                        ~receiver_type:(Type.iterator Type.integer)
+                        (Target.Method { class_name = "typing.Iterator"; method_name = "__next__" });
+                    ]
+                  ())) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:
+      {|
+       import typing
+
+       def bar(l: typing.List[int]):
+         return l[0]
+      |}
+    ~define_name:"test.bar"
+    ~expected:
+      [
+        ( "5:9-5:13",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~return_type:(Some ReturnType.integer)
+                        ~receiver_type:(Type.list Type.integer)
+                        (Target.Method { class_name = "list"; method_name = "__getitem__" });
+                    ]
+                  ())) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:
+      {|
+       from typing import Union, overload
+
+       @overload
+       def foo(x: int) -> int:
+         ...
+
+       @overload
+       def foo(x: str) -> str:
+         ...
+
+       def foo(x: Union[int, str]) -> Union[int, str]:
+         return x
+
+       def bar():
+         return foo(0)
+      |}
+    ~define_name:"test.bar"
+    ~expected:
+      [
+        ( "16:9-16:15",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~return_type:(Some ReturnType.integer)
+                        (Target.Function "test.foo");
+                    ]
+                  ())) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:
+      {|
+       import typing
+
+       T = typing.TypeVar("T")
+
+       def foo(x: T) -> T:
+         return T
+
+       def bar():
+         return foo(0)
+      |}
+    ~define_name:"test.bar"
+    ~expected:
+      [
+        ( "10:9-10:15",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~return_type:(Some ReturnType.integer)
+                        (Target.Function "test.foo");
+                    ]
+                  ())) );
+      ]
+    ();
+  (* Nested defines. *)
+  assert_call_graph_of_define
+    ~source:
+      {|
+       def baz(x: int) -> int:
+         return x
+
+       def foo():
+         def bar(x: int) -> int:
+           return baz(x)
+
+         return bar
+      |}
+    ~define_name:"$local_test?foo$bar"
+    ~expected:
+      [
+        ( "7:11-7:17",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~return_type:(Some ReturnType.integer)
+                        (Target.Function "test.baz");
+                    ]
+                  ())) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:
+      {|
+       def baz(x: int) -> int:
+         return x
+
+       def foo():
+         if 1 < 2:
+           def bar(x: int) -> int:
+             return baz(x)
+
+           return bar
+         else:
+           return None
+      |}
+    ~define_name:"$local_test?foo$bar"
+    ~expected:
+      [
+        ( "8:13-8:19",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~return_type:(Some ReturnType.integer)
+                        (Target.Function "test.baz");
+                    ]
+                  ())) );
       ]
     ();
   ()
 
 
-let test_resolve_ignoring_optional context =
-  let assert_resolved_without_optional ~source ~expression ~expected =
-    let resolution =
-      ScratchProject.setup ~context ["x.py", source] |> ScratchProject.build_resolution
-    in
-    CallGraph.resolve_ignoring_optional ~resolution (Test.parse_single_expression expression)
-    |> assert_equal ~printer:Type.show expected
+let test_return_type_from_annotation context =
+  let project = Test.ScratchProject.setup ~context [] in
+  let { Test.ScratchProject.BuiltTypeEnvironment.type_environment; _ } =
+    Test.ScratchProject.build_type_environment project
   in
-  assert_resolved_without_optional
-    ~source:{|
-    class Data:
-      def __init__(self, x: int) -> None: ...
-  |}
-    ~expression:"x.Data()"
-    ~expected:(Type.Primitive "x.Data")
+  let resolution =
+    TypeEnvironment.read_only type_environment |> TypeEnvironment.ReadOnly.global_resolution
+  in
+  let assert_from_annotation annotation expected =
+    let actual = ReturnType.from_annotation ~resolution annotation in
+    assert_equal ~printer:ReturnType.show ~cmp:ReturnType.equal expected actual
+  in
+  assert_from_annotation
+    Type.bool
+    { ReturnType.is_boolean = true; is_integer = false; is_float = false; is_enumeration = false };
+  assert_from_annotation
+    Type.enumeration
+    { ReturnType.is_boolean = false; is_integer = false; is_float = false; is_enumeration = true };
+  assert_from_annotation
+    Type.integer
+    { ReturnType.is_boolean = false; is_integer = true; is_float = true; is_enumeration = false };
+  assert_from_annotation
+    (Type.optional Type.bool)
+    { ReturnType.is_boolean = true; is_integer = false; is_float = false; is_enumeration = false };
+  assert_from_annotation
+    (Type.optional Type.enumeration)
+    { ReturnType.is_boolean = false; is_integer = false; is_float = false; is_enumeration = true };
+  assert_from_annotation
+    (Type.optional Type.integer)
+    { ReturnType.is_boolean = false; is_integer = true; is_float = true; is_enumeration = false };
+  assert_from_annotation
+    Type.none
+    { ReturnType.is_boolean = false; is_integer = false; is_float = false; is_enumeration = false };
+  assert_from_annotation
+    Type.Any
+    { ReturnType.is_boolean = false; is_integer = false; is_float = false; is_enumeration = false };
+  assert_from_annotation
+    (Type.awaitable Type.bool)
+    { ReturnType.is_boolean = true; is_integer = false; is_float = false; is_enumeration = false };
+  assert_from_annotation
+    (Type.awaitable Type.enumeration)
+    { ReturnType.is_boolean = false; is_integer = false; is_float = false; is_enumeration = true };
+  assert_from_annotation
+    (Type.awaitable Type.integer)
+    { ReturnType.is_boolean = false; is_integer = true; is_float = true; is_enumeration = false };
+  assert_from_annotation
+    (Type.awaitable (Type.optional Type.bool))
+    { ReturnType.is_boolean = true; is_integer = false; is_float = false; is_enumeration = false };
+  assert_from_annotation
+    (Type.awaitable (Type.optional Type.enumeration))
+    { ReturnType.is_boolean = false; is_integer = false; is_float = false; is_enumeration = true };
+  assert_from_annotation
+    (Type.awaitable (Type.optional Type.integer))
+    { ReturnType.is_boolean = false; is_integer = true; is_float = true; is_enumeration = false }
 
 
 let () =
   "interproceduralCallGraph"
   >::: [
          "call_graph_of_define" >:: test_call_graph_of_define;
-         "resolve_ignoring_optional" >:: test_resolve_ignoring_optional;
+         "return_type_from_annotation" >:: test_return_type_from_annotation;
        ]
   |> Test.run

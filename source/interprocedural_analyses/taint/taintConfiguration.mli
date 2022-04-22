@@ -11,6 +11,7 @@ module Rule : sig
   type t = {
     sources: Sources.t list;
     sinks: Sinks.t list;
+    transforms: TaintTransform.t list;
     code: int;
     name: string;
     message_format: string; (* format *)
@@ -55,6 +56,7 @@ val missing_flows_kind_from_string : string -> missing_flows_kind option
 type t = {
   sources: AnnotationParser.source_or_sink list;
   sinks: AnnotationParser.source_or_sink list;
+  transforms: TaintTransform.t list;
   features: string list;
   rules: Rule.t list;
   implicit_sinks: implicit_sinks;
@@ -63,6 +65,7 @@ type t = {
   partial_sink_labels: string list Core.String.Map.Tree.t;
   matching_sources: Sources.Set.t Sinks.Map.t;
   matching_sinks: Sinks.Set.t Sources.Map.t;
+  possible_tito_transforms: TaintTransforms.Set.t;
   find_missing_flows: missing_flows_kind option;
   dump_model_query_results_path: PyrePath.t option;
   analysis_model_constraints: analysis_model_constraints;
@@ -73,13 +76,56 @@ val empty : t
 
 val get : unit -> t
 
-exception
-  MalformedConfiguration of {
-    path: string;
-    parse_error: string;
-  }
+module Error : sig
+  type kind =
+    | FileNotFound
+    | FileRead
+    | InvalidJson of string
+    | NoConfigurationFound
+    | UnexpectedJsonType of {
+        json: Yojson.Safe.t;
+        message: string;
+        section: string option;
+      }
+    | MissingKey of {
+        key: string;
+        section: string;
+      }
+    | UnknownKey of {
+        key: string;
+        section: string;
+      }
+    | UnsupportedSource of string
+    | UnsupportedSink of string
+    | UnsupportedTransform of string
+    | UnexpectedCombinedSourceRule of Yojson.Safe.t
+    | PartialSinkDuplicate of string
+    | InvalidLabelMultiSink of {
+        label: string;
+        sink: string;
+        labels: string list;
+      }
+    | InvalidMultiSink of string
+    | RuleCodeDuplicate of int
+    | OptionDuplicate of string
+    | SourceDuplicate of string
+    | SinkDuplicate of string
+    | TransformDuplicate of string
+    | FeatureDuplicate of string
+  [@@deriving equal, show]
 
-val parse : Yojson.Safe.t list -> t
+  type t = {
+    kind: kind;
+    path: PyrePath.t option;
+  }
+  [@@deriving equal, show]
+
+  val create : path:PyrePath.t -> kind:kind -> t
+
+  val to_json : t -> Yojson.Safe.t
+end
+
+val parse : (PyrePath.t * Yojson.Safe.t) list -> (t, Error.t list) Result.t
 
 val register : t -> unit
 
@@ -92,9 +138,13 @@ val create
   maximum_trace_length:int option ->
   maximum_tito_depth:int option ->
   taint_model_paths:PyrePath.t list ->
-  t
+  (t, Error.t list) Result.t
 
-val validate : t -> unit
+val validate : t -> (t, Error.t list) Result.t
+
+val abort_on_error : (t, Error.t list) Result.t -> t
+
+val exception_on_error : (t, Error.t list) Result.t -> t
 
 val apply_missing_flows : t -> missing_flows_kind -> t
 
@@ -119,3 +169,5 @@ val maximum_tito_positions : int
 val maximum_tree_depth_after_widening : int
 
 val maximum_tito_leaves : int
+
+val transform_splits : 'a list -> ('a list * 'a list) list

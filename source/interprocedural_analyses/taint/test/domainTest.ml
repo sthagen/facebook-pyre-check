@@ -10,24 +10,48 @@ open Ast
 open Taint
 open Domains
 open Core
+open Test
+open Analysis
 
-let test_partition_call_map _ =
+let test_partition_call_map context =
+  let global_resolution =
+    ScratchProject.setup ~context [] |> ScratchProject.build_global_resolution
+  in
+  let resolution =
+    TypeCheck.resolution
+      global_resolution
+      (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
+      (module TypeCheck.DummyContext)
+  in
   let taint = ForwardTaint.singleton (Sources.NamedSource "UserControlled") Frame.initial in
+  let callee =
+    Some (Interprocedural.Target.Method { class_name = "test.Foo"; method_name = "bar" })
+  in
   let call_taint1 =
     ForwardTaint.apply_call
-      Location.WithModule.any
-      ~callees:[]
+      ~resolution
+      ~location:Location.WithModule.any
+      ~callee
+      ~arguments:[]
       ~port:AccessPath.Root.LocalResult
       ~path:[Abstract.TreeDomain.Label.create_name_index "a"]
       ~element:taint
+      ~is_self_call:false
+      ~caller_class_interval:Interprocedural.ClassInterval.top
+      ~receiver_class_interval:Interprocedural.ClassInterval.top
   in
   let call_taint2 =
     ForwardTaint.apply_call
-      Location.WithModule.any
-      ~callees:[]
+      ~resolution
+      ~location:Location.WithModule.any
+      ~callee
+      ~arguments:[]
       ~port:AccessPath.Root.LocalResult
       ~path:[]
       ~element:taint
+      ~is_self_call:false
+      ~caller_class_interval:Interprocedural.ClassInterval.top
+      ~receiver_class_interval:Interprocedural.ClassInterval.top
   in
   let joined = ForwardTaint.join call_taint1 call_taint2 in
   assert_equal
@@ -127,55 +151,47 @@ let test_sanitize _ =
   assert_sanitize_equal
     (Sanitize.join
        Sanitize.bottom
-       { Sanitize.sources = Some AllSources; sinks = Some AllSinks; tito = Some AllTito })
-    ~expected:{ Sanitize.sources = Some AllSources; sinks = Some AllSinks; tito = Some AllTito };
+       { Sanitize.sources = Some All; sinks = Some All; tito = Some All })
+    ~expected:{ Sanitize.sources = Some All; sinks = Some All; tito = Some All };
   assert_sanitize_equal
     (Sanitize.join
-       { Sanitize.sources = Some AllSources; sinks = Some AllSinks; tito = Some AllTito }
+       { Sanitize.sources = Some All; sinks = Some All; tito = Some All }
        Sanitize.bottom)
-    ~expected:{ Sanitize.sources = Some AllSources; sinks = Some AllSinks; tito = Some AllTito };
+    ~expected:{ Sanitize.sources = Some All; sinks = Some All; tito = Some All };
   assert_sanitize_equal
     (Sanitize.join
        {
-         Sanitize.sources = Some (SpecificSources source_a_set);
-         sinks = Some AllSinks;
+         Sanitize.sources = Some (Specific source_a_set);
+         sinks = Some All;
          tito =
            Some
-             (SpecificTito
-                { sanitized_tito_sources = source_b_set; sanitized_tito_sinks = sink_a_set });
+             (Specific { sanitized_tito_sources = source_b_set; sanitized_tito_sinks = sink_a_set });
        }
-       {
-         Sanitize.sources = Some AllSources;
-         sinks = Some (SpecificSinks sink_b_set);
-         tito = Some AllTito;
-       })
-    ~expected:{ Sanitize.sources = Some AllSources; sinks = Some AllSinks; tito = Some AllTito };
+       { Sanitize.sources = Some All; sinks = Some (Specific sink_b_set); tito = Some All })
+    ~expected:{ Sanitize.sources = Some All; sinks = Some All; tito = Some All };
   assert_sanitize_equal
     (Sanitize.join
        {
-         Sanitize.sources = Some (SpecificSources source_a_set);
-         sinks = Some (SpecificSinks sink_b_set);
+         Sanitize.sources = Some (Specific source_a_set);
+         sinks = Some (Specific sink_b_set);
          tito =
            Some
-             (SpecificTito
-                { sanitized_tito_sources = source_b_set; sanitized_tito_sinks = sink_a_set });
+             (Specific { sanitized_tito_sources = source_b_set; sanitized_tito_sinks = sink_a_set });
        }
        {
-         Sanitize.sources = Some (SpecificSources source_b_set);
-         sinks = Some (SpecificSinks sink_a_set);
+         Sanitize.sources = Some (Specific source_b_set);
+         sinks = Some (Specific sink_a_set);
          tito =
            Some
-             (SpecificTito
-                { sanitized_tito_sources = source_a_set; sanitized_tito_sinks = sink_b_set });
+             (Specific { sanitized_tito_sources = source_a_set; sanitized_tito_sinks = sink_b_set });
        })
     ~expected:
       {
-        Sanitize.sources = Some (SpecificSources source_ab_set);
-        sinks = Some (SpecificSinks sink_ab_set);
+        Sanitize.sources = Some (Specific source_ab_set);
+        sinks = Some (Specific sink_ab_set);
         tito =
           Some
-            (SpecificTito
-               { sanitized_tito_sources = source_ab_set; sanitized_tito_sinks = sink_ab_set });
+            (Specific { sanitized_tito_sources = source_ab_set; sanitized_tito_sinks = sink_ab_set });
       };
 
   (* Tess less_or_equal *)
@@ -197,68 +213,81 @@ let test_sanitize _ =
   in
   assert_less_or_equal
     ~left:Sanitize.bottom
-    ~right:{ Sanitize.sources = Some AllSources; sinks = Some AllSinks; tito = Some AllTito };
+    ~right:{ Sanitize.sources = Some All; sinks = Some All; tito = Some All };
   assert_not_less_or_equal
-    ~left:{ Sanitize.sources = Some AllSources; sinks = Some AllSinks; tito = Some AllTito }
+    ~left:{ Sanitize.sources = Some All; sinks = Some All; tito = Some All }
     ~right:Sanitize.bottom;
   assert_less_or_equal
-    ~left:{ Sanitize.sources = Some AllSources; sinks = Some AllSinks; tito = Some AllTito }
-    ~right:{ Sanitize.sources = Some AllSources; sinks = Some AllSinks; tito = Some AllTito };
+    ~left:{ Sanitize.sources = Some All; sinks = Some All; tito = Some All }
+    ~right:{ Sanitize.sources = Some All; sinks = Some All; tito = Some All };
   assert_less_or_equal
-    ~left:{ Sanitize.sources = None; sinks = Some AllSinks; tito = None }
-    ~right:{ Sanitize.sources = Some AllSources; sinks = Some AllSinks; tito = Some AllTito };
+    ~left:{ Sanitize.sources = None; sinks = Some All; tito = None }
+    ~right:{ Sanitize.sources = Some All; sinks = Some All; tito = Some All };
   assert_not_less_or_equal
-    ~left:{ Sanitize.sources = None; sinks = Some AllSinks; tito = None }
-    ~right:{ Sanitize.sources = Some AllSources; sinks = None; tito = Some AllTito };
+    ~left:{ Sanitize.sources = None; sinks = Some All; tito = None }
+    ~right:{ Sanitize.sources = Some All; sinks = None; tito = Some All };
   assert_less_or_equal
     ~left:
       {
-        Sanitize.sources = Some (SpecificSources source_a_set);
-        sinks = Some (SpecificSinks sink_a_set);
+        Sanitize.sources = Some (Specific source_a_set);
+        sinks = Some (Specific sink_a_set);
         tito =
           Some
-            (SpecificTito
-               { sanitized_tito_sources = source_a_set; sanitized_tito_sinks = sink_b_set });
+            (Specific { sanitized_tito_sources = source_a_set; sanitized_tito_sinks = sink_b_set });
       }
-    ~right:{ Sanitize.sources = Some AllSources; sinks = Some AllSinks; tito = Some AllTito };
+    ~right:{ Sanitize.sources = Some All; sinks = Some All; tito = Some All };
   assert_less_or_equal
     ~left:
       {
-        Sanitize.sources = Some (SpecificSources source_a_set);
-        sinks = Some (SpecificSinks sink_b_set);
+        Sanitize.sources = Some (Specific source_a_set);
+        sinks = Some (Specific sink_b_set);
         tito =
           Some
-            (SpecificTito
-               { sanitized_tito_sources = source_a_set; sanitized_tito_sinks = sink_b_set });
+            (Specific { sanitized_tito_sources = source_a_set; sanitized_tito_sinks = sink_b_set });
       }
     ~right:
       {
-        Sanitize.sources = Some (SpecificSources source_ab_set);
-        sinks = Some (SpecificSinks sink_ab_set);
+        Sanitize.sources = Some (Specific source_ab_set);
+        sinks = Some (Specific sink_ab_set);
         tito =
           Some
-            (SpecificTito
-               { sanitized_tito_sources = source_ab_set; sanitized_tito_sinks = sink_ab_set });
+            (Specific { sanitized_tito_sources = source_ab_set; sanitized_tito_sinks = sink_ab_set });
       };
   assert_not_less_or_equal
     ~left:
       {
-        Sanitize.sources = Some (SpecificSources source_a_set);
-        sinks = Some (SpecificSinks sink_b_set);
+        Sanitize.sources = Some (Specific source_a_set);
+        sinks = Some (Specific sink_b_set);
         tito =
           Some
-            (SpecificTito
-               { sanitized_tito_sources = source_a_set; sanitized_tito_sinks = sink_b_set });
+            (Specific { sanitized_tito_sources = source_a_set; sanitized_tito_sinks = sink_b_set });
       }
     ~right:
       {
-        Sanitize.sources = Some (SpecificSources source_ab_set);
-        sinks = Some (SpecificSinks sink_ab_set);
+        Sanitize.sources = Some (Specific source_ab_set);
+        sinks = Some (Specific sink_ab_set);
         tito =
           Some
-            (SpecificTito
-               { sanitized_tito_sources = source_b_set; sanitized_tito_sinks = sink_ab_set });
+            (Specific { sanitized_tito_sources = source_b_set; sanitized_tito_sinks = sink_ab_set });
       }
+
+
+let test_call_info_interval _ =
+  let assert_equal_interval ~actual ~expected =
+    assert_equal ~printer:CallInfoIntervals.show actual expected
+  in
+  assert_equal_interval
+    ~actual:(CallInfoIntervals.join CallInfoIntervals.top CallInfoIntervals.bottom)
+    ~expected:CallInfoIntervals.top;
+  assert_equal_interval
+    ~actual:(CallInfoIntervals.meet CallInfoIntervals.top CallInfoIntervals.bottom)
+    ~expected:CallInfoIntervals.bottom;
+  assert_equal
+    (CallInfoIntervals.less_or_equal ~left:CallInfoIntervals.top ~right:CallInfoIntervals.bottom)
+    false;
+  assert_equal
+    (CallInfoIntervals.less_or_equal ~left:CallInfoIntervals.bottom ~right:CallInfoIntervals.top)
+    true
 
 
 let () =
@@ -267,5 +296,6 @@ let () =
          "partition_call_map" >:: test_partition_call_map;
          "approximate_return_access_paths" >:: test_approximate_return_access_paths;
          "sanitize" >:: test_sanitize;
+         "call_info_interval" >:: test_call_info_interval;
        ]
   |> Test.run

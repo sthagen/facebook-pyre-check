@@ -270,11 +270,11 @@ let unannotated_global_environment class_metadata_environment =
   |> AliasEnvironment.ReadOnly.unannotated_global_environment
 
 
-let class_definition class_metadata_environment annotation ~dependency =
+let class_summary class_metadata_environment annotation ~dependency =
   Type.split annotation
   |> fst
   |> Type.primitive_name
-  >>= UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
+  >>= UnannotatedGlobalEnvironment.ReadOnly.get_class_summary
         (unannotated_global_environment class_metadata_environment)
         ?dependency
 
@@ -310,32 +310,19 @@ module ClassDecorators = struct
     eq: bool;
     order: bool;
     match_args: bool;
+    field_descriptors: Ast.Expression.t list;
   }
 
-  let extract_options
-      ~class_metadata_environment
-      ~names
-      ~default
-      ~init
-      ~repr
-      ~eq
-      ~order
+  let find_decorator ~class_metadata_environment ~names ?dependency class_summary =
+    UnannotatedGlobalEnvironment.ReadOnly.first_matching_class_decorator
+      (unannotated_global_environment class_metadata_environment)
       ?dependency
-      { Node.value = { ClassSummary.decorators; _ }; _ }
-    =
+      ~names
+      class_summary
+
+
+  let extract_options ~default ~init ~repr ~eq ~order decorator =
     let open Expression in
-    let get_decorators ~names =
-      let get_decorator decorator =
-        List.filter_map
-          ~f:
-            (UnannotatedGlobalEnvironment.ReadOnly.resolve_decorator_if_matches
-               (unannotated_global_environment class_metadata_environment)
-               ?dependency
-               ~target:decorator)
-          decorators
-      in
-      names |> List.map ~f:get_decorator |> List.concat
-    in
     let extract_options_from_arguments =
       let apply_arguments default argument =
         let recognize_value ~default = function
@@ -379,35 +366,178 @@ module ClassDecorators = struct
               else
                 default
             in
+            let default =
+              if String.equal argument_name "field_descriptors" then
+                match value with
+                | Expression.Tuple field_descriptors -> { default with field_descriptors }
+                | _ -> default
+              else
+                default
+            in
             default
         | _ -> default
       in
       List.fold ~init:default ~f:apply_arguments
     in
-    match get_decorators ~names with
-    | [] -> None
-    | { arguments = Some arguments; _ } :: _ -> Some (extract_options_from_arguments arguments)
-    | _ -> Some default
+    match decorator with
+    | { Decorator.arguments = Some arguments; _ } -> extract_options_from_arguments arguments
+    | _ -> default
 
 
-  let dataclass_options =
-    extract_options
+  let dataclass_options ~class_metadata_environment ?dependency class_summary =
+    let field_descriptors =
+      [Reference.create "dataclasses.field" |> Ast.Expression.from_reference ~location:Location.any]
+    in
+    find_decorator
       ~names:["dataclasses.dataclass"; "dataclass"]
-      ~default:{ init = true; repr = true; eq = true; order = false; match_args = true }
-      ~init:"init"
-      ~repr:"repr"
-      ~eq:"eq"
-      ~order:"order"
+      ~class_metadata_environment
+      ?dependency
+      class_summary
+    >>| extract_options
+          ~default:
+            {
+              init = true;
+              repr = true;
+              eq = true;
+              order = false;
+              match_args = true;
+              field_descriptors;
+            }
+          ~init:"init"
+          ~repr:"repr"
+          ~eq:"eq"
+          ~order:"order"
 
 
-  let attrs_attributes =
-    extract_options
+  let attrs_attributes ~class_metadata_environment ?dependency class_summary =
+    find_decorator
       ~names:["attr.s"; "attr.attrs"]
-      ~default:{ init = true; repr = true; eq = true; order = true; match_args = false }
-      ~init:"init"
-      ~repr:"repr"
-      ~eq:"cmp"
-      ~order:"cmp"
+      ~class_metadata_environment
+      ?dependency
+      class_summary
+    >>| extract_options
+          ~default:
+            {
+              init = true;
+              repr = true;
+              eq = true;
+              order = true;
+              match_args = false;
+              field_descriptors = [];
+            }
+          ~init:"init"
+          ~repr:"repr"
+          ~eq:"cmp"
+          ~order:"cmp"
+
+
+  let is_dataclass_transform decorator =
+    let decorator_reference { Decorator.name = { Node.value; _ }; _ } = value in
+    Decorator.from_expression decorator
+    >>| decorator_reference
+    >>| Reference.last
+    >>| String.equal "__dataclass_transform__"
+    |> Option.value ~default:false
+
+
+  let dataclass_transform_default =
+    {
+      init = true;
+      repr = false;
+      eq = true;
+      order = false;
+      match_args = false;
+      field_descriptors = [];
+    }
+
+
+  let find_dataclass_transform_decorator_with_default
+      ~class_metadata_environment
+      ?dependency
+      { Node.value = { ClassSummary.decorators; _ }; _ }
+    =
+    let get_dataclass_transform_decorator_with_default decorator =
+      let decorator_reference { Decorator.name = { Node.value; _ }; _ } = value in
+      let lookup_function reference =
+        UnannotatedGlobalEnvironment.ReadOnly.get_function_definition
+          (unannotated_global_environment class_metadata_environment)
+          ?dependency
+          reference
+        >>= fun { FunctionDefinition.body; _ } -> body >>| Node.value
+      in
+      let function_decorators { Define.signature = { Define.Signature.decorators; _ }; _ } =
+        decorators
+      in
+      decorator_reference decorator
+      |> lookup_function
+      >>| function_decorators
+      >>= List.find ~f:is_dataclass_transform
+      >>= Decorator.from_expression
+      >>| extract_options
+            ~default:dataclass_transform_default
+            ~init:""
+            ~repr:""
+            ~eq:"eq_default"
+            ~order:"order_default"
+      >>| fun default -> decorator, default
+    in
+    decorators
+    |> List.filter_map ~f:Decorator.from_expression
+    |> List.find_map ~f:get_dataclass_transform_decorator_with_default
+
+
+  let dataclass_transform_options ~class_metadata_environment ?dependency class_summary =
+    find_dataclass_transform_decorator_with_default
+      ~class_metadata_environment
+      ?dependency
+      class_summary
+    >>| fun (decorator, default) ->
+    extract_options ~default ~init:"init" ~repr:"repr" ~eq:"eq" ~order:"order" decorator
+
+
+  let find_dataclass_transform_class_as_decorator_with_default
+      ~class_metadata_environment
+      ?dependency
+      { Node.value = { ClassSummary.name; bases = { init_subclass_arguments; _ }; _ }; _ }
+    =
+    let get_dataclass_transform_default name =
+      let class_decorators { ClassSummary.decorators; _ } = decorators in
+      name
+      |> UnannotatedGlobalEnvironment.ReadOnly.get_class_summary
+           (ClassMetadataEnvironment.ReadOnly.unannotated_global_environment
+              class_metadata_environment)
+           ?dependency
+      >>| Node.value
+      >>| class_decorators
+      >>= List.find ~f:is_dataclass_transform
+      >>= Decorator.from_expression
+      >>| extract_options
+            ~default:dataclass_transform_default
+            ~init:""
+            ~repr:""
+            ~eq:"eq_default"
+            ~order:"order_default"
+    in
+    ClassMetadataEnvironment.ReadOnly.successors
+      class_metadata_environment
+      ?dependency
+      (Reference.show name)
+    |> List.find_map ~f:get_dataclass_transform_default
+    >>| fun default ->
+    ( {
+        Decorator.name = Node.create_with_default_location name;
+        arguments = Some init_subclass_arguments;
+      },
+      default )
+
+
+  let dataclass_transform_class_options ~class_metadata_environment ?dependency class_summary =
+    find_dataclass_transform_class_as_decorator_with_default
+      ~class_metadata_environment
+      ?dependency
+      class_summary
+    >>| fun (decorator, default) ->
+    extract_options ~default ~init:"init" ~repr:"repr" ~eq:"eq" ~order:"order" decorator
 
 
   let apply
@@ -421,8 +551,8 @@ module ClassDecorators = struct
     let open Expression in
     let { Node.value = { ClassSummary.name; _ }; _ } = definition in
     let parent_dataclasses =
-      let class_definition =
-        UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
+      let class_summary =
+        UnannotatedGlobalEnvironment.ReadOnly.get_class_summary
           (ClassMetadataEnvironment.ReadOnly.unannotated_global_environment
              class_metadata_environment)
           ?dependency
@@ -431,7 +561,7 @@ module ClassDecorators = struct
         class_metadata_environment
         ?dependency
         (Reference.show name)
-      |> List.filter_map ~f:class_definition
+      |> List.filter_map ~f:class_summary
     in
     let generate_attributes ~options =
       let already_in_table name =
@@ -491,36 +621,17 @@ module ClassDecorators = struct
       in
       match options definition with
       | None -> []
-      | Some { init; repr; eq; order; match_args } ->
+      | Some { init; repr; eq; order; match_args; field_descriptors } ->
           let init_parameters ~implicitly_initialize =
             let extract_dataclass_field_arguments (_, value) =
               match value with
-              | {
-               Node.value =
-                 Expression.Call
-                   {
-                     callee =
-                       {
-                         Node.value =
-                           Expression.Name
-                             (Name.Attribute
-                               {
-                                 base =
-                                   {
-                                     Node.value = Expression.Name (Name.Identifier "dataclasses");
-                                     _;
-                                   };
-                                 attribute = "field";
-                                 _;
-                               });
-                         _;
-                       };
-                     arguments;
-                     _;
-                   };
-               _;
-              } ->
-                  Some arguments
+              | { Node.value = Expression.Call { callee; arguments; _ }; _ } ->
+                  Option.some_if
+                    (List.exists field_descriptors ~f:(fun field_descriptor ->
+                         Int.equal
+                           (Ast.Expression.location_insensitive_compare callee field_descriptor)
+                           0))
+                    arguments
               | _ -> None
             in
             let init_not_disabled attribute =
@@ -538,20 +649,19 @@ module ClassDecorators = struct
             let extract_init_value (attribute, value) =
               let initialized = AnnotatedAttribute.initialized attribute in
               let get_default_value { Call.Argument.name; value } =
-                match name with
-                | Some { Node.value = parameter_name; _ } ->
-                    if String.equal "default" (Identifier.sanitized parameter_name) then
-                      Some value
-                    else if String.equal "default_factory" (Identifier.sanitized parameter_name)
-                    then
-                      let { Node.location; _ } = value in
-                      Some
-                        {
-                          Node.value = Expression.Call { Call.callee = value; arguments = [] };
-                          location;
-                        }
-                    else
-                      None
+                name
+                >>| Node.value
+                >>| Identifier.sanitized
+                >>= function
+                | "default" -> Some value
+                | "default_factory"
+                | "factory" ->
+                    let { Node.location; _ } = value in
+                    Some
+                      {
+                        Node.value = Expression.Call { Call.callee = value; arguments = [] };
+                        location;
+                      }
                 | _ -> None
               in
               match initialized with
@@ -763,7 +873,18 @@ module ClassDecorators = struct
       (* TODO (T41039225): Add support for other methods *)
       generate_attributes ~options:(attrs_attributes ~class_metadata_environment ?dependency)
     in
-    dataclass_attributes () @ attrs_attributes ()
+    let dataclass_transform_attributes () =
+      generate_attributes
+        ~options:(dataclass_transform_options ~class_metadata_environment ?dependency)
+    in
+    let dataclass_transform_class_attributes () =
+      generate_attributes
+        ~options:(dataclass_transform_class_options ~class_metadata_environment ?dependency)
+    in
+    dataclass_attributes ()
+    @ attrs_attributes ()
+    @ dataclass_transform_attributes ()
+    @ dataclass_transform_class_attributes ()
     |> List.iter ~f:(UninstantiatedAttributeTable.add table)
 end
 
@@ -2326,8 +2447,8 @@ class base class_metadata_environment dependency =
       in
       let add_constructor table =
         let successor_definitions =
-          let class_definition =
-            UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
+          let class_summary =
+            UnannotatedGlobalEnvironment.ReadOnly.get_class_summary
               (ClassMetadataEnvironment.ReadOnly.unannotated_global_environment
                  class_metadata_environment)
               ?dependency
@@ -2336,7 +2457,7 @@ class base class_metadata_environment dependency =
             class_metadata_environment
             ?dependency
             class_name
-          |> List.filter_map ~f:class_definition
+          |> List.filter_map ~f:class_summary
         in
         let name_annotation_pairs =
           let name_annotation_pair attribute =
@@ -2431,14 +2552,6 @@ class base class_metadata_environment dependency =
         ~name:"__table__"
         ~annotation:(Type.Primitive "sqlalchemy.sql.schema.Table")
         table;
-      add_special_attribute
-        ~name:"metadata"
-        ~annotation:(Type.Primitive "sqlalchemy_1_4.sql.schema.MetaData")
-        table;
-      add_special_attribute
-        ~name:"__table__"
-        ~annotation:(Type.Primitive "sqlalchemy_1_4.sql.schema.Table")
-        table;
       table
 
     method typed_dictionary_special_methods_table
@@ -2452,8 +2565,8 @@ class base class_metadata_environment dependency =
         ({ Node.value = { ClassSummary.name; _ }; _ } as parent_definition) =
       let table = UninstantiatedAttributeTable.create () in
       let add_special_methods () =
-        let class_definition =
-          UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
+        let class_summary =
+          UnannotatedGlobalEnvironment.ReadOnly.get_class_summary
             (ClassMetadataEnvironment.ReadOnly.unannotated_global_environment
                class_metadata_environment)
             ?dependency
@@ -2463,7 +2576,7 @@ class base class_metadata_environment dependency =
             class_metadata_environment
             ?dependency
             (Reference.show name)
-          |> List.filter_map ~f:class_definition
+          |> List.filter_map ~f:class_summary
         in
         let total =
           ClassHierarchy.is_total_typed_dictionary
@@ -2474,7 +2587,7 @@ class base class_metadata_environment dependency =
             class_name
         in
         let base_typed_dictionary_definition =
-          match class_definition (Type.TypedDictionary.class_name ~total) with
+          match class_summary (Type.TypedDictionary.class_name ~total) with
           | Some definition -> definition
           | None -> failwith "Expected to find TypedDictionary"
         in
@@ -2679,7 +2792,7 @@ class base class_metadata_environment dependency =
         table
       in
       match
-        ( UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
+        ( UnannotatedGlobalEnvironment.ReadOnly.get_class_summary
             (ClassMetadataEnvironment.ReadOnly.unannotated_global_environment
                class_metadata_environment)
             ?dependency
@@ -2691,13 +2804,10 @@ class base class_metadata_environment dependency =
       with
       | Some definition, Some { is_typed_dictionary; is_test = in_test; _ } ->
           let is_declarative_sqlalchemy_class () =
-            match self#metaclass ~assumptions class_name with
-            | Some
-                (Type.Primitive
-                  ( "sqlalchemy.ext.declarative.api.DeclarativeMeta"
-                  | "sqlalchemy_1_4.ext.declarative.api.DeclarativeMeta" )) ->
-                true
-            | _ -> false
+            Option.equal
+              Type.equal
+              (self#metaclass ~assumptions class_name)
+              (Some (Type.Primitive "sqlalchemy.ext.declarative.api.DeclarativeMeta"))
           in
           let table =
             if is_typed_dictionary then
@@ -2994,7 +3104,7 @@ class base class_metadata_environment dependency =
                     (Type.Variable.Unary.create "$synthetic_attribute_resolution_variable")
                 in
                 match name with
-                (* This can't be expressed without IntVars, StrVars, and corresponding ListVariadic
+                (* This can't be expressed without IntVars, StrVars, and corresponding TypeVarTuple
                    variants of them *)
                 | "typing_extensions.Literal"
                 | "typing.Literal"
@@ -3322,17 +3432,19 @@ class base class_metadata_environment dependency =
             let annotation, final, class_variable =
               parsed_annotation
               >>| (fun annotation ->
-                    let is_final, annotation =
-                      match Type.final_value annotation with
-                      | Some annotation -> true, annotation
-                      | None -> false, annotation
-                    in
-                    let is_class_variable, annotation =
+                    let process_class_variable annotation =
                       match Type.class_variable_value annotation with
                       | Some annotation -> true, annotation
                       | None -> false, annotation
                     in
-                    Some annotation, is_final, is_class_variable)
+                    match Type.final_value annotation with
+                    | `NoParameter -> None, true, false
+                    | `NotFinal ->
+                        let is_class_variable, annotation = process_class_variable annotation in
+                        Some annotation, false, is_class_variable
+                    | `Ok annotation ->
+                        let is_class_variable, annotation = process_class_variable annotation in
+                        Some annotation, true, is_class_variable)
               |> Option.value ~default:(None, false, false)
             in
             (* Handle enumeration attributes. *)
@@ -3391,16 +3503,11 @@ class base class_metadata_environment dependency =
               | None, Some value ->
                   let literal_value_annotation = self#resolve_literal ~assumptions value in
                   let is_dataclass_attribute =
-                    let get_decorator =
-                      UnannotatedGlobalEnvironment.ReadOnly.get_decorator
-                        (unannotated_global_environment class_metadata_environment)
-                        ?dependency
-                    in
-                    let get_dataclass_decorator annotated =
-                      get_decorator annotated ~decorator:"dataclasses.dataclass"
-                      @ get_decorator annotated ~decorator:"dataclass"
-                    in
-                    not (List.is_empty (get_dataclass_decorator parent))
+                    UnannotatedGlobalEnvironment.ReadOnly.exists_matching_class_decorator
+                      (unannotated_global_environment class_metadata_environment)
+                      ?dependency
+                      ~names:["dataclasses.dataclass"; "dataclass"]
+                      parent
                   in
                   if
                     (not (Type.is_partially_typed literal_value_annotation))
@@ -3567,7 +3674,7 @@ class base class_metadata_environment dependency =
               in
               base_classes
               |> List.map ~f:base_to_class
-              |> List.filter_map ~f:(class_definition class_metadata_environment ~dependency)
+              |> List.filter_map ~f:(class_summary class_metadata_environment ~dependency)
               |> List.filter ~f:(fun base_class ->
                      not ([%compare.equal: ClassSummary.t Node.t] base_class original))
             in
@@ -3605,7 +3712,7 @@ class base class_metadata_environment dependency =
                 first
             | _ -> candidate)
       in
-      UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
+      UnannotatedGlobalEnvironment.ReadOnly.get_class_summary
         (ClassMetadataEnvironment.ReadOnly.unannotated_global_environment
            class_metadata_environment)
         ?dependency
@@ -3652,7 +3759,7 @@ class base class_metadata_environment dependency =
       let open Ast.Expression in
       let is_concrete_class class_type =
         class_type
-        |> class_definition class_metadata_environment ~dependency
+        |> class_summary class_metadata_environment ~dependency
         >>| (fun { Node.value = { name; _ }; _ } -> Reference.show name)
         >>= ClassHierarchyEnvironment.ReadOnly.variables
               (class_hierarchy_environment class_metadata_environment)
@@ -4430,17 +4537,16 @@ class base class_metadata_environment dependency =
               >>| self#parse_annotation ~assumptions
               >>= fun annotation -> Option.some_if (not (Type.is_type_alias annotation)) annotation
             in
-            let annotation, is_final =
+            let annotation, is_explicit, is_final =
               match explicit_annotation with
-              | Some explicit when Type.is_final explicit ->
-                  Type.final_value explicit |> Option.value ~default:explicit, true
-              | Some explicit -> explicit, false
-              | None -> self#resolve_literal value ~assumptions, false
+              | None -> self#resolve_literal value ~assumptions, false, false
+              | Some explicit -> (
+                  match Type.final_value explicit with
+                  | `Ok final_value -> final_value, true, true
+                  | `NoParameter -> self#resolve_literal value ~assumptions, false, true
+                  | `NotFinal -> explicit, true, false)
             in
-            produce_assignment_global
-              ~is_explicit:(Option.is_some explicit_annotation)
-              ~is_final
-              annotation
+            produce_assignment_global ~is_explicit ~is_final annotation
             |> fun annotation ->
             Some { Global.annotation; undecorated_signature = None; problem = None }
         | TupleAssign { value; index; total_length; _ } ->
@@ -4509,8 +4615,6 @@ module ParseAnnotationCache = struct
       let prefix = Prefix.make ()
 
       let description = "parse annotation"
-
-      let unmarshall value = Marshal.from_string value 0
     end
 
     module KeySet = SharedMemoryKeys.ParseAnnotationKey.Set
@@ -4564,8 +4668,6 @@ module MetaclassCache = struct
 
       let compare = compare
 
-      type out = t
-
       let from_string = Fn.id
     end
 
@@ -4575,8 +4677,6 @@ module MetaclassCache = struct
       let prefix = Prefix.make ()
 
       let description = "metaclasses"
-
-      let unmarshall value = Marshal.from_string value 0
     end
 
     module KeySet = String.Set
@@ -4629,8 +4729,6 @@ module AttributeCache = struct
       let prefix = Prefix.make ()
 
       let description = "attributes"
-
-      let unmarshall value = Marshal.from_string value 0
     end
 
     module KeySet = SharedMemoryKeys.AttributeTableKey.Set
@@ -4731,8 +4829,6 @@ module GlobalAnnotationCache = struct
       let prefix = Prefix.make ()
 
       let description = "Global"
-
-      let unmarshall value = Marshal.from_string value 0
 
       let compare = Option.compare Global.compare
     end

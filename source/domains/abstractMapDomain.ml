@@ -131,11 +131,12 @@ module Make (Key : KEY) (Element : AbstractDomainCore.S) = struct
       else
         let find_witness ~key:_ ~data =
           match data with
-          | `Both (left, right) -> if not (Element.less_or_equal ~left ~right) then raise Exit
+          | `Both (left, right) ->
+              if not (Element.less_or_equal ~left ~right) then raise_notrace Exit
           | `Left _ ->
               (* If absence_implicitly_maps_to_bottom, then left is not bottom, so in either case,
                  the relation does not hold. *)
-              raise Exit
+              raise_notrace Exit
           | `Right _ ->
               (* An absent key is less than a present key in either case. *)
               ()
@@ -170,6 +171,14 @@ module Make (Key : KEY) (Element : AbstractDomainCore.S) = struct
             ~init:Map.empty
       | Key, Add -> update map ~key:f ~data:Element.bottom
       | Key, Filter -> Map.filter (fun key _ -> f key) map
+      | Key, FilterMap ->
+          Map.fold
+            map
+            ~f:(fun ~key ~data result ->
+              match f key with
+              | Some key -> update ~key ~data result
+              | None -> result)
+            ~init:Map.empty
       | Key, Expand ->
           Map.fold
             map
@@ -187,6 +196,14 @@ module Make (Key : KEY) (Element : AbstractDomainCore.S) = struct
           let key, data = f in
           update map ~key ~data
       | KeyValue, Filter -> Map.filter (fun key data -> f (key, data)) map
+      | KeyValue, FilterMap ->
+          Map.fold
+            map
+            ~f:(fun ~key ~data result ->
+              match f (key, data) with
+              | Some (key, data) -> update ~key ~data result
+              | None -> result)
+            ~init:Map.empty
       | KeyValue, Expand ->
           Map.fold
             map

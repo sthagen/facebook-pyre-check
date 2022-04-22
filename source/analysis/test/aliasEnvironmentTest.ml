@@ -21,7 +21,6 @@ let test_simple_registration context =
       AliasEnvironment.update_this_and_all_preceding_environments
         alias_environment
         ~scheduler:(mock_scheduler ())
-        ~configuration:(ScratchProject.configuration_of project)
         ColdStart
     in
     let read_only = AliasEnvironment.UpdateResult.read_only update_result in
@@ -62,15 +61,14 @@ let test_simple_registration context =
 
 
 let test_harder_registrations context =
-  let assert_registers ~expected_alias source name =
-    let project = ScratchProject.setup ["test.py", source] ~context in
+  let assert_registers ?external_sources ~expected_alias source name =
+    let project = ScratchProject.setup ?external_sources ["test.py", source] ~context in
     let ast_environment = ScratchProject.build_ast_environment project in
     let alias_environment = AliasEnvironment.create ast_environment in
     let update_result =
       AliasEnvironment.update_this_and_all_preceding_environments
         alias_environment
         ~scheduler:(mock_scheduler ())
-        ~configuration:(ScratchProject.configuration_of project)
         ColdStart
     in
     let read_only = AliasEnvironment.UpdateResult.read_only update_result in
@@ -282,6 +280,21 @@ let test_harder_registrations context =
                    (Type.OrderedTypes.Concatenation.create_unpackable
                       (Type.Variable.Variadic.Tuple.create "test.Ts"));
                ])));
+  (* An alias containing "..." should not mistake the "..." for some unknown alias. *)
+  assert_registers
+    ~external_sources:["reexports_callable.py", {|
+    from typing import Callable as Callable
+  |}]
+    {|
+    from reexports_callable import Callable
+    F = Callable[..., int]
+  |}
+    "test.F"
+    ~expected_alias:(Some (Type.TypeAlias (Type.Callable.create ~annotation:Type.integer ())));
+  (* Allow the union syntax in type aliases. *)
+  parsed_assert_registers {|
+    X = int | str
+  |} "test.X" (Some "typing.Union[int, str]");
   ()
 
 
@@ -310,7 +323,6 @@ let test_updates context =
       AliasEnvironment.update_this_and_all_preceding_environments
         alias_environment
         ~scheduler
-        ~configuration
         trigger
     in
     let update_result = update ColdStart in
@@ -353,7 +365,7 @@ let test_updates context =
         List.map new_sources ~f:(fun (relative, _) ->
             PyrePath.create_relative ~root:local_root ~relative)
       in
-      ModuleTracker.update ~configuration ~paths module_tracker
+      ModuleTracker.update ~paths module_tracker
       |> (fun updates -> AstEnvironment.Update updates)
       |> update
     in

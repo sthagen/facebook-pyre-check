@@ -24,38 +24,23 @@ let initialize_models kind ~scheduler ~static_analysis_configuration ~environmen
     AnalysisResult.get_abstract_analysis kind
   in
   let module Analysis = (val analysis) in
-  (* We call initialize_models outside the returned lambda so that initial models are computed
-     eagerly. *)
-  let initialized_models =
-    Analysis.initialize_models
-      ~static_analysis_configuration
-      ~scheduler
-      ~environment
-      ~callables
-      ~stubs
-  in
-  let specialize_models
-      { AnalysisResult.InitializedModels.initial_models = analysis_initial_models; skip_overrides }
-    =
+  let specialize_models { AnalysisResult.initial_models = analysis_initial_models; skip_overrides } =
     let to_model_t model =
       let pkg = AnalysisResult.Pkg { kind = ModelPart storable_kind; value = model } in
       { AnalysisResult.models = Kind.Map.add kind pkg Kind.Map.empty; is_obscure = false }
     in
     {
-      AnalysisResult.InitializedModels.initial_models =
-        analysis_initial_models |> Target.Map.map ~f:to_model_t;
+      AnalysisResult.initial_models = analysis_initial_models |> Target.Map.map ~f:to_model_t;
       skip_overrides;
     }
   in
-  let get_specialized_models ~updated_environment =
-    (* We call get_models_including_generated_models within the lambda so that callable-specific
-       models are generated only on demand. *)
-    AnalysisResult.InitializedModels.get_models_including_generated_models
-      ~updated_environment
-      initialized_models
-    |> specialize_models
-  in
-  AnalysisResult.InitializedModels.create get_specialized_models
+  Analysis.initialize_models
+    ~static_analysis_configuration
+    ~scheduler
+    ~environment
+    ~callables
+    ~stubs
+  |> specialize_models
 
 
 module Testing = struct
@@ -77,7 +62,7 @@ module Testing = struct
              Target.Map.set models ~key:target ~data:AnalysisResult.empty_model)
     in
     let add_missing_obscure_models models =
-      (stubs :> Target.t list)
+      stubs
       |> List.filter ~f:(fun target -> not (Target.Map.mem models target))
       |> List.fold ~init:models ~f:(fun models target ->
              Target.Map.set models ~key:target ~data:AnalysisResult.obscure_model)
@@ -87,18 +72,20 @@ end
 
 (* Save initial models in the shared memory. *)
 let record_initial_models ~callables ~stubs models =
-  Testing.record_initial_models ~targets:(callables :> Target.t list) ~stubs models
+  Testing.record_initial_models ~targets:callables ~stubs models
 
 
 let analysis_failed step ~exn callable ~message =
-  let callable = (callable :> Target.t) in
-  Log.error
-    "%s in step %s while analyzing %s.\nException %s\nBacktrace: %s"
-    message
-    (FixpointState.show_step step)
-    (Target.show callable)
-    (Exn.to_string exn)
-    (Printexc.get_backtrace ());
+  let message =
+    Format.asprintf
+      "%s in step %a while analyzing %a."
+      message
+      FixpointState.pp_step
+      step
+      Target.pp_pretty
+      callable
+  in
+  Log.log_exception message exn (Worker.exception_backtrace exn);
   raise exn
 
 
@@ -272,7 +259,7 @@ let widen_if_necessary step callable ~old_model ~new_model result =
     Log.log
       ~section:`Interprocedural
       "Reached fixpoint for %a\n%a"
-      Target.pretty_print
+      Target.pp_pretty
       callable
       AnalysisResult.pp_model_t
       old_model;
@@ -282,7 +269,7 @@ let widen_if_necessary step callable ~old_model ~new_model result =
     Log.log
       ~section:`Interprocedural
       "Widened fixpoint for %a\nold: %anew: %a\nwidened: %a"
-      Target.pretty_print
+      Target.pp_pretty
       callable
       AnalysisResult.pp_model_t
       old_model
@@ -293,15 +280,8 @@ let widen_if_necessary step callable ~old_model ~new_model result =
     FixpointState.{ is_partial = true; model; result }
 
 
-let analyze_define
-    step
-    abstract_analysis
-    callable
-    environment
-    qualifier
-    ({ Node.value = { Define.signature = { name; _ }; _ }; _ } as define)
-  =
-  let () = Log.log ~section:`Interprocedural "Analyzing %a" Target.pp_callable_t callable in
+let analyze_define step abstract_analysis callable environment qualifier define =
+  let () = Log.log ~section:`Interprocedural "Analyzing %a" Target.pp_pretty callable in
   let old_model =
     match FixpointState.get_old_model callable with
     | Some model ->
@@ -309,14 +289,13 @@ let analyze_define
           Log.log
             ~section:`Interprocedural
             "Analyzing %a, with initial model %a"
-            Target.pp_callable_t
+            Target.pp_pretty
             callable
             AnalysisResult.pp_model_t
             model
         in
         model
-    | None ->
-        Format.asprintf "No initial model found for %a" Target.pretty_print callable |> failwith
+    | None -> Format.asprintf "No initial model found for %a" Target.pp_pretty callable |> failwith
   in
   let models, results =
     try
@@ -329,14 +308,6 @@ let analyze_define
       ( Kind.Map.add abstract_kind (Pkg { kind = ModelPart kind; value = model }) Kind.Map.empty,
         Kind.Map.add abstract_kind (Pkg { kind = ResultPart kind; value = result }) Kind.Map.empty )
     with
-    | Analysis.ClassHierarchy.Untracked annotation ->
-        Log.log
-          ~section:`Info
-          "Could not generate model for `%a` due to invalid annotation `%s`"
-          Reference.pp
-          name
-          annotation;
-        AnalysisResult.Kind.Map.empty, AnalysisResult.Kind.Map.empty
     | Sys.Break as exn -> analysis_failed step ~exn ~message:"Hit Ctrl+C" callable
     | _ as exn -> analysis_failed step ~exn ~message:"Analysis failed" callable
   in
@@ -371,7 +342,7 @@ let analyze_overrides ({ FixpointState.iteration; _ } as step) callable =
           Log.log
             ~section:`Interprocedural
             "During override analysis, can't find model for %a"
-            Target.pretty_print
+            Target.pp_pretty
             override;
           result
       | Some model ->
@@ -391,8 +362,7 @@ let analyze_overrides ({ FixpointState.iteration; _ } as step) callable =
   let old_model =
     match FixpointState.get_old_model callable with
     | Some model -> model
-    | None ->
-        Format.asprintf "No initial model found for %a" Target.pretty_print callable |> failwith
+    | None -> Format.asprintf "No initial model found for %a" Target.pp_pretty callable |> failwith
   in
   let state =
     widen_if_necessary step callable ~old_model ~new_model:model AnalysisResult.empty_result
@@ -422,29 +392,34 @@ let analyze_callable analysis step callable environment =
     | None -> ()
     | Some { step = { epoch; _ }; _ } when epoch <> step.epoch ->
         let message =
-          Format.sprintf
-            "Fixpoint inconsistency: callable %s analyzed during epoch %s, but stored metadata \
-             from epoch %s"
-            (Target.show callable)
-            (Epoch.show step.epoch)
-            (Epoch.show epoch)
+          Format.asprintf
+            "Fixpoint inconsistency: callable %a analyzed during epoch %a, but stored metadata \
+             from epoch %a"
+            Target.pp_pretty
+            callable
+            Epoch.pp
+            step.epoch
+            Epoch.pp
+            epoch
         in
         Log.error "%s" message;
         failwith message
     | _ -> ()
   in
   match callable with
-  | #Target.callable_t as callable -> (
+  | (Target.Function _ | Target.Method _) as callable -> (
       match Target.get_module_and_definition callable ~resolution with
       | None ->
-          let () = Log.error "Found no definition for %s" (Target.show callable) in
+          let () = Log.error "Found no definition for %a" Target.pp_pretty callable in
           let () =
             if not (FixpointState.is_initial_iteration step) then (
               let message =
-                Format.sprintf
-                  "Fixpoint inconsistency: Target %s without body analyzed past initial step: %s"
-                  (Target.show callable)
-                  (FixpointState.show_step step)
+                Format.asprintf
+                  "Fixpoint inconsistency: Target %a without body analyzed past initial step: %a"
+                  Target.pp_pretty
+                  callable
+                  FixpointState.pp_step
+                  step
               in
               Log.error "%s" message;
               failwith message)
@@ -459,9 +434,9 @@ let analyze_callable analysis step callable environment =
           if Define.dump value then
             callables_to_dump := Target.Set.add callable !callables_to_dump;
           analyze_define step analysis callable environment qualifier define)
-  | #Target.override_t as callable -> analyze_overrides step callable
-  | #Target.object_t as path ->
-      Format.asprintf "Found object %a in fixpoint analysis" Target.pp path |> failwith
+  | Target.Override _ as callable -> analyze_overrides step callable
+  | Target.Object _ as path ->
+      Format.asprintf "Found object %a in fixpoint analysis" Target.pp_pretty path |> failwith
 
 
 type expensive_callable = {
@@ -483,14 +458,15 @@ let one_analysis_pass ~analysis ~step ~environment ~callables =
     let result = analyze_callable analysis step callable environment in
     FixpointState.add step callable result;
     (* Log outliers. *)
-    if Timer.stop_in_ms timer > 500 then begin
+    let time_to_analyze_in_ms = Timer.stop_in_ms timer in
+    if time_to_analyze_in_ms > 500 then begin
       Statistics.performance
         ~name:"static analysis of expensive callable"
         ~timer
         ~section:`Interprocedural
-        ~normals:["callable", Target.show callable]
+        ~normals:["callable", Target.show_pretty callable]
         ();
-      { time_to_analyze_in_ms = Timer.stop_in_ms timer; callable } :: expensive_callables
+      { time_to_analyze_in_ms; callable } :: expensive_callables
     end
     else
       expensive_callables
@@ -546,17 +522,20 @@ let compute_callables_to_reanalyze
             (* This is fine - even though this function was called, it was filtered from the
                analysis beforehand. *)
             Log.warning
-              "%s was omitted due to being explicitly filtered from the analysis."
-              (Target.show callable)
+              "%a was omitted due to being explicitly filtered from the analysis."
+              Target.pp_pretty
+              callable
         | Some { step = { epoch; _ }; _ } when epoch = Epoch.predefined -> ()
         | Some meta ->
             let message =
-              Format.sprintf
-                "Re-analysis in iteration %d determined to analyze %s but it is not part of epoch \
-                 %s (meta: %s)"
+              Format.asprintf
+                "Re-analysis in iteration %d determined to analyze %a but it is not part of epoch \
+                 %a (meta: %s)"
                 step.iteration
-                (Target.show callable)
-                (Epoch.show step.epoch)
+                Target.pp_pretty
+                callable
+                Epoch.pp
+                step.epoch
                 (meta_data_to_string meta)
             in
             Log.error "%s" message;
@@ -583,18 +562,18 @@ let compute_fixpoint
     let () =
       let witnesses =
         if number_of_callables <= 6 then
-          String.concat ~sep:", " (List.map ~f:Target.show callables_to_analyze)
+          String.concat ~sep:", " (List.map ~f:Target.show_pretty callables_to_analyze)
         else
           "..."
       in
-      Log.log ~section:`Info "Iteration #%d. %d Target [%s]" iteration number_of_callables witnesses
+      Log.info "Iteration #%d. %d callables [%s]" iteration number_of_callables witnesses
     in
     if number_of_callables = 0 then (* Fixpoint. *)
       iteration
     else if iteration >= max_iterations then (
       let max_to_show = 15 in
       let bucket =
-        callables_to_analyze |> List.map ~f:Target.show |> List.sort ~compare:String.compare
+        callables_to_analyze |> List.map ~f:Target.show_pretty |> List.sort ~compare:String.compare
       in
       let bucket_len = List.length bucket in
       let message =
@@ -658,7 +637,7 @@ let compute_fixpoint
             |> List.sort ~compare:(fun left right ->
                    Int.compare right.time_to_analyze_in_ms left.time_to_analyze_in_ms)
             |> List.map ~f:(fun { time_to_analyze_in_ms; callable } ->
-                   Format.sprintf "`%s`: %d ms" (Target.show callable) time_to_analyze_in_ms)
+                   Format.asprintf "`%a`: %d ms" Target.pp_pretty callable time_to_analyze_in_ms)
             |> String.concat ~sep:", ")
       in
       let callables_to_analyze =
@@ -669,13 +648,14 @@ let compute_fixpoint
           ~filtered_callables
           ~all_callables
       in
+      Memory.SharedMemory.collect `aggressive;
       let () =
         Log.info
           "Iteration #%n, %d callables, heap size %.3fGB took %.2fs"
           iteration
           number_of_callables
-          (Int.to_float (SharedMem.heap_size ()) /. 1000000000.0)
-          (Timer.stop timer |> Time.Span.to_sec)
+          (Int.to_float (SharedMemory.heap_size ()) /. 1000000000.0)
+          (Timer.stop_in_sec timer)
       in
       iterate ~iteration:(iteration + 1) callables_to_analyze
   in
@@ -693,7 +673,7 @@ let compute_fixpoint
       let resolution = Analysis.Resolution.global_resolution resolution in
       let { Define.signature = { name; _ }; _ } =
         match callable with
-        | #Target.callable_t as callable ->
+        | (Target.Function _ | Target.Method _) as callable ->
             Target.get_module_and_definition callable ~resolution
             >>| (fun (_, { Node.value; _ }) -> value)
             |> fun value -> Option.value_exn value
@@ -713,10 +693,7 @@ let compute_fixpoint
     iterations
   with
   | exn ->
-      Log.error
-        "Fixpoint iteration failed.\nException %s\nBacktrace: %s"
-        (Exn.to_string exn)
-        (Printexc.get_backtrace ());
+      Log.log_exception "Fixpoint iteration failed." exn (Worker.exception_backtrace exn);
       raise exn
 
 

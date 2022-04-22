@@ -12,7 +12,7 @@ from typing_extensions import Protocol
 # in their own environment
 from . import safe_json, tests, type_variable_operators
 from .generic import Generic
-from .refinement import none_throws, assert_is_instance, safe_cast
+from .refinement import assert_is_instance, none_throws, safe_cast
 
 
 __all__ = [
@@ -20,7 +20,6 @@ __all__ = [
     "DecoratorFactory",
     "Generic",
     "JSON",
-    "ListVariadic",
     "none_throws",
     "ParameterSpecification",
     "safe_cast",
@@ -78,7 +77,7 @@ class ParameterSpecification(list):
         pass
 
 
-def ListVariadic(name) -> object:
+def TypeVarTuple(name: str) -> object:
     return Any
 
 
@@ -86,7 +85,7 @@ _A = TypeVar("_A", bound=int)
 _B = TypeVar("_B", bound=int)
 _T1 = TypeVar("_T1")
 _T2 = TypeVar("_T2")
-_Ts = ListVariadic("_Ts")
+_Ts = TypeVarTuple("_Ts")
 _P = ParameterSpecification("_P")
 
 
@@ -121,14 +120,6 @@ class Product(Generic[_Ts], int):
     pass
 
 
-class TypeVarTuple:
-    def __init__(
-        self,
-        name: str,
-    ) -> None:
-        pass
-
-
 class Unpack(Generic[_T]):
     pass
 
@@ -141,8 +132,5 @@ class BroadcastError(Generic[_T1, _T2]):
     pass
 
 
-_Rs = TypeVarTuple("_Rs")
-
-
-class Compose(Generic[_Rs]):
+class Compose(Generic[_Ts]):
     pass

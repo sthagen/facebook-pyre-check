@@ -33,15 +33,32 @@ module RawSourceValue = struct
   let description = "Unprocessed source"
 
   let compare = Result.compare Source.compare ParserError.compare
-
-  let unmarshall value = Marshal.from_string value 0
 end
 
-module RawSources =
-  DependencyTrackedMemory.DependencyTrackedTableNoCache
-    (SharedMemoryKeys.ReferenceKey)
-    (SharedMemoryKeys.DependencyKey)
-    (RawSourceValue)
+module RawSources = struct
+  include
+    DependencyTrackedMemory.DependencyTrackedTableNoCache
+      (SharedMemoryKeys.ReferenceKey)
+      (SharedMemoryKeys.DependencyKey)
+      (RawSourceValue)
+
+  let add_parsed_source _ ({ Source.source_path = { SourcePath.qualifier; _ }; _ } as source) =
+    add qualifier (Result.Ok source)
+
+
+  let add_unparsed_source _ ({ ParserError.source_path = { SourcePath.qualifier; _ }; _ } as error) =
+    add qualifier (Result.Error error)
+
+
+  let update_and_compute_dependencies _ ~update ~scheduler qualifiers =
+    let keys = KeySet.of_list qualifiers in
+    SharedMemoryKeys.DependencyKey.Transaction.empty ~scheduler
+    |> add_to_transaction ~keys
+    |> SharedMemoryKeys.DependencyKey.Transaction.execute ~update
+
+
+  let remove_sources _ qualifiers = KeySet.of_list qualifiers |> remove_batch
+end
 
 let create ?additional_preprocessing module_tracker = { module_tracker; additional_preprocessing }
 
@@ -88,27 +105,6 @@ let wildcard_exports_of ({ Source.source_path = { SourcePath.is_stub; _ }; _ } a
       |> List.dedup_and_sort ~compare:Identifier.compare
 
 
-module Raw = struct
-  let add_parsed_source _ ({ Source.source_path = { SourcePath.qualifier; _ }; _ } as source) =
-    RawSources.add qualifier (Result.Ok source)
-
-
-  let add_unparsed_source _ ({ ParserError.source_path = { SourcePath.qualifier; _ }; _ } as error) =
-    RawSources.add qualifier (Result.Error error)
-
-
-  let update_and_compute_dependencies _ ~update ~scheduler ~configuration qualifiers =
-    let keys = RawSources.KeySet.of_list qualifiers in
-    SharedMemoryKeys.DependencyKey.Transaction.empty ~scheduler ~configuration
-    |> RawSources.add_to_transaction ~keys
-    |> SharedMemoryKeys.DependencyKey.Transaction.execute ~update
-
-
-  let get_source _ = RawSources.get
-
-  let remove_sources _ qualifiers = RawSources.KeySet.of_list qualifiers |> RawSources.remove_batch
-end
-
 type parse_result =
   | Success of Source.t
   | Error of {
@@ -117,10 +113,10 @@ type parse_result =
       is_suppressed: bool;
     }
 
-let create_source ~metadata ~source_path statements =
+let create_source ~typecheck_flags ~source_path statements =
   Source.create_from_source_path
     ~collect_format_strings_with_ignores:Visit.collect_format_strings_with_ignores
-    ~metadata
+    ~typecheck_flags
     ~source_path
     statements
 
@@ -128,15 +124,18 @@ let create_source ~metadata ~source_path statements =
 let parse_source
     ~configuration:({ Configuration.Analysis.enable_type_comments; _ } as configuration)
     ~context
+    ~module_tracker
     ({ SourcePath.qualifier; _ } as source_path)
   =
-  let parse content =
-    let metadata = Source.Metadata.parse ~qualifier (String.split content ~on:'\n') in
-    match PyreNewParser.parse_module ~enable_type_comment:enable_type_comments ~context content with
-    | Ok statements -> Success (create_source ~metadata ~source_path statements)
+  let parse raw_code =
+    let typecheck_flags = Source.TypecheckFlags.parse ~qualifier (String.split raw_code ~on:'\n') in
+    match
+      PyreNewParser.parse_module ~enable_type_comment:enable_type_comments ~context raw_code
+    with
+    | Ok statements -> Success (create_source ~typecheck_flags ~source_path statements)
     | Error { PyreNewParser.Error.line; column; end_line; end_column; message } ->
         let is_suppressed =
-          let { Source.Metadata.local_mode; ignore_codes; _ } = metadata in
+          let { Source.TypecheckFlags.local_mode; ignore_codes; _ } = typecheck_flags in
           match Source.mode ~configuration ~local_mode with
           | Source.Declare -> true
           | _ ->
@@ -166,10 +165,9 @@ let parse_source
         in
         Error { location; message; is_suppressed }
   in
-  let path = SourcePath.full_path ~configuration source_path in
-  try File.content_exn (File.create path) |> parse with
-  | Sys_error error ->
-      let message = Format.asprintf "Cannot open file `%a` due to: %s" PyrePath.pp path error in
+  match ModuleTracker.ReadOnly.get_raw_code module_tracker source_path with
+  | Ok raw_code -> parse raw_code
+  | Error message ->
       Error
         {
           location =
@@ -182,40 +180,40 @@ let parse_source
         }
 
 
-let parse_raw_sources ~configuration ~scheduler ~ast_environment source_paths =
-  let parse_and_categorize result source_path =
-    let do_parse context =
-      match parse_source ~configuration ~context source_path with
-      | Success ({ Source.source_path = { SourcePath.qualifier; _ }; _ } as source) ->
-          let source =
-            let {
-              Configuration.Analysis.python_major_version;
-              python_minor_version;
-              python_micro_version;
-              _;
-            }
-              =
-              configuration
-            in
-            Preprocessing.replace_version_specific_code
-              ~major_version:python_major_version
-              ~minor_version:python_minor_version
-              ~micro_version:python_micro_version
-              source
-            |> Preprocessing.preprocess_phase0
+let load_raw_source ~ast_environment:({ module_tracker; _ } as ast_environment) source_path =
+  let module_tracker = ModuleTracker.read_only module_tracker in
+  let configuration = ModuleTracker.ReadOnly.configuration module_tracker in
+  let do_parse context =
+    match parse_source ~configuration ~context ~module_tracker source_path with
+    | Success source ->
+        let source =
+          let {
+            Configuration.Analysis.python_major_version;
+            python_minor_version;
+            python_micro_version;
+            _;
+          }
+            =
+            configuration
           in
-          Raw.add_parsed_source ast_environment source;
-          qualifier :: result
-      | Error { location; message; is_suppressed } ->
-          let { SourcePath.qualifier; _ } = source_path in
-          Raw.add_unparsed_source
-            ast_environment
-            { ParserError.source_path; location; message; is_suppressed };
-          qualifier :: result
-    in
-    PyreNewParser.with_context do_parse
+          Preprocessing.replace_version_specific_code
+            ~major_version:python_major_version
+            ~minor_version:python_minor_version
+            ~micro_version:python_micro_version
+            source
+          |> Preprocessing.preprocess_phase0
+        in
+        RawSources.add_parsed_source ast_environment source
+    | Error { location; message; is_suppressed } ->
+        RawSources.add_unparsed_source
+          ast_environment
+          { ParserError.source_path; location; message; is_suppressed }
   in
-  Scheduler.map_reduce
+  PyreNewParser.with_context do_parse
+
+
+let load_raw_sources ~scheduler ~ast_environment source_paths =
+  Scheduler.iter
     scheduler
     ~policy:
       (Scheduler.Policy.fixed_chunk_count
@@ -223,12 +221,29 @@ let parse_raw_sources ~configuration ~scheduler ~ast_environment source_paths =
          ~minimum_chunk_size:100
          ~preferred_chunks_per_worker:5
          ())
-    ~initial:[]
-    ~map:(fun _ -> List.fold ~init:[] ~f:parse_and_categorize)
-    ~reduce:List.append
+    ~f:(List.iter ~f:(load_raw_source ~ast_environment))
     ~inputs:source_paths
-    ()
 
+
+module LazyRawSources = struct
+  let load ~ast_environment:({ module_tracker; _ } as ast_environment) qualifier =
+    let module_tracker = ModuleTracker.read_only module_tracker in
+    match ModuleTracker.ReadOnly.lookup_source_path module_tracker qualifier with
+    | Some source_path ->
+        load_raw_source ~ast_environment source_path;
+        true
+    | None -> false
+
+
+  let get ~ast_environment ?dependency qualifier =
+    match RawSources.get ?dependency qualifier with
+    | Some _ as source -> source
+    | None ->
+        if load ~ast_environment qualifier then
+          RawSources.get ?dependency qualifier
+        else
+          None
+end
 
 let expand_wildcard_imports ?dependency ~ast_environment source =
   let open Statement in
@@ -237,7 +252,7 @@ let expand_wildcard_imports ?dependency ~ast_environment source =
 
     type t = unit
 
-    let get_transitive_exports ?dependency ~ast_environment qualifier =
+    let get_transitive_exports ?dependency ~ast_environment:_ qualifier =
       let module Visitor = Visit.MakeStatementVisitor (struct
         type t = Reference.t list
 
@@ -263,7 +278,7 @@ let expand_wildcard_imports ?dependency ~ast_environment source =
               match Hash_set.strict_add visited_modules qualifier with
               | Error _ -> ()
               | Ok () -> (
-                  match Raw.get_source ast_environment qualifier ?dependency with
+                  match LazyRawSources.get ~ast_environment qualifier ?dependency with
                   | None
                   | Some (Result.Error _) ->
                       ()
@@ -320,25 +335,20 @@ let get_and_preprocess_source
   in
   (* Preprocessing a module depends on the module itself is implicitly assumed in `update`. No need
      to explicitly record the dependency. *)
-  Raw.get_source ast_environment qualifier ?dependency:None
+  LazyRawSources.get ~ast_environment qualifier ?dependency:None
   >>| function
   | Result.Ok source ->
       expand_wildcard_imports ?dependency ~ast_environment source
       |> preprocessing
       |> InlineDecorator.inline_decorators ~get_source:(fun qualifier ->
-             Raw.get_source ?dependency ast_environment qualifier >>= Result.ok)
+             LazyRawSources.get ~ast_environment qualifier >>= Result.ok)
   | Result.Error
       { ParserError.source_path = { SourcePath.qualifier; relative; _ } as source_path; _ } ->
       (* Files that have parser errors fall back into getattr-any. *)
       let fallback_source = ["import typing"; "def __getattr__(name: str) -> typing.Any: ..."] in
-      let metadata = Source.Metadata.parse ~qualifier fallback_source in
+      let typecheck_flags = Source.TypecheckFlags.parse ~qualifier fallback_source in
       let statements = Parser.parse_exn ~relative fallback_source in
-      create_source ~metadata ~source_path statements |> preprocessing
-
-
-let parse_sources ~configuration ~scheduler ~ast_environment source_paths =
-  parse_raw_sources ~configuration ~scheduler ~ast_environment source_paths
-  |> List.sort ~compare:Reference.compare
+      create_source ~typecheck_flags ~source_path statements |> preprocessing
 
 
 module UpdateResult = struct
@@ -362,13 +372,37 @@ type trigger =
   | Update of ModuleTracker.IncrementalUpdate.t list
   | ColdStart
 
-let update
-    ~configuration:({ Configuration.Analysis.incremental_style; _ } as configuration)
-    ~scheduler
-    ({ module_tracker; _ } as ast_environment)
-  = function
+let update ~scheduler ({ module_tracker = upstream_tracker; _ } as ast_environment) trigger =
+  let module_tracker = ModuleTracker.read_only upstream_tracker in
+  let { Configuration.Analysis.incremental_style; _ } =
+    ModuleTracker.ReadOnly.configuration module_tracker
+  in
+  match trigger with
+  | ColdStart ->
+      let timer = Timer.start () in
+      (* The one external module we want to try to force load is `builtins.pyi`. This improves
+         performance later and also will prevent problems with lazy qualifier lookups if, in the
+         future, there are ever nested classes in builtins. *)
+      let _ = LazyRawSources.load ~ast_environment Reference.empty in
+      let invalidated_modules =
+        Reference.empty
+        ::
+        (ModuleTracker.ReadOnly.source_paths module_tracker
+        |> List.filter ~f:SourcePath.is_in_project
+        |> List.map ~f:SourcePath.qualifier)
+      in
+      (* This logging can be removed later, but is needed for perf testing at this time. *)
+      Statistics.performance
+        ~name:"sources parsed"
+        ~phase_name:"Parsing and preprocessing"
+        ~timer
+        ();
+      {
+        UpdateResult.invalidated_modules;
+        triggered_dependencies = SharedMemoryKeys.DependencyKey.RegisteredSet.empty;
+      }
   | Update module_updates -> (
-      let reparse_source_paths, removed_modules, updated_submodules =
+      let changed_source_paths, removed_modules, new_implicits =
         let categorize = function
           | ModuleTracker.IncrementalUpdate.NewExplicit source_path -> `Fst source_path
           | ModuleTracker.IncrementalUpdate.Delete qualifier -> `Snd qualifier
@@ -376,40 +410,53 @@ let update
         in
         List.partition3_map module_updates ~f:categorize
       in
+      (* We only want to eagerly reparse sources that have been cached. We have to also invalidate
+         sources that are now deleted or changed from explicit to implicit. *)
+      let reparse_source_paths =
+        List.filter changed_source_paths ~f:(fun { SourcePath.qualifier; _ } ->
+            RawSources.mem qualifier)
+      in
+      let reparse_modules =
+        reparse_source_paths |> List.map ~f:(fun { SourcePath.qualifier; _ } -> qualifier)
+      in
+      let modules_with_invalidated_raw_source =
+        List.concat [removed_modules; new_implicits; reparse_modules]
+      in
+      (* Because type checking relies on AstEnvironment.UpdateResult.invalidated_modules to
+         determine which files require re-type-checking, we have to include all new non-external
+         modules, even though they don't really require us to update data in the push phase, or else
+         they'll never be checked. *)
+      let reparse_modules_union_in_project_modules =
+        let fold qualifiers { SourcePath.qualifier; _ } = Reference.Set.add qualifiers qualifier in
+        List.filter changed_source_paths ~f:SourcePath.is_in_project
+        |> List.fold ~init:(Reference.Set.of_list reparse_modules) ~f:fold
+        |> Reference.Set.to_list
+      in
+      let invalidated_modules_before_preprocessing =
+        List.concat [removed_modules; new_implicits; reparse_modules_union_in_project_modules]
+      in
       match incremental_style with
       | Configuration.Analysis.Shallow ->
-          let directly_changed_modules =
-            List.map reparse_source_paths ~f:(fun { SourcePath.qualifier; _ } -> qualifier)
-          in
-          Raw.remove_sources ast_environment (List.append removed_modules directly_changed_modules);
-          let parsed =
-            parse_sources ~configuration ~scheduler ~ast_environment reparse_source_paths
-          in
+          RawSources.remove_sources ast_environment modules_with_invalidated_raw_source;
+          load_raw_sources ~scheduler ~ast_environment reparse_source_paths;
           {
             UpdateResult.triggered_dependencies = SharedMemoryKeys.DependencyKey.RegisteredSet.empty;
-            invalidated_modules = List.append updated_submodules parsed;
+            invalidated_modules = invalidated_modules_before_preprocessing;
           }
-      | _ ->
-          let changed_modules =
-            let reparse_modules =
-              List.map reparse_source_paths ~f:(fun { SourcePath.qualifier; _ } -> qualifier)
-            in
-            List.concat [removed_modules; updated_submodules; reparse_modules]
-          in
+      | Configuration.Analysis.FineGrained ->
           let update_raw_sources () =
-            parse_raw_sources ~configuration ~scheduler ~ast_environment reparse_source_paths
+            load_raw_sources ~scheduler ~ast_environment reparse_source_paths
           in
           let _, triggered_dependencies =
             Profiling.track_duration_and_shared_memory
               "Parse Raw Sources"
               ~tags:["phase_name", "Parsing"]
               ~f:(fun _ ->
-                Raw.update_and_compute_dependencies
+                RawSources.update_and_compute_dependencies
                   ast_environment
-                  changed_modules
+                  modules_with_invalidated_raw_source
                   ~update:update_raw_sources
-                  ~scheduler
-                  ~configuration)
+                  ~scheduler)
           in
           let invalidated_modules =
             let fold_key registered sofar =
@@ -420,32 +467,11 @@ let update
             SharedMemoryKeys.DependencyKey.RegisteredSet.fold
               fold_key
               triggered_dependencies
-              (RawSources.KeySet.of_list changed_modules)
+              (RawSources.KeySet.of_list invalidated_modules_before_preprocessing)
             |> RawSources.KeySet.elements
           in
           { UpdateResult.triggered_dependencies; invalidated_modules })
-  | ColdStart ->
-      let timer = Timer.start () in
-      Log.info
-        "Parsing %d stubs and sources..."
-        (ModuleTracker.explicit_module_count module_tracker);
-      let ast_environment = create module_tracker in
-      let parsed =
-        ModuleTracker.source_paths module_tracker
-        |> parse_sources ~configuration ~scheduler ~ast_environment
-      in
-      Statistics.performance
-        ~name:"sources parsed"
-        ~phase_name:"Parsing and preprocessing"
-        ~timer
-        ();
-      {
-        UpdateResult.invalidated_modules = parsed;
-        triggered_dependencies = SharedMemoryKeys.DependencyKey.RegisteredSet.empty;
-      }
 
-
-let get_source_path { module_tracker; _ } = ModuleTracker.lookup_source_path module_tracker
 
 (* Both `load` and `store` are no-ops here since `Sources` and `WildcardExports` are in shared
    memory, and `Memory.load_shared_memory`/`Memory.save_shared_memory` will take care of the
@@ -456,31 +482,32 @@ let load = create ?additional_preprocessing:None
 
 module ReadOnly = struct
   type t = {
+    module_tracker: ModuleTracker.ReadOnly.t;
     get_processed_source: track_dependency:bool -> Reference.t -> Source.t option;
     get_raw_source: Reference.t -> (Source.t, ParserError.t) Result.t option;
-    get_source_path: Reference.t -> SourcePath.t option;
-    is_module: Reference.t -> bool;
-    all_explicit_modules: unit -> Reference.t list;
-    is_module_tracked: Reference.t -> bool;
   }
 
   let create
+      ~module_tracker
       ?(get_processed_source = fun ~track_dependency:_ _ -> None)
       ?(get_raw_source = fun _ -> None)
-      ?(get_source_path = fun _ -> None)
-      ?(is_module = fun _ -> false)
-      ?(all_explicit_modules = fun _ -> [])
-      ?(is_module_tracked = fun _ -> false)
       ()
     =
-    {
-      get_processed_source;
-      get_raw_source;
-      get_source_path;
-      is_module;
-      all_explicit_modules;
-      is_module_tracked;
-    }
+    { module_tracker; get_processed_source; get_raw_source }
+
+
+  let configuration { module_tracker; _ } = ModuleTracker.ReadOnly.configuration module_tracker
+
+  let get_source_path { module_tracker; _ } =
+    ModuleTracker.ReadOnly.lookup_source_path module_tracker
+
+
+  let is_module_tracked { module_tracker; _ } =
+    ModuleTracker.ReadOnly.is_module_tracked module_tracker
+
+
+  let all_explicit_modules { module_tracker; _ } =
+    ModuleTracker.ReadOnly.tracked_explicit_modules module_tracker
 
 
   let get_processed_source { get_processed_source; _ } ?(track_dependency = false) =
@@ -489,36 +516,27 @@ module ReadOnly = struct
 
   let get_raw_source { get_raw_source; _ } = get_raw_source
 
-  let get_source_path { get_source_path; _ } = get_source_path
-
   let get_relative read_only qualifier =
     let open Option in
     get_source_path read_only qualifier >>| fun { SourcePath.relative; _ } -> relative
 
 
-  let get_real_path ~configuration read_only qualifier =
+  let get_real_path read_only qualifier =
+    let configuration = configuration read_only in
     get_source_path read_only qualifier >>| SourcePath.full_path ~configuration
 
 
-  let get_real_path_relative
-      ~configuration:({ Configuration.Analysis.local_root; _ } as configuration)
-      read_only
-      qualifier
-    =
+  let get_real_path_relative read_only qualifier =
     (* SourcePath.relative refers to the renamed path when search paths are provided with a root and
        subdirectory. Instead, find the real filesystem relative path for the qualifier. *)
-    get_real_path ~configuration read_only qualifier
+    let { Configuration.Analysis.local_root; _ } = configuration read_only in
+    get_real_path read_only qualifier
     >>= fun path -> PyrePath.get_relative_to_root ~root:local_root ~path
-
-
-  let is_module { is_module; _ } = is_module
-
-  let is_module_tracked { is_module_tracked; _ } = is_module_tracked
-
-  let all_explicit_modules { all_explicit_modules; _ } = all_explicit_modules ()
 end
 
-let read_only ({ module_tracker; _ } as environment) =
+let remove_sources = RawSources.remove_sources
+
+let read_only ({ module_tracker; _ } as ast_environment) =
   let get_processed_source ~track_dependency qualifier =
     let dependency =
       if track_dependency then
@@ -528,20 +546,18 @@ let read_only ({ module_tracker; _ } as environment) =
       else
         None
     in
-    get_and_preprocess_source ?dependency environment qualifier
+    get_and_preprocess_source ?dependency ast_environment qualifier
   in
-  let is_module_tracked qualifier = ModuleTracker.is_module_tracked module_tracker qualifier in
   {
+    module_tracker = ModuleTracker.read_only module_tracker;
     ReadOnly.get_processed_source;
-    get_raw_source = RawSources.get;
-    get_source_path = get_source_path environment;
-    is_module = ModuleTracker.is_module_tracked module_tracker;
-    all_explicit_modules = (fun () -> ModuleTracker.tracked_explicit_modules module_tracker);
-    is_module_tracked;
+    get_raw_source = LazyRawSources.get ~ast_environment;
   }
 
 
 let module_tracker { module_tracker; _ } = module_tracker
+
+let configuration { module_tracker; _ } = ModuleTracker.configuration module_tracker
 
 let with_additional_preprocessing ~additional_preprocessing environment =
   { environment with additional_preprocessing }

@@ -11,7 +11,11 @@ open Pyre
 open Expression
 module PreviousEnvironment = EmptyStubEnvironment
 
-let preprocess_alias_value value = Preprocessing.expand_strings_in_annotation_expression value
+let preprocess_alias_value value =
+  value
+  |> Preprocessing.replace_union_shorthand_in_annotation_expression
+  |> Preprocessing.expand_strings_in_annotation_expression
+
 
 module AliasValue = struct
   type t = Type.alias option
@@ -19,8 +23,6 @@ module AliasValue = struct
   let prefix = Prefix.make ()
 
   let description = "Alias"
-
-  let unmarshall value = Marshal.from_string value 0
 
   let compare = Option.compare Type.compare_alias
 end
@@ -93,6 +95,8 @@ module UnresolvedAlias = struct
                         empty_stub_environment)
                      ?dependency
                      (Reference.create primitive)
+                (* Don't consider "..." in `MyCallable[..., int]` to be a dependent alias. *)
+                || Identifier.equal primitive "..."
               then
                 (), annotation
               else

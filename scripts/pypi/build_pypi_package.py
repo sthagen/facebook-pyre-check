@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import List, Tuple, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 # just validate that it's available, but we don't invoke it directly
 import wheel as _wheel  # noqa
@@ -27,9 +27,18 @@ LOG: logging.Logger = logging.getLogger(__name__)
 
 
 def _distribution_platform() -> str:
-    if platform.system() == "Linux":
+    system = platform.system()
+    if system == "Linux":
+        # Currently we only ever build on Intel Linux machines.
         return "-manylinux1_x86_64"
-    return "-macosx_10_11_x86_64"
+    elif system == "Darwin":
+        if "arm" in platform.processor():
+            # This means we are on Apple Silicon machines.
+            # The minimum possible arm64 Mac version for pip is 11.0.
+            return "-macosx_11_0_arm64"
+        return "-macosx_10_11_x86_64"
+    else:
+        raise RuntimeError(f"Building on platform `{system}` is not supported.")
 
 
 def _validate_typeshed(typeshed_path: Path) -> None:
@@ -55,7 +64,7 @@ def _mkdir_and_init(module_path: Path, version: Optional[str] = None) -> None:
     else:
         init_path.write_text(
             f"""\
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.

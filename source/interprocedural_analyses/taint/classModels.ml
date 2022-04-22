@@ -12,11 +12,11 @@ open Analysis
 open Interprocedural
 open Domains
 
-let infer ~environment =
+let infer ~environment ~user_models =
   Log.info "Computing inferred models...";
   let timer = Timer.start () in
   let global_resolution = TypeEnvironment.ReadOnly.global_resolution environment in
-  let fold_taint position existing_state attribute =
+  let add_parameter_tito position existing_state attribute =
     let leaf =
       BackwardTaint.singleton Sinks.LocalReturn Frame.initial
       |> BackwardState.Tree.create_leaf
@@ -30,6 +30,23 @@ let infer ~environment =
       ~path:[]
       leaf
       existing_state
+  in
+  let add_sink_from_attribute_model class_name position existing_state attribute =
+    let qualified_attribute =
+      Target.create_object (Reference.create ~prefix:class_name attribute)
+    in
+    match Target.Map.find user_models qualified_attribute with
+    | Some { Model.backward = { sink_taint; _ }; _ } ->
+        let taint = BackwardState.read ~root:GlobalModel.global_root ~path:[] sink_taint in
+        BackwardState.assign
+          ~weak:true
+          ~root:
+            (AccessPath.Root.PositionalParameter
+               { position; name = attribute; positional_only = false })
+          ~path:[]
+          taint
+          existing_state
+    | None -> existing_state
   in
   let attributes class_name =
     GlobalResolution.attributes
@@ -45,14 +62,18 @@ let infer ~environment =
       attributes class_name >>| List.map ~f:Annotated.Attribute.name |> Option.value ~default:[]
     in
     [
-      ( `Method { Target.class_name; method_name = "__init__" },
+      ( Target.Method { Target.class_name; method_name = "__init__" },
         {
           Model.forward = Model.Forward.empty;
           backward =
             {
               Model.Backward.taint_in_taint_out =
-                List.foldi ~f:fold_taint ~init:BackwardState.empty attributes;
-              sink_taint = BackwardState.empty;
+                List.foldi ~f:add_parameter_tito ~init:BackwardState.empty attributes;
+              sink_taint =
+                List.foldi
+                  attributes
+                  ~init:BackwardState.empty
+                  ~f:(add_sink_from_attribute_model (Reference.create class_name));
             };
           sanitizers = Model.Sanitizers.empty;
           modes = Model.ModeSet.empty;
@@ -67,58 +88,33 @@ let infer ~environment =
       List.exists attributes ~f:(fun attribute ->
           String.equal (Annotated.Attribute.name attribute) name)
     in
-    (* If a user-specified __new__ or __init__ exist, don't override it. *)
-    let models =
-      if has_attribute "__init__" then
-        []
-      else
-        GlobalResolution.class_definition global_resolution (Primitive class_name)
-        >>| Node.value
-        >>= ClassSummary.fields_tuple_value
-        >>| (fun attributes ->
-              [
-                ( `Method { Target.class_name; method_name = "__init__" },
-                  {
-                    Model.forward = Model.Forward.empty;
-                    backward =
-                      {
-                        Model.Backward.taint_in_taint_out =
-                          List.foldi ~f:fold_taint ~init:BackwardState.empty attributes;
-                        sink_taint = BackwardState.empty;
-                      };
-                    sanitizers = Model.Sanitizers.empty;
-                    modes = Model.ModeSet.empty;
-                  } );
-              ])
-        |> Option.value ~default:[]
-    in
-    let models =
-      if has_attribute "__new__" then
-        models
-      else
-        ( `Method { Target.class_name; method_name = "__new__" },
+    (* If a user-specified __new__ exist, don't override it. *)
+    if has_attribute "__new__" then
+      []
+    else
+      (* Should not omit this model. Otherwise the mode is "obscure", thus leading to a tito model,
+         which joins the taint on every element of the tuple. *)
+      [
+        ( Target.Method { Target.class_name; method_name = "__new__" },
           {
             Model.forward = Model.Forward.empty;
             backward = Model.Backward.empty;
             sanitizers = Model.Sanitizers.empty;
             modes = Model.ModeSet.empty;
-          } )
-        :: models
-    in
-    models
+          } );
+      ]
   in
   let compute_models class_name class_summary =
     let is_dataclass =
-      UnannotatedGlobalEnvironment.ReadOnly.get_decorator
+      UnannotatedGlobalEnvironment.ReadOnly.exists_matching_class_decorator
         (TypeEnvironment.ReadOnly.unannotated_global_environment environment)
+        ~names:["dataclasses.dataclass"; "dataclass"]
         class_summary
-        ~decorator:"dataclasses.dataclass"
-      |> fun decorators -> not (List.is_empty decorators)
     in
     if is_dataclass then
       compute_dataclass_models class_name
     else if
-      GlobalResolution.is_transitive_successor
+      CallResolution.is_transitive_successor_ignoring_untracked
         global_resolution
         ~predecessor:class_name
         ~successor:"typing.NamedTuple"
@@ -128,7 +124,7 @@ let infer ~environment =
       []
   in
   let inferred_models class_name =
-    GlobalResolution.class_definition global_resolution (Type.Primitive class_name)
+    GlobalResolution.class_summary global_resolution (Type.Primitive class_name)
     >>| compute_models class_name
     |> Option.value ~default:[]
   in

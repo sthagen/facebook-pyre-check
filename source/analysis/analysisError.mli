@@ -17,6 +17,12 @@ type missing_annotation = {
 }
 [@@deriving compare, sexp, show, hash]
 
+type revealed_local = {
+  name: Reference.t;
+  annotation: Annotation.t;
+}
+[@@deriving compare, sexp, show, hash]
+
 type class_kind =
   | Class
   | Enumeration
@@ -362,6 +368,7 @@ and kind =
       is_shadowed_class_imported: bool;
     }
   | RedundantCast of Type.t
+  | RevealedLocals of revealed_local list
   | RevealedType of {
       expression: Expression.t;
       annotation: Annotation.t;
@@ -461,7 +468,7 @@ include Hashable with type t := t
 
 val create : location:Location.WithModule.t -> kind:kind -> define:Statement.Define.t Node.t -> t
 
-val path : t -> Reference.t
+val module_reference : t -> Reference.t
 
 val code : t -> int
 

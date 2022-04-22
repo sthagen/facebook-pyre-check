@@ -62,10 +62,18 @@
       }
     ],
     "features": [
-      { "always-via": "tito" },
       { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ]
+      { "always-via": "special_sink" },
+      { "always-via": "tito" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "callables.AbstractEventProcessor.async_call_tainted",
+      "index": 0,
+      "parameter": "formal(self)"
+    },
+    "master_handle":
+      "callables.async_execute_event_processor:5002:0:Call|callables.AbstractEventProcessor.async_call_tainted|0|formal(self):7a96ef90e2bb1543556804c72ef5a35c"
   }
 }
 {
@@ -116,6 +124,8 @@
         "port": "formal(self)[tainted]",
         "taint": [
           {
+            "caller_interval": { "lower": 3, "upper": 4 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -144,6 +154,8 @@
         "port": "formal(self)[benign]",
         "taint": [
           {
+            "caller_interval": { "lower": 3, "upper": 4 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -172,6 +184,8 @@
         "port": "formal(self)[tainted]",
         "taint": [
           {
+            "caller_interval": { "lower": 3, "upper": 4 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -200,6 +214,8 @@
         "port": "formal(self)[benign]",
         "taint": [
           {
+            "caller_interval": { "lower": 3, "upper": 4 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -351,6 +367,8 @@
         "port": "formal(self)[tainted]",
         "taint": [
           {
+            "caller_interval": { "lower": 3, "upper": 4 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -379,6 +397,8 @@
         "port": "formal(self)[benign]",
         "taint": [
           {
+            "caller_interval": { "lower": 3, "upper": 4 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],

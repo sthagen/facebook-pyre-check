@@ -146,18 +146,21 @@ let test_parse_source context =
 
 let test_parse_sources context =
   let scheduler = Test.mock_scheduler () in
-  let content = "def foo() -> int: ..." in
+  (* Following symbolic links is needed to avoid is_external being always false on macos *)
+  let create_path = PyrePath.create_absolute ~follow_symbolic_links:true in
+  let local_root = create_path (bracket_tmpdir context) in
+  let module_root = create_path (bracket_tmpdir context) in
+  let link_root = create_path (bracket_tmpdir context) in
+  let stub_root = PyrePath.create_relative ~root:local_root ~relative:"stubs" in
+  let typeshed_root =
+    PyrePath.create_relative ~root:local_root ~relative:".pyre/resource_cache/typeshed"
+  in
+  let write_file root relative =
+    let content = "def foo() -> int: ..." in
+    File.create ~content (PyrePath.create_relative ~root ~relative) |> File.write
+  in
   let source_handles, ast_environment =
-    let local_root = PyrePath.create_absolute (bracket_tmpdir context) in
-    let typeshed_root =
-      PyrePath.create_relative ~root:local_root ~relative:".pyre/resource_cache/typeshed"
-    in
     Sys_utils.mkdir_p (PyrePath.absolute typeshed_root);
-    let module_root = PyrePath.create_absolute (bracket_tmpdir context) in
-    let link_root = PyrePath.create_absolute (bracket_tmpdir context) in
-    let write_file root relative =
-      File.create ~content (PyrePath.create_relative ~root ~relative) |> File.write
-    in
     write_file local_root "a.pyi";
     write_file local_root "a.py";
     write_file module_root "b.pyi";
@@ -176,13 +179,14 @@ let test_parse_sources context =
       Configuration.Analysis.create
         ~local_root
         ~source_paths:[SearchPath.Root local_root]
-        ~search_paths:[SearchPath.Root module_root; SearchPath.Root typeshed_root]
+        ~search_paths:
+          [SearchPath.Root module_root; SearchPath.Root typeshed_root; SearchPath.Root stub_root]
         ~filter_directories:[local_root]
         ()
     in
     let module_tracker = Analysis.ModuleTracker.create configuration in
     let ast_environment = Analysis.AstEnvironment.create module_tracker in
-    let update_result = AstEnvironment.update ~scheduler ~configuration ast_environment ColdStart in
+    let update_result = AstEnvironment.update ~scheduler ast_environment ColdStart in
     let sources =
       AstEnvironment.UpdateResult.invalidated_modules update_result
       |> List.filter_map
@@ -190,16 +194,6 @@ let test_parse_sources context =
              (AstEnvironment.ReadOnly.get_processed_source
                 (AstEnvironment.read_only ast_environment))
     in
-    let is_source_sorted =
-      let compare
-          { Source.source_path = { SourcePath.qualifier = left; _ }; _ }
-          { Source.source_path = { SourcePath.qualifier = right; _ }; _ }
-        =
-        Reference.compare left right
-      in
-      List.is_sorted sources ~compare
-    in
-    assert_bool "Sources should be in sorted order" is_source_sorted;
     let sorted_handles =
       List.map sources ~f:(fun { Source.source_path = { SourcePath.relative; _ }; _ } -> relative)
       |> List.sort ~compare:String.compare
@@ -209,38 +203,24 @@ let test_parse_sources context =
   assert_equal
     ~cmp:(List.equal String.equal)
     ~printer:(String.concat ~sep:", ")
-    ["a.pyi"; "b.pyi"; "c.py"; "d.pyi"; "foo.pyi"]
+    (* External files which have not been previously loaded are ignored in lazy invalidated_modules.
+       For this reason we skip `b.pyi` and `d.pyi`; `b` doesn't live in the local_root and neither
+       does the target of the symlink for `d` (we follow symlinks before setting `is_external`) *)
+    ["a.pyi"; "c.py"; "foo.pyi"]
     source_handles;
-  let local_root = PyrePath.create_absolute (bracket_tmpdir context) in
-  let stub_root = PyrePath.create_relative ~root:local_root ~relative:"stubs" in
   let source_handles =
-    let configuration =
-      Configuration.Analysis.create
-        ~local_root
-        ~source_paths:[SearchPath.Root local_root]
-        ~search_paths:[SearchPath.Root stub_root]
-        ~filter_directories:[local_root]
-        ()
-    in
-    let write_file root relative =
-      File.create ~content:"def foo() -> int: ..." (PyrePath.create_relative ~root ~relative)
-      |> File.write
-    in
-    write_file local_root "a.py";
-    write_file stub_root "stub.pyi";
-    let module_tracker = Analysis.ModuleTracker.create configuration in
+    write_file local_root "new_local.py";
+    write_file stub_root "new_stub.pyi";
     let update_result =
-      let { Configuration.Analysis.local_root; _ } = configuration in
       ModuleTracker.update
-        ~configuration
         ~paths:
           [
-            PyrePath.create_relative ~root:local_root ~relative:"a.py";
-            PyrePath.create_relative ~root:stub_root ~relative:"stub.pyi";
+            PyrePath.create_relative ~root:local_root ~relative:"new_local.py";
+            PyrePath.create_relative ~root:stub_root ~relative:"new_stub.pyi";
           ]
-        module_tracker
+        (AstEnvironment.module_tracker ast_environment)
       |> (fun updates -> AstEnvironment.Update updates)
-      |> AstEnvironment.update ~configuration ~scheduler:(mock_scheduler ()) ast_environment
+      |> AstEnvironment.update ~scheduler:(mock_scheduler ()) ast_environment
     in
     let sources =
       AstEnvironment.UpdateResult.invalidated_modules update_result
@@ -259,16 +239,9 @@ let test_parse_sources context =
       let left_handles = List.sort ~compare:String.compare left_handles in
       let right_handles = List.sort ~compare:String.compare right_handles in
       List.equal String.equal left_handles right_handles)
-    source_handles
-    ["stub.pyi"; "a.py"];
-  match
-    Analysis.AstEnvironment.ReadOnly.get_processed_source
-      (AstEnvironment.read_only ast_environment)
-      (Reference.create "c")
-  with
-  | Some { metadata = { Source.Metadata.raw_hash; _ }; _ } ->
-      assert_equal raw_hash ([%hash: string list] (String.split ~on:'\n' content))
-  | None -> assert_unreached ()
+    ["new_local.py"; "new_stub.pyi"]
+    source_handles;
+  ()
 
 
 let test_ast_change _ =
@@ -290,7 +263,7 @@ let test_ast_change _ =
     (* This is not guaranteed to be the case in theory, but collisions should be rare in practice *)
     assert_equal ~cmp:Bool.equal ~printer:(Format.sprintf "hash changed = %b") expected hash_changed
   in
-  (* Metadata *)
+  (* TypecheckFlags *)
   assert_ast_changed ~old_source:"# pyre-strict" ~new_source:"# pyre-strict" ~expected:false;
   assert_ast_changed ~old_source:"# pyre-strict" ~new_source:"" ~expected:true;
   assert_ast_changed
@@ -568,7 +541,7 @@ let test_ast_change _ =
 
   (* Trailing comment/spaces/empty lines shouldn't matter as they don't affect any AST locations. *)
   (* They may affect line counts and raw hashes, but they are ignored by the
-     Source.Metadata.compare/hash *)
+     Source.TypecheckFlags.compare/hash *)
   assert_ast_changed
     ~old_source:{|
     def foo() -> int:
@@ -677,6 +650,7 @@ module IncrementalTest = struct
   let assert_parser_update
       ?(external_setups = [])
       ?(preprocess_all_sources = false)
+      ?(force_load_external_sources = true)
       ~context
       ~expected:{ Expectation.dependencies = expected_dependencies }
       setups
@@ -719,12 +693,22 @@ module IncrementalTest = struct
         ScratchProject.setup ~context ~external_sources:old_external_sources old_sources
       in
       let ast_environment, update_result = ScratchProject.parse_sources project in
+      let read_only_environment = AstEnvironment.read_only ast_environment in
+      (if force_load_external_sources then
+         (* If we don't do this, external sources are ignored due to lazy loading *)
+         let load_source { handle; _ } =
+           let qualifier = SourcePath.qualifier_of_relative handle in
+           let _ = AstEnvironment.ReadOnly.get_raw_source read_only_environment qualifier in
+           ()
+         in
+         List.iter external_setups ~f:load_source);
       if preprocess_all_sources then
+        (* Preprocess invalidated modules (which are internal sources) *)
         AstEnvironment.UpdateResult.invalidated_modules update_result
         |> List.iter ~f:(fun qualifier ->
                AstEnvironment.ReadOnly.get_processed_source
+                 read_only_environment
                  ~track_dependency:true
-                 (AstEnvironment.read_only ast_environment)
                  qualifier
                |> ignore);
       configuration, module_tracker, ast_environment
@@ -732,10 +716,9 @@ module IncrementalTest = struct
     (* Update filesystem *)
     let paths = update_filesystem_state configuration in
     (* Compute the dependencies *)
-    let module_tracker_updates = ModuleTracker.update ~configuration ~paths module_tracker in
+    let module_tracker_updates = ModuleTracker.update ~paths module_tracker in
     let update_result =
       AstEnvironment.update
-        ~configuration
         ~scheduler:(Test.mock_scheduler ())
         ast_environment
         (Update module_tracker_updates)
@@ -744,9 +727,13 @@ module IncrementalTest = struct
     let assert_parser_dependency expected actual =
       let expected_set = Reference.Set.of_list expected in
       let actual_set = Reference.Set.of_list actual in
-      assert_bool
-        "Check if the actual parser dependency overapproximates the expected one"
-        (Set.is_subset expected_set ~of_:actual_set)
+      if not (Set.is_subset expected_set ~of_:actual_set) then
+        assert_bool
+          (Format.asprintf
+             "Expected dependencies %s are not a subset of actual dependencies %s"
+             (Reference.Set.sexp_of_t expected_set |> Sexp.to_string)
+             (Reference.Set.sexp_of_t actual_set |> Sexp.to_string))
+          false
     in
     AstEnvironment.UpdateResult.invalidated_modules update_result
     |> assert_parser_dependency expected_dependencies;
@@ -806,12 +793,14 @@ let test_parser_update context =
     ]
     ~expected:(Expectation.create [!&"test"]);
 
-  (* Single external file update *)
+  (* Single external file update. *)
+  (* These tests rely on us force-loading sources, which causes them to be counted as invalidated.
+     Otherwise, they would be ignored due to laziness. *)
   assert_parser_update
     ~external_setups:
       [{ handle = "test.pyi"; old_source = None; new_source = Some "def foo() -> None: ..." }]
     []
-    ~expected:(Expectation.create [!&"test"]);
+    ~expected:(Expectation.create []);
   assert_parser_update
     ~external_setups:
       [{ handle = "test.pyi"; old_source = Some "def foo() -> None: ..."; new_source = None }]

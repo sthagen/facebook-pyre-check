@@ -81,11 +81,6 @@ module CheckConfiguration = struct
         additional_logging_sections = _;
       }
     =
-    let source_paths =
-      match source_paths with
-      | Configuration.SourcePaths.Simple source_paths -> source_paths
-      | Buck { Configuration.Buck.artifact_root; _ } -> [SearchPath.Root artifact_root]
-    in
     Configuration.Analysis.create
       ~parallel
       ~analyze_external_sources:false
@@ -109,7 +104,7 @@ module CheckConfiguration = struct
       ~shared_memory_dependency_table_power:dependency_table_power
       ~shared_memory_hash_table_power:hash_table_power
       ~enable_type_comments
-      ~source_paths
+      ~source_paths:(Configuration.SourcePaths.to_search_paths source_paths)
       ()
 end
 
@@ -198,19 +193,22 @@ let on_exception = function
         | Some exit_code when exit_code < 10 -> ExitStatus.BuckUserError
         | _ -> ExitStatus.BuckInternalError
       in
-      Lwt.return exit_status
-  | Buck.Builder.JsonError message ->
+      exit_status
+  | Buck.Interface.JsonError message ->
       Log.error "Cannot build the project because Buck returns malformed JSON: %s" message;
-      Lwt.return ExitStatus.BuckUserError
+      ExitStatus.BuckUserError
   | Buck.Builder.LinkTreeConstructionError message ->
       Log.error
         "Cannot build the project because Pyre encounters a fatal error while constructing a link \
          tree: %s"
         message;
-      Lwt.return ExitStatus.BuckUserError
+      ExitStatus.BuckUserError
+  | Server.ChecksumMap.LoadError message ->
+      Log.error "Cannot load external wheel properly. %s" message;
+      ExitStatus.PyreError
   | _ as exn ->
       Log.error "Pyre encountered an internal exception: %s" (Exn.to_string exn);
-      Lwt.return ExitStatus.PyreError
+      ExitStatus.PyreError
 
 
 let run_check configuration_file =
@@ -244,7 +242,10 @@ let run_check configuration_file =
           ~memory_profiling_output
           ();
 
-        Lwt_main.run (Lwt.catch (fun () -> run_check check_configuration) on_exception)
+        Lwt_main.run
+          (Lwt.catch
+             (fun () -> run_check check_configuration)
+             (fun exn -> Lwt.return (on_exception exn)))
   in
   Statistics.flush ();
   exit (ExitStatus.exit_code exit_status)

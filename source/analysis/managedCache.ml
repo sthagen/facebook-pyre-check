@@ -12,9 +12,7 @@ module type SexpableKeyType = sig
 
   val to_string : t -> string
 
-  type out
-
-  val from_string : string -> out
+  val from_string : string -> t
 end
 
 module type In = sig
@@ -85,7 +83,8 @@ module Make (In : In) = struct
 
   include EnvironmentTable
 
-  let update_this_and_all_preceding_environments ast_environment ~scheduler ~configuration =
+  let update_this_and_all_preceding_environments this_environment ~scheduler =
+    let configuration = configuration this_environment in
     let () =
       match configuration with
       | { Configuration.Analysis.incremental_style = FineGrained; _ } ->
@@ -98,7 +97,7 @@ module Make (In : In) = struct
     in
     (* In both cases we need to produce a UpdateResult, but in the legacy case this will be a
        basically a no-op because of all_keys = []. *)
-    update_this_and_all_preceding_environments ast_environment ~scheduler ~configuration
+    update_this_and_all_preceding_environments this_environment ~scheduler
 
 
   module ReadOnly = struct

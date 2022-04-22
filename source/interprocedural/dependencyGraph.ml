@@ -13,19 +13,17 @@ open Analysis
 
 type t = Target.t list Target.Map.t
 
-type callgraph = Target.t list Target.CallableMap.t
+type callgraph = Target.t list Target.Map.t
 
 module CallGraphSharedMemory = Memory.Serializer (struct
-  type t = Target.t list Target.CallableMap.Tree.t
+  type t = Target.t list Target.Map.Tree.t
 
   module Serialized = struct
-    type t = Target.t list Target.CallableMap.Tree.t
+    type t = Target.t list Target.Map.Tree.t
 
     let prefix = Prefix.make ()
 
     let description = "Call graph"
-
-    let unmarshall value = Marshal.from_string value 0
   end
 
   let serialize = Fn.id
@@ -44,8 +42,6 @@ module OverridesSharedMemory = Memory.Serializer (struct
     let prefix = Prefix.make ()
 
     let description = "Overrides"
-
-    let unmarshall value = Marshal.from_string value 0
   end
 
   let serialize = Fn.id
@@ -55,13 +51,13 @@ end)
 
 let empty = Target.Map.empty
 
-let empty_callgraph = Target.CallableMap.empty
+let empty_callgraph = Target.Map.empty
 
 let empty_overrides = Reference.Map.empty
 
 (* Returns forest of nodes in reverse finish time order. *)
 let depth_first_search edges nodes =
-  let visited = Target.Hashable.Table.create ~size:(2 * List.length nodes) () in
+  let visited = Target.HashMap.create ~size:(2 * List.length nodes) () in
   let rec visit accumulator node =
     if Hashtbl.mem visited node then
       accumulator
@@ -79,13 +75,12 @@ let depth_first_search edges nodes =
 
 
 let reverse_edges edges =
-  let reverse_edges = Target.Hashable.Table.create () in
+  let reverse_edges = Target.HashMap.create () in
   let walk_reverse_edges ~key:caller ~data:callees =
     let walk_callees callee =
-      match Target.Hashable.Table.find reverse_edges callee with
-      | None -> Target.Hashable.Table.add_exn reverse_edges ~key:callee ~data:[caller]
-      | Some callers ->
-          Target.Hashable.Table.set reverse_edges ~key:callee ~data:(caller :: callers)
+      match Target.HashMap.find reverse_edges callee with
+      | None -> Target.HashMap.add_exn reverse_edges ~key:callee ~data:[caller]
+      | Some callers -> Target.HashMap.set reverse_edges ~key:callee ~data:(caller :: callers)
     in
     List.iter callees ~f:walk_callees
   in
@@ -93,7 +88,7 @@ let reverse_edges edges =
   let accumulate ~key ~data map =
     Target.Map.set map ~key ~data:(List.dedup_and_sort ~compare:Target.compare data)
   in
-  Target.Hashable.Table.fold reverse_edges ~init:Target.Map.empty ~f:accumulate
+  Target.HashMap.fold reverse_edges ~init:Target.Map.empty ~f:accumulate
 
 
 let reverse call_graph =
@@ -107,7 +102,7 @@ let reverse call_graph =
 let pp_partitions formatter partitions =
   let print_partition partitions =
     let print_partition index accumulator nodes =
-      let nodes_to_string = List.map ~f:Target.show nodes |> String.concat ~sep:" " in
+      let nodes_to_string = List.map ~f:Target.show_internal nodes |> String.concat ~sep:" " in
       let partition = Format.sprintf "Partition %d: [%s]" index nodes_to_string in
       accumulator ^ "\n" ^ partition
     in
@@ -127,11 +122,15 @@ let partition ~edges =
 let pp formatter edges =
   let pp_edge (callable, data) =
     let targets =
-      List.map data ~f:Target.show |> List.sort ~compare:String.compare |> String.concat ~sep:" "
+      List.map data ~f:Target.show_pretty_with_kind
+      |> List.sort ~compare:String.compare
+      |> String.concat ~sep:" "
     in
-    Format.fprintf formatter "%s -> [%s]\n" (Target.show callable) targets
+    Format.fprintf formatter "%a -> [%s]\n" Target.pp_pretty_with_kind callable targets
   in
-  let compare (left, _) (right, _) = String.compare (Target.show left) (Target.show right) in
+  let compare (left, _) (right, _) =
+    String.compare (Target.show_internal left) (Target.show_internal right)
+  in
   Target.Map.to_alist edges |> List.sort ~compare |> List.iter ~f:pp_edge
 
 
@@ -146,9 +145,8 @@ let dump call_graph ~path =
   let add_edges ~key:source ~data:targets =
     let add_edge target = Format.asprintf "    \"%s\",\n" target |> Buffer.add_string buffer in
     if not (List.is_empty targets) then (
-      Format.asprintf "  \"%s\": [\n" (Target.external_target_name source)
-      |> Buffer.add_string buffer;
-      List.map targets ~f:Target.external_target_name
+      Format.asprintf "  \"%s\": [\n" (Target.external_name source) |> Buffer.add_string buffer;
+      List.map targets ~f:Target.external_name
       |> List.sort ~compare:String.compare
       |> List.iter ~f:add_edge;
       remove_trailing_comma ();
@@ -164,11 +162,8 @@ let dump call_graph ~path =
 
 
 let from_callgraph callgraph =
-  let add ~key ~data result =
-    let key = (key :> Target.t) in
-    Target.Map.set result ~key ~data
-  in
-  Target.CallableMap.fold callgraph ~f:add ~init:Target.Map.empty
+  let add ~key ~data result = Target.Map.set result ~key ~data in
+  Target.Map.fold callgraph ~f:add ~init:Target.Map.empty
 
 
 let union left right =
@@ -192,7 +187,7 @@ let from_overrides overrides =
     let overrides_to_methods =
       let override_to_method_edge override =
         match override with
-        | `OverrideTarget _ as override ->
+        | Target.Override _ as override ->
             let corresponding_method = Target.get_corresponding_method override in
             Some (override, [corresponding_method])
         | _ -> None
@@ -224,7 +219,21 @@ let create_overrides ~environment ~source =
     let class_method_overrides { Node.value = { Class.body; name = class_name; _ }; _ } =
       let get_method_overrides child_method =
         let method_name = Define.unqualified_name child_method in
-        GlobalResolution.overrides (Reference.show class_name) ~name:method_name ~resolution
+        let ancestor =
+          try
+            GlobalResolution.overrides (Reference.show class_name) ~name:method_name ~resolution
+          with
+          | Analysis.ClassHierarchy.Untracked untracked_type ->
+              Log.warning
+                "Found untracked type `%s` when looking for a parent of `%a.%s`. The method will \
+                 be considered has having no parent, which could lead to false negatives."
+                untracked_type
+                Reference.pp
+                class_name
+                method_name;
+              None
+        in
+        ancestor
         >>= fun ancestor ->
         let parent_annotation = Annotated.Attribute.parent ancestor in
         let ancestor_parent =
@@ -277,8 +286,8 @@ let create_overrides ~environment ~source =
 
 let expand_callees callees =
   let rec expand_and_gather expanded = function
-    | (#Target.callable_t | #Target.object_t) as real -> real :: expanded
-    | #Target.override_t as override ->
+    | (Target.Function _ | Target.Method _ | Target.Object _) as real -> real :: expanded
+    | Target.Override _ as override ->
         let make_override at_type = Target.create_derived_override override ~at_type in
         let overrides =
           let member = Target.get_override_reference override in

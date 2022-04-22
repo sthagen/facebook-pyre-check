@@ -10,12 +10,12 @@ import re
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, cast
+from typing import Any, cast, Dict, Iterable, List, Optional, Tuple, Union
 
 import libcst
 import libcst.matchers as libcst_matchers
 
-from . import UserError, ast
+from . import ast, UserError
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -67,16 +67,31 @@ class LineBreakTransformer(libcst.CSTTransformer):
         self, original_node: libcst.Assert, updated_node: libcst.Assert
     ) -> libcst.Assert:
         test = updated_node.test
+        message = updated_node.msg
+        comma = updated_node.comma
         if not test:
             return updated_node
+        if message and isinstance(comma, libcst.Comma):
+            message = LineBreakTransformer.basic_parenthesize(
+                message, comma.whitespace_after
+            )
+            comma = comma.with_changes(
+                whitespace_after=libcst.SimpleWhitespace(
+                    value=" ",
+                )
+            )
         assert_whitespace = updated_node.whitespace_after_assert
         if isinstance(assert_whitespace, libcst.ParenthesizedWhitespace):
             return updated_node.with_changes(
                 test=LineBreakTransformer.basic_parenthesize(test, assert_whitespace),
+                msg=message,
+                comma=comma,
                 whitespace_after_assert=libcst.SimpleWhitespace(value=" "),
             )
         return updated_node.with_changes(
-            test=LineBreakTransformer.basic_parenthesize(test)
+            test=LineBreakTransformer.basic_parenthesize(test),
+            msg=message,
+            comma=comma,
         )
 
     def leave_Assign(
@@ -101,6 +116,32 @@ class LineBreakTransformer(libcst.CSTTransformer):
         return updated_node.with_changes(
             value=LineBreakTransformer.basic_parenthesize(assign_value)
         )
+
+    def leave_AnnAssign(
+        self, original_node: libcst.AnnAssign, updated_node: libcst.AnnAssign
+    ) -> libcst.AnnAssign:
+        assign_value = updated_node.value
+        equal = updated_node.equal
+        if not isinstance(equal, libcst.AssignEqual):
+            return updated_node
+        assign_whitespace = equal.whitespace_after
+        updated_value = (
+            LineBreakTransformer.basic_parenthesize(assign_value, assign_whitespace)
+            if assign_value
+            else None
+        )
+        if libcst_matchers.matches(
+            assign_whitespace, libcst_matchers.ParenthesizedWhitespace()
+        ):
+            updated_equal = equal.with_changes(
+                whitespace_after=libcst.SimpleWhitespace(value=" ")
+            )
+
+            return updated_node.with_changes(
+                equal=updated_equal,
+                value=updated_value,
+            )
+        return updated_node.with_changes(value=updated_value)
 
     def leave_Del(
         self, original_node: libcst.Del, updated_node: libcst.Del
@@ -243,6 +284,10 @@ class Errors:
                 LOG.warning(f"Skipping generated file at {path_to_suppress}")
             except SkippingUnparseableFileException:
                 LOG.warning(f"Skipping unparseable file at {path_to_suppress}")
+            except LineBreakParsingException:
+                LOG.warning(
+                    f"Skipping file with unparseable line breaks at {path_to_suppress}"
+                )
             except (ast.UnstableAST, SyntaxError) as exception:
                 unsuppressed_paths_and_exceptions.append((path_to_suppress, exception))
 
@@ -339,6 +384,10 @@ class SkippingUnparseableFileException(Exception):
     pass
 
 
+class LineBreakParsingException(Exception):
+    pass
+
+
 def _str_to_int(digits: str) -> Optional[int]:
     try:
         return int(digits)
@@ -368,7 +417,7 @@ def _get_unused_ignore_codes(errors: List[Dict[str, str]]) -> List[int]:
 def _remove_unused_ignores(line: str, errors: List[Dict[str, str]]) -> str:
     unused_ignore_codes = _get_unused_ignore_codes(errors)
     match = re.search(r"pyre-(ignore|fixme) *\[([0-9, ]+)\]", line)
-    stripped_line = re.sub(r"# pyre-(ignore|fixme).*$", "", line).rstrip()
+    stripped_line = re.sub(r"# *pyre-(ignore|fixme).*$", "", line).rstrip()
     if not match:
         return stripped_line
 
@@ -427,6 +476,41 @@ def _map_line_to_start_of_range(line_ranges: List[LineRange]) -> Dict[int, int]:
     return target_line_map
 
 
+class LineBreakBlock:
+    error_comments: List[List[str]]
+    opened_expressions: int
+    is_active: bool
+
+    def __init__(self) -> None:
+        self.error_comments = []
+        self.opened_expressions = 0
+        self.is_active = False
+
+    def ready_to_suppress(self) -> bool:
+        # Line break block has been filled and then ended; errors can be applied.
+        return not self.is_active and len(self.error_comments) > 0
+
+    def process_line(self, line: str, error_comments: List[str]) -> None:
+        comment_free_line = line.split("#")[0].rstrip()
+        if not self.is_active:
+            # Check if line break block is beginning.
+            self.is_active = comment_free_line.endswith("\\")
+            if self.is_active:
+                self.error_comments.append(error_comments)
+            return
+
+        # Check if line break block is ending.
+        self.error_comments.append(error_comments)
+        if comment_free_line.endswith("\\"):
+            return
+        if comment_free_line.endswith("("):
+            self.opened_expressions += 1
+            return
+        if comment_free_line.endswith(")"):
+            self.opened_expressions -= 1
+        self.is_active = self.opened_expressions > 0
+
+
 def _lines_after_suppressing_errors(
     lines: List[str],
     errors: Dict[int, List[Dict[str, str]]],
@@ -436,7 +520,8 @@ def _lines_after_suppressing_errors(
 ) -> List[str]:
     new_lines = []
     removing_pyre_comments = False
-    line_break_block_errors: List[List[str]] = []
+    line_break_block = LineBreakBlock()
+    in_multi_line_string = False
     for index, line in enumerate(lines):
         if removing_pyre_comments:
             stripped = line.lstrip()
@@ -477,20 +562,38 @@ def _lines_after_suppressing_errors(
             )
         ]
 
-        if len(line_break_block_errors) > 0 and not line.endswith("\\"):
-            # Handle error suppressions in line break block
-            line_break_block_errors.append(comments)
+        # Handle suppressions in line break blocks.
+        line_break_block.process_line(line, comments)
+        if line_break_block.ready_to_suppress():
             new_lines.append(line)
-            if sum(len(errors) for errors in line_break_block_errors) > 0:
-                _add_error_to_line_break_block(new_lines, line_break_block_errors)
-            line_break_block_errors = []
+            try:
+                line_break_block_errors = line_break_block.error_comments
+                if sum(len(errors) for errors in line_break_block_errors) > 0:
+                    _add_error_to_line_break_block(new_lines, line_break_block_errors)
+            except libcst.ParserSyntaxError as exception:
+                raise LineBreakParsingException(exception)
+            line_break_block = LineBreakBlock()
             continue
 
-        if line.endswith("\\"):
-            line_break_block_errors.append(comments)
-            comments = []
+        # Handle suppressions around multi-line strings.
+        contains_multi_line_string_token = line.count('"""') % 2 != 0
+        if contains_multi_line_string_token:
+            is_end_of_multi_line_string = in_multi_line_string
+            in_multi_line_string = not in_multi_line_string
+        else:
+            is_end_of_multi_line_string = False
 
-        if len(comments) > 0:
+        if is_end_of_multi_line_string and len(comments) > 0:
+            # Use a simple same-line suppression for errors on a multi-line string close
+            error_codes = [
+                error["code"] for error in relevant_errors if error["code"] != "0"
+            ]
+            line = line + "  # pyre-fixme[{}]".format(", ".join(error_codes))
+            new_lines.append(line)
+            continue
+
+        # Add suppression comments.
+        if not line_break_block.is_active and len(comments) > 0:
             LOG.info(
                 "Adding comment%s on line %d: %s",
                 "s" if len(comments) > 1 else "",

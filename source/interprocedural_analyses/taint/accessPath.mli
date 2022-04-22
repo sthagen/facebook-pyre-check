@@ -21,11 +21,13 @@ module Root : sig
     | StarParameter of { position: int }
     | StarStarParameter of { excluded: Identifier.t list }
     | Variable of Identifier.t
-  [@@deriving compare, show]
+  [@@deriving compare, eq, hash, sexp, show]
 
   val normalize_parameters : Parameter.t list -> (t * Identifier.t * Parameter.t) list
 
   val parameter_name : t -> string option
+
+  val to_string : t -> string
 end
 
 type t = {

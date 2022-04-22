@@ -30,7 +30,6 @@ module Make (Config : PRODUCT_CONFIG) = struct
   type product = element array
 
   module IntMap = Map.Make (Int)
-  module IntSet = Set.Make (Int)
 
   type abstract_slot = Slot : 'a Config.slot -> abstract_slot [@@unbox]
 
@@ -51,19 +50,14 @@ module Make (Config : PRODUCT_CONFIG) = struct
 
 
   (* The route map indicates for each part under a product element which slot the element is in *)
-  let route_map : int IntMap.t =
+  let route_map : int list IntMap.t =
     let map = ref IntMap.empty in
-    let duplicates = ref IntSet.empty in
     let gather (route : int) (type a) (part : a part) =
-      let part_id = part_id part in
-      (* Ignore parts that are present in multiple slots. *)
-      if not (IntSet.mem part_id !duplicates) then
-        if not (IntMap.mem part_id !map) then
-          map := IntMap.add part_id route !map
-        else begin
-          map := IntMap.remove part_id !map;
-          duplicates := IntSet.add part_id !duplicates
-        end
+      let add_route = function
+        | None -> Some [route]
+        | Some routes -> Some (route :: routes)
+      in
+      map := IntMap.update (part_id part) add_route !map
     in
     Array.iteri
       (fun route (Slot slot) ->
@@ -78,8 +72,19 @@ module Make (Config : PRODUCT_CONFIG) = struct
 
 
   let get_route (type a) (part : a part) =
-    try IntMap.find (part_id part) route_map with
-    | Not_found -> Format.sprintf "No route to part %s" (part_name part) |> failwith
+    match IntMap.find_opt (part_id part) route_map with
+    | Some [slot_index] -> slot_index
+    | Some slot_indices ->
+        let name_from_slot_index index =
+          let (Slot slot) = slots.(index) in
+          Config.slot_name slot
+        in
+        Format.sprintf
+          "Part %s is present in multiple slots of a product: %s"
+          (part_name part)
+          (slot_indices |> List.map name_from_slot_index |> String.concat ", ")
+        |> failwith
+    | None -> Format.sprintf "No route to part %s" (part_name part) |> failwith
 
 
   let bottom =
@@ -111,7 +116,7 @@ module Make (Config : PRODUCT_CONFIG) = struct
     let check_strict (Slot slot) =
       let module D = (val Config.slot_domain slot) in
       let value = get slot result in
-      if D.is_bottom value then raise Strict
+      if D.is_bottom value then raise_notrace Strict
     in
     try
       Array.iter check_strict strict_slots;
@@ -150,7 +155,7 @@ module Make (Config : PRODUCT_CONFIG) = struct
       let is_bottom_slot (Slot slot) =
         let module D = (val Config.slot_domain slot) in
         let v = get slot product in
-        if not (D.is_bottom v) then raise Exit
+        if not (D.is_bottom v) then raise_notrace Exit
       in
       if product == bottom then
         true
@@ -193,7 +198,7 @@ module Make (Config : PRODUCT_CONFIG) = struct
         let module D = (val Config.slot_domain slot) in
         let left = get slot left in
         let right = get slot right in
-        if not (D.less_or_equal ~left ~right) then raise Exit
+        if not (D.less_or_equal ~left ~right) then raise_notrace Exit
       in
       try
         Array.iter less_or_equal_slot slots;
@@ -209,7 +214,7 @@ module Make (Config : PRODUCT_CONFIG) = struct
         let right = get slot right in
         let result = D.meet left right in
         if Config.strict slot && D.is_bottom result then
-          raise Strict
+          raise_notrace Strict
         else
           Element result
       in
@@ -265,9 +270,9 @@ module Make (Config : PRODUCT_CONFIG) = struct
             | AllBottom -> SingleStrict (slot, result)
             | _ ->
                 (* multiple slots are non-bottom *)
-                raise Exit
+                raise_notrace Exit
           else (* non-strict slot non-bottom *)
-            raise Exit
+            raise_notrace Exit
         in
         try
           match Array.fold_left find_single_strict_slot AllBottom slots with

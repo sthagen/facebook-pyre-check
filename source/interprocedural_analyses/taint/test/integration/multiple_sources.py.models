@@ -49,60 +49,15 @@
         ]
       }
     ],
-    "features": []
-  }
-}
-{
-  "kind": "issue",
-  "data": {
-    "callable": "multiple_sources.issue_with_test_a_and_b",
-    "callable_line": 84,
-    "code": 4322,
-    "line": 86,
-    "start": 43,
-    "end": 63,
-    "filename": "multiple_sources.py",
-    "message": "TestA or TestB and permissive context combine",
-    "traces": [
-      {
-        "name": "forward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "leaves": [
-                  { "name": "multiple_sources.permissive_context" }
-                ],
-                "kind": "PermissiveContext"
-              }
-            ],
-            "root": {
-              "filename": "multiple_sources.py",
-              "line": 86,
-              "start": 43,
-              "end": 63
-            }
-          }
-        ]
-      },
-      {
-        "name": "backward",
-        "roots": [
-          {
-            "kinds": [
-              { "kind": "TriggeredPartialSink[ExpectsEitherTest[b]]" }
-            ],
-            "root": {
-              "filename": "multiple_sources.py",
-              "line": 86,
-              "start": 43,
-              "end": 63
-            }
-          }
-        ]
-      }
-    ],
-    "features": []
+    "features": [],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "multiple_sources.Node.send",
+      "index": 0,
+      "parameter": "formal(vc)"
+    },
+    "master_handle":
+      "multiple_sources.combine_tainted_user_and_dangerous_vc:4321:0:Call|multiple_sources.Node.send|0|formal(vc):4b283006a4044ae3eb3809f82c65d061"
   }
 }
 {
@@ -155,7 +110,76 @@
         ]
       }
     ],
-    "features": []
+    "features": [],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "multiple_sources.combines_tests_and_context",
+      "index": 0,
+      "parameter": "formal(vc)"
+    },
+    "master_handle":
+      "multiple_sources.issue_with_test_a_and_b:4322:0:Call|multiple_sources.combines_tests_and_context|0|formal(vc):2952b352e0a37aa627ef7429212a7ad1"
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "multiple_sources.issue_with_test_a_and_b",
+    "callable_line": 84,
+    "code": 4322,
+    "line": 86,
+    "start": 43,
+    "end": 63,
+    "filename": "multiple_sources.py",
+    "message": "TestA or TestB and permissive context combine",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  { "name": "multiple_sources.permissive_context" }
+                ],
+                "kind": "PermissiveContext"
+              }
+            ],
+            "root": {
+              "filename": "multiple_sources.py",
+              "line": 86,
+              "start": 43,
+              "end": 63
+            }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "kinds": [
+              { "kind": "TriggeredPartialSink[ExpectsEitherTest[b]]" }
+            ],
+            "root": {
+              "filename": "multiple_sources.py",
+              "line": 86,
+              "start": 43,
+              "end": 63
+            }
+          }
+        ]
+      }
+    ],
+    "features": [],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "multiple_sources.combines_tests_and_context",
+      "index": 1,
+      "parameter": "formal(vc)"
+    },
+    "master_handle":
+      "multiple_sources.issue_with_test_a_and_b:4322:0:Call|multiple_sources.combines_tests_and_context|1|formal(vc):00952f5183650c224ff0c1236b161820"
   }
 }
 {
@@ -218,7 +242,15 @@
         ]
       }
     ],
-    "features": []
+    "features": [],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "multiple_sources.demonstrate_triggered_context",
+      "index": 0,
+      "parameter": "formal(vc)"
+    },
+    "master_handle":
+      "multiple_sources.issue_with_triggered_context:4321:0:Call|multiple_sources.demonstrate_triggered_context|0|formal(vc):618ee3f551e51cbfdd4134288328fbfb"
   }
 }
 {
@@ -290,7 +322,15 @@
       { "has": "first-index" },
       { "first-index": "<unknown>" },
       { "always-via": "tito" }
-    ]
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "multiple_sources.demonstrate_triggered_input",
+      "index": 0,
+      "parameter": "formal(id)"
+    },
+    "master_handle":
+      "multiple_sources.issue_with_triggered_input:4321:0:Call|multiple_sources.demonstrate_triggered_input|0|formal(id):8a70cfef2676b9104e0817e743936160"
   }
 }
 {
@@ -488,6 +528,8 @@
         "port": "formal(vc)",
         "taint": [
           {
+            "receiver_interval": { "lower": 2, "upper": 3 },
+            "is_self_call": false,
             "kinds": [
               {
                 "leaves": [ { "name": "multiple_sources.Node.send" } ],
@@ -515,6 +557,8 @@
         "port": "formal(id)",
         "taint": [
           {
+            "receiver_interval": { "lower": 2, "upper": 3 },
+            "is_self_call": false,
             "kinds": [
               {
                 "leaves": [ { "name": "multiple_sources.Node.send" } ],

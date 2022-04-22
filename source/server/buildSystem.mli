@@ -85,7 +85,7 @@ module Initializer : sig
       always assumes an identity source-to-artifact mapping. This can be used when the project being
       checked does not use a build system. This initializer never raises. *)
 
-  val buck : raw:Buck.Raw.t -> Configuration.Buck.t -> t
+  val buck : builder:Buck.Builder.t -> artifact_root:PyrePath.t -> targets:string list -> unit -> t
   (** [buck] initializes a build system that interops with Buck. See {!module:Buck} for more details
       about its behavior.
 
@@ -97,6 +97,12 @@ module Initializer : sig
         output.
       - {!Buck.Builder.LinkTreeConstructionError} could happen when build artifact creation cannot
         function properly due to unexpected issues on the filesystem. *)
+
+  val track_unwatched_dependency : Configuration.UnwatchedDependency.t -> t
+  (** [track_unwatched_dependency] initializes a build system that keeps track of file changes in
+      unwatched dependencies.
+
+      See D33809915 for a detailed description on what the problem is and how the solution works. *)
 
   (* This function allows the client to fully tweak the behavior of an initializer. Expose for
      testing purpose only. *)

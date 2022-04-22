@@ -25,12 +25,9 @@ module ReadOnly : sig
   type t
 
   val create
-    :  ?get_processed_source:(track_dependency:bool -> Reference.t -> Source.t option) ->
+    :  module_tracker:ModuleTracker.ReadOnly.t ->
+    ?get_processed_source:(track_dependency:bool -> Reference.t -> Source.t option) ->
     ?get_raw_source:(Reference.t -> (Source.t, ParserError.t) Result.t option) ->
-    ?get_source_path:(Reference.t -> SourcePath.t option) ->
-    ?is_module:(Reference.t -> bool) ->
-    ?all_explicit_modules:(unit -> Reference.t list) ->
-    ?is_module_tracked:(Reference.t -> bool) ->
     unit ->
     t
 
@@ -40,21 +37,11 @@ module ReadOnly : sig
 
   val get_source_path : t -> Reference.t -> SourcePath.t option
 
-  val is_module : t -> Reference.t -> bool
-
   val get_relative : t -> Reference.t -> string option
 
-  val get_real_path
-    :  configuration:Configuration.Analysis.t ->
-    t ->
-    Reference.t ->
-    PyrePath.t option
+  val get_real_path : t -> Reference.t -> PyrePath.t option
 
-  val get_real_path_relative
-    :  configuration:Configuration.Analysis.t ->
-    t ->
-    Reference.t ->
-    string option
+  val get_real_path_relative : t -> Reference.t -> string option
 
   val all_explicit_modules : t -> Reference.t list
 
@@ -62,6 +49,8 @@ module ReadOnly : sig
 end
 
 val module_tracker : t -> ModuleTracker.t
+
+val configuration : t -> Configuration.Analysis.t
 
 (* Store the environment to saved-state *)
 val store : t -> unit
@@ -86,12 +75,9 @@ type trigger =
   | Update of ModuleTracker.IncrementalUpdate.t list
   | ColdStart
 
-val update
-  :  configuration:Configuration.Analysis.t ->
-  scheduler:Scheduler.t ->
-  t ->
-  trigger ->
-  UpdateResult.t
+val update : scheduler:Scheduler.t -> t -> trigger -> UpdateResult.t
+
+val remove_sources : t -> Reference.t list -> unit
 
 val read_only : t -> ReadOnly.t
 

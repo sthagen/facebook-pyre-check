@@ -22,13 +22,12 @@ type local_mode =
   | PlaceholderStub
 [@@deriving compare, show, sexp, hash]
 
-module Metadata = struct
+module TypecheckFlags = struct
   type t = {
     local_mode: local_mode Node.t option;
     unused_local_modes: local_mode Node.t list;
     ignore_codes: int list;
     ignore_lines: Ignore.t list;
-    raw_hash: int; [@compare.ignore]
   }
   [@@deriving compare, show, hash, sexp]
 
@@ -43,10 +42,9 @@ module Metadata = struct
       ?(unused_local_modes = [])
       ?(ignore_codes = [])
       ?(ignore_lines = [])
-      ?(raw_hash = -1)
       ()
     =
-    { local_mode = Some local_mode; unused_local_modes; ignore_codes; ignore_lines; raw_hash }
+    { local_mode = Some local_mode; unused_local_modes; ignore_codes; ignore_lines }
 
 
   let default_with_suppress_regex =
@@ -62,7 +60,7 @@ module Metadata = struct
     Str.string_match comment_regex line 0
 
 
-  let parse ~qualifier:_ lines =
+  let parse ~qualifier lines =
     let is_strict = is_pyre_comment "pyre-strict" in
     let is_unsafe = is_pyre_comment "pyre-unsafe" in
     (* We do not fall back to declarative mode on a typo when attempting to only suppress certain
@@ -167,10 +165,21 @@ module Metadata = struct
       in
       let ignore_codes =
         if is_default_with_suppress line then
+          let safe_int_of_string s =
+            try Some (int_of_string s) with
+            | _ ->
+                Log.warning
+                  "Parsing ignore comment: `int_of_string` failed on string `%s` in module `%s`.\n\
+                   The full line was `%s`."
+                  s
+                  (Reference.show qualifier)
+                  line;
+                None
+          in
           let suppressed_codes =
             Str.global_substitute (Str.regexp "[^,0-9]+") (fun _ -> "") line
             |> String.split_on_chars ~on:[',']
-            |> List.map ~f:int_of_string
+            |> List.filter_map ~f:safe_int_of_string
           in
           suppressed_codes @ ignore_codes
         else
@@ -187,12 +196,11 @@ module Metadata = struct
       unused_local_modes = List.rev unused_local_modes;
       ignore_codes;
       ignore_lines = ignore_lines |> Int.Map.data |> List.concat;
-      raw_hash = [%hash: string list] lines;
     }
 end
 
 type t = {
-  metadata: Metadata.t;
+  typecheck_flags: TypecheckFlags.t;
   source_path: SourcePath.t;
   top_level_unbound_names: Statement.Define.NameAccess.t list;
   statements: Statement.t list;
@@ -207,7 +215,7 @@ let pp format { statements; _ } =
 let pp_all format source = Sexp.pp_hum format (sexp_of_t source)
 
 let location_insensitive_compare left right =
-  match Metadata.compare left.metadata right.metadata with
+  match TypecheckFlags.compare left.typecheck_flags right.typecheck_flags with
   | x when x <> 0 -> x
   | _ -> (
       match SourcePath.compare left.source_path right.source_path with
@@ -254,7 +262,7 @@ let noop_collect_format_strings ~ignore_line_map:_ _ = []
 
 let ignored_lines_including_format_strings
     ?(collect_format_strings_with_ignores = noop_collect_format_strings)
-    ({ metadata = { Metadata.ignore_lines; _ }; _ } as source)
+    ({ typecheck_flags = { TypecheckFlags.ignore_lines; _ }; _ } as source)
   =
   let ignore_line_map =
     List.map ignore_lines ~f:(fun ({ Ignore.ignored_line; _ } as ignore) -> ignored_line, ignore)
@@ -268,13 +276,18 @@ let ignored_lines_including_format_strings
   |> List.concat_map ~f:(List.dedup_and_sort ~compare:Ignore.compare)
 
 
-let create_from_source_path ?collect_format_strings_with_ignores ~metadata ~source_path statements =
-  let source = { metadata; source_path; top_level_unbound_names = []; statements } in
+let create_from_source_path
+    ?collect_format_strings_with_ignores
+    ~typecheck_flags
+    ~source_path
+    statements
+  =
+  let source = { typecheck_flags; source_path; top_level_unbound_names = []; statements } in
   {
     source with
-    metadata =
+    typecheck_flags =
       {
-        metadata with
+        typecheck_flags with
         ignore_lines =
           ignored_lines_including_format_strings ?collect_format_strings_with_ignores source;
       };
@@ -282,17 +295,17 @@ let create_from_source_path ?collect_format_strings_with_ignores ~metadata ~sour
 
 
 let create
-    ?(metadata = Metadata.create_for_testing ())
+    ?(typecheck_flags = TypecheckFlags.create_for_testing ())
     ?(relative = "")
     ?(is_external = false)
     ?(priority = 0)
     statements
   =
   let source_path = SourcePath.create_for_testing ~relative ~is_external ~priority in
-  create_from_source_path ~metadata ~source_path statements
+  create_from_source_path ~typecheck_flags ~source_path statements
 
 
-let ignore_lines { metadata = { Metadata.ignore_lines; _ }; _ } = ignore_lines
+let ignore_lines { typecheck_flags = { TypecheckFlags.ignore_lines; _ }; _ } = ignore_lines
 
 let statements { statements; _ } = statements
 

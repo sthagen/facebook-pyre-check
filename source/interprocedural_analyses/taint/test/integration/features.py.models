@@ -18,9 +18,9 @@
             "kinds": [
               {
                 "features": [
+                  { "always-via": "special_source" },
                   { "always-type": "bool" },
-                  { "always-type": "scalar" },
-                  { "always-via": "special_source" }
+                  { "always-type": "scalar" }
                 ],
                 "leaves": [ { "name": "_test_source" } ],
                 "length": 1,
@@ -62,11 +62,19 @@
       }
     ],
     "features": [
-      { "always-type": "bool" },
-      { "always-type": "scalar" },
       { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ]
+      { "always-via": "special_sink" },
+      { "always-type": "bool" },
+      { "always-type": "scalar" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "features.async_issue_bools:5002:0:Call|_test_sink|0|formal(arg):3bdb42078e2c8bb931dffef24589a057"
   }
 }
 {
@@ -88,9 +96,9 @@
             "kinds": [
               {
                 "features": [
+                  { "always-via": "special_source" },
                   { "always-type": "bool" },
-                  { "always-type": "scalar" },
-                  { "always-via": "special_source" }
+                  { "always-type": "scalar" }
                 ],
                 "leaves": [ { "name": "_test_source" } ],
                 "length": 1,
@@ -132,11 +140,19 @@
       }
     ],
     "features": [
-      { "always-type": "bool" },
-      { "always-type": "scalar" },
       { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ]
+      { "always-via": "special_sink" },
+      { "always-type": "bool" },
+      { "always-type": "scalar" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "features.issue_from_tuple:5002:0:Call|_test_sink|0|formal(arg):d1f4d3eec61ad0279e2e2819a69a171a"
   }
 }
 {
@@ -200,13 +216,21 @@
       }
     ],
     "features": [
+      { "always-via": "special_source" },
+      { "always-via": "special_sink" },
       { "always-via": "obscure:model" },
       { "always-type": "bool" },
       { "always-type": "scalar" },
-      { "always-via": "tito" },
-      { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ]
+      { "always-via": "tito" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "features.issue_via_bool:5002:0:Call|_test_sink|0|formal(arg):57f857d039efde9df93f0a53da9abc79"
   }
 }
 {
@@ -275,13 +299,21 @@
       }
     ],
     "features": [
+      { "always-via": "special_source" },
+      { "always-via": "special_sink" },
       { "always-via": "obscure:model" },
       { "always-type": "bool" },
       { "always-type": "scalar" },
-      { "always-via": "tito" },
-      { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ]
+      { "always-via": "tito" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "features.issue_via_equality:5002:0:Call|_test_sink|0|formal(arg):a8a79cf353af7aca6875842989231e92"
   }
 }
 {
@@ -342,11 +374,19 @@
       }
     ],
     "features": [
-      { "always-type": "bool" },
-      { "always-type": "scalar" },
       { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ]
+      { "always-via": "special_sink" },
+      { "always-type": "bool" },
+      { "always-type": "scalar" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 1,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "features.issue_via_in:5002:0:Call|_test_sink|1|formal(arg):8b8fbc207f24e7cd4e765e7157929554"
   }
 }
 {
@@ -407,10 +447,40 @@
       }
     ],
     "features": [
-      { "always-type": "bool" },
-      { "always-type": "scalar" },
       { "always-via": "special_source" },
-      { "always-via": "special_sink" }
+      { "always-via": "special_sink" },
+      { "always-type": "bool" },
+      { "always-type": "scalar" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "features.issue_via_in:5002:0:Call|_test_sink|0|formal(arg):bfe94ee38d89fbed953f784a39443d8c"
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "features.SetItemClass.__setitem__",
+    "tito": [
+      {
+        "port": "formal(value)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "copy" } ],
+                "kind": "ParameterUpdate0"
+              }
+            ],
+            "decl": null
+          }
+        ]
+      }
     ]
   }
 }
@@ -557,6 +627,32 @@
 {
   "kind": "model",
   "data": {
+    "callable": "features.model_missing_feature",
+    "tito": [
+      {
+        "port": "formal(arg)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "features": [
+                  { "via": "string_concat_rhs" },
+                  { "always-via": "string_concat_lhs" }
+                ],
+                "return_paths": [ "" ],
+                "kind": "LocalReturn"
+              }
+            ],
+            "decl": null
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
     "callable": "features.named",
     "tito": [
       {
@@ -574,6 +670,36 @@
               }
             ],
             "decl": null
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "features.no_always_when_calling_setitem",
+    "sources": [
+      {
+        "port": "result",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "local_features": [ { "via": "copy" }, { "via": "tito" } ],
+            "tito": [ { "line": 121, "start": 20, "end": 21 } ],
+            "root": {
+              "filename": "features.py",
+              "line": 119,
+              "start": 8,
+              "end": 22
+            }
           }
         ]
       }

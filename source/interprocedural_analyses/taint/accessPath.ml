@@ -22,7 +22,7 @@ module Root = struct
     | StarParameter of { position: int }
     | StarStarParameter of { excluded: Identifier.t list }
     | Variable of Identifier.t
-  [@@deriving compare, show { with_path = false }, hash]
+  [@@deriving compare, eq, hash, sexp, show { with_path = false }]
 
   let chop_parameter_prefix name =
     match String.chop_prefix ~prefix:"$parameter$" name with
@@ -75,7 +75,7 @@ module Root = struct
           :: normalized )
     in
     List.foldi parameters ~f:normalize_parameters ~init:(false, [], [])
-    |> fun (_, _, parameters) -> parameters
+    |> fun (_, _, parameters) -> List.rev parameters
 
 
   let parameter_name = function
@@ -85,6 +85,15 @@ module Root = struct
     | StarParameter _ -> Some "*"
     | StarStarParameter _ -> Some "**"
     | _ -> None
+
+
+  let to_string = function
+    | LocalResult -> "result"
+    | PositionalParameter { position = _; name; _ } -> Format.sprintf "formal(%s)" name
+    | NamedParameter { name } -> Format.sprintf "formal(%s)" name
+    | StarParameter { position } -> Format.sprintf "formal(*rest%d)" position
+    | StarStarParameter _ -> "formal(**kw)"
+    | Variable name -> Format.sprintf "local(%s)" name
 end
 
 type argument_match = {
@@ -248,18 +257,7 @@ let get_index expression =
   | None -> Abstract.TreeDomain.Label.AnyIndex
 
 
-let to_json { root; path } =
-  let open Root in
-  let root_name = function
-    | LocalResult -> "result"
-    | PositionalParameter { position = _; name; _ } -> Format.sprintf "formal(%s)" name
-    | NamedParameter { name } -> Format.sprintf "formal(%s)" name
-    | StarParameter { position } -> Format.sprintf "formal(*rest%d)" position
-    | StarStarParameter _ -> "formal(**kw)"
-    | Variable name -> Format.sprintf "local(%s)" name
-  in
-  `String (root_name root ^ Abstract.TreeDomain.Label.show_path path)
-
+let to_json { root; path } = `String (Root.to_string root ^ Abstract.TreeDomain.Label.show_path path)
 
 let of_expression expression =
   let rec of_expression path = function

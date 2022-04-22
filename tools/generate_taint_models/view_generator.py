@@ -8,7 +8,7 @@
 import inspect
 import logging
 from importlib import import_module
-from typing import Any, Callable, Iterable, NamedTuple, Type, List
+from typing import Any, Callable, Iterable, List, NamedTuple, Type
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -50,6 +50,5 @@ def get_all_views(django_urls: DjangoUrls) -> List[Callable[..., object]]:
             else:
                 raise TypeError("pattern is not url resolver or url pattern.")
 
-    # pyre-ignore: Too dynamic.
     visit_all_patterns(imported_urls_module.urlpatterns)
     return functions_to_model

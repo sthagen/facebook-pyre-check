@@ -62,10 +62,19 @@
       }
     ],
     "features": [
+      { "always-via": "special_source" },
       { "always-type": "integer" },
-      { "always-type": "scalar" },
-      { "always-via": "special_source" }
-    ]
+      { "always-type": "scalar" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee":
+        "dataclass_taint.DataClassWithClassAttributeTaintedInConstructor.__init__",
+      "index": 1,
+      "parameter": "formal(bad)"
+    },
+    "master_handle":
+      "dataclass_taint.test_class_attr_model_tainted_in_constructor:5002:0:Call|dataclass_taint.DataClassWithClassAttributeTaintedInConstructor.__init__|1|formal(bad):4a7785b5b0dc31c99f8d25cf5234a82f"
   }
 }
 {
@@ -107,9 +116,9 @@
             "kinds": [
               {
                 "features": [
+                  { "always-via": "special_sink" },
                   { "always-type": "integer" },
-                  { "always-type": "scalar" },
-                  { "always-via": "special_sink" }
+                  { "always-type": "scalar" }
                 ],
                 "leaves": [ { "name": "_test_sink" } ],
                 "length": 1,
@@ -131,11 +140,88 @@
       }
     ],
     "features": [
-      { "always-type": "integer" },
-      { "always-type": "scalar" },
       { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ]
+      { "always-via": "special_sink" },
+      { "always-type": "integer" },
+      { "always-type": "scalar" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "dataclass_taint.DataClassWIthInit.__init__",
+      "index": 0,
+      "parameter": "formal(bad)"
+    },
+    "master_handle":
+      "dataclass_taint.issue_in_dataclass_constructor:5002:0:Call|dataclass_taint.DataClassWIthInit.__init__|0|formal(bad):95af429aa6b3669c034f8f4ade606c6b"
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "dataclass_taint.test_class_attr_model_tainted_directly",
+    "callable_line": 89,
+    "code": 5002,
+    "line": 93,
+    "start": 51,
+    "end": 65,
+    "filename": "dataclass_taint.py",
+    "message": "Data from [Test] source(s) may reach [Test] sink(s)",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "features": [ { "always-via": "special_source" } ],
+                "leaves": [ { "name": "_test_source" } ],
+                "kind": "Test"
+              }
+            ],
+            "root": {
+              "filename": "dataclass_taint.py",
+              "line": 93,
+              "start": 51,
+              "end": 65
+            }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name":
+                      "dataclass_taint.DataClassWithClassAttributeTaintedDirectly.__init__"
+                  }
+                ],
+                "kind": "Test"
+              }
+            ],
+            "root": {
+              "filename": "dataclass_taint.py",
+              "line": 93,
+              "start": 51,
+              "end": 65
+            }
+          }
+        ]
+      }
+    ],
+    "features": [ { "always-via": "special_source" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee":
+        "dataclass_taint.DataClassWithClassAttributeTaintedDirectly.__init__",
+      "index": 1,
+      "parameter": "formal(bad)"
+    },
+    "master_handle":
+      "dataclass_taint.test_class_attr_model_tainted_directly:5002:0:Call|dataclass_taint.DataClassWithClassAttributeTaintedDirectly.__init__|1|formal(bad):2f7989bea29b0339ab8a203e62db91c0"
   }
 }
 {
@@ -195,7 +281,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_source" } ]
+    "features": [ { "always-via": "special_source" } ],
+    "sink_handle": {
+      "kind": "Global",
+      "callee":
+        "Obj{dataclass_taint.DataClassWithClassAttributeTaintedDirectly.bad}",
+      "index": 0
+    },
+    "master_handle":
+      "dataclass_taint.test_class_attr_model_tainted_directly:5002:0:Global|Obj{dataclass_taint.DataClassWithClassAttributeTaintedDirectly.bad}|0:b81b9304aded9021a85d4fbe1e787a51"
   }
 }
 {
@@ -216,6 +310,12 @@
   "data": {
     "callable":
       "dataclass_taint.DataClassWithClassAttributeTaintedDirectly.__init__",
+    "sinks": [
+      {
+        "port": "formal(bad)",
+        "taint": [ { "kinds": [ { "kind": "Test" } ], "decl": null } ]
+      }
+    ],
     "tito": [
       {
         "port": "formal(benign)",
@@ -338,6 +438,8 @@
         "port": "formal(bad)",
         "taint": [
           {
+            "caller_interval": { "lower": 4, "upper": 5 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -424,6 +526,8 @@
         "port": "result[bad]",
         "taint": [
           {
+            "caller_interval": { "lower": 14, "upper": 15 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [
@@ -451,6 +555,8 @@
         "port": "formal(another)",
         "taint": [
           {
+            "caller_interval": { "lower": 14, "upper": 15 },
+            "is_self_call": false,
             "kinds": [
               {
                 "leaves": [
@@ -471,6 +577,10 @@
             }
           }
         ]
+      },
+      {
+        "port": "formal(bad_sink)",
+        "taint": [ { "kinds": [ { "kind": "Test" } ], "decl": null } ]
       }
     ],
     "tito": [
@@ -564,6 +674,8 @@
         "port": "result[bad]",
         "taint": [
           {
+            "caller_interval": { "lower": 14, "upper": 15 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [
@@ -591,6 +703,8 @@
         "port": "formal(another)",
         "taint": [
           {
+            "caller_interval": { "lower": 14, "upper": 15 },
+            "is_self_call": false,
             "kinds": [
               {
                 "leaves": [
@@ -613,9 +727,15 @@
         ]
       },
       {
+        "port": "formal(bad_sink)",
+        "taint": [ { "kinds": [ { "kind": "Test" } ], "decl": null } ]
+      },
+      {
         "port": "formal(bad)",
         "taint": [
           {
+            "caller_interval": { "lower": 4, "upper": 5 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -741,6 +861,8 @@
         "port": "formal(bad)",
         "taint": [
           {
+            "caller_interval": { "lower": 4, "upper": 5 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
@@ -887,6 +1009,8 @@
         "port": "result[bad]",
         "taint": [
           {
+            "caller_interval": { "lower": 14, "upper": 15 },
+            "is_self_call": false,
             "kinds": [
               {
                 "features": [
@@ -914,6 +1038,8 @@
         "port": "formal(another)",
         "taint": [
           {
+            "caller_interval": { "lower": 14, "upper": 15 },
+            "is_self_call": false,
             "kinds": [
               {
                 "leaves": [
@@ -934,6 +1060,10 @@
             }
           }
         ]
+      },
+      {
+        "port": "formal(bad_sink)",
+        "taint": [ { "kinds": [ { "kind": "Test" } ], "decl": null } ]
       }
     ],
     "tito": [
@@ -1091,12 +1221,20 @@
       }
     ],
     "features": [
+      { "always-via": "special_source" },
+      { "always-via": "special_sink" },
       { "always-via": "tito" },
       { "always-via": "broadening" },
-      { "always-via": "issue-broadening" },
-      { "always-via": "special_source" },
-      { "always-via": "special_sink" }
-    ]
+      { "always-via": "issue-broadening" }
+    ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "dataclass_taint.bad_is_tainted:5002:0:Call|_test_sink|0|formal(arg):a576244e9a2a485090237d4b1205ee6d"
   }
 }
 {
@@ -1234,7 +1372,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "dataclass_taint.test_dataclass_with_other_source:5002:0:Call|_test_sink|0|formal(arg):8dc1aba82fdce0b57ee34191013425bb"
   }
 }
 {
@@ -1342,7 +1488,15 @@
         ]
       }
     ],
-    "features": [ { "always-via": "special_sink" } ]
+    "features": [ { "always-via": "special_sink" } ],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "_test_sink",
+      "index": 0,
+      "parameter": "formal(arg)"
+    },
+    "master_handle":
+      "dataclass_taint.test_dataclass_with_source:5002:0:Call|_test_sink|0|formal(arg):7562e5836e6feb38f926ee37c2912468"
   }
 }
 {

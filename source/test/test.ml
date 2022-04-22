@@ -91,11 +91,11 @@ let parse_untrimmed ?(handle = "") ?(coerce_special_methods = false) source =
   let do_parse context =
     match PyreNewParser.parse_module ~context ~enable_type_comment:true source with
     | Result.Ok statements ->
-        let metadata =
+        let typecheck_flags =
           let qualifier = SourcePath.qualifier_of_relative handle in
-          Source.Metadata.parse ~qualifier (String.split source ~on:'\n')
+          Source.TypecheckFlags.parse ~qualifier (String.split source ~on:'\n')
         in
-        let source = Source.create ~metadata ~relative:handle statements in
+        let source = Source.create ~typecheck_flags ~relative:handle statements in
         let coerce_special_methods =
           if coerce_special_methods then coerce_special_methods_source else Fn.id
         in
@@ -174,6 +174,24 @@ let parse_callable ?name ?(aliases = Type.empty_aliases) callable =
   | _ -> callable
 
 
+let parse_position position =
+  match String.split ~on:':' position |> List.map ~f:int_of_string with
+  | [line_; column_] -> Location.{ line = line_; column = column_ }
+  | _ -> failwith "expected line:column"
+
+
+let parse_location location =
+  match String.split ~on:'-' location |> List.map ~f:parse_position with
+  | [start_; stop_] -> Location.{ start = start_; stop = stop_ }
+  | _ -> failwith "expected <position>-<position>"
+
+
+let parse_location_with_module location =
+  let module_reference, location = String.lsplit2_exn ~on:':' location in
+  parse_location location
+  |> Location.with_module ~module_reference:(Reference.create module_reference)
+
+
 let diff ~print format (left, right) =
   let escape string =
     String.substr_replace_all string ~pattern:"\"" ~with_:"\\\""
@@ -236,9 +254,9 @@ let node ~start:(start_line, start_column) ~stop:(stop_line, stop_column) =
 
 
 let assert_source_equal ?(location_insensitive = false) left right =
-  let metadata = Source.Metadata.create_for_testing () in
-  let left = { left with Source.metadata } in
-  let right = { right with Source.metadata } in
+  let typecheck_flags = Source.TypecheckFlags.create_for_testing () in
+  let left = { left with Source.typecheck_flags } in
+  let right = { right with Source.typecheck_flags } in
   let cmp =
     if location_insensitive then
       fun left right -> Source.location_insensitive_compare left right = 0
@@ -479,6 +497,8 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         _T = TypeVar('_T')
         _T_co = TypeVar('_T_co', covariant=True)
         _S = TypeVar('_S')
+        _KT = TypeVar('_KT')
+        _VT = TypeVar('_VT')
 
         class type:
           __name__: str = ...
@@ -694,31 +714,31 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
           @overload
           def __getitem__(self, x: slice) -> Tuple[_T_co, ...]: ...
 
-        class dict(MutableMapping[_T, _S], Generic[_T, _S]):
+        class dict(MutableMapping[_KT, _VT], Generic[_KT, _VT]):
           @overload
-          def __init__(self, **kwargs: _S) -> None: ...
+          def __init__(self, **kwargs: _VT) -> None: ...
           @overload
-          def __init__(self, map: Mapping[_T, _S], **kwargs: _S) -> None: ...
+          def __init__(self, map: Mapping[_KT, _VT], **kwargs: _VT) -> None: ...
           @overload
-          def __init__(self, iterable: Iterable[Tuple[_T, _S]], **kwargs: _S) -> None:
+          def __init__(self, iterable: Iterable[Tuple[_KT, _VT]], **kwargs: _VT) -> None:
             ...
-          def add_key(self, key: _T) -> None: pass
-          def add_value(self, value: _S) -> None: pass
-          def add_both(self, key: _T, value: _S) -> None: pass
-          def items(self) -> Iterable[Tuple[_T, _S]]: pass
-          def __delitem__(self, v: _T) -> None: ...
-          def __getitem__(self, k: _T) -> _S: ...
-          def __setitem__(self, k: _T, v: _S) -> None: ...
+          def add_key(self, key: _KT) -> None: pass
+          def add_value(self, value: _VT) -> None: pass
+          def add_both(self, key: _KT, value: _VT) -> None: pass
+          def items(self) -> Iterable[Tuple[_KT, _VT]]: pass
+          def __delitem__(self, __v: _KT) -> None: ...
+          def __getitem__(self, __k: _KT) -> _VT: ...
+          def __setitem__(self, __k: _KT, __v: _VT) -> None: ...
           @overload
-          def get(self, k: _T) -> Optional[_S]: ...
+          def get(self, __key: _KT) -> Optional[_VT]: ...
           @overload
-          def get(self, k: _T, default: _S) -> _S: ...
+          def get(self, __key: _KT, __default: Union[_VT, _T]) -> Union[_VT, _T]: ...
           @overload
-          def update(self, __m: Mapping[_T, _S], **kwargs: _S) -> None: ...
+          def update(self, __m: Mapping[_KT, _VT], **kwargs: _VT) -> None: ...
           @overload
-          def update(self, __m: Iterable[Tuple[_T, _S]], **kwargs: _S) -> None: ...
+          def update(self, __m: Iterable[Tuple[_KT, _VT]], **kwargs: _VT) -> None: ...
           @overload
-          def update(self, **kwargs: _S) -> None: ...
+          def update(self, **kwargs: _VT) -> None: ...
 
           def __len__(self) -> int: ...
 
@@ -932,33 +952,6 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         |} );
     ]
   in
-  let sqlalchemy_1_4_stubs =
-    [
-      "sqlalchemy_1_4/__init__.pyi", {|
-      from ..sqlalchemy import *
-    |};
-      ( "sqlalchemy_1_4/ext/declarative/__init__.pyi",
-        {|
-            from .api import (
-                declarative_base as declarative_base,
-                DeclarativeMeta as DeclarativeMeta,
-            )
-          |}
-      );
-      ( "sqlalchemy_1_4/ext/declarative/api.pyi",
-        {|
-            def declarative_base(bind: Optional[Any] = ..., metadata: Optional[Any] = ...,
-                                 mapper: Optional[Any] = ..., cls: Any = ..., name: str = ...,
-                                 constructor: Any = ..., class_registry: Optional[Any] = ...,
-                                 metaclass: Any = ...): ...
-
-            class DeclarativeMeta(type):
-                def __init__(cls, classname, bases, dict_) -> None: ...
-                def __setattr__(cls, key, value): ...
-        |}
-      );
-    ]
-  in
   let torch_stubs =
     [
       ( "torch/__init__.pyi",
@@ -1107,23 +1100,27 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
 
         class Mapping(_Collection[_KT], Generic[_KT, _VT_co]):
           @abstractmethod
-          def __getitem__(self, k: _KT) -> _VT_co:
+          def __getitem__(self, __k: _KT) -> _VT_co:
               ...
           # Mixin methods
           @overload
-          def get(self, k: _KT) -> Optional[_VT_co]: ...
+          def get(self, __key: _KT) -> Optional[_VT_co]: ...
           @overload
-          def get(self, k: _KT, default: Union[_VT_co, _T]) -> Union[_VT_co, _T]: ...
+          def get(self, __key: _KT, default: Union[_VT_co, _T]) -> Union[_VT_co, _T]: ...
           def items(self) -> AbstractSet[Tuple[_KT, _VT_co]]: ...
           def keys(self) -> AbstractSet[_KT]: ...
           def values(self) -> ValuesView[_VT_co]: ...
-          def __contains__(self, o: object) -> bool: ...
+          def __contains__(self, __o: object) -> bool: ...
 
         class MutableMapping(Mapping[_KT, _VT], Generic[_KT, _VT]):
           @abstractmethod
-          def __setitem__(self, k: _KT, v: _VT) -> None: ...
+          def __setitem__(self, __k: _KT, __v: _VT) -> None: ...
           @abstractmethod
-          def __delitem__(self, v: _KT) -> None: ...
+          def __delitem__(self, __v: _KT) -> None: ...
+          @overload
+          def pop(self, __key: _KT) -> _VT: ...
+          @overload
+          def pop(self, __key: _KT, __default: _VT | _T = ...) -> _VT | _T: ...
 
         class Awaitable(Protocol[_T_co]):
           def __await__(self) -> Generator[Any, None, _T_co]: ...
@@ -1162,6 +1159,8 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
             args = object()
             kwargs = object()
             def __init__(self, *args: object, **kwargs: object) -> None: ...
+
+        LiteralString: _SpecialForm = ...
       |}
     );
     "asyncio/coroutines.pyi", {|
@@ -1318,6 +1317,7 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
       {|
         from typing import Final as Final, ParamSpec as ParamSpec, _SpecialForm
         Literal: _SpecialForm = ...
+        LiteralString: _SpecialForm = ...
 
         TypeAlias: _SpecialForm = ...
 
@@ -1470,35 +1470,32 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         _T1 = TypeVar("_T1")
         _T2 = TypeVar("_T2")
 
+        class TypeVarTuple:
+          def __init__(
+              self,
+              name: str,
+              *constraints: Type[Any],
+              bound: Union[None, Type[Any], str] = ...,
+              covariant: bool = ...,
+              contravariant: bool = ...,
+          ) -> None: ...
 
         def none_throws(optional: Optional[_T]) -> _T: ...
         def safe_cast(new_type: Type[_T], value: Any) -> _T: ...
         def ParameterSpecification(__name: str) -> List[Type]: ...
-        def ListVariadic(__name: str) -> Type: ...
         def classproperty(f: Any) -> Any: ...
         class Add(Generic[_A, _B], int): pass
         class Multiply(Generic[_A, _B], int): pass
         class Subtract(Generic[_A, _B], int): pass
         class Divide(Generic[_A, _B], int): pass
-        _Ts = ListVariadic("_Ts")
+        _Ts = TypeVarTuple("_Ts")
         class Length(Generic[_Ts], int): pass
         class Product(Generic[_Ts], int): pass
 
-        class TypeVarTuple:
-            def __init__(
-                self,
-                name: str,
-                *constraints: Type[Any],
-                bound: Union[None, Type[Any], str] = ...,
-                covariant: bool = ...,
-                contravariant: bool = ...,
-            ) -> None: ...
-
-        _Rs = TypeVarTuple("_Rs")
         class Unpack(Generic[_T]): ...
         class Broadcast(Generic[_T1, _T2]): ...
         class BroadcastError(Generic[_T1, _T2]): ...
-        class Compose(Generic[_Rs]): ...
+        class Compose(Generic[_Ts]): ...
         |}
     );
     ( "pyre_extensions/generic.pyi",
@@ -2639,7 +2636,6 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         |};
   ]
   @ sqlalchemy_stubs
-  @ sqlalchemy_1_4_stubs
   @ torch_stubs
 
 
@@ -2672,18 +2668,12 @@ let mock_scheduler () =
   Scheduler.create_sequential ()
 
 
-let update_environments
-    ?(scheduler = mock_scheduler ())
-    ~configuration
-    ~ast_environment
-    ast_environment_trigger
-  =
+let update_environments ?(scheduler = mock_scheduler ()) ~ast_environment ast_environment_trigger =
   let environment = AnnotatedGlobalEnvironment.create ast_environment in
   ( environment,
     AnnotatedGlobalEnvironment.update_this_and_all_preceding_environments
       environment
       ~scheduler
-      ~configuration
       ast_environment_trigger )
 
 
@@ -2708,17 +2698,13 @@ module ScratchProject = struct
     }
   end
 
-  let clean_ast_shared_memory ~configuration module_tracker ast_environment =
+  let clean_ast_shared_memory module_tracker ast_environment =
     let deletions =
       ModuleTracker.source_paths module_tracker
-      |> List.map ~f:(fun { SourcePath.qualifier; _ } -> qualifier)
+      |> List.map ~f:SourcePath.qualifier
       |> List.map ~f:(fun qualifier -> ModuleTracker.IncrementalUpdate.Delete qualifier)
     in
-    AstEnvironment.update
-      ~configuration
-      ~scheduler:(mock_scheduler ())
-      ast_environment
-      (Update deletions)
+    AstEnvironment.update ~scheduler:(mock_scheduler ()) ast_environment (Update deletions)
     |> ignore
 
 
@@ -2800,44 +2786,36 @@ module ScratchProject = struct
   let source_paths_of { module_tracker; _ } = ModuleTracker.source_paths module_tracker
 
   let qualifiers_of { module_tracker; _ } =
-    ModuleTracker.source_paths module_tracker
-    |> List.map ~f:(fun { SourcePath.qualifier; _ } -> qualifier)
+    ModuleTracker.source_paths module_tracker |> List.map ~f:SourcePath.qualifier
 
 
-  let build_ast_environment { context; configuration; module_tracker } =
+  let build_ast_environment { context; module_tracker; _ } =
     let ast_environment = AstEnvironment.create module_tracker in
     let () =
       (* Clean shared memory up before the test *)
-      clean_ast_shared_memory ~configuration module_tracker ast_environment;
+      clean_ast_shared_memory module_tracker ast_environment;
       let set_up_shared_memory _ = () in
-      let tear_down_shared_memory () _ =
-        clean_ast_shared_memory ~configuration module_tracker ast_environment
-      in
+      let tear_down_shared_memory () _ = clean_ast_shared_memory module_tracker ast_environment in
       (* Clean shared memory up after the test *)
       OUnit2.bracket set_up_shared_memory tear_down_shared_memory context
     in
     ast_environment
 
 
-  let parse_sources ({ configuration; module_tracker; _ } as project) =
+  let parse_sources ({ module_tracker; _ } as project) =
     let ast_environment = build_ast_environment project in
     let ast_environment_update_result =
       Analysis.ModuleTracker.source_paths module_tracker
       |> List.map ~f:(fun source_path -> ModuleTracker.IncrementalUpdate.NewExplicit source_path)
       |> (fun updates -> AstEnvironment.Update updates)
-      |> Analysis.AstEnvironment.update
-           ~configuration
-           ~scheduler:(mock_scheduler ())
-           ast_environment
+      |> Analysis.AstEnvironment.update ~scheduler:(mock_scheduler ()) ast_environment
     in
     ast_environment, ast_environment_update_result
 
 
-  let build_global_environment ({ configuration; _ } as project) =
+  let build_global_environment project =
     let ast_environment = build_ast_environment project in
-    let global_environment, update_result =
-      update_environments ~ast_environment ~configuration ColdStart
-    in
+    let global_environment, update_result = update_environments ~ast_environment ColdStart in
     let sources =
       AnnotatedGlobalEnvironment.UpdateResult.ast_environment_update_result update_result
       |> AstEnvironment.UpdateResult.invalidated_modules
@@ -2944,8 +2922,7 @@ let assert_errors
            ~f:
              (AnalysisError.instantiate
                 ~show_error_traces
-                ~lookup:
-                  (AstEnvironment.ReadOnly.get_real_path_relative ~configuration ast_environment))
+                ~lookup:(AstEnvironment.ReadOnly.get_real_path_relative ast_environment))
     in
     let errors_with_any_location =
       List.filter_map errors ~f:(fun error ->

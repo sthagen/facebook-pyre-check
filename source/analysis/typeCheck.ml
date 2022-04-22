@@ -342,7 +342,7 @@ module State (Context : Context) = struct
 
   let emit_error ~errors ~location ~kind =
     Error.create
-      ~location:(Location.with_module ~qualifier:Context.qualifier location)
+      ~location:(Location.with_module ~module_reference:Context.qualifier location)
       ~kind
       ~define:Context.define
     :: errors
@@ -524,7 +524,7 @@ module State (Context : Context) = struct
           let define = StatementDefine.name define_value in
           AnalysisError.AnalysisFailure (FixpointThresholdReached { define })
         in
-        let location = Location.with_module ~qualifier:Context.qualifier define_location in
+        let location = Location.with_module ~module_reference:Context.qualifier define_location in
         let error = AnalysisError.create ~location ~kind ~define in
         let statement_key = [%hash: int * int] (Cfg.entry_index, 0) in
         let (_ : unit option) = Context.error_map >>| LocalErrorMap.append ~statement_key ~error in
@@ -659,7 +659,7 @@ module State (Context : Context) = struct
 
   let instantiate_path ~global_resolution location =
     let ast_environment = GlobalResolution.ast_environment global_resolution in
-    let location = Location.with_module ~qualifier:Context.qualifier location in
+    let location = Location.with_module ~module_reference:Context.qualifier location in
     Location.WithModule.instantiate
       ~lookup:(AstEnvironment.ReadOnly.get_relative ast_environment)
       location
@@ -990,6 +990,7 @@ module State (Context : Context) = struct
         ~base
         ~special
         ~attribute
+        ~has_default
       =
       let name = Name.Attribute { base; special; attribute } in
       let reference = name_to_reference name in
@@ -1032,7 +1033,7 @@ module State (Context : Context) = struct
         in
         let source_path_of_parent_module class_type =
           let ast_environment = GlobalResolution.ast_environment global_resolution in
-          GlobalResolution.class_definition global_resolution class_type
+          GlobalResolution.class_summary global_resolution class_type
           >>| Node.value
           >>= fun { ClassSummary.qualifier; _ } ->
           AstEnvironment.ReadOnly.get_source_path ast_environment qualifier
@@ -1040,20 +1041,23 @@ module State (Context : Context) = struct
         match Type.resolve_class resolved_base >>| List.map ~f:find_attribute >>= Option.all with
         | None ->
             let errors =
-              emit_error
-                ~errors
-                ~location
-                ~kind:
-                  (Error.UndefinedAttribute
-                     {
-                       attribute;
-                       origin =
-                         Error.Class
-                           {
-                             class_origin = ClassType resolved_base;
-                             parent_source_path = source_path_of_parent_module resolved_base;
-                           };
-                     })
+              if has_default then
+                errors
+              else
+                emit_error
+                  ~errors
+                  ~location
+                  ~kind:
+                    (Error.UndefinedAttribute
+                       {
+                         attribute;
+                         origin =
+                           Error.Class
+                             {
+                               class_origin = ClassType resolved_base;
+                               parent_source_path = source_path_of_parent_module resolved_base;
+                             };
+                       })
             in
             {
               Resolved.resolution;
@@ -1104,7 +1108,9 @@ module State (Context : Context) = struct
               in
               match target with
               | Some target ->
-                  if Option.is_some (inverse_operator name) then
+                  if has_default then
+                    errors
+                  else if Option.is_some (inverse_operator name) then
                     (* Defer any missing attribute error until the inverse operator has been
                        typechecked. *)
                     errors
@@ -1431,7 +1437,7 @@ module State (Context : Context) = struct
               | _ ->
                   let class_module =
                     let ast_environment = GlobalResolution.ast_environment global_resolution in
-                    GlobalResolution.class_definition global_resolution target
+                    GlobalResolution.class_summary global_resolution target
                     >>| Node.value
                     >>= fun { ClassSummary.qualifier; _ } ->
                     AstEnvironment.ReadOnly.get_source_path ast_environment qualifier
@@ -1857,6 +1863,22 @@ module State (Context : Context) = struct
         (* Resolve `type()` calls. *)
         let resolved = resolve_expression_type ~resolution value |> Type.meta in
         { resolution; errors = []; resolved; resolved_annotation = None; base = None }
+    | Call { callee = { Node.location; value = Name (Name.Identifier "reveal_locals") }; _ } ->
+        (* Special case reveal_locals(). *)
+        let from_annotation (reference, unit) =
+          let name = reference in
+          let annotation =
+            Option.value ~default:(Annotation.create_mutable Type.Any) (Refinement.Unit.base unit)
+          in
+          { Error.name; annotation }
+        in
+        let annotations = Map.to_alist (Resolution.annotation_store resolution).annotations in
+        let temporary_annotations =
+          Map.to_alist (Resolution.annotation_store resolution).temporary_annotations
+        in
+        let revealed_locals = List.map ~f:from_annotation (temporary_annotations @ annotations) in
+        let errors = emit_error ~errors:[] ~location ~kind:(Error.RevealedLocals revealed_locals) in
+        { resolution; errors; resolved = Type.none; resolved_annotation = None; base = None }
     | Call
         {
           callee = { Node.location; value = Name (Name.Identifier "reveal_type") };
@@ -2127,7 +2149,8 @@ module State (Context : Context) = struct
         {
           callee = { Node.value = Name (Name.Identifier "getattr"); _ };
           arguments =
-            [{ Call.Argument.value = base; _ }; { Call.Argument.value = attribute_expression; _ }];
+            { Call.Argument.value = base; _ }
+            :: { Call.Argument.value = attribute_expression; _ } :: (([] | [_]) as default_argument);
         } -> (
         let ({ Resolved.errors; resolution; _ } as base_resolved) =
           forward_expression ~resolution base
@@ -2137,6 +2160,14 @@ module State (Context : Context) = struct
           |> fun { resolution; errors = attribute_errors; resolved = attribute_resolved; _ } ->
           resolution, List.append attribute_errors errors, attribute_resolved
         in
+        let resolution, errors, has_default =
+          match default_argument with
+          | [{ Call.Argument.value = default_expression; _ }] ->
+              forward_expression ~resolution default_expression
+              |> fun { resolution; errors = default_errors; _ } ->
+              resolution, List.append default_errors errors, true
+          | _ -> resolution, errors, false
+        in
         match attribute_resolved with
         | Type.Literal (String (LiteralValue attribute)) ->
             resolve_attribute_access
@@ -2144,6 +2175,7 @@ module State (Context : Context) = struct
               ~base
               ~special:false
               ~attribute
+              ~has_default
         | _ ->
             {
               Resolved.resolution;
@@ -2754,6 +2786,7 @@ module State (Context : Context) = struct
           ~base
           ~special
           ~attribute
+          ~has_default:false
     | Constant Constant.NoneLiteral ->
         {
           resolution;
@@ -3524,12 +3557,16 @@ module State (Context : Context) = struct
           let annotation_errors, parsed_annotation =
             parse_and_check_annotation ~resolution annotation
           in
-          let unwrap ~f annotation = f annotation |> Option.value ~default:annotation in
-          ( annotation_errors,
-            Type.is_final parsed_annotation,
-            unwrap parsed_annotation ~f:Type.final_value
-            |> unwrap ~f:Type.class_variable_value
-            |> Option.some )
+          let final_annotation, is_final =
+            match Type.final_value parsed_annotation with
+            | `Ok final_annotation -> Some final_annotation, true
+            | `NoParameter -> None, true
+            | `NotFinal -> Some parsed_annotation, false
+          in
+          let unwrap_class_variable annotation =
+            Type.class_variable_value annotation |> Option.value ~default:annotation
+          in
+          annotation_errors, is_final, Option.map final_annotation ~f:unwrap_class_variable
     in
     match Node.value target with
     | Expression.Name (Name.Identifier _)
@@ -3776,7 +3813,8 @@ module State (Context : Context) = struct
                               ~attribute
                               ~instantiated_parent:parent
                               ~name
-                              ~location:(Location.with_module ~qualifier:Context.qualifier location)
+                              ~location:
+                                (Location.with_module ~module_reference:Context.qualifier location)
                         | _ -> ()
                       end;
                       reference, attribute, target_annotation
@@ -3998,7 +4036,7 @@ module State (Context : Context) = struct
                                 let ast_environment =
                                   GlobalResolution.ast_environment global_resolution
                                 in
-                                GlobalResolution.class_definition global_resolution parent
+                                GlobalResolution.class_summary global_resolution parent
                                 >>| Node.value
                                 >>= fun { ClassSummary.qualifier; _ } ->
                                 AstEnvironment.ReadOnly.get_source_path ast_environment qualifier
@@ -6082,7 +6120,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
           >>| List.filter ~f:(fun attribute -> AnnotatedAttribute.is_private attribute)
           >>| List.map ~f:(fun attribute ->
                   Error.create
-                    ~location:(Location.with_module ~qualifier:Context.qualifier location)
+                    ~location:(Location.with_module ~module_reference:Context.qualifier location)
                     ~kind:
                       (Error.PrivateProtocolProperty
                          {
@@ -6226,7 +6264,8 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
                    in
                    Some
                      (Error.create
-                        ~location:(Location.with_module ~qualifier:Context.qualifier location)
+                        ~location:
+                          (Location.with_module ~module_reference:Context.qualifier location)
                         ~kind:
                           (Error.UninitializedAttribute
                              {
@@ -6250,7 +6289,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
             if is_final then
               let error =
                 Error.create
-                  ~location:(Location.with_module ~qualifier:Context.qualifier location)
+                  ~location:(Location.with_module ~module_reference:Context.qualifier location)
                   ~kind:(Error.InvalidInheritance (ClassName (Expression.show expression_value)))
                   ~define:Context.define
               in
@@ -6338,7 +6377,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
               |> Option.value ~default:location
             in
             Error.create
-              ~location:(Location.with_module ~qualifier:Context.qualifier location)
+              ~location:(Location.with_module ~module_reference:Context.qualifier location)
               ~kind
               ~define:Context.define
           in
@@ -6419,7 +6458,8 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
                         in
                         Some
                           (Error.create
-                             ~location:(Location.with_module ~qualifier:Context.qualifier location)
+                             ~location:
+                               (Location.with_module ~module_reference:Context.qualifier location)
                              ~kind
                              ~define:Context.define)
                     in
@@ -6431,7 +6471,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
         override_errors @ errors
       in
       let name = Reference.prefix name >>| Reference.show |> Option.value ~default:"" in
-      GlobalResolution.class_definition global_resolution (Type.Primitive name)
+      GlobalResolution.class_summary global_resolution (Type.Primitive name)
       >>| Node.value
       >>| (fun definition ->
             errors
@@ -6482,7 +6522,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
         then
           let error =
             Error.create
-              ~location:(Location.with_module ~qualifier:Context.qualifier location)
+              ~location:(Location.with_module ~module_reference:Context.qualifier location)
               ~kind:(Error.MissingOverloadImplementation name)
               ~define:Context.define
           in
@@ -6512,7 +6552,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
             else
               let error =
                 Error.create
-                  ~location:(Location.with_module ~qualifier:Context.qualifier location)
+                  ~location:(Location.with_module ~module_reference:Context.qualifier location)
                   ~kind:
                     (Error.IncompatibleOverload
                        (ReturnType
@@ -6534,7 +6574,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
           then
             let error =
               Error.create
-                ~location:(Location.with_module ~qualifier:Context.qualifier location)
+                ~location:(Location.with_module ~module_reference:Context.qualifier location)
                 ~define:Context.define
                 ~kind:(Error.IncompatibleOverload (Parameters { name; location }))
             in
@@ -6562,7 +6602,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
                   ~right)
             >>| (fun matching_overload ->
                   Error.create
-                    ~location:(Location.with_module ~qualifier:Context.qualifier location)
+                    ~location:(Location.with_module ~module_reference:Context.qualifier location)
                     ~define:Context.define
                     ~kind:
                       (Error.IncompatibleOverload
@@ -6578,7 +6618,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
           when Type.Callable.equal_overload Type.equal current_overload offender ->
             let error =
               Error.create
-                ~location:(Location.with_module ~qualifier:Context.qualifier location)
+                ~location:(Location.with_module ~module_reference:Context.qualifier location)
                 ~define:Context.define
                 ~kind:(Error.IncompatibleOverload DifferingDecorators)
             in
@@ -6599,7 +6639,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
         if overload_decorator_misplaced then
           let error =
             Error.create
-              ~location:(Location.with_module ~qualifier:Context.qualifier location)
+              ~location:(Location.with_module ~module_reference:Context.qualifier location)
               ~define:Context.define
               ~kind:(Error.IncompatibleOverload MisplacedOverloadDecorator)
           in
@@ -6621,7 +6661,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
               let make_error ~location reason =
                 let error =
                   Error.create
-                    ~location:(Location.with_module ~qualifier:Context.qualifier location)
+                    ~location:(Location.with_module ~module_reference:Context.qualifier location)
                     ~define:Context.define
                     ~kind:(Error.InvalidDecoration reason)
                 in
@@ -6804,7 +6844,7 @@ let check_define
     ({ Node.location; value = { Define.signature = { name; _ }; _ } as define } as define_node)
   =
   try
-    let errors, local_annotations, callees =
+    let type_errors, local_annotations, callees =
       let module Context = struct
         let qualifier = qualifier
 
@@ -6823,6 +6863,12 @@ let check_define
       in
       exit_state ~resolution (module Context)
     in
+    let uninitialized_local_errors =
+      if Define.is_toplevel define then
+        []
+      else
+        UninitializedLocalCheck.run_on_define ~qualifier define_node
+    in
     (if not (Define.is_overloaded_function define) then
        let caller =
          if Define.is_property_setter define then
@@ -6831,7 +6877,7 @@ let check_define
            Callgraph.FunctionCaller name
        in
        Option.iter callees ~f:(fun callees -> Callgraph.set ~caller ~callees));
-    { CheckResult.errors; local_annotations }
+    { CheckResult.errors = List.append uninitialized_local_errors type_errors; local_annotations }
   with
   | ClassHierarchy.Untracked annotation ->
       Statistics.event
@@ -6844,7 +6890,7 @@ let check_define
         Log.dump "Analysis crashed because of untracked type `%s`." (Log.Color.red annotation);
       let undefined_error =
         Error.create
-          ~location:(Location.with_module ~qualifier location)
+          ~location:(Location.with_module ~module_reference:qualifier location)
           ~kind:(Error.AnalysisFailure (UnexpectedUndefinedType annotation))
           ~define:define_node
       in
@@ -6944,18 +6990,10 @@ let run_on_define ~configuration ~environment ?call_graph_builder (name, depende
   let resolution = resolution global_resolution (module DummyContext) in
   match GlobalResolution.function_definition global_resolution name with
   | None -> ()
-  | Some ({ FunctionDefinition.qualifier; _ } as definition) ->
+  | Some definition ->
       let { CheckResult.errors; local_annotations } =
         check_function_definition ~configuration ~resolution ~name ?call_graph_builder definition
       in
-      let uninitialized_local_errors =
-        definition
-        |> FunctionDefinition.all_bodies
-        |> List.filter ~f:(fun { Node.value; _ } -> not (Define.is_toplevel value))
-        |> List.map ~f:(UninitializedLocalCheck.run_on_define ~qualifier)
-        |> List.concat
-      in
-      let errors = errors @ uninitialized_local_errors in
       let () =
         if configuration.store_type_check_resolution then
           (* Write fixpoint type resolutions to shared memory *)
@@ -6969,7 +7007,11 @@ let run_on_define ~configuration ~environment ?call_graph_builder (name, depende
             name
             (LocalAnnotationMap.read_only local_annotations)
       in
-      TypeEnvironment.set_errors environment name errors
+      let () =
+        if configuration.store_type_errors then
+          TypeEnvironment.set_errors environment name errors
+      in
+      ()
 
 
 let run_on_defines ~scheduler ~configuration ~environment ?call_graph_builder defines =

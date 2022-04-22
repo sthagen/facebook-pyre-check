@@ -6,9 +6,10 @@
 import json
 import logging
 import os
+import re
 import shutil
 import sys
-from dataclasses import replace
+import textwrap
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -16,12 +17,11 @@ import click
 
 from . import (
     command_arguments,
+    commands,
     configuration as configuration_module,
     filesystem,
     log,
-    recently_used_configurations,
 )
-from . import commands
 from .version import __version__
 
 
@@ -46,7 +46,7 @@ def _show_pyre_version_as_json(
     log.stdout.write(f"{json.dumps(version_json)}\n")
 
 
-def _show_pyre_version(arguments: command_arguments.CommandArguments) -> None:
+def show_pyre_version(arguments: command_arguments.CommandArguments) -> None:
     binary_version: Optional[str] = None
     client_version: str = __version__
     try:
@@ -60,7 +60,7 @@ def _show_pyre_version(arguments: command_arguments.CommandArguments) -> None:
         _show_pyre_version_as_text(binary_version, client_version)
 
 
-def _start_logging_to_directory(log_directory: str) -> None:
+def start_logging_to_directory(log_directory: str) -> None:
     log_directory_path = Path(log_directory)
     log_directory_path.mkdir(parents=True, exist_ok=True)
     log.enable_file_logging(log_directory_path / "pyre.stderr")
@@ -69,9 +69,9 @@ def _start_logging_to_directory(log_directory: str) -> None:
 def _run_check_command(
     arguments: command_arguments.CommandArguments,
 ) -> commands.ExitCode:
-    configuration = _create_configuration_with_retry(arguments, Path("."))
-    _check_configuration(configuration)
-    _start_logging_to_directory(configuration.log_directory)
+    configuration = configuration_module.create_configuration(arguments, Path("."))
+    _check_open_source_version(configuration)
+    start_logging_to_directory(configuration.log_directory)
     check_arguments = command_arguments.CheckArguments(
         debug=arguments.debug,
         enable_memory_profiling=arguments.enable_memory_profiling,
@@ -88,14 +88,12 @@ def _run_check_command(
 
 def _run_incremental_command(
     arguments: command_arguments.CommandArguments,
-    nonblocking: bool,
-    incremental_style: command_arguments.IncrementalStyle,
     no_start_server: bool,
     no_watchman: bool,
 ) -> commands.ExitCode:
-    configuration = _create_configuration_with_retry(arguments, Path("."))
-    _check_configuration(configuration)
-    _start_logging_to_directory(configuration.log_directory)
+    configuration = configuration_module.create_configuration(arguments, Path("."))
+    _check_open_source_version(configuration)
+    start_logging_to_directory(configuration.log_directory)
     start_arguments = command_arguments.StartArguments(
         changed_files_path=arguments.changed_files_path,
         debug=arguments.debug,
@@ -131,8 +129,6 @@ def _run_default_command(
     if shutil.which("watchman"):
         return _run_incremental_command(
             arguments=arguments,
-            nonblocking=False,
-            incremental_style=command_arguments.IncrementalStyle.FINE_GRAINED,
             no_start_server=False,
             no_watchman=False,
         )
@@ -147,61 +143,30 @@ def _run_default_command(
         return _run_check_command(arguments)
 
 
-def _create_configuration_with_retry(
-    arguments: command_arguments.CommandArguments, base_directory: Path
-) -> configuration_module.Configuration:
-    configuration = configuration_module.create_configuration(arguments, base_directory)
-    if (
-        configuration.source_directories is not None
-        or configuration.targets is not None
-    ):
-        return configuration
+def _check_open_source_version(
+    configuration: configuration_module.Configuration,
+) -> None:
+    """
+    Check if version specified in configuration matches running version and warn
+    if it does not.
+    """
+    expected_version = configuration.version_hash
+    if expected_version is None or not re.match(r"\d+\.\d+\.\d+", expected_version):
+        return
 
-    if arguments.local_configuration is not None:
-        raise configuration_module.InvalidConfiguration(
-            "No buck targets or source directories to analyze.\nHint: Include"
-            + ' a "source_directories" or "targets" entry in your local'
-            + " configuration file."
-        )
+    try:
+        from .version import __version__ as actual_version
 
-    # Heuristic: If neither `source_directories` nor `targets` is specified,
-    # and if there exists recently-used local configurations, we guess that
-    # the user may have forgotten to specifiy `-l`.
-    error_message = "No buck targets or source directories to analyze."
-    recently_used_local_roots = recently_used_configurations.Cache(
-        configuration.dot_pyre_directory
-    ).get_all_items()
-    if len(recently_used_local_roots) == 0:
-        raise configuration_module.InvalidConfiguration(error_message)
-
-    LOG.warning(error_message)
-    local_root_for_rerun = recently_used_configurations.prompt_user_for_local_root(
-        recently_used_local_roots
-    )
-    if local_root_for_rerun is None:
-        raise configuration_module.InvalidConfiguration(
-            "Cannot determine which recent local root to rerun. "
-        )
-
-    LOG.warning(f"Running pyre under local root `{local_root_for_rerun}`...")
-    LOG.warning(
-        f"Hint: To avoid this prompt, run `pyre -l {local_root_for_rerun}` "
-        + f"or `cd {local_root_for_rerun} && pyre`."
-    )
-    new_configuration = configuration_module.create_configuration(
-        replace(arguments, local_configuration=local_root_for_rerun), base_directory
-    )
-    if (
-        new_configuration.source_directories is not None
-        or new_configuration.targets is not None
-    ):
-        return new_configuration
-    raise configuration_module.InvalidConfiguration(error_message)
-
-
-def _check_configuration(configuration: configuration_module.Configuration) -> None:
-    configuration_module.check_nested_local_configuration(configuration)
-    configuration_module.check_open_source_version(configuration)
+        if expected_version != actual_version:
+            LOG.warning(
+                textwrap.dedent(
+                    f"""\
+                    Your running version does not match the configured version for this
+                    project (running {actual_version}, expected {expected_version})."""
+                )
+            )
+    except ImportError:
+        pass
 
 
 @click.group(
@@ -209,12 +174,6 @@ def _check_configuration(configuration: configuration_module.Configuration) -> N
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 @click.pass_context
-@click.option(
-    "-l",
-    "--local-configuration",
-    type=str,
-    help="Specify a path where Pyre could find a local configuration.",
-)
 @click.option(
     "--version",
     is_flag=True,
@@ -232,7 +191,6 @@ def _check_configuration(configuration: configuration_module.Configuration) -> N
     default=None,
     help="Check all file in strict mode by default.",
 )
-@click.option("--additional-check", type=str, multiple=True, hidden=True)
 @click.option("--show-error-traces/--no-show-error-traces", default=False, hidden=True)
 @click.option(
     "--output",
@@ -254,29 +212,7 @@ def _check_configuration(configuration: configuration_module.Configuration) -> N
     help="Enable verbose non-interactive logging.",
 )
 @click.option("--logging-sections", type=str, hidden=True)
-@click.option("--log-identifier", type=str, default=None, hidden=True)
 @click.option("--dot-pyre-directory", type=str, hidden=True)
-@click.option("--logger", type=str, hidden=True)
-@click.option(
-    "--target",
-    type=str,
-    multiple=True,
-    help=(
-        "The buck target to check. "
-        "Can be specified multiple times to include multiple directories."
-    ),
-)
-@click.option(
-    "--use-buck-builder/--use-legacy-buck-builder",
-    default=None,
-    help="Use Pyre's own Java builder for Buck projects.",
-)
-@click.option("--buck-mode", type=str, help="Mode to pass to `buck query`")
-@click.option(
-    "--use-buck-source-database/--no-use-buck-source-database",
-    default=None,
-    hidden=True,
-)
 @click.option(
     "--source-directory",
     type=str,
@@ -285,18 +221,6 @@ def _check_configuration(configuration: configuration_module.Configuration) -> N
         "The source directory to check. "
         "Can be specified multiple times to include multiple directories."
     ),
-)
-@click.option(
-    "--do-not-ignore-errors-in",
-    type=str,
-    multiple=True,
-    help=("Report type errors within the given directory."),
-)
-@click.option(
-    "--no-saved-state",
-    is_flag=True,
-    hidden=True,
-    help="Do not attempt loading Pyre from saved state.",
 )
 @click.option(
     "--search-path",
@@ -310,12 +234,6 @@ def _check_configuration(configuration: configuration_module.Configuration) -> N
 @click.option(
     "--binary", type=str, show_envvar=True, help="Override location of the Pyre binary."
 )
-@click.option(
-    "--buck-builder-binary",
-    type=str,
-    show_envvar=True,
-    help="Override location of the buck builder binary.",
-)
 @click.option("--exclude", type=str, multiple=True, hidden=True)
 @click.option(
     "--typeshed",
@@ -326,12 +244,6 @@ def _check_configuration(configuration: configuration_module.Configuration) -> N
 @click.option("--save-initial-state-to", type=str, hidden=True)
 @click.option("--load-initial-state-from", type=str, hidden=True)
 @click.option("--changed-files-path", type=str, hidden=True)
-@click.option("--saved-state-project", type=str, hidden=True)
-@click.option("--features", type=str, hidden=True)
-@click.option(
-    "--use-command-v2/--no-use-command-v2", is_flag=True, default=None, hidden=True
-)
-@click.option("--isolation-prefix", type=str, hidden=True)
 @click.option(
     "--python-version",
     type=str,
@@ -367,106 +279,85 @@ def _check_configuration(configuration: configuration_module.Configuration) -> N
     default=None,
     hidden=True,
 )
+@click.option(
+    "--enable-go-to-definition/--no-enable-go-to-definition",
+    is_flag=True,
+    help="Whether Pyre should support go-to-definition in the IDE.",
+    default=None,
+    hidden=True,
+)
 @click.option("--number-of-workers", type=int, help="Number of parallel workers to use")
 def pyre(
     context: click.Context,
-    local_configuration: Optional[str],
     version: bool,
     debug: bool,
     sequential: Optional[bool],
     strict: Optional[bool],
-    additional_check: Iterable[str],
     show_error_traces: bool,
     output: str,
     enable_profiling: bool,
     enable_memory_profiling: bool,
     noninteractive: bool,
     logging_sections: Optional[str],
-    log_identifier: Optional[str],
     dot_pyre_directory: Optional[str],
-    logger: Optional[str],
-    target: Iterable[str],
-    use_buck_builder: Optional[bool],
-    buck_mode: Optional[str],
-    use_buck_source_database: Optional[bool],
     source_directory: Iterable[str],
-    do_not_ignore_errors_in: Iterable[str],
-    no_saved_state: bool,
     search_path: Iterable[str],
     binary: Optional[str],
-    buck_builder_binary: Optional[str],
     exclude: Iterable[str],
     typeshed: Optional[str],
     save_initial_state_to: Optional[str],
     load_initial_state_from: Optional[str],
     changed_files_path: Optional[str],
-    saved_state_project: Optional[str],
-    features: Optional[str],
-    use_command_v2: Optional[bool],
-    isolation_prefix: Optional[str],
     python_version: Optional[str],
     shared_memory_heap_size: Optional[int],
     shared_memory_dependency_table_power: Optional[int],
     shared_memory_hash_table_power: Optional[int],
     number_of_workers: Optional[int],
     enable_hover: Optional[bool],
-) -> int:
+    enable_go_to_definition: Optional[bool],
+) -> None:
     arguments = command_arguments.CommandArguments(
-        local_configuration=local_configuration,
+        local_configuration=None,
         version=version,
         debug=debug,
         sequential=sequential or False,
         strict=strict or False,
-        additional_checks=list(additional_check),
         show_error_traces=show_error_traces,
         output=output,
         enable_profiling=enable_profiling,
         enable_memory_profiling=enable_memory_profiling,
         noninteractive=noninteractive,
         logging_sections=logging_sections,
-        log_identifier=log_identifier,
-        logger=logger,
-        targets=list(target),
-        use_buck_builder=use_buck_builder,
-        use_buck_source_database=use_buck_source_database,
+        log_identifier=None,
+        logger=None,
+        targets=[],
         source_directories=list(source_directory),
-        do_not_ignore_errors_in=list(do_not_ignore_errors_in),
-        buck_mode=buck_mode,
-        no_saved_state=no_saved_state,
+        do_not_ignore_errors_in=[],
+        buck_mode=None,
+        no_saved_state=True,
         search_path=list(search_path),
         binary=binary,
-        buck_builder_binary=buck_builder_binary,
         exclude=list(exclude),
         typeshed=typeshed,
         save_initial_state_to=save_initial_state_to,
         load_initial_state_from=load_initial_state_from,
         changed_files_path=changed_files_path,
-        saved_state_project=saved_state_project,
+        saved_state_project=None,
         dot_pyre_directory=Path(dot_pyre_directory)
         if dot_pyre_directory is not None
         else None,
-        features=features,
-        use_command_v2=use_command_v2,
-        isolation_prefix=isolation_prefix,
+        isolation_prefix=None,
         python_version=python_version,
         shared_memory_heap_size=shared_memory_heap_size,
         shared_memory_dependency_table_power=shared_memory_dependency_table_power,
         shared_memory_hash_table_power=shared_memory_hash_table_power,
         number_of_workers=number_of_workers,
         enable_hover=enable_hover,
+        use_buck2=None,
+        enable_go_to_definition=enable_go_to_definition,
     )
-    if arguments.version:
-        _show_pyre_version(arguments)
-        return commands.ExitCode.SUCCESS
-
     context.ensure_object(dict)
     context.obj["arguments"] = arguments
-
-    if context.invoked_subcommand is None:
-        return _run_default_command(arguments)
-
-    # This return value is not used anywhere.
-    return commands.ExitCode.SUCCESS
 
 
 @pyre.command()
@@ -482,6 +373,12 @@ def pyre(
     is_flag=True,
     default=False,
     help="Do not verify models for the taint analysis.",
+)
+@click.option(
+    "--version",
+    is_flag=True,
+    default=False,
+    help="Print the client and binary versions of Pysa.",
 )
 @click.option(
     "--save-results-to",
@@ -540,6 +437,7 @@ def analyze(
     analysis: str,
     taint_models_path: Iterable[str],
     no_verify: bool,
+    version: bool,
     save_results_to: Optional[str],
     dump_call_graph: Optional[str],
     repository_root: Optional[str],
@@ -555,9 +453,15 @@ def analyze(
     Run Pysa, the inter-procedural static analysis tool.
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
-    configuration = _create_configuration_with_retry(command_argument, Path("."))
-    _check_configuration(configuration)
-    _start_logging_to_directory(configuration.log_directory)
+    if version:
+        show_pyre_version(command_argument)
+        return commands.ExitCode.SUCCESS
+
+    configuration = configuration_module.create_configuration(
+        command_argument, Path(".")
+    )
+    _check_open_source_version(configuration)
+    start_logging_to_directory(configuration.log_directory)
     return commands.analyze.run(
         configuration,
         command_arguments.AnalyzeArguments(
@@ -595,34 +499,12 @@ def check(context: click.Context) -> int:
 
 
 @pyre.command()
-@click.option(
-    "--nonblocking",
-    is_flag=True,
-    default=False,
-    help=(
-        "[DEPRECATED] Ask the server to return partial results immediately, "
-        "even if analysis is still in progress."
-    ),
-)
-@click.option(
-    "--incremental-style",
-    type=click.Choice(
-        [
-            str(command_arguments.IncrementalStyle.SHALLOW),
-            str(command_arguments.IncrementalStyle.FINE_GRAINED),
-        ]
-    ),
-    default=str(command_arguments.IncrementalStyle.FINE_GRAINED),
-    help="[DEPRECATED] How to approach doing incremental checks.",
-)
 @click.option("--no-start", is_flag=True, default=False, hidden=True)
 # This is mostly to allow `restart` to pass on the flag to `start`.
 @click.option("--no-watchman", is_flag=True, default=False, hidden=True)
 @click.pass_context
 def incremental(
     context: click.Context,
-    nonblocking: bool,
-    incremental_style: str,
     no_start: bool,
     no_watchman: bool,
 ) -> int:
@@ -630,18 +512,10 @@ def incremental(
     Connects to a running Pyre server and returns the current type errors for your
     project. If no server exists for your projects, starts a new one. Running `pyre`
     implicitly runs `pyre incremental`.
-
-    By default, incremental checks ensure that all dependencies of changed files are
-    analyzed before returning results. If you'd like to get partial type checking
-    results eagerly, you can run `pyre incremental --nonblocking`.
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     return _run_incremental_command(
         arguments=command_argument,
-        nonblocking=nonblocking,
-        incremental_style=command_arguments.IncrementalStyle.SHALLOW
-        if incremental_style == str(command_arguments.IncrementalStyle.SHALLOW)
-        else command_arguments.IncrementalStyle.FINE_GRAINED,
         no_start_server=no_start,
         no_watchman=no_watchman,
     )
@@ -766,7 +640,9 @@ def infer(
     ignored unless the `--in-place` flag is set.
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
-    configuration = _create_configuration_with_retry(command_argument, Path("."))
+    configuration = configuration_module.create_configuration(
+        command_argument, Path(".")
+    )
     working_directory = Path.cwd()
     modify_paths = (
         None
@@ -798,14 +674,8 @@ def infer(
 
 
 @pyre.command()
-@click.option(
-    "--local",
-    is_flag=True,
-    default=False,
-    help="[DEPRECATED] Initializes a local configuration.",
-)
 @click.pass_context
-def init(context: click.Context, local: bool) -> int:
+def init(context: click.Context) -> int:
     """
     Create a pyre configuration file at the current directory.
     """
@@ -854,7 +724,7 @@ def persistent(context: click.Context) -> int:
     configuration = configuration_module.create_configuration(
         command_argument, base_directory
     )
-    _start_logging_to_directory(
+    start_logging_to_directory(
         configuration.log_directory,
     )
     return commands.persistent.run(
@@ -879,7 +749,7 @@ def pysa_language_server(context: click.Context, no_watchman: bool) -> int:
     configuration = configuration_module.create_configuration(
         command_argument, Path(".")
     )
-    _start_logging_to_directory(
+    start_logging_to_directory(
         configuration.log_directory,
     )
     return commands.pysa_server.run(
@@ -926,7 +796,9 @@ def profile(context: click.Context, profile_output: str) -> int:
         raise ValueError(f"Unrecognized value for --profile-output: {profile_output}")
 
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
-    configuration = _create_configuration_with_retry(command_argument, Path("."))
+    configuration = configuration_module.create_configuration(
+        command_argument, Path(".")
+    )
     return commands.profile.run(configuration, get_profile_output(profile_output))
 
 
@@ -943,8 +815,10 @@ def query(context: click.Context, query: str) -> int:
     To get a full list of queries, you can run `pyre query help`.
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
-    configuration = _create_configuration_with_retry(command_argument, Path("."))
-    _start_logging_to_directory(configuration.log_directory)
+    configuration = configuration_module.create_configuration(
+        command_argument, Path(".")
+    )
+    start_logging_to_directory(configuration.log_directory)
     return commands.query.run(configuration, query)
 
 
@@ -999,32 +873,22 @@ def rage(
     default=False,
     help="Do not spawn a watchman client in the background.",
 )
-@click.option(
-    "--incremental-style",
-    type=click.Choice(
-        [
-            str(command_arguments.IncrementalStyle.SHALLOW),
-            str(command_arguments.IncrementalStyle.FINE_GRAINED),
-        ]
-    ),
-    default=str(command_arguments.IncrementalStyle.FINE_GRAINED),
-    help="[DEPRECATED] How to approach doing incremental checks.",
-)
 @click.pass_context
 def restart(
     context: click.Context,
     terminal: bool,
     store_type_check_resolution: bool,
     no_watchman: bool,
-    incremental_style: str,
 ) -> int:
     """
     Restarts a server. Equivalent to `pyre stop && pyre`.
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
-    configuration = _create_configuration_with_retry(command_argument, Path("."))
-    _check_configuration(configuration)
-    _start_logging_to_directory(configuration.log_directory)
+    configuration = configuration_module.create_configuration(
+        command_argument, Path(".")
+    )
+    _check_open_source_version(configuration)
+    start_logging_to_directory(configuration.log_directory)
     start_arguments = command_arguments.StartArguments(
         changed_files_path=command_argument.changed_files_path,
         debug=command_argument.debug,
@@ -1058,15 +922,30 @@ def restart(
     invoke_without_command=True,
 )
 @click.pass_context
-def servers(context: click.Context) -> int:
+def servers(context: click.Context) -> None:
     """
     Commands to manipulate multiple Pyre servers.
     """
+    pass
+
+
+@servers.result_callback()
+@click.pass_context
+def run_default_servers_command(
+    context: click.Context,
+    value: Optional[commands.ExitCode],
+    *args: object,
+    **kwargs: object,
+) -> commands.ExitCode:
     if context.invoked_subcommand is None:
         arguments: command_arguments.CommandArguments = context.obj["arguments"]
         return commands.servers.run_list(arguments.output)
-    # This return value is not used anywhere.
-    return commands.ExitCode.SUCCESS
+    elif value is not None:
+        return value
+    else:
+        raise commands.ClientException(
+            "Non-default serevers subcommand did not return a value"
+        )
 
 
 @servers.command(name="list")
@@ -1105,17 +984,6 @@ def servers_stop(context: click.Context) -> int:
     help="Do not spawn a watchman client in the background.",
 )
 @click.option(
-    "--incremental-style",
-    type=click.Choice(
-        [
-            str(command_arguments.IncrementalStyle.SHALLOW),
-            str(command_arguments.IncrementalStyle.FINE_GRAINED),
-        ]
-    ),
-    default=str(command_arguments.IncrementalStyle.FINE_GRAINED),
-    help="[DEPRECATED] How to approach doing incremental checks.",
-)
-@click.option(
     "--wait-on-initialization/--no-wait-on-initialization",
     default=False,
     hidden=True,
@@ -1127,16 +995,17 @@ def start(
     terminal: bool,
     store_type_check_resolution: bool,
     no_watchman: bool,
-    incremental_style: str,
     wait_on_initialization: bool,
 ) -> int:
     """
     Starts a pyre server as a daemon.
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
-    configuration = _create_configuration_with_retry(command_argument, Path("."))
-    _check_configuration(configuration)
-    _start_logging_to_directory(configuration.log_directory)
+    configuration = configuration_module.create_configuration(
+        command_argument, Path(".")
+    )
+    _check_open_source_version(configuration)
+    start_logging_to_directory(configuration.log_directory)
     return commands.start.run(
         configuration,
         command_arguments.StartArguments(
@@ -1170,37 +1039,47 @@ def start(
     help="Log the statistics results to external tables.",
 )
 @click.option(
-    "--print-aggregates",
+    "--aggregate",
     is_flag=True,
     default=False,
     help="Print aggregate instead of per-path data.",
+)
+@click.option(
+    "--print-summary",
+    is_flag=True,
+    default=False,
+    help="Pretty print human-readable type coverage summary for project.",
 )
 @click.pass_context
 def statistics(
     context: click.Context,
     filter_paths: Iterable[str],
     log_results: bool,
-    print_aggregates: bool,
+    aggregate: bool,
+    print_summary: bool,
 ) -> int:
     """
     Collect various syntactic metrics on type coverage.
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
-    configuration = _create_configuration_with_retry(command_argument, Path("."))
+    configuration = configuration_module.create_configuration(
+        command_argument, Path(".")
+    )
     return commands.statistics.run(
         configuration,
         command_arguments.StatisticsArguments(
             filter_paths=list(filter_paths),
             log_identifier=command_argument.log_identifier,
             log_results=log_results,
-            print_aggregates=print_aggregates,
+            aggregate=aggregate,
+            print_summary=print_summary,
         ),
     )
 
 
 @pyre.command()
 @click.argument(
-    "roots",
+    "paths_deprecated",
     type=str,
     nargs=-1,
 )
@@ -1212,18 +1091,45 @@ def statistics(
     type=str,
     help="In the output, make paths relative to directory specified.",
 )
+@click.option(
+    "--path",
+    "paths",
+    metavar="PATH",
+    type=str,
+    multiple=True,
+)
+@click.option(
+    "--print-summary",
+    is_flag=True,
+    default=False,
+    help="Pretty print human-readable per-line type coverage summary for project.",
+)
 @click.pass_context
 def coverage(
     context: click.Context,
-    roots: Iterable[str],
+    paths_deprecated: Iterable[str],
     working_directory: str,
+    paths: Iterable[str],
+    print_summary: bool,
 ) -> int:
     """
     Collect line-level type coverage.
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
-    configuration = _create_configuration_with_retry(command_argument, Path("."))
-    return commands.coverage.run(configuration, working_directory, list(roots))
+    configuration = configuration_module.create_configuration(
+        command_argument, Path(".")
+    )
+    paths = list(paths)
+    paths_deprecated = list(paths_deprecated)
+    paths = paths if len(paths) > 0 else paths_deprecated
+    return commands.coverage.run(
+        configuration,
+        command_arguments.CoverageArguments(
+            working_directory=working_directory,
+            paths=paths,
+            print_summary=print_summary,
+        ),
+    )
 
 
 @pyre.command()
@@ -1236,7 +1142,7 @@ def stop(context: click.Context) -> int:
     configuration = configuration_module.create_configuration(
         command_argument, Path(".")
     )
-    _start_logging_to_directory(configuration.log_directory)
+    start_logging_to_directory(configuration.log_directory)
     return commands.stop.run(configuration)
 
 
@@ -1247,9 +1153,31 @@ def validate_models(context: click.Context) -> int:
     Validate the taint models for the given project by querying the Pyre server.
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
-    configuration = _create_configuration_with_retry(command_argument, Path("."))
-    _start_logging_to_directory(configuration.log_directory)
+    configuration = configuration_module.create_configuration(
+        command_argument, Path(".")
+    )
+    start_logging_to_directory(configuration.log_directory)
     return commands.validate_models.run(configuration, output=command_argument.output)
+
+
+@pyre.result_callback()
+@click.pass_context
+def run_default_command(
+    context: click.Context,
+    value: Optional[commands.ExitCode],
+    *args: object,
+    **kwargs: object,
+) -> commands.ExitCode:
+    command_argument: command_arguments.CommandArguments = context.obj["arguments"]
+    if command_argument.version:
+        show_pyre_version(command_argument)
+        return commands.ExitCode.SUCCESS
+    elif context.invoked_subcommand is None:
+        return _run_default_command(command_argument)
+    elif value is not None:
+        return value
+    else:
+        raise commands.ClientException("Non-default command did not return a value")
 
 
 # Need the default argument here since this is our entry point in setup.py
@@ -1275,12 +1203,4 @@ def main(argv: List[str] = sys.argv[1:]) -> int:
 
 
 if __name__ == "__main__":
-    try:
-        os.getcwd()
-    except FileNotFoundError:
-        LOG.error(
-            "Pyre could not determine the current working directory. "
-            "Has it been removed?\nExiting."
-        )
-        sys.exit(commands.ExitCode.FAILURE)
     sys.exit(main(sys.argv[1:]))

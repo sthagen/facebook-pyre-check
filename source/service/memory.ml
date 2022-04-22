@@ -8,70 +8,18 @@
 open Core
 module Gc = Caml.Gc
 module Set = Caml.Set
-module SharedMemory = Hack_parallel.Std.SharedMem
 
-module type KeyType = sig
-  include SharedMem.UserKeyType
+module type KeyType = SharedMemory.KeyType
 
-  type out
+module type ValueType = SharedMemory.ValueType
 
-  val from_string : string -> out
-end
-
-module type ValueType = sig
-  include Value.Type
-
-  val unmarshall : string -> t
-end
-
-module NoCache = struct
-  module type S = sig
-    include SharedMemory.NoCache
-
-    type key_out
-  end
-
-  module Make (Key : KeyType) (Value : ValueType) : sig
-    include
-      S
-        with type t = Value.t
-         and type key = Key.t
-         and type key_out = Key.out
-         and module KeySet = Set.Make(Key)
-         and module KeyMap = MyMap.Make(Key)
-  end = struct
-    type key_out = Key.out
-
-    include SharedMemory.NoCache (Key) (Value)
-  end
-end
-
-module WithCache = struct
-  module type S = sig
-    include SharedMemory.WithCache
-
-    type key_out
-  end
-
-  module Make (Key : KeyType) (Value : ValueType) : sig
-    include
-      S
-        with type t = Value.t
-         and type key = Key.t
-         and type key_out = Key.out
-         and module KeySet = Set.Make(Key)
-         and module KeyMap = MyMap.Make(Key)
-  end = struct
-    type key_out = Key.out
-
-    include SharedMemory.WithCache (Key) (Value)
-  end
-end
+module NoCache = SharedMemory.NoCache
+module WithCache = SharedMemory.WithCache
 
 type bytes = int
 
 type configuration = {
-  heap_handle: Hack_parallel.Std.SharedMem.handle;
+  heap_handle: SharedMemory.handle;
   minor_heap_size: bytes;
 }
 
@@ -208,9 +156,9 @@ exception SavedStateLoadingFailure of string
 let save_shared_memory ~path ~configuration =
   SharedMemory.collect `aggressive;
   let { directory; table_path; dependencies_path } = prepare_saved_state_directory configuration in
-  SharedMem.save_table (PyrePath.absolute table_path);
+  SharedMemory.save_table (PyrePath.absolute table_path);
   let _edges_count : bytes =
-    SharedMem.save_dep_table_sqlite (PyrePath.absolute dependencies_path) "0.0.0"
+    SharedMemory.save_dep_table_sqlite (PyrePath.absolute dependencies_path) "0.0.0"
   in
   run_tar ["cf"; path; "-C"; PyrePath.absolute directory; "."]
 
@@ -219,13 +167,13 @@ let load_shared_memory ~path ~configuration =
   let { directory; table_path; dependencies_path } = prepare_saved_state_directory configuration in
   run_tar ["xf"; path; "-C"; PyrePath.absolute directory];
   try
-    SharedMem.load_table (PyrePath.absolute table_path);
+    SharedMemory.load_table (PyrePath.absolute table_path);
     let _edges_count : bytes =
-      SharedMem.load_dep_table_sqlite (PyrePath.absolute dependencies_path) true
+      SharedMemory.load_dep_table_sqlite (PyrePath.absolute dependencies_path) true
     in
     ()
   with
-  | SharedMem.C_assertion_failure message ->
+  | SharedMemory.C_assertion_failure message ->
       let message =
         Format.sprintf
           "Assertion failure in shared memory loading: %s. This is likely due to a mismatch \
@@ -238,20 +186,22 @@ let load_shared_memory ~path ~configuration =
 external pyre_reset : unit -> unit = "pyre_reset"
 
 let reset_shared_memory () =
-  SharedMem.invalidate_caches ();
+  SharedMemory.invalidate_caches ();
   pyre_reset ()
 
 
-module SingletonKey = struct
+module IntKey = struct
   type t = int
 
   let to_string = Int.to_string
 
   let compare = Int.compare
 
-  type out = int
-
   let from_string = Int.of_string
+end
+
+module SingletonKey = struct
+  include IntKey
 
   let key = 0
 end
@@ -294,7 +244,7 @@ end
 
 (* Provide a unique integer for a given value. *)
 module Interner (Value : InternerValueType) = struct
-  module Table = SharedMemory.WithCache (Int) (Value)
+  module Table = SharedMemory.WithCache.Make (IntKey) (Value)
 
   type t = int
 
@@ -323,3 +273,5 @@ module Interner (Value : InternerValueType) = struct
 
   let compare = Int.compare
 end
+
+module SharedMemory = Hack_parallel.Std.SharedMemory

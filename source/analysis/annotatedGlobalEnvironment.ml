@@ -10,26 +10,12 @@ open Ast
 open Pyre
 module PreviousEnvironment = AttributeResolution
 
-let class_hierarchy_environment class_metadata_environment =
-  ClassMetadataEnvironment.ReadOnly.class_hierarchy_environment class_metadata_environment
-
-
-let alias_environment environment =
-  class_hierarchy_environment environment |> ClassHierarchyEnvironment.ReadOnly.alias_environment
-
-
-let unannotated_global_environment environment =
-  alias_environment environment |> AliasEnvironment.ReadOnly.unannotated_global_environment
-
-
 module GlobalLocationValue = struct
   type t = Location.WithModule.t option
 
   let prefix = Prefix.make ()
 
   let description = "Global Locations"
-
-  let unmarshall value = Marshal.from_string value 0
 
   let compare = Option.compare Location.WithModule.compare
 end
@@ -53,16 +39,16 @@ module Common = struct
 end
 
 let produce_global_location attribute_resolution name ~dependency =
-  let class_metadata_environment =
-    AttributeResolution.ReadOnly.class_metadata_environment attribute_resolution
+  let unannotated_global_environment =
+    AttributeResolution.ReadOnly.unannotated_global_environment attribute_resolution
   in
   let class_location =
     Reference.show name
-    |> UnannotatedGlobalEnvironment.ReadOnly.get_class_definition
-         (unannotated_global_environment class_metadata_environment)
+    |> UnannotatedGlobalEnvironment.ReadOnly.get_class_summary
+         unannotated_global_environment
          ?dependency
     >>| fun { Node.location; value = { ClassSummary.qualifier; _ } } ->
-    Location.with_module ~qualifier location
+    Location.with_module ~module_reference:qualifier location
   in
   match class_location with
   | Some location -> Some location
@@ -75,7 +61,7 @@ let produce_global_location attribute_resolution name ~dependency =
         | _ -> None
       in
       UnannotatedGlobalEnvironment.ReadOnly.get_unannotated_global
-        (unannotated_global_environment class_metadata_environment)
+        unannotated_global_environment
         ?dependency
         name
       >>= extract_location

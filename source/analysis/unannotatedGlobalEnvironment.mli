@@ -54,7 +54,7 @@ module ReadOnly : sig
 
   val all_defines_in_module : t -> Reference.t -> Reference.t list
 
-  val get_class_definition
+  val get_class_summary
     :  t ->
     ?dependency:DependencyKey.registered ->
     string ->
@@ -66,7 +66,7 @@ module ReadOnly : sig
     Reference.t ->
     UnannotatedGlobal.t option
 
-  val get_define
+  val get_function_definition
     :  t ->
     ?dependency:DependencyKey.registered ->
     Reference.t ->
@@ -101,19 +101,19 @@ module ReadOnly : sig
     Reference.t ->
     ResolvedReference.t option
 
-  val resolve_decorator_if_matches
+  val first_matching_class_decorator
     :  t ->
     ?dependency:SharedMemoryKeys.DependencyKey.registered ->
-    Ast.Expression.t ->
-    target:string ->
+    names:string list ->
+    ClassSummary.t Node.t ->
     Ast.Statement.Decorator.t option
 
-  val get_decorator
+  val exists_matching_class_decorator
     :  t ->
     ?dependency:SharedMemoryKeys.DependencyKey.registered ->
+    names:string list ->
     ClassSummary.t Node.t ->
-    decorator:string ->
-    Ast.Statement.Decorator.t list
+    bool
 end
 
 module UpdateResult : sig
@@ -150,11 +150,12 @@ val create : AstEnvironment.t -> t
 
 val ast_environment : t -> AstEnvironment.t
 
+val configuration : t -> Configuration.Analysis.t
+
 val read_only : t -> ReadOnly.t
 
 val update_this_and_all_preceding_environments
   :  t ->
   scheduler:Scheduler.t ->
-  configuration:Configuration.Analysis.t ->
   AstEnvironment.trigger ->
   UpdateResult.t

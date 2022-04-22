@@ -28,7 +28,7 @@ let create_source_path_exn ~configuration root relative =
 
 
 let lookup_exn tracker reference =
-  match ModuleTracker.lookup_source_path tracker reference with
+  match ModuleTracker.ReadOnly.lookup_source_path tracker reference with
   | Some source_path -> source_path
   | None ->
       let message =
@@ -36,14 +36,6 @@ let lookup_exn tracker reference =
       in
       assert_failure message
 
-
-module ModuleStatus = struct
-  type t =
-    | Untracked
-    | Explicit
-    | Implicit
-  [@@deriving sexp, compare]
-end
 
 let test_creation context =
   let assert_create_fail ~configuration root relative =
@@ -286,7 +278,7 @@ let test_creation context =
     assert_same_module_greater extension_py extension_first;
 
     (* ModuleTracker initialization test *)
-    let tracker = ModuleTracker.create configuration in
+    let tracker = ModuleTracker.create configuration |> ModuleTracker.read_only in
     assert_source_path
       (lookup_exn tracker (Reference.create "a"))
       ~search_root:external_root
@@ -351,52 +343,7 @@ let test_creation context =
       ];
     List.iter ~f:(touch local_root) ["a.py"; "b/c.py"; "d/__init__.py"; "d/e/f.py"];
     List.iter ~f:(touch external_root) ["d/g.py"; "h/i/j/__init__.pyi"];
-    let module_tracker =
-      Configuration.Analysis.create
-        ~local_root
-        ~source_paths:[SearchPath.Root local_root]
-        ~search_paths:[SearchPath.Root external_root]
-        ~filter_directories:[local_root]
-        ()
-      |> ModuleTracker.create
-    in
-    let assert_module ~expected qualifier =
-      let actual =
-        match ModuleTracker.lookup module_tracker qualifier with
-        | None -> ModuleStatus.Untracked
-        | Some (ModuleTracker.ModuleLookup.Explicit _) -> ModuleStatus.Explicit
-        | Some (ModuleTracker.ModuleLookup.Implicit _) -> ModuleStatus.Implicit
-      in
-      assert_equal
-        ~cmp:[%compare.equal: ModuleStatus.t]
-        ~printer:(fun status -> ModuleStatus.sexp_of_t status |> Sexp.to_string_hum)
-        expected
-        actual;
-
-      (* Also make sure `is_module_tracked` result is sensible *)
-      let expected_is_tracked =
-        match expected with
-        | ModuleStatus.Untracked -> false
-        | _ -> true
-      in
-      let actual_is_tracked = ModuleTracker.is_module_tracked module_tracker qualifier in
-      assert_equal ~cmp:Bool.equal ~printer:Bool.to_string expected_is_tracked actual_is_tracked
-    in
-    let open Test in
-    assert_module !&"a" ~expected:ModuleStatus.Explicit;
-    assert_module !&"a.b" ~expected:ModuleStatus.Untracked;
-    assert_module !&"b" ~expected:ModuleStatus.Implicit;
-    assert_module !&"b.c" ~expected:ModuleStatus.Explicit;
-    assert_module !&"b.d" ~expected:ModuleStatus.Untracked;
-    assert_module !&"d" ~expected:ModuleStatus.Explicit;
-    assert_module !&"d.e" ~expected:ModuleStatus.Implicit;
-    assert_module !&"d.g" ~expected:ModuleStatus.Explicit;
-    assert_module !&"d.e.f" ~expected:ModuleStatus.Explicit;
-    assert_module !&"d.e.g" ~expected:ModuleStatus.Untracked;
-    assert_module !&"h" ~expected:ModuleStatus.Implicit;
-    assert_module !&"h.i" ~expected:ModuleStatus.Implicit;
-    assert_module !&"h.i.j" ~expected:ModuleStatus.Explicit;
-    assert_module !&"h.i.j.k" ~expected:ModuleStatus.Untracked
+    ()
   in
   let test_search_path_subdirectory () =
     let local_root =
@@ -484,7 +431,7 @@ let test_creation context =
           ~is_init:false);
 
     (* ModuleTracker initialization test *)
-    let tracker = ModuleTracker.create configuration in
+    let tracker = ModuleTracker.create configuration |> ModuleTracker.read_only in
     assert_source_path
       (lookup_exn tracker (Reference.create "a"))
       ~search_root:external_root0
@@ -571,7 +518,7 @@ let test_creation context =
           ~is_init:false);
 
     (* ModuleTracker initialization test *)
-    let tracker = ModuleTracker.create configuration in
+    let tracker = ModuleTracker.create configuration |> ModuleTracker.read_only in
     assert_source_path
       (lookup_exn tracker (Reference.create "a"))
       ~search_root:source_root0
@@ -1098,12 +1045,41 @@ let test_creation context =
         ~filter_directories:[local_root]
         ()
       |> ModuleTracker.create
+      |> ModuleTracker.read_only
     in
     assert_equal
       ~cmp:Int.equal
       ~printer:Int.to_string
       0
-      (ModuleTracker.explicit_module_count module_tracker)
+      (ModuleTracker.ReadOnly.source_paths module_tracker |> List.length)
+  in
+  let test_hidden_files2 () =
+    let local_root =
+      let root = bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true in
+      PyrePath.create_relative ~root ~relative:".a"
+    in
+    List.iter ~f:(touch local_root) ["b.py"; ".c.py"; ".d/e.py"];
+    let configuration =
+      Configuration.Analysis.create
+        ~local_root
+        ~source_paths:[SearchPath.Root local_root]
+        ~filter_directories:[local_root]
+        ()
+    in
+    let create_exn = create_source_path_exn ~configuration in
+    let assert_source_path = assert_source_path ~configuration in
+    let module_tracker = ModuleTracker.create configuration |> ModuleTracker.read_only in
+    assert_equal
+      ~cmp:Int.equal
+      ~printer:Int.to_string
+      1
+      (ModuleTracker.ReadOnly.source_paths module_tracker |> List.length);
+    assert_source_path
+      (create_exn local_root "b.py")
+      ~search_root:local_root
+      ~relative:"b.py"
+      ~is_stub:false
+      ~is_external:false
   in
   test_basic ();
   test_submodules ();
@@ -1117,7 +1093,8 @@ let test_creation context =
   test_overlapping ();
   test_overlapping2 ();
   test_root_independence ();
-  test_hidden_files ()
+  test_hidden_files ();
+  test_hidden_files2 ()
 
 
 module IncrementalTest = struct
@@ -1191,7 +1168,7 @@ module IncrementalTest = struct
     in
     (* Compute the updates *)
     let paths = update_filesystem_state configuration in
-    let updates = ModuleTracker.update ~configuration ~paths module_tracker in
+    let updates = ModuleTracker.update ~paths module_tracker in
     let actual =
       let create_event = function
         | ModuleTracker.IncrementalUpdate.NewExplicit { SourcePath.relative; is_external; _ } ->

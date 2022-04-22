@@ -6,6 +6,7 @@
 
 import itertools
 import logging
+import sys
 from pathlib import Path
 from typing import Callable, List, NamedTuple, Optional
 
@@ -26,7 +27,7 @@ def _find_parent_directory_containing(
     predicate: Callable[[Path], bool],
     stop_search_after: Optional[int],
 ) -> Optional[Path]:
-    resolved_base = base.resolve(strict=False)
+    resolved_base = base.resolve(strict=True)
     # Using `itertools.chain` to avoid expanding `resolve_base.parents` eagerly
     for i, candidate_directory in enumerate(
         itertools.chain([resolved_base], resolved_base.parents)
@@ -53,7 +54,8 @@ def find_parent_directory_containing_file(
     """
     Walk directories upwards from `base`, until the root directory is
     reached. At each step, check if the `target` file exist, and return
-    it if found. Return None if the search is unsuccessful.
+    the closest such directory if found. Return None if the search is
+    unsuccessful.
 
     We stop searching after checking `stop_search_after` parent
     directories of `base` if provided; this is mainly for testing.
@@ -68,6 +70,40 @@ def find_parent_directory_containing_file(
         predicate=is_file,
         stop_search_after=stop_search_after,
     )
+
+
+def find_outermost_directory_containing_file(
+    base: Path,
+    target: str,
+    stop_search_after: Optional[int],
+) -> Optional[Path]:
+    """
+    Walk directories upwards from `base`, until the root directory is
+    reached. At each step, check if the `target` file exist, and return
+    the farthest such directory if found. Return None if the search is
+    unsuccessful.
+
+    We stop searching after checking `stop_search_after` parent
+    directories of `base` if provided; this is mainly for testing.
+    """
+    result: Optional[Path] = None
+    resolved_base = base.resolve(strict=True)
+    # Using `itertools.chain` to avoid expanding `resolve_base.parents` eagerly
+    for i, candidate_directory in enumerate(
+        itertools.chain([resolved_base], resolved_base.parents)
+    ):
+        candidate_path = candidate_directory / target
+        try:
+            if candidate_path.is_file():
+                result = candidate_directory
+        except PermissionError:
+            # We might not have sufficient permission to read the file/directory.
+            # In that case, pretend the file doesn't exist.
+            pass
+        if stop_search_after is not None:
+            if i >= stop_search_after:
+                break
+    return result
 
 
 def find_global_root(base: Path) -> Optional[Path]:
@@ -146,26 +182,22 @@ def find_parent_directory_containing_directory(
 
 
 def find_typeshed() -> Optional[Path]:
-    current_directory = Path(__file__).parent
-
     # Prefer the typeshed we bundled ourselves (if any) to the one
     # from the environment.
-    bundled_typeshed_relative_path = "pyre_check/typeshed/"
-    bundled_typeshed = find_parent_directory_containing_directory(
-        current_directory, bundled_typeshed_relative_path
-    )
-    if bundled_typeshed:
-        return bundled_typeshed / bundled_typeshed_relative_path
+    install_root = Path(sys.prefix)
+    bundled_typeshed = install_root / "lib/pyre_check/typeshed/"
+    if bundled_typeshed.is_dir():
+        return bundled_typeshed
 
+    LOG.debug("Could not find bundled typeshed. Try importing typeshed directly...")
     try:
         import typeshed  # pyre-fixme: Can't find module import typeshed
 
         return Path(typeshed.typeshed)
     except ImportError:
-        LOG.debug("`import typeshed` failed, attempting a manual lookup")
+        LOG.debug("`import typeshed` failed.")
 
-    # This is a terrible, terrible hack.
-    return find_parent_directory_containing_directory(current_directory, "typeshed/")
+    return None
 
 
 def find_typeshed_search_paths(typeshed_root: Path) -> List[Path]:
@@ -187,6 +219,8 @@ def find_typeshed_search_paths(typeshed_root: Path) -> List[Path]:
 
 
 def find_taint_models_directory() -> Optional[Path]:
-    return find_parent_directory_containing_directory(
-        Path(__file__).parent, "pyre_check/taint/"
-    )
+    install_root = Path(sys.prefix)
+    bundled_taint_models = install_root / "lib/pyre_check/taint/"
+    if bundled_taint_models.is_dir():
+        return bundled_taint_models
+    return None

@@ -44,6 +44,7 @@ module Internal : sig
         path: Abstract.TreeDomain.Label.path;
         leaf_names: Features.LeafName.t list;
         leaf_name_provided: bool;
+        trace_length: int option;
       }
     | Source of {
         source: Sources.t;
@@ -52,6 +53,7 @@ module Internal : sig
         path: Abstract.TreeDomain.Label.path;
         leaf_names: Features.LeafName.t list;
         leaf_name_provided: bool;
+        trace_length: int option;
       }
     | Tito of {
         tito: Sinks.t;
@@ -190,10 +192,8 @@ val parse
   configuration:TaintConfiguration.t ->
   callables:Interprocedural.Target.HashSet.t option ->
   stubs:Interprocedural.Target.HashSet.t ->
-  Model.t Interprocedural.Target.Map.t ->
+  unit ->
   parse_result
-
-exception InvalidModel of string
 
 val verify_model_syntax : path:PyrePath.t -> source:string -> unit
 
@@ -205,7 +205,7 @@ val compute_sources_and_sinks_to_keep
 (* Exposed for model queries. *)
 val create_callable_model_from_annotations
   :  resolution:Analysis.Resolution.t ->
-  callable:Interprocedural.Target.callable_t ->
+  callable:Interprocedural.Target.t ->
   sources_to_keep:Sources.Set.t option ->
   sinks_to_keep:Sinks.Set.t option ->
   is_obscure:bool ->

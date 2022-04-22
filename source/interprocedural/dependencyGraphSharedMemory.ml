@@ -6,7 +6,6 @@
  *)
 
 open Ast
-module SharedMemory = Memory
 
 module OverrideTypes = struct
   type t = Reference.t list
@@ -14,13 +13,10 @@ module OverrideTypes = struct
   let prefix = Prefix.make ()
 
   let description = "overriding types"
-
-  let unmarshall value = Marshal.from_string value 0
 end
 
 (* Maps the method access to the next subtypes that override that method *)
-module Overrides =
-  SharedMemory.WithCache.Make (Analysis.SharedMemoryKeys.ReferenceKey) (OverrideTypes)
+module Overrides = Memory.WithCache.Make (Analysis.SharedMemoryKeys.ReferenceKey) (OverrideTypes)
 
 let add_overriding_types ~member ~subtypes = Overrides.add member subtypes
 

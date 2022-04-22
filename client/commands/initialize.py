@@ -17,11 +17,11 @@ from .. import log
 from ..find_directories import (
     BINARY_NAME,
     CONFIGURATION_FILE,
-    LOCAL_CONFIGURATION_FILE,
     find_global_root,
     find_parent_directory_containing_file,
     find_taint_models_directory,
     find_typeshed,
+    LOCAL_CONFIGURATION_FILE,
 )
 from . import commands
 
@@ -123,6 +123,13 @@ def _get_configuration() -> Dict[str, Any]:
     configuration["source_directories"] = [
         _create_source_directory_element(path) for path in source_directory_paths
     ]
+
+    LOG.info(
+        "Pyre will automatically add typed pacakages installed on your system "
+        "as type checking dependencies, according to PEP561. You can edit the "
+        "configuration file if you want to change the behavior. "
+    )
+    configuration["site_package_search_strategy"] = "pep561"
     return configuration
 
 

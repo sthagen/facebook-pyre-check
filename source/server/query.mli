@@ -16,19 +16,23 @@ module Request : sig
     | Defines of Reference.t list
     | DumpCallGraph
     | Help of string
+    | InlineDecorators of {
+        function_reference: Reference.t;
+        decorators_to_skip: Reference.t list;
+      }
     | IsCompatibleWith of Expression.t * Expression.t
     | LessOrEqual of Expression.t * Expression.t
-    | ModuleOfPath of PyrePath.t
+    | LocationOfDefinition of {
+        path: PyrePath.t;
+        position: Location.position;
+      }
+    | ModulesOfPath of PyrePath.t
     | PathOfModule of Reference.t
     | SaveServerState of PyrePath.t
     | Superclasses of Reference.t list
     | Type of Expression.t
     | TypesInFiles of string list
     | ValidateTaintModels of string option
-    | InlineDecorators of {
-        function_reference: Reference.t;
-        decorators_to_skip: Reference.t list;
-      }
   [@@deriving sexp, compare]
 
   val inline_decorators : ?decorators_to_skip:Reference.t list -> Reference.t -> t
@@ -99,6 +103,24 @@ module Response : sig
     }
     [@@deriving sexp, compare]
 
+    type position = {
+      line: int;
+      character: int;
+    }
+    [@@deriving sexp, compare, to_yojson]
+
+    type range = {
+      start: position;
+      end_: position;
+    }
+    [@@deriving sexp, compare, to_yojson]
+
+    type location_of_definition = {
+      path: string;
+      range: range;
+    }
+    [@@deriving sexp, compare, to_yojson]
+
     type t =
       | Boolean of bool
       | Callees of Analysis.Callgraph.callee list
@@ -108,7 +130,8 @@ module Response : sig
       | Errors of Analysis.AnalysisError.Instantiated.t list
       | FoundAttributes of attribute list
       | FoundDefines of define list
-      | FoundModule of Ast.Reference.t
+      | FoundLocationsOfDefinitions of location_of_definition list
+      | FoundModules of Ast.Reference.t list
       | FoundPath of string
       | FunctionDefinition of Statement.Define.t
       | Help of string

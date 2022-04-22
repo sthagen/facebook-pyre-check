@@ -44,12 +44,13 @@ module type PreviousEnvironment = sig
 
   val ast_environment : t -> AstEnvironment.t
 
+  val configuration : t -> Configuration.Analysis.t
+
   val read_only : t -> ReadOnly.t
 
   val update_this_and_all_preceding_environments
     :  t ->
     scheduler:Scheduler.t ->
-    configuration:Configuration.Analysis.t ->
     AstEnvironment.trigger ->
     UpdateResult.t
 end
@@ -67,12 +68,13 @@ module type S = sig
 
   val ast_environment : t -> AstEnvironment.t
 
+  val configuration : t -> Configuration.Analysis.t
+
   val read_only : t -> ReadOnly.t
 
   val update_this_and_all_preceding_environments
     :  t ->
     scheduler:Scheduler.t ->
-    configuration:Configuration.Analysis.t ->
     AstEnvironment.trigger ->
     UpdateResult.t
 end
@@ -126,7 +128,7 @@ module EnvironmentTable : sig
 
     val serialize_value : Value.t -> string
 
-    val show_key : Key.out -> string
+    val show_key : Key.t -> string
 
     val equal_value : Value.t -> Value.t -> bool
   end
@@ -152,12 +154,13 @@ module EnvironmentTable : sig
 
     val ast_environment : t -> AstEnvironment.t
 
+    val configuration : t -> Configuration.Analysis.t
+
     val read_only : t -> ReadOnly.t
 
     val update_this_and_all_preceding_environments
       :  t ->
       scheduler:Scheduler.t ->
-      configuration:Configuration.Analysis.t ->
       AstEnvironment.trigger ->
       UpdateResult.t
   end

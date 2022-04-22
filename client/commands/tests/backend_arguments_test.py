@@ -10,16 +10,19 @@ from typing import Iterable, Tuple
 import testslide
 
 from ... import command_arguments, configuration
+from ...configuration import search_path
 from ...tests import setup
 from ..backend_arguments import (
-    RemoteLogging,
-    SimpleSourcePath,
-    BuckSourcePath,
     BaseArguments,
-    find_watchman_root,
+    BuckSourcePath,
+    find_buck2_root,
     find_buck_root,
+    find_watchman_root,
     get_checked_directory_allowlist,
     get_source_path,
+    RemoteLogging,
+    SimpleSourcePath,
+    WithUnwatchedDependencySourcePath,
 )
 
 
@@ -54,11 +57,35 @@ class ArgumentsTest(testslide.TestCase):
         self.assertDictEqual(
             SimpleSourcePath(
                 [
-                    configuration.SimpleSearchPathElement("/source0"),
-                    configuration.SimpleSearchPathElement("/source1"),
+                    search_path.SimpleElement("/source0"),
+                    search_path.SimpleElement("/source1"),
                 ]
             ).serialize(),
             {"kind": "simple", "paths": ["/source0", "/source1"]},
+        )
+        self.assertDictEqual(
+            WithUnwatchedDependencySourcePath(
+                change_indicator_root=Path("/root"),
+                unwatched_dependency=configuration.UnwatchedDependency(
+                    change_indicator="foo",
+                    files=configuration.UnwatchedFiles(
+                        root="/derp",
+                        checksum_path="CHECKSUMS",
+                    ),
+                ),
+                elements=[
+                    search_path.SimpleElement("/source0"),
+                    search_path.SimpleElement("/source1"),
+                ],
+            ).serialize(),
+            {
+                "kind": "with_unwatched_dependency",
+                "unwatched_dependency": {
+                    "change_indicator": {"root": "/root", "relative": "foo"},
+                    "files": {"root": "/derp", "checksum_path": "CHECKSUMS"},
+                },
+                "paths": ["/source0", "/source1"],
+            },
         )
         self.assertDictEqual(
             BuckSourcePath(
@@ -72,6 +99,7 @@ class ArgumentsTest(testslide.TestCase):
                 "source_root": "/source",
                 "artifact_root": "/artifact",
                 "targets": ["//foo:bar", "//foo:baz"],
+                "use_buck2": False,
             },
         )
         self.assertDictEqual(
@@ -82,6 +110,7 @@ class ArgumentsTest(testslide.TestCase):
                 targets=["//foo:bar"],
                 mode="opt",
                 isolation_prefix=".lsp",
+                use_buck2=True,
             ).serialize(),
             {
                 "kind": "buck",
@@ -90,6 +119,7 @@ class ArgumentsTest(testslide.TestCase):
                 "targets": ["//foo:bar"],
                 "mode": "opt",
                 "isolation_prefix": ".lsp",
+                "use_buck2": True,
             },
         )
 
@@ -108,9 +138,7 @@ class ArgumentsTest(testslide.TestCase):
             BaseArguments(
                 log_path="foo",
                 global_root="bar",
-                source_paths=SimpleSourcePath(
-                    [configuration.SimpleSearchPathElement("source")]
-                ),
+                source_paths=SimpleSourcePath([search_path.SimpleElement("source")]),
             ),
             [
                 ("log_path", "foo"),
@@ -221,38 +249,128 @@ class ArgumentsTest(testslide.TestCase):
             self.assertIsNone(find_buck_root(root_path / "foo", stop_search_after=1))
             self.assertIsNone(find_buck_root(root_path, stop_search_after=0))
 
+    def test_find_buck2_root(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()
+            setup.ensure_files_exist(
+                root_path,
+                [
+                    "foo/.buckconfig",
+                    "foo/qux/derp",
+                    "foo/bar/.buckconfig",
+                    "foo/bar/baz/derp",
+                ],
+            )
+
+            expected_root = root_path / "foo"
+            self.assertEqual(
+                find_buck2_root(root_path / "foo/bar/baz", stop_search_after=3),
+                expected_root,
+            )
+            self.assertEqual(
+                find_buck2_root(root_path / "foo/bar", stop_search_after=2),
+                expected_root,
+            )
+            self.assertEqual(
+                find_buck2_root(root_path / "foo/qux", stop_search_after=2),
+                expected_root,
+            )
+            self.assertEqual(
+                find_buck2_root(root_path / "foo", stop_search_after=1), expected_root
+            )
+            self.assertIsNone(find_buck2_root(root_path, stop_search_after=0))
+
     def test_get_simple_source_path__exists(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root).resolve()
             setup.ensure_directories_exists(root_path, [".pyre", "src"])
-            element = configuration.SimpleSearchPathElement(str(root_path / "src"))
+            raw_element = search_path.SimpleRawElement(str(root_path / "src"))
             self.assertEqual(
                 get_source_path(
                     configuration.Configuration(
                         project_root=str(root_path / "project"),
                         dot_pyre_directory=(root_path / ".pyre"),
-                        source_directories=[element],
-                    ).expand_and_filter_nonexistent_paths(),
+                        source_directories=[raw_element],
+                    ),
                     artifact_root_name="irrelevant",
                 ),
-                SimpleSourcePath([element]),
+                SimpleSourcePath([raw_element.to_element()]),
             )
 
     def test_get_simple_source_path__nonexists(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root).resolve()
             setup.ensure_directories_exists(root_path, [".pyre"])
-            element = configuration.SimpleSearchPathElement(str(root_path / "src"))
+            raw_element = search_path.SimpleRawElement(str(root_path / "src"))
             self.assertEqual(
                 get_source_path(
                     configuration.Configuration(
                         project_root=str(root_path / "project"),
                         dot_pyre_directory=(root_path / ".pyre"),
-                        source_directories=[element],
-                    ).expand_and_filter_nonexistent_paths(),
+                        source_directories=[raw_element],
+                    ),
                     artifact_root_name="irrelevant",
                 ),
                 SimpleSourcePath([]),
+            )
+
+    def test_get_with_unwatched_dependency_source_path__exists(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()
+            setup.ensure_directories_exists(root_path, [".pyre", "project/local"])
+            setup.ensure_files_exist(
+                root_path, ["src/indicator", "unwatched_root/CHECKSUMS"]
+            )
+            raw_element = search_path.SimpleRawElement(str(root_path / "src"))
+            unwatched_dependency = configuration.UnwatchedDependency(
+                change_indicator="indicator",
+                files=configuration.UnwatchedFiles(
+                    root=str(root_path / "unwatched_root"), checksum_path="CHECKSUMS"
+                ),
+            )
+            self.assertEqual(
+                get_source_path(
+                    configuration.Configuration(
+                        project_root=str(root_path / "project"),
+                        relative_local_root="local",
+                        dot_pyre_directory=(root_path / ".pyre"),
+                        source_directories=[raw_element],
+                        unwatched_dependency=unwatched_dependency,
+                    ),
+                    artifact_root_name="irrelevant",
+                ),
+                WithUnwatchedDependencySourcePath(
+                    elements=[raw_element.to_element()],
+                    change_indicator_root=(root_path / "project" / "local"),
+                    unwatched_dependency=unwatched_dependency,
+                ),
+            )
+
+    def test_get_with_unwatched_dependency_source_path__nonexists(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()
+            setup.ensure_directories_exists(root_path, [".pyre", "project"])
+            setup.ensure_files_exist(root_path, ["src/indicator"])
+            raw_element = search_path.SimpleRawElement(str(root_path / "src"))
+            unwatched_dependency = configuration.UnwatchedDependency(
+                change_indicator="indicator",
+                files=configuration.UnwatchedFiles(
+                    root=str(root_path / "unwatched_root"), checksum_path="CHECKSUMS"
+                ),
+            )
+            self.assertEqual(
+                get_source_path(
+                    configuration.Configuration(
+                        project_root=str(root_path / "project"),
+                        dot_pyre_directory=(root_path / ".pyre"),
+                        source_directories=[raw_element],
+                        unwatched_dependency=unwatched_dependency,
+                    ),
+                    artifact_root_name="irrelevant",
+                ),
+                SimpleSourcePath(
+                    elements=[raw_element.to_element()],
+                ),
             )
 
     def test_get_buck_source_path__global(self) -> None:
@@ -285,6 +403,39 @@ class ArgumentsTest(testslide.TestCase):
                     targets=["//ct:marle", "//ct:lucca"],
                     mode="opt",
                     isolation_prefix=".lsp",
+                ),
+            )
+
+    def test_get_buck2_source_path(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()
+            setup.ensure_directories_exists(root_path, [".pyre", "repo_root"])
+            setup.ensure_files_exist(
+                root_path, ["repo_root/.buckconfig", "repo_root/buck_root/.buckconfig"]
+            )
+            setup.write_configuration_file(
+                root_path / "repo_root" / "buck_root",
+                {
+                    "targets": ["//ct:lavos"],
+                },
+            )
+            self.assertEqual(
+                get_source_path(
+                    configuration.create_configuration(
+                        command_arguments.CommandArguments(
+                            dot_pyre_directory=root_path / ".pyre",
+                            use_buck2=True,
+                        ),
+                        root_path / "repo_root" / "buck_root",
+                    ),
+                    artifact_root_name="artifact_root",
+                ),
+                BuckSourcePath(
+                    source_root=root_path / "repo_root",
+                    artifact_root=root_path / ".pyre" / "artifact_root",
+                    checked_directory=root_path / "repo_root" / "buck_root",
+                    targets=["//ct:lavos"],
+                    use_buck2=True,
                 ),
             )
 
@@ -338,7 +489,7 @@ class ArgumentsTest(testslide.TestCase):
                         project_root=str(root_path / "project"),
                         dot_pyre_directory=(root_path / ".pyre"),
                         targets=["//ct:frog"],
-                    ).expand_and_filter_nonexistent_paths(),
+                    ),
                     artifact_root_name="irrelevant",
                 )
 
@@ -350,7 +501,7 @@ class ArgumentsTest(testslide.TestCase):
                     dot_pyre_directory=Path(".pyre"),
                     source_directories=None,
                     targets=None,
-                ).expand_and_filter_nonexistent_paths(),
+                ),
                 artifact_root_name="irrelevant",
             )
 
@@ -360,16 +511,16 @@ class ArgumentsTest(testslide.TestCase):
                 configuration.Configuration(
                     project_root="project",
                     dot_pyre_directory=Path(".pyre"),
-                    source_directories=[configuration.SimpleSearchPathElement("src")],
+                    source_directories=[search_path.SimpleRawElement("src")],
                     targets=["//ct:ayla"],
-                ).expand_and_filter_nonexistent_paths(),
+                ),
                 artifact_root_name="irrelevant",
             )
 
     def test_get_checked_directory_for_simple_source_path(self) -> None:
-        element0 = configuration.SimpleSearchPathElement("ozzie")
-        element1 = configuration.SubdirectorySearchPathElement("diva", "flea")
-        element2 = configuration.SitePackageSearchPathElement("super", "slash")
+        element0 = search_path.SimpleElement("ozzie")
+        element1 = search_path.SubdirectoryElement("diva", "flea")
+        element2 = search_path.SitePackageElement("super", "slash")
         self.assertCountEqual(
             SimpleSourcePath(
                 [element0, element1, element2, element0]
@@ -411,7 +562,7 @@ class ArgumentsTest(testslide.TestCase):
             self.assertCountEqual(
                 get_checked_directory_allowlist(
                     test_configuration,
-                    SimpleSourcePath([configuration.SimpleSearchPathElement("source")]),
+                    SimpleSourcePath([search_path.SimpleElement("source")]),
                 ),
                 [
                     str(root_path / "a"),
@@ -432,9 +583,7 @@ class ArgumentsTest(testslide.TestCase):
             self.assertCountEqual(
                 get_checked_directory_allowlist(
                     test_configuration,
-                    SimpleSourcePath(
-                        [configuration.SimpleSearchPathElement(str(root_path))]
-                    ),
+                    SimpleSourcePath([search_path.SimpleElement(str(root_path))]),
                 ),
                 [
                     str(root_path / "a"),
@@ -450,9 +599,7 @@ class ArgumentsTest(testslide.TestCase):
             self.assertCountEqual(
                 get_checked_directory_allowlist(
                     test_configuration,
-                    SimpleSourcePath(
-                        [configuration.SimpleSearchPathElement(str(root_path))]
-                    ),
+                    SimpleSourcePath([search_path.SimpleElement(str(root_path))]),
                 ),
                 [str(root_path)],
             )
