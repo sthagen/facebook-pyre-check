@@ -10,35 +10,35 @@ open Pyre
 open Taint
 module Target = Interprocedural.Target
 
+let initialize_configuration
+    ~static_analysis_configuration:
+      { Configuration.StaticAnalysis.configuration = { taint_model_paths; _ }; _ }
+  =
+  (* In order to save time, sanity check models before starting the analysis. *)
+  Log.info "Verifying model syntax and configuration.";
+  let timer = Timer.start () in
+  ModelParser.get_model_sources ~paths:taint_model_paths
+  |> List.iter ~f:(fun (path, source) -> ModelParser.verify_model_syntax ~path ~source);
+  let (_ : TaintConfiguration.t) =
+    TaintConfiguration.create
+      ~rule_filter:None
+      ~find_missing_flows:None
+      ~dump_model_query_results_path:None
+      ~maximum_trace_length:None
+      ~maximum_tito_depth:None
+      ~taint_model_paths
+    |> TaintConfiguration.exception_on_error
+  in
+  Statistics.performance
+    ~name:"Verified model syntax and configuration"
+    ~phase_name:"Verifying model syntax and configuration"
+    ~timer
+    ()
+
+
 (* Registers the Taint analysis with the interprocedural analysis framework. *)
 include Taint.Result.Register (struct
   include Taint.Result
-
-  let initialize_configuration
-      ~static_analysis_configuration:
-        { Configuration.StaticAnalysis.configuration = { taint_model_paths; _ }; _ }
-    =
-    (* In order to save time, sanity check models before starting the analysis. *)
-    Log.info "Verifying model syntax and configuration.";
-    let timer = Timer.start () in
-    ModelParser.get_model_sources ~paths:taint_model_paths
-    |> List.iter ~f:(fun (path, source) -> ModelParser.verify_model_syntax ~path ~source);
-    let (_ : TaintConfiguration.t) =
-      TaintConfiguration.create
-        ~rule_filter:None
-        ~find_missing_flows:None
-        ~dump_model_query_results_path:None
-        ~maximum_trace_length:None
-        ~maximum_tito_depth:None
-        ~taint_model_paths
-      |> TaintConfiguration.abort_on_error
-    in
-    Statistics.performance
-      ~name:"Verified model syntax and configuration"
-      ~phase_name:"Verifying model syntax and configuration"
-      ~timer
-      ()
-
 
   type model_query_data = {
     queries: ModelParser.Internal.ModelQuery.rule list;
@@ -207,7 +207,7 @@ include Taint.Result.Register (struct
           ~maximum_trace_length
           ~maximum_tito_depth
           ~taint_model_paths
-        |> TaintConfiguration.abort_on_error
+        |> TaintConfiguration.exception_on_error
       in
       TaintConfiguration.register taint_configuration;
       let models, errors, skip_overrides, queries =
@@ -221,12 +221,8 @@ include Taint.Result.Register (struct
             Log.error "Found %d model verification errors!" (List.length errors);
             List.iter errors ~f:(fun error -> Log.error "%s" (ModelVerificationError.display error))
           end
-          else begin
-            Yojson.Safe.pretty_to_string
-              (`Assoc ["errors", `List (List.map errors ~f:ModelVerificationError.to_json)])
-            |> Log.print "%s";
-            exit (Taint.ExitStatus.exit_code Taint.ExitStatus.ModelVerificationError)
-          end
+          else
+            raise (ModelParser.ModelVerificationError errors)
       in
       {
         initialize_result =
@@ -390,5 +386,98 @@ include Taint.Result.Register (struct
           empty_model
 
 
-  let report = Taint.Reporting.report
+  let report = Reporting.report
 end)
+
+let run_taint_analysis
+    ~static_analysis_configuration:
+      ({
+         Configuration.StaticAnalysis.configuration;
+         repository_root;
+         inline_decorators;
+         use_cache;
+         _;
+       } as static_analysis_configuration)
+    ~build_system
+    ~scheduler
+    ()
+  =
+  try
+    let () = initialize_configuration ~static_analysis_configuration in
+
+    (* Collect decorators to skip before type-checking because decorator inlining happens in an
+       early phase of type-checking and needs to know which decorators to skip. *)
+    Service.StaticAnalysis.parse_and_save_decorators_to_skip ~inline_decorators configuration;
+    let cache = Service.StaticAnalysis.Cache.load ~scheduler ~configuration ~enabled:use_cache in
+    let environment = Service.StaticAnalysis.type_check ~scheduler ~configuration ~cache in
+
+    let qualifiers =
+      Analysis.TypeEnvironment.module_tracker environment
+      |> Analysis.ModuleTracker.read_only
+      |> Analysis.ModuleTracker.ReadOnly.tracked_explicit_modules
+    in
+
+    let read_only_environment = Analysis.TypeEnvironment.read_only environment in
+    let class_hierarchy_graph =
+      Service.StaticAnalysis.build_class_hierarchy_graph
+        ~scheduler
+        ~cache
+        ~environment:read_only_environment
+        ~qualifiers
+    in
+    let _ = Service.StaticAnalysis.build_class_intervals class_hierarchy_graph in
+    let initial_callables =
+      Service.StaticAnalysis.fetch_initial_callables
+        ~scheduler
+        ~configuration
+        ~cache
+        ~environment:read_only_environment
+        ~qualifiers
+    in
+
+    let { Interprocedural.AnalysisResult.initial_models; skip_overrides } =
+      let { Service.StaticAnalysis.callables_with_dependency_information; stubs; _ } =
+        initial_callables
+      in
+      Interprocedural.FixpointAnalysis.initialize_models
+        abstract_kind
+        ~static_analysis_configuration
+        ~scheduler
+        ~environment:(Analysis.TypeEnvironment.read_only environment)
+        ~callables:(List.map callables_with_dependency_information ~f:fst)
+        ~stubs
+    in
+    let ast_environment =
+      environment
+      |> Analysis.TypeEnvironment.read_only
+      |> Analysis.TypeEnvironment.ReadOnly.ast_environment
+    in
+    let filename_lookup path_reference =
+      match
+        Server.RequestHandler.instantiate_path ~build_system ~ast_environment path_reference
+      with
+      | None -> None
+      | Some full_path ->
+          let root = Option.value repository_root ~default:configuration.local_root in
+          PyrePath.get_relative_to_root ~root ~path:(PyrePath.create_absolute full_path)
+    in
+    Service.StaticAnalysis.analyze
+      ~scheduler
+      ~analysis:abstract_kind
+      ~static_analysis_configuration
+      ~cache
+      ~filename_lookup
+      ~environment
+      ~qualifiers
+      ~initial_callables
+      ~initial_models
+      ~skip_overrides
+      ()
+  with
+  | (TaintConfiguration.TaintConfigurationError _ | ModelParser.ModelVerificationError _) as exn ->
+      raise exn
+  | exn ->
+      (* The backtrace is lost if the exception is caught at the top level, because of `Lwt`.
+       * Let's print the exception here to ease debugging. *)
+      Log.log_exception "Taint analysis failed." exn (Worker.exception_backtrace exn);
+      raise exn

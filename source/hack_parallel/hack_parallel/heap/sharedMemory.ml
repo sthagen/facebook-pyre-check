@@ -393,6 +393,7 @@ module type Key = sig
   val md5     : t -> md5
   val md5_old : old -> md5
   val string_of_md5 : md5 -> string
+
 end
 
 module KeyFunctor (KeyType : KeyType) : Key
@@ -705,7 +706,7 @@ module New : functor (Key : Key) -> functor(Value : ValueType) -> sig
   val add         : Key.t -> Value.t -> unit
 
   val get         : Key.t -> Value.t option
-  val find_unsafe : Key.t -> Value.t
+  val get_exn     : Key.t -> Value.t
   val remove      : Key.t -> unit
   val mem         : Key.t -> bool
 
@@ -731,7 +732,7 @@ end = functor (Key : Key) -> functor (Value  : ValueType) -> struct
     then Some (Raw.get key)
     else None
 
-  let find_unsafe key =
+  let get_exn key =
     match get key with
     | None -> raise Not_found
     | Some x -> x
@@ -797,27 +798,54 @@ module Old : functor (Key : Key) -> functor (Value : ValueType) ->
 (*****************************************************************************)
 (* A shared memory table with no process-local caching of reads *)
 (*****************************************************************************)
-module NoCache = struct
+module TableTypes = struct
   module type S = sig
     type key
     type value
     module KeySet : Set.S with type elt = key
     module KeyMap : MyMap.S with type key = key
+  end
 
+  module Make (KeyType : KeyType) (Value : ValueType) = struct
+    module Key = KeyFunctor (KeyType)
+    module KeySet = Set.Make (KeyType)
+    module KeyMap = MyMap.Make (KeyType)
+
+    type key = KeyType.t
+    type value = Value.t
+  end
+end
+
+module NoCache = struct
+  module type S = sig
+    include TableTypes.S
+
+
+
+    (* Add a value to the table. Safe for concurrent writes - the first
+       writer wins, later values are discarded. *)
     val add              : key -> value -> unit
+
+    (* Api to read and remove from the table *)
     val get              : key -> value option
-    val get_old          : key -> value option
-    val get_old_batch    : KeySet.t -> value option KeyMap.t
-    val remove_old_batch : KeySet.t -> unit
-    val find_unsafe      : key -> value
+    val get_exn          : key -> value
+    val mem              : key -> bool
     val get_batch        : KeySet.t -> value option KeyMap.t
     val remove_batch     : KeySet.t -> unit
-    val string_of_key    : key -> string
-    val mem              : key -> bool
+
+    (* Api to read and remove old data from the table, which lives in a separate
+       hash map. Used in situations where we want to know what has changed, for
+       example dependency-tracked tables. *)
+    val get_old          : key -> value option
     val mem_old          : key -> bool
+    val get_old_batch    : KeySet.t -> value option KeyMap.t
+    val remove_old_batch : KeySet.t -> unit
+
+    (* Move keys between the current view of the table and the old-values table *)
     val oldify_batch     : KeySet.t -> unit
     val revive_batch     : KeySet.t -> unit
 
+    (* Api to allow batching up local changes before serializing them *)
     module LocalChanges : sig
       val has_local_changes : unit -> bool
       val push_stack : unit -> unit
@@ -831,23 +859,17 @@ module NoCache = struct
 
   module Make (KeyType : KeyType) (Value : ValueType) = struct
 
-    module Key = KeyFunctor (KeyType)
+    include TableTypes.Make (KeyType) (Value)
+
     module New = New (Key) (Value)
     module Old = Old (Key) (Value) (New.Raw)
-    module KeySet = Set.Make (KeyType)
-    module KeyMap = MyMap.Make (KeyType)
-
-    type key = KeyType.t
-    type value = Value.t
-
-    let string_of_key key =
-      key |> Key.make Value.prefix |> Key.md5 |> Key.string_of_md5;;
 
     let add x y = New.add (Key.make Value.prefix x) y
-    let find_unsafe x = New.find_unsafe (Key.make Value.prefix x)
+
+    let get_exn x = New.get_exn (Key.make Value.prefix x)
 
     let get x =
-      try Some (find_unsafe x) with Not_found -> None
+      try Some (get_exn x) with Not_found -> None
 
     let get_old x =
       let key = Key.make_old Value.prefix x in
@@ -950,7 +972,6 @@ module type CacheType = sig
   val remove: key -> unit
   val clear: unit -> unit
 
-  val string_of_key : key -> string
   val get_size : unit -> int
 end
 
@@ -962,9 +983,6 @@ module FreqCache (Key : sig type t end) (Config:ConfigType) :
   CacheType with type key := Key.t and type value := Config.value = struct
 
   type value = Config.value
-
-  let string_of_key  _key =
-    failwith "FreqCache does not support 'string_of_key'"
 
   (* The cache itself *)
   let (cache: (Key.t, int ref * value) Hashtbl.t)
@@ -1038,9 +1056,6 @@ end
 module OrderedCache (Key : sig type t end) (Config:ConfigType):
   CacheType with type key := Key.t and type value := Config.value = struct
 
-  let string_of_key _key =
-    failwith "OrderedCache does not support 'string_of_key'"
-
   let (cache: (Key.t, Config.value) Hashtbl.t) =
     Hashtbl.create Config.capacity
 
@@ -1109,9 +1124,6 @@ module LocalCache (KeyType : KeyType) (Value : ValueType) = struct
   (* Frequent values cache *)
   module L2 = FreqCache (KeyType) (ConfValue)
 
-  let string_of_key _key =
-    failwith "LocalCache does not support 'string_of_key'"
-
   let add x y =
     L1.add x y;
     L2.add x y
@@ -1171,9 +1183,6 @@ module WithCache = struct
 
     module Cache = LocalCache (KeyType) (Value)
 
-    let string_of_key key =
-      Direct.string_of_key key
-
     let add x y =
       Direct.add x y;
       Cache.add x y
@@ -1209,7 +1218,7 @@ module WithCache = struct
     let get_old_batch = Direct.get_old_batch
     let mem_old = Direct.mem_old
 
-    let find_unsafe x =
+    let get_exn x =
       match get x with
       | None -> raise Not_found
       | Some x -> x

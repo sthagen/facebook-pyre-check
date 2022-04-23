@@ -16,6 +16,8 @@ let name = "UninitializedLocal"
 
 module NameAccessSet = Set.Make (Define.NameAccess)
 
+(** Collect accesses to names within expressions. Within lambdas and comprehensions, collect
+    accesses to names not bound by the lambda or comprehension. *)
 module AccessCollector = struct
   let rec from_expression collected { Node.value; location = expression_location } =
     let open Expression in
@@ -131,7 +133,7 @@ module AccessCollector = struct
     NameAccessSet.union collected element_accesses
 end
 
-let extract_reads_expression expression =
+let extract_reads_in_expression expression =
   let name_access_to_identifier_node { Define.NameAccess.name; location } =
     { Node.value = name; location }
   in
@@ -140,7 +142,7 @@ let extract_reads_expression expression =
   |> List.map ~f:name_access_to_identifier_node
 
 
-let extract_reads_statement { Node.value; _ } =
+let extract_reads_in_statement { Node.value; _ } =
   let expressions =
     match value with
     | Statement.Assign { Assign.value = expression; _ }
@@ -167,24 +169,39 @@ let extract_reads_statement { Node.value; _ } =
     | Try _ ->
         []
   in
-  expressions |> List.concat_map ~f:extract_reads_expression
+  expressions |> List.concat_map ~f:extract_reads_in_expression
 
 
-module InitializedVariables = Identifier.Set
+type defined_locals = Scope.Binding.t Identifier.Map.t
+
+module StatementKey = Int
+
+let create_map =
+  List.fold ~init:Identifier.Map.empty ~f:(fun sofar ({ Scope.Binding.name; _ } as binding) ->
+      (* First binding (i.e. last item in the list) wins. *)
+      Map.set sofar ~key:(Identifier.sanitized name) ~data:binding)
+
 
 module type Context = sig
-  val fixpoint_post_statement : (Statement.t * InitializedVariables.t) Int.Table.t
+  val fixpoint_post_statement : (Statement.t * defined_locals) StatementKey.Table.t
 end
 
 module State (Context : Context) = struct
   type t =
     | Bottom
-    | Value of InitializedVariables.t
+    | Value of defined_locals
 
   let show = function
     | Bottom -> "[]"
     | Value state ->
-        state |> InitializedVariables.elements |> String.concat ~sep:", " |> Format.sprintf "[%s]"
+        let show_binding { Scope.Binding.name; location; _ } =
+          [%show: Identifier.t * Location.t] (name, location)
+        in
+        state
+        |> Map.data
+        |> List.map ~f:show_binding
+        |> String.concat ~sep:", "
+        |> Format.sprintf "[%s]"
 
 
   let bottom = Bottom
@@ -192,55 +209,14 @@ module State (Context : Context) = struct
   let pp format state = Format.fprintf format "%s" (show state)
 
   let initial ~define:{ Node.value = { Define.signature; _ }; _ } =
-    signature.parameters
-    |> Scope.Binding.of_parameters []
-    |> List.map ~f:Scope.Binding.name
-    |> List.map ~f:Identifier.sanitized
-    |> InitializedVariables.of_list
-    |> fun value -> Value value
-
-
-  let errors ~qualifier ~define _ =
-    let emit_error { Node.value; location } =
-      Error.create
-        ~location:(Location.with_module ~module_reference:qualifier location)
-        ~kind:(Error.UninitializedLocal value)
-        ~define
-    in
-    let all_locals =
-      let { Scope.Scope.bindings; globals; nonlocals; _ } =
-        Scope.Scope.of_define_exn define.value
-      in
-      (* Santitization is needed to remove (some) scope information that is (sometimes, but not
-         consistently) added into the identifiers themselves (e.g. $local_test?f$y). *)
-      let locals =
-        Identifier.Map.keys bindings |> List.map ~f:Identifier.sanitized |> Identifier.Set.of_list
-      in
-      (* This operation needs to be repeated as Scope doesn't know about qualification, and hence
-         doesn't remove all globals and nonlocals from bindings *)
-      let globals = Identifier.Set.map ~f:Identifier.sanitized globals in
-      let nonlocals = Identifier.Set.map ~f:Identifier.sanitized nonlocals in
-      Identifier.Set.diff (Identifier.Set.diff locals globals) nonlocals
-    in
-    let in_local_scope { Node.value = identifier; _ } =
-      identifier |> Identifier.sanitized |> Identifier.Set.mem all_locals
-    in
-    let uninitialized_usage (statement, initialized) =
-      let is_uninitialized { Node.value = identifier; _ } =
-        not (InitializedVariables.mem initialized (Identifier.sanitized identifier))
-      in
-      extract_reads_statement statement |> List.filter ~f:is_uninitialized
-    in
-    Int.Table.data Context.fixpoint_post_statement
-    |> List.map ~f:uninitialized_usage
-    |> List.concat
-    |> List.filter ~f:in_local_scope
-    |> List.map ~f:emit_error
+    signature.parameters |> Scope.Binding.of_parameters [] |> create_map |> fun value -> Value value
 
 
   let less_or_equal ~left ~right =
     match left, right with
-    | Value left, Value right -> InitializedVariables.is_subset right ~of_:left
+    | Value left, Value right ->
+        let to_set map = Map.keys map |> Identifier.Set.of_list in
+        to_set right |> Set.is_subset ~of_:(to_set left)
     | Value _, Bottom -> false
     | Bottom, Value _ -> true
     | Bottom, Bottom -> true
@@ -248,7 +224,14 @@ module State (Context : Context) = struct
 
   let join left right =
     match left, right with
-    | Value left, Value right -> Value (InitializedVariables.inter left right)
+    | Value left, Value right ->
+        let intersect ~key:_ = function
+          | `Both (left, _) -> Some left
+          | `Right _
+          | `Left _ ->
+              None
+        in
+        Value (Map.merge ~f:intersect left right)
     | Value left, Bottom -> Value left
     | Bottom, Value right -> Value right
     | Bottom, Bottom -> Bottom
@@ -260,12 +243,21 @@ module State (Context : Context) = struct
     match state with
     | Bottom -> Bottom
     | Value state ->
+        let union ~key:_ = function
+          | `Both
+              ( ({ Scope.Binding.location = left_location; _ } as left),
+                ({ Scope.Binding.location = right_location; _ } as right) ) ->
+              (* Pick the later-assigned variable. *)
+              if [%compare: Location.t] left_location right_location >= 0 then
+                Some left
+              else
+                Some right
+          | `Right only
+          | `Left only ->
+              Some only
+        in
         let new_state =
-          Scope.Binding.of_statement [] statement
-          |> List.map ~f:Scope.Binding.name
-          |> List.map ~f:Identifier.sanitized
-          |> InitializedVariables.of_list
-          |> InitializedVariables.union state
+          Scope.Binding.of_statement [] statement |> create_map |> Map.merge ~f:union state
         in
         Hashtbl.set Context.fixpoint_post_statement ~key:statement_key ~data:(statement, new_state);
         Value new_state
@@ -274,16 +266,65 @@ module State (Context : Context) = struct
   let backward ~statement_key:_ _ ~statement:_ = failwith "Not implemented"
 end
 
-let run_on_define ~qualifier define =
+let defined_locals_at_each_statement define =
   let module Context = struct
-    let fixpoint_post_statement = Int.Table.create ()
+    let fixpoint_post_statement = StatementKey.Table.create ()
   end
   in
   let module State = State (Context) in
   let module Fixpoint = Fixpoint.Make (State) in
   let cfg = Cfg.create (Node.value define) in
   let fixpoint = Fixpoint.forward ~cfg ~initial:(State.initial ~define) in
-  Fixpoint.exit fixpoint >>| State.errors ~qualifier ~define |> Option.value ~default:[]
+  let defined_locals =
+    match
+      Context.fixpoint_post_statement |> StatementKey.Table.to_alist |> StatementKey.Map.of_alist
+    with
+    | `Ok map -> map
+    | `Duplicate_key _ -> StatementKey.Map.empty
+  in
+  Fixpoint.exit fixpoint
+  >>| (fun _ -> defined_locals)
+  |> Option.value ~default:StatementKey.Map.empty
+
+
+let errors ~qualifier ~define defined_locals_at_each_statement =
+  let emit_error { Node.value; location } =
+    Error.create
+      ~location:(Location.with_module ~module_reference:qualifier location)
+      ~kind:(Error.UninitializedLocal value)
+      ~define
+  in
+  let all_locals =
+    let { Scope.Scope.bindings; globals; nonlocals; _ } = Scope.Scope.of_define_exn define.value in
+    (* Santitization is needed to remove (some) scope information that is (sometimes, but not
+       consistently) added into the identifiers themselves (e.g. $local_test?f$y). *)
+    let locals =
+      Identifier.Map.keys bindings |> List.map ~f:Identifier.sanitized |> Identifier.Set.of_list
+    in
+    (* This operation needs to be repeated as Scope doesn't know about qualification, and hence
+       doesn't remove all globals and nonlocals from bindings *)
+    let globals = Identifier.Set.map ~f:Identifier.sanitized globals in
+    let nonlocals = Identifier.Set.map ~f:Identifier.sanitized nonlocals in
+    Identifier.Set.diff (Identifier.Set.diff locals globals) nonlocals
+  in
+  let in_local_scope { Node.value = identifier; _ } =
+    identifier |> Identifier.sanitized |> Identifier.Set.mem all_locals
+  in
+  let uninitialized_usage (statement, initialized) =
+    let is_uninitialized { Node.value = identifier; _ } =
+      not (Map.mem initialized (Identifier.sanitized identifier))
+    in
+    extract_reads_in_statement statement |> List.filter ~f:is_uninitialized
+  in
+  defined_locals_at_each_statement
+  |> Map.data
+  |> List.concat_map ~f:uninitialized_usage
+  |> List.filter ~f:in_local_scope
+  |> List.map ~f:emit_error
+
+
+let run_on_define ~qualifier define =
+  defined_locals_at_each_statement define |> errors ~qualifier ~define
 
 
 let run
