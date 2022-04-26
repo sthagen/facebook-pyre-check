@@ -70,6 +70,29 @@ function CheckButton(props) {
   );
 }
 
+function CopyUrlButton(props) {
+  const style = props.busy ? {color: 'lightgrey', cursor: 'default'} : null;
+
+  const copyCurrentUrl = () => {
+    navigator.clipboard.writeText(window.location.href);
+  }
+
+  return (
+    <div style={{textAlign: 'right'}}>
+      <div
+        className={classnames(
+          'button button--outline button--secondary',
+          styles.getStarted,
+        )}
+        style={style}
+        onClick={copyCurrentUrl}>
+        Copy Url
+      </div>
+    </div>
+  );
+}
+
+
 function Results(props) {
   const results = props.results;
   if (results == null) {
@@ -157,7 +180,11 @@ function Playground() {
         <h1 className={styles.heading}>Playground</h1>
         <Code code={code} setCode={setCode} busy={busy} />
         <br />
-        <CheckButton check={check} busy={busy} />
+        <div className={`${styles.buttons} check`}>
+          <CheckButton check={check} busy={busy} />
+          <CopyUrlButton busy={busy} />
+        </div>
+        <br />
         <br />
         <Results results={results} />
       </main>
