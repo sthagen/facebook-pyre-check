@@ -3385,14 +3385,18 @@ let test_call_graph_of_define context =
        class Child(Base):
            pass
 
+       class SubChild(Child):
+           def query(self, arg):
+               return arg
+
        def foo(base: Base, child: Child):
            base.query(1)
-           child.query(1)
+           child.query(1)  # TODO(T118151013): Should be an Override target
       |}
     ~define_name:"test.foo"
     ~expected:
       [
-        ( "14:4-14:17",
+        ( "18:4-18:17",
           LocationCallees.Singleton
             (ExpressionCallees.from_call
                (CallCallees.create
@@ -3403,10 +3407,166 @@ let test_call_graph_of_define context =
                         (Target.Method { Target.class_name = "test.Base"; method_name = "query" });
                     ]
                   ())) );
-        ( "15:4-15:18",
+        ( "19:4-19:18",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~index:1
+                        (Target.Method { Target.class_name = "test.Base"; method_name = "query" });
+                    ]
+                  ())) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:
+      {|
+       def decorator(function):
+           return function
+
+       class BaseA:
+           @decorator
+           def query(self, arg):
+               return arg
+
+       class BaseB:
+           pass
+
+       class Child(BaseB, BaseA):
+           pass
+
+       def foo(base: BaseA, child: Child):
+           base.query(1)
+           child.query(1)
+      |}
+    ~define_name:"test.foo"
+    ~expected:
+      [
+        ( "17:4-17:17",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        (Target.Method { Target.class_name = "test.BaseA"; method_name = "query" });
+                    ]
+                  ())) );
+        ( "18:4-18:18",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~index:1
+                        (Target.Method { Target.class_name = "test.BaseA"; method_name = "query" });
+                    ]
+                  ())) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:
+      {|
+       from typing import Generic, TypeVar
+
+       T = TypeVar("T")
+       def decorator(function):
+           return function
+
+       class A(Generic[T]):
+           @decorator
+           def query(self, arg: T) -> T:
+               pass
+
+       class B(A[int]):
+           pass
+
+       def foo(base: A, child: B):
+           base.query(1)
+           child.query(1)
+      |}
+    ~define_name:"test.foo"
+    ~expected:
+      [
+        ( "17:4-17:17",
           LocationCallees.Singleton
             (ExpressionCallees.from_call (CallCallees.create ~unresolved:true ())) );
+        ( "18:4-18:18",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~call_targets:
+                    [
+                      CallTarget.create
+                      (* TODO(T118125320): Return type is None, which is incorrect *)
+                        ~implicit_self:true
+                        (Target.Method { Target.class_name = "test.A"; method_name = "query" });
+                    ]
+                  ())) );
       ]
+    ();
+  assert_call_graph_of_define
+    ~source:
+      {|
+       def foo(l: typing.AsyncIterator[int | str]):
+         async for x in l:
+           pass
+      |}
+    ~define_name:"test.foo"
+    ~expected:
+      [
+        ( "3:12-3:13",
+          LocationCallees.Compound
+            (String.Map.Tree.of_alist_exn
+               [
+                 ( "__aiter__",
+                   ExpressionCallees.from_call_with_empty_attribute
+                     (CallCallees.create
+                        ~call_targets:
+                          [
+                            CallTarget.create
+                              ~implicit_self:true
+                              ~collapse_tito:false
+                              ~receiver_type:
+                                (Type.parametric
+                                   "typing.AsyncIterator"
+                                   [Single (Type.union [Type.integer; Type.string])])
+                              (Target.Method
+                                 { class_name = "typing.AsyncIterator"; method_name = "__aiter__" });
+                          ]
+                        ()) );
+                 ( "__anext__",
+                   ExpressionCallees.from_call_with_empty_attribute
+                     (CallCallees.create
+                        ~call_targets:
+                          [
+                            CallTarget.create
+                              ~implicit_self:true
+                              ~receiver_type:
+                                (Type.parametric
+                                   "typing.AsyncIterator"
+                                   [Single (Type.union [Type.integer; Type.string])])
+                              (Target.Method
+                                 { class_name = "typing.AsyncIterator"; method_name = "__anext__" });
+                          ]
+                        ()) );
+               ]) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:
+      {|
+       def foo(l0: typing.AsyncIterator[int]):
+         x = [x async for x in l0]
+      |}
+    ~define_name:"test.foo"
+    ~expected:[]
     ();
   ()
 

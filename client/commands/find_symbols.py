@@ -6,7 +6,7 @@
 import ast
 from typing import List, Union
 
-from ..commands.language_server_protocol import (
+from tools.pyre.client.commands.language_server_protocol import (
     LspRange,
     DocumentSymbolsResponse,
     SymbolKind,
@@ -32,11 +32,19 @@ def _node_to_symbol(
             start=start.to_lsp_position(),
             end=end.to_lsp_position(),
         ),
+        selection_range=LspRange(
+            start=start.to_lsp_position(),
+            end=end.to_lsp_position(),
+        ),
     )
 
 
 class _SymbolsCollector(ast.NodeVisitor):
-    symbols: List[DocumentSymbolsResponse] = []
+    symbols: List[DocumentSymbolsResponse]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.symbols = []
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self.symbols.append(_node_to_symbol(node, SymbolKind.FUNCTION))
