@@ -206,6 +206,7 @@ def process_initialize_request(
             {
                 "hover_provider": ide_features.is_hover_enabled(),
                 "definition_provider": ide_features.is_go_to_definition_enabled(),
+                "document_symbol_provider": ide_features.is_find_symbols_enabled(),
             }
             if ide_features is not None
             else {}
@@ -793,7 +794,7 @@ class PyreServer:
                 id=request_id,
                 # pyre-ignore[16]: Pyre does not understand
                 # `dataclasses_json`.
-                result=DocumentSymbolsResponse.schema().dump(symbols, many=True),
+                result=[s.to_dict() for s in symbols],
             ),
         )
 
