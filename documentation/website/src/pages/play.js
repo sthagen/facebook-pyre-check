@@ -42,9 +42,17 @@ function Code(props) {
           mode: 'python',
           lineNumbers: true,
           readOnly: props.busy ? 'nocursor' : false,
+          indentUnit: 4,
+          indentWithTabs: false,
         }}
         editorDidMount={(editor, _) => {
           props.setEditor(editor);
+          editor.setOption("extraKeys", {
+            Tab: function(codeMirror) {
+              var spaces = Array(codeMirror.getOption("indentUnit") + 1).join(" ");
+              codeMirror.replaceSelection(spaces);
+            }
+          });
         }}
         onBeforeChange={(editor, data, value) => {
           props.setCode(value);
@@ -107,7 +115,7 @@ function Results(props) {
     let errorDivs = errors
         .map(error => {
           let message = `${error.line}:${error.column}: ${error.description}`;
-          return <div style = {{fontFamily: 'monospace'}} key={message}> {message}</div>
+          return <div key={message}> <pre> {message} </pre> </div>
         });
     return <div>{errorDivs}</div>;
   } else {

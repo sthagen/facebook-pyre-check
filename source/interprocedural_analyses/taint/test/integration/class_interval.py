@@ -398,7 +398,7 @@ def abstract_method(b: B13, c: C13):
           / \
          /   \
         /     \
-B: [2,5]   C: [6,7]
+B: [2,5]   C: [6,7] \/ [3,4]
         \     /
          \   /
           \ /
@@ -416,8 +416,6 @@ class A14:
 
 class C14(A14):
     def m2(self):
-        # C14's interval is [6,7] \/ [3,4] = [3,7], which intersects
-        # with B14's interval [3,4], due to multi-inheritance
         return _test_source()
 
 
@@ -433,7 +431,7 @@ class D14(B14, C14):
     pass
 
 
-def multi_inheritance_false_positive_one_hop(b: B14):
+def multi_inheritance_no_issue_one_hop(b: B14):
     _test_sink(b.m0())
 
 
@@ -466,5 +464,35 @@ class D15(C15, E15):
     pass
 
 
-def multi_inheritance_false_positive_two_hops(b: B15):
+def multi_inheritance_no_issue_two_hops(b: B15):
     _test_sink(b.m0())
+
+
+class A16:
+    def m1(self):
+        return self.m2()
+
+    def m2(self):
+        pass
+
+
+class C16(A16):
+    def m2(self):
+        return 0
+
+
+class B16(A16):
+    def m0(self):
+        return self.m1()
+
+    def m2(self):
+        return 0
+
+
+class D16(B16, C16):
+    def m2(self):
+        return _test_source()
+
+
+def multi_inheritance_issue(b: B16):
+    _test_sink(b.m0())  # b may have type D16
