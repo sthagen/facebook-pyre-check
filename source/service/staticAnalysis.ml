@@ -88,10 +88,6 @@ module Cache = struct
     PyrePath.append (get_save_directory ~configuration) ~element:"overrides"
 
 
-  let get_callgraph_save_path ~configuration =
-    PyrePath.append (get_save_directory ~configuration) ~element:"callgraph"
-
-
   let exception_to_error ~error ~message ~f =
     try f () with
     | exception_ ->
@@ -285,39 +281,6 @@ module Cache = struct
         overrides
 
 
-  let load_call_graph ~configuration =
-    exception_to_error ~error:LoadError ~message:"loading call graph from cache" ~f:(fun () ->
-        let path = get_callgraph_save_path ~configuration in
-        let sexp = Sexplib.Sexp.load_sexp (PyrePath.absolute path) in
-        let callgraph = Target.Map.t_of_sexp (Core.List.t_of_sexp Target.t_of_sexp) sexp in
-        Log.info "Loaded call graph from cache.";
-        Ok callgraph)
-
-
-  let save_call_graph ~configuration ~call_graph =
-    exception_to_error ~error:() ~message:"saving call graph to cache" ~f:(fun () ->
-        let path = get_callgraph_save_path ~configuration in
-        let data = Target.Map.sexp_of_t (Core.List.sexp_of_t Target.sexp_of_t) call_graph in
-        ensure_save_directory_exists ~configuration;
-        Sexplib.Sexp.save (PyrePath.absolute path) data;
-        Log.info "Saved call graph to cache file: `%s`" (PyrePath.absolute path);
-        Ok ())
-
-
-  let call_graph { cache; save_cache; configuration; _ } f =
-    let call_graph =
-      match cache with
-      | Ok _ -> load_call_graph ~configuration |> Result.ok
-      | _ -> None
-    in
-    match call_graph with
-    | Some call_graph -> call_graph
-    | None ->
-        let call_graph = f () in
-        if save_cache then save_call_graph ~configuration ~call_graph |> ignore_result;
-        call_graph
-
-
   let load_class_hierarchy_graph () =
     exception_to_error
       ~error:LoadError
@@ -388,7 +351,13 @@ let parse_and_save_decorators_to_skip
       ())
 
 
-let record_and_merge_call_graph ~static_analysis_configuration ~environment ~call_graph ~source =
+let record_and_merge_call_graph
+    ~static_analysis_configuration
+    ~environment
+    ~attribute_targets
+    ~call_graph
+    ~source
+  =
   let record_and_merge_call_graph map call_graph =
     Map.merge_skewed map call_graph ~combine:(fun ~key:_ left _ -> left)
   in
@@ -396,6 +365,7 @@ let record_and_merge_call_graph ~static_analysis_configuration ~environment ~cal
     ~static_analysis_configuration
     ~store_shared_memory:true
     ~environment
+    ~attribute_targets
     ~source
   |> record_and_merge_call_graph call_graph
 
@@ -612,30 +582,48 @@ let record_overrides_for_qualifiers ~scheduler ~cache ~environment ~skip_overrid
   cap_override_result
 
 
+(* TODO(T117715045): This should go in a proper module that handles a set of models. *)
+let object_targets_from_models models =
+  let objects = Target.HashSet.create () in
+  let add ~key:target ~data:_ =
+    match target with
+    | Target.Object _ -> Hash_set.add objects target
+    | _ -> ()
+  in
+  let () = Target.Map.iteri ~f:add models in
+  objects
+
+
 (* Build the callgraph, a map from caller to callees. The overrides must be computed first because
    we depend on a global shared memory graph to include overrides in the call graph. Without it,
    we'll underanalyze and have an inconsistent fixpoint. *)
-let build_call_graph ~scheduler ~static_analysis_configuration ~cache ~environment ~qualifiers =
+let build_call_graph
+    ~scheduler
+    ~static_analysis_configuration
+    ~environment
+    ~attribute_targets
+    ~qualifiers
+  =
   let call_graph =
-    Cache.call_graph cache (fun () ->
-        let build_call_graph call_graph qualifier =
-          get_source ~environment qualifier
-          >>| (fun source ->
-                record_and_merge_call_graph
-                  ~static_analysis_configuration
-                  ~environment
-                  ~call_graph
-                  ~source)
-          |> Option.value ~default:call_graph
-        in
-        Scheduler.map_reduce
-          scheduler
-          ~policy:(Scheduler.Policy.legacy_fixed_chunk_count ())
-          ~initial:Target.Map.empty
-          ~map:(fun _ qualifiers -> List.fold qualifiers ~init:Target.Map.empty ~f:build_call_graph)
-          ~reduce:(Map.merge_skewed ~combine:(fun ~key:_ left _ -> left))
-          ~inputs:qualifiers
-          ())
+    let build_call_graph call_graph qualifier =
+      get_source ~environment qualifier
+      >>| (fun source ->
+            record_and_merge_call_graph
+              ~static_analysis_configuration
+              ~environment
+              ~attribute_targets
+              ~call_graph
+              ~source)
+      |> Option.value ~default:call_graph
+    in
+    Scheduler.map_reduce
+      scheduler
+      ~policy:(Scheduler.Policy.legacy_fixed_chunk_count ())
+      ~initial:Target.Map.empty
+      ~map:(fun _ qualifiers -> List.fold qualifiers ~init:Target.Map.empty ~f:build_call_graph)
+      ~reduce:(Map.merge_skewed ~combine:(fun ~key:_ left _ -> left))
+      ~inputs:qualifiers
+      ()
   in
   let () =
     match static_analysis_configuration.Configuration.StaticAnalysis.dump_call_graph with

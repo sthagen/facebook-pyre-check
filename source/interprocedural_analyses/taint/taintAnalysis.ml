@@ -423,18 +423,6 @@ let run_taint_analysis
       |> Analysis.TypeEnvironment.ReadOnly.ast_environment
     in
 
-    Log.info "Recording initial models in shared memory...";
-    let timer = Timer.start () in
-    Interprocedural.FixpointAnalysis.record_initial_models
-      ~callables:(List.map initial_callables.callables_with_dependency_information ~f:fst)
-      ~stubs:initial_callables.stubs
-      initial_models;
-    Statistics.performance
-      ~name:"Recorded initial models"
-      ~phase_name:"Recording initial models"
-      ~timer
-      ();
-
     Log.info "Computing overrides...";
     let timer = Timer.start () in
     let { Interprocedural.DependencyGraphSharedMemory.overrides; skipped_overrides } =
@@ -454,8 +442,8 @@ let run_taint_analysis
       Service.StaticAnalysis.build_call_graph
         ~scheduler
         ~static_analysis_configuration
-        ~cache
         ~environment:(Analysis.TypeEnvironment.read_only environment)
+        ~attribute_targets:(Service.StaticAnalysis.object_targets_from_models initial_models)
         ~qualifiers
     in
     Statistics.performance ~name:"Call graph built" ~phase_name:"Building call graph" ~timer ();
@@ -475,7 +463,12 @@ let run_taint_analysis
       ~timer
       ();
 
-    let () = MissingFlow.add_unknown_callee_models ~static_analysis_configuration ~callgraph in
+    let initial_models =
+      MissingFlow.add_unknown_callee_models
+        ~static_analysis_configuration
+        ~callgraph
+        ~initial_models
+    in
 
     Log.info "Purging shared memory...";
     let timer = Timer.start () in
@@ -483,6 +476,18 @@ let run_taint_analysis
     Statistics.performance
       ~name:"Purged shared memory"
       ~phase_name:"Purging shared memory"
+      ~timer
+      ();
+
+    Log.info "Recording initial models in shared memory...";
+    let timer = Timer.start () in
+    Interprocedural.FixpointAnalysis.record_initial_models
+      ~callables:(List.map initial_callables.callables_with_dependency_information ~f:fst)
+      ~stubs:initial_callables.stubs
+      initial_models;
+    Statistics.performance
+      ~name:"Recorded initial models"
+      ~phase_name:"Recording initial models"
       ~timer
       ();
 

@@ -17,24 +17,20 @@ type expect_fixpoint = {
 }
 
 let assert_fixpoint
-    ?models
+    ?models_source
     ~context
     ~missing_flows
     ~handle
     source
     ~expect:{ iterations = expect_iterations; expect }
   =
-  let () =
-    TestHelper.get_initial_models ~context
-    |> Interprocedural.FixpointAnalysis.record_initial_models ~callables:[] ~stubs:[]
-  in
   let scheduler = Test.mock_scheduler () in
   let taint_configuration =
     TaintConfiguration.apply_missing_flows TaintConfiguration.default missing_flows
   in
-  let { static_analysis_configuration; callables_to_analyze; callgraph; environment; overrides; _ } =
+  let { callables_to_analyze; callgraph; environment; overrides; _ } =
     initialize
-      ?models
+      ?models_source
       ~find_missing_flows:(TaintConfiguration.missing_flows_kind_to_string missing_flows)
       ~taint_configuration
       ~handle
@@ -46,7 +42,6 @@ let assert_fixpoint
     |> DependencyGraph.union overrides
     |> DependencyGraph.reverse
   in
-  let () = MissingFlow.add_unknown_callee_models ~static_analysis_configuration ~callgraph in
   let iterations =
     FixpointAnalysis.compute_fixpoint
       ~scheduler
@@ -67,7 +62,7 @@ let test_obscure context =
     ~context
     ~missing_flows:TaintConfiguration.Obscure
     ~handle:"test_obscure.py"
-    ~models:{|
+    ~models_source:{|
       def test_obscure.obscure(x): ...
     |}
     {|
