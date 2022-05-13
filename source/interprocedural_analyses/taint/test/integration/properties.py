@@ -233,3 +233,24 @@ def function_with_nested_properties():
     def my_property(self, value) -> None:
         _test_sink(_test_source())
         bar()
+
+
+class CollidePropertySetterName:
+    def foo(self):
+        pass
+
+    def bar(self):
+        pass
+
+    @property
+    def collided_property(self):
+        # Please ensure the target name of the inner function does not
+        # collide with the property setter of the outer function.
+        def setter(value):
+            self.foo()
+
+        setter(1)
+
+    @collided_property.setter
+    def collided_property(self, value):
+        self.bar()

@@ -30,7 +30,7 @@ from typing import (
     Union,
 )
 
-from .. import command_arguments, find_directories
+from .. import command_arguments, dataclasses_merge, find_directories
 from ..filesystem import expand_relative_path, expand_global_root
 from ..find_directories import (
     BINARY_NAME,
@@ -142,35 +142,67 @@ def get_default_site_roots() -> List[str]:
         return []
 
 
+@dataclasses_merge.dataclass_merge
 @dataclass(frozen=True)
 class PartialConfiguration:
     binary: Optional[str] = None
-    buck_mode: Optional[platform_aware.PlatformAware[str]] = None
-    disabled: Optional[bool] = None
-    do_not_ignore_errors_in: Sequence[str] = field(default_factory=list)
+    buck_mode: Optional[platform_aware.PlatformAware[str]] = field(
+        default=None,
+        metadata={"merge_policy": platform_aware.PlatformAware.merge_optional},
+    )
+    do_not_ignore_errors_in: Sequence[str] = field(
+        default_factory=list,
+        metadata={"merge_policy": dataclasses_merge.Policy.PREPEND},
+    )
     dot_pyre_directory: Optional[Path] = None
-    excludes: Sequence[str] = field(default_factory=list)
-    extensions: Sequence[ExtensionElement] = field(default_factory=list)
-    ide_features: Optional[ide_features_module.IdeFeatures] = None
-    ignore_all_errors: Sequence[str] = field(default_factory=list)
-    ignore_infer: Sequence[str] = field(default_factory=list)
+    excludes: Sequence[str] = field(
+        default_factory=list,
+        metadata={"merge_policy": dataclasses_merge.Policy.PREPEND},
+    )
+    extensions: Sequence[ExtensionElement] = field(
+        default_factory=list,
+        metadata={"merge_policy": dataclasses_merge.Policy.PREPEND},
+    )
+    ide_features: Optional[ide_features_module.IdeFeatures] = field(
+        default=None,
+        metadata={"merge_policy": ide_features_module.IdeFeatures.merge_optional},
+    )
+    ignore_all_errors: Sequence[str] = field(
+        default_factory=list,
+        metadata={"merge_policy": dataclasses_merge.Policy.PREPEND},
+    )
     isolation_prefix: Optional[str] = None
     logger: Optional[str] = None
     number_of_workers: Optional[int] = None
     oncall: Optional[str] = None
-    other_critical_files: Sequence[str] = field(default_factory=list)
+    other_critical_files: Sequence[str] = field(
+        default_factory=list,
+        metadata={"merge_policy": dataclasses_merge.Policy.PREPEND},
+    )
     pysa_version_hash: Optional[str] = None
     python_version: Optional[python_version_module.PythonVersion] = None
-    search_path: Sequence[search_path_module.RawElement] = field(default_factory=list)
+    search_path: Sequence[search_path_module.RawElement] = field(
+        default_factory=list,
+        metadata={"merge_policy": dataclasses_merge.Policy.PREPEND},
+    )
     shared_memory: shared_memory_module.SharedMemory = (
         shared_memory_module.SharedMemory()
     )
     site_package_search_strategy: Optional[site_packages.SearchStrategy] = None
     site_roots: Optional[Sequence[str]] = None
-    source_directories: Optional[Sequence[search_path_module.RawElement]] = None
+    source_directories: Optional[Sequence[search_path_module.RawElement]] = field(
+        default=None,
+        metadata={"merge_policy": dataclasses_merge.Policy.RAISE_WHEN_OVERWRITTEN},
+    )
     strict: Optional[bool] = None
-    taint_models_path: Sequence[str] = field(default_factory=list)
-    targets: Optional[Sequence[str]] = None
+    taint_models_path: Sequence[str] = field(
+        default_factory=list,
+        metadata={"merge_policy": dataclasses_merge.Policy.PREPEND},
+    )
+    targets: Optional[Sequence[str]] = field(
+        default=None,
+        metadata={"merge_policy": dataclasses_merge.Policy.RAISE_WHEN_OVERWRITTEN},
+    )
     typeshed: Optional[str] = None
     unwatched_dependency: Optional[unwatched.UnwatchedDependency] = None
     use_buck2: Optional[bool] = None
@@ -218,14 +250,12 @@ class PartialConfiguration:
             buck_mode=platform_aware.PlatformAware.from_json(
                 arguments.buck_mode, "buck_mode"
             ),
-            disabled=None,
             do_not_ignore_errors_in=arguments.do_not_ignore_errors_in,
             dot_pyre_directory=arguments.dot_pyre_directory,
             excludes=arguments.exclude,
             extensions=[],
             ide_features=ide_features,
             ignore_all_errors=[],
-            ignore_infer=[],
             isolation_prefix=arguments.isolation_prefix,
             logger=arguments.logger,
             number_of_workers=arguments.number_of_workers,
@@ -435,7 +465,6 @@ class PartialConfiguration:
                     ),
                     "buck_mode",
                 ),
-                disabled=ensure_option_type(configuration_json, "disabled", bool),
                 do_not_ignore_errors_in=ensure_string_list(
                     configuration_json, "do_not_ignore_errors_in"
                 ),
@@ -454,7 +483,6 @@ class PartialConfiguration:
                 ignore_all_errors=ensure_string_list(
                     configuration_json, "ignore_all_errors"
                 ),
-                ignore_infer=ensure_string_list(configuration_json, "ignore_infer"),
                 isolation_prefix=ensure_option_type(
                     configuration_json, "isolation_prefix", str
                 ),
@@ -544,7 +572,6 @@ class PartialConfiguration:
         return PartialConfiguration(
             binary=binary,
             buck_mode=self.buck_mode,
-            disabled=self.disabled,
             do_not_ignore_errors_in=[
                 expand_relative_path(root, path)
                 for path in self.do_not_ignore_errors_in
@@ -555,9 +582,6 @@ class PartialConfiguration:
             ide_features=self.ide_features,
             ignore_all_errors=[
                 expand_relative_path(root, path) for path in self.ignore_all_errors
-            ],
-            ignore_infer=[
-                expand_relative_path(root, path) for path in self.ignore_infer
             ],
             isolation_prefix=self.isolation_prefix,
             logger=logger,
@@ -588,95 +612,11 @@ class PartialConfiguration:
 def merge_partial_configurations(
     base: PartialConfiguration, override: PartialConfiguration
 ) -> PartialConfiguration:
-    def overwrite_base(base: Optional[T], override: Optional[T]) -> Optional[T]:
-        return base if override is None else override
-
-    def prepend_base(base: Sequence[T], override: Sequence[T]) -> Sequence[T]:
-        return list(override) + list(base)
-
-    def raise_when_overridden(
-        base: Optional[T], override: Optional[T], name: str
-    ) -> Optional[T]:
-        if base is None:
-            return override
-        elif override is None:
-            return base
-        else:
-            raise exceptions.InvalidConfiguration(
-                f"Configuration option `{name}` cannot be overridden."
-            )
-
-    return PartialConfiguration(
-        binary=overwrite_base(base.binary, override.binary),
-        buck_mode=platform_aware.PlatformAware.merge(
-            base.buck_mode, override.buck_mode
-        ),
-        disabled=overwrite_base(base.disabled, override.disabled),
-        do_not_ignore_errors_in=prepend_base(
-            base.do_not_ignore_errors_in, override.do_not_ignore_errors_in
-        ),
-        dot_pyre_directory=overwrite_base(
-            base.dot_pyre_directory, override.dot_pyre_directory
-        ),
-        excludes=prepend_base(base.excludes, override.excludes),
-        extensions=prepend_base(base.extensions, override.extensions),
-        ide_features=ide_features_module.IdeFeatures.merge_optional(
-            base.ide_features, override.ide_features
-        ),
-        ignore_all_errors=prepend_base(
-            base.ignore_all_errors, override.ignore_all_errors
-        ),
-        ignore_infer=prepend_base(base.ignore_infer, override=override.ignore_infer),
-        isolation_prefix=overwrite_base(
-            base.isolation_prefix, override.isolation_prefix
-        ),
-        logger=overwrite_base(base.logger, override.logger),
-        number_of_workers=overwrite_base(
-            base.number_of_workers, override.number_of_workers
-        ),
-        oncall=overwrite_base(base.oncall, override.oncall),
-        other_critical_files=prepend_base(
-            base.other_critical_files, override.other_critical_files
-        ),
-        pysa_version_hash=overwrite_base(
-            base.pysa_version_hash, override.pysa_version_hash
-        ),
-        python_version=overwrite_base(base.python_version, override.python_version),
-        search_path=prepend_base(base.search_path, override.search_path),
-        shared_memory=shared_memory_module.SharedMemory(
-            heap_size=overwrite_base(
-                base.shared_memory.heap_size, override.shared_memory.heap_size
-            ),
-            dependency_table_power=overwrite_base(
-                base.shared_memory.dependency_table_power,
-                override.shared_memory.dependency_table_power,
-            ),
-            hash_table_power=overwrite_base(
-                base.shared_memory.hash_table_power,
-                override.shared_memory.hash_table_power,
-            ),
-        ),
-        site_package_search_strategy=overwrite_base(
-            base.site_package_search_strategy, override.site_package_search_strategy
-        ),
-        site_roots=overwrite_base(base.site_roots, override.site_roots),
-        source_directories=raise_when_overridden(
-            base.source_directories,
-            override.source_directories,
-            name="source_directories",
-        ),
-        strict=overwrite_base(base.strict, override.strict),
-        taint_models_path=prepend_base(
-            base.taint_models_path, override.taint_models_path
-        ),
-        targets=raise_when_overridden(base.targets, override.targets, name="targets"),
-        typeshed=overwrite_base(base.typeshed, override.typeshed),
-        unwatched_dependency=overwrite_base(
-            base.unwatched_dependency, override.unwatched_dependency
-        ),
-        use_buck2=overwrite_base(base.use_buck2, override.use_buck2),
-        version_hash=overwrite_base(base.version_hash, override.version_hash),
-    )
+    try:
+        # pyre-ignore[16]: Pyre does not understand `dataclass_merge`
+        return PartialConfiguration.merge(base, override)
+    except dataclasses_merge.DataclassMergeError as error:
+        raise exceptions.InvalidConfiguration(str(error))
 
 
 @dataclass(frozen=True)
@@ -686,13 +626,11 @@ class Configuration:
 
     binary: Optional[str] = None
     buck_mode: Optional[platform_aware.PlatformAware[str]] = None
-    disabled: bool = False
     do_not_ignore_errors_in: Sequence[str] = field(default_factory=list)
     excludes: Sequence[str] = field(default_factory=list)
     extensions: Sequence[ExtensionElement] = field(default_factory=list)
     ide_features: Optional[ide_features_module.IdeFeatures] = None
     ignore_all_errors: Sequence[str] = field(default_factory=list)
-    ignore_infer: Sequence[str] = field(default_factory=list)
     isolation_prefix: Optional[str] = None
     logger: Optional[str] = None
     number_of_workers: Optional[int] = None
@@ -733,13 +671,11 @@ class Configuration:
             ),
             binary=partial_configuration.binary,
             buck_mode=partial_configuration.buck_mode,
-            disabled=_get_optional_value(partial_configuration.disabled, default=False),
             do_not_ignore_errors_in=partial_configuration.do_not_ignore_errors_in,
             excludes=partial_configuration.excludes,
             extensions=partial_configuration.extensions,
             ide_features=partial_configuration.ide_features,
             ignore_all_errors=partial_configuration.ignore_all_errors,
-            ignore_infer=partial_configuration.ignore_infer,
             isolation_prefix=partial_configuration.isolation_prefix,
             logger=partial_configuration.logger,
             number_of_workers=partial_configuration.number_of_workers,
@@ -805,12 +741,10 @@ class Configuration:
             "dot_pyre_directory": str(self.dot_pyre_directory),
             **({"binary": binary} if binary is not None else {}),
             **({"buck_mode": buck_mode.to_json()} if buck_mode is not None else {}),
-            "disabled": self.disabled,
             "do_not_ignore_errors_in": list(self.do_not_ignore_errors_in),
             "excludes": list(self.excludes),
             "extensions": list(self.extensions),
             "ignore_all_errors": list(self.ignore_all_errors),
-            "ignore_infer": list(self.ignore_infer),
             **(
                 {"isolation_prefix": isolation_prefix}
                 if isolation_prefix is not None
@@ -932,15 +866,6 @@ class Configuration:
             )
         else:
             return []
-
-    def get_existent_ignore_infer_paths(self) -> List[str]:
-        existent_paths = []
-        for path in self.ignore_infer:
-            if os.path.exists(path):
-                existent_paths.append(path)
-            else:
-                LOG.warn(f"Filtering out nonexistent path in `ignore_infer`: {path}")
-        return existent_paths
 
     def get_existent_do_not_ignore_errors_in_paths(self) -> List[str]:
         """

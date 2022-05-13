@@ -158,10 +158,6 @@ class PartialConfigurationTest(unittest.TestCase):
                 ).buck_mode
             )
 
-        self.assertEqual(
-            PartialConfiguration.from_string(json.dumps({"disabled": True})).disabled,
-            True,
-        )
         self.assertListEqual(
             list(
                 PartialConfiguration.from_string(
@@ -471,13 +467,11 @@ class PartialConfigurationTest(unittest.TestCase):
                 }
             )
         )
-        assert_raises(json.dumps({"disabled": "False"}))
         assert_raises(json.dumps({"do_not_ignore_errors_in": "abc"}))
         assert_raises(json.dumps({"dot_pyre_directory": {}}))
         assert_raises(json.dumps({"exclude": 42}))
         assert_raises(json.dumps({"extensions": 42}))
         assert_raises(json.dumps({"ignore_all_errors": [1, 2, 3]}))
-        assert_raises(json.dumps({"ignore_infer": [False, "bc"]}))
         assert_raises(json.dumps({"logger": []}))
         assert_raises(json.dumps({"oncall": []}))
         assert_raises(json.dumps({"workers": "abc"}))
@@ -499,125 +493,6 @@ class PartialConfigurationTest(unittest.TestCase):
         assert_raises(json.dumps({"unwatched_dependency": {"change_indicator": "abc"}}))
         assert_raises(json.dumps({"use_buck2": {}}))
 
-    def test_merge(self) -> None:
-        # Unsafe features like `getattr` has to be used in this test to reduce boilerplates.
-
-        def create_configuration(name: str, value: object) -> PartialConfiguration:
-            return dataclasses.replace(PartialConfiguration(), **{name: value})
-
-        # Overwriting behaves correctly when:
-        # - If both base config and overriding config are absent, result is None.
-        # - If one of the config is presented, result is the that config.
-        # - If both base config and overriding config are present, result is the
-        #   overriding config.
-        def assert_overwritten(
-            attribute_name: str,
-            base_value: Optional[object] = None,
-            override_value: Optional[object] = None,
-        ) -> None:
-            base_value = base_value if base_value is not None else object()
-            override_value = override_value if override_value is not None else object()
-            # The actual value doesn't really matter. We only care about equalities.
-            # This is obviously not type-safe but it does save a significant amount
-            # of keystrokes.
-            self.assertIsNone(
-                getattr(
-                    merge_partial_configurations(
-                        base=create_configuration(attribute_name, None),
-                        override=create_configuration(attribute_name, None),
-                    ),
-                    attribute_name,
-                )
-            )
-            self.assertEqual(
-                getattr(
-                    merge_partial_configurations(
-                        base=create_configuration(attribute_name, base_value),
-                        override=create_configuration(attribute_name, None),
-                    ),
-                    attribute_name,
-                ),
-                base_value,
-            )
-            self.assertEqual(
-                getattr(
-                    merge_partial_configurations(
-                        base=create_configuration(attribute_name, None),
-                        override=create_configuration(attribute_name, override_value),
-                    ),
-                    attribute_name,
-                ),
-                override_value,
-            )
-            self.assertEqual(
-                getattr(
-                    merge_partial_configurations(
-                        base=create_configuration(attribute_name, base_value),
-                        override=create_configuration(attribute_name, override_value),
-                    ),
-                    attribute_name,
-                ),
-                override_value,
-            )
-
-        def assert_prepended(attribute_name: str) -> None:
-            # The actual value doesn't really matter. We only care about equalities.
-            # This is obviously not type-safe but it does save a significant amount
-            # of keystrokes.
-            base_value = object()
-            override_value = object()
-            self.assertListEqual(
-                getattr(
-                    merge_partial_configurations(
-                        base=create_configuration(attribute_name, [base_value]),
-                        override=create_configuration(attribute_name, [override_value]),
-                    ),
-                    attribute_name,
-                ),
-                [override_value, base_value],
-            )
-
-        def assert_raise_when_overridden(attribute_name: str) -> None:
-            # The actual value doesn't really matter. We only care about equalities.
-            # This is obviously not type-safe but it does save a significant amount
-            # of keystrokes.
-            base_value = object()
-            override_value = object()
-            with self.assertRaises(InvalidConfiguration):
-                merge_partial_configurations(
-                    base=create_configuration(attribute_name, base_value),
-                    override=create_configuration(attribute_name, override_value),
-                )
-
-        assert_overwritten(
-            "buck_mode",
-            PlatformAware.from_json("one", "buck_mode"),
-            PlatformAware.from_json("two", "buck_mode"),
-        )
-        assert_overwritten("disabled")
-        assert_prepended("do_not_ignore_errors_in")
-        assert_overwritten("dot_pyre_directory")
-        assert_prepended("excludes")
-        assert_prepended("extensions")
-        assert_prepended("ignore_all_errors")
-        assert_prepended("ignore_infer")
-        assert_overwritten("logger")
-        assert_overwritten("number_of_workers")
-        assert_overwritten("oncall")
-        assert_prepended("other_critical_files")
-        assert_overwritten("python_version")
-        assert_prepended("search_path")
-        assert_overwritten("site_package_search_strategy")
-        assert_overwritten("site_roots")
-        assert_raise_when_overridden("source_directories")
-        assert_overwritten("strict")
-        assert_prepended("taint_models_path")
-        assert_raise_when_overridden("targets")
-        assert_overwritten("typeshed")
-        assert_overwritten("unwatched_dependency")
-        assert_overwritten("use_buck2")
-        assert_overwritten("version_hash")
-
     def test_expand_relative_paths(self) -> None:
         self.assertEqual(
             PartialConfiguration(binary="foo").expand_relative_paths("bar").binary,
@@ -637,12 +512,6 @@ class PartialConfigurationTest(unittest.TestCase):
             PartialConfiguration(ignore_all_errors=["foo", "bar"])
             .expand_relative_paths("baz")
             .ignore_all_errors,
-            ["baz/foo", "baz/bar"],
-        )
-        self.assertEqual(
-            PartialConfiguration(ignore_infer=["foo", "bar"])
-            .expand_relative_paths("baz")
-            .ignore_infer,
             ["baz/foo", "baz/bar"],
         )
         self.assertEqual(
@@ -727,7 +596,6 @@ class ConfigurationTest(testslide.TestCase):
             partial_configuration=PartialConfiguration(
                 binary="binary",
                 buck_mode=PlatformAware.from_json("opt", "buck_mode"),
-                disabled=None,
                 do_not_ignore_errors_in=["foo"],
                 dot_pyre_directory=None,
                 excludes=["exclude"],
@@ -738,7 +606,6 @@ class ConfigurationTest(testslide.TestCase):
                     find_symbols_enabled=True,
                 ),
                 ignore_all_errors=["bar"],
-                ignore_infer=["baz"],
                 logger="logger",
                 number_of_workers=3,
                 oncall="oncall",
@@ -763,7 +630,6 @@ class ConfigurationTest(testslide.TestCase):
         self.assertEqual(configuration.binary, "binary")
         self.assertIsNotNone(configuration.buck_mode)
         self.assertEqual(configuration.buck_mode.get(), "opt")
-        self.assertEqual(configuration.disabled, False)
         self.assertListEqual(list(configuration.do_not_ignore_errors_in), ["foo"])
         self.assertEqual(configuration.dot_pyre_directory, Path("root/.pyre"))
         self.assertListEqual(list(configuration.excludes), ["exclude"])
@@ -777,7 +643,6 @@ class ConfigurationTest(testslide.TestCase):
             ),
         )
         self.assertListEqual(list(configuration.ignore_all_errors), ["bar"])
-        self.assertListEqual(list(configuration.ignore_infer), ["baz"])
         self.assertEqual(configuration.logger, "logger")
         self.assertEqual(configuration.number_of_workers, 3)
         self.assertEqual(configuration.oncall, "oncall")
@@ -924,25 +789,6 @@ class ConfigurationTest(testslide.TestCase):
                         ),
                     ),
                 ).get_existent_unwatched_dependency()
-            )
-
-    def test_existent_ignore_infer(self) -> None:
-        with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root).resolve()
-            ensure_directories_exists(root_path, ["a", "b/c"])
-
-            self.assertCountEqual(
-                Configuration(
-                    project_root=str(root_path),
-                    dot_pyre_directory=Path(".pyre"),
-                    ignore_infer=[
-                        str(root_path / "a"),
-                        str(root_path / "x"),
-                        str(root_path / "b/c"),
-                        str(root_path / "y/z"),
-                    ],
-                ).get_existent_ignore_infer_paths(),
-                [str(root_path / "a"), str(root_path / "b/c")],
             )
 
     def test_existent_do_not_ignore_errors(self) -> None:
