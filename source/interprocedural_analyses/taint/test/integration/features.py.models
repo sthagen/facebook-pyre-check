@@ -520,9 +520,19 @@
             "kinds": [
               {
                 "features": [ { "always-via": "copy" } ],
-                "kind": "ParameterUpdate0"
+                "return_paths": [ "" ],
+                "kind": "LocalReturn"
               }
             ],
+            "decl": null
+          }
+        ]
+      },
+      {
+        "port": "formal(self)",
+        "taint": [
+          {
+            "kinds": [ { "return_paths": [ "" ], "kind": "LocalReturn" } ],
             "decl": null
           }
         ]
@@ -738,7 +748,10 @@
                 "kind": "Test"
               }
             ],
-            "local_features": [ { "via": "copy" }, { "via": "tito" } ],
+            "local_features": [
+              { "always-via": "copy" },
+              { "always-via": "tito" }
+            ],
             "tito": [ { "line": 121, "start": 20, "end": 21 } ],
             "root": {
               "filename": "features.py",

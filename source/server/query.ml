@@ -35,6 +35,10 @@ module Request = struct
       }
     | ModulesOfPath of PyrePath.t
     | PathOfModule of Reference.t
+    | FindReferences of {
+        path: PyrePath.t;
+        position: Location.position;
+      }
     | SaveServerState of PyrePath.t
     | Superclasses of Reference.t list
     | Type of Expression.t
@@ -127,7 +131,7 @@ module Response = struct
       `Assoc ["start", position_to_yojson start; "end", position_to_yojson end_]
 
 
-    type location_of_definition = {
+    type code_location = {
       path: string;
       range: range;
     }
@@ -142,9 +146,10 @@ module Response = struct
       | Errors of Analysis.AnalysisError.Instantiated.t list
       | FoundAttributes of attribute list
       | FoundDefines of define list
-      | FoundLocationsOfDefinitions of location_of_definition list
+      | FoundLocationsOfDefinitions of code_location list
       | FoundModules of Reference.t list
       | FoundPath of string
+      | FoundReferences of code_location list
       | FunctionDefinition of Statement.Define.t
       | Help of string
       | ModelVerificationErrors of Taint.ModelVerificationError.t list
@@ -231,11 +236,12 @@ module Response = struct
           in
           `List (List.map defines ~f:define_to_yojson)
       | FoundLocationsOfDefinitions locations ->
-          `List (List.map locations ~f:location_of_definition_to_yojson)
+          `List (List.map locations ~f:code_location_to_yojson)
       | FoundModules references ->
           let reference_to_yojson reference = `String (Reference.show reference) in
           `List (List.map references ~f:reference_to_yojson)
       | FoundPath path -> `Assoc ["path", `String path]
+      | FoundReferences locations -> `List (List.map locations ~f:code_location_to_yojson)
       | FunctionDefinition define ->
           `Assoc
             [
@@ -307,6 +313,10 @@ let help () =
     | ModulesOfPath _ ->
         Some "modules_of_path(path): Returns the modules of a file pointed to by path."
     | PathOfModule _ -> Some "path_of_module(module): Gives an absolute path for `module`."
+    | FindReferences _ ->
+        Some
+          "find_references(path='<absolute path>', line=<line>, character=<character>): Returns \
+           the locations of all references to the symbol at the given line and character."
     | SaveServerState _ ->
         Some "save_server_state('path'): Saves Pyre's serialized state into `path`."
     | Superclasses _ ->
@@ -458,6 +468,12 @@ let rec parse_request_exn query =
             }
       | "modules_of_path", [path] -> Request.ModulesOfPath (PyrePath.create_absolute (string path))
       | "path_of_module", [module_access] -> Request.PathOfModule (reference module_access)
+      | "find_references", [path; line; column] ->
+          Request.FindReferences
+            {
+              path = PyrePath.create_absolute (string path);
+              position = { line = integer line; column = integer column };
+            }
       | "save_server_state", [path] ->
           Request.SaveServerState (PyrePath.create_absolute (string path))
       | "superclasses", names -> Superclasses (List.map ~f:reference names)
@@ -583,6 +599,17 @@ let rec process_request ~environment ~build_system ~configuration request =
             path
             (print_reason error_reason))
         errors
+    in
+    let modules_of_path path =
+      let module_of_path path =
+        match ModuleTracker.ReadOnly.lookup_path module_tracker path with
+        | ModuleTracker.PathLookup.Found { SourcePath.qualifier; _ } -> Some qualifier
+        | ShadowedBy _
+        | NotFound ->
+            None
+      in
+      let artifact_path = BuildSystem.lookup_artifact build_system path in
+      List.filter_map ~f:module_of_path artifact_path
     in
     let open Response in
     match request with
@@ -745,16 +772,7 @@ let rec process_request ~environment ~build_system ~configuration request =
         in
         GlobalResolution.is_compatible_with global_resolution ~left ~right
         |> fun result -> Single (Base.Compatibility { actual = left; expected = right; result })
-    | ModulesOfPath path ->
-        let module_of_path path =
-          match ModuleTracker.ReadOnly.lookup_path module_tracker path with
-          | ModuleTracker.PathLookup.Found { SourcePath.qualifier; _ } -> Some qualifier
-          | ShadowedBy _
-          | NotFound ->
-              None
-        in
-        let artifiact_paths = BuildSystem.lookup_artifact build_system path in
-        Single (Base.FoundModules (List.filter_map ~f:module_of_path artifiact_paths))
+    | ModulesOfPath path -> Single (Base.FoundModules (modules_of_path path))
     | LessOrEqual (left, right) ->
         let left = parse_and_validate left in
         let right = parse_and_validate right in
@@ -766,11 +784,8 @@ let rec process_request ~environment ~build_system ~configuration request =
             let { Configuration.Analysis.local_root = root; _ } = configuration in
             PyrePath.create_relative ~root ~relative:(PyrePath.absolute path)
           in
-          match
-            BuildSystem.lookup_artifact build_system relative_path
-            |> List.map ~f:(ModuleTracker.ReadOnly.lookup_path module_tracker)
-          with
-          | [ModuleTracker.PathLookup.Found { SourcePath.qualifier; _ }] -> Some qualifier
+          match modules_of_path relative_path with
+          | [found_module] -> Some found_module
           | _ -> None
         in
         let open Base in
@@ -817,6 +832,56 @@ let rec process_request ~environment ~build_system ~configuration request =
         |> Option.value
              ~default:
                (Error (Format.sprintf "No path found for module `%s`" (Reference.show module_name)))
+    | FindReferences { path; position } -> (
+        let find_references_local ~reference ~define_name =
+          (* TODO(T114362295): Support find all references. *)
+          let _, _ = reference, define_name in
+          Single (Base.FoundReferences [])
+        in
+        let find_references_global ~reference =
+          (* TODO(T114362295): Support find all references. *)
+          let _ = reference in
+          Single (Base.FoundReferences [])
+        in
+        let symbol =
+          let module_of_path path =
+            let relative_path =
+              let { Configuration.Analysis.local_root = root; _ } = configuration in
+              PyrePath.create_relative ~root ~relative:(PyrePath.absolute path)
+            in
+            match modules_of_path relative_path with
+            | [found_module] -> Some found_module
+            | _ -> None
+          in
+          module_of_path path
+          >>= fun module_reference ->
+          LocationBasedLookup.find_narrowest_spanning_symbol
+            ~type_environment:(TypeEnvironment.read_only environment)
+            ~module_reference
+            position
+        in
+        match symbol with
+        | Some
+            {
+              symbol_with_definition = Expression { Node.value = Name name; _ };
+              cfg_data = { define_name; _ };
+              _;
+            }
+        | Some
+            {
+              symbol_with_definition = TypeAnnotation { Node.value = Name name; _ };
+              cfg_data = { define_name; _ };
+              _;
+            }
+          when Expression.is_simple_name name ->
+            let reference = Expression.name_to_reference_exn name in
+            if Reference.is_local reference then
+              find_references_local ~reference ~define_name
+            else
+              find_references_global ~reference
+        | _ ->
+            (* Find-all-references is not supported for syntax, keywords, or literal values. *)
+            Single (Base.FoundReferences []))
     | SaveServerState path ->
         let path = PyrePath.absolute path in
         Log.info "Saving server state into `%s`" path;

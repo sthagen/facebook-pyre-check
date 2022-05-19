@@ -33,248 +33,6 @@ module ResolvedReference = struct
   [@@deriving sexp, compare, hash]
 end
 
-module ReadOnly = struct
-  type t = {
-    ast_environment: AstEnvironment.ReadOnly.t;
-    class_exists: ?dependency:DependencyKey.registered -> string -> bool;
-    all_classes: unit -> Type.Primitive.t list;
-    all_indices: unit -> IndexTracker.t list;
-    all_unannotated_globals: unit -> Reference.t list;
-    all_defines: unit -> Reference.t list;
-    all_defines_in_module: Reference.t -> Reference.t list;
-    get_class_summary:
-      ?dependency:DependencyKey.registered -> string -> ClassSummary.t Node.t option;
-    get_unannotated_global:
-      ?dependency:DependencyKey.registered -> Reference.t -> UnannotatedGlobal.t option;
-    get_function_definition:
-      ?dependency:DependencyKey.registered -> Reference.t -> FunctionDefinition.t option;
-    get_define_body: ?dependency:DependencyKey.registered -> Reference.t -> Define.t Node.t option;
-    get_module_metadata: ?dependency:DependencyKey.registered -> Reference.t -> Module.t option;
-    module_exists: ?dependency:SharedMemoryKeys.DependencyKey.registered -> Reference.t -> bool;
-  }
-
-  let ast_environment { ast_environment; _ } = ast_environment
-
-  let unannotated_global_environment = Fn.id
-
-  let class_exists { class_exists; _ } = class_exists
-
-  let all_classes { all_classes; _ } = all_classes ()
-
-  let all_indices { all_indices; _ } = all_indices ()
-
-  let all_defines { all_defines; _ } = all_defines ()
-
-  let all_unannotated_globals { all_unannotated_globals; _ } = all_unannotated_globals ()
-
-  let get_class_summary { get_class_summary; _ } = get_class_summary
-
-  let get_unannotated_global { get_unannotated_global; _ } = get_unannotated_global
-
-  let get_function_definition { get_function_definition; _ } = get_function_definition
-
-  let get_define_body { get_define_body; _ } = get_define_body
-
-  let all_defines_in_module { all_defines_in_module; _ } = all_defines_in_module
-
-  let primitive_name annotation =
-    let primitive, _ = Type.split annotation in
-    Type.primitive_name primitive
-
-
-  let is_protocol { get_class_summary; _ } ?dependency annotation =
-    primitive_name annotation
-    >>= get_class_summary ?dependency
-    >>| Node.value
-    >>| ClassSummary.is_protocol
-    |> Option.value ~default:false
-
-
-  let contains_untracked read_only ?dependency annotation =
-    let is_tracked = class_exists read_only ?dependency in
-    List.exists ~f:(fun annotation -> not (is_tracked annotation)) (Type.elements annotation)
-
-
-  let get_module_metadata { get_module_metadata; _ } = get_module_metadata
-
-  let module_exists { module_exists; _ } = module_exists
-
-  let legacy_resolve_exports read_only ?dependency reference =
-    (* Resolve exports. Fixpoint is necessary due to export/module name conflicts: P59503092 *)
-    let widening_threshold = 25 in
-    let rec resolve_exports_fixpoint ~reference ~visited ~count =
-      if Set.mem visited reference || count > widening_threshold then
-        reference
-      else
-        let rec resolve_exports ~lead ~tail =
-          match tail with
-          | head :: tail ->
-              let incremented_lead = lead @ [head] in
-              if
-                Option.is_some
-                  (get_module_metadata
-                     ?dependency
-                     read_only
-                     (Reference.create_from_list incremented_lead))
-              then
-                resolve_exports ~lead:incremented_lead ~tail
-              else
-                get_module_metadata ?dependency read_only (Reference.create_from_list lead)
-                >>| (fun definition ->
-                      match Module.legacy_aliased_export definition (Reference.create head) with
-                      | Some export -> Reference.combine export (Reference.create_from_list tail)
-                      | _ -> resolve_exports ~lead:(lead @ [head]) ~tail)
-                |> Option.value ~default:reference
-          | _ -> reference
-        in
-        match Reference.as_list reference with
-        | head :: tail ->
-            let exported_reference = resolve_exports ~lead:[head] ~tail in
-            if Reference.is_strict_prefix ~prefix:reference exported_reference then
-              reference
-            else
-              resolve_exports_fixpoint
-                ~reference:exported_reference
-                ~visited:(Set.add visited reference)
-                ~count:(count + 1)
-        | _ -> reference
-    in
-    resolve_exports_fixpoint ~reference ~visited:Reference.Set.empty ~count:0
-
-
-  module ResolveExportItem = struct
-    module T = struct
-      type t = {
-        current_module: Reference.t;
-        name: Identifier.t;
-      }
-      [@@deriving sexp, compare, hash]
-    end
-
-    include T
-    include Hashable.Make (T)
-  end
-
-  let resolve_exports read_only ?dependency ?(from = Reference.empty) reference =
-    let visited_set = ResolveExportItem.Hash_set.create () in
-    let rec resolve_module_alias ~current_module ~names_to_resolve () =
-      match get_module_metadata ?dependency read_only current_module with
-      | None ->
-          let rec resolve_placeholder_stub sofar = function
-            | [] -> None
-            | name :: prefixes -> (
-                let checked_module = List.rev prefixes |> Reference.create_from_list in
-                let sofar = name :: sofar in
-                match get_module_metadata ?dependency read_only checked_module with
-                | Some module_metadata when Module.empty_stub module_metadata ->
-                    Some
-                      (ResolvedReference.PlaceholderStub
-                         { stub_module = checked_module; remaining = sofar })
-                | _ -> resolve_placeholder_stub sofar prefixes)
-          in
-          (* Make sure none of the parent of `current_module` is placeholder stub *)
-          resolve_placeholder_stub names_to_resolve (Reference.as_list current_module |> List.rev)
-      | Some module_metadata -> (
-          match Module.empty_stub module_metadata with
-          | true ->
-              Some
-                (ResolvedReference.PlaceholderStub
-                   { stub_module = current_module; remaining = names_to_resolve })
-          | false -> (
-              match names_to_resolve with
-              | [] -> Some (ResolvedReference.Module current_module)
-              | next_name :: rest_names -> (
-                  let item = { ResolveExportItem.current_module; name = next_name } in
-                  match Hash_set.strict_add visited_set item with
-                  | Result.Error _ ->
-                      (* Module alias cycle detected. Abort resolution. *)
-                      None
-                  | Result.Ok _ -> (
-                      match Module.get_export module_metadata next_name with
-                      | None -> (
-                          match Module.get_export module_metadata "__getattr__" with
-                          | Some Module.Export.(Name (Define { is_getattr_any = true })) ->
-                              Some
-                                (ResolvedReference.ModuleAttribute
-                                   {
-                                     from = current_module;
-                                     name = next_name;
-                                     export = ResolvedReference.FromModuleGetattr;
-                                     remaining = rest_names;
-                                   })
-                          | _ ->
-                              (* We could be hitting an implicit module, or we could be hitting an
-                                 explicit module whose name is a prefix of another explicit module.
-                                 Keep moving through the current reference chain to make sure we
-                                 don't mis-handle those cases. *)
-                              resolve_module_alias
-                                ~current_module:
-                                  (Reference.create next_name |> Reference.combine current_module)
-                                ~names_to_resolve:rest_names
-                                ())
-                      | Some (Module.Export.NameAlias { from; name }) ->
-                          if Reference.equal current_module from then
-                            (* This could legitimately happen when an __init__ module trying to
-                               import its sibling modules *)
-                            resolve_module_alias
-                              ~current_module:(Reference.create name |> Reference.combine from)
-                              ~names_to_resolve:rest_names
-                              ()
-                          else
-                            (* We don't know if `name` refers to a module or not. Move forward on
-                               the alias chain. *)
-                            resolve_module_alias
-                              ~current_module:from
-                              ~names_to_resolve:(name :: rest_names)
-                              ()
-                      | Some (Module.Export.Module name) ->
-                          (* `name` is definitely a module. *)
-                          resolve_module_alias ~current_module:name ~names_to_resolve:rest_names ()
-                      | Some (Module.Export.Name export) ->
-                          (* We find a non-module. *)
-                          Some
-                            (ResolvedReference.ModuleAttribute
-                               {
-                                 from = current_module;
-                                 name = next_name;
-                                 export = ResolvedReference.Exported export;
-                                 remaining = rest_names;
-                               })))))
-    in
-    resolve_module_alias ~current_module:from ~names_to_resolve:(Reference.as_list reference) ()
-
-
-  let first_matching_class_decorator
-      read_only
-      ?dependency
-      ~names
-      { Node.value = { ClassSummary.decorators; _ }; _ }
-    =
-    let resolve_and_check_for_match decorator =
-      match Decorator.from_expression decorator with
-      | None -> None
-      | Some ({ Ast.Statement.Decorator.name = { Node.value = name; location }; _ } as decorator) ->
-          let resolved_name =
-            match resolve_exports read_only ?dependency name with
-            | Some (ResolvedReference.ModuleAttribute { from; name; remaining; _ }) ->
-                Reference.create_from_list (name :: remaining) |> Reference.combine from
-            | _ -> name
-          in
-          let with_matched_name_if_matches name_to_match =
-            if String.equal (Reference.show resolved_name) name_to_match then
-              Some { decorator with name = { Node.value = resolved_name; location } }
-            else
-              None
-          in
-          List.find_map names ~f:with_matched_name_if_matches
-    in
-    List.find_map decorators ~f:resolve_and_check_for_match
-
-
-  let exists_matching_class_decorator read_only ?dependency ~names class_summary =
-    first_matching_class_decorator read_only ?dependency ~names class_summary |> Option.is_some
-end
-
 let missing_builtin_globals =
   let assign name annotation =
     {
@@ -506,14 +264,6 @@ module KeyTracker = struct
     let description = "Class keys"
   end
 
-  module UnannotatedGlobalKeyValue = struct
-    type t = Reference.t list [@@deriving compare]
-
-    let prefix = Prefix.make ()
-
-    let description = "Class keys"
-  end
-
   module DefineKeyValue = struct
     type t = Reference.t list [@@deriving compare]
 
@@ -522,499 +272,857 @@ module KeyTracker = struct
     let description = "Define keys"
   end
 
-  module ClassKeys = Memory.WithCache.Make (SharedMemoryKeys.ReferenceKey) (ClassKeyValue)
-  module UnannotatedGlobalKeys =
-    Memory.WithCache.Make (SharedMemoryKeys.ReferenceKey) (UnannotatedGlobalKeyValue)
-  module DefineKeys = Memory.WithCache.Make (SharedMemoryKeys.ReferenceKey) (DefineKeyValue)
+  module UnannotatedGlobalKeyValue = struct
+    type t = Reference.t list [@@deriving compare]
 
-  let get_class_keys qualifiers =
+    let prefix = Prefix.make ()
+
+    let description = "Class keys"
+  end
+
+  module ClassKeys =
+    Memory.FirstClass.WithCache.Make (SharedMemoryKeys.ReferenceKey) (ClassKeyValue)
+  module DefineKeys =
+    Memory.FirstClass.WithCache.Make (SharedMemoryKeys.ReferenceKey) (DefineKeyValue)
+  module UnannotatedGlobalKeys =
+    Memory.FirstClass.WithCache.Make (SharedMemoryKeys.ReferenceKey) (UnannotatedGlobalKeyValue)
+
+  type t = {
+    class_keys: ClassKeys.t;
+    unannotated_global_keys: UnannotatedGlobalKeys.t;
+    define_keys: DefineKeys.t;
+  }
+
+  let create () =
+    {
+      class_keys = ClassKeys.create ();
+      unannotated_global_keys = UnannotatedGlobalKeys.create ();
+      define_keys = DefineKeys.create ();
+    }
+
+
+  let add_class_keys { class_keys; _ } = ClassKeys.add class_keys
+
+  let add_define_keys { define_keys; _ } = DefineKeys.add define_keys
+
+  let add_unannotated_global_keys { unannotated_global_keys; _ } =
+    UnannotatedGlobalKeys.add unannotated_global_keys
+
+
+  let get_class_keys { class_keys; _ } qualifiers =
     ClassKeys.KeySet.of_list qualifiers
-    |> ClassKeys.get_batch
+    |> ClassKeys.get_batch class_keys
     |> ClassKeys.KeyMap.values
     |> List.filter_map ~f:Fn.id
     |> List.concat
 
 
-  let get_unannotated_global_keys qualifiers =
+  let get_define_keys { define_keys; _ } qualifiers =
+    DefineKeys.KeySet.of_list qualifiers
+    |> DefineKeys.get_batch define_keys
+    |> DefineKeys.KeyMap.values
+    |> List.filter_map ~f:Fn.id
+    |> List.concat
+
+
+  let get_unannotated_global_keys { unannotated_global_keys; _ } qualifiers =
     UnannotatedGlobalKeys.KeySet.of_list qualifiers
-    |> UnannotatedGlobalKeys.get_batch
+    |> UnannotatedGlobalKeys.get_batch unannotated_global_keys
     |> UnannotatedGlobalKeys.KeyMap.values
     |> List.filter_map ~f:Fn.id
     |> List.concat
 
 
-  let get_define_body_keys qualifiers =
-    DefineKeys.KeySet.of_list qualifiers
-    |> DefineKeys.get_batch
-    |> DefineKeys.KeyMap.values
-    |> List.filter_map ~f:Fn.id
-    |> List.concat
-end
-
-(* We want to ensure that we are only writing to this table in this phase, not creating internal
-   dependencies with self-reads. Accordingly read_only should only be called by downstream clients *)
-module WriteOnly : sig
-  val add_to_transaction
-    :  DependencyKey.Transaction.t ->
-    previous_classes_list:string list ->
-    previous_unannotated_globals_list:Reference.t list ->
-    previous_defines_list:Reference.t list ->
-    previous_modules_list:Reference.t list ->
-    DependencyKey.Transaction.t
-
-  val get_all_dependents
-    :  class_additions:string list ->
-    unannotated_global_additions:Reference.t list ->
-    define_additions:Reference.t list ->
-    DependencyKey.RegisteredSet.t
-
-  val direct_data_purge
-    :  previous_classes_list:Type.Primitive.t list ->
-    previous_unannotated_globals_list:Reference.t list ->
-    previous_defines_list:Reference.t list ->
-    previous_modules_list:Reference.t list ->
-    unit
-
-  val set_module_data : Source.t -> unit
-
-  val read_only : ast_environment:AstEnvironment.ReadOnly.t -> ReadOnly.t
-end = struct
-  module ClassSummaryValue = struct
-    type t = ClassSummary.t Node.t
-
-    let prefix = Prefix.make ()
-
-    let description = "ClassSummary"
-
-    let compare = Node.compare ClassSummary.compare
-  end
-
-  module ClassSummaries = struct
-    include
-      DependencyTrackedMemory.DependencyTrackedTableWithCache
-        (SharedMemoryKeys.StringKey)
-        (DependencyKey)
-        (ClassSummaryValue)
-
-    let is_qualifier = false
-
-    let key_to_reference name = Reference.create name
-  end
-
-  module UnannotatedGlobalValue = struct
-    type t = UnannotatedGlobal.t
-
-    let prefix = Prefix.make ()
-
-    let description = "UnannotatedGlobal"
-
-    let compare = UnannotatedGlobal.compare
-  end
-
-  module UnannotatedGlobals = struct
-    include
-      DependencyTrackedMemory.DependencyTrackedTableNoCache
-        (SharedMemoryKeys.ReferenceKey)
-        (DependencyKey)
-        (UnannotatedGlobalValue)
-
-    let is_qualifier = false
-
-    let key_to_reference = Fn.id
-  end
-
-  module FunctionDefinitionValue = struct
-    type t = FunctionDefinition.t
-
-    let description = "FunctionDefinition"
-
-    let prefix = Prefix.make ()
-
-    let compare = FunctionDefinition.compare
-  end
-
-  module FunctionDefinitions = struct
-    include
-      DependencyTrackedMemory.DependencyTrackedTableWithCache
-        (SharedMemoryKeys.ReferenceKey)
-        (DependencyKey)
-        (FunctionDefinitionValue)
-
-    let is_qualifier = false
-
-    let key_to_reference = Fn.id
-  end
-
-  module ModuleValue = struct
-    type t = Module.t
-
-    let prefix = Prefix.make ()
-
-    let description = "Module"
-
-    let compare = Module.compare
-  end
-
-  module Modules = struct
-    include
-      DependencyTrackedMemory.DependencyTrackedTableWithCache
-        (SharedMemoryKeys.ReferenceKey)
-        (DependencyKey)
-        (ModuleValue)
-
-    let is_qualifier = true
-
-    let key_to_reference = Fn.id
-  end
-
-  let set_module ~qualifier module_ = Modules.add qualifier module_
-
-  let set_unannotated_global ~name unannotated_global =
-    UnannotatedGlobals.add name unannotated_global
-
-
-  let set_class_summary ~name class_summary = ClassSummaries.write_around name class_summary
-
-  let set_function_definition ~name function_definition =
-    FunctionDefinitions.write_around name function_definition
-
-
-  let set_unannotated_globals ({ Source.source_path = { SourcePath.qualifier; _ }; _ } as source) =
-    let write { UnannotatedGlobal.Collector.Result.name; unannotated_global } =
-      let name = Reference.create name |> Reference.combine qualifier in
-      set_unannotated_global ~name unannotated_global;
-      name
-    in
-    let merge_defines unannotated_globals_alist =
-      let not_defines, defines =
-        List.partition_map unannotated_globals_alist ~f:(function
-            | { UnannotatedGlobal.Collector.Result.name; unannotated_global = Define defines } ->
-                Either.Second (name, defines)
-            | x -> Either.First x)
-      in
-      let add_to_map sofar (name, defines) =
-        let merge_with_existing to_merge = function
-          | None -> Some to_merge
-          | Some existing -> Some (to_merge @ existing)
-        in
-        Map.change sofar name ~f:(merge_with_existing defines)
-      in
-      List.fold defines ~f:add_to_map ~init:Identifier.Map.empty
-      |> Identifier.Map.to_alist
-      |> List.map ~f:(fun (name, defines) ->
-             {
-               UnannotatedGlobal.Collector.Result.name;
-               unannotated_global = Define (List.rev defines);
-             })
-      |> fun defines -> List.append defines not_defines
-    in
-    let drop_classes unannotated_globals =
-      let is_not_class = function
-        | { UnannotatedGlobal.Collector.Result.unannotated_global = Class; _ } -> false
-        | _ -> true
-      in
-      List.filter unannotated_globals ~f:is_not_class
-    in
-    let globals = UnannotatedGlobal.Collector.from_source source |> merge_defines |> drop_classes in
-    let globals =
-      match Reference.as_list qualifier with
-      | [] -> globals @ missing_builtin_globals
-      | _ -> globals
-    in
-    globals |> List.map ~f:write |> KeyTracker.UnannotatedGlobalKeys.add qualifier
-
-
-  let set_class_summaries ({ Source.source_path = { SourcePath.qualifier; _ }; _ } as source) =
-    (* TODO (T57944324): Support checking classes that are nested inside function bodies *)
-    let module ClassCollector = Visit.MakeStatementVisitor (struct
-      type t = Class.t Node.t list
-
-      let visit_children _ = true
-
-      let statement _ sofar = function
-        | { Node.location; value = Statement.Class definition } ->
-            { Node.location; value = definition } :: sofar
-        | _ -> sofar
-    end)
-    in
-    let classes = ClassCollector.visit [] source in
-    let classes =
-      match Reference.as_list qualifier with
-      | [] -> classes @ missing_builtin_classes
-      | ["typing"] -> classes @ missing_typing_classes
-      | ["typing_extensions"] -> classes @ missing_typing_extensions_classes
-      | _ -> classes
-    in
-    let register new_annotations { Node.location; value = { Class.name; _ } as definition } =
-      let primitive = Reference.show name in
-      let definition =
-        match primitive with
-        | "type" ->
-            let value =
-              Type.expression
-                (Type.parametric "typing.Generic" [Single (Type.variable "typing._T")])
-            in
-            { definition with Class.base_arguments = [{ name = None; value }] }
-        | _ -> definition
-      in
-      set_class_summary
-        ~name:primitive
-        { Node.location; value = ClassSummary.create ~qualifier definition };
-      Set.add new_annotations primitive
-    in
-    List.fold classes ~init:Type.Primitive.Set.empty ~f:register
-    |> Set.to_list
-    |> KeyTracker.ClassKeys.add qualifier
-
-
-  let set_function_definitions
-      ({ Source.source_path = { SourcePath.qualifier; is_external; _ }; _ } as source)
-    =
-    match is_external with
-    | true ->
-        (* Do not collect function bodies for external sources as they won't get type checked *)
-        ()
-    | false ->
-        let function_definitions = FunctionDefinition.collect_defines source in
-        let register (name, function_definition) =
-          set_function_definition ~name function_definition;
-          name
-        in
-        List.map function_definitions ~f:register
-        |> List.sort ~compare:Reference.compare
-        |> KeyTracker.DefineKeys.add qualifier
-
-
-  let set_module_data ({ Source.source_path = { SourcePath.qualifier; _ }; _ } as source) =
-    set_unannotated_globals source;
-    set_class_summaries source;
-    set_function_definitions source;
-    (* We must set this last, because lazy-loading uses Module.mem to determine whether the source
-       has already been processed. So setting it earlier can lead to data races *)
-    set_module ~qualifier (Module.create source)
-
-
-  let add_to_transaction
-      transaction
-      ~previous_classes_list
-      ~previous_unannotated_globals_list
-      ~previous_defines_list
-      ~previous_modules_list
-    =
-    let class_keys = ClassSummaries.KeySet.of_list previous_classes_list in
-    let unannotated_globals_keys =
-      UnannotatedGlobals.KeySet.of_list previous_unannotated_globals_list
-    in
-    let defines_keys = FunctionDefinitions.KeySet.of_list previous_defines_list in
-    let module_keys = Modules.KeySet.of_list previous_modules_list in
-    ClassSummaries.add_to_transaction ~keys:class_keys transaction
-    |> UnannotatedGlobals.add_to_transaction ~keys:unannotated_globals_keys
-    |> FunctionDefinitions.add_to_transaction ~keys:defines_keys
-    |> Modules.add_to_transaction ~keys:module_keys
-
-
-  let get_all_dependents ~class_additions ~unannotated_global_additions ~define_additions =
-    let function_and_class_dependents =
-      DependencyKey.RegisteredSet.union
-        (ClassSummaries.KeySet.of_list class_additions |> ClassSummaries.get_all_dependents)
-        (FunctionDefinitions.KeySet.of_list define_additions
-        |> FunctionDefinitions.get_all_dependents)
-    in
-    DependencyKey.RegisteredSet.union
-      function_and_class_dependents
-      (UnannotatedGlobals.KeySet.of_list unannotated_global_additions
-      |> UnannotatedGlobals.get_all_dependents)
-
-
-  let direct_data_purge
-      ~previous_classes_list
-      ~previous_unannotated_globals_list
-      ~previous_defines_list
-      ~previous_modules_list
-    =
-    ClassSummaries.KeySet.of_list previous_classes_list |> ClassSummaries.remove_batch;
-    UnannotatedGlobals.KeySet.of_list previous_unannotated_globals_list
-    |> UnannotatedGlobals.remove_batch;
-    FunctionDefinitions.KeySet.of_list previous_defines_list |> FunctionDefinitions.remove_batch;
-    Modules.KeySet.of_list previous_modules_list |> Modules.remove_batch
-
-
-  module LazyLoading = struct
-    let load_module_if_tracked ~ast_environment qualifier =
-      if not (Modules.mem qualifier) then
-        if AstEnvironment.ReadOnly.is_module_tracked ast_environment qualifier then
-          match
-            AstEnvironment.ReadOnly.get_processed_source
-              ~track_dependency:true
-              ast_environment
-              qualifier
-          with
-          | Some source -> set_module_data source
-          | None -> ()
-
-
-    let load_all_possible_modules ~is_qualifier ~ast_environment reference =
-      let load_module_if_tracked = load_module_if_tracked ~ast_environment in
-      let ancestors_descending = Reference.possible_qualifiers reference in
-      List.iter ancestors_descending ~f:load_module_if_tracked;
-      if is_qualifier then load_module_if_tracked reference;
-      ()
-  end
-
-  module ReadOnlyTable = struct
-    module type S = sig
-      type key
-
-      type value
-
-      val mem
-        :  ast_environment:AstEnvironment.ReadOnly.t ->
-        ?dependency:DependencyKey.registered ->
-        key ->
-        bool
-
-      val get
-        :  ast_environment:AstEnvironment.ReadOnly.t ->
-        ?dependency:DependencyKey.registered ->
-        key ->
-        value option
-    end
-
-    module type In = sig
-      type key
-
-      type value
-
-      val is_qualifier : bool
-
-      val key_to_reference : key -> Reference.t
-
-      val mem : ?dependency:DependencyKey.registered -> key -> bool
-
-      val get : ?dependency:DependencyKey.registered -> key -> value option
-    end
-
-    module Make (In : In) : S with type key := In.key and type value := In.value = struct
-      let is_qualifier = In.is_qualifier
-
-      let mem ~ast_environment ?dependency key =
-        (* First handle the case where it's already in the hash map *)
-        match In.mem ?dependency key with
-        | true -> true
-        | false ->
-            (* If no precomputed value exists, we make sure all potential qualifiers are loaded *)
-            LazyLoading.load_all_possible_modules
-              ~is_qualifier
-              ~ast_environment
-              (In.key_to_reference key);
-            (* We try fetching again *)
-            In.mem ?dependency key
-
-
-      let get ~ast_environment ?dependency key =
-        (* The first get finds precomputed values *)
-        match In.get ?dependency key with
-        | Some _ as hit -> hit
-        | None ->
-            (* If no precomputed value exists, we make sure all potential qualifiers are loaded *)
-            LazyLoading.load_all_possible_modules
-              ~is_qualifier
-              ~ast_environment
-              (In.key_to_reference key);
-            (* We try fetching again *)
-            In.get ?dependency key
-    end
-  end
-
-  let read_only ~ast_environment =
-    (* Mask the raw DependencyTrackedTables with lazy read-only views of each one *)
-    let module Modules = ReadOnlyTable.Make (Modules) in
-    let module ClassSummaries = ReadOnlyTable.Make (ClassSummaries) in
-    let module FunctionDefinitions = ReadOnlyTable.Make (FunctionDefinitions) in
-    let module UnannotatedGlobals = ReadOnlyTable.Make (UnannotatedGlobals) in
-    (* Define the basic getters and existence checks *)
-    let get_module = Modules.get ~ast_environment in
-    let class_exists = ClassSummaries.mem ~ast_environment in
-    let get_class_summary = ClassSummaries.get ~ast_environment in
-    let get_unannotated_global = UnannotatedGlobals.get ~ast_environment in
-    let get_function_definition = FunctionDefinitions.get ~ast_environment in
-    (* all_defines_in_module is the only KeyTracker-based API that requires loading *)
-    let all_defines_in_module qualifier =
-      LazyLoading.load_module_if_tracked ~ast_environment qualifier;
-      KeyTracker.get_define_body_keys [qualifier]
-    in
-    (* Special case some logic for modules *)
-    let get_module_metadata ?dependency qualifier =
-      let qualifier =
-        match Reference.as_list qualifier with
-        | ["future"; "builtins"]
-        | ["builtins"] ->
-            Reference.empty
-        | _ -> qualifier
-      in
-      match get_module ?dependency qualifier with
-      | Some _ as result -> result
-      | None -> (
-          match AstEnvironment.ReadOnly.is_module_tracked ast_environment qualifier with
-          | true -> Some (Module.create_implicit ())
-          | false -> None)
-    in
-    let module_exists ?dependency qualifier =
-      let qualifier =
-        match Reference.as_list qualifier with
-        | ["future"; "builtins"]
-        | ["builtins"] ->
-            Reference.empty
-        | _ -> qualifier
-      in
-      match Modules.mem ~ast_environment ?dependency qualifier with
-      | true -> true
-      | false -> AstEnvironment.ReadOnly.is_module_tracked ast_environment qualifier
-    in
-    (* Define the bulk key reads - these tell us what's been loaded thus far *)
-    let all_classes () =
-      AstEnvironment.ReadOnly.all_explicit_modules ast_environment |> KeyTracker.get_class_keys
-    in
-    let all_indices () =
-      all_classes ()
-      |> Type.Primitive.Set.of_list
-      |> IndexTracker.indices
-      |> IndexTracker.Set.to_list
-    in
-    let all_unannotated_globals () =
-      AstEnvironment.ReadOnly.all_explicit_modules ast_environment
-      |> KeyTracker.get_unannotated_global_keys
-    in
-    let all_defines () =
-      AstEnvironment.ReadOnly.all_explicit_modules ast_environment
-      |> KeyTracker.get_define_body_keys
-    in
-    let get_define_body ?dependency key =
-      get_function_definition ?dependency key >>= fun { FunctionDefinition.body; _ } -> body
-    in
-    {
-      ReadOnly.ast_environment;
-      get_class_summary;
-      all_classes;
-      all_indices;
-      all_defines;
-      class_exists;
-      get_unannotated_global;
-      get_function_definition;
-      get_define_body;
-      all_defines_in_module;
-      all_unannotated_globals;
-      get_module_metadata;
-      module_exists;
+  module PreviousKeys = struct
+    type t = {
+      previous_classes_list: Type.Primitive.t list;
+      previous_classes: Type.Primitive.Set.t;
+      previous_defines_list: Reference.t list;
+      previous_defines: Reference.Set.t;
+      previous_unannotated_globals_list: Reference.t list;
+      previous_unannotated_globals: Reference.Set.t;
     }
+  end
+
+  let get_previous_keys_and_clear
+      ({ class_keys; define_keys; unannotated_global_keys } as key_tracker)
+      modified_qualifiers
+    =
+    let previous_classes_list = get_class_keys key_tracker modified_qualifiers in
+    let previous_defines_list = get_define_keys key_tracker modified_qualifiers in
+    let previous_unannotated_globals_list =
+      get_unannotated_global_keys key_tracker modified_qualifiers
+    in
+    let previous_classes = Type.Primitive.Set.of_list previous_classes_list in
+    let previous_defines = Reference.Set.of_list previous_defines_list in
+    let previous_unannotated_globals = Reference.Set.of_list previous_unannotated_globals_list in
+    ClassKeys.KeySet.of_list modified_qualifiers |> ClassKeys.remove_batch class_keys;
+    DefineKeys.KeySet.of_list modified_qualifiers |> DefineKeys.remove_batch define_keys;
+    UnannotatedGlobalKeys.KeySet.of_list modified_qualifiers
+    |> UnannotatedGlobalKeys.remove_batch unannotated_global_keys;
+    PreviousKeys.
+      {
+        previous_classes_list;
+        previous_classes;
+        previous_defines_list;
+        previous_defines;
+        previous_unannotated_globals_list;
+        previous_unannotated_globals;
+      }
 end
+
+module ModuleValue = struct
+  type t = Module.t
+
+  let prefix = Prefix.make ()
+
+  let description = "Module"
+
+  let compare = Module.compare
+end
+
+module Modules = struct
+  include
+    DependencyTrackedMemory.DependencyTrackedTableWithCache
+      (SharedMemoryKeys.ReferenceKey)
+      (DependencyKey)
+      (ModuleValue)
+
+  let is_qualifier = true
+
+  let key_to_reference = Fn.id
+end
+
+module ClassSummaryValue = struct
+  type t = ClassSummary.t Node.t
+
+  let prefix = Prefix.make ()
+
+  let description = "ClassSummary"
+
+  let compare = Node.compare ClassSummary.compare
+end
+
+module ClassSummaries = struct
+  include
+    DependencyTrackedMemory.DependencyTrackedTableWithCache
+      (SharedMemoryKeys.StringKey)
+      (DependencyKey)
+      (ClassSummaryValue)
+
+  let is_qualifier = false
+
+  let key_to_reference name = Reference.create name
+end
+
+module FunctionDefinitionValue = struct
+  type t = FunctionDefinition.t
+
+  let description = "FunctionDefinition"
+
+  let prefix = Prefix.make ()
+
+  let compare = FunctionDefinition.compare
+end
+
+module FunctionDefinitions = struct
+  include
+    DependencyTrackedMemory.DependencyTrackedTableWithCache
+      (SharedMemoryKeys.ReferenceKey)
+      (DependencyKey)
+      (FunctionDefinitionValue)
+
+  let is_qualifier = false
+
+  let key_to_reference = Fn.id
+end
+
+module UnannotatedGlobalValue = struct
+  type t = UnannotatedGlobal.t
+
+  let prefix = Prefix.make ()
+
+  let description = "UnannotatedGlobal"
+
+  let compare = UnannotatedGlobal.compare
+end
+
+module UnannotatedGlobals = struct
+  include
+    DependencyTrackedMemory.DependencyTrackedTableNoCache
+      (SharedMemoryKeys.ReferenceKey)
+      (DependencyKey)
+      (UnannotatedGlobalValue)
+
+  let is_qualifier = false
+
+  let key_to_reference = Fn.id
+end
+
+module ReadWrite = struct
+  type t = {
+    key_tracker: KeyTracker.t;
+    modules: Modules.t;
+    class_summaries: ClassSummaries.t;
+    function_definitions: FunctionDefinitions.t;
+    unannotated_globals: UnannotatedGlobals.t;
+    ast_environment: AstEnvironment.t;
+  }
+
+  (* For the moment, all base environments need to use the same first-class tables because otherwise
+     the SharedMemory hash tables will leak memory rather than reusing the same memory in each test.
+     In production we never create multiple base environments, so this restriction is specific to
+     tests where we reuse the same shared memory repeatedly. *)
+  let base_key_tracker = KeyTracker.create ()
+
+  let base_modules = Modules.create ()
+
+  let base_class_summaries = ClassSummaries.create ()
+
+  let base_function_definitions = FunctionDefinitions.create ()
+
+  let base_unannotated_globals = UnannotatedGlobals.create ()
+
+  let create ast_environment =
+    {
+      key_tracker = base_key_tracker;
+      modules = base_modules;
+      class_summaries = base_class_summaries;
+      function_definitions = base_function_definitions;
+      unannotated_globals = base_unannotated_globals;
+      ast_environment;
+    }
+
+
+  let ast_environment { ast_environment; _ } = ast_environment
+
+  let configuration { ast_environment; _ } = AstEnvironment.configuration ast_environment
+end
+
+include ReadWrite
+
+let set_module { modules; _ } ~qualifier module_ = Modules.add modules qualifier module_
+
+let set_class_summary { class_summaries; _ } ~name class_summary =
+  ClassSummaries.write_around class_summaries name class_summary
+
+
+let set_function_definition { function_definitions; _ } ~name function_definition =
+  FunctionDefinitions.write_around function_definitions name function_definition
+
+
+let set_unannotated_global { unannotated_globals; _ } ~name unannotated_global =
+  UnannotatedGlobals.add unannotated_globals name unannotated_global
+
+
+let set_class_summaries
+    ({ key_tracker; _ } as environment)
+    ({ Source.source_path = { SourcePath.qualifier; _ }; _ } as source)
+  =
+  (* TODO (T57944324): Support checking classes that are nested inside function bodies *)
+  let module ClassCollector = Visit.MakeStatementVisitor (struct
+    type t = Class.t Node.t list
+
+    let visit_children _ = true
+
+    let statement _ sofar = function
+      | { Node.location; value = Statement.Class definition } ->
+          { Node.location; value = definition } :: sofar
+      | _ -> sofar
+  end)
+  in
+  let classes = ClassCollector.visit [] source in
+  let classes =
+    match Reference.as_list qualifier with
+    | [] -> classes @ missing_builtin_classes
+    | ["typing"] -> classes @ missing_typing_classes
+    | ["typing_extensions"] -> classes @ missing_typing_extensions_classes
+    | _ -> classes
+  in
+  let register new_annotations { Node.location; value = { Class.name; _ } as definition } =
+    let primitive = Reference.show name in
+    let definition =
+      match primitive with
+      | "type" ->
+          let value =
+            Type.expression (Type.parametric "typing.Generic" [Single (Type.variable "typing._T")])
+          in
+          { definition with Class.base_arguments = [{ name = None; value }] }
+      | _ -> definition
+    in
+    set_class_summary
+      environment
+      ~name:primitive
+      { Node.location; value = ClassSummary.create ~qualifier definition };
+    Set.add new_annotations primitive
+  in
+  List.fold classes ~init:Type.Primitive.Set.empty ~f:register
+  |> Set.to_list
+  |> KeyTracker.add_class_keys key_tracker qualifier
+
+
+let set_function_definitions
+    ({ key_tracker; _ } as environment)
+    ({ Source.source_path = { SourcePath.qualifier; is_external; _ }; _ } as source)
+  =
+  match is_external with
+  | true ->
+      (* Do not collect function bodies for external sources as they won't get type checked *)
+      ()
+  | false ->
+      let function_definitions = FunctionDefinition.collect_defines source in
+      let register (name, function_definition) =
+        set_function_definition environment ~name function_definition;
+        name
+      in
+      List.map function_definitions ~f:register
+      |> List.sort ~compare:Reference.compare
+      |> KeyTracker.add_define_keys key_tracker qualifier
+
+
+let set_unannotated_globals
+    ({ key_tracker; _ } as environment)
+    ({ Source.source_path = { SourcePath.qualifier; _ }; _ } as source)
+  =
+  let write { UnannotatedGlobal.Collector.Result.name; unannotated_global } =
+    let name = Reference.create name |> Reference.combine qualifier in
+    set_unannotated_global environment ~name unannotated_global;
+    name
+  in
+  let merge_defines unannotated_globals_alist =
+    let not_defines, defines =
+      List.partition_map unannotated_globals_alist ~f:(function
+          | { UnannotatedGlobal.Collector.Result.name; unannotated_global = Define defines } ->
+              Either.Second (name, defines)
+          | x -> Either.First x)
+    in
+    let add_to_map sofar (name, defines) =
+      let merge_with_existing to_merge = function
+        | None -> Some to_merge
+        | Some existing -> Some (to_merge @ existing)
+      in
+      Map.change sofar name ~f:(merge_with_existing defines)
+    in
+    List.fold defines ~f:add_to_map ~init:Identifier.Map.empty
+    |> Identifier.Map.to_alist
+    |> List.map ~f:(fun (name, defines) ->
+           {
+             UnannotatedGlobal.Collector.Result.name;
+             unannotated_global = Define (List.rev defines);
+           })
+    |> fun defines -> List.append defines not_defines
+  in
+  let drop_classes unannotated_globals =
+    let is_not_class = function
+      | { UnannotatedGlobal.Collector.Result.unannotated_global = Class; _ } -> false
+      | _ -> true
+    in
+    List.filter unannotated_globals ~f:is_not_class
+  in
+  let globals = UnannotatedGlobal.Collector.from_source source |> merge_defines |> drop_classes in
+  let globals =
+    match Reference.as_list qualifier with
+    | [] -> globals @ missing_builtin_globals
+    | _ -> globals
+  in
+  globals |> List.map ~f:write |> KeyTracker.add_unannotated_global_keys key_tracker qualifier
+
+
+let set_module_data environment ({ Source.source_path = { SourcePath.qualifier; _ }; _ } as source) =
+  set_class_summaries environment source;
+  set_function_definitions environment source;
+  set_unannotated_globals environment source;
+  (* We must set this last, because lazy-loading uses Module.mem to determine whether the source has
+     already been processed. So setting it earlier can lead to data races *)
+  set_module environment ~qualifier (Module.create source)
+
+
+let add_to_transaction
+    { modules; class_summaries; function_definitions; unannotated_globals; _ }
+    transaction
+    ~previous_classes_list
+    ~previous_unannotated_globals_list
+    ~previous_defines_list
+    ~previous_modules_list
+  =
+  let module_keys = Modules.KeySet.of_list previous_modules_list in
+  let class_keys = ClassSummaries.KeySet.of_list previous_classes_list in
+  let defines_keys = FunctionDefinitions.KeySet.of_list previous_defines_list in
+  let unannotated_globals_keys =
+    UnannotatedGlobals.KeySet.of_list previous_unannotated_globals_list
+  in
+  transaction
+  |> Modules.add_to_transaction modules ~keys:module_keys
+  |> ClassSummaries.add_to_transaction class_summaries ~keys:class_keys
+  |> FunctionDefinitions.add_to_transaction function_definitions ~keys:defines_keys
+  |> UnannotatedGlobals.add_to_transaction unannotated_globals ~keys:unannotated_globals_keys
+
+
+let get_all_dependents ~class_additions ~unannotated_global_additions ~define_additions =
+  let function_and_class_dependents =
+    DependencyKey.RegisteredSet.union
+      (ClassSummaries.KeySet.of_list class_additions |> ClassSummaries.get_all_dependents)
+      (FunctionDefinitions.KeySet.of_list define_additions |> FunctionDefinitions.get_all_dependents)
+  in
+  DependencyKey.RegisteredSet.union
+    function_and_class_dependents
+    (UnannotatedGlobals.KeySet.of_list unannotated_global_additions
+    |> UnannotatedGlobals.get_all_dependents)
+
+
+let direct_data_purge
+    { modules; class_summaries; function_definitions; unannotated_globals; _ }
+    ~previous_classes_list
+    ~previous_unannotated_globals_list
+    ~previous_defines_list
+    ~previous_modules_list
+  =
+  Modules.KeySet.of_list previous_modules_list |> Modules.remove_batch modules;
+  ClassSummaries.KeySet.of_list previous_classes_list |> ClassSummaries.remove_batch class_summaries;
+  FunctionDefinitions.KeySet.of_list previous_defines_list
+  |> FunctionDefinitions.remove_batch function_definitions;
+  UnannotatedGlobals.KeySet.of_list previous_unannotated_globals_list
+  |> UnannotatedGlobals.remove_batch unannotated_globals;
+  ()
+
+
+module ReadOnly = struct
+  type t = {
+    ast_environment: AstEnvironment.ReadOnly.t;
+    class_exists: ?dependency:DependencyKey.registered -> string -> bool;
+    all_classes: unit -> Type.Primitive.t list;
+    all_indices: unit -> IndexTracker.t list;
+    all_unannotated_globals: unit -> Reference.t list;
+    all_defines: unit -> Reference.t list;
+    all_defines_in_module: Reference.t -> Reference.t list;
+    get_class_summary:
+      ?dependency:DependencyKey.registered -> string -> ClassSummary.t Node.t option;
+    get_unannotated_global:
+      ?dependency:DependencyKey.registered -> Reference.t -> UnannotatedGlobal.t option;
+    get_function_definition:
+      ?dependency:DependencyKey.registered -> Reference.t -> FunctionDefinition.t option;
+    get_define_body: ?dependency:DependencyKey.registered -> Reference.t -> Define.t Node.t option;
+    get_module_metadata: ?dependency:DependencyKey.registered -> Reference.t -> Module.t option;
+    module_exists: ?dependency:SharedMemoryKeys.DependencyKey.registered -> Reference.t -> bool;
+  }
+
+  let ast_environment { ast_environment; _ } = ast_environment
+
+  let unannotated_global_environment = Fn.id
+
+  let all_classes { all_classes; _ } = all_classes ()
+
+  let all_indices { all_indices; _ } = all_indices ()
+
+  let all_defines { all_defines; _ } = all_defines ()
+
+  let all_unannotated_globals { all_unannotated_globals; _ } = all_unannotated_globals ()
+
+  let all_defines_in_module { all_defines_in_module; _ } = all_defines_in_module
+
+  let get_module_metadata { get_module_metadata; _ } = get_module_metadata
+
+  let module_exists { module_exists; _ } = module_exists
+
+  let get_class_summary { get_class_summary; _ } = get_class_summary
+
+  let class_exists { class_exists; _ } = class_exists
+
+  let get_function_definition { get_function_definition; _ } = get_function_definition
+
+  let get_define_body { get_define_body; _ } = get_define_body
+
+  let get_unannotated_global { get_unannotated_global; _ } = get_unannotated_global
+
+  let primitive_name annotation =
+    let primitive, _ = Type.split annotation in
+    Type.primitive_name primitive
+
+
+  let is_protocol { get_class_summary; _ } ?dependency annotation =
+    primitive_name annotation
+    >>= get_class_summary ?dependency
+    >>| Node.value
+    >>| ClassSummary.is_protocol
+    |> Option.value ~default:false
+
+
+  let contains_untracked read_only ?dependency annotation =
+    let is_tracked = class_exists read_only ?dependency in
+    List.exists ~f:(fun annotation -> not (is_tracked annotation)) (Type.elements annotation)
+
+
+  let legacy_resolve_exports read_only ?dependency reference =
+    (* Resolve exports. Fixpoint is necessary due to export/module name conflicts: P59503092 *)
+    let widening_threshold = 25 in
+    let rec resolve_exports_fixpoint ~reference ~visited ~count =
+      if Set.mem visited reference || count > widening_threshold then
+        reference
+      else
+        let rec resolve_exports ~lead ~tail =
+          match tail with
+          | head :: tail ->
+              let incremented_lead = lead @ [head] in
+              if
+                Option.is_some
+                  (get_module_metadata
+                     ?dependency
+                     read_only
+                     (Reference.create_from_list incremented_lead))
+              then
+                resolve_exports ~lead:incremented_lead ~tail
+              else
+                get_module_metadata ?dependency read_only (Reference.create_from_list lead)
+                >>| (fun definition ->
+                      match Module.legacy_aliased_export definition (Reference.create head) with
+                      | Some export -> Reference.combine export (Reference.create_from_list tail)
+                      | _ -> resolve_exports ~lead:(lead @ [head]) ~tail)
+                |> Option.value ~default:reference
+          | _ -> reference
+        in
+        match Reference.as_list reference with
+        | head :: tail ->
+            let exported_reference = resolve_exports ~lead:[head] ~tail in
+            if Reference.is_strict_prefix ~prefix:reference exported_reference then
+              reference
+            else
+              resolve_exports_fixpoint
+                ~reference:exported_reference
+                ~visited:(Set.add visited reference)
+                ~count:(count + 1)
+        | _ -> reference
+    in
+    resolve_exports_fixpoint ~reference ~visited:Reference.Set.empty ~count:0
+
+
+  module ResolveExportItem = struct
+    module T = struct
+      type t = {
+        current_module: Reference.t;
+        name: Identifier.t;
+      }
+      [@@deriving sexp, compare, hash]
+    end
+
+    include T
+    include Hashable.Make (T)
+  end
+
+  let resolve_exports read_only ?dependency ?(from = Reference.empty) reference =
+    let visited_set = ResolveExportItem.Hash_set.create () in
+    let rec resolve_module_alias ~current_module ~names_to_resolve () =
+      match get_module_metadata ?dependency read_only current_module with
+      | None ->
+          let rec resolve_placeholder_stub sofar = function
+            | [] -> None
+            | name :: prefixes -> (
+                let checked_module = List.rev prefixes |> Reference.create_from_list in
+                let sofar = name :: sofar in
+                match get_module_metadata ?dependency read_only checked_module with
+                | Some module_metadata when Module.empty_stub module_metadata ->
+                    Some
+                      (ResolvedReference.PlaceholderStub
+                         { stub_module = checked_module; remaining = sofar })
+                | _ -> resolve_placeholder_stub sofar prefixes)
+          in
+          (* Make sure none of the parent of `current_module` is placeholder stub *)
+          resolve_placeholder_stub names_to_resolve (Reference.as_list current_module |> List.rev)
+      | Some module_metadata -> (
+          match Module.empty_stub module_metadata with
+          | true ->
+              Some
+                (ResolvedReference.PlaceholderStub
+                   { stub_module = current_module; remaining = names_to_resolve })
+          | false -> (
+              match names_to_resolve with
+              | [] -> Some (ResolvedReference.Module current_module)
+              | next_name :: rest_names -> (
+                  let item = { ResolveExportItem.current_module; name = next_name } in
+                  match Hash_set.strict_add visited_set item with
+                  | Result.Error _ ->
+                      (* Module alias cycle detected. Abort resolution. *)
+                      None
+                  | Result.Ok _ -> (
+                      match Module.get_export module_metadata next_name with
+                      | None -> (
+                          match Module.get_export module_metadata "__getattr__" with
+                          | Some Module.Export.(Name (Define { is_getattr_any = true })) ->
+                              Some
+                                (ResolvedReference.ModuleAttribute
+                                   {
+                                     from = current_module;
+                                     name = next_name;
+                                     export = ResolvedReference.FromModuleGetattr;
+                                     remaining = rest_names;
+                                   })
+                          | _ ->
+                              (* We could be hitting an implicit module, or we could be hitting an
+                                 explicit module whose name is a prefix of another explicit module.
+                                 Keep moving through the current reference chain to make sure we
+                                 don't mis-handle those cases. *)
+                              resolve_module_alias
+                                ~current_module:
+                                  (Reference.create next_name |> Reference.combine current_module)
+                                ~names_to_resolve:rest_names
+                                ())
+                      | Some (Module.Export.NameAlias { from; name }) ->
+                          if Reference.equal current_module from then
+                            (* This could legitimately happen when an __init__ module trying to
+                               import its sibling modules *)
+                            resolve_module_alias
+                              ~current_module:(Reference.create name |> Reference.combine from)
+                              ~names_to_resolve:rest_names
+                              ()
+                          else
+                            (* We don't know if `name` refers to a module or not. Move forward on
+                               the alias chain. *)
+                            resolve_module_alias
+                              ~current_module:from
+                              ~names_to_resolve:(name :: rest_names)
+                              ()
+                      | Some (Module.Export.Module name) ->
+                          (* `name` is definitely a module. *)
+                          resolve_module_alias ~current_module:name ~names_to_resolve:rest_names ()
+                      | Some (Module.Export.Name export) ->
+                          (* We find a non-module. *)
+                          Some
+                            (ResolvedReference.ModuleAttribute
+                               {
+                                 from = current_module;
+                                 name = next_name;
+                                 export = ResolvedReference.Exported export;
+                                 remaining = rest_names;
+                               })))))
+    in
+    resolve_module_alias ~current_module:from ~names_to_resolve:(Reference.as_list reference) ()
+
+
+  let first_matching_class_decorator
+      read_only
+      ?dependency
+      ~names
+      { Node.value = { ClassSummary.decorators; _ }; _ }
+    =
+    let resolve_and_check_for_match decorator =
+      match Decorator.from_expression decorator with
+      | None -> None
+      | Some ({ Ast.Statement.Decorator.name = { Node.value = name; location }; _ } as decorator) ->
+          let resolved_name =
+            match resolve_exports read_only ?dependency name with
+            | Some (ResolvedReference.ModuleAttribute { from; name; remaining; _ }) ->
+                Reference.create_from_list (name :: remaining) |> Reference.combine from
+            | _ -> name
+          in
+          let with_matched_name_if_matches name_to_match =
+            if String.equal (Reference.show resolved_name) name_to_match then
+              Some { decorator with name = { Node.value = resolved_name; location } }
+            else
+              None
+          in
+          List.find_map names ~f:with_matched_name_if_matches
+    in
+    List.find_map decorators ~f:resolve_and_check_for_match
+
+
+  let exists_matching_class_decorator read_only ?dependency ~names class_summary =
+    first_matching_class_decorator read_only ?dependency ~names class_summary |> Option.is_some
+end
+
+module LazyLoader = struct
+  type t = {
+    environment: ReadWrite.t;
+    ast_environment: AstEnvironment.ReadOnly.t;
+  }
+
+  let load_module_if_tracked { environment; ast_environment } qualifier =
+    if not (Modules.mem environment.modules qualifier) then
+      if AstEnvironment.ReadOnly.is_module_tracked ast_environment qualifier then
+        match
+          AstEnvironment.ReadOnly.get_processed_source
+            ~track_dependency:true
+            ast_environment
+            qualifier
+        with
+        | Some source -> set_module_data environment source
+        | None -> ()
+
+
+  let load_all_possible_modules loader ~is_qualifier reference =
+    let load_module_if_tracked = load_module_if_tracked loader in
+    let ancestors_descending = Reference.possible_qualifiers reference in
+    List.iter ancestors_descending ~f:load_module_if_tracked;
+    if is_qualifier then load_module_if_tracked reference;
+    ()
+end
+
+module ReadOnlyTable = struct
+  module type S = sig
+    type key
+
+    type value
+
+    type table
+
+    type t
+
+    val create : loader:LazyLoader.t -> table -> t
+
+    val mem : t -> ?dependency:DependencyKey.registered -> key -> bool
+
+    val get : t -> ?dependency:DependencyKey.registered -> key -> value option
+  end
+
+  module type In = sig
+    type key
+
+    type value
+
+    type t
+
+    val is_qualifier : bool
+
+    val key_to_reference : key -> Reference.t
+
+    val mem : t -> ?dependency:DependencyKey.registered -> key -> bool
+
+    val get : t -> ?dependency:DependencyKey.registered -> key -> value option
+  end
+
+  module Make (In : In) :
+    S with type key := In.key and type value := In.value and type table := In.t = struct
+    type t = {
+      loader: LazyLoader.t;
+      table: In.t;
+    }
+
+    let create ~loader table = { loader; table }
+
+    let is_qualifier = In.is_qualifier
+
+    let mem { loader; table } ?dependency key =
+      (* First handle the case where it's already in the hash map *)
+      match In.mem table ?dependency key with
+      | true -> true
+      | false ->
+          (* If no precomputed value exists, we make sure all potential qualifiers are loaded *)
+          LazyLoader.load_all_possible_modules loader ~is_qualifier (In.key_to_reference key);
+          (* We try fetching again *)
+          In.mem table ?dependency key
+
+
+    let get { loader; table } ?dependency key =
+      (* The first get finds precomputed values *)
+      match In.get table ?dependency key with
+      | Some _ as hit -> hit
+      | None ->
+          (* If no precomputed value exists, we make sure all potential qualifiers are loaded *)
+          LazyLoader.load_all_possible_modules loader ~is_qualifier (In.key_to_reference key);
+          (* We try fetching again *)
+          In.get table ?dependency key
+  end
+end
+
+let read_only
+    ({
+       ast_environment;
+       key_tracker;
+       modules;
+       class_summaries;
+       function_definitions;
+       unannotated_globals;
+     } as environment)
+  =
+  let ast_environment = AstEnvironment.read_only ast_environment in
+  let loader = LazyLoader.{ environment; ast_environment } in
+  (* Mask the raw DependencyTrackedTables with lazy read-only views of each one *)
+  let module Modules = ReadOnlyTable.Make (Modules) in
+  let module ClassSummaries = ReadOnlyTable.Make (ClassSummaries) in
+  let module FunctionDefinitions = ReadOnlyTable.Make (FunctionDefinitions) in
+  let module UnannotatedGlobals = ReadOnlyTable.Make (UnannotatedGlobals) in
+  let modules = Modules.create ~loader modules in
+  let class_summaries = ClassSummaries.create ~loader class_summaries in
+  let function_definitions = FunctionDefinitions.create ~loader function_definitions in
+  let unannotated_globals = UnannotatedGlobals.create ~loader unannotated_globals in
+  (* Define the basic getters and existence checks *)
+  let get_module = Modules.get modules in
+  let get_module_metadata ?dependency qualifier =
+    let qualifier =
+      match Reference.as_list qualifier with
+      | ["future"; "builtins"]
+      | ["builtins"] ->
+          Reference.empty
+      | _ -> qualifier
+    in
+    match get_module ?dependency qualifier with
+    | Some _ as result -> result
+    | None -> (
+        match AstEnvironment.ReadOnly.is_module_tracked ast_environment qualifier with
+        | true -> Some (Module.create_implicit ())
+        | false -> None)
+  in
+  let module_exists ?dependency qualifier =
+    let qualifier =
+      match Reference.as_list qualifier with
+      | ["future"; "builtins"]
+      | ["builtins"] ->
+          Reference.empty
+      | _ -> qualifier
+    in
+    match Modules.mem modules ?dependency qualifier with
+    | true -> true
+    | false -> AstEnvironment.ReadOnly.is_module_tracked ast_environment qualifier
+  in
+  let get_class_summary = ClassSummaries.get class_summaries in
+  let class_exists = ClassSummaries.mem class_summaries in
+  let get_function_definition = FunctionDefinitions.get function_definitions in
+  let get_define_body ?dependency key =
+    get_function_definition ?dependency key >>= fun { FunctionDefinition.body; _ } -> body
+  in
+  let get_unannotated_global = UnannotatedGlobals.get unannotated_globals in
+  (* all_defines_in_module is the only KeyTracker-based API that requires loading *)
+  let all_defines_in_module qualifier =
+    LazyLoader.load_module_if_tracked loader qualifier;
+    KeyTracker.get_define_keys key_tracker [qualifier]
+  in
+  (* Define the bulk key reads - these tell us what's been loaded thus far *)
+  let all_classes () =
+    AstEnvironment.ReadOnly.all_explicit_modules ast_environment
+    |> KeyTracker.get_class_keys key_tracker
+  in
+  let all_indices () =
+    all_classes () |> Type.Primitive.Set.of_list |> IndexTracker.indices |> IndexTracker.Set.to_list
+  in
+  let all_unannotated_globals () =
+    AstEnvironment.ReadOnly.all_explicit_modules ast_environment
+    |> KeyTracker.get_unannotated_global_keys key_tracker
+  in
+  let all_defines () =
+    AstEnvironment.ReadOnly.all_explicit_modules ast_environment
+    |> KeyTracker.get_define_keys key_tracker
+  in
+  {
+    ReadOnly.ast_environment;
+    get_module_metadata;
+    module_exists;
+    get_class_summary;
+    class_exists;
+    get_function_definition;
+    get_define_body;
+    get_unannotated_global;
+    all_defines_in_module;
+    all_classes;
+    all_indices;
+    all_defines;
+    all_unannotated_globals;
+  }
+
 
 module UpdateResult = struct
   type t = {
     previous_classes: Type.Primitive.Set.t;
-    previous_unannotated_globals: Reference.Set.t;
     previous_defines: Reference.Set.t;
     define_additions: Reference.Set.t;
+    previous_unannotated_globals: Reference.Set.t;
     triggered_dependencies: DependencyKey.RegisteredSet.t;
     upstream: AstEnvironment.UpdateResult.t;
     read_only: ReadOnly.t;
@@ -1022,15 +1130,15 @@ module UpdateResult = struct
 
   type read_only = ReadOnly.t
 
-  let previous_unannotated_globals { previous_unannotated_globals; _ } =
-    previous_unannotated_globals
-
+  let previous_classes { previous_classes; _ } = previous_classes
 
   let previous_defines { previous_defines; _ } = previous_defines
 
-  let previous_classes { previous_classes; _ } = previous_classes
-
   let define_additions { define_additions; _ } = define_additions
+
+  let previous_unannotated_globals { previous_unannotated_globals; _ } =
+    previous_unannotated_globals
+
 
   let locally_triggered_dependencies { triggered_dependencies; _ } = triggered_dependencies
 
@@ -1047,21 +1155,8 @@ module UpdateResult = struct
   let read_only { read_only; _ } = read_only
 end
 
-type t = { ast_environment: AstEnvironment.t }
-
-let create ast_environment = { ast_environment }
-
-let ast_environment { ast_environment } = ast_environment
-
-let configuration { ast_environment; _ } = AstEnvironment.configuration ast_environment
-
-let read_only { ast_environment } =
-  let ast_environment = AstEnvironment.read_only ast_environment in
-  WriteOnly.read_only ~ast_environment
-
-
 let update_this_and_all_preceding_environments
-    ({ ast_environment } as this_environment)
+    ({ ast_environment; key_tracker; _ } as environment)
     ~scheduler
     trigger
   =
@@ -1070,7 +1165,7 @@ let update_this_and_all_preceding_environments
   let map sources =
     let register qualifier =
       AstEnvironment.ReadOnly.get_processed_source ~track_dependency:true ast_environment qualifier
-      >>| WriteOnly.set_module_data
+      >>| set_module_data environment
       |> Option.value ~default:()
     in
     List.iter sources ~f:register
@@ -1088,19 +1183,19 @@ let update_this_and_all_preceding_environments
       ~f:map
       ~inputs:modified_qualifiers
   in
-  let previous_classes_list = KeyTracker.get_class_keys modified_qualifiers in
-  let previous_classes = Type.Primitive.Set.of_list previous_classes_list in
-  let previous_unannotated_globals_list =
-    KeyTracker.get_unannotated_global_keys modified_qualifiers
+  let KeyTracker.PreviousKeys.
+        {
+          previous_classes_list;
+          previous_classes;
+          previous_defines_list;
+          previous_defines;
+          previous_unannotated_globals_list;
+          previous_unannotated_globals;
+        }
+    =
+    KeyTracker.get_previous_keys_and_clear key_tracker modified_qualifiers
   in
-  let previous_unannotated_globals = Reference.Set.of_list previous_unannotated_globals_list in
-  let previous_defines_list = KeyTracker.get_define_body_keys modified_qualifiers in
-  let previous_defines = Reference.Set.of_list previous_defines_list in
-  KeyTracker.ClassKeys.KeySet.of_list modified_qualifiers |> KeyTracker.ClassKeys.remove_batch;
-  KeyTracker.UnannotatedGlobalKeys.KeySet.of_list modified_qualifiers
-  |> KeyTracker.UnannotatedGlobalKeys.remove_batch;
-  KeyTracker.DefineKeys.KeySet.of_list modified_qualifiers |> KeyTracker.DefineKeys.remove_batch;
-  match configuration this_environment with
+  match configuration environment with
   | { Configuration.Analysis.incremental_style = FineGrained; _ } ->
       let define_additions, triggered_dependencies =
         Profiling.track_duration_and_shared_memory_with_dynamic_tags
@@ -1108,7 +1203,8 @@ let update_this_and_all_preceding_environments
           ~f:(fun _ ->
             let (), mutation_triggers =
               DependencyKey.Transaction.empty ~scheduler
-              |> WriteOnly.add_to_transaction
+              |> add_to_transaction
+                   environment
                    ~previous_classes_list
                    ~previous_unannotated_globals_list
                    ~previous_defines_list
@@ -1116,21 +1212,23 @@ let update_this_and_all_preceding_environments
               |> DependencyKey.Transaction.execute ~update
             in
             let current_classes =
-              KeyTracker.get_class_keys modified_qualifiers |> Type.Primitive.Set.of_list
-            in
-            let current_unannotated_globals =
-              KeyTracker.get_unannotated_global_keys modified_qualifiers |> Reference.Set.of_list
+              KeyTracker.get_class_keys key_tracker modified_qualifiers
+              |> Type.Primitive.Set.of_list
             in
             let current_defines =
-              KeyTracker.get_define_body_keys modified_qualifiers |> Reference.Set.of_list
+              KeyTracker.get_define_keys key_tracker modified_qualifiers |> Reference.Set.of_list
+            in
+            let current_unannotated_globals =
+              KeyTracker.get_unannotated_global_keys key_tracker modified_qualifiers
+              |> Reference.Set.of_list
             in
             let class_additions = Type.Primitive.Set.diff current_classes previous_classes in
+            let define_additions = Reference.Set.diff current_defines previous_defines in
             let unannotated_global_additions =
               Reference.Set.diff current_unannotated_globals previous_unannotated_globals
             in
-            let define_additions = Reference.Set.diff current_defines previous_defines in
             let addition_triggers =
-              WriteOnly.get_all_dependents
+              get_all_dependents
                 ~class_additions:(Set.to_list class_additions)
                 ~unannotated_global_additions:(Set.to_list unannotated_global_additions)
                 ~define_additions:(Set.to_list define_additions)
@@ -1152,12 +1250,12 @@ let update_this_and_all_preceding_environments
       in
       {
         UpdateResult.previous_classes;
-        previous_unannotated_globals;
         previous_defines;
         define_additions;
+        previous_unannotated_globals;
         triggered_dependencies;
         upstream;
-        read_only = WriteOnly.read_only ~ast_environment;
+        read_only = read_only environment;
       }
   | _ ->
       let triggered_dependencies =
@@ -1165,7 +1263,8 @@ let update_this_and_all_preceding_environments
           "LegacyTableUpdate(Unannotated globals)"
           ~tags:["phase_name", "global discovery"]
           ~f:(fun _ ->
-            WriteOnly.direct_data_purge
+            direct_data_purge
+              environment
               ~previous_classes_list
               ~previous_unannotated_globals_list
               ~previous_defines_list
@@ -1174,11 +1273,11 @@ let update_this_and_all_preceding_environments
             DependencyKey.RegisteredSet.empty)
       in
       {
-        previous_classes;
+        UpdateResult.previous_classes;
         previous_unannotated_globals;
         previous_defines;
         define_additions = Reference.Set.empty;
         triggered_dependencies;
         upstream;
-        read_only = WriteOnly.read_only ~ast_environment;
+        read_only = read_only environment;
       }

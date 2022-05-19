@@ -8,7 +8,6 @@ import dataclasses
 import glob
 import json
 import logging
-import multiprocessing
 import os
 import shutil
 import site
@@ -30,8 +29,10 @@ from typing import (
     Union,
 )
 
+import psutil
+
 from .. import command_arguments, dataclasses_merge, find_directories
-from ..filesystem import expand_relative_path, expand_global_root
+from ..filesystem import expand_global_root, expand_relative_path
 from ..find_directories import (
     BINARY_NAME,
     CONFIGURATION_FILE,
@@ -40,12 +41,12 @@ from ..find_directories import (
     LOG_DIRECTORY,
 )
 from . import (
-    search_path as search_path_module,
     exceptions,
+    ide_features as ide_features_module,
     platform_aware,
     python_version as python_version_module,
+    search_path as search_path_module,
     shared_memory as shared_memory_module,
-    ide_features as ide_features_module,
     site_packages,
     unwatched,
 )
@@ -952,15 +953,22 @@ class Configuration:
         if number_of_workers is not None and number_of_workers > 0:
             return number_of_workers
 
-        try:
-            default_number_of_workers = max(multiprocessing.cpu_count() - 4, 1)
-        except NotImplementedError:
-            default_number_of_workers = 4
+        # pyre-fixme[28]: Unexpected keyword argument `logical`.
+        number_of_physical_cores = psutil.cpu_count(logical=False)
+        if number_of_physical_cores is None:
+            default_number_of_workers = 1
+        else:
+            default_number_of_workers = max(1, number_of_physical_cores - 1)
 
         LOG.info(
             "Could not determine the number of Pyre workers from configuration. "
             f"Auto-set the value to {default_number_of_workers}."
         )
+        if default_number_of_workers <= 1:
+            LOG.info(
+                "Consider setting the `--sequential` flag instead when the number "
+                "of parallel workers is not greater than 1."
+            )
         return default_number_of_workers
 
     def is_hover_enabled(self) -> bool:

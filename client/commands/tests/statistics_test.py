@@ -23,20 +23,32 @@ from ..statistics import (
 
 
 class StatisticsTest(testslide.TestCase):
-    def test_find_roots__filter_path_duplicate(self) -> None:
+    def test_find_roots__duplicate_directories(self) -> None:
         self.assertCountEqual(
             find_roots(
                 configuration.Configuration(
                     project_root="/root", dot_pyre_directory=Path("/irrelevant")
                 ),
                 command_arguments.StatisticsArguments(
-                    filter_paths=["/root/foo.py", "/root/bar.py", "/root/foo.py"]
+                    directories=["/root/foo.py", "/root/bar.py", "/root/foo.py"]
                 ),
             ),
             [Path("/root/foo.py"), Path("/root/bar.py")],
         )
 
-    def test_find_roots__filter_path_expand(self) -> None:
+        self.assertCountEqual(
+            find_roots(
+                configuration.Configuration(
+                    project_root="/root", dot_pyre_directory=Path("/irrelevant")
+                ),
+                command_arguments.StatisticsArguments(
+                    directories=["/root/foo", "/root/bar", "/root/foo"]
+                ),
+            ),
+            [Path("/root/foo"), Path("/root/bar")],
+        )
+
+    def test_find_roots__expand_directories(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root).resolve()  # resolve is necessary on OSX 11.6
             with setup.switch_working_directory(root_path):
@@ -46,7 +58,7 @@ class StatisticsTest(testslide.TestCase):
                             project_root="/root", dot_pyre_directory=Path("/irrelevant")
                         ),
                         command_arguments.StatisticsArguments(
-                            filter_paths=["foo.py", "bar.py"]
+                            directories=["foo.py", "bar.py"]
                         ),
                     ),
                     [root_path / "foo.py", root_path / "bar.py"],
@@ -60,12 +72,12 @@ class StatisticsTest(testslide.TestCase):
                     dot_pyre_directory=Path("/irrelevant"),
                     relative_local_root="local",
                 ),
-                command_arguments.StatisticsArguments(filter_paths=[]),
+                command_arguments.StatisticsArguments(directories=[]),
             ),
             [Path("/root/local")],
         )
 
-    def test_find_roots__current_working_directory(self) -> None:
+    def test_find_roots__project_root(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root).resolve()  # resolve is necessary on OSX 11.6
             with setup.switch_working_directory(root_path):
@@ -74,9 +86,9 @@ class StatisticsTest(testslide.TestCase):
                         configuration.Configuration(
                             project_root="/root", dot_pyre_directory=Path("/irrelevant")
                         ),
-                        command_arguments.StatisticsArguments(filter_paths=[]),
+                        command_arguments.StatisticsArguments(directories=[]),
                     ),
-                    [root_path],
+                    [Path("/root")],
                 )
 
     def test_find_paths_to_parse(self) -> None:
