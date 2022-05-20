@@ -3,6 +3,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import dataclasses
+import enum
 import json
 import logging
 from pathlib import Path
@@ -14,14 +16,7 @@ from .. import (
     error,
     statistics_logger,
 )
-from . import (
-    backend_arguments,
-    commands,
-    remote_logging as remote_logging_module,
-    server_connection,
-    server_event,
-    start,
-)
+from . import backend_arguments, commands, server_connection, server_event, start
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -31,6 +26,20 @@ COMMAND_NAME = "incremental"
 
 class InvalidServerResponse(Exception):
     pass
+
+
+class ServerStatus(str, enum.Enum):
+    NEWLY_STARTED: str = "newly_started_server"
+    ALREADY_RUNNING: str = "already_running_server"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclasses.dataclass(frozen=True)
+class ExitStatus:
+    exit_code: commands.ExitCode
+    connected_to: ServerStatus
 
 
 def parse_type_error_response_json(response_json: object) -> List[error.Error]:
@@ -141,7 +150,7 @@ def _show_progress_log_and_display_type_errors(
 def run_incremental(
     configuration: configuration_module.Configuration,
     incremental_arguments: command_arguments.IncrementalArguments,
-) -> remote_logging_module.ExitCodeWithAdditionalLogging:
+) -> ExitStatus:
     socket_path = server_connection.get_default_socket_path(
         project_root=Path(configuration.project_root),
         relative_local_root=Path(configuration.relative_local_root)
@@ -159,11 +168,8 @@ def run_incremental(
         exit_code = _show_progress_log_and_display_type_errors(
             log_path, socket_path, output, remote_logging
         )
-        return remote_logging_module.ExitCodeWithAdditionalLogging(
-            exit_code=exit_code,
-            additional_logging={
-                "connected_to": "already_running_server",
-            },
+        return ExitStatus(
+            exit_code=exit_code, connected_to=ServerStatus.ALREADY_RUNNING
         )
     except server_connection.ConnectionFailure:
         pass
@@ -180,12 +186,7 @@ def run_incremental(
     exit_code = _show_progress_log_and_display_type_errors(
         log_path, socket_path, output, remote_logging
     )
-    return remote_logging_module.ExitCodeWithAdditionalLogging(
-        exit_code=exit_code,
-        additional_logging={
-            "connected_to": "newly_started_server",
-        },
-    )
+    return ExitStatus(exit_code=exit_code, connected_to=ServerStatus.NEWLY_STARTED)
 
 
 def _exit_code_from_error_kind(error_kind: server_event.ErrorKind) -> commands.ExitCode:
@@ -198,11 +199,10 @@ def _exit_code_from_error_kind(error_kind: server_event.ErrorKind) -> commands.E
     return commands.ExitCode.FAILURE
 
 
-@remote_logging_module.log_usage_with_additional_info(command_name=COMMAND_NAME)
 def run(
     configuration: configuration_module.Configuration,
     incremental_arguments: command_arguments.IncrementalArguments,
-) -> remote_logging_module.ExitCodeWithAdditionalLogging:
+) -> ExitStatus:
     try:
         return run_incremental(configuration, incremental_arguments)
     except server_event.ServerStartException as error:
