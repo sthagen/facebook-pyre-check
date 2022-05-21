@@ -288,23 +288,30 @@ let run_taint_analysis
 
     let initial_callables =
       Service.StaticAnalysis.Cache.initial_callables cache (fun () ->
-          Interprocedural.FetchCallables.fetch_initial_callables
-            ~scheduler
-            ~configuration
-            ~environment:read_only_environment
-            ~qualifiers)
+          let timer = Timer.start () in
+          let initial_callables =
+            Interprocedural.FetchCallables.from_qualifiers
+              ~scheduler
+              ~configuration
+              ~environment:read_only_environment
+              ~include_unit_tests:false
+              ~qualifiers
+          in
+          Statistics.performance
+            ~name:"Fetched initial callables to analyze"
+            ~phase_name:"Fetching initial callables to analyze"
+            ~timer
+            ();
+          initial_callables)
     in
 
     let { ModelParser.models = initial_models; skip_overrides; _ } =
-      let { Interprocedural.FetchCallables.callables_with_dependency_information; stubs; _ } =
-        initial_callables
-      in
       initialize_models
         ~scheduler
         ~static_analysis_configuration
         ~environment:(Analysis.TypeEnvironment.read_only environment)
-        ~callables:(List.map callables_with_dependency_information ~f:fst)
-        ~stubs
+        ~callables:(Interprocedural.FetchCallables.get_callables initial_callables)
+        ~stubs:(Interprocedural.FetchCallables.get_stubs initial_callables)
     in
 
     let ast_environment =
@@ -315,13 +322,14 @@ let run_taint_analysis
 
     Log.info "Computing overrides...";
     let timer = Timer.start () in
-    let { Interprocedural.DependencyGraphSharedMemory.overrides; skipped_overrides } =
-      Service.StaticAnalysis.record_overrides_for_qualifiers
-        ~scheduler
-        ~cache
-        ~environment:(Analysis.TypeEnvironment.read_only environment)
-        ~skip_overrides
-        ~qualifiers
+    let { Interprocedural.OverrideGraph.Heap.overrides; skipped_overrides } =
+      Service.StaticAnalysis.Cache.override_graph cache (fun () ->
+          Interprocedural.OverrideGraph.record_overrides_for_qualifiers
+            ~scheduler
+            ~environment:(Analysis.TypeEnvironment.read_only environment)
+            ~skip_overrides
+            ~maximum_overrides:(TaintConfiguration.get_maximum_overrides_to_analyze ())
+            ~qualifiers)
     in
     let override_dependencies = Interprocedural.DependencyGraph.from_overrides overrides in
     Statistics.performance ~name:"Overrides computed" ~phase_name:"Computing overrides" ~timer ();
@@ -334,7 +342,7 @@ let run_taint_analysis
         ~static_analysis_configuration
         ~environment:(Analysis.TypeEnvironment.read_only environment)
         ~attribute_targets:(Registry.object_targets initial_models)
-        ~qualifiers
+        ~callables:(Interprocedural.FetchCallables.get_callables initial_callables)
     in
     Statistics.performance ~name:"Call graph built" ~phase_name:"Building call graph" ~timer ();
 
@@ -342,8 +350,7 @@ let run_taint_analysis
     let timer = Timer.start () in
     let dependency_graph, callables_to_analyze, override_targets =
       Service.StaticAnalysis.build_dependency_graph
-        ~callables_with_dependency_information:
-          initial_callables.callables_with_dependency_information
+        ~initial_callables
         ~callgraph
         ~override_dependencies
     in
@@ -382,9 +389,8 @@ let run_taint_analysis
         ~context:
           { Taint.Fixpoint.Analysis.environment = Analysis.TypeEnvironment.read_only environment }
         ~dependency_graph
-        ~initial_callables:(List.map initial_callables.callables_with_dependency_information ~f:fst)
-        ~stubs:initial_callables.stubs
-        ~filtered_callables:initial_callables.filtered_callables
+        ~initial_callables:(Interprocedural.FetchCallables.get_callables initial_callables)
+        ~stubs:(Interprocedural.FetchCallables.get_stubs initial_callables)
         ~override_targets
         ~callables_to_analyze
         ~initial_models

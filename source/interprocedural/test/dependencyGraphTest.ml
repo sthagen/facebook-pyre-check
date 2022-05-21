@@ -35,13 +35,9 @@ let create_call_graph ?(update_environment_with = []) ~context source_text =
     setup ~update_environment_with ~context ~handle:"test.py" source_text
   in
   let static_analysis_configuration = Configuration.StaticAnalysis.create configuration () in
-  let record_overrides overrides =
-    let record_override_edge ~key:member ~data:subtypes =
-      DependencyGraphSharedMemory.add_overriding_types ~member ~subtypes
-    in
-    Reference.Map.iteri overrides ~f:record_override_edge
+  let () =
+    OverrideGraph.Heap.from_source ~environment ~source |> OverrideGraph.SharedMemory.from_heap
   in
-  DependencyGraph.create_overrides ~environment ~source |> record_overrides;
   let () =
     let errors = TypeEnvironment.ReadOnly.get_errors environment !&"test" in
     if not (List.is_empty errors) then
@@ -52,12 +48,24 @@ let create_call_graph ?(update_environment_with = []) ~context source_text =
         errors
       |> failwith
   in
-  CallGraph.create_callgraph
-    ~static_analysis_configuration
-    ~store_shared_memory:false
-    ~environment
-    ~attribute_targets:(Target.HashSet.create ())
-    ~source
+  let callables =
+    FetchCallables.from_source
+      ~configuration
+      ~resolution:(TypeEnvironment.ReadOnly.global_resolution environment)
+      ~include_unit_tests:true
+      ~source
+    |> FetchCallables.get_callables
+  in
+  let fold call_graph callable =
+    CallGraph.call_graph_of_callable
+      ~static_analysis_configuration
+      ~store_shared_memory:false
+      ~environment
+      ~attribute_targets:(Target.HashSet.create ())
+      ~global_call_graph:call_graph
+      ~callable
+  in
+  List.fold ~init:Target.Map.empty ~f:fold callables
 
 
 let create_callable = function
@@ -471,88 +479,33 @@ let test_type_collection context =
     ~expected:[4, 0, "$local_0$a.foo.(...).foo.(...)", "test2.A.foo"]
 
 
-let test_method_overrides context =
-  let assert_method_overrides ?(update_environment_with = []) ?(handle = "test.py") source ~expected
-    =
-    let expected =
-      let create_callables (member, overriding_types) =
-        !&member, List.map overriding_types ~f:Reference.create
-      in
-      List.map expected ~f:create_callables
-    in
-    let source, environment, _ = setup ~update_environment_with ~context ~handle source in
-    let overrides_map = DependencyGraph.create_overrides ~environment ~source in
-    let expected_overrides = Reference.Map.of_alist_exn expected in
-    let equal_elements = List.equal Reference.equal in
-    let printer map =
-      map |> Reference.Map.sexp_of_t (List.sexp_of_t Reference.sexp_of_t) |> Sexp.to_string
-    in
-    assert_equal ~cmp:(Reference.Map.equal equal_elements) ~printer expected_overrides overrides_map
-  in
-  assert_method_overrides
-    {|
-      class Foo:
-        def foo(): pass
-      class Bar(Foo):
-        def foo(): pass
-      class Baz(Bar):
-        def foo(): pass
-        def baz(): pass
-      class Qux(Foo):
-        def foo(): pass
-    |}
-    ~expected:["test.Bar.foo", ["test.Baz"]; "test.Foo.foo", ["test.Bar"; "test.Qux"]];
-
-  (* We don't register any overrides at all for classes in test files. *)
-  assert_method_overrides
-    {|
-      class Foo:
-        def foo(): pass
-      class Bar(Foo):
-        def foo(): pass
-      class Test(unittest.case.TestCase):
-        class Baz(Foo):
-          def foo(): pass
-    |}
-    ~expected:[];
-  assert_method_overrides
-    ~update_environment_with:
-      [
-        {
-          handle = "module.py";
-          source =
-            {|
-        import module
-        class Baz(module.Foo):
-          def foo(): pass
-      |};
-        };
-      ]
-    ~handle:"test_module.py"
-    {|
-      import module
-      class Test(unittest.case.TestCase):
-        class Bar(module.Foo):
-          def foo(): pass
-    |}
-    ~expected:[]
-
-
 let test_strongly_connected_components context =
   let assert_strongly_connected_components source ~handle ~expected =
     let expected = List.map expected ~f:(List.map ~f:create_callable) in
     let source, environment, configuration = setup ~context ~handle source in
     let static_analysis_configuration = Configuration.StaticAnalysis.create configuration () in
-    let partitions =
-      let edges =
-        CallGraph.create_callgraph
+    let callables =
+      FetchCallables.from_source
+        ~configuration
+        ~resolution:(TypeEnvironment.ReadOnly.global_resolution environment)
+        ~include_unit_tests:true
+        ~source
+      |> FetchCallables.get_callables
+    in
+    let call_graph =
+      let fold call_graph callable =
+        CallGraph.call_graph_of_callable
           ~static_analysis_configuration
           ~store_shared_memory:false
           ~environment
           ~attribute_targets:(Target.HashSet.create ())
-          ~source
-        |> DependencyGraph.from_callgraph
+          ~global_call_graph:call_graph
+          ~callable
       in
+      List.fold ~init:Target.Map.empty ~f:fold callables
+    in
+    let partitions =
+      let edges = DependencyGraph.from_callgraph call_graph in
       DependencyGraph.partition ~edges
     in
     let printer partitions = Format.asprintf "%a" DependencyGraph.pp_partitions partitions in
@@ -679,27 +632,34 @@ let test_prune_callables _ =
     let overrides =
       List.map overrides ~f:(fun (key, values) ->
           Reference.create key, List.map values ~f:(fun value -> Reference.create value))
-      |> Reference.Map.of_alist_exn
+      |> OverrideGraph.Heap.of_alist_exn
     in
-    let callables_with_dependency_information =
-      List.map project_callables ~f:(fun callable ->
-          Target.create_method (Reference.create callable), true)
-      @ List.map external_callables ~f:(fun callable ->
-            Target.create_method (Reference.create callable), false)
+    let project_callables =
+      List.map ~f:(fun name -> name |> Reference.create |> Target.create_method) project_callables
+    in
+    let external_callables =
+      List.map ~f:(fun name -> name |> Reference.create |> Target.create_method) external_callables
+    in
+    let initial_callables =
+      {
+        FetchCallables.internals = project_callables;
+        callables = List.rev_append project_callables external_callables;
+        stubs = [];
+      }
     in
     let overrides = DependencyGraph.from_overrides overrides in
     let dependencies =
       DependencyGraph.from_callgraph callgraph |> DependencyGraph.union overrides
     in
     let { DependencyGraph.dependencies = actual_dependencies; pruned_callables = actual_callables } =
-      DependencyGraph.prune dependencies ~callables_with_dependency_information
+      DependencyGraph.prune dependencies ~initial_callables
     in
     assert_equal
       ~cmp:(List.equal Target.equal)
       ~printer:(List.to_string ~f:Target.show_pretty)
       (List.map expected_callables ~f:(fun callable ->
            Target.create_method (Reference.create callable)))
-      actual_callables;
+      (List.sort ~compare:Target.compare actual_callables);
     assert_equal
       ~cmp:
         (List.equal (fun (left_key, left_values) (right_key, right_values) ->
@@ -765,7 +725,7 @@ let test_prune_callables _ =
         "external.unrelated";
       ]
     ~expected_callables:
-      ["a.foo"; "external.bar"; "external.C.m"; "external.D.m"; "external.called_by_override"]
+      ["a.foo"; "external.bar"; "external.called_by_override"; "external.C.m"; "external.D.m"]
     ~expected_dependencies:
       [
         "a.foo", ["external.bar"];
@@ -823,7 +783,7 @@ let test_prune_callables _ =
         "external.unrelated";
       ]
     ~expected_callables:
-      ["a.foo"; "external.C.m"; "external.D.m"; "external.E.m"; "external.called_by_override"]
+      ["a.foo"; "external.called_by_override"; "external.C.m"; "external.D.m"; "external.E.m"]
     ~expected_dependencies:
       [
         "a.foo", ["O|external.C.m"];
@@ -869,7 +829,6 @@ let () =
          "type_collection" >:: test_type_collection;
          "build" >:: test_construction;
          "build_reverse" >:: test_construction_reverse;
-         "overrides" >:: test_method_overrides;
          "strongly_connected_components" >:: test_strongly_connected_components;
          "prune_callables" >:: test_prune_callables;
        ]
