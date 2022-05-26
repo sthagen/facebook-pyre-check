@@ -22,6 +22,7 @@ let recheck
   =
   let timer = Timer.start () in
   let ast_environment = TypeEnvironment.ast_environment environment in
+  let annotated_global_environment = TypeEnvironment.global_environment environment in
   let module_tracker = AstEnvironment.module_tracker ast_environment in
   let module_updates = ModuleTracker.update module_tracker ~paths in
   Scheduler.once_per_worker scheduler ~configuration ~f:SharedMemory.invalidate_caches;
@@ -31,16 +32,14 @@ let recheck
   Log.info "Repopulating the environment...";
 
   let annotated_global_environment_update_result =
-    let annotated_global_environment = AnnotatedGlobalEnvironment.create ast_environment in
     AnnotatedGlobalEnvironment.update_this_and_all_preceding_environments
       annotated_global_environment
       ~scheduler
       (Update module_updates)
   in
   let invalidated_modules =
-    AnnotatedGlobalEnvironment.UpdateResult.ast_environment_update_result
+    AnnotatedGlobalEnvironment.UpdateResult.invalidated_modules
       annotated_global_environment_update_result
-    |> AstEnvironment.UpdateResult.invalidated_modules
   in
   let recheck_modules, new_errors, total_rechecked_functions =
     match incremental_style with

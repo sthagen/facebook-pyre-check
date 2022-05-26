@@ -37,7 +37,7 @@ module OverrideGraphSharedMemory = Memory.Serializer (struct
   module Serialized = struct
     type t = {
       overrides: OverrideGraph.Heap.serializable;
-      skipped_overrides: Ast.Reference.t list;
+      skipped_overrides: Target.t list;
     }
 
     let prefix = Prefix.make ()
@@ -137,6 +137,7 @@ module Cache = struct
         ~configuration
         ~old_module_tracker
         ~new_module_tracker
+      |> List.map ~f:PyrePath.Built.raw
       |> List.filter ~f:(fun path -> not (is_pysa_model path || is_taint_config path))
     in
     match changed_paths with

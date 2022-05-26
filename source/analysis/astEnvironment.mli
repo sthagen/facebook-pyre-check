@@ -38,13 +38,15 @@ module ReadOnly : sig
 
   val get_relative : t -> Reference.t -> string option
 
-  val get_real_path : t -> Reference.t -> PyrePath.t option
+  val get_real_path : t -> Reference.t -> PyrePath.Built.t option
 
   val get_real_path_relative : t -> Reference.t -> string option
 
   val all_explicit_modules : t -> Reference.t list
 
   val is_module_tracked : t -> Reference.t -> bool
+
+  val project_qualifiers : t -> Ast.Reference.t list
 end
 
 val module_tracker : t -> ModuleTracker.t
@@ -60,19 +62,13 @@ val load : ModuleTracker.t -> t
 
 val create : ?additional_preprocessing:(Source.t -> Source.t) -> ModuleTracker.t -> t
 
-module UpdateResult : sig
-  type t
-
-  val invalidated_modules : t -> Reference.t list
-
-  val create_for_testing : unit -> t
+module InvalidatedModules : sig
+  type t = Reference.t list
 end
 
-type trigger =
-  | Update of ModuleTracker.IncrementalUpdate.t list
-  | ColdStart
+type trigger = Update of ModuleTracker.IncrementalUpdate.t list
 
-val update : scheduler:Scheduler.t -> t -> trigger -> UpdateResult.t
+val update : scheduler:Scheduler.t -> t -> trigger -> InvalidatedModules.t
 
 val remove_sources : t -> Reference.t list -> unit
 

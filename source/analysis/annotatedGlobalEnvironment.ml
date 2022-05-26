@@ -33,8 +33,6 @@ module Common = struct
     List.fold ~init:previous_unannotated_globals ~f:Set.add previous_classes
 
 
-  let all_keys = UnannotatedGlobalEnvironment.ReadOnly.all_unannotated_globals
-
   let show_key = Reference.show
 end
 
@@ -119,6 +117,10 @@ module ReadOnly = struct
     |> ClassHierarchyEnvironment.ReadOnly.alias_environment
     |> AliasEnvironment.ReadOnly.unannotated_global_environment
     |> UnannotatedGlobalEnvironment.ReadOnly.ast_environment
+
+
+  let project_qualifiers environment =
+    ast_environment environment |> AstEnvironment.ReadOnly.project_qualifiers
 end
 
 module UpdateResult = GlobalLocationTable.UpdateResult

@@ -21,19 +21,17 @@ let location (start_line, start_column) (stop_line, stop_column) =
 
 let create_with_location value start end_ = Node.create value ~location:(location start end_)
 
+let create_and_cold_start project =
+  let ast_environment = ScratchProject.build_ast_environment project in
+  let unannotated_global_environment = UnannotatedGlobalEnvironment.create ast_environment in
+  let _ = UnannotatedGlobalEnvironment.cold_start unannotated_global_environment in
+  unannotated_global_environment
+
+
 let test_global_registration context =
   let assert_registers ?(expected = true) source name =
     let project = ScratchProject.setup ["test.py", source] ~context in
-    let ast_environment = ScratchProject.build_ast_environment project in
-    let update_result =
-      UnannotatedGlobalEnvironment.create ast_environment
-      |> fun unannotated_global_environment ->
-      UnannotatedGlobalEnvironment.update_this_and_all_preceding_environments
-        unannotated_global_environment
-        ~scheduler:(mock_scheduler ())
-        ColdStart
-    in
-    let read_only = UnannotatedGlobalEnvironment.UpdateResult.read_only update_result in
+    let read_only = create_and_cold_start project |> UnannotatedGlobalEnvironment.read_only in
     assert_equal (UnannotatedGlobalEnvironment.ReadOnly.class_exists read_only name) expected
   in
   assert_registers {|
@@ -50,15 +48,7 @@ let test_global_registration context =
 let test_define_registration context =
   let assert_registers ~expected source =
     let project = ScratchProject.setup ["test.py", source] ~context in
-    let ast_environment = ScratchProject.build_ast_environment project in
-    let unannotated_global_environment = UnannotatedGlobalEnvironment.create ast_environment in
-    let update_result =
-      UnannotatedGlobalEnvironment.update_this_and_all_preceding_environments
-        unannotated_global_environment
-        ~scheduler:(mock_scheduler ())
-        ColdStart
-    in
-    let read_only = UnannotatedGlobalEnvironment.UpdateResult.read_only update_result in
+    let read_only = create_and_cold_start project |> UnannotatedGlobalEnvironment.read_only in
     let actual = UnannotatedGlobalEnvironment.ReadOnly.all_defines_in_module read_only !&"test" in
     let expected = List.sort expected ~compare:Reference.compare in
     assert_equal
@@ -251,15 +241,7 @@ let test_define_registration context =
 let test_simple_global_registration context =
   let assert_registers source name expected =
     let project = ScratchProject.setup ["test.py", source] ~context in
-    let ast_environment = ScratchProject.build_ast_environment project in
-    let unannotated_global_environment = UnannotatedGlobalEnvironment.create ast_environment in
-    let update_result =
-      UnannotatedGlobalEnvironment.update_this_and_all_preceding_environments
-        unannotated_global_environment
-        ~scheduler:(mock_scheduler ())
-        ColdStart
-    in
-    let read_only = UnannotatedGlobalEnvironment.UpdateResult.read_only update_result in
+    let read_only = create_and_cold_start project |> UnannotatedGlobalEnvironment.read_only in
     let printer global =
       global >>| UnannotatedGlobal.sexp_of_t >>| Sexp.to_string_hum |> Option.value ~default:"None"
     in
@@ -355,42 +337,32 @@ let test_simple_global_registration context =
 
 
 let test_builtin_modules context =
-  let ast_environment =
-    let ast_environment =
-      let sources = ["builtins.py", "foo: int = 42"] in
-      let project =
-        ScratchProject.setup
-          ~context
-          ~include_typeshed_stubs:false
-          ~include_helper_builtins:false
-          sources
-      in
-      ScratchProject.build_ast_environment project
+  let read_only =
+    let sources = ["builtins.py", "foo: int = 42"] in
+    let project =
+      ScratchProject.setup
+        ~context
+        ~include_typeshed_stubs:false
+        ~include_helper_builtins:false
+        sources
     in
-    let update_result =
-      let unannotated_global_environment = UnannotatedGlobalEnvironment.create ast_environment in
-      UnannotatedGlobalEnvironment.update_this_and_all_preceding_environments
-        unannotated_global_environment
-        ~scheduler:(mock_scheduler ())
-        ColdStart
-    in
-    UnannotatedGlobalEnvironment.UpdateResult.read_only update_result
+    create_and_cold_start project |> UnannotatedGlobalEnvironment.read_only
   in
   assert_bool
     "empty qualifier module exists"
-    (UnannotatedGlobalEnvironment.ReadOnly.module_exists ast_environment Reference.empty);
+    (UnannotatedGlobalEnvironment.ReadOnly.module_exists read_only Reference.empty);
   assert_bool
     "random qualifier doesn't exist"
-    (not (UnannotatedGlobalEnvironment.ReadOnly.module_exists ast_environment !&"derp"));
+    (not (UnannotatedGlobalEnvironment.ReadOnly.module_exists read_only !&"derp"));
   assert_bool
     "`builtins` exists"
-    (UnannotatedGlobalEnvironment.ReadOnly.module_exists ast_environment !&"builtins");
+    (UnannotatedGlobalEnvironment.ReadOnly.module_exists read_only !&"builtins");
   assert_bool
     "`future.builtins` exists"
-    (UnannotatedGlobalEnvironment.ReadOnly.module_exists ast_environment !&"future.builtins");
+    (UnannotatedGlobalEnvironment.ReadOnly.module_exists read_only !&"future.builtins");
 
   let assert_nonempty qualifier =
-    match UnannotatedGlobalEnvironment.ReadOnly.get_module_metadata ast_environment qualifier with
+    match UnannotatedGlobalEnvironment.ReadOnly.get_module_metadata read_only qualifier with
     | None -> assert_failure "Module does not exist"
     | Some metadata ->
         assert_bool "empty stub not expected" (not (Module.empty_stub metadata));
@@ -412,29 +384,19 @@ let test_resolve_exports context =
   let open UnannotatedGlobalEnvironment in
   let assert_resolved ?(include_typeshed = false) ~expected ?from ~reference sources =
     Memory.reset_shared_memory ();
-    let ast_environment =
-      let project =
-        if include_typeshed then
-          ScratchProject.setup ~context sources
-        else
-          ScratchProject.setup
-            ~context
-            ~include_typeshed_stubs:false
-            ~include_helper_builtins:false
-            ~external_sources:["builtins.py", ""]
-            sources
-      in
-      ScratchProject.build_ast_environment project
+    let project =
+      if include_typeshed then
+        ScratchProject.setup ~context sources
+      else
+        ScratchProject.setup
+          ~context
+          ~include_typeshed_stubs:false
+          ~include_helper_builtins:false
+          ~external_sources:["builtins.py", ""]
+          sources
     in
-    let update_result =
-      let unannotated_global_environment = UnannotatedGlobalEnvironment.create ast_environment in
-      UnannotatedGlobalEnvironment.update_this_and_all_preceding_environments
-        unannotated_global_environment
-        ~scheduler:(mock_scheduler ())
-        ColdStart
-    in
-    let unannotated_global_environment = UpdateResult.read_only update_result in
-    let actual = ReadOnly.resolve_exports unannotated_global_environment ?from reference in
+    let read_only = create_and_cold_start project |> UnannotatedGlobalEnvironment.read_only in
+    let actual = ReadOnly.resolve_exports read_only ?from reference in
     assert_equal
       ~ctxt:context
       ~cmp:[%compare.equal: ResolvedReference.t option]
@@ -745,16 +707,9 @@ let assert_updates
       sources
       ~context
   in
-  let ast_environment = ScratchProject.build_ast_environment project in
-  let unannotated_global_environment = UnannotatedGlobalEnvironment.create ast_environment in
   let configuration = ScratchProject.configuration_of project in
-  let update_result =
-    UnannotatedGlobalEnvironment.update_this_and_all_preceding_environments
-      unannotated_global_environment
-      ~scheduler:(mock_scheduler ())
-      ColdStart
-  in
-  let read_only = UnannotatedGlobalEnvironment.UpdateResult.read_only update_result in
+  let unannotated_global_environment = create_and_cold_start project in
+  let read_only = UnannotatedGlobalEnvironment.read_only unannotated_global_environment in
   let execute_action = function
     | `Get (class_name, dependency, expected_number_of_statements) ->
         let printer number =
@@ -770,6 +725,11 @@ let assert_updates
         UnannotatedGlobalEnvironment.ReadOnly.class_exists read_only ~dependency class_name
         |> assert_equal expectation
     | `AllClasses expectation ->
+        let _force_lazy_loading_of_module_ =
+          UnannotatedGlobalEnvironment.ReadOnly.get_module_metadata
+            read_only
+            (Reference.create "test")
+        in
         UnannotatedGlobalEnvironment.ReadOnly.all_classes read_only
         |> assert_equal ~printer:(List.to_string ~f:Fn.id) expectation
     | `Global (global_name, dependency, expectation) ->
@@ -849,7 +809,7 @@ let assert_updates
   new_source >>| add_file project ~relative:"test.py" |> Option.value ~default:();
   let { ScratchProject.module_tracker; _ } = project in
   let { Configuration.Analysis.local_root; _ } = configuration in
-  let path = PyrePath.create_relative ~root:local_root ~relative:"test.py" in
+  let path = PyrePath.Built.create_relative ~root:local_root ~relative:"test.py" in
   let update_result =
     ModuleTracker.update ~paths:[path] module_tracker
     |> (fun updates -> AstEnvironment.Update updates)

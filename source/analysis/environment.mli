@@ -29,7 +29,7 @@ module UpdateResult : sig
       :  t ->
       UnannotatedGlobalEnvironment.UpdateResult.t
 
-    val ast_environment_update_result : t -> AstEnvironment.UpdateResult.t
+    val invalidated_modules : t -> AstEnvironment.InvalidatedModules.t
   end
 end
 
@@ -47,6 +47,8 @@ module type PreviousEnvironment = sig
   val configuration : t -> Configuration.Analysis.t
 
   val read_only : t -> ReadOnly.t
+
+  val cold_start : t -> ReadOnly.t
 
   val update_this_and_all_preceding_environments
     :  t ->
@@ -71,6 +73,8 @@ module type S = sig
   val configuration : t -> Configuration.Analysis.t
 
   val read_only : t -> ReadOnly.t
+
+  val cold_start : t -> ReadOnly.t
 
   val update_this_and_all_preceding_environments
     :  t ->
@@ -124,8 +128,6 @@ module EnvironmentTable : sig
       dependency:SharedMemoryKeys.DependencyKey.registered option ->
       Value.t
 
-    val all_keys : UnannotatedGlobalEnvironment.ReadOnly.t -> Key.t list
-
     val serialize_value : Value.t -> string
 
     val show_key : Key.t -> string
@@ -157,6 +159,8 @@ module EnvironmentTable : sig
     val configuration : t -> Configuration.Analysis.t
 
     val read_only : t -> ReadOnly.t
+
+    val cold_start : t -> ReadOnly.t
 
     val update_this_and_all_preceding_environments
       :  t ->

@@ -5,13 +5,19 @@
 
 
 import dataclasses
-from collections import defaultdict
+import logging
 from enum import Enum
 from re import compile
-from typing import Any, Dict, Iterable, List, Pattern, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Pattern, Sequence
 
 import libcst as cst
 from libcst.metadata import CodeRange, PositionProvider
+from typing_extensions import TypeAlias
+
+LOG: logging.Logger = logging.getLogger(__name__)
+
+ErrorCode: TypeAlias = int
+LineNumber: TypeAlias = int
 
 
 @dataclasses.dataclass(frozen=True)
@@ -19,6 +25,40 @@ class AnnotationInfo:
     node: cst.CSTNode
     is_annotated: bool
     code_range: CodeRange
+
+
+@dataclasses.dataclass(frozen=True)
+class ModuleAnnotationData:
+    line_count: int
+    total_functions: List[CodeRange]
+    partially_annotated_functions: List[CodeRange]
+    fully_annotated_functions: List[CodeRange]
+    total_parameters: List[CodeRange]
+    annotated_parameters: List[CodeRange]
+    total_returns: List[CodeRange]
+    annotated_returns: List[CodeRange]
+    total_globals: List[CodeRange]
+    annotated_globals: List[CodeRange]
+    total_attributes: List[CodeRange]
+    annotated_attributes: List[CodeRange]
+
+
+@dataclasses.dataclass(frozen=True)
+class ModuleSuppressionData:
+    code: Dict[ErrorCode, List[LineNumber]]
+    no_code: List[LineNumber]
+
+
+class ModuleMode(str, Enum):
+    UNSAFE = "UNSAFE"
+    STRICT = "STRICT"
+    IGNORE_ALL = "IGNORE_ALL"
+
+
+@dataclasses.dataclass(frozen=True)
+class ModuleStrictData:
+    mode: ModuleMode
+    explicit_comment_line: Optional[LineNumber]
 
 
 class FunctionAnnotationKind(Enum):
@@ -229,132 +269,171 @@ class AnnotationCollector(cst.CSTVisitor):
 
 
 class StatisticsCollector(cst.CSTVisitor):
-    def build_json(self) -> Dict[str, int]:
-        return {}
+    pass
 
 
 class AnnotationCountCollector(StatisticsCollector, AnnotationCollector):
-    def return_count(self) -> int:
-        return len(list(self.returns()))
+    def partially_annotated_functions(self) -> List[FunctionAnnotationInfo]:
+        return [f for f in self.functions if f.is_partially_annotated]
 
-    def annotated_return_count(self) -> int:
-        return len([r for r in self.returns() if r.is_annotated])
+    def fully_annotated_functions(self) -> List[FunctionAnnotationInfo]:
+        return [f for f in self.functions if f.is_fully_annotated]
 
-    def globals_count(self) -> int:
-        return len(self.globals)
+    def annotated_parameters(self) -> List[AnnotationInfo]:
+        return [p for p in self.parameters() if p.is_annotated]
 
-    def annotated_globals_count(self) -> int:
-        return len([g for g in self.globals if g.is_annotated])
+    def annotated_returns(self) -> List[AnnotationInfo]:
+        return [r for r in self.returns() if r.is_annotated]
 
-    def parameters_count(self) -> int:
-        return len(list(self.parameters()))
+    def annotated_globals(self) -> List[AnnotationInfo]:
+        return [g for g in self.globals if g.is_annotated]
 
-    def annotated_parameters_count(self) -> int:
-        return len([p for p in self.parameters() if p.is_annotated])
+    def annotated_attributes(self) -> List[AnnotationInfo]:
+        return [a for a in self.attributes if a.is_annotated]
 
-    def attributes_count(self) -> int:
-        return len(self.attributes)
+    def build_result(self) -> ModuleAnnotationData:
+        return ModuleAnnotationData(
+            line_count=self.line_count,
+            total_functions=[function.code_range for function in self.functions],
+            partially_annotated_functions=[
+                function.code_range for function in self.partially_annotated_functions()
+            ],
+            fully_annotated_functions=[
+                function.code_range for function in self.fully_annotated_functions()
+            ],
+            total_parameters=[p.code_range for p in list(self.parameters())],
+            annotated_parameters=[
+                p.code_range for p in self.parameters() if p.is_annotated
+            ],
+            total_returns=[r.code_range for r in list(self.returns())],
+            annotated_returns=[r.code_range for r in self.annotated_returns()],
+            total_globals=[g.code_range for g in self.globals],
+            annotated_globals=[g.code_range for g in self.annotated_globals()],
+            total_attributes=[a.code_range for a in self.attributes],
+            annotated_attributes=[a.code_range for a in self.annotated_attributes()],
+        )
 
-    def annotated_attributes_count(self) -> int:
-        return len([a for a in self.attributes if a.is_annotated])
-
-    def function_count(self) -> int:
-        return len(self.functions)
-
-    def partially_annotated_functions_count(self) -> int:
-        return len([f for f in self.functions if f.is_partially_annotated])
-
-    def fully_annotated_functions_count(self) -> int:
-        return len([f for f in self.functions if f.is_fully_annotated])
-
-    def build_json(self) -> Dict[str, int]:
+    @staticmethod
+    def get_result_counts(result: ModuleAnnotationData) -> Dict[str, int]:
         return {
-            "return_count": self.return_count(),
-            "annotated_return_count": self.annotated_return_count(),
-            "globals_count": self.globals_count(),
-            "annotated_globals_count": self.annotated_globals_count(),
-            "parameter_count": self.parameters_count(),
-            "annotated_parameter_count": self.annotated_parameters_count(),
-            "attribute_count": self.attributes_count(),
-            "annotated_attribute_count": self.annotated_attributes_count(),
-            "function_count": self.function_count(),
-            "partially_annotated_function_count": (
-                self.partially_annotated_functions_count()
+            "return_count": len(result.total_returns),
+            "annotated_return_count": len(result.annotated_returns),
+            "globals_count": len(result.total_globals),
+            "annotated_globals_count": len(result.annotated_globals),
+            "parameter_count": len(result.total_parameters),
+            "annotated_parameter_count": len(result.annotated_parameters),
+            "attribute_count": len(result.total_attributes),
+            "annotated_attribute_count": len(result.annotated_attributes),
+            "function_count": len(result.total_functions),
+            "partially_annotated_function_count": len(
+                result.partially_annotated_functions
             ),
-            "fully_annotated_function_count": self.fully_annotated_functions_count(),
-            "line_count": self.line_count,
+            "fully_annotated_function_count": len(result.fully_annotated_functions),
+            "line_count": result.line_count,
         }
 
 
-class CountCollector(StatisticsCollector):
+class SuppressionCountCollector(StatisticsCollector):
+    METADATA_DEPENDENCIES = (PositionProvider,)
+
     def __init__(self, regex: str) -> None:
-        self.counts: Dict[str, int] = defaultdict(int)
+        self.no_code: List[int] = []
+        self.codes: Dict[int, List[int]] = {}
         self.regex: Pattern[str] = compile(regex)
 
+    def error_codes(self, line: str) -> Optional[List[ErrorCode]]:
+        match = self.regex.match(line)
+        if match is None:
+            # No suppression on line
+            return None
+        code_group = match.group(1)
+        if code_group is None:
+            # Code-less error suppression
+            return []
+        code_strings = code_group.strip("[] ").split(",")
+        try:
+            codes = [int(code) for code in code_strings]
+            return codes
+        except ValueError:
+            LOG.warning("Invalid error suppression code: %s", line)
+            return []
+
     def visit_Comment(self, node: cst.Comment) -> None:
-        match = self.regex.match(node.value)
-        if match:
-            code_group = match.group(1)
-            if code_group:
-                codes = code_group.strip("[] ").split(",")
+        error_codes = self.error_codes(node.value)
+        if error_codes is None:
+            return
+        suppression_line = self.get_metadata(PositionProvider, node).start.line
+        if len(error_codes) == 0:
+            self.no_code.append(suppression_line)
+            return
+        for code in error_codes:
+            if code in self.codes:
+                self.codes[code].append(suppression_line)
             else:
-                codes = ["No Code"]
-            for code in codes:
-                self.counts[code.strip()] += 1
+                self.codes[code] = [suppression_line]
 
-    def build_json(self) -> Dict[str, int]:
-        return dict(self.counts)
+    def build_result(self) -> ModuleSuppressionData:
+        return ModuleSuppressionData(code=self.codes, no_code=self.no_code)
 
 
-class FixmeCountCollector(CountCollector):
+class FixmeCountCollector(SuppressionCountCollector):
     def __init__(self) -> None:
         super().__init__(r".*# *pyre-fixme(\[(\d* *,? *)*\])?")
 
 
-class IgnoreCountCollector(CountCollector):
+class IgnoreCountCollector(SuppressionCountCollector):
     def __init__(self) -> None:
         super().__init__(r".*# *pyre-ignore(\[(\d* *,? *)*\])?")
 
 
+class TypeIgnoreCountCollector(SuppressionCountCollector):
+    def __init__(self) -> None:
+        super().__init__(r".*# *type: ignore")
+
+
 class StrictCountCollector(StatisticsCollector):
+    METADATA_DEPENDENCIES = (PositionProvider,)
+    unsafe_regex: Pattern[str] = compile(r" ?#+ *pyre-unsafe")
+    strict_regex: Pattern[str] = compile(r" ?#+ *pyre-strict")
+    ignore_all_regex: Pattern[str] = compile(r" ?#+ *pyre-ignore-all-errors")
+    ignore_all_by_code_regex: Pattern[str] = compile(
+        r" ?#+ *pyre-ignore-all-errors\[[0-9]+[0-9, ]*\]"
+    )
+
     def __init__(self, strict_by_default: bool) -> None:
-        self.is_strict: bool = False
-        self.is_unsafe: bool = False
+        self.strict_by_default: bool = strict_by_default
+        self.explicit_strict_comment_line: Optional[int] = None
+        self.explicit_unsafe_comment_line: Optional[int] = None
         self.strict_count: int = 0
         self.unsafe_count: int = 0
-        self.strict_by_default: bool = strict_by_default
-        self.unsafe_regex: Pattern[str] = compile(r" ?#+ *pyre-unsafe")
-        self.strict_regex: Pattern[str] = compile(r" ?#+ *pyre-strict")
-        self.ignore_all_regex: Pattern[str] = compile(r" ?#+ *pyre-ignore-all-errors")
-        self.ignore_all_by_code_regex: Pattern[str] = compile(
-            r" ?#+ *pyre-ignore-all-errors\[[0-9]+[0-9, ]*\]"
-        )
 
     def is_unsafe_module(self) -> bool:
-        if self.is_unsafe:
+        if self.explicit_unsafe_comment_line is not None:
             return True
-        elif self.is_strict or self.strict_by_default:
+        elif self.explicit_strict_comment_line is not None or self.strict_by_default:
             return False
         return True
 
     def is_strict_module(self) -> bool:
         return not self.is_unsafe_module()
 
-    def visit_Module(self, node: cst.Module) -> None:
-        self.is_strict = False
-        self.is_unsafe = False
-
     def visit_Comment(self, node: cst.Comment) -> None:
         if self.strict_regex.match(node.value):
-            self.is_strict = True
+            self.explicit_strict_comment_line = self.get_metadata(
+                PositionProvider, node
+            ).start.line
             return
         if self.unsafe_regex.match(node.value):
-            self.is_unsafe = True
+            self.explicit_unsafe_comment_line = self.get_metadata(
+                PositionProvider, node
+            ).start.line
             return
         if self.ignore_all_regex.match(
             node.value
         ) and not self.ignore_all_by_code_regex.match(node.value):
-            self.is_unsafe = True
+            self.explicit_unsafe_comment_line = self.get_metadata(
+                PositionProvider, node
+            ).start.line
 
     def leave_Module(self, original_node: cst.Module) -> None:
         if self.is_unsafe_module():
@@ -362,8 +441,13 @@ class StrictCountCollector(StatisticsCollector):
         else:
             self.strict_count += 1
 
-    def build_json(self) -> Dict[str, int]:
-        return {"unsafe_count": self.unsafe_count, "strict_count": self.strict_count}
+    def build_result(self) -> ModuleStrictData:
+        return ModuleStrictData(
+            mode=ModuleMode.UNSAFE if self.is_unsafe_module() else ModuleMode.STRICT,
+            explicit_comment_line=self.explicit_unsafe_comment_line
+            if self.is_unsafe_module()
+            else self.explicit_strict_comment_line,
+        )
 
 
 class CodeQualityIssue:

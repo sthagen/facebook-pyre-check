@@ -103,13 +103,24 @@ module Internal : sig
       [@@deriving compare, show]
     end
 
-    type class_constraint =
-      | NameSatisfies of name_constraint
-      | Extends of {
-          class_name: string;
-          is_transitive: bool;
-        }
-    [@@deriving compare, show]
+    module DecoratorConstraint : sig
+      type t = {
+        name_constraint: name_constraint;
+        arguments_constraint: ArgumentsConstraint.t option;
+      }
+      [@@deriving compare, show]
+    end
+
+    module ClassConstraint : sig
+      type t =
+        | NameSatisfies of name_constraint
+        | Extends of {
+            class_name: string;
+            is_transitive: bool;
+          }
+        | DecoratorSatisfies of DecoratorConstraint.t
+      [@@deriving compare, show]
+    end
 
     type model_constraint =
       | NameConstraint of name_constraint
@@ -118,11 +129,8 @@ module Internal : sig
       | AnyParameterConstraint of ParameterConstraint.t
       | AnyOf of model_constraint list
       | AllOf of model_constraint list
-      | ParentConstraint of class_constraint
-      | DecoratorConstraint of {
-          name_constraint: name_constraint;
-          arguments_constraint: ArgumentsConstraint.t option;
-        }
+      | ParentConstraint of ClassConstraint.t
+      | AnyDecoratorConstraint of DecoratorConstraint.t
       | Not of model_constraint
     [@@deriving compare, show]
 

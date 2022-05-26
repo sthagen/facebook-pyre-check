@@ -29,7 +29,7 @@ module type UpdateResultType = sig
     :  t ->
     UnannotatedGlobalEnvironment.UpdateResult.t
 
-  val ast_environment_update_result : t -> AstEnvironment.UpdateResult.t
+  val invalidated_modules : t -> AstEnvironment.InvalidatedModules.t
 end
 
 module type PreviousEnvironment = sig
@@ -46,6 +46,8 @@ module type PreviousEnvironment = sig
   val configuration : t -> Configuration.Analysis.t
 
   val read_only : t -> ReadOnly.t
+
+  val cold_start : t -> ReadOnly.t
 
   val update_this_and_all_preceding_environments
     :  t ->
@@ -78,9 +80,9 @@ module UpdateResult = struct
       PreviousEnvironment.UpdateResult.unannotated_global_environment_update_result upstream
 
 
-    let ast_environment_update_result previous =
+    let invalidated_modules previous =
       unannotated_global_environment_update_result previous
-      |> UnannotatedGlobalEnvironment.UpdateResult.upstream
+      |> UnannotatedGlobalEnvironment.UpdateResult.invalidated_modules
   end
 end
 
@@ -100,6 +102,8 @@ module type S = sig
   val configuration : t -> Configuration.Analysis.t
 
   val read_only : t -> ReadOnly.t
+
+  val cold_start : t -> ReadOnly.t
 
   val update_this_and_all_preceding_environments
     :  t ->
@@ -137,8 +141,6 @@ module EnvironmentTable = struct
       trigger ->
       dependency:SharedMemoryKeys.DependencyKey.registered option ->
       Value.t
-
-    val all_keys : UnannotatedGlobalEnvironment.ReadOnly.t -> Key.t list
 
     val serialize_value : Value.t -> string
 
@@ -192,6 +194,8 @@ module EnvironmentTable = struct
 
     val read_only : t -> ReadOnly.t
 
+    val cold_start : t -> ReadOnly.t
+
     val update_this_and_all_preceding_environments
       :  t ->
       scheduler:Scheduler.t ->
@@ -210,10 +214,11 @@ module EnvironmentTable = struct
       upstream_environment: In.PreviousEnvironment.t;
     }
 
-    let base_table = Table.create ()
-
     let create ast_environment =
-      { table = base_table; upstream_environment = In.PreviousEnvironment.create ast_environment }
+      {
+        table = Table.create ();
+        upstream_environment = In.PreviousEnvironment.create ast_environment;
+      }
 
 
     let ast_environment { upstream_environment; _ } =
@@ -291,81 +296,71 @@ module EnvironmentTable = struct
         in
         ()
       in
-      match configuration this_environment with
-      | { Configuration.Analysis.incremental_style = FineGrained; _ } ->
-          let triggered_dependencies =
-            let name = Format.sprintf "TableUpdate(%s)" In.Value.description in
-            Profiling.track_duration_and_shared_memory_with_dynamic_tags name ~f:(fun _ ->
-                let names_to_update =
-                  In.PreviousEnvironment.UpdateResult.all_triggered_dependencies upstream_update
-                  |> List.fold ~init:TriggerMap.empty ~f:(fun triggers upstream_dependencies ->
-                         SharedMemoryKeys.DependencyKey.RegisteredSet.fold
-                           (fun dependency triggers ->
-                             match
-                               In.filter_upstream_dependency
-                                 (SharedMemoryKeys.DependencyKey.get_key dependency)
-                             with
-                             | Some trigger -> (
-                                 match TriggerMap.add triggers ~key:trigger ~data:dependency with
-                                 | `Duplicate -> triggers
-                                 | `Ok updated -> updated)
-                             | None -> triggers)
-                           upstream_dependencies
-                           triggers)
-                  |> Map.to_alist
-                in
-                let (), triggered_dependencies =
-                  let keys =
-                    List.map names_to_update ~f:fst
-                    |> List.map ~f:In.convert_trigger
-                    |> Table.KeySet.of_list
-                  in
-                  let transaction = SharedMemoryKeys.DependencyKey.Transaction.empty ~scheduler in
-                  if In.lazy_incremental then
-                    Table.add_pessimistic_transaction table ~keys transaction
-                    |> SharedMemoryKeys.DependencyKey.Transaction.execute ~update:(fun () -> ())
-                  else
-                    Table.add_to_transaction table ~keys transaction
-                    |> SharedMemoryKeys.DependencyKey.Transaction.execute
-                         ~update:(update ~names_to_update)
-                in
-                let tags () =
-                  let triggered_dependencies_size =
-                    SharedMemoryKeys.DependencyKey.RegisteredSet.cardinal triggered_dependencies
-                    |> Format.sprintf "%d"
-                  in
-                  [
-                    "phase_name", In.Value.description;
-                    "number_of_triggered_dependencies", triggered_dependencies_size;
-                  ]
-                in
-                { Profiling.result = triggered_dependencies; tags })
-          in
-          {
-            UpdateResult.triggered_dependencies;
-            upstream = upstream_update;
-            read_only = read_only this_environment;
-          }
-      | _ ->
-          let _ =
-            let name = Format.sprintf "LegacyTableUpdate(%s)" In.Value.description in
-            Profiling.track_duration_and_shared_memory
-              name
-              ~tags:["phase_name", In.Value.description]
-              ~f:(fun _ ->
-                In.PreviousEnvironment.UpdateResult.unannotated_global_environment_update_result
-                  upstream_update
-                |> In.legacy_invalidated_keys
-                |> Set.to_list
+      let triggered_dependencies =
+        let name = Format.sprintf "TableUpdate(%s)" In.Value.description in
+        Profiling.track_duration_and_shared_memory_with_dynamic_tags name ~f:(fun _ ->
+            let names_to_update =
+              In.PreviousEnvironment.UpdateResult.all_triggered_dependencies upstream_update
+              |> List.fold ~init:TriggerMap.empty ~f:(fun triggers upstream_dependencies ->
+                     SharedMemoryKeys.DependencyKey.RegisteredSet.fold
+                       (fun dependency triggers ->
+                         match
+                           In.filter_upstream_dependency
+                             (SharedMemoryKeys.DependencyKey.get_key dependency)
+                         with
+                         | Some trigger -> (
+                             match TriggerMap.add triggers ~key:trigger ~data:dependency with
+                             | `Duplicate -> triggers
+                             | `Ok updated -> updated)
+                         | None -> triggers)
+                       upstream_dependencies
+                       triggers)
+              |> Map.to_alist
+            in
+            let (), triggered_dependencies =
+              let keys =
+                List.map names_to_update ~f:fst
                 |> List.map ~f:In.convert_trigger
                 |> Table.KeySet.of_list
-                |> Table.remove_batch table)
-          in
+              in
+              let transaction = SharedMemoryKeys.DependencyKey.Transaction.empty ~scheduler in
+              if In.lazy_incremental then
+                Table.add_pessimistic_transaction table ~keys transaction
+                |> SharedMemoryKeys.DependencyKey.Transaction.execute ~update:(fun () -> ())
+              else
+                Table.add_to_transaction table ~keys transaction
+                |> SharedMemoryKeys.DependencyKey.Transaction.execute
+                     ~update:(update ~names_to_update)
+            in
+            let tags () =
+              let triggered_dependencies_size =
+                SharedMemoryKeys.DependencyKey.RegisteredSet.cardinal triggered_dependencies
+                |> Format.sprintf "%d"
+              in
+              [
+                "phase_name", In.Value.description;
+                "number_of_triggered_dependencies", triggered_dependencies_size;
+              ]
+            in
+            { Profiling.result = triggered_dependencies; tags })
+      in
+      {
+        UpdateResult.triggered_dependencies;
+        upstream = upstream_update;
+        read_only = read_only this_environment;
+      }
+
+
+    let cold_start { table; upstream_environment } =
+      let name = Format.sprintf "LegacyTableUpdate(%s)" In.Value.description in
+      Profiling.track_duration_and_shared_memory
+        name
+        ~tags:["phase_name", In.Value.description]
+        ~f:(fun _ ->
           {
-            UpdateResult.triggered_dependencies = SharedMemoryKeys.DependencyKey.RegisteredSet.empty;
-            upstream = upstream_update;
-            read_only = read_only this_environment;
-          }
+            ReadOnly.table;
+            upstream_environment = In.PreviousEnvironment.cold_start upstream_environment;
+          })
 
 
     let update_this_and_all_preceding_environments

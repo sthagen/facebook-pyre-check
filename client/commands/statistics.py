@@ -9,7 +9,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Callable, Dict, Iterable, Mapping, Optional, Sequence, Union
+from typing import Dict, Iterable, Mapping, Optional, Sequence
 
 import libcst as cst
 
@@ -19,30 +19,26 @@ from .. import (
     log,
     statistics_collectors as collectors,
 )
-from . import commands
+from . import commands, frontend_configuration
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
 
 def find_roots(
-    configuration: configuration_module.Configuration,
-    statistics_arguments: command_arguments.StatisticsArguments,
+    explicitly_specified_directories: Sequence[str],
+    local_root: Optional[Path],
+    global_root: Path,
 ) -> Iterable[Path]:
-    explicit_directories = statistics_arguments.directories
-    if len(explicit_directories) > 0:
+    if len(explicitly_specified_directories) > 0:
 
         def to_absolute_path(given: str) -> Path:
             path = Path(given)
             return path if path.is_absolute() else Path.cwd() / path
 
-        return {to_absolute_path(path) for path in explicit_directories}
+        return {to_absolute_path(path) for path in explicitly_specified_directories}
 
-    local_root = configuration.local_root
-    if local_root is not None:
-        return [Path(local_root)]
-
-    return [Path(configuration.project_root)]
+    return [local_root] if local_root is not None else [global_root]
 
 
 def _is_excluded(path: Path, excludes: Sequence[str]) -> bool:
@@ -68,12 +64,12 @@ def has_py_extension_and_not_ignored(path: Path, excludes: Sequence[str]) -> boo
 
 
 def find_paths_to_parse(
-    configuration: configuration_module.Configuration, paths: Iterable[Path]
+    paths: Iterable[Path], excludes: Sequence[str]
 ) -> Iterable[Path]:
     def _get_paths_for_file(target_file: Path) -> Iterable[Path]:
         return (
             [target_file]
-            if has_py_extension_and_not_ignored(target_file, configuration.excludes)
+            if has_py_extension_and_not_ignored(target_file, excludes)
             else []
         )
 
@@ -81,7 +77,7 @@ def find_paths_to_parse(
         return (
             path
             for path in target_directory.glob("**/*.py")
-            if not _should_ignore(path, configuration.excludes)
+            if not _should_ignore(path, excludes)
         )
 
     return itertools.chain.from_iterable(
@@ -106,50 +102,49 @@ def parse_path_to_module(path: Path) -> Optional[cst.Module]:
         return None
 
 
-def _collect_statistics_for_module(
-    module: Union[cst.Module, cst.MetadataWrapper],
-    collector_factory: Callable[[], collectors.StatisticsCollector],
-) -> Dict[str, int]:
-    collector = collector_factory()
-    module.visit(collector)
-    return collector.build_json()
-
-
-def _collect_annotation_statistics(module: cst.Module) -> Dict[str, int]:
-    return _collect_statistics_for_module(
-        cst.MetadataWrapper(module),
-        collectors.AnnotationCountCollector,
-    )
+def _collect_annotation_statistics(
+    module: cst.Module,
+) -> collectors.ModuleAnnotationData:
+    collector = collectors.AnnotationCountCollector()
+    module_with_position_metadata = cst.MetadataWrapper(module)
+    module_with_position_metadata.visit(collector)
+    return collector.build_result()
 
 
 def _collect_fixme_statistics(
     module: cst.Module,
-) -> Dict[str, int]:
-    return _collect_statistics_for_module(module, collectors.FixmeCountCollector)
+) -> collectors.ModuleSuppressionData:
+    collector = collectors.FixmeCountCollector()
+    module_with_position_metadata = cst.MetadataWrapper(module)
+    module_with_position_metadata.visit(collector)
+    return collector.build_result()
 
 
 def _collect_ignore_statistics(
     module: cst.Module,
-) -> Dict[str, int]:
-    return _collect_statistics_for_module(module, collectors.IgnoreCountCollector)
+) -> collectors.ModuleSuppressionData:
+    collector = collectors.IgnoreCountCollector()
+    module_with_position_metadata = cst.MetadataWrapper(module)
+    module_with_position_metadata.visit(collector)
+    return collector.build_result()
 
 
 def _collect_strict_file_statistics(
     module: cst.Module,
     strict_default: bool,
-) -> Dict[str, int]:
-    def collector_factory() -> collectors.StrictCountCollector:
-        return collectors.StrictCountCollector(strict_default)
-
-    return _collect_statistics_for_module(module, collector_factory)
+) -> collectors.ModuleStrictData:
+    collector = collectors.StrictCountCollector(strict_default)
+    module_with_position_metadata = cst.MetadataWrapper(module)
+    module_with_position_metadata.visit(collector)
+    return collector.build_result()
 
 
 @dataclasses.dataclass(frozen=True)
 class StatisticsData:
-    annotations: Dict[str, int] = dataclasses.field(default_factory=dict)
-    fixmes: Dict[str, int] = dataclasses.field(default_factory=dict)
-    ignores: Dict[str, int] = dataclasses.field(default_factory=dict)
-    strict: Dict[str, int] = dataclasses.field(default_factory=dict)
+    annotations: collectors.ModuleAnnotationData
+    fixmes: collectors.ModuleSuppressionData
+    ignores: collectors.ModuleSuppressionData
+    strict: collectors.ModuleStrictData
 
 
 def collect_statistics(
@@ -177,6 +172,24 @@ def collect_statistics(
         except RecursionError:
             LOG.warning(f"LibCST encountered recursion error in `{path}`")
     return data
+
+
+def collect_all_statistics(
+    configuration: frontend_configuration.Base,
+    statistics_arguments: command_arguments.StatisticsArguments,
+) -> Dict[str, StatisticsData]:
+    local_root = configuration.get_local_root()
+    return collect_statistics(
+        find_paths_to_parse(
+            find_roots(
+                statistics_arguments.directories,
+                local_root=Path(local_root) if local_root is not None else None,
+                global_root=Path(configuration.get_global_root()),
+            ),
+            excludes=configuration.get_excludes(),
+        ),
+        strict_default=configuration.is_strict(),
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -207,29 +220,32 @@ def aggregate_statistics(
     }
 
     for statistics_data in data.values():
+        annotation_counts = collectors.AnnotationCountCollector.get_result_counts(
+            statistics_data.annotations
+        )
         for key in aggregate_annotations.keys():
-            aggregate_annotations[key] += statistics_data.annotations[key]
+            aggregate_annotations[key] += annotation_counts[key]
 
     return AggregatedStatisticsData(
         annotations=aggregate_annotations,
         fixmes=sum(
-            len(fixmes)
+            len(fixmes.no_code) + len(fixmes.code)
             for fixmes in [statistics_data.fixmes for statistics_data in data.values()]
         ),
         ignores=sum(
-            len(ignores)
+            len(ignores.no_code) + len(ignores.code)
             for ignores in [
                 statistics_data.ignores for statistics_data in data.values()
             ]
         ),
         strict=sum(
-            strictness["strict_count"]
+            1 if strictness.mode == collectors.ModuleMode.STRICT else 0
             for strictness in [
                 statistics_data.strict for statistics_data in data.values()
             ]
         ),
         unsafe=sum(
-            strictness["unsafe_count"]
+            1 if strictness.mode == collectors.ModuleMode.UNSAFE else 0
             for strictness in [
                 statistics_data.strict for statistics_data in data.values()
             ]
@@ -310,15 +326,10 @@ def process_json_statistics(
 
 
 def run_statistics(
-    configuration: configuration_module.Configuration,
+    configuration: frontend_configuration.Base,
     statistics_arguments: command_arguments.StatisticsArguments,
 ) -> commands.ExitCode:
-    data = collect_statistics(
-        find_paths_to_parse(
-            configuration, find_roots(configuration, statistics_arguments)
-        ),
-        strict_default=configuration.strict,
-    )
+    data = collect_all_statistics(configuration, statistics_arguments)
     if statistics_arguments.print_summary:
         print_text_summary(data)
         return commands.ExitCode.SUCCESS
@@ -337,7 +348,9 @@ def run(
 ) -> commands.ExitCode:
     try:
         LOG.info("Collecting statistics...")
-        return run_statistics(configuration, statistics_arguments)
+        return run_statistics(
+            frontend_configuration.OpenSource(configuration), statistics_arguments
+        )
     except Exception as error:
         raise commands.ClientException(
             f"Exception occurred during statistics collection: {error}"

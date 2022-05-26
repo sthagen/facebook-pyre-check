@@ -44,8 +44,6 @@ module Make (In : In) = struct
     let enabled = ref false
 
     let cache = In.HashableKey.Table.create ()
-
-    let clear () = In.HashableKey.Table.clear cache
   end
 
   (* For some reason this no longer matches our mli when I directly include this :/ *)
@@ -68,12 +66,6 @@ module Make (In : In) = struct
        legacy-style invalidate in the way this interface is designed to do *)
     let legacy_invalidated_keys _ = KeySet.empty
 
-    (* All of these functions are used for the shared memory debugging functionality. They all rely
-       on the ability to exhaustively list your keys, which is doable for traditional environments,
-       but the idea of a managed cache is using this for situations where the keys are not known
-       ahead of time. For now we'll just ignore this debugging stuff, and maybe return to it later. *)
-    let all_keys _ = []
-
     let serialize_value _ = "Not used"
 
     let show_key _ = "Not used"
@@ -83,21 +75,16 @@ module Make (In : In) = struct
 
   include EnvironmentTable
 
-  let update_this_and_all_preceding_environments this_environment ~scheduler =
-    let configuration = configuration this_environment in
+  let create ast_environment =
+    let table = EnvironmentTable.create ast_environment in
+    let { Configuration.Analysis.incremental_style; _ } = EnvironmentTable.configuration table in
     let () =
-      match configuration with
-      | { Configuration.Analysis.incremental_style = FineGrained; _ } ->
-          UnmanagedCache.enabled := false;
-          ()
-      | _ ->
-          UnmanagedCache.enabled := true;
-          Scheduler.once_per_worker scheduler ~configuration ~f:UnmanagedCache.clear;
-          UnmanagedCache.clear ()
+      UnmanagedCache.enabled :=
+        match incremental_style with
+        | FineGrained -> false
+        | Shallow -> true
     in
-    (* In both cases we need to produce a UpdateResult, but in the legacy case this will be a
-       basically a no-op because of all_keys = []. *)
-    update_this_and_all_preceding_environments this_environment ~scheduler
+    table
 
 
   module ReadOnly = struct

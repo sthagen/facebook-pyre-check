@@ -117,23 +117,24 @@ module Internal = struct
       [@@deriving compare, show]
     end
 
-    type class_constraint =
-      | NameSatisfies of name_constraint
-      | Extends of {
-          class_name: string;
-          is_transitive: bool;
-        }
-    [@@deriving compare]
+    module DecoratorConstraint = struct
+      type t = {
+        name_constraint: name_constraint;
+        arguments_constraint: ArgumentsConstraint.t option;
+      }
+      [@@deriving compare, show]
+    end
 
-    let pp_class_constraint formatter class_constraint =
-      match class_constraint with
-      | NameSatisfies name_constraint ->
-          Format.fprintf formatter "NameSatisfies(%s)" (show_name_constraint name_constraint)
-      | Extends { class_name; is_transitive } ->
-          Format.fprintf formatter "Extends(%s, is_transitive=%b)" class_name is_transitive
-
-
-    let show_class_constraint = Format.asprintf "%a" pp_class_constraint
+    module ClassConstraint = struct
+      type t =
+        | NameSatisfies of name_constraint
+        | Extends of {
+            class_name: string;
+            is_transitive: bool;
+          }
+        | DecoratorSatisfies of DecoratorConstraint.t
+      [@@deriving compare, show]
+    end
 
     type model_constraint =
       | NameConstraint of name_constraint
@@ -142,11 +143,8 @@ module Internal = struct
       | AnyParameterConstraint of ParameterConstraint.t
       | AnyOf of model_constraint list
       | AllOf of model_constraint list
-      | ParentConstraint of class_constraint
-      | DecoratorConstraint of {
-          name_constraint: name_constraint;
-          arguments_constraint: ArgumentsConstraint.t option;
-        }
+      | ParentConstraint of ClassConstraint.t
+      | AnyDecoratorConstraint of DecoratorConstraint.t
       | Not of model_constraint
     [@@deriving compare, show]
 
@@ -1300,6 +1298,78 @@ let parse_annotation_constraint ~path ~location ({ Node.value; _ } as constraint
            (InvalidTypeAnnotationClause constraint_expression))
 
 
+let parse_arguments_constraint ~path ~location ({ Node.value; _ } as constraint_expression) =
+  match value with
+  | Expression.Call
+      {
+        Call.callee =
+          {
+            Node.value =
+              Expression.Name
+                (Name.Attribute
+                  {
+                    base = { Node.value = Name (Name.Identifier "arguments"); _ };
+                    attribute = ("contains" | "equals") as attribute;
+                    _;
+                  });
+            _;
+          };
+        arguments;
+      } -> (
+      match attribute with
+      | "contains" -> Ok (ModelQuery.ArgumentsConstraint.Contains arguments)
+      | "equals" -> Ok (ModelQuery.ArgumentsConstraint.Equals arguments)
+      | _ -> failwith "impossible case")
+  | _ ->
+      Error
+        (model_verification_error ~path ~location (InvalidArgumentsClause constraint_expression))
+
+
+let parse_decorator_constraint ~path ~location ({ Node.value; _ } as constraint_expression) =
+  let open Core.Result in
+  match value with
+  | Expression.Call { Call.callee = { Node.value = Expression.Name _; _ } as callee; arguments }
+    -> (
+      match arguments with
+      | [{ Call.Argument.name = None; Call.Argument.value = decorator_name_constraint }] ->
+          parse_name_constraint ~path ~location decorator_name_constraint
+          >>= fun name_constraint ->
+          Ok { ModelQuery.DecoratorConstraint.name_constraint; arguments_constraint = None }
+      | [
+       { Call.Argument.name = None; value = first_constraint };
+       { Call.Argument.name = None; value = second_constraint };
+      ] -> (
+          match
+            ( parse_name_constraint ~path ~location first_constraint,
+              parse_arguments_constraint ~path ~location second_constraint )
+          with
+          | Ok name_constraint, Ok arguments_constraint ->
+              Ok
+                {
+                  ModelQuery.DecoratorConstraint.name_constraint;
+                  arguments_constraint = Some arguments_constraint;
+                }
+          | _ ->
+              parse_name_constraint ~path ~location second_constraint
+              >>= fun name_constraint ->
+              parse_arguments_constraint ~path ~location first_constraint
+              >>= fun arguments_constraint ->
+              Ok
+                {
+                  ModelQuery.DecoratorConstraint.name_constraint;
+                  arguments_constraint = Some arguments_constraint;
+                })
+      | _ ->
+          Error
+            (model_verification_error
+               ~path
+               ~location
+               (InvalidModelQueryClauseArguments { callee; arguments })))
+  | _ ->
+      Error
+        (model_verification_error ~path ~location (InvalidDecoratorClause constraint_expression))
+
+
 let parse_where_clause ~path ~find_clause ({ Node.value; location } as expression) =
   let open Core.Result in
   let invalid_model_query_where_clause ~path ~location callee =
@@ -1308,32 +1378,6 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
       ~location
       (InvalidModelQueryWhereClause
          { expression = callee; find_clause_kind = get_find_clause_as_string find_clause })
-  in
-  let parse_arguments_constraint ({ Node.value; _ } as constraint_expression) =
-    match value with
-    | Expression.Call
-        {
-          Call.callee =
-            {
-              Node.value =
-                Expression.Name
-                  (Name.Attribute
-                    {
-                      base = { Node.value = Name (Name.Identifier "arguments"); _ };
-                      attribute = ("contains" | "equals") as attribute;
-                      _;
-                    });
-              _;
-            };
-          arguments;
-        } -> (
-        match attribute with
-        | "contains" -> Ok (ModelQuery.ArgumentsConstraint.Contains arguments)
-        | "equals" -> Ok (ModelQuery.ArgumentsConstraint.Equals arguments)
-        | _ -> failwith "impossible case")
-    | _ ->
-        Error
-          (model_verification_error ~path ~location (InvalidArgumentsClause constraint_expression))
   in
   let rec parse_constraint ({ Node.value; _ } as constraint_expression) =
     match value with
@@ -1361,51 +1405,24 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
               _;
             } as callee;
           _;
-        } -> (
-        match is_callable_clause_kind find_clause with
-        | true -> Error (invalid_model_query_where_clause ~path ~location callee)
-        | _ ->
-            parse_annotation_constraint ~path ~location constraint_expression
-            >>= fun annotation_constraint ->
-            Ok (ModelQuery.AnnotationConstraint annotation_constraint))
+        } ->
+        if is_callable_clause_kind find_clause then
+          Error (invalid_model_query_where_clause ~path ~location callee)
+        else
+          parse_annotation_constraint ~path ~location constraint_expression
+          >>= fun annotation_constraint ->
+          Ok (ModelQuery.AnnotationConstraint annotation_constraint)
     | Expression.Call
         {
           Call.callee = { Node.value = Expression.Name (Name.Identifier "Decorator"); _ } as callee;
-          arguments;
-        } -> (
-        match arguments, is_callable_clause_kind find_clause with
-        | _, false -> Error (invalid_model_query_where_clause ~path ~location callee)
-        | [{ Call.Argument.name = None; Call.Argument.value = decorator_name_constraint }], _ ->
-            parse_name_constraint ~path ~location decorator_name_constraint
-            >>= fun name_constraint ->
-            Ok (ModelQuery.DecoratorConstraint { name_constraint; arguments_constraint = None })
-        | ( [
-              { Call.Argument.name = None; value = first_constraint };
-              { Call.Argument.name = None; value = second_constraint };
-            ],
-            _ ) -> (
-            match
-              ( parse_name_constraint ~path ~location first_constraint,
-                parse_arguments_constraint second_constraint )
-            with
-            | Ok name_constraint, Ok arguments_constraint ->
-                Ok
-                  (ModelQuery.DecoratorConstraint
-                     { name_constraint; arguments_constraint = Some arguments_constraint })
-            | _ ->
-                parse_name_constraint ~path ~location second_constraint
-                >>= fun name_constraint ->
-                parse_arguments_constraint first_constraint
-                >>= fun arguments_constraint ->
-                Ok
-                  (ModelQuery.DecoratorConstraint
-                     { name_constraint; arguments_constraint = Some arguments_constraint }))
-        | _ ->
-            Error
-              (model_verification_error
-                 ~path
-                 ~location
-                 (InvalidModelQueryClauseArguments { callee; arguments })))
+          _;
+        } ->
+        if not (is_callable_clause_kind find_clause) then
+          Error (invalid_model_query_where_clause ~path ~location callee)
+        else
+          parse_decorator_constraint ~path ~location constraint_expression
+          >>= fun decorator_constraint ->
+          Ok (ModelQuery.AnyDecoratorConstraint decorator_constraint)
     | Expression.Call
         {
           Call.callee =
@@ -1417,12 +1434,12 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
               _;
             } as callee;
           _;
-        } -> (
-        match is_callable_clause_kind find_clause with
-        | false -> Error (invalid_model_query_where_clause ~path ~location callee)
-        | _ ->
-            parse_annotation_constraint ~path ~location constraint_expression
-            >>= fun annotation_constraint -> Ok (ModelQuery.ReturnConstraint annotation_constraint))
+        } ->
+        if not (is_callable_clause_kind find_clause) then
+          Error (invalid_model_query_where_clause ~path ~location callee)
+        else
+          parse_annotation_constraint ~path ~location constraint_expression
+          >>= fun annotation_constraint -> Ok (ModelQuery.ReturnConstraint annotation_constraint)
     | Expression.Call
         {
           Call.callee =
@@ -1495,34 +1512,36 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
             } as callee;
           arguments;
         } -> (
-        match is_class_member_clause_kind find_clause with
-        | false -> Error (invalid_model_query_where_clause ~path ~location callee)
-        | _ -> (
-            match arguments with
-            | [
-             {
-               Call.Argument.value =
-                 {
-                   Node.value =
-                     Expression.Constant (Constant.String { StringLiteral.value = class_name; _ });
-                   _;
-                 };
-               _;
-             };
-            ] ->
-                let name_constraint =
-                  match attribute with
-                  | "equals" -> ModelQuery.Equals class_name
-                  | "matches" -> ModelQuery.Matches (Re2.create_exn class_name)
-                  | _ -> failwith "impossible case"
-                in
-                Ok (ModelQuery.ParentConstraint (ModelQuery.NameSatisfies name_constraint))
-            | _ ->
-                Error
-                  (model_verification_error
-                     ~path
-                     ~location
-                     (InvalidModelQueryClauseArguments { callee; arguments }))))
+        if not (is_class_member_clause_kind find_clause) then
+          Error (invalid_model_query_where_clause ~path ~location callee)
+        else
+          match arguments with
+          | [
+           {
+             Call.Argument.value =
+               {
+                 Node.value =
+                   Expression.Constant (Constant.String { StringLiteral.value = class_name; _ });
+                 _;
+               };
+             _;
+           };
+          ] ->
+              let name_constraint =
+                match attribute with
+                | "equals" -> ModelQuery.Equals class_name
+                | "matches" -> ModelQuery.Matches (Re2.create_exn class_name)
+                | _ -> failwith "impossible case"
+              in
+              Ok
+                (ModelQuery.ParentConstraint
+                   (ModelQuery.ClassConstraint.NameSatisfies name_constraint))
+          | _ ->
+              Error
+                (model_verification_error
+                   ~path
+                   ~location
+                   (InvalidModelQueryClauseArguments { callee; arguments })))
     | Expression.Call
         {
           Call.callee =
@@ -1539,54 +1558,76 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
             } as callee;
           arguments;
         } -> (
-        match is_class_member_clause_kind find_clause with
-        | false -> Error (invalid_model_query_where_clause ~path ~location callee)
-        | _ -> (
-            match arguments with
-            | [
-             {
-               Call.Argument.value =
-                 {
-                   Node.value =
-                     Expression.Constant (Constant.String { StringLiteral.value = class_name; _ });
-                   _;
-                 };
-               _;
-             };
-            ] ->
-                Ok (ModelQuery.ParentConstraint (Extends { class_name; is_transitive = false }))
-            | [
-             {
-               Call.Argument.value =
-                 {
-                   Node.value =
-                     Expression.Constant (Constant.String { StringLiteral.value = class_name; _ });
-                   _;
-                 };
-               _;
-             };
-             {
-               Call.Argument.name = Some { Node.value = "is_transitive"; _ };
-               value = { Node.value = is_transitive_value; _ } as is_transitive_expression;
-             };
-            ] ->
-                (match is_transitive_value with
-                | Expression.Constant Constant.True -> Ok true
-                | Expression.Constant Constant.False -> Ok false
-                | _ ->
-                    Error
-                      (model_verification_error
-                         ~path
-                         ~location
-                         (InvalidExtendsIsTransitive is_transitive_expression)))
-                >>= fun is_transitive ->
-                Ok (ModelQuery.ParentConstraint (Extends { class_name; is_transitive }))
-            | _ ->
-                Error
-                  (model_verification_error
-                     ~path
-                     ~location
-                     (InvalidModelQueryClauseArguments { callee; arguments }))))
+        if not (is_class_member_clause_kind find_clause) then
+          Error (invalid_model_query_where_clause ~path ~location callee)
+        else
+          match arguments with
+          | [
+           {
+             Call.Argument.value =
+               {
+                 Node.value =
+                   Expression.Constant (Constant.String { StringLiteral.value = class_name; _ });
+                 _;
+               };
+             _;
+           };
+          ] ->
+              Ok (ModelQuery.ParentConstraint (Extends { class_name; is_transitive = false }))
+          | [
+           {
+             Call.Argument.value =
+               {
+                 Node.value =
+                   Expression.Constant (Constant.String { StringLiteral.value = class_name; _ });
+                 _;
+               };
+             _;
+           };
+           {
+             Call.Argument.name = Some { Node.value = "is_transitive"; _ };
+             value = { Node.value = is_transitive_value; _ } as is_transitive_expression;
+           };
+          ] ->
+              (match is_transitive_value with
+              | Expression.Constant Constant.True -> Ok true
+              | Expression.Constant Constant.False -> Ok false
+              | _ ->
+                  Error
+                    (model_verification_error
+                       ~path
+                       ~location
+                       (InvalidExtendsIsTransitive is_transitive_expression)))
+              >>= fun is_transitive ->
+              Ok (ModelQuery.ParentConstraint (Extends { class_name; is_transitive }))
+          | _ ->
+              Error
+                (model_verification_error
+                   ~path
+                   ~location
+                   (InvalidModelQueryClauseArguments { callee; arguments })))
+    | Expression.Call
+        {
+          Call.callee =
+            {
+              Node.value =
+                Expression.Name
+                  (Name.Attribute
+                    {
+                      base = { Node.value = Name (Name.Identifier "parent"); _ };
+                      attribute = "decorator";
+                      _;
+                    });
+              _;
+            } as callee;
+          _;
+        } ->
+        if not (is_class_member_clause_kind find_clause) then
+          Error (invalid_model_query_where_clause ~path ~location callee)
+        else
+          parse_decorator_constraint ~path ~location constraint_expression
+          >>= fun decorator_constraint ->
+          Ok (ModelQuery.ParentConstraint (DecoratorSatisfies decorator_constraint))
     | Expression.Call { Call.callee; arguments = _ } ->
         Error (model_verification_error ~path ~location (UnsupportedCallee callee))
     | _ ->
@@ -1778,18 +1819,20 @@ let parse_model_clause
         {
           Call.callee = { Node.value = Name (Name.Identifier "Returns"); _ } as callee;
           arguments = [{ Call.Argument.value = taint; _ }];
-        } -> (
-        match is_callable_clause_kind find_clause with
-        | false -> Error (invalid_model_query_model_clause ~path ~location callee)
-        | _ -> parse_taint taint >>| fun taint -> ModelQuery.ReturnTaint taint)
+        } ->
+        if not (is_callable_clause_kind find_clause) then
+          Error (invalid_model_query_model_clause ~path ~location callee)
+        else
+          parse_taint taint >>| fun taint -> ModelQuery.ReturnTaint taint
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "AttributeModel"); _ } as callee;
           arguments = [{ Call.Argument.value = taint; _ }];
-        } -> (
-        match is_callable_clause_kind find_clause with
-        | true -> Error (invalid_model_query_model_clause ~path ~location callee)
-        | _ -> parse_taint taint >>| fun taint -> ModelQuery.AttributeTaint taint)
+        } ->
+        if is_callable_clause_kind find_clause then
+          Error (invalid_model_query_model_clause ~path ~location callee)
+        else
+          parse_taint taint >>| fun taint -> ModelQuery.AttributeTaint taint
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "NamedParameter"); _ } as callee;
@@ -1802,10 +1845,11 @@ let parse_model_clause
               };
               { Call.Argument.value = taint; name = Some { Node.value = "taint"; _ } };
             ];
-        } -> (
-        match is_callable_clause_kind find_clause with
-        | false -> Error (invalid_model_query_model_clause ~path ~location callee)
-        | _ -> parse_taint taint >>| fun taint -> ModelQuery.NamedParameterTaint { name; taint })
+        } ->
+        if not (is_callable_clause_kind find_clause) then
+          Error (invalid_model_query_model_clause ~path ~location callee)
+        else
+          parse_taint taint >>| fun taint -> ModelQuery.NamedParameterTaint { name; taint }
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "PositionalParameter"); _ } as callee;
@@ -1817,21 +1861,20 @@ let parse_model_clause
               };
               { Call.Argument.value = taint; name = Some { Node.value = "taint"; _ } };
             ];
-        } -> (
-        match is_callable_clause_kind find_clause with
-        | false -> Error (invalid_model_query_model_clause ~path ~location callee)
-        | _ ->
-            parse_taint taint >>| fun taint -> ModelQuery.PositionalParameterTaint { index; taint })
+        } ->
+        if not (is_callable_clause_kind find_clause) then
+          Error (invalid_model_query_model_clause ~path ~location callee)
+        else
+          parse_taint taint >>| fun taint -> ModelQuery.PositionalParameterTaint { index; taint }
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "AllParameters"); _ } as callee;
           arguments = [{ Call.Argument.value = taint; _ }];
-        } -> (
-        match is_callable_clause_kind find_clause with
-        | false -> Error (invalid_model_query_model_clause ~path ~location callee)
-        | _ ->
-            parse_taint taint
-            >>| fun taint -> ModelQuery.AllParametersTaint { excludes = []; taint })
+        } ->
+        if not (is_callable_clause_kind find_clause) then
+          Error (invalid_model_query_model_clause ~path ~location callee)
+        else
+          parse_taint taint >>| fun taint -> ModelQuery.AllParametersTaint { excludes = []; taint }
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "AllParameters"); _ } as callee;
@@ -1840,27 +1883,26 @@ let parse_model_clause
               { Call.Argument.value = taint; _ };
               { Call.Argument.name = Some { Node.value = "exclude"; _ }; value = excludes };
             ];
-        } -> (
-        match is_callable_clause_kind find_clause with
-        | false -> Error (invalid_model_query_model_clause ~path ~location callee)
-        | _ ->
-            let excludes =
-              let parse_string_to_exclude ({ Node.value; location } as exclude) =
-                match value with
-                | Expression.Constant (Constant.String { StringLiteral.value; _ }) ->
-                    Core.Result.Ok value
-                | _ ->
-                    Error
-                      (model_verification_error ~path ~location (InvalidParameterExclude exclude))
-              in
-              match Node.value excludes with
-              | Expression.List exclude_strings ->
-                  List.map exclude_strings ~f:parse_string_to_exclude |> Core.Result.all
-              | _ -> parse_string_to_exclude excludes >>| fun exclude -> [exclude]
+        } ->
+        if not (is_callable_clause_kind find_clause) then
+          Error (invalid_model_query_model_clause ~path ~location callee)
+        else
+          let excludes =
+            let parse_string_to_exclude ({ Node.value; location } as exclude) =
+              match value with
+              | Expression.Constant (Constant.String { StringLiteral.value; _ }) ->
+                  Core.Result.Ok value
+              | _ ->
+                  Error (model_verification_error ~path ~location (InvalidParameterExclude exclude))
             in
-            excludes
-            >>= fun excludes ->
-            parse_taint taint >>| fun taint -> ModelQuery.AllParametersTaint { excludes; taint })
+            match Node.value excludes with
+            | Expression.List exclude_strings ->
+                List.map exclude_strings ~f:parse_string_to_exclude |> Core.Result.all
+            | _ -> parse_string_to_exclude excludes >>| fun exclude -> [exclude]
+          in
+          excludes
+          >>= fun excludes ->
+          parse_taint taint >>| fun taint -> ModelQuery.AllParametersTaint { excludes; taint }
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "Parameters"); _ } as callee;

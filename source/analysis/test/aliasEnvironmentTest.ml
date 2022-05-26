@@ -17,13 +17,7 @@ let test_simple_registration context =
     let project = ScratchProject.setup ["test.py", source] ~include_typeshed_stubs:false ~context in
     let ast_environment = ScratchProject.build_ast_environment project in
     let alias_environment = AliasEnvironment.create ast_environment in
-    let update_result =
-      AliasEnvironment.update_this_and_all_preceding_environments
-        alias_environment
-        ~scheduler:(mock_scheduler ())
-        ColdStart
-    in
-    let read_only = AliasEnvironment.UpdateResult.read_only update_result in
+    let read_only = AliasEnvironment.cold_start alias_environment in
     let expected = expected >>| fun expected -> Type.TypeAlias (Type.Primitive expected) in
     let printer v = v >>| Type.show_alias |> Option.value ~default:"none" in
     assert_equal ~printer expected (AliasEnvironment.ReadOnly.get_alias read_only name)
@@ -65,13 +59,7 @@ let test_harder_registrations context =
     let project = ScratchProject.setup ?external_sources ["test.py", source] ~context in
     let ast_environment = ScratchProject.build_ast_environment project in
     let alias_environment = AliasEnvironment.create ast_environment in
-    let update_result =
-      AliasEnvironment.update_this_and_all_preceding_environments
-        alias_environment
-        ~scheduler:(mock_scheduler ())
-        ColdStart
-    in
-    let read_only = AliasEnvironment.UpdateResult.read_only update_result in
+    let read_only = AliasEnvironment.cold_start alias_environment in
     let printer alias =
       alias >>| Type.sexp_of_alias >>| Sexp.to_string_hum |> Option.value ~default:"none"
     in
@@ -319,15 +307,7 @@ let test_updates context =
     let configuration = ScratchProject.configuration_of project in
     let ast_environment = ScratchProject.build_ast_environment project in
     let alias_environment = AliasEnvironment.create ast_environment in
-    let update trigger =
-      let scheduler = Test.mock_scheduler () in
-      AliasEnvironment.update_this_and_all_preceding_environments
-        alias_environment
-        ~scheduler
-        trigger
-    in
-    let update_result = update ColdStart in
-    let read_only = AliasEnvironment.UpdateResult.read_only update_result in
+    let read_only = AliasEnvironment.cold_start alias_environment in
     let execute_action (alias_name, dependency, expectation) =
       let printer v =
         v >>| Type.sexp_of_alias >>| Sexp.to_string_hum |> Option.value ~default:"none"
@@ -364,11 +344,13 @@ let test_updates context =
       let { Configuration.Analysis.local_root; _ } = configuration in
       let paths =
         List.map new_sources ~f:(fun (relative, _) ->
-            PyrePath.create_relative ~root:local_root ~relative)
+            PyrePath.Built.create_relative ~root:local_root ~relative)
       in
       ModuleTracker.update ~paths module_tracker
       |> (fun updates -> AstEnvironment.Update updates)
-      |> update
+      |> AliasEnvironment.update_this_and_all_preceding_environments
+           alias_environment
+           ~scheduler:(Test.mock_scheduler ())
     in
     let printer set =
       SharedMemoryKeys.DependencyKey.RegisteredSet.elements set

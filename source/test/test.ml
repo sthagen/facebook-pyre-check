@@ -2670,13 +2670,21 @@ let mock_scheduler () =
   Scheduler.create_sequential ()
 
 
-let update_environments ?(scheduler = mock_scheduler ()) ~ast_environment ast_environment_trigger =
-  let environment = AnnotatedGlobalEnvironment.create ast_environment in
-  ( environment,
-    AnnotatedGlobalEnvironment.update_this_and_all_preceding_environments
-      environment
-      ~scheduler
-      ast_environment_trigger )
+let update_environments
+    ?(scheduler = mock_scheduler ())
+    ~annotated_global_environment
+    ast_environment_trigger
+  =
+  AnnotatedGlobalEnvironment.update_this_and_all_preceding_environments
+    annotated_global_environment
+    ~scheduler
+    ast_environment_trigger
+
+
+let cold_start_environments ~ast_environment () =
+  let annotated_global_environment = AnnotatedGlobalEnvironment.create ast_environment in
+  let _ = AnnotatedGlobalEnvironment.cold_start annotated_global_environment in
+  annotated_global_environment
 
 
 module ScratchProject = struct
@@ -2841,10 +2849,10 @@ module ScratchProject = struct
 
   let build_global_environment project =
     let ast_environment = build_ast_environment project in
-    let global_environment, update_result = update_environments ~ast_environment ColdStart in
+    let global_environment = cold_start_environments ~ast_environment () in
     let sources =
-      AnnotatedGlobalEnvironment.UpdateResult.ast_environment_update_result update_result
-      |> AstEnvironment.UpdateResult.invalidated_modules
+      AnnotatedGlobalEnvironment.read_only global_environment
+      |> AnnotatedGlobalEnvironment.ReadOnly.project_qualifiers
       |> List.filter_map
            ~f:
              (AstEnvironment.ReadOnly.get_processed_source

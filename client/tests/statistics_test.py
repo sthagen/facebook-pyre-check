@@ -5,7 +5,7 @@
 
 import textwrap
 import unittest
-from typing import Dict
+from typing import Dict, List, Optional
 
 import libcst as cst
 from libcst.metadata import CodePosition, CodeRange, MetadataWrapper
@@ -16,6 +16,7 @@ from ..statistics_collectors import (
     FixmeCountCollector,
     FunctionAnnotationKind,
     IgnoreCountCollector,
+    ModuleMode,
     StrictCountCollector,
 )
 
@@ -58,10 +59,13 @@ class AnnotationCollectorTest(unittest.TestCase):
 
 class AnnotationCountCollectorTest(unittest.TestCase):
     def assert_counts(self, source: str, expected: Dict[str, int]) -> None:
-        source_module = MetadataWrapper(parse_source(source))
         collector = AnnotationCountCollector()
+        source_module = MetadataWrapper(parse_source(source))
         source_module.visit(collector)
-        self.assertDictEqual(collector.build_json(), expected)
+        result = collector.build_result()
+        self.assertDictEqual(
+            expected, AnnotationCountCollector.get_result_counts(result)
+        )
 
     def test_count_annotations(self) -> None:
         self.assert_counts(
@@ -571,28 +575,40 @@ class FunctionAnnotationKindTest(unittest.TestCase):
 
 
 class FixmeCountCollectorTest(unittest.TestCase):
-    def assert_counts(self, source: str, expected: Dict[str, int]) -> None:
-        source_module = parse_source(source.replace("FIXME", "pyre-fixme"))
+    def assert_counts(
+        self,
+        source: str,
+        expected_codes: Dict[int, List[int]],
+        expected_no_codes: List[int],
+    ) -> None:
+        source_module = MetadataWrapper(
+            parse_source(source.replace("FIXME", "pyre-fixme"))
+        )
         collector = FixmeCountCollector()
         source_module.visit(collector)
-        self.assertDictEqual(collector.build_json(), expected)
+        result = collector.build_result()
+        self.assertEqual(expected_codes, result.code)
+        self.assertEqual(expected_no_codes, result.no_code)
 
     def test_count_fixmes(self) -> None:
-        self.assert_counts("# FIXME[2]: Example Error Message", {"2": 1})
+        self.assert_counts("# FIXME[2]: Example Error Message", {2: [1]}, [])
         self.assert_counts(
             "# FIXME[3]: Example Error Message \n\n\n # FIXME[34]: Example",
-            {"3": 1, "34": 1},
+            {3: [1], 34: [4]},
+            [],
         )
         self.assert_counts(
             "# FIXME[2]: Example Error Message\n\n\n# FIXME[2]: message",
-            {"2": 2},
+            {2: [1, 4]},
+            [],
         )
         self.assert_counts(
             """
             def foo(x: str) -> int:
                 return x  # FIXME[7]
             """,
-            {"7": 1},
+            {7: [3]},
+            [],
         )
         self.assert_counts(
             """
@@ -600,42 +616,48 @@ class FixmeCountCollectorTest(unittest.TestCase):
                 # FIXME[7]: comments
                 return x
             """,
-            {"7": 1},
+            {7: [3]},
+            [],
         )
         self.assert_counts(
             """
             def foo(x: str) -> int:
                 return x # unrelated # FIXME[7]
             """,
-            {"7": 1},
+            {7: [3]},
+            [],
         )
         self.assert_counts(
             """
             def foo(x: str) -> int:
                 return x # unrelated   #  FIXME[7] comments
             """,
-            {"7": 1},
+            {7: [3]},
+            [],
         )
         self.assert_counts(
             """
             def foo(x: str) -> int:
                 return x  # FIXME
             """,
-            {"No Code": 1},
+            {},
+            [3],
         )
         self.assert_counts(
             """
             def foo(x: str) -> int:
                 return x  # FIXME: comments
             """,
-            {"No Code": 1},
+            {},
+            [3],
         )
         self.assert_counts(
             """
             def foo(x: str) -> int:
                 return x # FIXME[7, 8]
             """,
-            {"7": 1, "8": 1},
+            {7: [3], 8: [3]},
+            [],
         )
         self.assert_counts(
             """
@@ -643,37 +665,65 @@ class FixmeCountCollectorTest(unittest.TestCase):
             def foo(x: str) -> int:
                 return x # FIXME[7, 8]
             """,
-            {"7": 1, "8": 2},
+            {7: [4], 8: [2, 4]},
+            [],
+        )
+        # Invalid suppression
+        self.assert_counts(
+            """
+            # FIXME[8,]
+            def foo(x: str) -> int:
+                return x
+            """,
+            {},
+            [2],
         )
 
 
 class IgnoreCountCollectorTest(unittest.TestCase):
-    def assert_counts(self, source: str, expected: Dict[str, int]) -> None:
-        source_module = parse_source(source.replace("IGNORE", "pyre-ignore"))
+    def assert_counts(
+        self,
+        source: str,
+        expected_codes: Dict[int, List[int]],
+        expected_no_codes: List[int],
+    ) -> None:
+        source_module = MetadataWrapper(
+            parse_source(source.replace("IGNORE", "pyre-ignore"))
+        )
         collector = IgnoreCountCollector()
         source_module.visit(collector)
-        self.assertEqual(collector.build_json(), expected)
+        result = collector.build_result()
+        self.assertEqual(expected_codes, result.code)
+        self.assertEqual(expected_no_codes, result.no_code)
 
     def test_count_ignores(self) -> None:
-        self.assert_counts("# IGNORE[2]: Example Error Message", {"2": 1})
+        self.assert_counts("# IGNORE[2]: Example Error Message", {2: [1]}, [])
         self.assert_counts(
             "# IGNORE[3]: Example Error Message \n\n\n # pyre-ignore[34]: Example",
-            {"3": 1, "34": 1},
+            {3: [1], 34: [4]},
+            [],
         )
         self.assert_counts(
             "# IGNORE[2]: Example Error Message\n\n\n# pyre-ignore[2]: message",
-            {"2": 2},
+            {2: [1, 4]},
+            [],
         )
 
 
 class StrictCountCollectorTest(unittest.TestCase):
     def assert_counts(
-        self, source: str, expected: Dict[str, int], default_strict: bool
+        self,
+        source: str,
+        default_strict: bool,
+        mode: ModuleMode,
+        explicit_comment_line: Optional[int],
     ) -> None:
-        source_module = parse_source(source)
+        source_module = MetadataWrapper(parse_source(source))
         collector = StrictCountCollector(default_strict)
         source_module.visit(collector)
-        self.assertEqual(collector.build_json(), expected)
+        result = collector.build_result()
+        self.assertEqual(mode, result.mode)
+        self.assertEqual(explicit_comment_line, result.explicit_comment_line)
 
     def test_strict_files(self) -> None:
         self.assert_counts(
@@ -683,8 +733,9 @@ class StrictCountCollectorTest(unittest.TestCase):
             def foo():
                 return 1
             """,
-            {"strict_count": 0, "unsafe_count": 1},
-            True,
+            default_strict=True,
+            mode=ModuleMode.UNSAFE,
+            explicit_comment_line=2,
         )
         self.assert_counts(
             """
@@ -692,24 +743,27 @@ class StrictCountCollectorTest(unittest.TestCase):
             def foo():
                 return 1
             """,
-            {"strict_count": 1, "unsafe_count": 0},
-            False,
+            default_strict=False,
+            mode=ModuleMode.STRICT,
+            explicit_comment_line=2,
         )
         self.assert_counts(
             """
             def foo():
                 return 1
             """,
-            {"strict_count": 0, "unsafe_count": 1},
-            False,
+            default_strict=False,
+            mode=ModuleMode.UNSAFE,
+            explicit_comment_line=None,
         )
         self.assert_counts(
             """
             def foo():
                 return 1
             """,
-            {"strict_count": 1, "unsafe_count": 0},
-            True,
+            default_strict=True,
+            mode=ModuleMode.STRICT,
+            explicit_comment_line=None,
         )
         self.assert_counts(
             """
@@ -717,16 +771,18 @@ class StrictCountCollectorTest(unittest.TestCase):
             def foo():
                 return 1
             """,
-            {"strict_count": 0, "unsafe_count": 1},
-            True,
+            default_strict=True,
+            mode=ModuleMode.UNSAFE,
+            explicit_comment_line=2,
         )
         self.assert_counts(
             """
             def foo(x: str) -> int:
                 return x
             """,
-            {"strict_count": 0, "unsafe_count": 1},
-            False,
+            default_strict=False,
+            mode=ModuleMode.UNSAFE,
+            explicit_comment_line=None,
         )
         self.assert_counts(
             """
@@ -734,8 +790,9 @@ class StrictCountCollectorTest(unittest.TestCase):
             def foo(x: str) -> int:
                 return x
             """,
-            {"strict_count": 1, "unsafe_count": 0},
-            False,
+            default_strict=False,
+            mode=ModuleMode.STRICT,
+            explicit_comment_line=2,
         )
         self.assert_counts(
             """
@@ -743,6 +800,7 @@ class StrictCountCollectorTest(unittest.TestCase):
             def foo(x: str) -> int:
                 return x
             """,
-            {"strict_count": 1, "unsafe_count": 0},
-            True,
+            default_strict=True,
+            mode=ModuleMode.STRICT,
+            explicit_comment_line=None,
         )

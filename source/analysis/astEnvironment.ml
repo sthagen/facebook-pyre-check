@@ -361,42 +361,25 @@ let get_and_preprocess_source
       create_source ~typecheck_flags ~source_path statements |> preprocessing
 
 
-module UpdateResult = struct
-  type t = { invalidated_modules: Reference.t list }
-
-  let invalidated_modules { invalidated_modules; _ } = invalidated_modules
-
-  let create_for_testing () = { invalidated_modules = [] }
+module InvalidatedModules = struct
+  type t = Reference.t list
 end
 
-type trigger =
-  | Update of ModuleTracker.IncrementalUpdate.t list
-  | ColdStart
+type trigger = Update of ModuleTracker.IncrementalUpdate.t list
 
 let update
     ~scheduler
     ({ raw_sources; module_tracker = upstream_tracker; _ } as ast_environment)
-    trigger
+    (Update module_updates)
   =
   let module_tracker = ModuleTracker.read_only upstream_tracker in
   let { Configuration.Analysis.incremental_style; _ } =
     ModuleTracker.ReadOnly.configuration module_tracker
   in
-  match trigger with
-  | ColdStart ->
-      (* The one external module we want to try to force load is `builtins.pyi`. This improves
-         performance later and also will prevent problems with lazy qualifier lookups if, in the
-         future, there are ever nested classes in builtins. *)
-      let _ = LazyRawSources.load ~ast_environment Reference.empty in
-      let invalidated_modules =
-        Reference.empty
-        ::
-        (ModuleTracker.ReadOnly.source_paths module_tracker
-        |> List.filter ~f:SourcePath.is_in_project
-        |> List.map ~f:SourcePath.qualifier)
-      in
-      { UpdateResult.invalidated_modules }
-  | Update module_updates -> (
+  match incremental_style with
+  | Configuration.Analysis.Shallow ->
+      failwith "We never use Shallow incremental_style to do incremental updates."
+  | Configuration.Analysis.FineGrained ->
       let changed_source_paths, removed_modules, new_implicits =
         let categorize = function
           | ModuleTracker.IncrementalUpdate.NewExplicit source_path -> `Fst source_path
@@ -430,38 +413,32 @@ let update
       let invalidated_modules_before_preprocessing =
         List.concat [removed_modules; new_implicits; reparse_modules_union_in_project_modules]
       in
-      match incremental_style with
-      | Configuration.Analysis.Shallow ->
-          RawSources.remove_sources raw_sources modules_with_invalidated_raw_source;
-          load_raw_sources ~scheduler ~ast_environment reparse_source_paths;
-          { invalidated_modules = invalidated_modules_before_preprocessing }
-      | Configuration.Analysis.FineGrained ->
-          let update_raw_sources () =
-            load_raw_sources ~scheduler ~ast_environment reparse_source_paths
-          in
-          let _, preprocessing_dependencies =
-            Profiling.track_duration_and_shared_memory
-              "Parse Raw Sources"
-              ~tags:["phase_name", "Parsing"]
-              ~f:(fun _ ->
-                RawSources.update_and_compute_dependencies
-                  raw_sources
-                  modules_with_invalidated_raw_source
-                  ~update:update_raw_sources
-                  ~scheduler)
-          in
-          let invalidated_modules =
-            let fold_key registered sofar =
-              let qualifier = QualifierDependencyKey.get_key registered in
-              RawSources.KeySet.add qualifier sofar
-            in
-            QualifierDependencyKey.RegisteredSet.fold
-              fold_key
-              preprocessing_dependencies
-              (RawSources.KeySet.of_list invalidated_modules_before_preprocessing)
-            |> RawSources.KeySet.elements
-          in
-          { invalidated_modules })
+      let update_raw_sources () =
+        load_raw_sources ~scheduler ~ast_environment reparse_source_paths
+      in
+      let _, preprocessing_dependencies =
+        Profiling.track_duration_and_shared_memory
+          "Parse Raw Sources"
+          ~tags:["phase_name", "Parsing"]
+          ~f:(fun _ ->
+            RawSources.update_and_compute_dependencies
+              raw_sources
+              modules_with_invalidated_raw_source
+              ~update:update_raw_sources
+              ~scheduler)
+      in
+      let invalidated_modules =
+        let fold_key registered sofar =
+          let qualifier = QualifierDependencyKey.get_key registered in
+          RawSources.KeySet.add qualifier sofar
+        in
+        QualifierDependencyKey.RegisteredSet.fold
+          fold_key
+          preprocessing_dependencies
+          (RawSources.KeySet.of_list invalidated_modules_before_preprocessing)
+        |> RawSources.KeySet.elements
+      in
+      invalidated_modules
 
 
 (* Both `load` and `store` are no-ops here since `Sources` and `WildcardExports` are in shared
@@ -522,7 +499,11 @@ module ReadOnly = struct
        subdirectory. Instead, find the real filesystem relative path for the qualifier. *)
     let { Configuration.Analysis.local_root; _ } = configuration read_only in
     get_real_path read_only qualifier
-    >>= fun path -> PyrePath.get_relative_to_root ~root:local_root ~path
+    >>= fun path -> PyrePath.Built.get_relative_to_root ~root:local_root ~path
+
+
+  let project_qualifiers { module_tracker; _ } =
+    ModuleTracker.ReadOnly.project_qualifiers module_tracker
 end
 
 let remove_sources { raw_sources; _ } = RawSources.remove_sources raw_sources
