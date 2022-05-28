@@ -45,17 +45,17 @@ let test_basic context =
         in
         assert_failure message
     | Some source_path ->
-        let actual = SourcePath.full_path ~configuration source_path in
-        assert_equal ~cmp:PyrePath.Built.equal ~printer:PyrePath.Built.show expected actual
+        let actual = ModulePath.full_path ~configuration source_path in
+        assert_equal ~cmp:ArtifactPath.equal ~printer:ArtifactPath.show expected actual
   in
   assert_source_path
     !&"a"
     ~ast_environment
-    ~expected:(PyrePath.Built.create_relative ~root:local_root ~relative:handle_a);
+    ~expected:(Test.relative_artifact_path ~root:local_root ~relative:handle_a);
   assert_source_path
     !&"b"
     ~ast_environment
-    ~expected:(PyrePath.Built.create_relative ~root:local_root ~relative:handle_b);
+    ~expected:(Test.relative_artifact_path ~root:local_root ~relative:handle_b);
   ()
 
 
@@ -126,7 +126,7 @@ let test_parse_source context =
       ~f:(AstEnvironment.ReadOnly.get_processed_source ast_environment)
   in
   let handles =
-    List.map sources ~f:(fun { Source.source_path = { SourcePath.relative; _ }; _ } -> relative)
+    List.map sources ~f:(fun { Source.source_path = { ModulePath.relative; _ }; _ } -> relative)
   in
   assert_equal handles ["x.py"];
   let source =
@@ -135,7 +135,7 @@ let test_parse_source context =
       !&"x"
   in
   assert_equal (Option.is_some source) true;
-  let { Source.source_path = { SourcePath.relative; _ }; statements; _ } =
+  let { Source.source_path = { ModulePath.relative; _ }; statements; _ } =
     Option.value_exn source
   in
   assert_equal relative "x.py";
@@ -196,7 +196,7 @@ let test_parse_sources context =
         ~f:(AstEnvironment.ReadOnly.get_processed_source (AstEnvironment.read_only ast_environment))
     in
     let sorted_handles =
-      List.map sources ~f:(fun { Source.source_path = { SourcePath.relative; _ }; _ } -> relative)
+      List.map sources ~f:(fun { Source.source_path = { ModulePath.relative; _ }; _ } -> relative)
       |> List.sort ~compare:String.compare
     in
     sorted_handles, ast_environment
@@ -216,8 +216,8 @@ let test_parse_sources context =
       ModuleTracker.update
         ~paths:
           [
-            PyrePath.Built.create_relative ~root:local_root ~relative:"new_local.py";
-            PyrePath.Built.create_relative ~root:stub_root ~relative:"new_stub.pyi";
+            Test.relative_artifact_path ~root:local_root ~relative:"new_local.py";
+            Test.relative_artifact_path ~root:stub_root ~relative:"new_stub.pyi";
           ]
         (AstEnvironment.module_tracker ast_environment)
       |> (fun updates -> AstEnvironment.Update updates)
@@ -228,7 +228,7 @@ let test_parse_sources context =
         invalidated_modules
         ~f:(AstEnvironment.ReadOnly.get_processed_source (AstEnvironment.read_only ast_environment))
     in
-    List.map sources ~f:(fun { Source.source_path = { SourcePath.relative; _ }; _ } -> relative)
+    List.map sources ~f:(fun { Source.source_path = { ModulePath.relative; _ }; _ } -> relative)
   in
   (* Note that the stub gets parsed twice due to appearing both in the local root and stubs, but
      consistently gets mapped to the correct handle. *)
@@ -594,7 +594,7 @@ let test_parse_repository context =
           invalidated_modules
           ~f:(AstEnvironment.ReadOnly.get_processed_source ast_environment)
       in
-      List.map sources ~f:(fun ({ Source.source_path = { SourcePath.relative; _ }; _ } as source) ->
+      List.map sources ~f:(fun ({ Source.source_path = { ModulePath.relative; _ }; _ } as source) ->
           relative, source)
       |> List.sort ~compare:(fun (left_handle, _) (right_handle, _) ->
              String.compare left_handle right_handle)
@@ -683,7 +683,7 @@ module IncrementalTest = struct
         let external_root = List.hd_exn search_paths |> SearchPath.get_root in
         List.filter_map external_setups ~f:(update_file ~root:external_root)
       in
-      List.append external_paths paths |> List.map ~f:PyrePath.Built.create
+      List.append external_paths paths |> List.map ~f:ArtifactPath.create
     in
     (* Set up the initial project *)
     let old_external_sources = get_old_inputs external_setups in
@@ -701,7 +701,7 @@ module IncrementalTest = struct
       (if force_load_external_sources then
          (* If we don't do this, external sources are ignored due to lazy loading *)
          let load_source { handle; _ } =
-           let qualifier = SourcePath.qualifier_of_relative handle in
+           let qualifier = ModulePath.qualifier_of_relative handle in
            let _ = AstEnvironment.ReadOnly.get_raw_source read_only_environment qualifier in
            ()
          in
@@ -989,87 +989,6 @@ let test_parser_update context =
   ()
 
 
-let test_ast_transformer context =
-  let assert_transformed repository ~additional_preprocessing ~expected =
-    let actual =
-      ScratchProject.setup ~context ~include_typeshed_stubs:false repository
-      |> ScratchProject.parse_sources
-      |> fun (ast_environment, invalidated_modules) ->
-      let sources =
-        let transformed_ast_environment =
-          AstEnvironment.with_additional_preprocessing ~additional_preprocessing ast_environment
-        in
-        let ast_environment = Analysis.AstEnvironment.read_only transformed_ast_environment in
-        List.filter_map
-          invalidated_modules
-          ~f:(AstEnvironment.ReadOnly.get_processed_source ast_environment)
-      in
-      List.map sources ~f:(fun { Source.source_path = { SourcePath.relative; _ }; statements; _ } ->
-          relative, statements)
-      |> List.sort ~compare:(fun (left_handle, _) (right_handle, _) ->
-             String.compare left_handle right_handle)
-    in
-    let equal (expected_handle, expected_source) (handle, statements) =
-      let equal left right = Statement.location_insensitive_compare left right = 0 in
-      String.equal expected_handle handle && List.equal equal expected_source statements
-    in
-    let printer (handle, statements) =
-      Format.sprintf
-        "%s: %s"
-        handle
-        (List.map statements ~f:Statement.show |> String.concat ~sep:"; ")
-    in
-    assert_equal ~cmp:(List.equal equal) ~printer:(List.to_string ~f:printer) expected actual
-  in
-  let open Statement in
-  let open Expression in
-  assert_transformed
-    ["a.py", "def foo() -> int: ..."]
-    ~additional_preprocessing:None
-    ~expected:
-      [
-        ( "a.py",
-          [
-            +Statement.Define
-               {
-                 Define.signature =
-                   {
-                     Define.Signature.name = !&"a.foo";
-                     parameters = [];
-                     decorators = [];
-                     return_annotation = Some !"int";
-                     async = false;
-                     generator = false;
-                     parent = None;
-                     nesting_define = None;
-                   };
-                 captures = [];
-                 unbound_names = [];
-                 body = [+Statement.Expression (+Expression.Constant Constant.Ellipsis)];
-               };
-          ] );
-      ];
-  let remove_first_statement ({ Source.statements; _ } as source) =
-    { source with statements = List.tl_exn statements }
-  in
-  assert_transformed
-    ["a.py", "def foo() -> int: ...\nbar: int = 1\n"]
-    ~additional_preprocessing:(Some remove_first_statement)
-    ~expected:
-      [
-        ( "a.py",
-          [
-            +Statement.Assign
-               {
-                 Assign.target = !"$local_a$bar";
-                 value = +Expression.Constant (Constant.Integer 1);
-                 annotation = Some !"int";
-               };
-          ] );
-      ];
-  ()
-
-
 let () =
   "ast_environment"
   >::: [
@@ -1080,6 +999,5 @@ let () =
          "ast_change" >:: test_ast_change;
          "parse_repository" >:: test_parse_repository;
          "parser_update" >:: test_parser_update;
-         "ast_transformer" >:: test_ast_transformer;
        ]
   |> Test.run

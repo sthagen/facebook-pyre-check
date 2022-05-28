@@ -12,7 +12,7 @@ type t
 
 module ParserError : sig
   type t = {
-    source_path: SourcePath.t;
+    source_path: ModulePath.t;
     location: Location.t;
     is_suppressed: bool;
     message: string;
@@ -34,11 +34,11 @@ module ReadOnly : sig
 
   val get_raw_source : t -> Reference.t -> (Source.t, ParserError.t) Result.t option
 
-  val get_source_path : t -> Reference.t -> SourcePath.t option
+  val get_source_path : t -> Reference.t -> ModulePath.t option
 
   val get_relative : t -> Reference.t -> string option
 
-  val get_real_path : t -> Reference.t -> PyrePath.Built.t option
+  val get_real_path : t -> Reference.t -> ArtifactPath.t option
 
   val get_real_path_relative : t -> Reference.t -> string option
 
@@ -60,7 +60,7 @@ val store : t -> unit
    loading an `AstEnvironment` must be done after loading a `ModuleTracker` *)
 val load : ModuleTracker.t -> t
 
-val create : ?additional_preprocessing:(Source.t -> Source.t) -> ModuleTracker.t -> t
+val create : ModuleTracker.t -> t
 
 module InvalidatedModules : sig
   type t = Reference.t list
@@ -73,5 +73,3 @@ val update : scheduler:Scheduler.t -> t -> trigger -> InvalidatedModules.t
 val remove_sources : t -> Reference.t list -> unit
 
 val read_only : t -> ReadOnly.t
-
-val with_additional_preprocessing : additional_preprocessing:(Source.t -> Source.t) option -> t -> t

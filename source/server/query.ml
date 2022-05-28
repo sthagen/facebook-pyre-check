@@ -603,7 +603,7 @@ let rec process_request ~environment ~build_system ~configuration request =
     let modules_of_path path =
       let module_of_path path =
         match ModuleTracker.ReadOnly.lookup_path module_tracker path with
-        | ModuleTracker.PathLookup.Found { SourcePath.qualifier; _ } -> Some qualifier
+        | ModuleTracker.PathLookup.Found { ModulePath.qualifier; _ } -> Some qualifier
         | ShadowedBy _
         | NotFound ->
             None
@@ -772,7 +772,7 @@ let rec process_request ~environment ~build_system ~configuration request =
         in
         GlobalResolution.is_compatible_with global_resolution ~left ~right
         |> fun result -> Single (Base.Compatibility { actual = left; expected = right; result })
-    | ModulesOfPath path -> Single (Base.FoundModules (modules_of_path path))
+    | ModulesOfPath path -> Single (Base.FoundModules (SourcePath.create path |> modules_of_path))
     | LessOrEqual (left, right) ->
         let left = parse_and_validate left in
         let right = parse_and_validate right in
@@ -782,7 +782,7 @@ let rec process_request ~environment ~build_system ~configuration request =
         let module_of_path path =
           let relative_path =
             let { Configuration.Analysis.local_root = root; _ } = configuration in
-            PyrePath.create_relative ~root ~relative:(PyrePath.absolute path)
+            PyrePath.create_relative ~root ~relative:(PyrePath.absolute path) |> SourcePath.create
           in
           match modules_of_path relative_path with
           | [found_module] -> Some found_module
@@ -801,7 +801,8 @@ let rec process_request ~environment ~build_system ~configuration request =
             AstEnvironment.ReadOnly.get_real_path
               (TypeEnvironment.ReadOnly.ast_environment read_only_environment)
               reference
-            >>| PyrePath.Built.absolute
+            >>| ArtifactPath.raw
+            >>| PyrePath.absolute
           in
           let Location.WithPath.{ path; _ } =
             Location.WithModule.instantiate location_with_module ~lookup:module_to_absolute_path
@@ -828,7 +829,9 @@ let rec process_request ~environment ~build_system ~configuration request =
         ModuleTracker.ReadOnly.lookup_source_path module_tracker module_name
         >>= (fun source_path ->
               let path =
-                SourcePath.full_path ~configuration source_path |> PyrePath.Built.absolute
+                ModulePath.full_path ~configuration source_path
+                |> ArtifactPath.raw
+                |> PyrePath.absolute
               in
               Some (Single (Base.FoundPath path)))
         |> Option.value
@@ -849,7 +852,7 @@ let rec process_request ~environment ~build_system ~configuration request =
           let module_of_path path =
             let relative_path =
               let { Configuration.Analysis.local_root = root; _ } = configuration in
-              PyrePath.create_relative ~root ~relative:(PyrePath.absolute path)
+              PyrePath.create_relative ~root ~relative:(PyrePath.absolute path) |> SourcePath.create
             in
             match modules_of_path relative_path with
             | [found_module] -> Some found_module

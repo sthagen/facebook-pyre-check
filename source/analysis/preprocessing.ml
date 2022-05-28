@@ -13,7 +13,7 @@ open PyreParser
 open Statement
 
 let expand_relative_imports
-    ({ Source.source_path = { SourcePath.qualifier; _ } as source_path; _ } as source)
+    ({ Source.source_path = { ModulePath.qualifier; _ } as source_path; _ } as source)
   =
   let module Transform = Transform.MakeStatementTransformer (struct
     type t = Reference.t
@@ -25,13 +25,19 @@ let expand_relative_imports
           when (not (String.equal (Reference.show from) "builtins"))
                && not (String.equal (Reference.show from) "future.builtins") ->
             Statement.Import
-              { Import.from = Some (SourcePath.expand_relative_import source_path ~from); imports }
+              { Import.from = Some (ModulePath.expand_relative_import source_path ~from); imports }
         | _ -> value
       in
       qualifier, [{ Node.location; value }]
   end)
   in
   Transform.transform qualifier source |> Transform.source
+
+
+let is_type_variable_definition callee =
+  name_is ~name:"typing.TypeVar" callee
+  || name_is ~name:"$local_typing$TypeVar" callee
+  || name_is ~name:"typing_extensions.IntVar" callee
 
 
 let transform_string_annotation_expression ~relative =
@@ -78,9 +84,7 @@ let transform_string_annotation_expression ~relative =
               value
           | _ -> Call { callee; arguments = List.map ~f:transform_argument arguments })
       | Expression.Call { callee; arguments = variable_name :: remaining_arguments }
-        when name_is ~name:"typing.TypeVar" callee
-             || name_is ~name:"$local_typing$TypeVar" callee
-             || name_is ~name:"typing_extensions.IntVar" callee ->
+        when is_type_variable_definition callee ->
           Expression.Call
             {
               callee;
@@ -119,10 +123,18 @@ let transform_annotations ~transform_annotation_expression source =
 
     let transform_children state _ = state, true
 
+    let transform_assign ~assign:({ Assign.annotation; value = assign_value; _ } as assign) =
+      match Node.value assign_value with
+      | Expression.Call { callee; _ } when is_type_variable_definition callee ->
+          {
+            assign with
+            Assign.annotation = annotation >>| transform_annotation_expression;
+            Assign.value = transform_annotation_expression assign_value;
+          }
+      | _ -> { assign with Assign.annotation = annotation >>| transform_annotation_expression }
+
+
     let statement _ ({ Node.value; _ } as statement) =
-      let transform_assign ~assign:({ Assign.annotation; _ } as assign) =
-        { assign with Assign.annotation = annotation >>| transform_annotation_expression }
-      in
       let transform_define
           ({ Define.signature = { parameters; return_annotation; _ }; _ } as define)
         =
@@ -199,7 +211,7 @@ let transform_annotations ~transform_annotation_expression source =
   Transform.transform () source |> Transform.source
 
 
-let expand_string_annotations ({ Source.source_path = { SourcePath.relative; _ }; _ } as source) =
+let expand_string_annotations ({ Source.source_path = { ModulePath.relative; _ }; _ } as source) =
   transform_annotations
     ~transform_annotation_expression:(transform_string_annotation_expression ~relative)
     source
@@ -1195,7 +1207,7 @@ module Qualify (Context : QualifyContext) = struct
 end
 
 let qualify
-    ({ Source.source_path = { SourcePath.relative; qualifier; _ }; statements; _ } as source)
+    ({ Source.source_path = { ModulePath.relative; qualifier; _ }; statements; _ } as source)
   =
   let module Context = struct
     let source_relative = relative
@@ -1886,7 +1898,7 @@ let classes source =
   Collector.collect source
 
 
-let dequalify_map ({ Source.source_path = { SourcePath.qualifier; _ }; _ } as source) =
+let dequalify_map ({ Source.source_path = { ModulePath.qualifier; _ }; _ } as source) =
   let module ImportDequalifier = Transform.MakeStatementTransformer (struct
     include Transform.Identity
 
@@ -2052,7 +2064,7 @@ let replace_lazy_import ?(is_lazy_import = is_lazy_import) source =
 
 
 let replace_mypy_extensions_stub
-    ({ Source.source_path = { SourcePath.relative; _ }; statements; _ } as source)
+    ({ Source.source_path = { ModulePath.relative; _ }; statements; _ } as source)
   =
   if String.is_suffix relative ~suffix:"mypy_extensions.pyi" then
     let typed_dictionary_stub ~location =
@@ -2086,7 +2098,7 @@ let replace_mypy_extensions_stub
 
 
 let expand_typed_dictionary_declarations
-    ({ Source.statements; source_path = { SourcePath.qualifier; _ }; _ } as source)
+    ({ Source.statements; source_path = { ModulePath.qualifier; _ }; _ } as source)
   =
   let expand_typed_dictionaries ({ Node.location; value } as statement) =
     let expanded_declaration =
@@ -3901,7 +3913,7 @@ let inline_six_metaclass ({ Source.statements; _ } as source) =
 
 
 (* Special syntax added to support configerator. *)
-let expand_import_python_calls ({ Source.source_path = { SourcePath.qualifier; _ }; _ } as source) =
+let expand_import_python_calls ({ Source.source_path = { ModulePath.qualifier; _ }; _ } as source) =
   let module Transform = Transform.MakeStatementTransformer (struct
     type t = Reference.t
 
