@@ -10,6 +10,7 @@ open Analysis
 open Ast
 open Expression
 
+(** Represents type information about the return type of a call. *)
 module ReturnType : sig
   type t = {
     is_boolean: bool;
@@ -30,6 +31,7 @@ module ReturnType : sig
   val from_annotation : resolution:GlobalResolution.t -> Type.t -> t
 end
 
+(** A specific target of a given call, with extra information. *)
 module CallTarget : sig
   type t = {
     target: Target.t;
@@ -62,7 +64,7 @@ module CallTarget : sig
     t
 end
 
-(* Information about an argument being a callable. *)
+(** Information about an argument being a callable. *)
 module HigherOrderParameter : sig
   type t = {
     index: int;
@@ -71,7 +73,7 @@ module HigherOrderParameter : sig
   [@@deriving eq, show]
 end
 
-(* An aggregate of all possible callees at a call site. *)
+(** An aggregate of all possible callees at a call site. *)
 module CallCallees : sig
   type t = {
     (* Normal call targets. *)
@@ -104,7 +106,7 @@ module CallCallees : sig
   val pp_option : Format.formatter -> t option -> unit
 end
 
-(* An aggregrate of all possible callees for a given attribute access. *)
+(** An aggregrate of all possible callees for a given attribute access. *)
 module AttributeAccessCallees : sig
   type t = {
     property_targets: CallTarget.t list;
@@ -118,17 +120,17 @@ module AttributeAccessCallees : sig
   val empty : t
 end
 
-(* An aggregate of all possible callees for a given identifier expression. *)
+(** An aggregate of all possible callees for a given identifier expression, i.e `foo`. *)
 module IdentifierCallees : sig
   type t = { global_targets: CallTarget.t list } [@@deriving eq, show]
 end
 
-(* An aggregate of all implicit callees for any expression used in a f string *)
+(** An aggregate of all implicit callees for any expression used in a f-string. *)
 module FormatStringCallees : sig
   type t = { call_targets: CallTarget.t list } [@@deriving eq, show]
 end
 
-(* An aggregate of all possible callees for an arbitrary expression. *)
+(** An aggregate of all possible callees for an arbitrary expression. *)
 module ExpressionCallees : sig
   type t = {
     call: CallCallees.t option;
@@ -149,8 +151,9 @@ module ExpressionCallees : sig
   val from_format_string : FormatStringCallees.t -> t
 end
 
-(* An aggregate of all possible callees for an arbitrary location.
- * Note that multiple expressions might have the same location. *)
+(** An aggregate of all possible callees for an arbitrary location.
+
+    Note that multiple expressions might have the same location. *)
 module LocationCallees : sig
   type t =
     | Singleton of ExpressionCallees.t
@@ -158,6 +161,7 @@ module LocationCallees : sig
   [@@deriving eq, show]
 end
 
+(** The call graph of a function or method definition. *)
 module DefineCallGraph : sig
   type t [@@deriving eq, show]
 
@@ -187,6 +191,9 @@ module DefineCallGraph : sig
 
   (* For testing purpose only. *)
   val equal_ignoring_types : t -> t -> bool
+
+  val all_targets : t -> Target.t list
+  (** Return all callees of the call graph, as a sorted list. *)
 end
 
 val call_graph_of_define
@@ -199,19 +206,49 @@ val call_graph_of_define
 
 val redirect_special_calls : resolution:Resolution.t -> Call.t -> Call.t
 
-module SharedMemory : sig
-  val add : callable:Target.t -> call_graph:DefineCallGraph.t -> unit
-
-  val get : callable:Target.t -> DefineCallGraph.t option
-
-  val remove : Target.t list -> unit
-end
-
 val call_graph_of_callable
   :  static_analysis_configuration:Configuration.StaticAnalysis.t ->
-  store_shared_memory:bool ->
   environment:Analysis.TypeEnvironment.ReadOnly.t ->
   attribute_targets:Target.HashSet.t ->
-  global_call_graph:DependencyGraph.callgraph ->
   callable:Target.t ->
-  DependencyGraph.callgraph
+  DefineCallGraph.t
+
+(** Call graphs of callables, stored in the shared memory. This is a mapping from a callable to its
+    `DefineCallGraph.t`. *)
+module ProgramCallGraphSharedMemory : sig
+  val set : callable:Target.t -> call_graph:DefineCallGraph.t -> unit
+
+  val get : callable:Target.t -> DefineCallGraph.t option
+end
+
+(** Whole-program call graph, stored in the ocaml heap. This is a mapping from a callable to all its
+    callees. *)
+module ProgramCallGraphHeap : sig
+  type t
+
+  val empty : t
+
+  val is_empty : t -> bool
+
+  val of_alist_exn : (Target.t * Target.t list) list -> t
+
+  val add_or_exn : callable:Target.t -> callees:Target.t list -> t -> t
+
+  val fold : t -> init:'a -> f:(target:Target.t -> callees:Target.t list -> 'a -> 'a) -> 'a
+
+  val to_target_graph : t -> TargetGraph.t
+end
+
+val build_whole_program_call_graph
+  :  scheduler:Scheduler.t ->
+  static_analysis_configuration:Configuration.StaticAnalysis.t ->
+  environment:TypeEnvironment.ReadOnly.t ->
+  store_shared_memory:bool ->
+  attribute_targets:Target.HashSet.t ->
+  callables:Target.t list ->
+  ProgramCallGraphHeap.t
+(** Build the whole call graph of the program.
+
+    The overrides must be computed first because we depend on a global shared memory graph to
+    include overrides in the call graph. Without it, we'll underanalyze and have an inconsistent
+    fixpoint. *)
