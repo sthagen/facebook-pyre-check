@@ -29,7 +29,7 @@ module UpdateResult : sig
       :  t ->
       UnannotatedGlobalEnvironment.UpdateResult.t
 
-    val invalidated_modules : t -> AstEnvironment.InvalidatedModules.t
+    val invalidated_modules : t -> Ast.Reference.t list
   end
 end
 
@@ -48,12 +48,10 @@ module type PreviousEnvironment = sig
 
   val read_only : t -> ReadOnly.t
 
-  val cold_start : t -> ReadOnly.t
-
   val update_this_and_all_preceding_environments
     :  t ->
     scheduler:Scheduler.t ->
-    AstEnvironment.trigger ->
+    ArtifactPath.t list ->
     UpdateResult.t
 end
 
@@ -74,13 +72,21 @@ module type S = sig
 
   val read_only : t -> ReadOnly.t
 
-  val cold_start : t -> ReadOnly.t
-
   val update_this_and_all_preceding_environments
     :  t ->
     scheduler:Scheduler.t ->
-    AstEnvironment.trigger ->
+    ArtifactPath.t list ->
     UpdateResult.t
+
+  module Testing : sig
+    module ReadOnly : sig
+      val upstream : ReadOnly.t -> PreviousEnvironment.ReadOnly.t
+    end
+
+    module UpdateResult : sig
+      val upstream : UpdateResult.t -> PreviousEnvironment.UpdateResult.t
+    end
+  end
 end
 
 (* The following is a special form of a shared memory table optimized for incremental type checking.
@@ -160,13 +166,21 @@ module EnvironmentTable : sig
 
     val read_only : t -> ReadOnly.t
 
-    val cold_start : t -> ReadOnly.t
-
     val update_this_and_all_preceding_environments
       :  t ->
       scheduler:Scheduler.t ->
-      AstEnvironment.trigger ->
+      ArtifactPath.t list ->
       UpdateResult.t
+
+    module Testing : sig
+      module ReadOnly : sig
+        val upstream : ReadOnly.t -> In.PreviousEnvironment.ReadOnly.t
+      end
+
+      module UpdateResult : sig
+        val upstream : UpdateResult.t -> In.PreviousEnvironment.UpdateResult.t
+      end
+    end
   end
 
   module WithCache (In : In) : S with module In = In

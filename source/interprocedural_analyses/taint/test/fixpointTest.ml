@@ -24,31 +24,34 @@ let assert_fixpoint
   =
   let scheduler = Test.mock_scheduler () in
   let {
-    callables_to_analyze;
-    callgraph;
+    whole_program_call_graph;
+    define_call_graphs;
     environment;
-    overrides;
+    override_graph_heap;
+    override_graph_shared_memory;
     initial_models;
     initial_callables;
     stubs;
-    override_targets;
     _;
   }
     =
     initialize ?models_source ~handle:"qualifier.py" ~context source
   in
-  let dependency_graph =
-    DependencyGraph.from_callgraph callgraph
-    |> DependencyGraph.union overrides
-    |> DependencyGraph.reverse
+  let { DependencyGraph.dependency_graph; callables_to_analyze; override_targets; _ } =
+    Interprocedural.DependencyGraph.build_whole_program_dependency_graph
+      ~prune:false
+      ~initial_callables
+      ~call_graph:whole_program_call_graph
+      ~overrides:override_graph_heap
   in
   let fixpoint_state =
     Fixpoint.compute
       ~scheduler
       ~type_environment:environment
-      ~context:{ Fixpoint.Analysis.environment }
+      ~override_graph:override_graph_shared_memory
       ~dependency_graph
-      ~initial_callables
+      ~context:{ Fixpoint.Context.type_environment = environment; define_call_graphs }
+      ~initial_callables:(Interprocedural.FetchCallables.get_callables initial_callables)
       ~stubs
       ~override_targets
       ~callables_to_analyze
@@ -57,7 +60,9 @@ let assert_fixpoint
       ~epoch:Fixpoint.Epoch.initial
   in
 
-  assert_bool "Call graph is empty!" (not (CallGraph.ProgramCallGraphHeap.is_empty callgraph));
+  assert_bool
+    "Call graph is empty!"
+    (not (CallGraph.WholeProgramCallGraph.is_empty whole_program_call_graph));
   assert_equal
     ~msg:"Fixpoint iterations"
     expect_iterations

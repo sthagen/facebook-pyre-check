@@ -23,16 +23,11 @@ end
 module ReadOnly : sig
   type t
 
-  val create
-    :  module_tracker:ModuleTracker.ReadOnly.t ->
-    ?get_processed_source:(track_dependency:bool -> Reference.t -> Source.t option) ->
-    ?get_raw_source:(Reference.t -> (Source.t, ParserError.t) Result.t option) ->
-    unit ->
-    t
-
   val get_processed_source : t -> ?track_dependency:bool -> Reference.t -> Source.t option
 
   val get_raw_source : t -> Reference.t -> (Source.t, ParserError.t) Result.t option
+
+  val module_tracker : t -> ModuleTracker.ReadOnly.t
 
   val get_source_path : t -> Reference.t -> ModulePath.t option
 
@@ -62,13 +57,17 @@ val load : ModuleTracker.t -> t
 
 val create : ModuleTracker.t -> t
 
-module InvalidatedModules : sig
-  type t = Reference.t list
+module UpdateResult : sig
+  type t
+
+  val invalidated_modules : t -> Reference.t list
+
+  val module_updates : t -> ModuleTracker.IncrementalUpdate.t list
 end
 
-type trigger = Update of ModuleTracker.IncrementalUpdate.t list
+val update : scheduler:Scheduler.t -> t -> ArtifactPath.t list -> UpdateResult.t
 
-val update : scheduler:Scheduler.t -> t -> trigger -> InvalidatedModules.t
+val clear_memory_for_tests : scheduler:Scheduler.t -> t -> unit
 
 val remove_sources : t -> Reference.t list -> unit
 

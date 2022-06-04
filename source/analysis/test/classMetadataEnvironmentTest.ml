@@ -17,9 +17,10 @@ let test_simple_registration context =
     let project =
       ScratchProject.setup [source_name ^ ".py", source] ~include_typeshed_stubs:false ~context
     in
-    let ast_environment = ScratchProject.build_ast_environment project in
-    let class_metadata_environment = ClassMetadataEnvironment.create ast_environment in
-    let read_only = ClassMetadataEnvironment.cold_start class_metadata_environment in
+    let read_only =
+      ScratchProject.global_environment project
+      |> AnnotatedGlobalEnvironment.Testing.ReadOnly.class_metadata_environment
+    in
     let printer v =
       v >>| ClassMetadataEnvironment.show_class_metadata |> Option.value ~default:"none"
     in
@@ -132,10 +133,11 @@ let test_updates context =
         original_sources
         ~context
     in
-    let ast_environment = ScratchProject.build_ast_environment project in
     let configuration = ScratchProject.configuration_of project in
-    let class_metadata_environment = ClassMetadataEnvironment.create ast_environment in
-    let read_only = ClassMetadataEnvironment.cold_start class_metadata_environment in
+    let read_only =
+      ScratchProject.global_environment project
+      |> AnnotatedGlobalEnvironment.Testing.ReadOnly.class_metadata_environment
+    in
     let execute_action (class_name, dependency, expectation) =
       let printer v =
         v >>| ClassMetadataEnvironment.show_class_metadata |> Option.value ~default:"none"
@@ -144,35 +146,16 @@ let test_updates context =
       |> assert_equal ~printer expectation
     in
     List.iter middle_actions ~f:execute_action;
-    let delete_file
-        { ScratchProject.configuration = { Configuration.Analysis.local_root; _ }; _ }
-        relative
-      =
-      PyrePath.create_relative ~root:local_root ~relative |> PyrePath.absolute |> Core.Unix.remove
-    in
-    let add_file
-        { ScratchProject.configuration = { Configuration.Analysis.local_root; _ }; _ }
-        ~relative
-        content
-      =
-      let content = trim_extra_indentation content in
-      let file = File.create ~content (PyrePath.create_relative ~root:local_root ~relative) in
-      File.write file
-    in
-    List.iter original_sources ~f:(fun (path, _) -> delete_file project path);
-    List.iter new_sources ~f:(fun (relative, content) -> add_file project ~relative content);
+    List.iter original_sources ~f:(fun (relative, _) ->
+        ScratchProject.delete_file project ~relative);
+    List.iter new_sources ~f:(fun (relative, content) ->
+        ScratchProject.add_file project ~relative content);
     let update_result =
-      let { ScratchProject.module_tracker; _ } = project in
       let { Configuration.Analysis.local_root; _ } = configuration in
-      let paths =
-        List.map new_sources ~f:(fun (relative, _) ->
-            Test.relative_artifact_path ~root:local_root ~relative)
-      in
-      ModuleTracker.update ~paths module_tracker
-      |> (fun updates -> AstEnvironment.Update updates)
-      |> ClassMetadataEnvironment.update_this_and_all_preceding_environments
-           class_metadata_environment
-           ~scheduler:(Test.mock_scheduler ())
+      List.map new_sources ~f:(fun (relative, _) ->
+          Test.relative_artifact_path ~root:local_root ~relative)
+      |> ScratchProject.update_global_environment project ~scheduler:(Test.mock_scheduler ())
+      |> AnnotatedGlobalEnvironment.Testing.UpdateResult.class_metadata_environment
     in
     let printer set =
       SharedMemoryKeys.DependencyKey.RegisteredSet.elements set

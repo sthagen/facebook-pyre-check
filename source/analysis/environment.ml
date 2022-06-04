@@ -14,28 +14,30 @@ module type ReadOnly = sig
   val unannotated_global_environment : t -> UnannotatedGlobalEnvironment.ReadOnly.t
 end
 
-module type UpdateResultType = sig
-  type t
+module UpdateResult = struct
+  module type S = sig
+    type t
 
-  type read_only
+    type read_only
 
-  val locally_triggered_dependencies : t -> SharedMemoryKeys.DependencyKey.RegisteredSet.t
+    val locally_triggered_dependencies : t -> SharedMemoryKeys.DependencyKey.RegisteredSet.t
 
-  val all_triggered_dependencies : t -> SharedMemoryKeys.DependencyKey.RegisteredSet.t list
+    val all_triggered_dependencies : t -> SharedMemoryKeys.DependencyKey.RegisteredSet.t list
 
-  val read_only : t -> read_only
+    val read_only : t -> read_only
 
-  val unannotated_global_environment_update_result
-    :  t ->
-    UnannotatedGlobalEnvironment.UpdateResult.t
+    val unannotated_global_environment_update_result
+      :  t ->
+      UnannotatedGlobalEnvironment.UpdateResult.t
 
-  val invalidated_modules : t -> AstEnvironment.InvalidatedModules.t
+    val invalidated_modules : t -> Ast.Reference.t list
+  end
 end
 
 module type PreviousEnvironment = sig
   module ReadOnly : ReadOnly
 
-  module UpdateResult : UpdateResultType with type read_only := ReadOnly.t
+  module UpdateResult : UpdateResult.S with type read_only := ReadOnly.t
 
   type t
 
@@ -47,43 +49,11 @@ module type PreviousEnvironment = sig
 
   val read_only : t -> ReadOnly.t
 
-  val cold_start : t -> ReadOnly.t
-
   val update_this_and_all_preceding_environments
     :  t ->
     scheduler:Scheduler.t ->
-    AstEnvironment.trigger ->
+    ArtifactPath.t list ->
     UpdateResult.t
-end
-
-module UpdateResult = struct
-  module type S = UpdateResultType
-
-  module Make (PreviousEnvironment : PreviousEnvironment) (ReadOnly : ReadOnly) = struct
-    type read_only = ReadOnly.t
-
-    type t = {
-      upstream: PreviousEnvironment.UpdateResult.t;
-      triggered_dependencies: SharedMemoryKeys.DependencyKey.RegisteredSet.t;
-      read_only: ReadOnly.t;
-    }
-
-    let locally_triggered_dependencies { triggered_dependencies; _ } = triggered_dependencies
-
-    let all_triggered_dependencies { triggered_dependencies; upstream; _ } =
-      triggered_dependencies :: PreviousEnvironment.UpdateResult.all_triggered_dependencies upstream
-
-
-    let read_only { read_only; _ } = read_only
-
-    let unannotated_global_environment_update_result { upstream; _ } =
-      PreviousEnvironment.UpdateResult.unannotated_global_environment_update_result upstream
-
-
-    let invalidated_modules previous =
-      unannotated_global_environment_update_result previous
-      |> UnannotatedGlobalEnvironment.UpdateResult.invalidated_modules
-  end
 end
 
 module type S = sig
@@ -103,13 +73,21 @@ module type S = sig
 
   val read_only : t -> ReadOnly.t
 
-  val cold_start : t -> ReadOnly.t
-
   val update_this_and_all_preceding_environments
     :  t ->
     scheduler:Scheduler.t ->
-    AstEnvironment.trigger ->
+    ArtifactPath.t list ->
     UpdateResult.t
+
+  module Testing : sig
+    module ReadOnly : sig
+      val upstream : ReadOnly.t -> PreviousEnvironment.ReadOnly.t
+    end
+
+    module UpdateResult : sig
+      val upstream : UpdateResult.t -> PreviousEnvironment.UpdateResult.t
+    end
+  end
 end
 
 module EnvironmentTable = struct
@@ -194,13 +172,21 @@ module EnvironmentTable = struct
 
     val read_only : t -> ReadOnly.t
 
-    val cold_start : t -> ReadOnly.t
-
     val update_this_and_all_preceding_environments
       :  t ->
       scheduler:Scheduler.t ->
-      AstEnvironment.trigger ->
+      ArtifactPath.t list ->
       UpdateResult.t
+
+    module Testing : sig
+      module ReadOnly : sig
+        val upstream : ReadOnly.t -> In.PreviousEnvironment.ReadOnly.t
+      end
+
+      module UpdateResult : sig
+        val upstream : UpdateResult.t -> In.PreviousEnvironment.UpdateResult.t
+      end
+    end
   end
 
   module Make (In : In) (Table : Table with type value = In.Value.t and type key = In.Key.t) =
@@ -260,7 +246,32 @@ module EnvironmentTable = struct
       }
 
 
-    module UpdateResult = UpdateResult.Make (In.PreviousEnvironment) (ReadOnly)
+    module UpdateResult = struct
+      type read_only = ReadOnly.t
+
+      type t = {
+        upstream: In.PreviousEnvironment.UpdateResult.t;
+        triggered_dependencies: SharedMemoryKeys.DependencyKey.RegisteredSet.t;
+        read_only: ReadOnly.t;
+      }
+
+      let locally_triggered_dependencies { triggered_dependencies; _ } = triggered_dependencies
+
+      let all_triggered_dependencies { triggered_dependencies; upstream; _ } =
+        triggered_dependencies
+        :: In.PreviousEnvironment.UpdateResult.all_triggered_dependencies upstream
+
+
+      let read_only { read_only; _ } = read_only
+
+      let unannotated_global_environment_update_result { upstream; _ } =
+        In.PreviousEnvironment.UpdateResult.unannotated_global_environment_update_result upstream
+
+
+      let invalidated_modules previous =
+        unannotated_global_environment_update_result previous
+        |> UnannotatedGlobalEnvironment.UpdateResult.invalidated_modules
+    end
 
     module TriggerMap = Map.Make (struct
       type t = In.trigger [@@deriving sexp, compare]
@@ -351,23 +362,27 @@ module EnvironmentTable = struct
       }
 
 
-    let cold_start { table; upstream_environment } =
-      {
-        ReadOnly.table;
-        upstream_environment = In.PreviousEnvironment.cold_start upstream_environment;
-      }
-
-
     let update_this_and_all_preceding_environments
         ({ upstream_environment; _ } as this_environment)
         ~scheduler
-        ast_environment_trigger
+        artifact_paths
       =
       In.PreviousEnvironment.update_this_and_all_preceding_environments
         upstream_environment
         ~scheduler
-        ast_environment_trigger
+        artifact_paths
       |> update_only_this_environment this_environment ~scheduler
+
+
+    module Testing = struct
+      module ReadOnly = struct
+        let upstream { ReadOnly.upstream_environment; _ } = upstream_environment
+      end
+
+      module UpdateResult = struct
+        let upstream { UpdateResult.upstream; _ } = upstream
+      end
+    end
   end
 
   module WithCache (In : In) =

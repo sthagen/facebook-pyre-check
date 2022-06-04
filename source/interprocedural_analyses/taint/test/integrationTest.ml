@@ -91,42 +91,55 @@ let test_integration path context =
     in
     let handle = PyrePath.show path |> String.split ~on:'/' |> List.last_exn in
     let create_call_graph_files call_graph =
-      let dependencies = DependencyGraph.from_callgraph call_graph in
       let actual =
-        Format.asprintf "@%s\nCall dependencies\n%a" "generated" DependencyGraph.pp dependencies
+        Format.asprintf
+          "@%s\nCall dependencies\n%a"
+          "generated"
+          TargetGraph.pp
+          (CallGraph.WholeProgramCallGraph.to_target_graph call_graph)
       in
       create_expected_and_actual_files ~suffix:".cg" actual
     in
     let create_overrides_files overrides =
-      let actual = Format.asprintf "@%s\nOverrides\n%a" "generated" DependencyGraph.pp overrides in
+      let actual =
+        Format.asprintf
+          "@%s\nOverrides\n%a"
+          "generated"
+          TargetGraph.pp
+          (DependencyGraph.Reversed.to_target_graph
+             (DependencyGraph.Reversed.from_overrides overrides))
+      in
       create_expected_and_actual_files ~suffix:".overrides" actual
     in
     let {
-      callables_to_analyze;
-      callgraph;
+      whole_program_call_graph;
+      define_call_graphs;
       environment;
-      overrides;
+      override_graph_heap;
+      override_graph_shared_memory;
       initial_models;
       initial_callables;
       stubs;
-      override_targets;
       _;
     }
       =
       initialize ~handle ?models_source ~add_initial_models ~taint_configuration ~context source
     in
-    let dependency_graph =
-      DependencyGraph.from_callgraph callgraph
-      |> DependencyGraph.union overrides
-      |> DependencyGraph.reverse
+    let { DependencyGraph.dependency_graph; callables_to_analyze; override_targets; _ } =
+      DependencyGraph.build_whole_program_dependency_graph
+        ~prune:true
+        ~initial_callables
+        ~call_graph:whole_program_call_graph
+        ~overrides:override_graph_heap
     in
     let fixpoint_state =
       Fixpoint.compute
         ~scheduler:(Test.mock_scheduler ())
         ~type_environment:environment
-        ~context:{ Fixpoint.Analysis.environment }
+        ~override_graph:override_graph_shared_memory
         ~dependency_graph
-        ~initial_callables
+        ~context:{ Fixpoint.Context.type_environment = environment; define_call_graphs }
+        ~initial_callables:(FetchCallables.get_callables initial_callables)
         ~stubs
         ~override_targets
         ~callables_to_analyze
@@ -140,14 +153,20 @@ let test_integration path context =
           Analysis.TypeEnvironment.ReadOnly.ast_environment environment
           |> Analysis.AstEnvironment.ReadOnly.get_relative
         in
-        Taint.Reporting.fetch_and_externalize ~fixpoint_state ~filename_lookup callable
+        Taint.Reporting.fetch_and_externalize
+          ~fixpoint_state
+          ~filename_lookup
+          ~override_graph:override_graph_shared_memory
+          callable
         |> List.map ~f:(fun json -> Yojson.Safe.pretty_to_string ~std:true json ^ "\n")
         |> String.concat ~sep:""
       in
       externalization
     in
 
-    let divergent_files = [create_call_graph_files callgraph; create_overrides_files overrides] in
+    let divergent_files =
+      [create_call_graph_files whole_program_call_graph; create_overrides_files override_graph_heap]
+    in
     let serialized_models =
       List.rev_append (Registry.targets initial_models) callables_to_analyze
       |> Target.Set.of_list
@@ -157,6 +176,7 @@ let test_integration path context =
       |> String.concat ~sep:""
     in
     let () = Fixpoint.cleanup fixpoint_state in
+    let () = OverrideGraph.SharedMemory.cleanup override_graph_shared_memory override_graph_heap in
     divergent_files, serialized_models
   in
   let divergent_files =

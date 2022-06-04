@@ -1161,18 +1161,20 @@ module IncrementalTest = struct
     let configuration, module_tracker =
       let old_external_sources = get_old_inputs external_setups in
       let old_sources = get_old_inputs setups in
-      let { ScratchProject.configuration; module_tracker; _ } =
+      let project =
         ScratchProject.setup
           ~context
           ~external_sources:old_external_sources
           ~in_memory:false
           old_sources
       in
+      let configuration = ScratchProject.configuration_of project in
+      let module_tracker = ScratchProject.ReadWrite.module_tracker project in
       configuration, module_tracker
     in
     (* Compute the updates *)
-    let paths = update_filesystem_state configuration in
-    let updates = ModuleTracker.update ~paths module_tracker in
+    let artifact_paths = update_filesystem_state configuration in
+    let updates = ModuleTracker.update ~artifact_paths module_tracker in
     let actual =
       let create_event = function
         | ModuleTracker.IncrementalUpdate.NewExplicit { ModulePath.relative; is_external; _ } ->

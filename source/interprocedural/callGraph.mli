@@ -199,6 +199,7 @@ end
 val call_graph_of_define
   :  static_analysis_configuration:Configuration.StaticAnalysis.t ->
   environment:Analysis.TypeEnvironment.ReadOnly.t ->
+  override_graph:OverrideGraph.SharedMemory.t ->
   attribute_targets:Target.HashSet.t ->
   qualifier:Reference.t ->
   define:Ast.Statement.Define.t ->
@@ -209,21 +210,22 @@ val redirect_special_calls : resolution:Resolution.t -> Call.t -> Call.t
 val call_graph_of_callable
   :  static_analysis_configuration:Configuration.StaticAnalysis.t ->
   environment:Analysis.TypeEnvironment.ReadOnly.t ->
+  override_graph:OverrideGraph.SharedMemory.t ->
   attribute_targets:Target.HashSet.t ->
   callable:Target.t ->
   DefineCallGraph.t
 
 (** Call graphs of callables, stored in the shared memory. This is a mapping from a callable to its
     `DefineCallGraph.t`. *)
-module ProgramCallGraphSharedMemory : sig
-  val set : callable:Target.t -> call_graph:DefineCallGraph.t -> unit
+module DefineCallGraphSharedMemory : sig
+  type t
 
-  val get : callable:Target.t -> DefineCallGraph.t option
+  val get : t -> callable:Target.t -> DefineCallGraph.t option
 end
 
 (** Whole-program call graph, stored in the ocaml heap. This is a mapping from a callable to all its
     callees. *)
-module ProgramCallGraphHeap : sig
+module WholeProgramCallGraph : sig
   type t
 
   val empty : t
@@ -239,14 +241,20 @@ module ProgramCallGraphHeap : sig
   val to_target_graph : t -> TargetGraph.t
 end
 
+type call_graphs = {
+  whole_program_call_graph: WholeProgramCallGraph.t;
+  define_call_graphs: DefineCallGraphSharedMemory.t;
+}
+
 val build_whole_program_call_graph
   :  scheduler:Scheduler.t ->
   static_analysis_configuration:Configuration.StaticAnalysis.t ->
   environment:TypeEnvironment.ReadOnly.t ->
+  override_graph:OverrideGraph.SharedMemory.t ->
   store_shared_memory:bool ->
   attribute_targets:Target.HashSet.t ->
   callables:Target.t list ->
-  ProgramCallGraphHeap.t
+  call_graphs
 (** Build the whole call graph of the program.
 
     The overrides must be computed first because we depend on a global shared memory graph to

@@ -58,23 +58,8 @@ let create_environment ~context ?include_typeshed_stubs ?include_helpers ?additi
   |> fst
 
 
-let create_readonly_environment
-    ~context
-    ?include_typeshed_stubs
-    ?include_helpers
-    ?additional_sources
-    ()
-  =
-  create_environment ~context ?include_typeshed_stubs ?include_helpers ?additional_sources ()
-  |> AnnotatedGlobalEnvironment.read_only
-
-
 let populate ?include_typeshed_stubs ?include_helpers sources =
-  create_readonly_environment
-    ?include_typeshed_stubs
-    ?include_helpers
-    ~additional_sources:sources
-    ()
+  create_environment ?include_typeshed_stubs ?include_helpers ~additional_sources:sources ()
 
 
 let order_and_environment ~context source =
@@ -412,7 +397,7 @@ let test_register_aliases context =
 
 
 let test_register_implicit_submodules context =
-  let environment = create_readonly_environment ~context ~additional_sources:["a/b/c.py", ""] () in
+  let environment = create_environment ~context ~additional_sources:["a/b/c.py", ""] () in
   let ast_environment = AnnotatedGlobalEnvironment.ReadOnly.ast_environment environment in
   let global_resolution = GlobalResolution.create environment in
   assert_bool
@@ -548,10 +533,7 @@ let test_connect_type_order context =
         );
       ]
   in
-  let ast_environment = ScratchProject.build_ast_environment project in
-  let global_environment =
-    cold_start_environments ~ast_environment () |> AnnotatedGlobalEnvironment.read_only
-  in
+  let global_environment = ScratchProject.global_environment project in
   let order = class_hierarchy global_environment in
   let assert_successors annotation successors =
     assert_equal
@@ -1151,10 +1133,7 @@ let test_connect_annotations_to_top context =
         );
       ]
   in
-  let ast_environment = ScratchProject.build_ast_environment project in
-  let global_environment =
-    cold_start_environments ~ast_environment () |> AnnotatedGlobalEnvironment.read_only
-  in
+  let global_environment = ScratchProject.global_environment project in
   let order = class_hierarchy global_environment in
   assert_equal (ClassHierarchy.least_upper_bound order "test.One" "test.Two") ["object"]
 
@@ -1176,10 +1155,7 @@ let test_deduplicate context =
         );
       ]
   in
-  let ast_environment = ScratchProject.build_ast_environment project in
-  let global_environment =
-    cold_start_environments ~ast_environment () |> AnnotatedGlobalEnvironment.read_only
-  in
+  let global_environment = ScratchProject.global_environment project in
   let (module Handler) = class_hierarchy global_environment in
   let index_of annotation = IndexTracker.index annotation in
   let module TargetAsserter (ListOrSet : ClassHierarchy.Target.ListOrSet) = struct
@@ -1222,10 +1198,7 @@ let test_remove_extra_edges_to_object context =
         );
       ]
   in
-  let ast_environment = ScratchProject.build_ast_environment project in
-  let global_environment =
-    cold_start_environments ~ast_environment () |> AnnotatedGlobalEnvironment.read_only
-  in
+  let global_environment = ScratchProject.global_environment project in
   let (module Handler) = class_hierarchy global_environment in
   let zero_index = IndexTracker.index "test.Zero" in
   let one_index = IndexTracker.index "test.One" in
@@ -1239,7 +1212,7 @@ let test_remove_extra_edges_to_object context =
 
 let test_update_and_compute_dependencies context =
   (* Pre-test setup *)
-  let annotated_global_environment, project =
+  let global_environment, project =
     create_environments_and_project
       ~context
       ~additional_sources:
@@ -1251,7 +1224,6 @@ let test_update_and_compute_dependencies context =
       ~in_memory:false
       ()
   in
-  let readonly_environment = AnnotatedGlobalEnvironment.read_only annotated_global_environment in
   let dependency_A =
     SharedMemoryKeys.DependencyKey.Registry.register (TypeCheckDefine (Reference.create "A"))
   in
@@ -1259,12 +1231,12 @@ let test_update_and_compute_dependencies context =
     SharedMemoryKeys.DependencyKey.Registry.register (TypeCheckDefine (Reference.create "B"))
   in
   (* Establish dependencies *)
-  let untracked_global_resolution = GlobalResolution.create readonly_environment in
+  let untracked_global_resolution = GlobalResolution.create global_environment in
   let dependency_tracked_global_resolution_A =
-    GlobalResolution.create ~dependency:dependency_A readonly_environment
+    GlobalResolution.create ~dependency:dependency_A global_environment
   in
   let dependency_tracked_global_resolution_B =
-    GlobalResolution.create ~dependency:dependency_B readonly_environment
+    GlobalResolution.create ~dependency:dependency_B global_environment
   in
   let global resolution name = GlobalResolution.global resolution (Reference.create name) in
   (* A read Foo *)
@@ -1277,36 +1249,15 @@ let test_update_and_compute_dependencies context =
     let assert_state (primitive, expected) =
       global untracked_global_resolution primitive |> Option.is_some |> assert_equal expected
     in
-    let add_file
-        { ScratchProject.configuration = { Configuration.Analysis.local_root; _ }; _ }
-        content
-        ~relative
-      =
-      let content = trim_extra_indentation content in
-      let file = File.create ~content (PyrePath.create_relative ~root:local_root ~relative) in
-      File.write file
-    in
-    let delete_file
-        { ScratchProject.configuration = { Configuration.Analysis.local_root; _ }; _ }
-        relative
-      =
-      PyrePath.create_relative ~root:local_root ~relative |> PyrePath.absolute |> Core.Unix.remove
-    in
     let dependents =
-      delete_file project "source.py";
+      ScratchProject.delete_file project ~relative:"source.py";
       let repopulate_source_to = Option.value repopulate_source_to ~default:"" in
-      add_file project repopulate_source_to ~relative:"source.py";
+      ScratchProject.add_file project repopulate_source_to ~relative:"source.py";
       let update_result =
         let { ScratchProject.configuration; _ } = project in
         let { Configuration.Analysis.local_root; _ } = configuration in
         let path = Test.relative_artifact_path ~root:local_root ~relative:"source.py" in
-        let ast_environment =
-          AnnotatedGlobalEnvironment.ast_environment annotated_global_environment
-        in
-        let module_tracker = AstEnvironment.module_tracker ast_environment in
-        ModuleTracker.update ~paths:[path] module_tracker
-        |> (fun updates -> AstEnvironment.Update updates)
-        |> update_environments ~annotated_global_environment
+        ScratchProject.update_global_environment project [path]
       in
       AnnotatedGlobalEnvironment.UpdateResult.all_triggered_dependencies update_result
       |> List.fold

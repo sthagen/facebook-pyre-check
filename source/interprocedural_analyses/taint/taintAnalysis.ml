@@ -36,6 +36,43 @@ let initialize_configuration
     ()
 
 
+let parse_and_save_decorators_to_skip
+    ~inline_decorators
+    { Configuration.Analysis.taint_model_paths; _ }
+  =
+  Analysis.InlineDecorator.set_should_inline_decorators inline_decorators;
+  if inline_decorators then (
+    let timer = Timer.start () in
+    Log.info "Getting decorators to skip when inlining...";
+    let model_sources = ModelParser.get_model_sources ~paths:taint_model_paths in
+    let decorators_to_skip =
+      List.concat_map model_sources ~f:(fun (path, source) ->
+          Analysis.InlineDecorator.decorators_to_skip ~path source)
+    in
+    List.iter decorators_to_skip ~f:(fun decorator ->
+        Analysis.InlineDecorator.DecoratorsToSkip.add decorator decorator);
+    Statistics.performance
+      ~name:"Getting decorators to skip when inlining"
+      ~phase_name:"Getting decorators to skip when inlining"
+      ~timer
+      ())
+
+
+(** Perform a full type check and build a type environment. *)
+let type_check ~scheduler ~configuration ~cache =
+  Cache.type_environment cache (fun () ->
+      let configuration =
+        (* In order to get an accurate call graph and type information, we need to ensure that we
+           schedule a type check for external files. *)
+        { configuration with Configuration.Analysis.analyze_external_sources = true }
+      in
+      Service.Check.check
+        ~scheduler
+        ~configuration
+        ~call_graph_builder:(module Analysis.Callgraph.NullBuilder)
+      |> fun { environment; _ } -> environment)
+
+
 let join_parse_result
     {
       ModelParser.models = models_left;
@@ -246,6 +283,14 @@ let initialize_models ~scheduler ~static_analysis_configuration ~environment ~ca
   { ModelParser.models; skip_overrides; queries = []; errors }
 
 
+(** Aggressively remove things we do not need anymore from the shared memory. *)
+let purge_shared_memory ~environment ~qualifiers =
+  let ast_environment = Analysis.TypeEnvironment.ast_environment environment in
+  Analysis.AstEnvironment.remove_sources ast_environment qualifiers;
+  Memory.SharedMemory.collect `aggressive;
+  ()
+
+
 let run_taint_analysis
     ~static_analysis_configuration:
       ({
@@ -264,9 +309,11 @@ let run_taint_analysis
 
     (* Collect decorators to skip before type-checking because decorator inlining happens in an
        early phase of type-checking and needs to know which decorators to skip. *)
-    Service.StaticAnalysis.parse_and_save_decorators_to_skip ~inline_decorators configuration;
-    let cache = Service.StaticAnalysis.Cache.load ~scheduler ~configuration ~enabled:use_cache in
-    let environment = Service.StaticAnalysis.type_check ~scheduler ~configuration ~cache in
+    let () = parse_and_save_decorators_to_skip ~inline_decorators configuration in
+
+    let cache = Cache.load ~scheduler ~configuration ~enabled:use_cache in
+
+    let environment = type_check ~scheduler ~configuration ~cache in
 
     let qualifiers =
       Analysis.TypeEnvironment.module_tracker environment
@@ -277,17 +324,37 @@ let run_taint_analysis
     let read_only_environment = Analysis.TypeEnvironment.read_only environment in
 
     let class_hierarchy_graph =
-      Service.StaticAnalysis.build_class_hierarchy_graph
-        ~scheduler
-        ~cache
-        ~environment:read_only_environment
-        ~qualifiers
+      Cache.class_hierarchy_graph cache (fun () ->
+          let timer = Timer.start () in
+          let class_hierarchy_graph =
+            Interprocedural.ClassHierarchyGraph.from_qualifiers
+              ~scheduler
+              ~environment:read_only_environment
+              ~qualifiers
+          in
+          Statistics.performance
+            ~name:"Computed class hierarchy graph"
+            ~phase_name:"Computing class hierarchy graph"
+            ~timer
+            ();
+          class_hierarchy_graph)
     in
 
-    let _ = Service.StaticAnalysis.build_class_intervals class_hierarchy_graph in
+    let () =
+      let timer = Timer.start () in
+      let () =
+        Interprocedural.ClassIntervalSetGraph.Heap.from_class_hierarchy class_hierarchy_graph
+        |> Interprocedural.ClassIntervalSetGraph.SharedMemory.from_heap
+      in
+      Statistics.performance
+        ~name:"Computed class intervals"
+        ~phase_name:"Computing class intervals"
+        ~timer
+        ()
+    in
 
     let initial_callables =
-      Service.StaticAnalysis.Cache.initial_callables cache (fun () ->
+      Cache.initial_callables cache (fun () ->
           let timer = Timer.start () in
           let initial_callables =
             Interprocedural.FetchCallables.from_qualifiers
@@ -322,9 +389,14 @@ let run_taint_analysis
 
     Log.info "Computing overrides...";
     let timer = Timer.start () in
-    let { Interprocedural.OverrideGraph.Heap.overrides; skipped_overrides } =
-      Service.StaticAnalysis.Cache.override_graph cache (fun () ->
-          Interprocedural.OverrideGraph.record_overrides_for_qualifiers
+    let {
+      Interprocedural.OverrideGraph.override_graph_heap;
+      override_graph_shared_memory;
+      skipped_overrides;
+    }
+      =
+      Cache.override_graph cache (fun () ->
+          Interprocedural.OverrideGraph.build_whole_program_overrides
             ~scheduler
             ~environment:(Analysis.TypeEnvironment.read_only environment)
             ~include_unit_tests:false
@@ -332,16 +404,16 @@ let run_taint_analysis
             ~maximum_overrides:(TaintConfiguration.get_maximum_overrides_to_analyze ())
             ~qualifiers)
     in
-    let override_dependencies = Interprocedural.DependencyGraph.from_overrides overrides in
     Statistics.performance ~name:"Overrides computed" ~phase_name:"Computing overrides" ~timer ();
 
     Log.info "Building call graph...";
     let timer = Timer.start () in
-    let callgraph =
+    let { Interprocedural.CallGraph.whole_program_call_graph; define_call_graphs } =
       Interprocedural.CallGraph.build_whole_program_call_graph
         ~scheduler
         ~static_analysis_configuration
         ~environment:(Analysis.TypeEnvironment.read_only environment)
+        ~override_graph:override_graph_shared_memory
         ~store_shared_memory:true
         ~attribute_targets:(Registry.object_targets initial_models)
         ~callables:(Interprocedural.FetchCallables.get_callables initial_callables)
@@ -350,11 +422,18 @@ let run_taint_analysis
 
     Log.info "Computing dependencies...";
     let timer = Timer.start () in
-    let dependency_graph, callables_to_analyze, override_targets =
-      Service.StaticAnalysis.build_dependency_graph
+    let {
+      Interprocedural.DependencyGraph.dependency_graph;
+      override_targets;
+      callables_kept;
+      callables_to_analyze;
+    }
+      =
+      Interprocedural.DependencyGraph.build_whole_program_dependency_graph
+        ~prune:true
         ~initial_callables
-        ~callgraph
-        ~override_dependencies
+        ~call_graph:whole_program_call_graph
+        ~overrides:override_graph_heap
     in
     Statistics.performance
       ~name:"Computed dependencies"
@@ -365,13 +444,13 @@ let run_taint_analysis
     let initial_models =
       MissingFlow.add_unknown_callee_models
         ~static_analysis_configuration
-        ~callgraph
+        ~call_graph:whole_program_call_graph
         ~initial_models
     in
 
     Log.info "Purging shared memory...";
     let timer = Timer.start () in
-    let () = Service.StaticAnalysis.purge_shared_memory ~environment ~qualifiers in
+    let () = purge_shared_memory ~environment ~qualifiers in
     Statistics.performance
       ~name:"Purged shared memory"
       ~phase_name:"Purging shared memory"
@@ -381,16 +460,19 @@ let run_taint_analysis
     Log.info
       "Analysis fixpoint started for %d overrides and %d functions..."
       (List.length override_targets)
-      (List.length callables_to_analyze);
-    let callables_to_analyze = List.rev_append override_targets callables_to_analyze in
+      (List.length callables_kept);
     let fixpoint_timer = Timer.start () in
     let fixpoint_state =
       Taint.Fixpoint.compute
         ~scheduler
         ~type_environment:(Analysis.TypeEnvironment.read_only environment)
-        ~context:
-          { Taint.Fixpoint.Analysis.environment = Analysis.TypeEnvironment.read_only environment }
+        ~override_graph:override_graph_shared_memory
         ~dependency_graph
+        ~context:
+          {
+            Taint.Fixpoint.Context.type_environment = Analysis.TypeEnvironment.read_only environment;
+            define_call_graphs;
+          }
         ~initial_callables:(Interprocedural.FetchCallables.get_callables initial_callables)
         ~stubs:(Interprocedural.FetchCallables.get_stubs initial_callables)
         ~override_targets
@@ -417,6 +499,7 @@ let run_taint_analysis
         ~scheduler
         ~static_analysis_configuration
         ~filename_lookup
+        ~override_graph:override_graph_shared_memory
         ~callables
         ~skipped_overrides
         ~fixpoint_timer

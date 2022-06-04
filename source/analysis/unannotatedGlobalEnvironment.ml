@@ -252,17 +252,6 @@ module ReadWrite = struct
     ast_environment: AstEnvironment.t;
   }
 
-  let create ast_environment =
-    {
-      key_tracker = KeyTracker.create ();
-      modules = Modules.create ();
-      class_summaries = ClassSummaries.create ();
-      function_definitions = FunctionDefinitions.create ();
-      unannotated_globals = UnannotatedGlobals.create ();
-      ast_environment;
-    }
-
-
   let ast_environment { ast_environment; _ } = ast_environment
 
   let configuration { ast_environment; _ } = AstEnvironment.configuration ast_environment
@@ -397,15 +386,6 @@ let set_unannotated_globals
   globals |> List.map ~f:write |> KeyTracker.add_unannotated_global_keys key_tracker qualifier
 
 
-let set_module_data environment ({ Source.source_path = { ModulePath.qualifier; _ }; _ } as source) =
-  set_class_summaries environment source;
-  set_function_definitions environment source;
-  set_unannotated_globals environment source;
-  (* We must set this last, because lazy-loading uses Module.mem to determine whether the source has
-     already been processed. So setting it earlier can lead to data races *)
-  set_module environment ~qualifier (Module.create source)
-
-
 let add_to_transaction
     { modules; class_summaries; function_definitions; unannotated_globals; _ }
     transaction
@@ -437,6 +417,40 @@ let get_all_dependents ~class_additions ~unannotated_global_additions ~define_ad
     function_and_class_dependents
     (UnannotatedGlobals.KeySet.of_list unannotated_global_additions
     |> UnannotatedGlobals.get_all_dependents)
+
+
+let set_module_data environment ({ Source.source_path = { ModulePath.qualifier; _ }; _ } as source) =
+  set_class_summaries environment source;
+  set_function_definitions environment source;
+  set_unannotated_globals environment source;
+  (* We must set this last, because lazy-loading uses Module.mem to determine whether the source has
+     already been processed. So setting it earlier can lead to data races *)
+  set_module environment ~qualifier (Module.create source)
+
+
+let create ast_environment =
+  let cold_start ({ ast_environment; _ } as environment) =
+    (* Eagerly load `builtins.pyi` + the project sources but nothing else *)
+    let ast_read_only = AstEnvironment.read_only ast_environment in
+    AstEnvironment.ReadOnly.get_processed_source
+      ast_read_only
+      ~track_dependency:true
+      Reference.empty
+    >>| set_module_data environment
+    |> Option.value ~default:()
+  in
+  let environment =
+    {
+      key_tracker = KeyTracker.create ();
+      modules = Modules.create ();
+      class_summaries = ClassSummaries.create ();
+      function_definitions = FunctionDefinitions.create ();
+      unannotated_globals = UnannotatedGlobals.create ();
+      ast_environment;
+    }
+  in
+  cold_start environment;
+  environment
 
 
 module ReadOnly = struct
@@ -877,7 +891,8 @@ module UpdateResult = struct
     define_additions: Reference.Set.t;
     previous_unannotated_globals: Reference.Set.t;
     triggered_dependencies: DependencyKey.RegisteredSet.t;
-    invalidated_modules: AstEnvironment.InvalidatedModules.t;
+    invalidated_modules: Reference.t list;
+    module_updates: ModuleTracker.IncrementalUpdate.t list;
     read_only: ReadOnly.t;
   }
 
@@ -899,26 +914,23 @@ module UpdateResult = struct
 
   let invalidated_modules { invalidated_modules; _ } = invalidated_modules
 
+  let module_updates { module_updates; _ } = module_updates
+
   let unannotated_global_environment_update_result = Fn.id
 
   let read_only { read_only; _ } = read_only
 end
 
-let cold_start ({ ast_environment; _ } as environment) =
-  (* Eagerly load `builtins.pyi` + the project sources but nothing else *)
-  let ast_read_only = AstEnvironment.read_only ast_environment in
-  AstEnvironment.ReadOnly.get_processed_source ast_read_only ~track_dependency:true Reference.empty
-  >>| set_module_data environment
-  |> Option.value ~default:();
-  read_only environment
-
-
 let update_this_and_all_preceding_environments
     ({ ast_environment; key_tracker; _ } as environment)
     ~scheduler
-    trigger
+    artifact_paths
   =
-  let invalidated_modules = AstEnvironment.update ~scheduler ast_environment trigger in
+  let invalidated_modules, module_updates =
+    let update_result = AstEnvironment.update ~scheduler ast_environment artifact_paths in
+    ( AstEnvironment.UpdateResult.invalidated_modules update_result,
+      AstEnvironment.UpdateResult.module_updates update_result )
+  in
   let ast_environment = AstEnvironment.read_only ast_environment in
   let map sources =
     let register qualifier =
@@ -1009,5 +1021,6 @@ let update_this_and_all_preceding_environments
     previous_unannotated_globals;
     triggered_dependencies;
     invalidated_modules;
+    module_updates;
     read_only = read_only environment;
   }

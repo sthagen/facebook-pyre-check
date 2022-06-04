@@ -2674,53 +2674,27 @@ let mock_scheduler () =
   Scheduler.create_sequential ()
 
 
-let update_environments
-    ?(scheduler = mock_scheduler ())
-    ~annotated_global_environment
-    ast_environment_trigger
-  =
-  AnnotatedGlobalEnvironment.update_this_and_all_preceding_environments
-    annotated_global_environment
-    ~scheduler
-    ast_environment_trigger
-
-
-let cold_start_environments ~ast_environment () =
-  let annotated_global_environment = AnnotatedGlobalEnvironment.create ast_environment in
-  let _ = AnnotatedGlobalEnvironment.cold_start annotated_global_environment in
-  annotated_global_environment
-
-
 module ScratchProject = struct
   type t = {
     context: test_ctxt;
     configuration: Configuration.Analysis.t;
-    module_tracker: ModuleTracker.t;
+    type_environment: TypeEnvironment.t;
+    in_memory: bool;
   }
 
   module BuiltTypeEnvironment = struct
     type t = {
       sources: Source.t list;
-      type_environment: TypeEnvironment.t;
+      type_environment: TypeEnvironment.ReadOnly.t;
     }
   end
 
   module BuiltGlobalEnvironment = struct
     type t = {
       sources: Source.t list;
-      global_environment: AnnotatedGlobalEnvironment.t;
+      global_environment: AnnotatedGlobalEnvironment.ReadOnly.t;
     }
   end
-
-  let clean_ast_shared_memory module_tracker ast_environment =
-    let deletions =
-      ModuleTracker.source_paths module_tracker
-      |> List.map ~f:ModulePath.qualifier
-      |> List.map ~f:(fun qualifier -> ModuleTracker.IncrementalUpdate.Delete qualifier)
-    in
-    AstEnvironment.update ~scheduler:(mock_scheduler ()) ast_environment (Update deletions)
-    |> ignore
-
 
   let setup
       ?(incremental_style = Configuration.Analysis.FineGrained)
@@ -2790,7 +2764,20 @@ module ScratchProject = struct
         List.iter external_sources ~f:(add_source ~root:external_root);
         ModuleTracker.create configuration
     in
-    { context; configuration; module_tracker }
+    let ast_environment = AstEnvironment.create module_tracker in
+    let () =
+      (* Clean shared memory up before the test *)
+      AstEnvironment.clear_memory_for_tests ~scheduler:(mock_scheduler ()) ast_environment;
+      let set_up_shared_memory _ = () in
+      let tear_down_shared_memory () _ =
+        AstEnvironment.clear_memory_for_tests ~scheduler:(mock_scheduler ()) ast_environment
+      in
+      (* Clean shared memory up after the test *)
+      OUnit2.bracket set_up_shared_memory tear_down_shared_memory context
+    in
+    let global_environment = AnnotatedGlobalEnvironment.create ast_environment in
+    let type_environment = TypeEnvironment.create global_environment in
+    { context; configuration; type_environment; in_memory }
 
 
   (* Incremental checks already call ModuleTracker.update, so we don't need to update the state
@@ -2819,55 +2806,46 @@ module ScratchProject = struct
     File.write file
 
 
+  let type_environment { type_environment; _ } = type_environment |> TypeEnvironment.read_only
+
+  let global_environment project =
+    type_environment project |> TypeEnvironment.ReadOnly.global_environment
+
+
+  let ast_environment project =
+    global_environment project |> AnnotatedGlobalEnvironment.ReadOnly.ast_environment
+
+
+  let module_tracker project = ast_environment project |> AstEnvironment.ReadOnly.module_tracker
+
   let configuration_of { configuration; _ } = configuration
 
-  let source_paths_of { module_tracker; _ } = ModuleTracker.source_paths module_tracker
+  let source_paths_of project = module_tracker project |> ModuleTracker.ReadOnly.source_paths
 
-  let qualifiers_of { module_tracker; _ } =
-    ModuleTracker.source_paths module_tracker |> List.map ~f:ModulePath.qualifier
+  let qualifiers_of project = source_paths_of project |> List.map ~f:ModulePath.qualifier
+
+  let project_qualifiers project =
+    ast_environment project |> AstEnvironment.ReadOnly.project_qualifiers
 
 
-  let build_ast_environment { context; module_tracker; _ } =
-    let ast_environment = AstEnvironment.create module_tracker in
-    let () =
-      (* Clean shared memory up before the test *)
-      clean_ast_shared_memory module_tracker ast_environment;
-      let set_up_shared_memory _ = () in
-      let tear_down_shared_memory () _ = clean_ast_shared_memory module_tracker ast_environment in
-      (* Clean shared memory up after the test *)
-      OUnit2.bracket set_up_shared_memory tear_down_shared_memory context
+  let get_project_sources project =
+    let ast_environment =
+      global_environment project |> AnnotatedGlobalEnvironment.ReadOnly.ast_environment
     in
-    ast_environment
+    project_qualifiers project
+    |> List.filter_map ~f:(AstEnvironment.ReadOnly.get_processed_source ast_environment)
 
 
-  let parse_sources ({ module_tracker; _ } as project) =
-    let ast_environment = build_ast_environment project in
-    let ast_environment_update_result =
-      Analysis.ModuleTracker.source_paths module_tracker
-      |> List.map ~f:(fun source_path -> ModuleTracker.IncrementalUpdate.NewExplicit source_path)
-      |> (fun updates -> AstEnvironment.Update updates)
-      |> Analysis.AstEnvironment.update ~scheduler:(mock_scheduler ()) ast_environment
-    in
-    ast_environment, ast_environment_update_result
-
+  let build_ast_environment = ast_environment
 
   let build_global_environment project =
-    let ast_environment = build_ast_environment project in
-    let global_environment = cold_start_environments ~ast_environment () in
-    let sources =
-      AnnotatedGlobalEnvironment.read_only global_environment
-      |> AnnotatedGlobalEnvironment.ReadOnly.project_qualifiers
-      |> List.filter_map
-           ~f:
-             (AstEnvironment.ReadOnly.get_processed_source
-                (AstEnvironment.read_only ast_environment))
-    in
+    let global_environment = global_environment project in
+    let sources = get_project_sources project in
     { BuiltGlobalEnvironment.sources; global_environment }
 
 
-  let build_type_environment ?call_graph_builder project =
-    let { BuiltGlobalEnvironment.sources; global_environment } = build_global_environment project in
-    let type_environment = TypeEnvironment.create global_environment in
+  let build_type_environment ?call_graph_builder ({ type_environment; _ } as project) =
+    let sources = get_project_sources project in
     let configuration = configuration_of project in
     List.map sources ~f:(fun { Source.source_path = { ModulePath.qualifier; _ }; _ } -> qualifier)
     |> TypeCheck.legacy_run_on_modules
@@ -2875,7 +2853,7 @@ module ScratchProject = struct
          ~configuration
          ~environment:type_environment
          ?call_graph_builder;
-    { BuiltTypeEnvironment.sources; type_environment }
+    { BuiltTypeEnvironment.sources; type_environment = TypeEnvironment.read_only type_environment }
 
 
   let build_type_environment_and_postprocess ?call_graph_builder project =
@@ -2887,14 +2865,14 @@ module ScratchProject = struct
       |> Postprocessing.run
            ~scheduler:(Scheduler.create_sequential ())
            ~configuration:(configuration_of project)
-           ~environment:(TypeEnvironment.read_only built_type_environment.type_environment)
+           ~environment:built_type_environment.type_environment
     in
     built_type_environment, errors
 
 
   let build_global_resolution project =
     let { BuiltGlobalEnvironment.global_environment; _ } = build_global_environment project in
-    AnnotatedGlobalEnvironment.read_only global_environment |> GlobalResolution.create
+    GlobalResolution.create global_environment
 
 
   let build_resolution project =
@@ -2902,6 +2880,39 @@ module ScratchProject = struct
     TypeCheck.resolution
       global_resolution (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
       (module TypeCheck.DummyContext)
+
+
+  let add_file { configuration = { Configuration.Analysis.local_root; _ }; _ } content ~relative =
+    let content = trim_extra_indentation content in
+    let file = File.create ~content (PyrePath.create_relative ~root:local_root ~relative) in
+    File.write file
+
+
+  let delete_file { configuration = { Configuration.Analysis.local_root; _ }; _ } ~relative =
+    PyrePath.create_relative ~root:local_root ~relative |> PyrePath.absolute |> Core.Unix.remove
+
+
+  let update_global_environment
+      { type_environment; in_memory; _ }
+      ?(scheduler = mock_scheduler ())
+      artifact_paths
+    =
+    if in_memory then
+      failwith "Cannot call update_global_environment on an in-memory scratch project";
+    let global_environment = TypeEnvironment.global_environment type_environment in
+    AnnotatedGlobalEnvironment.update_this_and_all_preceding_environments
+      global_environment
+      ~scheduler
+      artifact_paths
+
+
+  module ReadWrite = struct
+    (* Because module tracker updates aren't exposed directly through UpdateResult, grey-box tests
+       of ModuleTracker updates require access to the read-write tracker. We put this in a ReadWrite
+       module to emphasize that it would be easy to make mistakes using it. *)
+    let module_tracker { type_environment; _ } =
+      TypeEnvironment.ast_environment type_environment |> AstEnvironment.module_tracker
+  end
 end
 
 type test_update_environment_with_t = {
@@ -2951,10 +2962,11 @@ let assert_errors
           ScratchProject.build_global_environment project
         in
         let configuration = ScratchProject.configuration_of project in
+        let { ScratchProject.type_environment; _ } = project in
         ( configuration,
           sources,
-          AnnotatedGlobalEnvironment.ast_environment global_environment |> AstEnvironment.read_only,
-          TypeEnvironment.create global_environment )
+          AnnotatedGlobalEnvironment.ReadOnly.ast_environment global_environment,
+          type_environment )
       in
       let configuration = { configuration with debug; strict } in
       let source =
@@ -3007,9 +3019,7 @@ let assert_equivalent_attributes ~context source expected =
     let { ScratchProject.BuiltGlobalEnvironment.global_environment; _ } =
       ScratchProject.setup ~context [handle, source] |> ScratchProject.build_global_environment
     in
-    let global_resolution =
-      AnnotatedGlobalEnvironment.read_only global_environment |> GlobalResolution.create
-    in
+    let global_resolution = GlobalResolution.create global_environment in
     let compare_by_name left right =
       String.compare (Annotated.Attribute.name left) (Annotated.Attribute.name right)
     in

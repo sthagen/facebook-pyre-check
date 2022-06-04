@@ -21,17 +21,13 @@ let location (start_line, start_column) (stop_line, stop_column) =
 
 let create_with_location value start end_ = Node.create value ~location:(location start end_)
 
-let create_and_cold_start project =
-  let ast_environment = ScratchProject.build_ast_environment project in
-  let unannotated_global_environment = UnannotatedGlobalEnvironment.create ast_environment in
-  let _ = UnannotatedGlobalEnvironment.cold_start unannotated_global_environment in
-  unannotated_global_environment
-
-
 let test_global_registration context =
   let assert_registers ?(expected = true) source name =
     let project = ScratchProject.setup ["test.py", source] ~context in
-    let read_only = create_and_cold_start project |> UnannotatedGlobalEnvironment.read_only in
+    let read_only =
+      ScratchProject.global_environment project
+      |> AnnotatedGlobalEnvironment.Testing.ReadOnly.unannotated_global_environment
+    in
     assert_equal (UnannotatedGlobalEnvironment.ReadOnly.class_exists read_only name) expected
   in
   assert_registers {|
@@ -48,7 +44,10 @@ let test_global_registration context =
 let test_define_registration context =
   let assert_registers ~expected source =
     let project = ScratchProject.setup ["test.py", source] ~context in
-    let read_only = create_and_cold_start project |> UnannotatedGlobalEnvironment.read_only in
+    let read_only =
+      ScratchProject.global_environment project
+      |> AnnotatedGlobalEnvironment.Testing.ReadOnly.unannotated_global_environment
+    in
     let actual = UnannotatedGlobalEnvironment.ReadOnly.all_defines_in_module read_only !&"test" in
     let expected = List.sort expected ~compare:Reference.compare in
     assert_equal
@@ -241,7 +240,10 @@ let test_define_registration context =
 let test_simple_global_registration context =
   let assert_registers source name expected =
     let project = ScratchProject.setup ["test.py", source] ~context in
-    let read_only = create_and_cold_start project |> UnannotatedGlobalEnvironment.read_only in
+    let read_only =
+      ScratchProject.global_environment project
+      |> AnnotatedGlobalEnvironment.Testing.ReadOnly.unannotated_global_environment
+    in
     let printer global =
       global >>| UnannotatedGlobal.sexp_of_t >>| Sexp.to_string_hum |> Option.value ~default:"None"
     in
@@ -346,7 +348,8 @@ let test_builtin_modules context =
         ~include_helper_builtins:false
         sources
     in
-    create_and_cold_start project |> UnannotatedGlobalEnvironment.read_only
+    ScratchProject.global_environment project
+    |> AnnotatedGlobalEnvironment.Testing.ReadOnly.unannotated_global_environment
   in
   assert_bool
     "empty qualifier module exists"
@@ -395,7 +398,10 @@ let test_resolve_exports context =
           ~external_sources:["builtins.py", ""]
           sources
     in
-    let read_only = create_and_cold_start project |> UnannotatedGlobalEnvironment.read_only in
+    let read_only =
+      ScratchProject.global_environment project
+      |> AnnotatedGlobalEnvironment.Testing.ReadOnly.unannotated_global_environment
+    in
     let actual = ReadOnly.resolve_exports read_only ?from reference in
     assert_equal
       ~ctxt:context
@@ -708,8 +714,10 @@ let assert_updates
       ~context
   in
   let configuration = ScratchProject.configuration_of project in
-  let unannotated_global_environment = create_and_cold_start project in
-  let read_only = UnannotatedGlobalEnvironment.read_only unannotated_global_environment in
+  let read_only =
+    ScratchProject.global_environment project
+    |> AnnotatedGlobalEnvironment.Testing.ReadOnly.unannotated_global_environment
+  in
   let execute_action = function
     | `Get (class_name, dependency, expected_number_of_statements) ->
         let printer number =
@@ -789,33 +797,14 @@ let assert_updates
           actual
   in
   List.iter middle_actions ~f:execute_action;
-  let add_file
-      { ScratchProject.configuration = { Configuration.Analysis.local_root; _ }; _ }
-      content
-      ~relative
-    =
-    let content = trim_extra_indentation content in
-    let file = File.create ~content (PyrePath.create_relative ~root:local_root ~relative) in
-    File.write file
-  in
-  let delete_file
-      { ScratchProject.configuration = { Configuration.Analysis.local_root; _ }; _ }
-      relative
-    =
-    PyrePath.create_relative ~root:local_root ~relative |> PyrePath.absolute |> Core.Unix.remove
-  in
   if Option.is_some original_source then
-    delete_file project "test.py";
-  new_source >>| add_file project ~relative:"test.py" |> Option.value ~default:();
-  let { ScratchProject.module_tracker; _ } = project in
+    ScratchProject.delete_file project ~relative:"test.py";
+  new_source >>| ScratchProject.add_file project ~relative:"test.py" |> Option.value ~default:();
   let { Configuration.Analysis.local_root; _ } = configuration in
   let path = Test.relative_artifact_path ~root:local_root ~relative:"test.py" in
   let update_result =
-    ModuleTracker.update ~paths:[path] module_tracker
-    |> (fun updates -> AstEnvironment.Update updates)
-    |> UnannotatedGlobalEnvironment.update_this_and_all_preceding_environments
-         unannotated_global_environment
-         ~scheduler:(mock_scheduler ())
+    ScratchProject.update_global_environment project [path]
+    |> AnnotatedGlobalEnvironment.Testing.UpdateResult.unannotated_global_environment
   in
   let printer set =
     SharedMemoryKeys.DependencyKey.RegisteredSet.elements set

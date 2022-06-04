@@ -15,9 +15,10 @@ open Test
 let test_simple_registration context =
   let assert_registers sources name ~expected_edges ~expected_extends_placeholder_stub =
     let project = ScratchProject.setup sources ~include_typeshed_stubs:false ~context in
-    let ast_environment = ScratchProject.build_ast_environment project in
-    let class_hierarchy_environment = ClassHierarchyEnvironment.create ast_environment in
-    let read_only = ClassHierarchyEnvironment.cold_start class_hierarchy_environment in
+    let read_only =
+      ScratchProject.global_environment project
+      |> AnnotatedGlobalEnvironment.Testing.ReadOnly.class_hierarchy_environment
+    in
     let expected_edges =
       expected_edges
       >>| List.map ~f:(fun name ->
@@ -120,12 +121,9 @@ let test_inferred_generic_base context =
     let project =
       ScratchProject.setup ["test.py", source] ~context ~incremental_style:FineGrained
     in
-    let ast_environment = ScratchProject.build_ast_environment project in
     let read_only =
-      Test.cold_start_environments ~ast_environment ()
-      |> AnnotatedGlobalEnvironment.read_only
-      |> AnnotatedGlobalEnvironment.ReadOnly.class_metadata_environment
-      |> ClassMetadataEnvironment.ReadOnly.class_hierarchy_environment
+      ScratchProject.global_environment project
+      |> AnnotatedGlobalEnvironment.Testing.ReadOnly.class_hierarchy_environment
     in
     let expected =
       expected
@@ -226,10 +224,11 @@ let test_updates context =
         sources
         ~context
     in
-    let ast_environment = ScratchProject.build_ast_environment project in
     let configuration = ScratchProject.configuration_of project in
-    let class_hierarchy_environment = ClassHierarchyEnvironment.create ast_environment in
-    let read_only = ClassHierarchyEnvironment.cold_start class_hierarchy_environment in
+    let read_only =
+      ScratchProject.global_environment project
+      |> AnnotatedGlobalEnvironment.Testing.ReadOnly.class_hierarchy_environment
+    in
     let execute_action = function
       | `Edges (class_name, dependency, expectation) ->
           let printer v =
@@ -254,37 +253,15 @@ let test_updates context =
           |> assert_equal ~printer expectation
     in
     List.iter middle_actions ~f:execute_action;
-    let delete_file
-        { ScratchProject.configuration = { Configuration.Analysis.local_root; _ }; _ }
-        relative
-      =
-      PyrePath.create_relative ~root:local_root ~relative |> PyrePath.absolute |> Core.Unix.remove
-    in
-    let add_file
-        { ScratchProject.configuration = { Configuration.Analysis.local_root; _ }; _ }
-        relative
-        content
-      =
-      let content = trim_extra_indentation content in
-      let file = File.create ~content (PyrePath.create_relative ~root:local_root ~relative) in
-      File.write file
-    in
     if Option.is_some original_source then
-      delete_file project "test.py";
-    Option.iter new_source ~f:(add_file project "test.py");
+      ScratchProject.delete_file project ~relative:"test.py";
+    Option.iter new_source ~f:(ScratchProject.add_file project ~relative:"test.py");
     let update_result =
-      let { ScratchProject.module_tracker; _ } = project in
       let { Configuration.Analysis.local_root; _ } = configuration in
-      let paths =
-        List.map ["test.py", ()] ~f:(fun (relative, _) ->
-            Test.relative_artifact_path ~root:local_root ~relative)
-      in
-      ModuleTracker.update ~paths module_tracker
-      |> fun updates ->
-      AstEnvironment.Update updates
-      |> ClassHierarchyEnvironment.update_this_and_all_preceding_environments
-           class_hierarchy_environment
-           ~scheduler:(Test.mock_scheduler ())
+      List.map ["test.py", ()] ~f:(fun (relative, _) ->
+          Test.relative_artifact_path ~root:local_root ~relative)
+      |> ScratchProject.update_global_environment project
+      |> AnnotatedGlobalEnvironment.Testing.UpdateResult.class_hierarchy_environment
     in
     let printer set =
       SharedMemoryKeys.DependencyKey.RegisteredSet.elements set

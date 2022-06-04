@@ -64,25 +64,29 @@ let test_call_graph_of_define context =
           (Preprocessing.defines ~include_nested:true ~include_toplevels:true test_source)
           ~f:find_define,
         test_source,
-        TypeEnvironment.read_only type_environment,
+        type_environment,
         project.configuration )
     in
     let static_analysis_configuration = Configuration.StaticAnalysis.create configuration () in
-    let overrides =
+    let override_graph_heap =
       OverrideGraph.Heap.from_source ~environment ~include_unit_tests:false ~source:test_source
     in
-    let () = OverrideGraph.SharedMemory.from_heap overrides in
-    assert_equal
-      ~cmp
-      ~printer:DefineCallGraph.show
-      expected
-      (CallGraph.call_graph_of_define
-         ~static_analysis_configuration
-         ~environment
-         ~attribute_targets:(Target.HashSet.of_list object_targets)
-         ~qualifier:(Reference.create "test")
-         ~define);
-    OverrideGraph.SharedMemory.cleanup overrides
+    let override_graph_shared_memory = OverrideGraph.SharedMemory.from_heap override_graph_heap in
+    let () =
+      assert_equal
+        ~cmp
+        ~printer:DefineCallGraph.show
+        expected
+        (CallGraph.call_graph_of_define
+           ~static_analysis_configuration
+           ~environment
+           ~override_graph:override_graph_shared_memory
+           ~attribute_targets:(Target.HashSet.of_list object_targets)
+           ~qualifier:(Reference.create "test")
+           ~define)
+    in
+    let () = OverrideGraph.SharedMemory.cleanup override_graph_shared_memory override_graph_heap in
+    ()
   in
   assert_call_graph_of_define
     ~source:{|
@@ -4517,9 +4521,7 @@ let test_return_type_from_annotation context =
   let { Test.ScratchProject.BuiltTypeEnvironment.type_environment; _ } =
     Test.ScratchProject.build_type_environment project
   in
-  let resolution =
-    TypeEnvironment.read_only type_environment |> TypeEnvironment.ReadOnly.global_resolution
-  in
+  let resolution = TypeEnvironment.ReadOnly.global_resolution type_environment in
   let assert_from_annotation annotation expected =
     let actual = ReturnType.from_annotation ~resolution annotation in
     assert_equal ~printer:ReturnType.show ~cmp:ReturnType.equal expected actual

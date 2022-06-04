@@ -388,11 +388,12 @@ module Make (Analysis : ANALYSIS) = struct
     widen_if_necessary ~step ~callable ~previous_model ~new_model ~result
 
 
-  let analyze_overrides ~step:({ iteration; _ } as step) ~callable =
+  let analyze_overrides ~override_graph ~step:({ iteration; _ } as step) ~callable =
     let timer = Timer.start () in
     let overrides =
       (* TODO(T117715045): This should be a parameter of the functor. *)
       OverrideGraph.SharedMemory.get_overriding_types
+        override_graph
         ~member:(Target.get_corresponding_method callable)
       |> Option.value ~default:[]
       |> List.map ~f:(fun at_type -> Target.create_derived_override callable ~at_type)
@@ -428,7 +429,7 @@ module Make (Analysis : ANALYSIS) = struct
     state
 
 
-  let analyze_callable ~type_environment ~context ~step ~callable =
+  let analyze_callable ~type_environment ~override_graph ~context ~step ~callable =
     let resolution = TypeEnvironment.ReadOnly.global_resolution type_environment in
     let () =
       (* Verify invariants *)
@@ -453,7 +454,7 @@ module Make (Analysis : ANALYSIS) = struct
         | None ->
             Format.asprintf "Found no definition for `%a`" Target.pp_pretty callable |> failwith
         | Some (qualifier, define) -> analyze_define ~context ~step ~callable ~qualifier ~define)
-    | Target.Override _ as callable -> analyze_overrides ~step ~callable
+    | Target.Override _ as callable -> analyze_overrides ~override_graph ~step ~callable
     | Target.Object _ as target ->
         Format.asprintf "Found object `%a` in fixpoint analysis" Target.pp_pretty target |> failwith
 
@@ -464,10 +465,10 @@ module Make (Analysis : ANALYSIS) = struct
   }
 
   (* Called on a worker with a set of targets to analyze. *)
-  let one_analysis_pass ~type_environment ~context ~step ~callables =
+  let one_analysis_pass ~type_environment ~override_graph ~context ~step ~callables =
     let analyze_target expensive_callables callable =
       let timer = Timer.start () in
-      let result = analyze_callable ~type_environment ~context ~step ~callable in
+      let result = analyze_callable ~type_environment ~override_graph ~context ~step ~callable in
       State.add step callable result;
       (* Log outliers. *)
       if Logger.is_expensive_callable ~callable ~timer then
@@ -479,8 +480,6 @@ module Make (Analysis : ANALYSIS) = struct
     { callables_processed = List.length callables; expensive_callables }
 
 
-  type dependency_graph = Target.t list Target.Map.t
-
   let compute_callables_to_reanalyze ~dependency_graph ~all_callables ~previous_callables ~step =
     let might_change_if_reanalyzed =
       List.fold previous_callables ~init:Target.Set.empty ~f:(fun accumulator callable ->
@@ -489,7 +488,7 @@ module Make (Analysis : ANALYSIS) = struct
           else
             (* callable must be re-analyzed next iteration because its result has changed, and
                therefore its callers must also be reanalyzed. *)
-            let callers = Target.Map.find dependency_graph callable |> Option.value ~default:[] in
+            let callers = DependencyGraph.dependencies dependency_graph callable in
             List.fold
               callers
               ~init:(Target.Set.add callable accumulator)
@@ -535,8 +534,9 @@ module Make (Analysis : ANALYSIS) = struct
   let compute
       ~scheduler
       ~type_environment
-      ~context
+      ~override_graph
       ~dependency_graph
+      ~context
       ~initial_callables
       ~stubs
       ~override_targets
@@ -565,7 +565,9 @@ module Make (Analysis : ANALYSIS) = struct
         let step = { epoch; iteration } in
         let old_batch = State.KeySet.of_list callables_to_analyze in
         let () = State.oldify old_batch in
-        let map _ callables = one_analysis_pass ~type_environment ~context ~step ~callables in
+        let map _ callables =
+          one_analysis_pass ~type_environment ~override_graph ~context ~step ~callables
+        in
         let reduce left right =
           let callables_processed = left.callables_processed + right.callables_processed in
           let () = Logger.iteration_progress ~iteration ~callables_processed ~number_of_callables in
