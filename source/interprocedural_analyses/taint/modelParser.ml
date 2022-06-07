@@ -188,10 +188,11 @@ module Internal = struct
     [@@deriving show, compare]
 
     type rule = {
+      location: Location.t;
       query: model_constraint list;
       productions: production list;
       rule_kind: kind;
-      name: string option;
+      name: string;
     }
     [@@deriving show, compare]
   end
@@ -2744,23 +2745,6 @@ let parse_statement ~resolution ~path ~configuration statement =
       let clauses =
         match arguments with
         | [
-         { Call.Argument.name = Some { Node.value = "find"; _ }; value = find_clause };
-         { Call.Argument.name = Some { Node.value = "where"; _ }; value = where_clause };
-         { Call.Argument.name = Some { Node.value = "model"; _ }; value = model_clause };
-        ] ->
-            let parsed_find_clause = parse_find_clause ~path find_clause in
-            let is_object_target = not (is_callable_clause_kind parsed_find_clause) in
-            Ok
-              ( None,
-                parsed_find_clause,
-                parse_where_clause ~path ~find_clause:parsed_find_clause where_clause,
-                parse_model_clause
-                  ~path
-                  ~configuration
-                  ~find_clause:parsed_find_clause
-                  ~is_object_target
-                  model_clause )
-        | [
          {
            Call.Argument.name = Some { Node.value = "name"; _ };
            value =
@@ -2776,7 +2760,7 @@ let parse_statement ~resolution ~path ~configuration statement =
             let parsed_find_clause = parse_find_clause ~path find_clause in
             let is_object_target = not (is_callable_clause_kind parsed_find_clause) in
             Ok
-              ( Some name,
+              ( name,
                 parsed_find_clause,
                 parse_where_clause ~path ~find_clause:parsed_find_clause where_clause,
                 parse_model_clause
@@ -2795,7 +2779,8 @@ let parse_statement ~resolution ~path ~configuration statement =
       where_clause
       >>= fun query ->
       model_clause
-      >>| fun productions -> [ParsedQuery { ModelQuery.rule_kind; query; productions; name }]
+      >>| fun productions ->
+      [ParsedQuery { ModelQuery.rule_kind; query; productions; name; location }]
   | { Node.location; _ } ->
       Error (model_verification_error ~path ~location (UnexpectedStatement statement))
 
@@ -3093,6 +3078,21 @@ let create_model_from_attribute
   Model ({ Model.WithTarget.model; target = call_target }, skipped_override)
 
 
+let verify_no_duplicate_model_query_names ~path (results, errors) =
+  let parsed_statement_to_query_name_and_location_option = function
+    | ParsedSignature _ -> None
+    | ParsedAttribute _ -> None
+    | ParsedQuery query -> Some (query.name, query.location)
+  in
+  let names_and_locations =
+    List.filter_map results ~f:parsed_statement_to_query_name_and_location_option
+  in
+  match List.find_a_dup ~compare:(fun (x, _) (y, _) -> String.compare x y) names_and_locations with
+  | Some (name, location) ->
+      results, model_verification_error ~path ~location (DuplicateNameClauses name) :: errors
+  | None -> results, errors
+
+
 let create ~resolution ~path ~configuration ~rule_filter ~callables ~stubs source =
   let sources_to_keep, sinks_to_keep =
     compute_sources_and_sinks_to_keep ~configuration ~rule_filter
@@ -3105,8 +3105,10 @@ let create ~resolution ~path ~configuration ~rule_filter ~callables ~stubs sourc
     >>| Source.statements
     >>| List.map ~f:(parse_statement ~resolution ~path ~configuration)
     >>| List.partition_result
+    >>| (fun (results, errors) -> List.concat results, errors)
+    >>| verify_no_duplicate_model_query_names ~path
     |> function
-    | Ok (results, errors) -> List.concat results, errors
+    | Ok results_errors -> results_errors
     | Error { Parser.Error.location; _ } ->
         [], [model_verification_error ~path ~location ParseError]
   in

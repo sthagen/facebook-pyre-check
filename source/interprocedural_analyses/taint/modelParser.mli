@@ -174,10 +174,11 @@ module Internal : sig
     [@@deriving show, compare]
 
     type rule = {
+      location: Ast.Location.t;
       query: model_constraint list;
       productions: production list;
       rule_kind: kind;
-      name: string option;
+      name: string;
     }
     [@@deriving show, compare]
   end

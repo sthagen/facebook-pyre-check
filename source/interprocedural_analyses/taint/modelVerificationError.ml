@@ -118,6 +118,7 @@ type kind =
       name: Reference.t;
       annotation: string;
     }
+  | DuplicateNameClauses of string
 [@@deriving sexp, compare, show]
 
 type t = {
@@ -198,7 +199,8 @@ let description error =
         actual_name
   | InvalidModelQueryClauses clause_list ->
       Format.asprintf
-        "The model query arguments at `%s` are invalid: expected a find, where and model clause."
+        "The model query arguments at `%s` are invalid: expected a name, find, where and model \
+         clause."
         (List.map clause_list ~f:Expression.Call.Argument.show |> String.concat ~sep:", ")
   | InvalidModelQueryWhereClause { expression; find_clause_kind } ->
       Format.asprintf
@@ -313,6 +315,11 @@ let description error =
         "Invalid annotation for attribute model `%s`: `%s`."
         (Reference.show name)
         annotation
+  | DuplicateNameClauses name ->
+      Format.sprintf
+        "Multiple model queries have the same name `%s`. Model\n\
+        \   query names should be unique within each file."
+        name
 
 
 let code { kind; _ } =
@@ -356,6 +363,7 @@ let code { kind; _ } =
   | NoCorrespondingCallable _ -> 37
   | InvalidAnnotationForAttributeModel _ -> 38
   | InvalidDecoratorClause _ -> 39
+  | DuplicateNameClauses _ -> 40
 
 
 let display { kind = error; path; location } =

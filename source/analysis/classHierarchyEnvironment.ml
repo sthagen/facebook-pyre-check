@@ -155,8 +155,6 @@ module Edges = Environment.EnvironmentTable.WithCache (struct
 
   let trigger_to_dependency name = SharedMemoryKeys.ClassConnect name
 
-  let legacy_invalidated_keys = UnannotatedGlobalEnvironment.UpdateResult.previous_classes
-
   let decode_target { ClassHierarchy.Target.target; parameters } =
     Format.asprintf
       "%s[%a]"
@@ -241,7 +239,15 @@ end
 
 type t = { edges: Edges.t }
 
-let create ast_environment = { edges = Edges.create ast_environment }
+let create configuration = { edges = Edges.create configuration }
+
+let create_for_testing configuration source_path_code_pairs =
+  { edges = Edges.create_for_testing configuration source_path_code_pairs }
+
+
+let store { edges } = Edges.store edges
+
+let load configuration = { edges = Edges.load configuration }
 
 let ast_environment { edges } = Edges.ast_environment edges
 
@@ -258,9 +264,8 @@ let update_this_and_all_preceding_environments
   let result =
     Edges.update_this_and_all_preceding_environments edges ~scheduler ast_environment_trigger
   in
-  let read_only = Edges.UpdateResult.read_only result in
   if debug then
-    ReadOnly.check_integrity read_only;
+    read_only this_environment |> ReadOnly.check_integrity;
   result
 
 

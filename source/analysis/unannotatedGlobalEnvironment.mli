@@ -9,14 +9,6 @@ open Ast
 open Statement
 open SharedMemoryKeys
 
-type t
-
-val create : AstEnvironment.t -> t
-
-val ast_environment : t -> AstEnvironment.t
-
-val configuration : t -> Configuration.Analysis.t
-
 module ResolvedReference : sig
   type export =
     | FromModuleGetattr
@@ -131,20 +123,12 @@ module ReadOnly : sig
     bool
 end
 
-val read_only : t -> ReadOnly.t
-
 module UpdateResult : sig
   (* This type is sealed to reify that Environment updates must follow and be based off of
      preenvironment updates *)
   type t
 
   type read_only = ReadOnly.t
-
-  val previous_unannotated_globals : t -> Reference.Set.t
-
-  val previous_classes : t -> Type.Primitive.Set.t
-
-  val previous_defines : t -> Reference.Set.t
 
   val define_additions : t -> Reference.Set.t
 
@@ -161,8 +145,24 @@ module UpdateResult : sig
   val read_only : t -> read_only
 end
 
+type t
+
+val create : Configuration.Analysis.t -> t
+
+val create_for_testing : Configuration.Analysis.t -> (Ast.ModulePath.t * string) list -> t
+
+val ast_environment : t -> AstEnvironment.t
+
+val configuration : t -> Configuration.Analysis.t
+
+val read_only : t -> ReadOnly.t
+
 val update_this_and_all_preceding_environments
   :  t ->
   scheduler:Scheduler.t ->
   ArtifactPath.t list ->
   UpdateResult.t
+
+val store : t -> unit
+
+val load : Configuration.Analysis.t -> t

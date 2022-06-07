@@ -41,19 +41,15 @@ let check
   search_paths |> List.iter ~f:check_search_path_exists;
   (* Profiling helper *)
   Profiling.track_shared_memory_usage ~name:"Before module tracking" ();
-
-  (* Find sources to parse *)
-  let module_tracker = Analysis.ModuleTracker.create configuration in
-  (* Parse sources. *)
-  let ast_environment = Analysis.AstEnvironment.create module_tracker in
   let environment, qualifiers =
     let open Analysis in
     Log.info "Building type environment...";
 
     let timer = Timer.start () in
-    let annotated_global_environment = AnnotatedGlobalEnvironment.create ast_environment in
-    let type_environment = TypeEnvironment.create annotated_global_environment in
-    let global_environment = AnnotatedGlobalEnvironment.read_only annotated_global_environment in
+    let type_environment = TypeEnvironment.create configuration in
+    let global_environment =
+      TypeEnvironment.global_environment type_environment |> AnnotatedGlobalEnvironment.read_only
+    in
 
     Statistics.performance ~name:"full environment built" ~timer ();
 

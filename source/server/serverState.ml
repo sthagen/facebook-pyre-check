@@ -74,23 +74,15 @@ end)
 let load_stored_configuration = StoredConfiguration.load
 
 let load ~configuration ~build_system () =
-  let module_tracker = Analysis.ModuleTracker.Serializer.from_stored_layouts ~configuration () in
-  let ast_environment = Analysis.AstEnvironment.load module_tracker in
-  let type_environment =
-    Analysis.AnnotatedGlobalEnvironment.create ast_environment |> Analysis.TypeEnvironment.create
-  in
-  Analysis.SharedMemoryKeys.DependencyKey.Registry.load ();
+  let type_environment = Analysis.TypeEnvironment.load configuration in
   let error_table = ServerErrors.load () in
   create ~build_system ~type_environment ~error_table ()
 
 
 let store ~path ~configuration { type_environment; error_table; build_system; _ } =
   Memory.SharedMemory.collect `aggressive;
-  Analysis.TypeEnvironment.module_tracker type_environment
-  |> Analysis.ModuleTracker.Serializer.store_layouts;
-  Analysis.TypeEnvironment.ast_environment type_environment |> Analysis.AstEnvironment.store;
+  Analysis.TypeEnvironment.store type_environment;
   StoredConfiguration.store configuration;
   ServerErrors.store error_table;
   BuildSystem.store build_system;
-  Analysis.SharedMemoryKeys.DependencyKey.Registry.store ();
   Memory.save_shared_memory ~path:(PyrePath.absolute path) ~configuration

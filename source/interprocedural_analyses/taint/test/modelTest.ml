@@ -2173,6 +2173,114 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        find = "functions",
+        where = name.matches("foo"),
+        model = Returns(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      {|The model query arguments at `{ Expression.Call.Argument.name = (Some find); value = "functions" }, { Expression.Call.Argument.name = (Some where); value = name.matches("foo") }, { Expression.Call.Argument.name = (Some model);
+  value = Returns(TaintSource[Test]) }` are invalid: expected a name, find, where and model clause.|}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        where = name.matches("foo"),
+        model = Returns(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      {|The model query arguments at `{ Expression.Call.Argument.name = (Some name); value = "invalid_model" }, { Expression.Call.Argument.name = (Some where); value = name.matches("foo") }, { Expression.Call.Argument.name = (Some model);
+  value = Returns(TaintSource[Test]) }` are invalid: expected a name, find, where and model clause.|}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "functions",
+        model = Returns(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      {|The model query arguments at `{ Expression.Call.Argument.name = (Some name); value = "invalid_model" }, { Expression.Call.Argument.name = (Some find); value = "functions" }, { Expression.Call.Argument.name = (Some model);
+  value = Returns(TaintSource[Test]) }` are invalid: expected a name, find, where and model clause.|}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "functions",
+        where = name.matches("foo")
+      )
+    |}
+    ~expect:
+      {|The model query arguments at `{ Expression.Call.Argument.name = (Some name); value = "invalid_model" }, { Expression.Call.Argument.name = (Some find); value = "functions" }, { Expression.Call.Argument.name = (Some where); value = name.matches("foo") }` are invalid: expected a name, find, where and model clause.|}
+    ();
+  assert_invalid_model
+    ~source:{|
+      @d("1")
+      def foo(x):
+        ...
+    |}
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "same_name",
+        find = "functions",
+        where = Decorator(arguments.contains("1"), name.matches("d")),
+        model = Returns(TaintSource[A])
+      )
+      ModelQuery(
+        name = "same_name",
+        find = "functions",
+        where = Decorator(arguments.contains("1"), name.matches("d")),
+        model = Returns(TaintSource[A])
+      )
+    |}
+    ~expect:
+      "Multiple model queries have the same name `same_name`. Model\n\
+      \   query names should be unique within each file."
+    ();
+  assert_invalid_model
+    ~source:{|
+      @d("1")
+      def foo(x):
+        ...
+    |}
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "same_name",
+        find = "functions",
+        where = Decorator(arguments.contains("1"), name.matches("d")),
+        model = Returns(TaintSource[A])
+      )
+      ModelQuery(
+        name = "different_name",
+        find = "functions",
+        where = Decorator(arguments.contains("1"), name.matches("d")),
+        model = Returns(TaintSource[A])
+      )
+      ModelQuery(
+        name = "same_name",
+        find = "functions",
+        where = Decorator(arguments.contains("1"), name.matches("d")),
+        model = Returns(TaintSource[A])
+      )
+    |}
+    ~expect:
+      "Multiple model queries have the same name `same_name`. Model\n\
+      \   query names should be unique within each file."
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
         find = "attributes",
         where = name.matches("foo"),
         model = Returns(TaintSource[Test])
@@ -2185,6 +2293,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "attributes",
         where = name.matches("foo"),
         model = NamedParameter(name="x", taint = TaintSource[Test, Via[foo]])
@@ -2198,6 +2307,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "attributes",
         where = name.matches("foo"),
         model = AllParameters(TaintSource[Test])
@@ -2211,6 +2321,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "functions",
         where = return_annotation.is_annotated_type(),
         model = AttributeModel(TaintSource[Test])
@@ -2224,6 +2335,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "methods",
         where = return_annotation.is_annotated_type(),
         model = AttributeModel(TaintSource[Test])
@@ -2236,6 +2348,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "attributes",
         where = any_parameter.annotation.is_annotated_type(),
         model = AttributeModel(TaintSource[Test])
@@ -2249,6 +2362,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "attributes",
         where = AnyOf(
           parent.matches("foo"),
@@ -2265,6 +2379,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "attributes",
         where = AnyOf(
           parent.matches("foo"),
@@ -2281,6 +2396,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "attributes",
         where = AnyOf(
           parent.matches("foo"),
@@ -2297,6 +2413,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "attributes",
         where = AnyOf(
           parent.matches("foo"),
@@ -2313,6 +2430,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "attributes",
         where = AnyOf(
           parent.matches("foo"),
@@ -2329,6 +2447,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "attributes",
         where = Decorator(name.matches("app.route")),
         model = AttributeModel(TaintSource[Test])
@@ -2342,6 +2461,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "functions",
         where = parent.matches("foo"),
         model = Returns(TaintSource[Test])
@@ -2355,6 +2475,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "functions",
         where = type_annotation.equals("int"),
         model = Returns(TaintSource[Test])
@@ -2368,6 +2489,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "methods",
         where = type_annotation.equals("int"),
         model = Returns(TaintSource[Test])
@@ -2381,6 +2503,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "functions",
         where = type_annotation.matches("int"),
         model = Returns(TaintSource[Test])
@@ -2394,6 +2517,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "methods",
         where = type_annotation.matches("int"),
         model = Returns(TaintSource[Test])
@@ -2407,6 +2531,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "functions",
         where = type_annotation.is_annotated_type(),
         model = Returns(TaintSource[Test])
@@ -2420,6 +2545,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "methods",
         where = type_annotation.is_annotated_type(),
         model = Returns(TaintSource[Test])
@@ -2434,6 +2560,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "methods",
         where = parent.extends("foo", is_transitive=foobar),
         model = ReturnModel(TaintSource[Test])
@@ -2445,6 +2572,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "methods",
         where = parent.extends("foo", foobar),
         model = ReturnModel(TaintSource[Test])
@@ -2458,6 +2586,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "methods",
         where = parent.matches("foo", is_transitive=foobar),
         model = ReturnModel(TaintSource[Test])
@@ -2472,6 +2601,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "methods",
         where = name.foo("foo"),
         model = ReturnModel(TaintSource[Test])
@@ -2483,6 +2613,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "methods",
         where = name.matches(foobar, 1, 2),
         model = ReturnModel(TaintSource[Test])
@@ -2497,6 +2628,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "methods",
         where = name.equals(foobar, 1, 2),
         model = ReturnModel(TaintSource[Test])
@@ -3074,14 +3206,15 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         fnid = "functions",
         where = name.matches("foo"),
         model = Returns(TaintSource[Test])
       )
     |}
     ~expect:
-      {|The model query arguments at `{ Expression.Call.Argument.name = (Some fnid); value = "functions" }, { Expression.Call.Argument.name = (Some where); value = name.matches("foo") }, { Expression.Call.Argument.name = (Some model);
-  value = Returns(TaintSource[Test]) }` are invalid: expected a find, where and model clause.|}
+      {|The model query arguments at `{ Expression.Call.Argument.name = (Some name); value = "invalid_model" }, { Expression.Call.Argument.name = (Some fnid); value = "functions" }, { Expression.Call.Argument.name = (Some where); value = name.matches("foo") }, { Expression.Call.Argument.name = (Some model);
+  value = Returns(TaintSource[Test]) }` are invalid: expected a name, find, where and model clause.|}
     ();
   (* Test Decorator clause in model queries *)
   assert_valid_model
@@ -3093,21 +3226,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
-        find = "functions",
-        where = Decorator(arguments.contains("1"), name.matches("d")),
-        model = Returns(TaintSource[A])
-      )
-    |}
-    ();
-  assert_valid_model
-    ~source:{|
-      @d("1")
-      def foo(x):
-        ...
-    |}
-    ~model_source:
-      {|
-      ModelQuery(
+        name = "valid_model",
         find = "functions",
         where = Decorator(arguments.contains("1"), name.matches("d")),
         model = Returns(TaintSource[A])
@@ -3118,6 +3237,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "functions",
         where = Decorator(foo),
         model = Returns(TaintSource[Test])
@@ -3129,6 +3249,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "functions",
         where = Decorator(name.matches("a"), name.matches("b")),
         model = Returns(TaintSource[Test])
@@ -3140,6 +3261,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "functions",
         where = Decorator(arguments.contains("a")),
         model = Returns(TaintSource[Test])
@@ -3151,6 +3273,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "functions",
         where = Decorator(arguments.contains("a"), arguments.contains("b")),
         model = Returns(TaintSource[Test])
@@ -3162,6 +3285,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "functions",
         where = Decorator(name.matches(a, b)),
         model = Returns(TaintSource[Test])
@@ -3174,6 +3298,7 @@ let test_invalid_models context =
     ~model_source:
       {|
       ModelQuery(
+        name = "invalid_model",
         find = "functions",
         where = Decorator(name.equals(a, b), arguments.equals(1, 2)),
         model = Returns(TaintSource[Test])
@@ -3636,6 +3761,7 @@ let test_query_parsing context =
     ~model_source:
       {|
     ModelQuery(
+     name = "get_foo",
      find = "functions",
      where = name.matches("foo"),
      model = Returns(TaintSource[Test])
@@ -3644,7 +3770,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = None;
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
           query = [NameConstraint (Matches (Re2.create_exn "foo"))];
           rule_kind = FunctionModel;
           productions =
@@ -3672,6 +3799,7 @@ let test_query_parsing context =
     ~model_source:
       {|
     ModelQuery(
+     name = "get_foo",
      find = "functions",
      where = name.matches("foo"),
      model = [Returns(TaintSource[Test])]
@@ -3680,7 +3808,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = None;
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
           query = [NameConstraint (Matches (Re2.create_exn "foo"))];
           rule_kind = FunctionModel;
           productions =
@@ -3708,6 +3837,7 @@ let test_query_parsing context =
     ~model_source:
       {|
     ModelQuery(
+     name = "get_foo",
      find = "functions",
      where = [name.matches("foo"), name.matches("bar")],
      model = Returns(TaintSource[Test])
@@ -3716,7 +3846,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = None;
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
           query =
             [
               NameConstraint (Matches (Re2.create_exn "foo"));
@@ -3748,6 +3879,7 @@ let test_query_parsing context =
     ~model_source:
       {|
     ModelQuery(
+     name = "get_foo",
      find = "functions",
      where = name.matches("foo"),
      model = [Returns([TaintSource[Test], TaintSink[Test]])]
@@ -3756,7 +3888,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = None;
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
           query = [NameConstraint (Matches (Re2.create_exn "foo"))];
           rule_kind = FunctionModel;
           productions =
@@ -3795,6 +3928,7 @@ let test_query_parsing context =
     ~model_source:
       {|
     ModelQuery(
+     name = "get_foo",
      find = "functions",
      where = name.equals("test.foo"),
      model = [Returns([TaintSource[Test], TaintSink[Test]])]
@@ -3803,7 +3937,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = None;
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
           query = [NameConstraint (Equals "test.foo")];
           rule_kind = FunctionModel;
           productions =
@@ -3851,7 +3986,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = Some "foo_finders";
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "foo_finders";
           query = [NameConstraint (Matches (Re2.create_exn "foo"))];
           rule_kind = FunctionModel;
           productions =
@@ -3899,7 +4035,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = Some "foo_finders";
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "foo_finders";
           query = [ReturnConstraint IsAnnotatedTypeConstraint];
           rule_kind = FunctionModel;
           productions =
@@ -3936,7 +4073,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = Some "foo_finders";
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "foo_finders";
           query = [AnyParameterConstraint (AnnotationConstraint IsAnnotatedTypeConstraint)];
           rule_kind = FunctionModel;
           productions =
@@ -3976,7 +4114,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = Some "foo_finders";
+          location = { start = { line = 2; column = 0 }; stop = { line = 10; column = 1 } };
+          name = "foo_finders";
           query =
             [
               AnyOf
@@ -4023,7 +4162,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = Some "foo_finders";
+          location = { start = { line = 2; column = 0 }; stop = { line = 10; column = 1 } };
+          name = "foo_finders";
           query =
             [
               AllOf
@@ -4068,7 +4208,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = Some "foo_finders";
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "foo_finders";
           query = [NameConstraint (Matches (Re2.create_exn "foo"))];
           rule_kind = FunctionModel;
           productions =
@@ -4109,7 +4250,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = Some "foo_finders";
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "foo_finders";
           query = [NameConstraint (Matches (Re2.create_exn "foo"))];
           rule_kind = FunctionModel;
           productions =
@@ -4150,7 +4292,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = Some "foo_finders";
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "foo_finders";
           query = [NameConstraint (Matches (Re2.create_exn "foo"))];
           rule_kind = FunctionModel;
           productions =
@@ -4195,7 +4338,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = Some "foo_finders";
+          location = { start = { line = 2; column = 0 }; stop = { line = 11; column = 1 } };
+          name = "foo_finders";
           query = [AnyParameterConstraint (AnnotationConstraint IsAnnotatedTypeConstraint)];
           rule_kind = FunctionModel;
           productions =
@@ -4231,7 +4375,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = Some "foo_finders";
+          location = { start = { line = 2; column = 0 }; stop = { line = 11; column = 1 } };
+          name = "foo_finders";
           query = [AnyParameterConstraint (AnnotationConstraint IsAnnotatedTypeConstraint)];
           rule_kind = FunctionModel;
           productions =
@@ -4253,6 +4398,7 @@ let test_query_parsing context =
     ~model_source:
       {|
     ModelQuery(
+     name = "get_foo",
      find = "methods",
      where = parent.equals("Foo"),
      model = [Returns([TaintSource[Test], TaintSink[Test]])]
@@ -4261,7 +4407,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = None;
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
           query = [ParentConstraint (NameSatisfies (Equals "Foo"))];
           rule_kind = MethodModel;
           productions =
@@ -4300,6 +4447,7 @@ let test_query_parsing context =
     ~model_source:
       {|
     ModelQuery(
+     name = "get_foo",
      find = "methods",
      where = parent.extends("Foo"),
      model = [Returns([TaintSource[Test], TaintSink[Test]])]
@@ -4308,7 +4456,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = None;
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
           query = [ParentConstraint (Extends { class_name = "Foo"; is_transitive = false })];
           rule_kind = MethodModel;
           productions =
@@ -4347,6 +4496,7 @@ let test_query_parsing context =
     ~model_source:
       {|
     ModelQuery(
+     name = "get_foo",
      find = "methods",
      where = parent.extends("Foo", is_transitive=False),
      model = [Returns([TaintSource[Test]])]
@@ -4355,7 +4505,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = None;
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
           query = [ParentConstraint (Extends { class_name = "Foo"; is_transitive = false })];
           rule_kind = MethodModel;
           productions =
@@ -4383,6 +4534,7 @@ let test_query_parsing context =
     ~model_source:
       {|
     ModelQuery(
+     name = "get_foo",
      find = "methods",
      where = parent.extends("Foo", is_transitive=True),
      model = [Returns([TaintSource[Test]])]
@@ -4391,7 +4543,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = None;
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
           query = [ParentConstraint (Extends { class_name = "Foo"; is_transitive = true })];
           rule_kind = MethodModel;
           productions =
@@ -4419,6 +4572,7 @@ let test_query_parsing context =
     ~model_source:
       {|
     ModelQuery(
+     name = "get_foo",
      find = "methods",
      where = parent.matches("Foo.*"),
      model = [Returns([TaintSource[Test], TaintSink[Test]])]
@@ -4427,7 +4581,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = None;
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
           query = [ParentConstraint (NameSatisfies (Matches (Re2.create_exn "Foo.*")))];
           rule_kind = MethodModel;
           productions =
@@ -4466,6 +4621,7 @@ let test_query_parsing context =
     ~model_source:
       {|
     ModelQuery(
+     name = "get_foo",
      find = "methods",
      where = parent.decorator(name.matches("foo.*")),
      model = [Returns([TaintSource[Test], TaintSink[Test]])]
@@ -4474,7 +4630,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = None;
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
           query =
             [
               ParentConstraint
@@ -4522,6 +4679,7 @@ let test_query_parsing context =
     ~model_source:
       {|
     ModelQuery(
+     name = "get_foo",
      find = "methods",
      where = Decorator(name.matches("foo")),
      model = [Returns([TaintSource[Test]])],
@@ -4530,7 +4688,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = None;
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
           query =
             [
               AnyDecoratorConstraint
@@ -4585,7 +4744,8 @@ let test_query_parsing context =
     ~expect:
       [
         {
-          name = Some "get_POST_annotated_sources";
+          location = { start = { line = 2; column = 0 }; stop = { line = 19; column = 1 } };
+          name = "get_POST_annotated_sources";
           query =
             [
               AnyDecoratorConstraint

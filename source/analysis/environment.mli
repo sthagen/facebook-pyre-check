@@ -17,13 +17,9 @@ module UpdateResult : sig
   module type S = sig
     type t
 
-    type read_only
-
     val locally_triggered_dependencies : t -> SharedMemoryKeys.DependencyKey.RegisteredSet.t
 
     val all_triggered_dependencies : t -> SharedMemoryKeys.DependencyKey.RegisteredSet.t list
-
-    val read_only : t -> read_only
 
     val unannotated_global_environment_update_result
       :  t ->
@@ -36,11 +32,13 @@ end
 module type PreviousEnvironment = sig
   module ReadOnly : ReadOnly
 
-  module UpdateResult : UpdateResult.S with type read_only := ReadOnly.t
+  module UpdateResult : UpdateResult.S
 
   type t
 
-  val create : AstEnvironment.t -> t
+  val create : Configuration.Analysis.t -> t
+
+  val create_for_testing : Configuration.Analysis.t -> (Ast.ModulePath.t * string) list -> t
 
   val ast_environment : t -> AstEnvironment.t
 
@@ -53,6 +51,10 @@ module type PreviousEnvironment = sig
     scheduler:Scheduler.t ->
     ArtifactPath.t list ->
     UpdateResult.t
+
+  val store : t -> unit
+
+  val load : Configuration.Analysis.t -> t
 end
 
 module type S = sig
@@ -60,11 +62,13 @@ module type S = sig
 
   module PreviousEnvironment : PreviousEnvironment
 
-  module UpdateResult : UpdateResult.S with type read_only = ReadOnly.t
+  module UpdateResult : UpdateResult.S
 
   type t
 
-  val create : AstEnvironment.t -> t
+  val create : Configuration.Analysis.t -> t
+
+  val create_for_testing : Configuration.Analysis.t -> (Ast.ModulePath.t * string) list -> t
 
   val ast_environment : t -> AstEnvironment.t
 
@@ -77,6 +81,10 @@ module type S = sig
     scheduler:Scheduler.t ->
     ArtifactPath.t list ->
     UpdateResult.t
+
+  val store : t -> unit
+
+  val load : Configuration.Analysis.t -> t
 
   module Testing : sig
     module ReadOnly : sig
@@ -122,11 +130,6 @@ module EnvironmentTable : sig
 
     val trigger_to_dependency : trigger -> SharedMemoryKeys.dependency
 
-    (* For compatibility with the old dependency mode, we also need a different kind of key
-       discovery that just returns all of the keys that possibly could have been affected by the
-       update *)
-    val legacy_invalidated_keys : UnannotatedGlobalEnvironment.UpdateResult.t -> TriggerSet.t
-
     (* This is the actual main function of the update. *)
     val produce_value
       :  PreviousEnvironment.ReadOnly.t ->
@@ -154,11 +157,13 @@ module EnvironmentTable : sig
       val unannotated_global_environment : t -> UnannotatedGlobalEnvironment.ReadOnly.t
     end
 
-    module UpdateResult : UpdateResult.S with type read_only = ReadOnly.t
+    module UpdateResult : UpdateResult.S
 
     type t
 
-    val create : AstEnvironment.t -> t
+    val create : Configuration.Analysis.t -> t
+
+    val create_for_testing : Configuration.Analysis.t -> (Ast.ModulePath.t * string) list -> t
 
     val ast_environment : t -> AstEnvironment.t
 
@@ -171,6 +176,10 @@ module EnvironmentTable : sig
       scheduler:Scheduler.t ->
       ArtifactPath.t list ->
       UpdateResult.t
+
+    val store : t -> unit
+
+    val load : Configuration.Analysis.t -> t
 
     module Testing : sig
       module ReadOnly : sig
