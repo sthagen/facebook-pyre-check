@@ -1627,28 +1627,194 @@ let test_lookup_unknown_accesses context =
 
 
 let test_classify_coverage_data _ =
-  let make_coverage_data_record ~expression type_ =
-    let expression = parse_single_expression expression in
-    let type_ = Type.create ~aliases:Type.empty_aliases (parse_single_expression type_) in
-    { LocationBasedLookup.expression; type_ }
+  let parse_expression expression =
+    match expression with
+    | "None" -> None
+    | _ -> Some (parse_single_expression expression)
   in
+  let parse_type type_ = Type.create ~aliases:Type.empty_aliases (parse_single_expression type_) in
+  let make_coverage_data_record ~expression type_ = { LocationBasedLookup.expression; type_ } in
   let make_coverage_gap_record ~coverage_data reason =
     Some { LocationBasedLookup.coverage_data; reason }
   in
-  let assert_coverage_gap ~expression ~type_ reason =
-    let coverage_data = make_coverage_data_record ~expression type_ in
-    let coverage_gap =
-      match reason with
-      | None -> None
-      | Some current_reason -> make_coverage_gap_record ~coverage_data current_reason
-    in
-    assert_equal coverage_gap (LocationBasedLookup.classify_coverage_data coverage_data)
+  let make_coverage_gap ~coverage_data reason =
+    match reason with
+    | None -> None
+    | Some current_reason -> make_coverage_gap_record ~coverage_data current_reason
   in
-  assert_coverage_gap
+  let assert_coverage_gap ~coverage_data reason =
+    assert_equal
+      ~cmp:[%compare.equal: LocationBasedLookup.coverage_gap option]
+      ~printer:[%show: LocationBasedLookup.coverage_gap option]
+      (make_coverage_gap ~coverage_data reason)
+      (LocationBasedLookup.classify_coverage_data coverage_data)
+  in
+  let assert_coverage_gap_any ~expression ~type_ reason =
+    let coverage_data =
+      make_coverage_data_record ~expression:(parse_expression expression) (parse_type type_)
+    in
+    assert_coverage_gap ~coverage_data reason
+  in
+  let assert_coverage_gap_callable ~expression ~type_ reason =
+    let coverage_data = make_coverage_data_record ~expression:(parse_expression expression) type_ in
+    assert_coverage_gap ~coverage_data reason
+  in
+  assert_coverage_gap_any
     ~expression:"print(x + 1)"
     ~type_:"typing.Any"
     (Some LocationBasedLookup.TypeIsAny);
-  assert_coverage_gap ~expression:"1" ~type_:"typing_extensions.Literal[1]" None
+  assert_coverage_gap_any ~expression:"1" ~type_:"typing_extensions.Literal[1]" None;
+  assert_coverage_gap_any
+    ~expression:"x"
+    ~type_:"typing.List[typing.Any]"
+    (Some LocationBasedLookup.ContainerParameterIsAny);
+  assert_coverage_gap_any ~expression:"x" ~type_:"typing.List[float]" None;
+  assert_coverage_gap_any
+    ~expression:"x"
+    ~type_:"typing.Set[typing.Any]"
+    (Some LocationBasedLookup.ContainerParameterIsAny);
+  assert_coverage_gap_any ~expression:"x" ~type_:"typing.Set[int]" None;
+  assert_coverage_gap_any
+    ~expression:"x"
+    ~type_:"typing.Dict[typing.Any, typing.Any]"
+    (Some LocationBasedLookup.ContainerParameterIsAny);
+  assert_coverage_gap_any ~expression:"x" ~type_:"typing.Dict[str, typing.Any]" None;
+  assert_coverage_gap_any ~expression:"Foo[Any]" ~type_:"Foo[Any]" None;
+  (* TODO(T123023697): We only identify coverage gaps in Callable when all the parameters are
+     Unknown or Any. Task handles niche cases such as keyword-only or positional arguments*)
+  assert_coverage_gap_callable
+    ~expression:"foo"
+    ~type_:(Type.Callable.create ~annotation:Type.bytes ())
+    None;
+  assert_coverage_gap_callable
+    ~expression:"foo"
+    ~type_:
+      (Type.Callable.create
+         ~parameters:
+           (Type.Callable.Defined
+              [Type.Callable.Parameter.Named { name = "x"; annotation = Type.Any; default = false }])
+         ~annotation:Type.bytes
+         ())
+    (Some LocationBasedLookup.CallableParameterIsUnknownOrAny);
+  assert_coverage_gap_callable
+    ~expression:"foo"
+    ~type_:
+      (Type.Callable.create
+         ~parameters:
+           (Type.Callable.Defined
+              [Type.Callable.Parameter.Named { name = "x"; annotation = Type.Top; default = false }])
+         ~annotation:Type.bytes
+         ())
+    (Some LocationBasedLookup.CallableParameterIsUnknownOrAny);
+  assert_coverage_gap_callable
+    ~expression:"foo"
+    ~type_:
+      (Type.Callable.create
+         ~parameters:
+           (Type.Callable.Defined
+              [
+                Type.Callable.Parameter.Named
+                  { name = "x"; annotation = Type.integer; default = false };
+              ])
+         ~annotation:Type.bytes
+         ())
+    None;
+  assert_coverage_gap_callable
+    ~expression:"foo"
+    ~type_:
+      (Type.Callable.create
+         ~parameters:
+           (Type.Callable.Defined
+              [
+                Type.Callable.Parameter.Named { name = "x"; annotation = Type.Any; default = false };
+                Type.Callable.Parameter.Named { name = "y"; annotation = Type.Any; default = false };
+              ])
+         ~annotation:Type.bytes
+         ())
+    (Some LocationBasedLookup.CallableParameterIsUnknownOrAny);
+  assert_coverage_gap_callable
+    ~expression:"foo"
+    ~type_:
+      (Type.Callable.create
+         ~parameters:
+           (Type.Callable.Defined
+              [
+                Type.Callable.Parameter.Named { name = "x"; annotation = Type.Top; default = false };
+                Type.Callable.Parameter.Named { name = "y"; annotation = Type.Top; default = false };
+              ])
+         ~annotation:Type.bytes
+         ())
+    (Some LocationBasedLookup.CallableParameterIsUnknownOrAny);
+  assert_coverage_gap_callable
+    ~expression:"foo"
+    ~type_:
+      (Type.Callable.create
+         ~parameters:
+           (Type.Callable.Defined
+              [
+                Type.Callable.Parameter.Named { name = "x"; annotation = Type.Top; default = false };
+                Type.Callable.Parameter.Named { name = "y"; annotation = Type.Any; default = false };
+              ])
+         ~annotation:Type.bytes
+         ())
+    (Some LocationBasedLookup.CallableParameterIsUnknownOrAny);
+  assert_coverage_gap_callable
+    ~expression:"foo"
+    ~type_:
+      (Type.Callable.create
+         ~parameters:
+           (Type.Callable.Defined
+              [
+                Type.Callable.Parameter.Named { name = "x"; annotation = Type.Any; default = false };
+                Type.Callable.Parameter.Named { name = "y"; annotation = Type.Any; default = false };
+                Type.Callable.Parameter.Named { name = "z"; annotation = Type.Any; default = false };
+              ])
+         ~annotation:Type.bytes
+         ())
+    (Some LocationBasedLookup.CallableParameterIsUnknownOrAny);
+  assert_coverage_gap_callable
+    ~expression:"foo"
+    ~type_:
+      (Type.Callable.create
+         ~parameters:
+           (Type.Callable.Defined
+              [
+                Type.Callable.Parameter.Named { name = "x"; annotation = Type.Top; default = false };
+                Type.Callable.Parameter.Named { name = "y"; annotation = Type.Top; default = false };
+                Type.Callable.Parameter.Named { name = "z"; annotation = Type.Top; default = false };
+              ])
+         ~annotation:Type.bytes
+         ())
+    (Some LocationBasedLookup.CallableParameterIsUnknownOrAny);
+  assert_coverage_gap_callable
+    ~expression:"foo"
+    ~type_:
+      (Type.Callable.create
+         ~parameters:
+           (Type.Callable.Defined
+              [
+                Type.Callable.Parameter.Named
+                  { name = "x"; annotation = Type.integer; default = false };
+                Type.Callable.Parameter.Named { name = "y"; annotation = Type.Any; default = false };
+              ])
+         ~annotation:Type.bytes
+         ())
+    None;
+  assert_coverage_gap_callable
+    ~expression:"foo"
+    ~type_:
+      (Type.Callable.create
+         ~parameters:
+           (Type.Callable.Defined
+              [
+                Type.Callable.Parameter.Named { name = "x"; annotation = Type.Top; default = false };
+                Type.Callable.Parameter.Named
+                  { name = "y"; annotation = Type.integer; default = false };
+              ])
+         ~annotation:Type.bytes
+         ())
+    None;
+  ()
 
 
 let () =

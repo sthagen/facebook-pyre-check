@@ -72,7 +72,7 @@ let recheck ~configuration ~scheduler ~environment ~errors artifact_paths =
   TypeEnvironment.invalidate environment recheck_function_names;
   recheck_functions_list
   |> List.map ~f:(fun (define, registered) -> define, Some registered)
-  |> TypeCheck.run_on_defines ~scheduler ~configuration ~environment;
+  |> TypeEnvironment.populate_for_definitions ~scheduler ~configuration environment;
 
   (* Rerun postprocessing for triggered modules. *)
   let recheck_modules =
@@ -82,8 +82,8 @@ let recheck ~configuration ~scheduler ~environment ~errors artifact_paths =
       (Reference.Map.keys function_triggers)
       ~f:(fun sofar define_name ->
         let unannotated_global_environment =
-          UnannotatedGlobalEnvironment.UpdateResult.read_only
-            unannotated_global_environment_update_result
+          TypeEnvironment.read_only environment
+          |> TypeEnvironment.ReadOnly.unannotated_global_environment
         in
         match
           UnannotatedGlobalEnvironment.ReadOnly.get_function_definition

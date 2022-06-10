@@ -62,16 +62,22 @@ val location_of_definition
   Location.position ->
   Location.WithModule.t option
 
-type reason = TypeIsAny
+type reason =
+  | TypeIsAny
+  | ContainerParameterIsAny
+  | CallableParameterIsUnknownOrAny
+[@@deriving compare, sexp, show, hash]
 
 type coverage_data = {
-  expression: Expression.t;
+  expression: Expression.t option;
   type_: Type.t;
 }
+[@@deriving compare, sexp, show, hash]
 
 type coverage_gap = {
   coverage_data: coverage_data;
   reason: reason;
 }
+[@@deriving compare, sexp, show, hash]
 
 val classify_coverage_data : coverage_data -> coverage_gap option

@@ -6042,10 +6042,6 @@ module CheckResult = struct
     errors: Error.t list;
     local_annotations: LocalAnnotationMap.t option;
   }
-
-  let aggregate_errors results =
-    List.fold results ~init:[] ~f:(fun errors_sofar { errors; _ } ->
-        List.append errors errors_sofar)
 end
 
 module DummyContext = struct
@@ -6834,6 +6830,36 @@ let exit_state ~resolution (module Context : Context) =
     errors, Some local_annotations, Some callees)
 
 
+let compute_local_annotations ~global_environment name =
+  let global_resolution = GlobalResolution.create global_environment in
+  match GlobalResolution.define_body global_resolution name with
+  | None -> None
+  | Some define_node ->
+      let _, local_annotations, _ =
+        (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
+        let resolution = resolution global_resolution (module DummyContext) in
+        let module Context = struct
+          (* Doesn't matter what the qualifier is since we won't be using it *)
+          let qualifier = Reference.empty
+
+          let debug = false
+
+          let constraint_solving_style = Configuration.Analysis.default_constraint_solving_style
+
+          let define = define_node
+
+          let resolution_fixpoint = Some (LocalAnnotationMap.empty ())
+
+          let error_map = Some (LocalErrorMap.empty ())
+
+          module Builder = Callgraph.NullBuilder
+        end
+        in
+        exit_state ~resolution (module Context)
+      in
+      local_annotations >>| LocalAnnotationMap.read_only
+
+
 let check_define
     ~configuration:{ Configuration.Analysis.debug; constraint_solving_style; _ }
     ~resolution
@@ -6895,43 +6921,6 @@ let check_define
       { errors = [undefined_error]; local_annotations = None }
 
 
-let get_or_recompute_local_annotations ~environment name =
-  match TypeEnvironment.ReadOnly.get_local_annotations environment name with
-  | Some _ as local_annotations -> local_annotations
-  | None -> (
-      (* Local annotations not preserved in shared memory in a standard pyre server (they can be,
-         via TypeEnvironment.LocalAnnotations, but to save memory we only populate this for pysa
-         runs, not the normal server used by LSP). This behavior is controlled by the
-         `store_type_check_resolution` flag. *)
-      let global_resolution = TypeEnvironment.ReadOnly.global_resolution environment in
-      match GlobalResolution.define_body global_resolution name with
-      | None -> None
-      | Some define_node ->
-          let _, local_annotations, _ =
-            (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
-            let resolution = resolution global_resolution (module DummyContext) in
-            let module Context = struct
-              (* Doesn't matter what the qualifier is since we won't be using it *)
-              let qualifier = Reference.empty
-
-              let debug = false
-
-              let constraint_solving_style = Configuration.Analysis.default_constraint_solving_style
-
-              let define = define_node
-
-              let resolution_fixpoint = Some (LocalAnnotationMap.empty ())
-
-              let error_map = Some (LocalErrorMap.empty ())
-
-              module Builder = Callgraph.NullBuilder
-            end
-            in
-            exit_state ~resolution (module Context)
-          in
-          local_annotations >>| LocalAnnotationMap.read_only)
-
-
 let check_function_definition
     ~configuration
     ~resolution
@@ -6952,11 +6941,14 @@ let check_function_definition
   let sibling_bodies = List.map siblings ~f:(fun { FunctionDefinition.Sibling.body; _ } -> body) in
   let sibling_results = List.map sibling_bodies ~f:(fun define_node -> check_define define_node) in
   let result =
-    let open CheckResult in
+    let aggregate_errors results =
+      List.fold results ~init:[] ~f:(fun errors_sofar { CheckResult.errors; _ } ->
+          List.append errors errors_sofar)
+    in
     match body with
-    | None -> { errors = aggregate_errors sibling_results; local_annotations = None }
+    | None -> { CheckResult.errors = aggregate_errors sibling_results; local_annotations = None }
     | Some define_node ->
-        let ({ local_annotations; _ } as body_result) = check_define define_node in
+        let ({ CheckResult.local_annotations; _ } as body_result) = check_define define_node in
         { errors = aggregate_errors (body_result :: sibling_results); local_annotations }
   in
 
@@ -6980,121 +6972,9 @@ let check_function_definition
   result
 
 
-let run_on_define ~configuration ~environment ?call_graph_builder (name, dependency) =
-  let global_resolution =
-    let global_environment =
-      TypeEnvironment.global_environment environment |> AnnotatedGlobalEnvironment.read_only
-    in
-    GlobalResolution.create global_environment ?dependency
-  in
+let check_define_by_name ~configuration ~global_environment ?call_graph_builder (name, dependency) =
+  let global_resolution = GlobalResolution.create global_environment ?dependency in
   (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
   let resolution = resolution global_resolution (module DummyContext) in
-  match GlobalResolution.function_definition global_resolution name with
-  | None -> ()
-  | Some definition ->
-      let { CheckResult.errors; local_annotations } =
-        check_function_definition ~configuration ~resolution ~name ?call_graph_builder definition
-      in
-      let () =
-        if configuration.store_type_check_resolution then
-          (* Write fixpoint type resolutions to shared memory *)
-          let local_annotations =
-            match local_annotations with
-            | Some local_annotations -> local_annotations
-            | None -> LocalAnnotationMap.empty ()
-          in
-          TypeEnvironment.set_local_annotations
-            environment
-            name
-            (LocalAnnotationMap.read_only local_annotations)
-      in
-      let () =
-        if configuration.store_type_errors then
-          TypeEnvironment.set_errors environment name errors
-      in
-      ()
-
-
-let run_on_defines ~scheduler ~configuration ~environment ?call_graph_builder defines =
-  let timer = Timer.start () in
-
-  let number_of_defines = List.length defines in
-  Log.info "Checking %d functions..." number_of_defines;
-  let map _ names =
-    let analyze_define number_defines define_name_and_dependency =
-      run_on_define ~configuration ~environment ?call_graph_builder define_name_and_dependency;
-      number_defines + 1
-    in
-    List.fold names ~init:0 ~f:analyze_define
-  in
-  let reduce left right =
-    let number_defines = left + right in
-    Log.log ~section:`Progress "Processed %d of %d functions" number_defines number_of_defines;
-    number_defines
-  in
-  let _ =
-    SharedMemoryKeys.DependencyKey.Registry.collected_map_reduce
-      scheduler
-      ~policy:
-        (Scheduler.Policy.fixed_chunk_size
-           ~minimum_chunk_size:10
-           ~minimum_chunks_per_worker:2
-           ~preferred_chunk_size:1000
-           ())
-      ~initial:0
-      ~map
-      ~reduce
-      ~inputs:defines
-      ()
-  in
-
-  Statistics.performance ~name:"check_TypeCheck" ~phase_name:"Type check" ~timer ()
-
-
-let legacy_run_on_modules ~scheduler ~configuration ~environment ?call_graph_builder qualifiers =
-  Profiling.track_shared_memory_usage ~name:"Before legacy type check" ();
-
-  let all_defines =
-    let unannotated_global_environment =
-      TypeEnvironment.global_environment environment
-      |> AnnotatedGlobalEnvironment.read_only
-      |> AnnotatedGlobalEnvironment.ReadOnly.unannotated_global_environment
-    in
-    let map _ qualifiers =
-      List.concat_map qualifiers ~f:(fun qualifier ->
-          UnannotatedGlobalEnvironment.ReadOnly.all_defines_in_module
-            unannotated_global_environment
-            qualifier)
-    in
-    Scheduler.map_reduce
-      scheduler
-      ~policy:
-        (Scheduler.Policy.fixed_chunk_count
-           ~minimum_chunks_per_worker:1
-           ~minimum_chunk_size:100
-           ~preferred_chunks_per_worker:5
-           ())
-      ~initial:[]
-      ~map
-      ~reduce:List.append
-      ~inputs:qualifiers
-      ()
-  in
-  let all_defines =
-    match configuration with
-    | { Configuration.Analysis.incremental_style = FineGrained; _ } ->
-        List.map all_defines ~f:(fun define ->
-            ( define,
-              Some
-                (SharedMemoryKeys.DependencyKey.Registry.register
-                   (SharedMemoryKeys.TypeCheckDefine define)) ))
-    | _ -> List.map all_defines ~f:(fun define -> define, None)
-  in
-
-  run_on_defines ~scheduler ~configuration ~environment ?call_graph_builder all_defines;
-  Statistics.event
-    ~section:`Memory
-    ~name:"shared memory size post-typecheck"
-    ~integers:["size", Memory.heap_size ()]
-    ();
-  Profiling.track_shared_memory_usage ~name:"After legacy type check" ()
+  GlobalResolution.function_definition global_resolution name
+  >>| check_function_definition ~configuration ~resolution ~name ?call_graph_builder

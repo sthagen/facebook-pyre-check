@@ -35,8 +35,6 @@ class MissingOverrideReturnAnnotations(Command):
         )
 
     @classmethod
-    # pyre-fixme[40]: Non-static method `add_arguments` cannot override a static
-    #  method defined in `Command`.
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
         super(MissingOverrideReturnAnnotations, cls).add_arguments(parser)
         parser.set_defaults(command=cls.from_arguments)
@@ -95,8 +93,6 @@ class MissingGlobalAnnotations(Command):
         )
 
     @classmethod
-    # pyre-fixme[40]: Non-static method `add_arguments` cannot override a static
-    #  method defined in `Command`.
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
         super(MissingGlobalAnnotations, cls).add_arguments(parser)
         parser.set_defaults(command=cls.from_arguments)
@@ -135,7 +131,7 @@ class MissingGlobalAnnotations(Command):
             path.write_text("\n".join(lines))
 
 
-class EnableSourceDatabaseBuckBuilder(Command):
+class SetUseBuck1(Command):
     def __init__(self, *, local_roots: Sequence[Path], repository: Repository) -> None:
         super().__init__(repository)
         self._local_roots = local_roots
@@ -143,20 +139,16 @@ class EnableSourceDatabaseBuckBuilder(Command):
     @staticmethod
     def from_arguments(
         arguments: argparse.Namespace, repository: Repository
-    ) -> "EnableSourceDatabaseBuckBuilder":
-        return EnableSourceDatabaseBuckBuilder(
-            local_roots=arguments.local_roots, repository=repository
-        )
+    ) -> "SetUseBuck1":
+        return SetUseBuck1(local_roots=arguments.local_roots, repository=repository)
 
     @classmethod
-    # pyre-fixme[40]: Non-static method `add_arguments` cannot override a static
-    #  method defined in `Command`.
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
-        super(EnableSourceDatabaseBuckBuilder, cls).add_arguments(parser)
+        super(SetUseBuck1, cls).add_arguments(parser)
         parser.set_defaults(command=cls.from_arguments)
         parser.add_argument(
             "local_roots",
-            help="Path to directory with local configuration",
+            help="Paths to directory with local configuration",
             type=path_exists,
             nargs="*",
         )
@@ -164,5 +156,5 @@ class EnableSourceDatabaseBuckBuilder(Command):
     def run(self) -> None:
         for local_root in self._local_roots:
             configuration = Configuration(local_root / ".pyre_configuration.local")
-            configuration.enable_source_database_buck_builder()
+            configuration.set_use_buck1_if_possible()
             configuration.write()

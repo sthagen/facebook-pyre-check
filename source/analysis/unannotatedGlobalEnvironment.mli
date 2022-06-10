@@ -47,13 +47,9 @@ module ReadOnly : sig
 
   val all_classes : t -> Type.Primitive.t list
 
-  val all_defines : t -> Reference.t list
-
   val all_indices : t -> IndexTracker.t list
 
   val all_unannotated_globals : t -> Reference.t list
-
-  val all_defines_in_module : t -> Reference.t -> Reference.t list
 
   (* All other functions are dependency tracked *)
 
@@ -62,6 +58,12 @@ module ReadOnly : sig
     ?dependency:DependencyKey.registered ->
     Reference.t ->
     Module.t option
+
+  val get_define_names
+    :  t ->
+    ?dependency:DependencyKey.registered ->
+    Reference.t ->
+    Reference.t list
 
   val get_class_summary
     :  t ->
@@ -128,8 +130,6 @@ module UpdateResult : sig
      preenvironment updates *)
   type t
 
-  type read_only = ReadOnly.t
-
   val define_additions : t -> Reference.Set.t
 
   val locally_triggered_dependencies : t -> DependencyKey.RegisteredSet.t
@@ -141,8 +141,6 @@ module UpdateResult : sig
   val all_triggered_dependencies : t -> DependencyKey.RegisteredSet.t list
 
   val unannotated_global_environment_update_result : t -> t
-
-  val read_only : t -> read_only
 end
 
 type t

@@ -11,6 +11,12 @@ open Ast
 open Expression
 open Statement
 
+type coverage_data = {
+  expression: Expression.t option;
+  type_: Type.t;
+}
+[@@deriving compare, sexp, show, hash]
+
 type resolved_type_lookup = Type.t Location.Table.t
 
 (** This visitor stores the resolved type formation for an expression on the key of its location.
@@ -47,7 +53,7 @@ module CreateDefinitionAndAnnotationLookupVisitor = struct
       with
       | ClassHierarchy.Untracked _ -> None
     in
-    let store_resolved_type ({ Node.location; value } as expression) =
+    let store_coverage_data_for_expression ({ Node.location; value } as expression) =
       let store_lookup ~table ~location data =
         if not (Location.equal location Location.any) then
           Hashtbl.set table ~key:location ~data |> ignore
@@ -127,10 +133,10 @@ module CreateDefinitionAndAnnotationLookupVisitor = struct
     in
     match node with
     | Visit.Expression expression ->
-        store_resolved_type expression;
+        store_coverage_data_for_expression expression;
         state
     | Visit.Reference { Node.value = reference; location } ->
-        store_resolved_type (Ast.Expression.from_reference ~location reference);
+        store_coverage_data_for_expression (Ast.Expression.from_reference ~location reference);
         state
     | _ -> state
 
@@ -235,7 +241,7 @@ let create_of_module type_environment qualifier =
       ({ Node.value = { Define.signature = { name; _ }; _ } as define; _ } as define_node)
     =
     let resolved_type_lookup =
-      TypeCheck.get_or_recompute_local_annotations ~environment:type_environment name
+      TypeEnvironment.ReadOnly.get_or_recompute_local_annotations type_environment name
       |> function
       | Some resolved_type_lookup -> resolved_type_lookup
       | None -> LocalAnnotationMap.empty () |> LocalAnnotationMap.read_only
@@ -284,17 +290,15 @@ let create_of_module type_environment qualifier =
     in
     walk_statement Cfg.entry_index 0 define_signature
   in
-  let all_defines =
+  let define_names =
     let unannotated_global_environment =
       GlobalResolution.unannotated_global_environment global_resolution
     in
-    UnannotatedGlobalEnvironment.ReadOnly.all_defines_in_module
-      unannotated_global_environment
-      qualifier
+    UnannotatedGlobalEnvironment.ReadOnly.get_define_names unannotated_global_environment qualifier
     |> List.filter_map
          ~f:(UnannotatedGlobalEnvironment.ReadOnly.get_define_body unannotated_global_environment)
   in
-  List.iter all_defines ~f:walk_define;
+  List.iter define_names ~f:walk_define;
   resolved_types_lookup
 
 
@@ -557,7 +561,7 @@ let find_narrowest_spanning_symbol ~type_environment ~module_reference position 
     let unannotated_global_environment =
       GlobalResolution.unannotated_global_environment global_resolution
     in
-    UnannotatedGlobalEnvironment.ReadOnly.all_defines_in_module
+    UnannotatedGlobalEnvironment.ReadOnly.get_define_names
       unannotated_global_environment
       module_reference
     |> List.filter_map
@@ -666,7 +670,7 @@ let resolve_definition_for_symbol
   let resolution =
     let global_resolution = TypeEnvironment.ReadOnly.global_resolution type_environment in
     let resolved_type_lookup =
-      TypeCheck.get_or_recompute_local_annotations ~environment:type_environment define_name
+      TypeEnvironment.ReadOnly.get_or_recompute_local_annotations type_environment define_name
       |> function
       | Some resolved_type_lookup -> resolved_type_lookup
       | None -> LocalAnnotationMap.empty () |> LocalAnnotationMap.read_only
@@ -707,19 +711,33 @@ let location_of_definition ~type_environment ~module_reference position =
   result >>= resolve_definition_for_symbol ~type_environment ~module_reference
 
 
-type reason = TypeIsAny
-
-type coverage_data = {
-  expression: Expression.t;
-  type_: Type.t;
-}
+type reason =
+  | TypeIsAny
+  | ContainerParameterIsAny
+  | CallableParameterIsUnknownOrAny
+[@@deriving compare, sexp, show, hash]
 
 type coverage_gap = {
   coverage_data: coverage_data;
   reason: reason;
 }
+[@@deriving compare, sexp, show, hash]
 
 let classify_coverage_data { expression; type_ } =
+  let make_coverage_gap reason = Some { coverage_data = { expression; type_ }; reason } in
   match type_ with
-  | Any -> Some { coverage_data = { expression; type_ }; reason = TypeIsAny }
+  | Any -> make_coverage_gap TypeIsAny
+  | Parametric { name = "list" | "set"; parameters = [Single Any] }
+  | Parametric { name = "dict"; parameters = [Single Any; Single Any] } ->
+      make_coverage_gap ContainerParameterIsAny
+  | Callable { implementation = { parameters = Defined parameter_list; _ }; _ } ->
+      let parameter_is_top_or_any = function
+        | Type.Callable.Parameter.Named { annotation = Type.Any | Type.Top; _ } -> true
+        | _ -> false
+      in
+      let all_parameters_are_top_or_any = List.for_all ~f:parameter_is_top_or_any parameter_list in
+      if all_parameters_are_top_or_any then
+        make_coverage_gap CallableParameterIsUnknownOrAny
+      else
+        None
   | _ -> None

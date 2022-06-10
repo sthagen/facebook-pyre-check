@@ -39,15 +39,13 @@ module ReadOnly = struct
     all_classes: unit -> Type.Primitive.t list;
     all_indices: unit -> IndexTracker.t list;
     all_unannotated_globals: unit -> Reference.t list;
-    all_defines: unit -> Reference.t list;
-    all_defines_in_module: Reference.t -> Reference.t list;
+    get_define_names: ?dependency:DependencyKey.registered -> Reference.t -> Reference.t list;
     get_class_summary:
       ?dependency:DependencyKey.registered -> string -> ClassSummary.t Node.t option;
     get_unannotated_global:
       ?dependency:DependencyKey.registered -> Reference.t -> UnannotatedGlobal.t option;
     get_function_definition:
       ?dependency:DependencyKey.registered -> Reference.t -> FunctionDefinition.t option;
-    get_define_body: ?dependency:DependencyKey.registered -> Reference.t -> Define.t Node.t option;
     get_module_metadata: ?dependency:DependencyKey.registered -> Reference.t -> Module.t option;
     module_exists: ?dependency:SharedMemoryKeys.DependencyKey.registered -> Reference.t -> bool;
   }
@@ -60,11 +58,9 @@ module ReadOnly = struct
 
   let all_indices { all_indices; _ } = all_indices ()
 
-  let all_defines { all_defines; _ } = all_defines ()
-
   let all_unannotated_globals { all_unannotated_globals; _ } = all_unannotated_globals ()
 
-  let all_defines_in_module { all_defines_in_module; _ } = all_defines_in_module
+  let get_define_names { get_define_names; _ } = get_define_names
 
   let get_module_metadata { get_module_metadata; _ } = get_module_metadata
 
@@ -76,9 +72,12 @@ module ReadOnly = struct
 
   let get_function_definition { get_function_definition; _ } = get_function_definition
 
-  let get_define_body { get_define_body; _ } = get_define_body
-
   let get_unannotated_global { get_unannotated_global; _ } = get_unannotated_global
+
+  let get_define_body environment ?dependency name =
+    get_function_definition environment ?dependency name
+    >>= fun { FunctionDefinition.body; _ } -> body
+
 
   let primitive_name annotation =
     let primitive, _ = Type.split annotation in
@@ -280,10 +279,7 @@ module UpdateResult = struct
     triggered_dependencies: DependencyKey.RegisteredSet.t;
     invalidated_modules: Reference.t list;
     module_updates: ModuleTracker.IncrementalUpdate.t list;
-    read_only: ReadOnly.t;
   }
-
-  type read_only = ReadOnly.t
 
   let define_additions { define_additions; _ } = define_additions
 
@@ -296,11 +292,9 @@ module UpdateResult = struct
   let module_updates { module_updates; _ } = module_updates
 
   let unannotated_global_environment_update_result = Fn.id
-
-  let read_only { read_only; _ } = read_only
 end
 
-module FromReadonlyUpstream = struct
+module FromReadOnlyUpstream = struct
   (* The key tracking is necessary because there is no empirical way to determine which classes
      exist for a given class. This "fan-out" necessitates internal tracking. However, this module
      need not be sealed to ensure write only-ness since we're not dependency tracking this, since
@@ -316,14 +310,6 @@ module FromReadonlyUpstream = struct
       let description = "Class keys"
     end
 
-    module DefineKeyValue = struct
-      type t = Reference.t list [@@deriving compare]
-
-      let prefix = Prefix.make ()
-
-      let description = "Define keys"
-    end
-
     module UnannotatedGlobalKeyValue = struct
       type t = Reference.t list [@@deriving compare]
 
@@ -334,28 +320,22 @@ module FromReadonlyUpstream = struct
 
     module ClassKeys =
       Memory.FirstClass.WithCache.Make (SharedMemoryKeys.ReferenceKey) (ClassKeyValue)
-    module DefineKeys =
-      Memory.FirstClass.WithCache.Make (SharedMemoryKeys.ReferenceKey) (DefineKeyValue)
     module UnannotatedGlobalKeys =
       Memory.FirstClass.WithCache.Make (SharedMemoryKeys.ReferenceKey) (UnannotatedGlobalKeyValue)
 
     type t = {
       class_keys: ClassKeys.t;
       unannotated_global_keys: UnannotatedGlobalKeys.t;
-      define_keys: DefineKeys.t;
     }
 
     let create () =
       {
         class_keys = ClassKeys.create ();
         unannotated_global_keys = UnannotatedGlobalKeys.create ();
-        define_keys = DefineKeys.create ();
       }
 
 
     let add_class_keys { class_keys; _ } = ClassKeys.add class_keys
-
-    let add_define_keys { define_keys; _ } = DefineKeys.add define_keys
 
     let add_unannotated_global_keys { unannotated_global_keys; _ } =
       UnannotatedGlobalKeys.add unannotated_global_keys
@@ -365,14 +345,6 @@ module FromReadonlyUpstream = struct
       ClassKeys.KeySet.of_list qualifiers
       |> ClassKeys.get_batch class_keys
       |> ClassKeys.KeyMap.values
-      |> List.filter_map ~f:Fn.id
-      |> List.concat
-
-
-    let get_define_keys { define_keys; _ } qualifiers =
-      DefineKeys.KeySet.of_list qualifiers
-      |> DefineKeys.get_batch define_keys
-      |> DefineKeys.KeyMap.values
       |> List.filter_map ~f:Fn.id
       |> List.concat
 
@@ -389,35 +361,28 @@ module FromReadonlyUpstream = struct
       type t = {
         previous_classes_list: Type.Primitive.t list;
         previous_classes: Type.Primitive.Set.t;
-        previous_defines_list: Reference.t list;
-        previous_defines: Reference.Set.t;
         previous_unannotated_globals_list: Reference.t list;
         previous_unannotated_globals: Reference.Set.t;
       }
     end
 
     let get_previous_keys_and_clear
-        ({ class_keys; define_keys; unannotated_global_keys } as key_tracker)
+        ({ class_keys; unannotated_global_keys } as key_tracker)
         invalidated_modules
       =
       let previous_classes_list = get_class_keys key_tracker invalidated_modules in
-      let previous_defines_list = get_define_keys key_tracker invalidated_modules in
       let previous_unannotated_globals_list =
         get_unannotated_global_keys key_tracker invalidated_modules
       in
       let previous_classes = Type.Primitive.Set.of_list previous_classes_list in
-      let previous_defines = Reference.Set.of_list previous_defines_list in
       let previous_unannotated_globals = Reference.Set.of_list previous_unannotated_globals_list in
       ClassKeys.KeySet.of_list invalidated_modules |> ClassKeys.remove_batch class_keys;
-      DefineKeys.KeySet.of_list invalidated_modules |> DefineKeys.remove_batch define_keys;
       UnannotatedGlobalKeys.KeySet.of_list invalidated_modules
       |> UnannotatedGlobalKeys.remove_batch unannotated_global_keys;
       PreviousKeys.
         {
           previous_classes_list;
           previous_classes;
-          previous_defines_list;
-          previous_defines;
           previous_unannotated_globals_list;
           previous_unannotated_globals;
         }
@@ -443,6 +408,32 @@ module FromReadonlyUpstream = struct
     let is_qualifier = true
 
     let key_to_reference = Fn.id
+  end
+
+  module DefineNamesValue = struct
+    type t = Reference.t list [@@deriving compare]
+
+    let prefix = Prefix.make ()
+
+    let description = "DefineListing"
+  end
+
+  module DefineNames = struct
+    include
+      DependencyTrackedMemory.DependencyTrackedTableWithCache
+        (SharedMemoryKeys.ReferenceKey)
+        (DependencyKey)
+        (DefineNamesValue)
+
+    let is_qualifier = true
+
+    let key_to_reference = Fn.id
+
+    let get_define_names define_names qualifiers =
+      get_batch define_names (KeySet.of_list qualifiers)
+      |> KeyMap.values
+      |> List.filter_opt
+      |> List.concat
   end
 
   module ClassSummaryValue = struct
@@ -515,6 +506,7 @@ module FromReadonlyUpstream = struct
     type t = {
       key_tracker: KeyTracker.t;
       modules: Modules.t;
+      define_names: DefineNames.t;
       class_summaries: ClassSummaries.t;
       function_definitions: FunctionDefinitions.t;
       unannotated_globals: UnannotatedGlobals.t;
@@ -525,6 +517,7 @@ module FromReadonlyUpstream = struct
       {
         key_tracker = KeyTracker.create ();
         modules = Modules.create ();
+        define_names = DefineNames.create ();
         class_summaries = ClassSummaries.create ();
         function_definitions = FunctionDefinitions.create ();
         unannotated_globals = UnannotatedGlobals.create ();
@@ -599,7 +592,7 @@ module FromReadonlyUpstream = struct
 
 
   let set_function_definitions
-      ({ key_tracker; _ } as environment)
+      ({ define_names; _ } as environment)
       ({ Source.source_path = { ModulePath.qualifier; is_external; _ }; _ } as source)
     =
     match is_external with
@@ -614,7 +607,7 @@ module FromReadonlyUpstream = struct
         in
         List.map function_definitions ~f:register
         |> List.sort ~compare:Reference.compare
-        |> KeyTracker.add_define_keys key_tracker qualifier
+        |> DefineNames.add define_names qualifier
 
 
   let set_unannotated_globals
@@ -666,7 +659,7 @@ module FromReadonlyUpstream = struct
 
 
   let add_to_transaction
-      { modules; class_summaries; function_definitions; unannotated_globals; _ }
+      { modules; class_summaries; function_definitions; unannotated_globals; define_names; _ }
       transaction
       ~previous_classes_list
       ~previous_unannotated_globals_list
@@ -681,6 +674,7 @@ module FromReadonlyUpstream = struct
     in
     transaction
     |> Modules.add_to_transaction modules ~keys:module_keys
+    |> DefineNames.add_to_transaction define_names ~keys:module_keys
     |> ClassSummaries.add_to_transaction class_summaries ~keys:class_keys
     |> FunctionDefinitions.add_to_transaction function_definitions ~keys:defines_keys
     |> UnannotatedGlobals.add_to_transaction unannotated_globals ~keys:unannotated_globals_keys
@@ -820,6 +814,7 @@ module FromReadonlyUpstream = struct
          ast_environment;
          key_tracker;
          modules;
+         define_names;
          class_summaries;
          function_definitions;
          unannotated_globals;
@@ -828,10 +823,12 @@ module FromReadonlyUpstream = struct
     let loader = LazyLoader.{ environment; ast_environment } in
     (* Mask the raw DependencyTrackedTables with lazy read-only views of each one *)
     let module Modules = ReadOnlyTable.Make (Modules) in
+    let module DefineNames = ReadOnlyTable.Make (DefineNames) in
     let module ClassSummaries = ReadOnlyTable.Make (ClassSummaries) in
     let module FunctionDefinitions = ReadOnlyTable.Make (FunctionDefinitions) in
     let module UnannotatedGlobals = ReadOnlyTable.Make (UnannotatedGlobals) in
     let modules = Modules.create ~loader modules in
+    let define_names = DefineNames.create ~loader define_names in
     let class_summaries = ClassSummaries.create ~loader class_summaries in
     let function_definitions = FunctionDefinitions.create ~loader function_definitions in
     let unannotated_globals = UnannotatedGlobals.create ~loader unannotated_globals in
@@ -867,14 +864,9 @@ module FromReadonlyUpstream = struct
     let get_class_summary = ClassSummaries.get class_summaries in
     let class_exists = ClassSummaries.mem class_summaries in
     let get_function_definition = FunctionDefinitions.get function_definitions in
-    let get_define_body ?dependency key =
-      get_function_definition ?dependency key >>= fun { FunctionDefinition.body; _ } -> body
-    in
     let get_unannotated_global = UnannotatedGlobals.get unannotated_globals in
-    (* all_defines_in_module is the only KeyTracker-based API that requires loading *)
-    let all_defines_in_module qualifier =
-      LazyLoader.load_module_if_tracked loader qualifier;
-      KeyTracker.get_define_keys key_tracker [qualifier]
+    let get_define_names ?dependency qualifier =
+      DefineNames.get define_names ?dependency qualifier |> Option.value ~default:[]
     in
     (* Define the bulk key reads - these tell us what's been loaded thus far *)
     let all_classes () =
@@ -891,10 +883,6 @@ module FromReadonlyUpstream = struct
       AstEnvironment.ReadOnly.all_explicit_modules ast_environment
       |> KeyTracker.get_unannotated_global_keys key_tracker
     in
-    let all_defines () =
-      AstEnvironment.ReadOnly.all_explicit_modules ast_environment
-      |> KeyTracker.get_define_keys key_tracker
-    in
     {
       ReadOnly.ast_environment;
       get_module_metadata;
@@ -902,18 +890,16 @@ module FromReadonlyUpstream = struct
       get_class_summary;
       class_exists;
       get_function_definition;
-      get_define_body;
       get_unannotated_global;
-      all_defines_in_module;
+      get_define_names;
       all_classes;
       all_indices;
-      all_defines;
       all_unannotated_globals;
     }
 
 
   let update
-      ({ ast_environment; key_tracker; _ } as environment)
+      ({ ast_environment; key_tracker; define_names; _ } as environment)
       ~scheduler
       invalidated_modules
       module_updates
@@ -945,14 +931,13 @@ module FromReadonlyUpstream = struct
           {
             previous_classes_list;
             previous_classes;
-            previous_defines_list;
-            previous_defines;
             previous_unannotated_globals_list;
             previous_unannotated_globals;
           }
       =
       KeyTracker.get_previous_keys_and_clear key_tracker invalidated_modules
     in
+    let previous_defines_list = DefineNames.get_define_names define_names invalidated_modules in
     let define_additions, triggered_dependencies =
       Profiling.track_duration_and_shared_memory_with_dynamic_tags
         "TableUpdate(Unannotated globals)"
@@ -971,14 +956,16 @@ module FromReadonlyUpstream = struct
             KeyTracker.get_class_keys key_tracker invalidated_modules |> Type.Primitive.Set.of_list
           in
           let current_defines =
-            KeyTracker.get_define_keys key_tracker invalidated_modules |> Reference.Set.of_list
+            DefineNames.get_define_names define_names invalidated_modules |> Reference.Set.of_list
           in
           let current_unannotated_globals =
             KeyTracker.get_unannotated_global_keys key_tracker invalidated_modules
             |> Reference.Set.of_list
           in
           let class_additions = Type.Primitive.Set.diff current_classes previous_classes in
-          let define_additions = Reference.Set.diff current_defines previous_defines in
+          let define_additions =
+            Reference.Set.of_list previous_defines_list |> Reference.Set.diff current_defines
+          in
           let unannotated_global_additions =
             Reference.Set.diff current_unannotated_globals previous_unannotated_globals
           in
@@ -1003,41 +990,35 @@ module FromReadonlyUpstream = struct
           in
           { Profiling.result = define_additions, triggered_dependencies; tags })
     in
-    {
-      UpdateResult.define_additions;
-      triggered_dependencies;
-      invalidated_modules;
-      module_updates;
-      read_only = read_only environment;
-    }
+    { UpdateResult.define_additions; triggered_dependencies; invalidated_modules; module_updates }
 end
 
 module Base = struct
   type t = {
     ast_environment: AstEnvironment.t;
-    from_readonly_upstream: FromReadonlyUpstream.t;
+    from_read_only_upstream: FromReadOnlyUpstream.t;
   }
 
   let create configuration =
     let ast_environment = AstEnvironment.create configuration in
-    let from_readonly_upstream =
-      AstEnvironment.read_only ast_environment |> FromReadonlyUpstream.create
+    let from_read_only_upstream =
+      AstEnvironment.read_only ast_environment |> FromReadOnlyUpstream.create
     in
-    FromReadonlyUpstream.cold_start from_readonly_upstream;
-    { ast_environment; from_readonly_upstream }
+    FromReadOnlyUpstream.cold_start from_read_only_upstream;
+    { ast_environment; from_read_only_upstream }
 
 
   let create_for_testing configuration source_path_code_pairs =
     let ast_environment = AstEnvironment.create_for_testing configuration source_path_code_pairs in
-    let from_readonly_upstream =
-      AstEnvironment.read_only ast_environment |> FromReadonlyUpstream.create
+    let from_read_only_upstream =
+      AstEnvironment.read_only ast_environment |> FromReadOnlyUpstream.create
     in
-    FromReadonlyUpstream.cold_start from_readonly_upstream;
-    { ast_environment; from_readonly_upstream }
+    FromReadOnlyUpstream.cold_start from_read_only_upstream;
+    { ast_environment; from_read_only_upstream }
 
 
   let update_this_and_all_preceding_environments
-      { ast_environment; from_readonly_upstream }
+      { ast_environment; from_read_only_upstream }
       ~scheduler
       artifact_paths
     =
@@ -1046,15 +1027,19 @@ module Base = struct
       ( AstEnvironment.UpdateResult.invalidated_modules update_result,
         AstEnvironment.UpdateResult.module_updates update_result )
     in
-    FromReadonlyUpstream.update from_readonly_upstream ~scheduler invalidated_modules module_updates
+    FromReadOnlyUpstream.update
+      from_read_only_upstream
+      ~scheduler
+      invalidated_modules
+      module_updates
 
 
-  let read_only { from_readonly_upstream; _ } =
-    FromReadonlyUpstream.read_only from_readonly_upstream
+  let read_only { from_read_only_upstream; _ } =
+    FromReadOnlyUpstream.read_only from_read_only_upstream
 
 
-  let configuration { from_readonly_upstream; _ } =
-    FromReadonlyUpstream.configuration from_readonly_upstream
+  let configuration { from_read_only_upstream; _ } =
+    FromReadOnlyUpstream.configuration from_read_only_upstream
 
 
   let ast_environment { ast_environment; _ } = ast_environment
@@ -1064,10 +1049,10 @@ module Base = struct
      non-SharedMemory data *)
   let load configuration =
     let ast_environment = AstEnvironment.load configuration in
-    let from_readonly_upstream =
-      AstEnvironment.read_only ast_environment |> FromReadonlyUpstream.create
+    let from_read_only_upstream =
+      AstEnvironment.read_only ast_environment |> FromReadOnlyUpstream.create
     in
-    { ast_environment; from_readonly_upstream }
+    { ast_environment; from_read_only_upstream }
 
 
   let store { ast_environment; _ } = AstEnvironment.store ast_environment

@@ -225,10 +225,6 @@ module ReadOnly = struct
         None
     in
     get_and_preprocess_source ?dependency environment qualifier
-
-
-  (* Hide the ?dependency optional argument, which is only for internal use *)
-  let get_raw_source environment qualifier = get_raw_source environment qualifier
 end
 
 module UpdateResult = struct
@@ -242,7 +238,7 @@ module UpdateResult = struct
   let module_updates { module_updates; _ } = module_updates
 end
 
-module FromReadonlyUpstream = struct
+module FromReadOnlyUpstream = struct
   module RawSourceValue = struct
     type t = (Source.t, ParserError.t) Result.t
 
@@ -469,15 +465,11 @@ module FromReadonlyUpstream = struct
     in
     let invalidated_modules =
       let fold_key registered sofar =
-        let qualifier =
-          match SharedMemoryKeys.DependencyKey.get_key registered with
-          | SharedMemoryKeys.WildcardImport qualifier -> qualifier
-          | _ ->
-              (* Due to shared-memory limitations we cannot express this restriction in the type
-                 system, but it is key to reasoning about the dependency graph *)
-              failwith "RawSources should never have non-WildCardImport dependencies"
-        in
-        RawSources.KeySet.add qualifier sofar
+        (* There can never be a true dependency that is not a WildcardImport.
+         * Other dependencies might be registered due to hash collisions - ignore them *)
+        match SharedMemoryKeys.DependencyKey.get_key registered with
+        | SharedMemoryKeys.WildcardImport qualifier -> RawSources.KeySet.add qualifier sofar
+        | _ -> sofar
       in
       SharedMemoryKeys.DependencyKey.RegisteredSet.fold
         fold_key
@@ -500,13 +492,14 @@ end
 module Base = struct
   type t = {
     module_tracker: ModuleTracker.t;
-    from_readonly_upstream: FromReadonlyUpstream.t;
+    from_read_only_upstream: FromReadOnlyUpstream.t;
   }
 
   let from_module_tracker module_tracker =
     {
       module_tracker;
-      from_readonly_upstream = ModuleTracker.read_only module_tracker |> FromReadonlyUpstream.create;
+      from_read_only_upstream =
+        ModuleTracker.read_only module_tracker |> FromReadOnlyUpstream.create;
     }
 
 
@@ -522,33 +515,33 @@ module Base = struct
 
   let store { module_tracker; _ } = ModuleTracker.Serializer.store_layouts module_tracker
 
-  let update ~scheduler { module_tracker; from_readonly_upstream } artifact_paths =
+  let update ~scheduler { module_tracker; from_read_only_upstream } artifact_paths =
     ModuleTracker.update module_tracker ~artifact_paths
-    |> FromReadonlyUpstream.process_module_updates ~scheduler from_readonly_upstream
+    |> FromReadOnlyUpstream.process_module_updates ~scheduler from_read_only_upstream
 
 
-  let clear_memory_for_tests ~scheduler { module_tracker; from_readonly_upstream } =
+  let clear_memory_for_tests ~scheduler { module_tracker; from_read_only_upstream } =
     let _ =
       ModuleTracker.source_paths module_tracker
       |> List.map ~f:ModulePath.qualifier
       |> List.map ~f:(fun qualifier -> ModuleTracker.IncrementalUpdate.Delete qualifier)
-      |> FromReadonlyUpstream.process_module_updates ~scheduler from_readonly_upstream
+      |> FromReadOnlyUpstream.process_module_updates ~scheduler from_read_only_upstream
     in
     ()
 
 
   let module_tracker { module_tracker; _ } = module_tracker
 
-  let configuration { from_readonly_upstream; _ } =
-    FromReadonlyUpstream.configuration from_readonly_upstream
+  let configuration { from_read_only_upstream; _ } =
+    FromReadOnlyUpstream.configuration from_read_only_upstream
 
 
-  let remove_sources { from_readonly_upstream; _ } qualifiers =
-    FromReadonlyUpstream.remove_sources from_readonly_upstream qualifiers
+  let remove_sources { from_read_only_upstream; _ } qualifiers =
+    FromReadOnlyUpstream.remove_sources from_read_only_upstream qualifiers
 
 
-  let read_only { from_readonly_upstream; _ } =
-    FromReadonlyUpstream.read_only from_readonly_upstream
+  let read_only { from_read_only_upstream; _ } =
+    FromReadOnlyUpstream.read_only from_read_only_upstream
 end
 
 include Base
