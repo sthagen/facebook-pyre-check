@@ -17,6 +17,10 @@ val run_for_testing : source:Source.t -> Error.t list
 
 module StatementKey = Int
 
+(* Get bindings for local identifiers. This cannot live in scope.ml because it deals with
+   qualification. *)
+val local_bindings : Scope.Scope.t -> Scope.Binding.t Identifier.Map.t
+
 type defined_locals = Scope.Binding.t Identifier.Map.t
 
 val defined_locals_at_each_statement
