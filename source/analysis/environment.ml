@@ -30,62 +30,40 @@ module UpdateResult = struct
   end
 end
 
-module type PreviousEnvironment = sig
-  module ReadOnly : ReadOnly
+module PreviousEnvironment = struct
+  module type S = sig
+    module ReadOnly : ReadOnly
 
-  module UpdateResult : UpdateResult.S
+    module UpdateResult : UpdateResult.S
 
-  type t
+    type t
 
-  val create : Configuration.Analysis.t -> t
+    val create : Configuration.Analysis.t -> t
 
-  val create_for_testing : Configuration.Analysis.t -> (Ast.ModulePath.t * string) list -> t
+    val create_for_testing : Configuration.Analysis.t -> (Ast.ModulePath.t * string) list -> t
 
-  val ast_environment : t -> AstEnvironment.t
+    val ast_environment : t -> AstEnvironment.t
 
-  val configuration : t -> Configuration.Analysis.t
+    val configuration : t -> Configuration.Analysis.t
 
-  val read_only : t -> ReadOnly.t
+    val read_only : t -> ReadOnly.t
 
-  val update_this_and_all_preceding_environments
-    :  t ->
-    scheduler:Scheduler.t ->
-    ArtifactPath.t list ->
-    UpdateResult.t
+    val update_this_and_all_preceding_environments
+      :  t ->
+      scheduler:Scheduler.t ->
+      ArtifactPath.t list ->
+      UpdateResult.t
 
-  val store : t -> unit
+    val store : t -> unit
 
-  val load : Configuration.Analysis.t -> t
+    val load : Configuration.Analysis.t -> t
+  end
 end
 
 module type S = sig
-  module ReadOnly : ReadOnly
+  include PreviousEnvironment.S
 
-  module PreviousEnvironment : PreviousEnvironment
-
-  module UpdateResult : UpdateResult.S
-
-  type t
-
-  val create : Configuration.Analysis.t -> t
-
-  val create_for_testing : Configuration.Analysis.t -> (Ast.ModulePath.t * string) list -> t
-
-  val ast_environment : t -> AstEnvironment.t
-
-  val configuration : t -> Configuration.Analysis.t
-
-  val read_only : t -> ReadOnly.t
-
-  val update_this_and_all_preceding_environments
-    :  t ->
-    scheduler:Scheduler.t ->
-    ArtifactPath.t list ->
-    UpdateResult.t
-
-  val store : t -> unit
-
-  val load : Configuration.Analysis.t -> t
+  module PreviousEnvironment : PreviousEnvironment.S
 
   module Testing : sig
     module ReadOnly : sig
@@ -100,7 +78,7 @@ end
 
 module EnvironmentTable = struct
   module type In = sig
-    module PreviousEnvironment : PreviousEnvironment
+    module PreviousEnvironment : PreviousEnvironment.S
 
     module Key : Memory.KeyType
 
@@ -271,7 +249,26 @@ module EnvironmentTable = struct
         type t = In.trigger [@@deriving sexp, compare]
       end)
 
-      let update_only_this_environment ~scheduler { table; upstream_environment } upstream_update =
+      let compute_trigger_map upstream_triggered_dependencies =
+        List.fold
+          upstream_triggered_dependencies
+          ~init:TriggerMap.empty
+          ~f:(fun triggers upstream_dependencies ->
+            SharedMemoryKeys.DependencyKey.RegisteredSet.fold
+              (fun dependency triggers ->
+                match
+                  In.filter_upstream_dependency (SharedMemoryKeys.DependencyKey.get_key dependency)
+                with
+                | Some trigger -> (
+                    match TriggerMap.add triggers ~key:trigger ~data:dependency with
+                    | `Duplicate -> triggers
+                    | `Ok updated -> updated)
+                | None -> triggers)
+              upstream_dependencies
+              triggers)
+
+
+      let update_only_this_environment ~scheduler { table; upstream_environment } trigger_map =
         Log.log ~section:`Environment "Updating %s Environment" In.Value.description;
         let update ~names_to_update () =
           let register () =
@@ -301,24 +298,7 @@ module EnvironmentTable = struct
         let triggered_dependencies =
           let name = Format.sprintf "TableUpdate(%s)" In.Value.description in
           Profiling.track_duration_and_shared_memory_with_dynamic_tags name ~f:(fun _ ->
-              let names_to_update =
-                In.PreviousEnvironment.UpdateResult.all_triggered_dependencies upstream_update
-                |> List.fold ~init:TriggerMap.empty ~f:(fun triggers upstream_dependencies ->
-                       SharedMemoryKeys.DependencyKey.RegisteredSet.fold
-                         (fun dependency triggers ->
-                           match
-                             In.filter_upstream_dependency
-                               (SharedMemoryKeys.DependencyKey.get_key dependency)
-                           with
-                           | Some trigger -> (
-                               match TriggerMap.add triggers ~key:trigger ~data:dependency with
-                               | `Duplicate -> triggers
-                               | `Ok updated -> updated)
-                           | None -> triggers)
-                         upstream_dependencies
-                         triggers)
-                |> Map.to_alist
-              in
+              let names_to_update = Map.to_alist trigger_map in
               let (), triggered_dependencies =
                 let keys =
                   List.map names_to_update ~f:fst
@@ -346,7 +326,7 @@ module EnvironmentTable = struct
               in
               { Profiling.result = triggered_dependencies; tags })
         in
-        { UpdateResult.triggered_dependencies; upstream = upstream_update }
+        triggered_dependencies
     end
 
     module Base = struct
@@ -389,11 +369,18 @@ module EnvironmentTable = struct
           ~scheduler
           artifact_paths
         =
-        In.PreviousEnvironment.update_this_and_all_preceding_environments
-          upstream_environment
-          ~scheduler
-          artifact_paths
-        |> FromReadOnlyUpstream.update_only_this_environment from_read_only_upstream ~scheduler
+        let upstream_update =
+          In.PreviousEnvironment.update_this_and_all_preceding_environments
+            upstream_environment
+            ~scheduler
+            artifact_paths
+        in
+        let triggered_dependencies =
+          In.PreviousEnvironment.UpdateResult.all_triggered_dependencies upstream_update
+          |> FromReadOnlyUpstream.compute_trigger_map
+          |> FromReadOnlyUpstream.update_only_this_environment from_read_only_upstream ~scheduler
+        in
+        { UpdateResult.triggered_dependencies; upstream = upstream_update }
 
 
       (* All SharedMemory tables are populated and stored in separate, imperative steps that must be
