@@ -2743,16 +2743,16 @@ module ScratchProject = struct
     in
     let type_environment =
       if in_memory then
-        let to_source_path_code_pair (relative, content) ~is_external =
+        let to_module_path_code_pair (relative, content) ~is_external =
           let code = trim_extra_indentation content in
-          let source_path = ModulePath.create_for_testing ~relative ~is_external ~priority:1 in
-          source_path, code
+          let module_path = ModulePath.create_for_testing ~relative ~is_external ~priority:1 in
+          module_path, code
         in
-        let source_path_code_pairs =
-          List.map sources ~f:(to_source_path_code_pair ~is_external:false)
-          @ List.map external_sources ~f:(to_source_path_code_pair ~is_external:true)
+        let module_path_code_pairs =
+          List.map sources ~f:(to_module_path_code_pair ~is_external:false)
+          @ List.map external_sources ~f:(to_module_path_code_pair ~is_external:true)
         in
-        TypeEnvironment.create_for_testing configuration source_path_code_pairs
+        TypeEnvironment.create_for_testing configuration module_path_code_pairs
       else
         let add_source ~root (relative, content) =
           let content = trim_extra_indentation content in
@@ -2817,9 +2817,9 @@ module ScratchProject = struct
 
   let configuration_of { configuration; _ } = configuration
 
-  let source_paths_of project = module_tracker project |> ModuleTracker.ReadOnly.source_paths
+  let module_paths_of project = module_tracker project |> ModuleTracker.ReadOnly.module_paths
 
-  let qualifiers_of project = source_paths_of project |> List.map ~f:ModulePath.qualifier
+  let qualifiers_of project = module_paths_of project |> List.map ~f:ModulePath.qualifier
 
   let project_qualifiers project =
     ast_environment project |> AstEnvironment.ReadOnly.project_qualifiers
@@ -2844,7 +2844,7 @@ module ScratchProject = struct
   let build_type_environment ?call_graph_builder ({ type_environment; _ } as project) =
     let sources = get_project_sources project in
     let configuration = configuration_of project in
-    List.map sources ~f:(fun { Source.source_path = { ModulePath.qualifier; _ }; _ } -> qualifier)
+    List.map sources ~f:(fun { Source.module_path = { ModulePath.qualifier; _ }; _ } -> qualifier)
     |> TypeEnvironment.populate_for_modules
          ~scheduler:(Scheduler.create_sequential ())
          ~configuration
@@ -2858,7 +2858,7 @@ module ScratchProject = struct
     let errors =
       List.map
         built_type_environment.sources
-        ~f:(fun { Source.source_path = { ModulePath.qualifier; _ }; _ } -> qualifier)
+        ~f:(fun { Source.module_path = { ModulePath.qualifier; _ }; _ } -> qualifier)
       |> Postprocessing.run
            ~scheduler:(Scheduler.create_sequential ())
            ~configuration:(configuration_of project)
@@ -2965,7 +2965,7 @@ let assert_errors
       in
       let configuration = { configuration with debug; strict } in
       let source =
-        List.find_exn sources ~f:(fun { Source.source_path = { ModulePath.relative; _ }; _ } ->
+        List.find_exn sources ~f:(fun { Source.module_path = { ModulePath.relative; _ }; _ } ->
             String.equal handle relative)
       in
       check ~configuration ~environment ~source
