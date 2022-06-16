@@ -241,9 +241,12 @@ class PartialConfiguration:
                 hover_enabled=arguments.enable_hover,
                 go_to_definition_enabled=arguments.enable_go_to_definition,
                 find_symbols_enabled=arguments.enable_find_symbols,
+                find_all_references_enabled=arguments.enable_find_all_references,
             )
             if arguments.enable_hover is not None
             or arguments.enable_go_to_definition is not None
+            or arguments.enable_find_symbols is not None
+            or arguments.enable_find_all_references is not None
             else None
         )
         return PartialConfiguration(
@@ -984,6 +987,11 @@ class Configuration:
         if self.ide_features is None:
             return ide_features_module.IdeFeatures.DEFAULT_FIND_SYMBOLS_ENABLED
         return self.ide_features.is_find_symbols_enabled()
+
+    def is_find_all_references_enabled(self) -> bool:
+        if self.ide_features is None:
+            return ide_features_module.IdeFeatures.DEFAULT_FIND_ALL_REFERENCES_ENABLED
+        return self.ide_features.is_find_all_references_enabled()
 
     def get_valid_extension_suffixes(self) -> List[str]:
         vaild_extensions = []
