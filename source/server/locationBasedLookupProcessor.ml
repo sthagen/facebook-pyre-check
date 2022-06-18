@@ -12,8 +12,11 @@ open Analysis
 type error_reason =
   | StubShadowing
   | FileNotFound
+[@@deriving sexp]
 
 type types_by_location = ((Location.t * Type.t) list, error_reason) Result.t
+
+type coverage_by_location = (LocationBasedLookup.coverage_for_path, error_reason) Result.t
 
 let get_lookup ~configuration ~build_system ~environment path =
   let generate_lookup_for_existent_path { ModulePath.qualifier; _ } =
@@ -47,5 +50,12 @@ let get_lookup ~configuration ~build_system ~environment path =
 let find_all_resolved_types_for_path ~environment ~build_system ~configuration path =
   let open Result in
   get_lookup ~configuration ~environment ~build_system path
-  >>| LocationBasedLookup.get_all_resolved_types
+  >>| LocationBasedLookup.get_all_nodes_and_coverage_data
+  >>| List.map ~f:(fun (location, { LocationBasedLookup.type_; expression = _ }) -> location, type_)
   >>| List.sort ~compare:[%compare: Location.t * Type.t]
+
+
+let find_expression_level_coverage_for_path ~environment ~build_system ~configuration path =
+  let open Result in
+  get_lookup ~configuration ~environment ~build_system path
+  >>| LocationBasedLookup.get_expression_level_coverage

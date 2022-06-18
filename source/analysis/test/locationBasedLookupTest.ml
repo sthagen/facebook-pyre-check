@@ -36,7 +36,9 @@ let assert_annotation_list ~lookup expected =
     ~printer:(String.concat ~sep:", ")
     ~pp_diff:(diff ~print:list_diff)
     expected
-    (LocationBasedLookup.get_all_resolved_types lookup
+    (LocationBasedLookup.get_all_nodes_and_coverage_data lookup
+    |> List.map ~f:(fun (location, { LocationBasedLookup.type_; expression = _ }) ->
+           location, type_)
     |> List.sort ~compare:[%compare: Location.t * Type.t]
     |> List.map ~f:(fun (key, data) -> Format.asprintf "%s/%a" (show_location key) Type.pp data))
 
@@ -45,9 +47,9 @@ let assert_annotation ~lookup ~position ~annotation =
   assert_equal
     ~printer:(Option.value ~default:"(none)")
     annotation
-    (LocationBasedLookup.get_resolved_type lookup ~position
-    >>| fun (location, annotation) ->
-    Format.asprintf "%s/%a" (show_location location) Type.pp annotation)
+    (LocationBasedLookup.get_coverage_data lookup ~position
+    >>| fun (location, { LocationBasedLookup.type_; _ }) ->
+    Format.asprintf "%s/%a" (show_location location) Type.pp type_)
 
 
 let test_lookup_out_of_bounds_location context =
@@ -69,7 +71,7 @@ let test_lookup_out_of_bounds_location context =
         List.map indices ~f:(fun index_two -> index_one, index_two))
   in
   let test_one (line, column) =
-    LocationBasedLookup.get_resolved_type lookup ~position:{ Location.line; column } |> ignore
+    LocationBasedLookup.get_coverage_data lookup ~position:{ Location.line; column } |> ignore
   in
   List.iter indices_product ~f:test_one
 
@@ -116,7 +118,7 @@ let test_lookup_pick_narrowest context =
 let test_narrowest_match _ =
   let open LocationBasedLookup in
   let assert_narrowest expressions expected =
-    let narrowest_matching_expression =
+    let narrowest_matching_expression expressions =
       expressions
       |> List.map ~f:(fun (expression, location) ->
              {
@@ -134,15 +136,20 @@ let test_narrowest_match _ =
       | { symbol_with_definition = Expression expression; _ } -> expression
       | _ -> failwith "Expected expression"
     in
-    assert_equal
-      ~cmp:(fun left right ->
-        match left, right with
-        | Some left, Some right -> location_insensitive_compare left right = 0
-        | None, None -> true
-        | _ -> false)
-      ~printer:[%show: Expression.t option]
-      (expected >>| parse_single_expression)
-      narrowest_matching_expression
+    let assert_narrowest_matching_expression expressions =
+      assert_equal
+        ~cmp:(fun left right ->
+          match left, right with
+          | Some left, Some right -> location_insensitive_compare left right = 0
+          | None, None -> true
+          | _ -> false)
+        ~printer:[%show: Expression.t option]
+        (expected >>| parse_single_expression)
+        (narrowest_matching_expression expressions)
+    in
+    assert_narrowest_matching_expression expressions;
+    (* The narrowest match should be insensitive to the list order. *)
+    assert_narrowest_matching_expression (List.rev expressions)
   in
   assert_narrowest
     [
@@ -162,13 +169,16 @@ let test_narrowest_match _ =
       "my_dictionary", "5:2-5:15";
     ]
     (Some "my_dictionary");
-  assert_narrowest
-    [
-      "my_dictionary['foo']", "5:2-5:24";
-      "my_dictionary", "5:2-5:15";
-      "my_dictionary.__getitem__", "5:2-5:15";
-    ]
-    (Some "my_dictionary");
+  (* For if-statements, the assertion `if foo.bar:` is desugared into two assert statements:
+
+     - one for the if-branch: `assert foo.bar`
+
+     - one for the else-branch: `assert (not foo.bar)`.
+
+     These assertions have the same location range. Pick the former as the narrowest spanning
+     symbol. Otherwise, we would end up looking for the definition of the non-reference `not
+     foo.bar`, and fail. *)
+  assert_narrowest ["not foo.bar", "5:2-5:24"; "foo.bar", "5:2-5:24"] (Some "foo.bar");
   ()
 
 
@@ -693,6 +703,99 @@ let test_find_narrowest_spanning_symbol context =
          cfg_data = { define_name = !&"test.foo"; node_id = 4; statement_index = 0 };
          use_postcondition_info = false;
        });
+  assert_narrowest_expression
+    ~source:
+      {|
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class Foo:
+          my_attribute: int
+
+        def main(foo: Foo) -> None:
+          print(foo.my_attribute)
+        #              ^-- CURSOR
+    |}
+    (Some
+       {
+         symbol_with_definition =
+           Expression
+             (Expression.Name
+                (Name.Attribute
+                   {
+                     base =
+                       Node.create_with_default_location
+                         (Expression.Name (Name.Identifier "$parameter$foo"));
+                     attribute = "my_attribute";
+                     special = false;
+                   })
+             |> Node.create_with_default_location);
+         cfg_data = { define_name = !&"test.main"; node_id = 4; statement_index = 0 };
+         use_postcondition_info = false;
+       });
+  assert_narrowest_expression
+    ~source:
+      {|
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class Foo:
+          my_attribute: int
+
+        def main(foo: Foo) -> None:
+          if foo.my_attribute:
+            #        ^-- CURSOR
+            print("hello")
+    |}
+    (Some
+       {
+         symbol_with_definition =
+           Expression
+             (Expression.Name
+                (Name.Attribute
+                   {
+                     base =
+                       Node.create_with_default_location
+                         (Expression.Name (Name.Identifier "$parameter$foo"));
+                     attribute = "my_attribute";
+                     special = false;
+                   })
+             |> Node.create_with_default_location);
+         cfg_data = { define_name = !&"test.main"; node_id = 7; statement_index = 0 };
+         use_postcondition_info = false;
+       });
+  assert_narrowest_expression
+    ~source:
+      {|
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class Foo:
+          my_attribute: int
+          other_attribute: str
+
+        def main(foo: Foo) -> None:
+          if foo.my_attribute and not foo.other_attribute:
+            #                               ^-- CURSOR
+            print("hello")
+    |}
+    (Some
+       {
+         symbol_with_definition =
+           Expression
+             (Expression.Name
+                (Name.Attribute
+                   {
+                     base =
+                       Node.create_with_default_location
+                         (Expression.Name (Name.Identifier "$parameter$foo"));
+                     attribute = "other_attribute";
+                     special = false;
+                   })
+             |> Node.create_with_default_location);
+         cfg_data = { define_name = !&"test.main"; node_id = 7; statement_index = 0 };
+         use_postcondition_info = false;
+       });
   ()
 
 
@@ -980,6 +1083,66 @@ let test_resolve_definition_for_symbol context =
       use_postcondition_info = false;
     }
     (Some "test:4:2-4:37");
+  assert_resolved_definition
+    ~source:
+      {|
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class Foo:
+          my_attribute: int
+
+        def main(foo: Foo) -> None:
+          print(foo.my_attribute)
+    |}
+    {
+      symbol_with_definition =
+        Expression
+          (Expression.Name
+             (Name.Attribute
+                {
+                  base =
+                    Node.create_with_default_location
+                      (Expression.Name (Name.Identifier "$parameter$foo"));
+                  attribute = "my_attribute";
+                  special = false;
+                })
+          |> Node.create_with_default_location);
+      cfg_data = { define_name = !&"test.main"; node_id = 4; statement_index = 0 };
+      use_postcondition_info = false;
+    }
+    (Some "test:6:2-6:19");
+  assert_resolved_definition
+    ~source:
+      {|
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class Foo:
+          my_attribute: int
+
+        def main(foo: Foo) -> None:
+          if foo.my_attribute:
+            #        ^-- CURSOR
+            print("hello")
+    |}
+    {
+      symbol_with_definition =
+        Expression
+          (Expression.Name
+             (Name.Attribute
+                {
+                  base =
+                    Node.create_with_default_location
+                      (Expression.Name (Name.Identifier "$parameter$foo"));
+                  attribute = "my_attribute";
+                  special = false;
+                })
+          |> Node.create_with_default_location);
+      cfg_data = { define_name = !&"test.main"; node_id = 7; statement_index = 0 };
+      use_postcondition_info = false;
+    }
+    (Some "test:6:2-6:19");
   ()
 
 
@@ -1814,6 +1977,414 @@ let test_classify_coverage_data _ =
          ~annotation:Type.bytes
          ())
     None;
+  assert_coverage_gap_callable
+    ~expression:"foo"
+    ~type_:(Type.Callable.create ~parameters:(Type.Callable.Defined []) ~annotation:Type.bytes ())
+    None;
+  ()
+
+
+let test_lookup_expression context =
+  let assert_coverage_data ~context ~source expected_coverage_gap_list =
+    let coverage_data_lookup = generate_lookup ~context source in
+    let lookup_list = LocationBasedLookup.get_all_nodes_and_coverage_data coverage_data_lookup in
+    let coverage_data_list = List.map ~f:(fun (_, coverage_data) -> coverage_data) lookup_list in
+    let actual_tuple_list =
+      List.map
+        ~f:(fun { LocationBasedLookup.expression; type_ } -> expression, type_)
+        coverage_data_list
+    in
+    assert_equal
+      ~printer:(fun x -> [%sexp_of: (Expression.t option * Type.t) list] x |> Sexp.to_string_hum)
+      ~cmp:(fun left right ->
+        let compare_coverage_data (left_expression, left_type) (right_expression, right_type) =
+          let same =
+            Option.compare location_insensitive_compare left_expression right_expression = 0
+            && Type.equal left_type right_type
+          in
+          match same with
+          | true -> 0
+          | false -> -1
+        in
+        List.compare compare_coverage_data left right = 0)
+      expected_coverage_gap_list
+      (List.sort actual_tuple_list ~compare:[%compare: Expression.t option * Type.t])
+  in
+  assert_coverage_data
+    ~context
+    ~source:{|
+      def foo(x) -> None:
+        print(x + 1) |}
+    [
+      ( Some
+          (Expression.Name
+             (Name.Attribute
+                {
+                  base =
+                    Node.create_with_default_location (Expression.Name (Name.Identifier "test"));
+                  attribute = "foo";
+                  special = false;
+                })
+          |> Node.create_with_default_location),
+        Type.Callable
+          {
+            kind = Named (Reference.create "test.foo");
+            implementation =
+              {
+                parameters =
+                  Type.Callable.Defined
+                    [
+                      Type.Callable.Parameter.Named
+                        { name = "$parameter$x"; annotation = Type.Top; default = false };
+                    ];
+                annotation = NoneType;
+              };
+            overloads = [];
+          } );
+      ( Some (Expression.Name (Name.Identifier "$parameter$x") |> Node.create_with_default_location),
+        Type.Any );
+      Some (Expression.Constant Constant.NoneLiteral |> Node.create_with_default_location), NoneType;
+      ( Some (Expression.Name (Name.Identifier "print") |> Node.create_with_default_location),
+        Type.Callable
+          {
+            kind = Named (Reference.create "print");
+            implementation =
+              {
+                parameters =
+                  Type.Callable.Defined
+                    [
+                      Type.Callable.Parameter.Variable (Concrete Type.object_primitive);
+                      Type.Callable.Parameter.KeywordOnly
+                        { name = "$parameter$sep"; annotation = Type.Top; default = true };
+                      Type.Callable.Parameter.KeywordOnly
+                        { name = "$parameter$end"; annotation = Type.Top; default = true };
+                      Type.Callable.Parameter.KeywordOnly
+                        {
+                          name = "$parameter$file";
+                          annotation = Type.union [Type.NoneType; Type.Primitive "_Writer"];
+                          default = true;
+                        };
+                      Type.Callable.Parameter.KeywordOnly
+                        {
+                          name = "$parameter$flush";
+                          annotation = Type.Primitive "bool";
+                          default = true;
+                        };
+                    ];
+                annotation = NoneType;
+              };
+            overloads = [];
+          } );
+      ( Some
+          (Expression.Call
+             {
+               callee =
+                 Expression.Name (Name.Identifier "print") |> Node.create_with_default_location;
+               arguments =
+                 [
+                   {
+                     name = None;
+                     value =
+                       Expression.Call
+                         {
+                           callee =
+                             Expression.Name
+                               (Name.Attribute
+                                  {
+                                    base =
+                                      Node.create_with_default_location
+                                        (Expression.Name (Name.Identifier "$parameter$x"));
+                                    attribute = "__add__";
+                                    special = true;
+                                  })
+                             |> Node.create_with_default_location;
+                           arguments =
+                             [
+                               {
+                                 name = None;
+                                 value =
+                                   Expression.Constant (Integer 1)
+                                   |> Node.create_with_default_location;
+                               };
+                             ];
+                         }
+                       |> Node.create_with_default_location;
+                   };
+                 ];
+             }
+          |> Node.create_with_default_location),
+        NoneType );
+      ( Some (Expression.Name (Name.Identifier "$parameter$x") |> Node.create_with_default_location),
+        Type.Any );
+      ( Some
+          (Expression.Call
+             {
+               callee =
+                 Expression.Name
+                   (Name.Attribute
+                      {
+                        base =
+                          Node.create_with_default_location
+                            (Expression.Name (Name.Identifier "$parameter$x"));
+                        attribute = "__add__";
+                        special = true;
+                      })
+                 |> Node.create_with_default_location;
+               arguments =
+                 [
+                   {
+                     name = None;
+                     value = Expression.Constant (Integer 1) |> Node.create_with_default_location;
+                   };
+                 ];
+             }
+          |> Node.create_with_default_location),
+        Type.Any );
+      ( Some (Expression.Constant (Integer 1) |> Node.create_with_default_location),
+        Type.literal_integer 1 );
+    ];
+  ()
+
+
+let test_coverage_gaps_in_module context =
+  let assert_coverage_gaps_in_module ~context ~source expected =
+    let lookup = generate_lookup ~context source in
+    let all_nodes_and_coverage = LocationBasedLookup.get_all_nodes_and_coverage_data lookup in
+    let coverage_data = List.map ~f:(fun (_, coverage) -> coverage) all_nodes_and_coverage in
+    let actual_coverage_gaps = LocationBasedLookup.coverage_gaps_in_module coverage_data in
+    let equal_coverage_gap left right =
+      let {
+        LocationBasedLookup.coverage_data = { expression = left_expression; type_ = left_type };
+        reason = left_reason;
+      }
+        =
+        left
+      in
+      let {
+        LocationBasedLookup.coverage_data =
+          { LocationBasedLookup.expression = right_expression; type_ = right_type };
+        reason = right_reason;
+      }
+        =
+        right
+      in
+      let option_insensitive_compare left right =
+        match left, right with
+        | Some left, Some right -> location_insensitive_compare left right = 0
+        | None, None -> true
+        | _ -> false
+      in
+      option_insensitive_compare left_expression right_expression
+      && Type.equal left_type right_type
+      && [%compare.equal: LocationBasedLookup.reason] left_reason right_reason
+    in
+    assert_equal
+      ~printer:(fun x -> [%sexp_of: LocationBasedLookup.coverage_gap list] x |> Sexp.to_string_hum)
+      ~cmp:(List.equal equal_coverage_gap)
+      expected
+      actual_coverage_gaps
+  in
+  assert_coverage_gaps_in_module
+    ~context
+    ~source:{|
+      def foo(x) -> None:
+          print(x+1)
+    |}
+    [
+      {
+        LocationBasedLookup.coverage_data =
+          {
+            expression =
+              Some
+                (Expression.Name (Name.Identifier "$parameter$x")
+                |> Node.create_with_default_location);
+            type_ = Type.Any;
+          };
+        reason = TypeIsAny;
+      };
+      {
+        LocationBasedLookup.coverage_data =
+          {
+            expression =
+              Some
+                (Expression.Name (Name.Identifier "$parameter$x")
+                |> Node.create_with_default_location);
+            type_ = Type.Any;
+          };
+        reason = TypeIsAny;
+      };
+      {
+        LocationBasedLookup.coverage_data =
+          {
+            expression =
+              Some
+                (Expression.Call
+                   {
+                     callee =
+                       Expression.Name
+                         (Name.Attribute
+                            {
+                              base =
+                                Node.create_with_default_location
+                                  (Expression.Name (Name.Identifier "$parameter$x"));
+                              attribute = "__add__";
+                              special = true;
+                            })
+                       |> Node.create_with_default_location;
+                     arguments =
+                       [
+                         {
+                           name = None;
+                           value =
+                             Expression.Constant (Integer 1) |> Node.create_with_default_location;
+                         };
+                       ];
+                   }
+                |> Node.create_with_default_location);
+            type_ = Type.Any;
+          };
+        reason = TypeIsAny;
+      };
+      {
+        LocationBasedLookup.coverage_data =
+          {
+            expression =
+              Some
+                (Expression.Name
+                   (Name.Attribute
+                      {
+                        base =
+                          Node.create_with_default_location
+                            (Expression.Name (Name.Identifier "test"));
+                        attribute = "foo";
+                        special = false;
+                      })
+                |> Node.create_with_default_location);
+            type_ =
+              Type.Callable
+                {
+                  kind = Type.Callable.Named (Reference.create "test.foo");
+                  implementation =
+                    {
+                      annotation = NoneType;
+                      parameters =
+                        Type.Callable.Defined
+                          [
+                            Type.Callable.Parameter.Named
+                              { name = "$parameter$x"; annotation = Type.Top; default = false };
+                          ];
+                    };
+                  overloads = [];
+                };
+          };
+        reason = CallableParameterIsUnknownOrAny;
+      };
+    ];
+  assert_coverage_gaps_in_module
+    ~context
+    ~source:{|
+      def foo(x:int) -> int:
+          return x
+    |}
+    [];
+  assert_coverage_gaps_in_module ~context ~source:{|
+      y: int = 5
+    |} [];
+  assert_coverage_gaps_in_module
+    ~context
+    ~source:{|
+      y: Any
+    |}
+    [
+      {
+        LocationBasedLookup.coverage_data =
+          {
+            expression =
+              Some (Expression.Constant Constant.Ellipsis |> Node.create_with_default_location);
+            type_ = Type.Any;
+          };
+        reason = TypeIsAny;
+      };
+      {
+        LocationBasedLookup.coverage_data =
+          {
+            expression =
+              Some
+                (Expression.Name (Name.Identifier "$local_test$y")
+                |> Node.create_with_default_location);
+            type_ = Type.Any;
+          };
+        reason = TypeIsAny;
+      };
+    ];
+  assert_coverage_gaps_in_module ~context ~source:{|
+      a: list[int] = []
+    |} [];
+  assert_coverage_gaps_in_module ~context ~source:{|
+      a: set[int] = set()
+    |} [];
+  assert_coverage_gaps_in_module ~context ~source:{|
+      a: dict[int,int] = dict()
+    |} [];
+  assert_coverage_gaps_in_module
+    ~context
+    ~source:{|
+      a = []
+    |}
+    [
+      {
+        LocationBasedLookup.coverage_data =
+          {
+            expression =
+              Some
+                (Expression.Name (Name.Identifier "$local_test$a")
+                |> Node.create_with_default_location);
+            type_ = Type.Parametric { name = "list"; parameters = [Type.Parameter.Single Type.Any] };
+          };
+        reason = ContainerParameterIsAny;
+      };
+    ];
+  assert_coverage_gaps_in_module
+    ~context
+    ~source:{|
+      a = set()
+    |}
+    [
+      {
+        LocationBasedLookup.coverage_data =
+          {
+            expression =
+              Some
+                (Expression.Name (Name.Identifier "$local_test$a")
+                |> Node.create_with_default_location);
+            type_ = Type.Parametric { name = "set"; parameters = [Type.Parameter.Single Type.Any] };
+          };
+        reason = ContainerParameterIsAny;
+      };
+    ];
+  assert_coverage_gaps_in_module
+    ~context
+    ~source:{|
+      a = dict()
+    |}
+    [
+      {
+        LocationBasedLookup.coverage_data =
+          {
+            expression =
+              Some
+                (Expression.Name (Name.Identifier "$local_test$a")
+                |> Node.create_with_default_location);
+            type_ =
+              Type.Parametric
+                {
+                  name = "dict";
+                  parameters = [Type.Parameter.Single Type.Any; Type.Parameter.Single Type.Any];
+                };
+          };
+        reason = ContainerParameterIsAny;
+      };
+    ];
   ()
 
 
@@ -1837,5 +2408,7 @@ let () =
          "lookup_union_type_resolution" >:: test_lookup_union_type_resolution;
          "lookup_unknown_accesses" >:: test_lookup_unknown_accesses;
          "classify_coverage_data" >:: test_classify_coverage_data;
+         "lookup_expression" >:: test_lookup_expression;
+         "coverage_gaps_in_module" >:: test_coverage_gaps_in_module;
        ]
   |> Test.run

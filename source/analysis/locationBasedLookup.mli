@@ -7,16 +7,47 @@
 
 open Ast
 
-type resolved_type_lookup
+type coverage_data = {
+  expression: Expression.t option;
+  type_: Type.t;
+}
+[@@deriving compare, sexp, show, hash, to_yojson]
 
-val create_of_module : TypeEnvironment.ReadOnly.t -> Reference.t -> resolved_type_lookup
+type reason =
+  | TypeIsAny
+  | ContainerParameterIsAny
+  | CallableParameterIsUnknownOrAny
+[@@deriving compare, sexp, show, hash, to_yojson]
 
-val get_resolved_type
-  :  resolved_type_lookup ->
+type coverage_gap = {
+  coverage_data: coverage_data;
+  reason: reason;
+}
+[@@deriving compare, sexp, show, hash, to_yojson]
+
+type coverage_gap_by_location = {
+  location: Location.t;
+  type_: Type.t;
+  reason: reason;
+}
+[@@deriving compare, sexp, show, hash, to_yojson]
+
+type coverage_for_path = {
+  total_expressions: int;
+  coverage_gaps: coverage_gap_by_location list;
+}
+[@@deriving compare, sexp, show, hash, to_yojson]
+
+type coverage_data_lookup
+
+val create_of_module : TypeEnvironment.ReadOnly.t -> Reference.t -> coverage_data_lookup
+
+val get_coverage_data
+  :  coverage_data_lookup ->
   position:Location.position ->
-  (Location.t * Type.t) option
+  (Location.t * coverage_data) option
 
-val get_all_resolved_types : resolved_type_lookup -> (Location.t * Type.t) list
+val get_all_nodes_and_coverage_data : coverage_data_lookup -> (Location.t * coverage_data) list
 
 type symbol_with_definition =
   | Expression of Expression.t
@@ -62,22 +93,8 @@ val location_of_definition
   Location.position ->
   Location.WithModule.t option
 
-type reason =
-  | TypeIsAny
-  | ContainerParameterIsAny
-  | CallableParameterIsUnknownOrAny
-[@@deriving compare, sexp, show, hash]
-
-type coverage_data = {
-  expression: Expression.t option;
-  type_: Type.t;
-}
-[@@deriving compare, sexp, show, hash]
-
-type coverage_gap = {
-  coverage_data: coverage_data;
-  reason: reason;
-}
-[@@deriving compare, sexp, show, hash]
-
 val classify_coverage_data : coverage_data -> coverage_gap option
+
+val coverage_gaps_in_module : coverage_data list -> coverage_gap list
+
+val get_expression_level_coverage : coverage_data_lookup -> coverage_for_path

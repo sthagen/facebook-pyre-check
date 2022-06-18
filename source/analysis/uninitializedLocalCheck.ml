@@ -11,9 +11,6 @@ open Pyre
 open Statement
 open Expression
 module Error = AnalysisError
-
-let name = "UninitializedLocal"
-
 module NameAccessSet = Set.Make (Define.NameAccess)
 
 (** Collect accesses to names within expressions. Within lambdas and comprehensions, collect
@@ -336,12 +333,14 @@ let errors ~qualifier ~define defined_locals_at_each_statement =
   |> List.map ~f:emit_error
 
 
-let run_on_define ~qualifier define =
+let check_define ~qualifier define =
   defined_locals_at_each_statement define |> errors ~qualifier ~define
 
 
-let run_for_testing ~source:({ Source.module_path = { ModulePath.qualifier; _ }; _ } as source) =
+let check_module_for_testing
+    ~source:({ Source.module_path = { ModulePath.qualifier; _ }; _ } as source)
+  =
   source
   |> Preprocessing.defines ~include_toplevels:false
-  |> List.map ~f:(run_on_define ~qualifier)
+  |> List.map ~f:(check_define ~qualifier)
   |> List.concat

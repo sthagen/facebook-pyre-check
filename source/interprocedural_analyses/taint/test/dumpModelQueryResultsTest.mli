@@ -5,8 +5,4 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-type t [@@deriving show, eq, compare, hash]
-
-val create : PyrePath.t -> t
-
-val raw : t -> PyrePath.t
+(* Blank to catch unused tests *)
