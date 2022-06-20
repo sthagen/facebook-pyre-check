@@ -88,7 +88,7 @@ let join_parse_result
     }
   =
   {
-    ModelParser.models = Registry.merge models_left models_right;
+    ModelParser.models = Registry.merge ~join:Model.join_user_models models_left models_right;
     queries = List.rev_append queries_right queries_left;
     errors = List.rev_append errors_right errors_left;
     skip_overrides = Set.union skip_overrides_left skip_overrides_right;
@@ -194,7 +194,12 @@ let parse_models_and_queries_from_configuration
         raise (ModelParser.ModelVerificationError errors)
   in
   let class_models = ClassModels.infer ~environment ~user_models in
-  { ModelParser.models = Registry.merge user_models class_models; queries; skip_overrides; errors }
+  {
+    ModelParser.models = Registry.merge ~join:Model.join_user_models user_models class_models;
+    queries;
+    skip_overrides;
+    errors;
+  }
 
 
 let initialize_models ~scheduler ~static_analysis_configuration ~environment ~callables ~stubs =
@@ -229,16 +234,17 @@ let initialize_models ~scheduler ~static_analysis_configuration ~environment ~ca
             ~taint_configuration
             queries
         in
-        (match taint_configuration.dump_model_query_results_path with
-        | Some path ->
-            Log.warning "Emitting the model query results to `%s`" (PyrePath.absolute path);
-            let content = TaintModelQuery.ModelQuery.DumpModelQueryResults.dump ~models_and_names in
-            path |> File.create ~content |> File.write
-        | None -> ());
+        let () =
+          match taint_configuration.dump_model_query_results_path with
+          | Some path ->
+              TaintModelQuery.ModelQuery.DumpModelQueryResults.dump_to_file ~models_and_names ~path
+          | None -> ()
+        in
         let models =
           models_and_names
           |> TaintModelQuery.ModelQuery.ModelQueryRegistryMap.get_registry
-          |> Registry.merge models
+               ~model_join:Model.join_user_models
+          |> Registry.merge ~join:Model.join_user_models models
         in
         Statistics.performance
           ~name:"Generated models from model queries"

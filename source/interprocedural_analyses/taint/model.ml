@@ -615,6 +615,33 @@ let should_externalize { forward; backward; sanitizers; _ } =
   || not (Sanitizers.is_empty sanitizers)
 
 
+(* For every frame, convert the may breadcrumbs into must breadcrumbs. *)
+let may_breadcrumbs_to_must
+    { forward = { source_taint }; backward = { taint_in_taint_out; sink_taint }; sanitizers; modes }
+  =
+  let source_taint = ForwardState.may_breadcrumbs_to_must source_taint in
+  let taint_in_taint_out = BackwardState.may_breadcrumbs_to_must taint_in_taint_out in
+  let sink_taint = BackwardState.may_breadcrumbs_to_must sink_taint in
+  { forward = { source_taint }; backward = { taint_in_taint_out; sink_taint }; sanitizers; modes }
+
+
+(* Within every local taint, join every frame with the frame in the same local taint of the `Attach`
+   kind. *)
+let join_every_frame_with_attach
+    { forward = { source_taint }; backward = { taint_in_taint_out; sink_taint }; sanitizers; modes }
+  =
+  let source_taint = ForwardState.join_every_frame_with source_taint ~frame_kind:Sources.Attach in
+  let taint_in_taint_out =
+    BackwardState.join_every_frame_with taint_in_taint_out ~frame_kind:Sinks.Attach
+  in
+  let sink_taint = BackwardState.join_every_frame_with sink_taint ~frame_kind:Sinks.Attach in
+  { forward = { source_taint }; backward = { taint_in_taint_out; sink_taint }; sanitizers; modes }
+
+
+let join_user_models left right =
+  join left right |> join_every_frame_with_attach |> may_breadcrumbs_to_must
+
+
 let to_json
     ~expand_overrides
     ~is_valid_callee
