@@ -8,9 +8,14 @@
 open Ast
 module Error = AnalysisError
 
+val run_on_qualifier
+  :  TypeEnvironment.ReadOnly.t ->
+  dependency:SharedMemoryKeys.DependencyKey.registered option ->
+  Reference.t ->
+  Error.t list
+
 val run
   :  scheduler:Scheduler.t ->
-  configuration:Configuration.Analysis.t ->
   environment:TypeEnvironment.ReadOnly.t ->
   Reference.t list ->
   Error.t list

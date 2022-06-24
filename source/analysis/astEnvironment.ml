@@ -82,7 +82,7 @@ module ReadOnly = struct
 
   let module_tracker { module_tracker; _ } = module_tracker
 
-  let configuration environment = module_tracker environment |> ModuleTracker.ReadOnly.configuration
+  let controls environment = module_tracker environment |> ModuleTracker.ReadOnly.controls
 
   let get_module_path environment =
     module_tracker environment |> ModuleTracker.ReadOnly.lookup_module_path
@@ -102,6 +102,8 @@ module ReadOnly = struct
     let open Option in
     get_module_path read_only qualifier >>| fun { ModulePath.relative; _ } -> relative
 
+
+  let configuration environment = controls environment |> EnvironmentControls.configuration
 
   let get_real_path read_only qualifier =
     let configuration = configuration read_only in
@@ -229,9 +231,12 @@ end
 
 module UpdateResult = struct
   type t = {
+    triggered_dependencies: SharedMemoryKeys.DependencyKey.RegisteredSet.t;
     invalidated_modules: Reference.t list;
     module_updates: ModuleTracker.IncrementalUpdate.t list;
   }
+
+  let triggered_dependencies { triggered_dependencies; _ } = triggered_dependencies
 
   let invalidated_modules { invalidated_modules; _ } = invalidated_modules
 
@@ -246,7 +251,7 @@ module FromReadOnlyUpstream = struct
 
     let description = "Unprocessed source"
 
-    let compare = Result.compare Source.compare ParserError.compare
+    let equal = Memory.equal_from_compare (Result.compare Source.compare ParserError.compare)
   end
 
   module RawSources = struct
@@ -354,24 +359,21 @@ module FromReadOnlyUpstream = struct
 
 
   let load_raw_source ~ast_environment:{ raw_sources; module_tracker; _ } module_path =
-    let configuration = ModuleTracker.ReadOnly.configuration module_tracker in
     let do_parse context =
+      let controls = ModuleTracker.ReadOnly.controls module_tracker in
+      let configuration = EnvironmentControls.configuration controls in
       match parse_source ~configuration ~context ~module_tracker module_path with
       | Success source ->
           let source =
-            let {
-              Configuration.Analysis.python_major_version;
-              python_minor_version;
-              python_micro_version;
-              _;
-            }
+            let EnvironmentControls.PythonVersionInfo.
+                  { major_version; minor_version; micro_version }
               =
-              configuration
+              EnvironmentControls.python_version_info controls
             in
             Preprocessing.replace_version_specific_code
-              ~major_version:python_major_version
-              ~minor_version:python_minor_version
-              ~micro_version:python_micro_version
+              ~major_version
+              ~minor_version
+              ~micro_version
               source
             |> Preprocessing.preprocess_phase0
           in
@@ -385,6 +387,9 @@ module FromReadOnlyUpstream = struct
 
 
   let load_raw_sources ~scheduler ~ast_environment module_paths =
+    (* Note: We don't need SharedMemoryKeys.DependencyKey.Registry.collected_iter here; the
+       collection handles *registering* dependencies but not detecting triggered dependencies, and
+       this is the upstream-most part of the dependency DAG *)
     Scheduler.iter
       scheduler
       ~policy:
@@ -452,7 +457,7 @@ module FromReadOnlyUpstream = struct
       List.concat [removed_modules; new_implicits; reparse_modules_union_in_project_modules]
     in
     let update_raw_sources () = load_raw_sources ~scheduler ~ast_environment reparse_module_paths in
-    let _, preprocessing_dependencies =
+    let _, raw_source_dependencies =
       Profiling.track_duration_and_shared_memory
         "Parse Raw Sources"
         ~tags:["phase_name", "Parsing"]
@@ -463,21 +468,29 @@ module FromReadOnlyUpstream = struct
             ~update:update_raw_sources
             ~scheduler)
     in
-    let invalidated_modules =
-      let fold_key registered sofar =
-        (* There can never be a true dependency that is not a WildcardImport.
-         * Other dependencies might be registered due to hash collisions - ignore them *)
+    let triggered_dependencies, invalidated_modules =
+      let fold_key registered (triggered_dependencies, invalidated_modules) =
+        (* WildcardImport dependencies should be handled internally by converting them
+         * to invalidated_modules, which UnannotatedGlobalEnvironment will load. Other dependencies
+         * should be forwarded to later environments. *)
         match SharedMemoryKeys.DependencyKey.get_key registered with
-        | SharedMemoryKeys.WildcardImport qualifier -> RawSources.KeySet.add qualifier sofar
-        | _ -> sofar
+        | SharedMemoryKeys.WildcardImport qualifier ->
+            triggered_dependencies, RawSources.KeySet.add qualifier invalidated_modules
+        | _ ->
+            ( SharedMemoryKeys.DependencyKey.RegisteredSet.add registered triggered_dependencies,
+              invalidated_modules )
       in
       SharedMemoryKeys.DependencyKey.RegisteredSet.fold
         fold_key
-        preprocessing_dependencies
-        (RawSources.KeySet.of_list invalidated_modules_before_preprocessing)
-      |> RawSources.KeySet.elements
+        raw_source_dependencies
+        ( SharedMemoryKeys.DependencyKey.RegisteredSet.empty,
+          RawSources.KeySet.of_list invalidated_modules_before_preprocessing )
     in
-    { UpdateResult.invalidated_modules; module_updates }
+    {
+      UpdateResult.triggered_dependencies;
+      invalidated_modules = RawSources.KeySet.elements invalidated_modules;
+      module_updates;
+    }
 
 
   let remove_sources { raw_sources; _ } = RawSources.remove_sources raw_sources
@@ -486,7 +499,7 @@ module FromReadOnlyUpstream = struct
     { ReadOnly.module_tracker; get_raw_source = LazyRawSources.get ~ast_environment }
 
 
-  let configuration { module_tracker; _ } = ModuleTracker.ReadOnly.configuration module_tracker
+  let controls { module_tracker; _ } = ModuleTracker.ReadOnly.controls module_tracker
 end
 
 module Base = struct
@@ -503,14 +516,14 @@ module Base = struct
     }
 
 
-  let create configuration = ModuleTracker.create configuration |> from_module_tracker
+  let create controls = ModuleTracker.create controls |> from_module_tracker
 
-  let create_for_testing configuration module_path_code_pairs =
-    ModuleTracker.create_for_testing configuration module_path_code_pairs |> from_module_tracker
+  let create_for_testing controls module_path_code_pairs =
+    ModuleTracker.create_for_testing controls module_path_code_pairs |> from_module_tracker
 
 
-  let load configuration =
-    ModuleTracker.Serializer.from_stored_layouts ~configuration () |> from_module_tracker
+  let load controls =
+    ModuleTracker.Serializer.from_stored_layouts ~controls () |> from_module_tracker
 
 
   let store { module_tracker; _ } = ModuleTracker.Serializer.store_layouts module_tracker
@@ -532,8 +545,8 @@ module Base = struct
 
   let module_tracker { module_tracker; _ } = module_tracker
 
-  let configuration { from_read_only_upstream; _ } =
-    FromReadOnlyUpstream.configuration from_read_only_upstream
+  let controls { from_read_only_upstream; _ } =
+    FromReadOnlyUpstream.controls from_read_only_upstream
 
 
   let remove_sources { from_read_only_upstream; _ } qualifiers =

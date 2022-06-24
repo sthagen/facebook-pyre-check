@@ -8,17 +8,12 @@
 open Core
 open Pyre
 
-type result = {
-  environment: Analysis.TypeEnvironment.t;
-  errors: Analysis.AnalysisError.t list;
-}
-
 let check
     ~scheduler
     ~configuration:
       ({ Configuration.Analysis.project_root; source_paths; search_paths; debug; _ } as
       configuration)
-    ~call_graph_builder
+    ~populate_call_graph
   =
   (* Sanity check environment. *)
   let check_directory_exists directory =
@@ -41,24 +36,21 @@ let check
   search_paths |> List.iter ~f:check_search_path_exists;
   (* Profiling helper *)
   Profiling.track_shared_memory_usage ~name:"Before module tracking" ();
-  let environment, qualifiers =
+  let environment =
     let open Analysis in
     Log.info "Building type environment...";
 
     let timer = Timer.start () in
-    let type_environment = TypeEnvironment.create configuration in
-    let global_environment =
-      TypeEnvironment.global_environment type_environment |> AnnotatedGlobalEnvironment.read_only
+    let errors_environment =
+      EnvironmentControls.create ~populate_call_graph configuration |> ErrorsEnvironment.create
+    in
+    let type_environment =
+      ErrorsEnvironment.read_only errors_environment |> ErrorsEnvironment.ReadOnly.type_environment
     in
 
+    let global_environment = TypeEnvironment.ReadOnly.global_environment type_environment in
     Statistics.performance ~name:"full environment built" ~timer ();
 
-    let global_resolution = GlobalResolution.create global_environment in
-    let indices () =
-      global_environment
-      |> AnnotatedGlobalEnvironment.ReadOnly.unannotated_global_environment
-      |> UnannotatedGlobalEnvironment.ReadOnly.all_indices
-    in
     if Log.is_enabled `Dotty then (
       let type_order_file =
         PyrePath.create_relative
@@ -66,10 +58,13 @@ let check
           ~relative:"type_order.dot"
       in
       Log.info "Emitting type order dotty file to %s" (PyrePath.absolute type_order_file);
+      let indices =
+        AnnotatedGlobalEnvironment.ReadOnly.unannotated_global_environment global_environment
+        |> UnannotatedGlobalEnvironment.ReadOnly.all_indices
+      in
+      let global_resolution = GlobalResolution.create global_environment in
       let class_hierarchy_dot =
-        ClassHierarchy.to_dot
-          (GlobalResolution.class_hierarchy global_resolution)
-          ~indices:(indices ())
+        ClassHierarchy.to_dot (GlobalResolution.class_hierarchy global_resolution) ~indices
       in
       File.create ~content:class_hierarchy_dot type_order_file |> File.write);
     if debug then
@@ -79,25 +74,10 @@ let check
         ~integers:["size", Memory.heap_size ()]
         ();
 
-    let project_qualifiers =
-      AnnotatedGlobalEnvironment.ReadOnly.project_qualifiers global_environment
-    in
-    type_environment, project_qualifiers
+    errors_environment
   in
-  let errors =
-    Analysis.TypeEnvironment.populate_for_modules
-      ~scheduler
-      ~configuration
-      ~call_graph_builder
-      environment
-      qualifiers;
-    Analysis.Postprocessing.run
-      ~scheduler
-      ~configuration
-      ~environment:(Analysis.TypeEnvironment.read_only environment)
-      qualifiers
-  in
+  let () = Analysis.ErrorsEnvironment.populate_all_errors ~scheduler environment in
   Profiling.track_shared_memory_usage ();
 
   (* Only destroy the scheduler if the check command created it. *)
-  { environment; errors }
+  environment

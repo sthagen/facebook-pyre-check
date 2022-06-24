@@ -7,13 +7,8 @@
 
 open Analysis
 
-type result = {
-  environment: TypeEnvironment.t;
-  errors: AnalysisError.t list;
-}
-
 val check
   :  scheduler:Scheduler.t ->
   configuration:Configuration.Analysis.t ->
-  call_graph_builder:(module Callgraph.Builder) ->
-  result
+  populate_call_graph:bool ->
+  ErrorsEnvironment.t

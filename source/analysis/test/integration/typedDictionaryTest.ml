@@ -352,8 +352,8 @@ let test_check_typed_dictionaries context =
     |}
     [
       "Revealed type [-1]: Revealed type for `Movie.__init__` is `typing.Callable(__init__)[..., \
-       unknown][[[Named(self, unknown), KeywordOnly(name, str), KeywordOnly(year, int)], \
-       Movie][[Named(self, unknown), Movie], Movie]]`.";
+       unknown][[[Named(self, Movie), KeywordOnly(name, str), KeywordOnly(year, int)], \
+       None][[Movie, Movie], None]]`.";
     ];
   assert_test_typed_dictionary
     {|
@@ -1605,8 +1605,8 @@ let test_check_typed_dictionary_inheritance context =
     |}
     [
       "Revealed type [-1]: Revealed type for `test.Child.__init__` is \
-       `typing.Callable(__init__)[..., unknown][[[Named(self, unknown), KeywordOnly(foo, int)], \
-       Child][[Named(self, unknown), Child], Child]]`.";
+       `typing.Callable(__init__)[..., unknown][[[Named(self, Child), KeywordOnly(foo, int)], \
+       None][[Child, Child], None]]`.";
     ];
   assert_test_typed_dictionary
     {|
@@ -1621,8 +1621,8 @@ let test_check_typed_dictionary_inheritance context =
     |}
     [
       "Revealed type [-1]: Revealed type for `test.Child.__init__` is \
-       `typing.Callable(__init__)[..., unknown][[[Named(self, unknown), KeywordOnly(foo, int)], \
-       Child][[Named(self, unknown), Child], Child]]`.";
+       `typing.Callable(__init__)[..., unknown][[[Named(self, Child), KeywordOnly(foo, int)], \
+       None][[Child, Child], None]]`.";
     ];
   assert_test_typed_dictionary
     {|
@@ -1643,8 +1643,8 @@ let test_check_typed_dictionary_inheritance context =
        Type `str` is not a subtype of the overridden attribute `int`.";
       (* Only the shadowing field shows up in the constructor. *)
       "Revealed type [-1]: Revealed type for `test.Child.__init__` is \
-       `typing.Callable(__init__)[..., unknown][[[Named(self, unknown), KeywordOnly(bar, int), \
-       KeywordOnly(foo, str)], Child][[Named(self, unknown), Child], Child]]`.";
+       `typing.Callable(__init__)[..., unknown][[[Named(self, Child), KeywordOnly(bar, int), \
+       KeywordOnly(foo, str)], None][[Child, Child], None]]`.";
     ];
   (* Error when one field is required and the other is not. *)
   assert_test_typed_dictionary
@@ -1736,12 +1736,12 @@ let test_check_typed_dictionary_inheritance context =
       "Invalid inheritance [39]: `NonTypedDict` is not a valid parent class for a typed \
        dictionary. Expected a typed dictionary.";
       "Revealed type [-1]: Revealed type for `test.Child.__init__` is \
-       `typing.Callable(__init__)[..., unknown][[[Named(self, unknown), KeywordOnly(baz, str), \
-       KeywordOnly(foo, int)], Child][[Named(self, unknown), Child], Child]]`.";
+       `typing.Callable(__init__)[..., unknown][[[Named(self, Child), KeywordOnly(baz, str), \
+       KeywordOnly(foo, int)], None][[Child, Child], None]]`.";
       "Revealed type [-1]: Revealed type for `test.NonTotalChild.__init__` is \
-       `typing.Callable(__init__)[..., unknown][[[Named(self, unknown), KeywordOnly(foo, int), \
-       KeywordOnly(non_total_baz, str, default)], NonTotalChild][[Named(self, unknown), \
-       NonTotalChild], NonTotalChild]]`.";
+       `typing.Callable(__init__)[..., unknown][[[Named(self, NonTotalChild), KeywordOnly(foo, \
+       int), KeywordOnly(non_total_baz, str, default)], None][[NonTotalChild, NonTotalChild], \
+       None]]`.";
     ];
   ()
 
@@ -2018,7 +2018,51 @@ let test_check_optional_typed_dictionary context =
     [
       "TypedDict initialization error [55]: Expected type `str` for `MyDict` field `b` but got \
        `int`.";
-    ]
+    ];
+  ()
+
+
+let test_required_not_required_fields context =
+  assert_type_errors_inject_typing_and_typing_extensions
+    ~context
+    {|
+      from typing import Any, TypedDict, Optional
+      from __TYPING_PLACEHOLDER import NotRequired
+
+      class Movie(TypedDict):
+        name: str
+        year: NotRequired[int]
+
+      def main(movie: Movie) -> None:
+        x: str = movie["name"]
+        y: int = movie["year"]
+
+        movie2: Movie = { "name": "The Matrix", "year": 1999 }
+        movie3: Movie = { "name": "The Matrix" }
+    |}
+    [];
+  assert_type_errors_inject_typing_and_typing_extensions
+    ~context
+    {|
+      from typing import Any, TypedDict, Optional
+      from __TYPING_PLACEHOLDER import Required
+
+      class MovieNonTotal(TypedDict, total=False):
+        name: Required[str]
+        year: int
+
+      def main(movie: MovieNonTotal) -> None:
+        x: str = movie["name"]
+        y: int = movie["year"]
+
+        movie2: MovieNonTotal = { "name": "The Matrix", "year": 1999 }
+        movie3: MovieNonTotal = { "year": 1999 }
+    |}
+    [
+      "TypedDict initialization error [55]: Missing required field `name` for TypedDict \
+       `MovieNonTotal`.";
+    ];
+  ()
 
 
 let () =
@@ -2029,5 +2073,6 @@ let () =
          "check_typed_dictionary_inheritance" >:: test_check_typed_dictionary_inheritance;
          "check_typed_dictionary_in_alias" >:: test_check_typed_dictionary_in_alias;
          "check_optional_typed_dictionary" >:: test_check_optional_typed_dictionary;
+         "required_not_required_fields" >:: test_required_not_required_fields;
        ]
   |> Test.run

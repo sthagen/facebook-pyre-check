@@ -331,8 +331,12 @@ class StartTest(testslide.TestCase):
                         global_root=str(root_path),
                         checked_directory_allowlist=[
                             str(root_path / "allows"),
+                            str(root_path / "nonexistent"),
                         ],
-                        checked_directory_blocklist=[str(root_path / "blocks")],
+                        checked_directory_blocklist=[
+                            str(root_path / "blocks"),
+                            str(root_path / "nonexistent"),
+                        ],
                         debug=True,
                         excludes=["exclude"],
                         extensions=[".ext"],

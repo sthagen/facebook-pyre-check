@@ -23,7 +23,7 @@ module ReadOnly : sig
 
   val get_processed_source : t -> ?track_dependency:bool -> Reference.t -> Source.t option
 
-  val configuration : t -> Configuration.Analysis.t
+  val controls : t -> EnvironmentControls.t
 
   val get_raw_source
     :  t ->
@@ -51,7 +51,13 @@ module ReadOnly : sig
 end
 
 module UpdateResult : sig
-  type t
+  type t = {
+    triggered_dependencies: SharedMemoryKeys.DependencyKey.RegisteredSet.t;
+    invalidated_modules: Reference.t list;
+    module_updates: ModuleTracker.IncrementalUpdate.t list;
+  }
+
+  val triggered_dependencies : t -> SharedMemoryKeys.DependencyKey.RegisteredSet.t
 
   val invalidated_modules : t -> Reference.t list
 
@@ -62,15 +68,15 @@ type t
 
 val module_tracker : t -> ModuleTracker.t
 
-val configuration : t -> Configuration.Analysis.t
+val controls : t -> EnvironmentControls.t
 
-val create : Configuration.Analysis.t -> t
+val create : EnvironmentControls.t -> t
 
-val create_for_testing : Configuration.Analysis.t -> (Ast.ModulePath.t * string) list -> t
+val create_for_testing : EnvironmentControls.t -> (Ast.ModulePath.t * string) list -> t
 
 (* Load and store the environment to and from saved-state *)
 
-val load : Configuration.Analysis.t -> t
+val load : EnvironmentControls.t -> t
 
 val store : t -> unit
 

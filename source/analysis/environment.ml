@@ -12,6 +12,8 @@ module type ReadOnly = sig
   type t
 
   val unannotated_global_environment : t -> UnannotatedGlobalEnvironment.ReadOnly.t
+
+  val controls : t -> EnvironmentControls.t
 end
 
 module UpdateResult = struct
@@ -38,13 +40,11 @@ module PreviousEnvironment = struct
 
     type t
 
-    val create : Configuration.Analysis.t -> t
+    val create : EnvironmentControls.t -> t
 
-    val create_for_testing : Configuration.Analysis.t -> (Ast.ModulePath.t * string) list -> t
+    val create_for_testing : EnvironmentControls.t -> (Ast.ModulePath.t * string) list -> t
 
     val ast_environment : t -> AstEnvironment.t
-
-    val configuration : t -> Configuration.Analysis.t
 
     val read_only : t -> ReadOnly.t
 
@@ -56,7 +56,7 @@ module PreviousEnvironment = struct
 
     val store : t -> unit
 
-    val load : Configuration.Analysis.t -> t
+    val load : EnvironmentControls.t -> t
   end
 end
 
@@ -82,7 +82,7 @@ module EnvironmentTable = struct
 
     module Key : Memory.KeyType
 
-    module Value : Memory.ComparableValueType
+    module Value : Memory.ValueTypeWithEquivalence
 
     type trigger [@@deriving sexp, compare]
 
@@ -140,19 +140,19 @@ module EnvironmentTable = struct
       val upstream_environment : t -> In.PreviousEnvironment.ReadOnly.t
 
       val unannotated_global_environment : t -> UnannotatedGlobalEnvironment.ReadOnly.t
+
+      val controls : t -> EnvironmentControls.t
     end
 
     module UpdateResult : UpdateResult.S
 
     type t
 
-    val create : Configuration.Analysis.t -> t
+    val create : EnvironmentControls.t -> t
 
-    val create_for_testing : Configuration.Analysis.t -> (Ast.ModulePath.t * string) list -> t
+    val create_for_testing : EnvironmentControls.t -> (Ast.ModulePath.t * string) list -> t
 
     val ast_environment : t -> AstEnvironment.t
-
-    val configuration : t -> Configuration.Analysis.t
 
     val read_only : t -> ReadOnly.t
 
@@ -164,7 +164,11 @@ module EnvironmentTable = struct
 
     val store : t -> unit
 
-    val load : Configuration.Analysis.t -> t
+    val load : EnvironmentControls.t -> t
+
+    module Unsafe : sig
+      val upstream : t -> In.PreviousEnvironment.t
+    end
 
     module Testing : sig
       module ReadOnly : sig
@@ -195,6 +199,10 @@ module EnvironmentTable = struct
 
       let unannotated_global_environment { upstream_environment; _ } =
         In.PreviousEnvironment.ReadOnly.unannotated_global_environment upstream_environment
+
+
+      let controls { upstream_environment; _ } =
+        In.PreviousEnvironment.ReadOnly.controls upstream_environment
     end
 
     module UpdateResult = struct
@@ -341,17 +349,11 @@ module EnvironmentTable = struct
         }
 
 
-      let create configuration =
-        In.PreviousEnvironment.create configuration |> from_upstream_environment
+      let create controls = In.PreviousEnvironment.create controls |> from_upstream_environment
 
-
-      let create_for_testing configuration module_path_code_pairs =
-        In.PreviousEnvironment.create_for_testing configuration module_path_code_pairs
+      let create_for_testing controls module_path_code_pairs =
+        In.PreviousEnvironment.create_for_testing controls module_path_code_pairs
         |> from_upstream_environment
-
-
-      let configuration { upstream_environment; _ } =
-        In.PreviousEnvironment.configuration upstream_environment
 
 
       let ast_environment { upstream_environment; _ } =
@@ -387,11 +389,14 @@ module EnvironmentTable = struct
 
       let store { upstream_environment; _ } = In.PreviousEnvironment.store upstream_environment
 
-      let load configuration =
-        In.PreviousEnvironment.load configuration |> from_upstream_environment
+      let load controls = In.PreviousEnvironment.load controls |> from_upstream_environment
     end
 
     include Base
+
+    module Unsafe = struct
+      let upstream { Base.upstream_environment; _ } = upstream_environment
+    end
 
     module Testing = struct
       module ReadOnly = struct

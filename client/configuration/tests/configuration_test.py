@@ -588,7 +588,7 @@ class ConfigurationTest(testslide.TestCase):
             partial_configuration=PartialConfiguration(
                 binary="binary",
                 buck_mode=PlatformAware.from_json("opt", "buck_mode"),
-                do_not_ignore_errors_in=["foo"],
+                do_not_ignore_errors_in=["//foo"],
                 dot_pyre_directory=None,
                 excludes=["exclude"],
                 extensions=[ExtensionElement(".ext", False)],
@@ -623,7 +623,7 @@ class ConfigurationTest(testslide.TestCase):
         self.assertEqual(configuration.binary, "binary")
         self.assertIsNotNone(configuration.buck_mode)
         self.assertEqual(configuration.buck_mode.get(), "opt")
-        self.assertListEqual(list(configuration.do_not_ignore_errors_in), ["foo"])
+        self.assertListEqual(list(configuration.do_not_ignore_errors_in), ["root/foo"])
         self.assertEqual(configuration.dot_pyre_directory, Path("root/.pyre"))
         self.assertListEqual(list(configuration.excludes), ["exclude"])
         self.assertEqual(configuration.extensions, [ExtensionElement(".ext", False)])
@@ -783,50 +783,6 @@ class ConfigurationTest(testslide.TestCase):
                         ),
                     ),
                 ).get_existent_unwatched_dependency()
-            )
-
-    def test_existent_do_not_ignore_errors(self) -> None:
-        with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root).resolve()
-            ensure_directories_exists(root_path, ["a", "b/c"])
-
-            self.assertCountEqual(
-                Configuration(
-                    project_root=str(root_path),
-                    dot_pyre_directory=Path(".pyre"),
-                    do_not_ignore_errors_in=[
-                        str(root_path / "a"),
-                        str(root_path / "x"),
-                        "//b/c",
-                        "//y/z",
-                    ],
-                ).get_existent_do_not_ignore_errors_in_paths(),
-                [str(root_path / "a"), str(root_path / "b/c")],
-            )
-
-    def test_existent_ignore_all_errors(self) -> None:
-        with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root).resolve()
-            ensure_directories_exists(root_path, ["a", "b/c", "b/d"])
-
-            self.assertCountEqual(
-                Configuration(
-                    project_root=str(root_path),
-                    dot_pyre_directory=Path(".pyre"),
-                    ignore_all_errors=[
-                        str(root_path / "a"),
-                        str(root_path / "x"),
-                        "//b/c",
-                        "//y/z",
-                        f"{root_path}/b/*",
-                    ],
-                ).get_existent_ignore_all_errors_paths(),
-                [
-                    str(root_path / "a"),
-                    str(root_path / "b/c"),
-                    str(root_path / "b/c"),
-                    str(root_path / "b/d"),
-                ],
             )
 
     def test_get_binary_version_ok(self) -> None:
@@ -1332,16 +1288,13 @@ class ConfigurationTest(testslide.TestCase):
             )
             write_configuration_file(root_path, {}, relative="nest0/nest1/local")
 
-            try:
-                check_nested_local_configuration(
-                    Configuration(
-                        project_root=root,
-                        dot_pyre_directory=Path(".pyre"),
-                        relative_local_root="nest0/nest1/local",
-                    )
+            check_nested_local_configuration(
+                Configuration(
+                    project_root=root,
+                    dot_pyre_directory=Path(".pyre"),
+                    relative_local_root="nest0/nest1/local",
                 )
-            except InvalidConfiguration:
-                self.fail("Nested local configuration check fails unexpectedly!")
+            )
 
     def test_check_nested_local_configuration_expand_relative_root(self) -> None:
         with tempfile.TemporaryDirectory() as root:
@@ -1355,16 +1308,13 @@ class ConfigurationTest(testslide.TestCase):
             )
             write_configuration_file(root_path, {}, relative="nest0/nest1/local")
 
-            try:
-                check_nested_local_configuration(
-                    Configuration(
-                        project_root=root,
-                        dot_pyre_directory=Path(".pyre"),
-                        relative_local_root="nest0/nest1/local",
-                    )
+            check_nested_local_configuration(
+                Configuration(
+                    project_root=root,
+                    dot_pyre_directory=Path(".pyre"),
+                    relative_local_root="nest0/nest1/local",
                 )
-            except InvalidConfiguration:
-                self.fail("Nested local configuration check fails unexpectedly!")
+            )
 
     def test_source_directories_glob(self) -> None:
         with tempfile.TemporaryDirectory() as root:

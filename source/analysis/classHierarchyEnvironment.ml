@@ -32,7 +32,7 @@ module EdgesValue = struct
 
   let description = "Edges"
 
-  let compare = Option.compare compare_edges
+  let equal = Memory.equal_from_compare (Option.compare compare_edges)
 end
 
 let get_parents alias_environment name ~dependency =
@@ -220,19 +220,17 @@ end
 
 type t = { edges: Edges.t }
 
-let create configuration = { edges = Edges.create configuration }
+let create controls = { edges = Edges.create controls }
 
-let create_for_testing configuration module_path_code_pairs =
-  { edges = Edges.create_for_testing configuration module_path_code_pairs }
+let create_for_testing controls module_path_code_pairs =
+  { edges = Edges.create_for_testing controls module_path_code_pairs }
 
 
 let store { edges } = Edges.store edges
 
-let load configuration = { edges = Edges.load configuration }
+let load controls = { edges = Edges.load controls }
 
 let ast_environment { edges } = Edges.ast_environment edges
-
-let configuration { edges } = Edges.configuration edges
 
 let read_only { edges } = Edges.read_only edges
 
@@ -241,12 +239,12 @@ let update_this_and_all_preceding_environments
     ~scheduler
     ast_environment_trigger
   =
-  let { Configuration.Analysis.debug; _ } = configuration this_environment in
   let result =
     Edges.update_this_and_all_preceding_environments edges ~scheduler ast_environment_trigger
   in
-  if debug then
-    read_only this_environment |> ReadOnly.check_integrity;
+  let read_only = read_only this_environment in
+  if ReadOnly.controls read_only |> EnvironmentControls.debug then
+    ReadOnly.check_integrity read_only;
   result
 
 

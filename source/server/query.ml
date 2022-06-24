@@ -541,11 +541,13 @@ module InlineDecorators = struct
           (Format.asprintf "Could not find function `%s`" (Reference.show function_reference))
 end
 
-let rec process_request ~environment ~build_system ~configuration request =
+let rec process_request ~environment ~build_system request =
   let process_request () =
-    let module_tracker = TypeEnvironment.module_tracker environment |> ModuleTracker.read_only in
-    let read_only_environment = TypeEnvironment.read_only environment in
-    let global_resolution = TypeEnvironment.ReadOnly.global_resolution read_only_environment in
+    let configuration =
+      TypeEnvironment.ReadOnly.controls environment |> EnvironmentControls.configuration
+    in
+    let module_tracker = TypeEnvironment.ReadOnly.module_tracker environment in
+    let global_resolution = TypeEnvironment.ReadOnly.global_resolution environment in
     let order = GlobalResolution.class_hierarchy global_resolution in
     let resolution =
       TypeCheck.resolution
@@ -665,8 +667,7 @@ let rec process_request ~environment ~build_system ~configuration request =
              ~default:
                (Error
                   (Format.sprintf "No class definition found for %s" (Reference.show annotation)))
-    | Batch requests ->
-        Batch (List.map ~f:(process_request ~environment ~build_system ~configuration) requests)
+    | Batch requests -> Batch (List.map ~f:(process_request ~environment ~build_system) requests)
     | Callees caller ->
         (* We don't yet support a syntax for fetching property setters. *)
         Single
@@ -678,7 +679,7 @@ let rec process_request ~environment ~build_system ~configuration request =
           Location.WithModule.instantiate
             ~lookup:
               (AstEnvironment.ReadOnly.get_real_path_relative
-                 (TypeEnvironment.ReadOnly.ast_environment read_only_environment))
+                 (TypeEnvironment.ReadOnly.ast_environment environment))
         in
         let callees =
           (* We don't yet support a syntax for fetching property setters. *)
@@ -688,7 +689,7 @@ let rec process_request ~environment ~build_system ~configuration request =
         in
         Single (Base.CalleesWithLocation callees)
     | Defines module_or_class_names ->
-        let ast_environment = TypeEnvironment.ReadOnly.ast_environment read_only_environment in
+        let ast_environment = TypeEnvironment.ReadOnly.ast_environment environment in
         let defines_of_module module_or_class_name =
           let module_name, filter_define =
             if AstEnvironment.ReadOnly.is_module_tracked ast_environment module_or_class_name then
@@ -758,14 +759,14 @@ let rec process_request ~environment ~build_system ~configuration request =
               Location.WithModule.instantiate
                 ~lookup:
                   (AstEnvironment.ReadOnly.get_real_path_relative
-                     (TypeEnvironment.ReadOnly.ast_environment read_only_environment))
+                     (TypeEnvironment.ReadOnly.ast_environment environment))
             in
             Callgraph.get ~caller:(Callgraph.FunctionCaller caller)
             |> List.map ~f:(fun { Callgraph.callee; locations } ->
                    { Base.callee; locations = List.map locations ~f:instantiate })
             |> fun callees -> { Base.caller; callees }
           in
-          let ast_environment = TypeEnvironment.ReadOnly.ast_environment read_only_environment in
+          let ast_environment = TypeEnvironment.ReadOnly.ast_environment environment in
           AstEnvironment.ReadOnly.get_processed_source ast_environment module_qualifier
           >>| Preprocessing.defines ~include_toplevels:false ~include_stubs:false
           >>| List.map ~f:callees
@@ -774,19 +775,39 @@ let rec process_request ~environment ~build_system ~configuration request =
         let qualifiers = ModuleTracker.ReadOnly.tracked_explicit_modules module_tracker in
         Single (Base.Callgraph (List.concat_map qualifiers ~f:get_callgraph))
     | ExpressionLevelCoverage paths ->
-        let find_resolved_types path =
-          match
-            LocationBasedLookupProcessor.find_expression_level_coverage_for_path
-              ~environment
-              ~build_system
-              ~configuration
-              path
-          with
-          | Result.Ok { total_expressions; coverage_gaps } ->
-              Either.First { Base.path; total_expressions; coverage_gaps }
-          | Result.Error error_reason -> Either.Second (path, error_reason)
+        let read_text_file path =
+          try In_channel.read_lines path |> List.map ~f:(fun x -> Result.Ok x) with
+          | _ -> [Result.Error (path, LocationBasedLookupProcessor.FileNotFound)]
         in
-        let results, errors = List.partition_map ~f:find_resolved_types paths in
+        let get_text_file_path_list path =
+          read_text_file path
+          |> List.filter ~f:(fun path ->
+                 match path with
+                 | Result.Ok path -> not (String.equal (String.strip path) "")
+                 | Result.Error _ -> true)
+        in
+        let extract_paths path =
+          match String.get path 0 with
+          | '@' -> get_text_file_path_list (String.sub path ~pos:1 ~len:(String.length path - 1))
+          | _ -> [Result.Ok path]
+        in
+        let find_resolved_types result =
+          match result with
+          | Result.Error error -> Either.Second error
+          | Result.Ok path -> (
+              match
+                LocationBasedLookupProcessor.find_expression_level_coverage_for_path
+                  ~environment
+                  ~build_system
+                  path
+              with
+              | Result.Ok { total_expressions; coverage_gaps } ->
+                  Either.First { Base.path; total_expressions; coverage_gaps }
+              | Result.Error error_reason -> Either.Second (path, error_reason))
+        in
+        let results, errors =
+          List.concat_map paths ~f:extract_paths |> List.partition_map ~f:find_resolved_types
+        in
         if List.is_empty errors then
           Single (Base.ExpressionLevelCoverageResponse results)
         else
@@ -794,7 +815,7 @@ let rec process_request ~environment ~build_system ~configuration request =
     | Help help_list -> Single (Base.Help help_list)
     | InlineDecorators { function_reference; decorators_to_skip } ->
         InlineDecorators.inline_decorators
-          ~environment:(TypeEnvironment.read_only environment)
+          ~environment
           ~decorators_to_skip:(Reference.Set.of_list decorators_to_skip)
           function_reference
     | IsCompatibleWith (left, right) ->
@@ -836,7 +857,7 @@ let rec process_request ~environment ~build_system ~configuration request =
           =
           PathLookup.instantiate_path
             ~build_system
-            ~ast_environment:(TypeEnvironment.ReadOnly.ast_environment read_only_environment)
+            ~ast_environment:(TypeEnvironment.ReadOnly.ast_environment environment)
             module_reference
           >>| fun path ->
           {
@@ -851,7 +872,7 @@ let rec process_request ~environment ~build_system ~configuration request =
         module_of_path path
         >>= (fun module_reference ->
               LocationBasedLookup.location_of_definition
-                ~type_environment:(TypeEnvironment.read_only environment)
+                ~type_environment:environment
                 ~module_reference
                 position)
         >>= location_to_location_of_definition
@@ -893,7 +914,7 @@ let rec process_request ~environment ~build_system ~configuration request =
           module_of_path path
           >>= fun module_reference ->
           LocationBasedLookup.find_narrowest_spanning_symbol
-            ~type_environment:(TypeEnvironment.read_only environment)
+            ~type_environment:environment
             ~module_reference
             position
         in
@@ -977,7 +998,6 @@ let rec process_request ~environment ~build_system ~configuration request =
             LocationBasedLookupProcessor.find_all_resolved_types_for_path
               ~environment
               ~build_system
-              ~configuration
               path
           with
           | Result.Ok types ->
@@ -1059,7 +1079,7 @@ let rec process_request ~environment ~build_system ~configuration request =
            (Hash_set.to_list trace |> String.concat ~sep:", "))
 
 
-let parse_and_process_request ~environment ~build_system ~configuration request =
+let parse_and_process_request ~environment ~build_system request =
   match parse_request request with
   | Result.Error reason -> Response.Error reason
-  | Result.Ok request -> process_request ~environment ~build_system ~configuration request
+  | Result.Ok request -> process_request ~environment ~build_system request

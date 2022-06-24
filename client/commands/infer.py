@@ -14,7 +14,6 @@ import re
 import shutil
 import subprocess
 import sys
-import traceback
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Set, TypeVar, Union
 
@@ -743,9 +742,7 @@ def create_infer_arguments(
             checked_directory_allowlist=backend_arguments.get_checked_directory_allowlist(
                 configuration, source_paths
             ),
-            checked_directory_blocklist=(
-                configuration.get_existent_ignore_all_errors_paths()
-            ),
+            checked_directory_blocklist=(configuration.ignore_all_errors),
             debug=infer_arguments.debug_infer,
             excludes=configuration.excludes,
             extensions=configuration.get_valid_extension_suffixes(),
@@ -965,7 +962,7 @@ def _annotate_in_place(
             pass
 
 
-def run_infer(
+def run(
     configuration: configuration_module.Configuration,
     infer_arguments: command_arguments.InferArguments,
 ) -> commands.ExitCode:
@@ -1023,18 +1020,3 @@ def run_infer(
                     number_of_workers=configuration.get_number_of_workers(),
                 )
     return commands.ExitCode.SUCCESS
-
-
-def run(
-    configuration: configuration_module.Configuration,
-    infer_arguments: command_arguments.InferArguments,
-) -> commands.ExitCode:
-    try:
-        return run_infer(configuration, infer_arguments)
-    except commands.ClientException:
-        raise
-    except Exception as error:
-        traceback.print_exc(file=sys.stderr)
-        raise commands.ClientException(
-            f"Exception occurred during Pyre infer: {error}"
-        ) from error

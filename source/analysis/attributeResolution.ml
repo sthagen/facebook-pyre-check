@@ -2578,15 +2578,8 @@ class base class_metadata_environment dependency =
             (Reference.show name)
           |> List.filter_map ~f:class_summary
         in
-        let total =
-          ClassHierarchy.is_total_typed_dictionary
-            ~class_hierarchy:
-              (ClassHierarchyEnvironment.ReadOnly.class_hierarchy
-                 ?dependency
-                 (class_hierarchy_environment class_metadata_environment))
-            class_name
-        in
-        let base_typed_dictionary_definition =
+        let base_typed_dictionary_definition fields =
+          let total = Type.TypedDictionary.are_fields_total fields in
           match class_summary (Type.TypedDictionary.class_name ~total) with
           | Some definition -> definition
           | None -> failwith "Expected to find TypedDictionary"
@@ -2604,12 +2597,11 @@ class base class_metadata_environment dependency =
             ~include_generated_attributes
             { Node.value = { bases = { ClassSummary.base_classes; _ }; _ } as class_summary; _ }
           =
-          let required =
-            not
-              (List.exists base_classes ~f:(fun base_expression ->
-                   String.equal
-                     (Expression.show base_expression)
-                     (Type.TypedDictionary.class_name ~total:false)))
+          let has_non_total_typed_dictionary_base_class =
+            List.exists base_classes ~f:(fun base_expression ->
+                String.equal
+                  (Expression.show base_expression)
+                  (Type.TypedDictionary.class_name ~total:false))
           in
           ClassSummary.attributes ~include_generated_attributes ~in_test class_summary
           |> Identifier.SerializableMap.bindings
@@ -2620,16 +2612,18 @@ class base class_metadata_environment dependency =
                      ?defined:(Some true)
                      ~accessed_via_metaclass
                      (Node.value field_attribute),
-                   required ))
+                   has_non_total_typed_dictionary_base_class ))
         in
-        let attribute_to_typed_dictionary_field (attribute, required) =
+        let attribute_to_typed_dictionary_field
+            (attribute, has_non_total_typed_dictionary_base_class)
+          =
           match AnnotatedAttribute.uninstantiated_annotation attribute with
           | { UninstantiatedAnnotation.kind = Attribute annotation; _ } ->
               Some
                 (Type.TypedDictionary.create_field
-                   ~name:(AnnotatedAttribute.name attribute)
                    ~annotation
-                   ~required)
+                   ~has_non_total_typed_dictionary_base_class
+                   (AnnotatedAttribute.name attribute))
           | _ -> None
         in
         let keep_last_declarations fields =
@@ -2697,7 +2691,8 @@ class base class_metadata_environment dependency =
         let all_special_methods =
           constructor
           ::
-          (get_field_attributes ~include_generated_attributes:true base_typed_dictionary_definition
+          (base_typed_dictionary_definition fields
+          |> get_field_attributes ~include_generated_attributes:true
           |> List.filter_map ~f:overload_method)
         in
         List.iter ~f:(UninstantiatedAttributeTable.add table) all_special_methods
@@ -4610,7 +4605,7 @@ module ParseAnnotationCache = struct
     module Key = SharedMemoryKeys.ParseAnnotationKey
 
     module Value = struct
-      type t = Type.t [@@deriving compare]
+      type t = Type.t [@@deriving eq]
 
       let prefix = Prefix.make ()
 
@@ -4666,13 +4661,11 @@ module MetaclassCache = struct
 
       let to_string = show
 
-      let compare = compare
-
       let from_string = Fn.id
     end
 
     module Value = struct
-      type t = Type.t option [@@deriving compare]
+      type t = Type.t option [@@deriving equal]
 
       let prefix = Prefix.make ()
 
@@ -4729,6 +4722,8 @@ module AttributeCache = struct
       let prefix = Prefix.make ()
 
       let description = "attributes"
+
+      let equal = Memory.equal_from_compare compare
     end
 
     module KeySet = SharedMemoryKeys.AttributeTableKey.Set
@@ -4816,7 +4811,7 @@ module GlobalAnnotationCache = struct
 
       let description = "Global"
 
-      let compare = Option.compare Global.compare
+      let equal = Memory.equal_from_compare (Option.compare Global.compare)
     end
 
     type trigger = Reference.t [@@deriving sexp, compare]

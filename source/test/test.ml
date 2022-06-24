@@ -1023,9 +1023,6 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
             class GenericMeta(type): ...
 
         if sys.version_info >= (3, 10):
-          class ParamSpec:
-              __name__: str
-              def __init__(self, name: str) -> None: ...
           Concatenate: _SpecialForm = ...
           TypeAlias: _SpecialForm = ...
           TypeGuard: _SpecialForm = ...
@@ -1167,6 +1164,9 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
             def __init__(self, *args: object, **kwargs: object) -> None: ...
 
         LiteralString: _SpecialForm = ...
+
+        Required: _SpecialForm = ...
+        NotRequired: _SpecialForm = ...
       |}
     );
     "asyncio/coroutines.pyi", {|
@@ -1328,6 +1328,9 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         TypeAlias: _SpecialForm = ...
 
         TypeGuard: _SpecialForm = ...
+
+        Required: _SpecialForm = ...
+        NotRequired: _SpecialForm = ...
         |}
     );
     ( "collections.pyi",
@@ -2682,7 +2685,7 @@ let mock_scheduler () =
 module ScratchProject = struct
   type t = {
     context: test_ctxt;
-    configuration: Configuration.Analysis.t;
+    controls: EnvironmentControls.t;
     type_environment: TypeEnvironment.t;
   }
 
@@ -2709,6 +2712,9 @@ module ScratchProject = struct
       ?(include_typeshed_stubs = true)
       ?(include_helper_builtins = true)
       ?(in_memory = true)
+      ?(populate_call_graph = false)
+      ?debug
+      ?strict
       sources
     =
     let local_root, external_root, log_directory =
@@ -2726,7 +2732,7 @@ module ScratchProject = struct
         let log_directory = bracket_tmpdir context in
         local_root, external_root, log_directory
     in
-    let configuration =
+    let controls =
       Configuration.Analysis.create
         ~local_root
         ~source_paths:[SearchPath.Root local_root]
@@ -2738,7 +2744,10 @@ module ScratchProject = struct
         ~constraint_solving_style
         ~show_error_traces
         ~parallel:false
+        ?strict
+        ?debug
         ()
+      |> EnvironmentControls.create ~populate_call_graph
     in
     let external_sources =
       if include_typeshed_stubs then
@@ -2757,7 +2766,7 @@ module ScratchProject = struct
           List.map sources ~f:(to_module_path_code_pair ~is_external:false)
           @ List.map external_sources ~f:(to_module_path_code_pair ~is_external:true)
         in
-        TypeEnvironment.create_for_testing configuration module_path_code_pairs
+        TypeEnvironment.create_for_testing controls module_path_code_pairs
       else
         let add_source ~root (relative, content) =
           let content = trim_extra_indentation content in
@@ -2766,7 +2775,7 @@ module ScratchProject = struct
         in
         List.iter sources ~f:(add_source ~root:local_root);
         List.iter external_sources ~f:(add_source ~root:external_root);
-        TypeEnvironment.create configuration
+        TypeEnvironment.create controls
     in
     let () =
       let ast_environment = TypeEnvironment.ast_environment type_environment in
@@ -2779,16 +2788,15 @@ module ScratchProject = struct
       (* Clean shared memory up after the test *)
       OUnit2.bracket set_up_shared_memory tear_down_shared_memory context
     in
-    { context; configuration; type_environment }
+    { context; controls; type_environment }
 
+
+  let configuration_of { controls; _ } = EnvironmentControls.configuration controls
 
   (* Incremental checks already call ModuleTracker.update, so we don't need to update the state
      here. *)
-  let add_source
-      { configuration = { Configuration.Analysis.source_paths; search_paths; _ }; _ }
-      ~is_external
-      (relative, content)
-    =
+  let add_source project ~is_external (relative, content) =
+    let { Configuration.Analysis.source_paths; search_paths; _ } = configuration_of project in
     let path =
       let root =
         if is_external then
@@ -2820,8 +2828,6 @@ module ScratchProject = struct
 
   let module_tracker project = ast_environment project |> AstEnvironment.ReadOnly.module_tracker
 
-  let configuration_of { configuration; _ } = configuration
-
   let module_paths_of project = module_tracker project |> ModuleTracker.ReadOnly.module_paths
 
   let qualifiers_of project = module_paths_of project |> List.map ~f:ModulePath.qualifier
@@ -2846,27 +2852,23 @@ module ScratchProject = struct
     { BuiltGlobalEnvironment.sources; global_environment }
 
 
-  let build_type_environment ?call_graph_builder ({ type_environment; _ } as project) =
+  let build_type_environment ({ type_environment; _ } as project) =
     let sources = get_project_sources project in
-    let configuration = configuration_of project in
     List.map sources ~f:(fun { Source.module_path = { ModulePath.qualifier; _ }; _ } -> qualifier)
     |> TypeEnvironment.populate_for_modules
          ~scheduler:(Scheduler.create_sequential ())
-         ~configuration
-         ?call_graph_builder
          type_environment;
     { BuiltTypeEnvironment.sources; type_environment = TypeEnvironment.read_only type_environment }
 
 
-  let build_type_environment_and_postprocess ?call_graph_builder project =
-    let built_type_environment = build_type_environment ?call_graph_builder project in
+  let build_type_environment_and_postprocess project =
+    let built_type_environment = build_type_environment project in
     let errors =
       List.map
         built_type_environment.sources
         ~f:(fun { Source.module_path = { ModulePath.qualifier; _ }; _ } -> qualifier)
       |> Postprocessing.run
            ~scheduler:(Scheduler.create_sequential ())
-           ~configuration:(configuration_of project)
            ~environment:built_type_environment.type_environment
     in
     built_type_environment, errors
@@ -2884,13 +2886,15 @@ module ScratchProject = struct
       (module TypeCheck.DummyContext)
 
 
-  let add_file { configuration = { Configuration.Analysis.local_root; _ }; _ } content ~relative =
+  let add_file project content ~relative =
+    let { Configuration.Analysis.local_root; _ } = configuration_of project in
     let content = trim_extra_indentation content in
     let file = File.create ~content (PyrePath.create_relative ~root:local_root ~relative) in
     File.write file
 
 
-  let delete_file { configuration = { Configuration.Analysis.local_root; _ }; _ } ~relative =
+  let delete_file project ~relative =
+    let { Configuration.Analysis.local_root; _ } = configuration_of project in
     PyrePath.create_relative ~root:local_root ~relative |> PyrePath.absolute |> Core.Unix.remove
 
 
@@ -2946,7 +2950,7 @@ let assert_errors
 
   let descriptions =
     let errors =
-      let configuration, sources, ast_environment, environment =
+      let sources, ast_environment, environment =
         let project =
           let external_sources =
             List.map update_environment_with ~f:(fun { handle; source } -> handle, source)
@@ -2956,24 +2960,23 @@ let assert_errors
             ~constraint_solving_style
             ~external_sources
             ~in_memory
+            ~strict
+            ~debug
             [handle, source]
         in
         let { ScratchProject.BuiltGlobalEnvironment.sources; global_environment } =
           ScratchProject.build_global_environment project
         in
-        let configuration = ScratchProject.configuration_of project in
         let { ScratchProject.type_environment; _ } = project in
-        ( configuration,
-          sources,
+        ( sources,
           AnnotatedGlobalEnvironment.ReadOnly.ast_environment global_environment,
           type_environment )
       in
-      let configuration = { configuration with debug; strict } in
       let source =
         List.find_exn sources ~f:(fun { Source.module_path = { ModulePath.relative; _ }; _ } ->
             String.equal handle relative)
       in
-      check ~configuration ~environment ~source
+      check ~environment ~source
       |> List.map
            ~f:
              (AnalysisError.instantiate
@@ -3012,22 +3015,58 @@ let assert_errors
   assert_equal ~cmp:(List.equal String.equal) ~printer:(String.concat ~sep:"\n") errors descriptions
 
 
-let assert_equivalent_attributes ~context source expected =
-  let handle = "test.py" in
-  let attributes class_type source =
+let assert_instantiated_attribute_equal expected actual =
+  let pp_as_sexps format l =
+    List.map l ~f:Annotated.Attribute.sexp_of_instantiated
+    |> List.map ~f:Sexp.to_string_hum
+    |> String.concat ~sep:"\n"
+    |> Format.fprintf format "%s\n"
+  in
+  let simple_print l =
+    let simple attribute =
+      let annotation = Annotated.Attribute.annotation attribute |> Annotation.annotation in
+      let name = Annotated.Attribute.name attribute in
+      Printf.sprintf "%s, %s" name (Type.show annotation)
+    in
+    List.map l ~f:simple |> String.concat ~sep:"\n"
+  in
+  assert_equal
+    ~cmp:[%compare.equal: Annotated.Attribute.instantiated list]
+    ~printer:simple_print
+    ~pp_diff:(diff ~print:pp_as_sexps)
+    expected
+    actual
+
+
+(* Assert that the class [class_name] in [source], after all transformations, has attributes
+   equivalent to the class [class_name] in [expected_equivalent_class_source].
+
+   This is useful when Pyre adds, removes, or modifies the original class's attributes, e.g., by
+   adding dunder methods. *)
+let assert_equivalent_attributes
+    ~context
+    ?(assert_attribute_equal = assert_instantiated_attribute_equal)
+    ~source
+    ~class_name
+    expected_equivalent_class_source
+  =
+  let module_name = "test" in
+  let attributes source =
     Memory.reset_shared_memory ();
     let { ScratchProject.BuiltGlobalEnvironment.global_environment; _ } =
-      ScratchProject.setup ~context [handle, source] |> ScratchProject.build_global_environment
+      ScratchProject.setup ~context [Format.asprintf "%s.py" module_name, source]
+      |> ScratchProject.build_global_environment
     in
     let global_resolution = GlobalResolution.create global_environment in
     let compare_by_name left right =
       String.compare (Annotated.Attribute.name left) (Annotated.Attribute.name right)
     in
-    Type.split class_type
-    |> fst
-    |> Type.primitive_name
-    >>= GlobalResolution.attributes ~transitive:false ~resolution:global_resolution
-    |> (fun attributes -> Option.value_exn attributes)
+    Format.asprintf "%s.%s" module_name class_name
+    |> GlobalResolution.attributes ~transitive:false ~resolution:global_resolution
+    |> (fun attributes ->
+         Option.value_exn
+           ~message:(Format.asprintf "Expected to find class `%s` in `%s`" class_name source)
+           attributes)
     |> List.sort ~compare:compare_by_name
     |> List.map
          ~f:
@@ -3035,42 +3074,7 @@ let assert_equivalent_attributes ~context source expected =
               ~resolution:global_resolution
               ~accessed_through_class:false)
   in
-  let class_names =
-    let expected =
-      List.map expected ~f:(fun definition -> parse ~handle definition |> Preprocessing.preprocess)
-    in
-    let get_name_if_class { Node.value; _ } =
-      match value with
-      | Statement.Class { Class.name; _ } -> Some (Reference.show name)
-      | _ -> None
-    in
-    List.map ~f:Source.statements expected
-    |> List.filter_map ~f:List.hd
-    |> List.filter_map ~f:get_name_if_class
-    |> List.map ~f:(fun name -> Type.Primitive name)
-  in
-  let assert_class_equal class_type expected =
-    let pp_as_sexps format l =
-      List.map l ~f:Annotated.Attribute.sexp_of_instantiated
-      |> List.map ~f:Sexp.to_string_hum
-      |> String.concat ~sep:"\n"
-      |> Format.fprintf format "%s\n"
-    in
-    let simple_print l =
-      let simple attribute =
-        let annotation = Annotated.Attribute.annotation attribute |> Annotation.annotation in
-        let name = Annotated.Attribute.name attribute in
-        Printf.sprintf "%s, %s" name (Type.show annotation)
-      in
-      List.map l ~f:simple |> String.concat ~sep:"\n"
-    in
-    assert_equal
-      ~printer:simple_print
-      ~pp_diff:(diff ~print:pp_as_sexps)
-      (attributes class_type expected)
-      (attributes class_type source)
-  in
-  List.iter2_exn ~f:assert_class_equal class_names expected
+  assert_attribute_equal (attributes expected_equivalent_class_source) (attributes source)
 
 
 module MockClassHierarchyHandler = struct

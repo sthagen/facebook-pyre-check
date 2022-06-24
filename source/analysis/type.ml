@@ -6129,7 +6129,25 @@ module TypedDictionary = struct
 
   let anonymous fields = { name = "$anonymous"; fields }
 
-  let create_field ~name ~annotation ~required = { name; annotation; required }
+  let create_field ~annotation ~has_non_total_typed_dictionary_base_class name =
+    let annotation, required =
+      match annotation with
+      | Parametric
+          {
+            name = "typing_extensions.NotRequired" | "typing.NotRequired";
+            parameters = [Single annotation];
+          } ->
+          annotation, false
+      | Parametric
+          {
+            name = "typing_extensions.Required" | "typing.Required";
+            parameters = [Single annotation];
+          } ->
+          annotation, true
+      | _ -> annotation, not has_non_total_typed_dictionary_base_class
+    in
+    { name; annotation; required }
+
 
   let are_fields_total = are_fields_total
 
@@ -6164,9 +6182,11 @@ module TypedDictionary = struct
     List.exists right_fields ~f:found_collision
 
 
-  let self_parameter = CallableParameter.Named { name = "self"; annotation = Top; default = false }
+  let self_parameter class_name =
+    CallableParameter.Named { name = "self"; annotation = Primitive class_name; default = false }
 
-  let field_named_parameters ?(all_default = false) fields =
+
+  let field_named_parameters ?(all_default = false) ~class_name fields =
     let field_to_argument { name; annotation; required } =
       Record.Callable.RecordParameter.KeywordOnly
         {
@@ -6175,25 +6195,30 @@ module TypedDictionary = struct
           default = all_default || not required;
         }
     in
-    List.map ~f:field_to_argument fields |> fun parameters -> Defined (self_parameter :: parameters)
+    let required_fields, non_required_fields =
+      List.partition_tf fields ~f:(fun { required; _ } -> required)
+    in
+    required_fields @ non_required_fields
+    |> List.map ~f:field_to_argument
+    |> fun parameters -> Defined (self_parameter class_name :: parameters)
 
 
   let constructor ~name ~fields =
-    let annotation = Primitive name in
     {
       Callable.kind = Named (Reference.create "__init__");
       implementation = { annotation = Top; parameters = Undefined };
       overloads =
         [
-          { annotation; parameters = field_named_parameters fields };
+          { annotation = none; parameters = field_named_parameters ~class_name:name fields };
           {
-            annotation;
+            annotation = none;
             parameters =
               Defined
                 [
-                  self_parameter;
                   Record.Callable.RecordParameter.PositionalOnly
-                    { index = 0; annotation; default = false };
+                    { index = 0; annotation = Primitive name; default = false };
+                  Record.Callable.RecordParameter.PositionalOnly
+                    { index = 1; annotation = Primitive name; default = false };
                 ];
           };
         ];
@@ -6234,7 +6259,7 @@ module TypedDictionary = struct
   let common_special_methods ~class_name =
     let getitem_overloads =
       let overload { name; annotation; _ } =
-        { annotation; parameters = Defined [self_parameter; key_parameter name] }
+        { annotation; parameters = Defined [self_parameter class_name; key_parameter name] }
       in
       List.map ~f:overload
     in
@@ -6245,7 +6270,9 @@ module TypedDictionary = struct
           parameters =
             Defined
               [
-                self_parameter; key_parameter name; Named { name = "v"; annotation; default = false };
+                self_parameter class_name;
+                key_parameter name;
+                Named { name = "v"; annotation; default = false };
               ];
         }
       in
@@ -6256,14 +6283,14 @@ module TypedDictionary = struct
         [
           {
             annotation = union [annotation; NoneType];
-            parameters = Defined [self_parameter; key_parameter name];
+            parameters = Defined [self_parameter class_name; key_parameter name];
           };
           {
             annotation = Union [annotation; Variable (Variable.Unary.create "_T")];
             parameters =
               Defined
                 [
-                  self_parameter;
+                  self_parameter class_name;
                   key_parameter name;
                   Named
                     {
@@ -6284,7 +6311,7 @@ module TypedDictionary = struct
           parameters =
             Defined
               [
-                self_parameter;
+                self_parameter class_name;
                 key_parameter name;
                 Named { name = "default"; annotation; default = false };
               ];
@@ -6294,15 +6321,19 @@ module TypedDictionary = struct
     in
     let update_overloads fields =
       [
-        { annotation = none; parameters = field_named_parameters ~all_default:true fields };
+        {
+          annotation = none;
+          parameters = field_named_parameters ~all_default:true ~class_name fields;
+        };
         {
           annotation = none;
           parameters =
             Defined
               [
-                self_parameter;
                 Record.Callable.RecordParameter.PositionalOnly
                   { index = 0; annotation = Primitive class_name; default = false };
+                Record.Callable.RecordParameter.PositionalOnly
+                  { index = 1; annotation = Primitive class_name; default = false };
               ];
         };
       ]
@@ -6316,20 +6347,20 @@ module TypedDictionary = struct
     ]
 
 
-  let non_total_special_methods =
+  let non_total_special_methods class_name =
     let pop_overloads =
       let overloads { name; annotation; required; _ } =
         if required then
           []
         else
           [
-            { annotation; parameters = Defined [self_parameter; key_parameter name] };
+            { annotation; parameters = Defined [self_parameter class_name; key_parameter name] };
             {
               annotation = Union [annotation; Variable (Variable.Unary.create "_T")];
               parameters =
                 Defined
                   [
-                    self_parameter;
+                    self_parameter class_name;
                     key_parameter name;
                     Named
                       {
@@ -6347,7 +6378,10 @@ module TypedDictionary = struct
       let overload { name; annotation = _; required } =
         Option.some_if
           (not required)
-          { annotation = none; parameters = Defined [self_parameter; key_parameter name] }
+          {
+            annotation = none;
+            parameters = Defined [self_parameter class_name; key_parameter name];
+          }
       in
       List.filter_map ~f:overload fields
     in
@@ -6363,7 +6397,7 @@ module TypedDictionary = struct
       if total then
         common_special_methods ~class_name
       else
-        non_total_special_methods @ common_special_methods ~class_name
+        non_total_special_methods class_name @ common_special_methods ~class_name
     in
     List.find special_methods ~f:(fun { name; _ } -> String.equal name method_name)
     >>| fun { overloads; _ } -> overloads fields
@@ -6374,7 +6408,7 @@ module TypedDictionary = struct
       if total then
         common_special_methods ~class_name
       else
-        non_total_special_methods @ common_special_methods ~class_name
+        non_total_special_methods class_name @ common_special_methods ~class_name
     in
     List.find special_methods ~f:(fun { name; _ } -> String.equal name method_name)
     >>= (fun { special_index; _ } -> special_index)
@@ -6390,12 +6424,13 @@ module TypedDictionary = struct
 
   let defines ~total ~t_self_expression =
     let open Statement in
+    let class_name = class_name ~total in
     let define ?self_parameter ?return_annotation name =
       Statement.Define
         {
           signature =
             {
-              name = Reference.create_from_list [class_name ~total; name];
+              name = Reference.create_from_list [class_name; name];
               parameters =
                 [
                   { ExpressionParameter.name = "self"; value = None; annotation = self_parameter }
@@ -6405,7 +6440,7 @@ module TypedDictionary = struct
               return_annotation;
               async = false;
               generator = false;
-              parent = Some (Reference.create (class_name ~total));
+              parent = Some (Reference.create class_name);
               nesting_define = None;
             };
           captures = [];
@@ -6423,14 +6458,13 @@ module TypedDictionary = struct
           ~return_annotation:(expression (iterator string))
           "__iter__";
       ]
-      @ List.map
-          (common_special_methods ~class_name:(class_name ~total))
-          ~f:(fun { name; _ } -> define name)
+      @ List.map (common_special_methods ~class_name) ~f:(fun { name; _ } -> define name)
     in
     if total then
       common_methods
     else
-      common_methods @ List.map non_total_special_methods ~f:(fun { name; _ } -> define name)
+      common_methods
+      @ (non_total_special_methods class_name |> List.map ~f:(fun { name; _ } -> define name))
 end
 
 (* Transform tuples and callables so they are printed correctly when running infer and click to fix. *)

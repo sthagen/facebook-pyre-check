@@ -20,7 +20,7 @@ module type In = sig
 
   module Key : SexpableKeyType
 
-  module Value : Memory.ComparableValueType
+  module Value : Memory.ValueTypeWithEquivalence
 
   module KeySet : Set.S with type Elt.t = Key.t
 
@@ -69,15 +69,9 @@ module Make (In : In) = struct
 
   include EnvironmentTable
 
-  let create ast_environment =
-    let table = EnvironmentTable.create ast_environment in
-    let { Configuration.Analysis.incremental_style; _ } = EnvironmentTable.configuration table in
-    let () =
-      UnmanagedCache.enabled :=
-        match incremental_style with
-        | FineGrained -> false
-        | Shallow -> true
-    in
+  let create controls =
+    let table = EnvironmentTable.create controls in
+    let () = UnmanagedCache.enabled := not (EnvironmentControls.track_dependencies controls) in
     table
 
 

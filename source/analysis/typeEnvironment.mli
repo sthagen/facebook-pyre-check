@@ -8,14 +8,10 @@
 open Ast
 module Error = AnalysisError
 
-module ReadOnly : sig
+module TypeEnvironmentReadOnly : sig
   type t
 
-  val create
-    :  ?get_errors:(Reference.t -> Error.t list) ->
-    ?get_local_annotations:(Reference.t -> LocalAnnotationMap.ReadOnly.t option) ->
-    AnnotatedGlobalEnvironment.ReadOnly.t ->
-    t
+  val controls : t -> EnvironmentControls.t
 
   val global_environment : t -> AnnotatedGlobalEnvironment.ReadOnly.t
 
@@ -23,20 +19,29 @@ module ReadOnly : sig
 
   val ast_environment : t -> AstEnvironment.ReadOnly.t
 
+  val module_tracker : t -> ModuleTracker.ReadOnly.t
+
   val unannotated_global_environment : t -> UnannotatedGlobalEnvironment.ReadOnly.t
 
-  val get_errors : t -> Reference.t -> Error.t list
+  val get_errors
+    :  t ->
+    ?dependency:SharedMemoryKeys.DependencyKey.registered ->
+    Reference.t ->
+    Error.t list
 
-  val get_local_annotations : t -> Reference.t -> LocalAnnotationMap.ReadOnly.t option
+  val get_local_annotations
+    :  t ->
+    ?dependency:SharedMemoryKeys.DependencyKey.registered ->
+    Reference.t ->
+    LocalAnnotationMap.ReadOnly.t option
 
   val get_or_recompute_local_annotations : t -> Reference.t -> LocalAnnotationMap.ReadOnly.t option
 end
 
-type t
-
-val create : Configuration.Analysis.t -> t
-
-val create_for_testing : Configuration.Analysis.t -> (Ast.ModulePath.t * string) list -> t
+include
+  Environment.S
+    with module ReadOnly = TypeEnvironmentReadOnly
+     and module PreviousEnvironment = AnnotatedGlobalEnvironment
 
 val global_environment : t -> AnnotatedGlobalEnvironment.t
 
@@ -44,30 +49,6 @@ val ast_environment : t -> AstEnvironment.t
 
 val module_tracker : t -> ModuleTracker.t
 
-val get_errors : t -> Reference.t -> Error.t list
+val populate_for_definitions : scheduler:Scheduler.t -> t -> Ast.Reference.t list -> unit
 
-val get_local_annotations : t -> Reference.t -> LocalAnnotationMap.ReadOnly.t option
-
-val invalidate : t -> Reference.t list -> unit
-
-val read_only : t -> ReadOnly.t
-
-val populate_for_definitions
-  :  scheduler:Scheduler.t ->
-  configuration:Configuration.Analysis.t ->
-  ?call_graph_builder:(module Callgraph.Builder) ->
-  t ->
-  (Ast.Reference.t * SharedMemoryKeys.DependencyKey.registered option) list ->
-  unit
-
-val populate_for_modules
-  :  scheduler:Scheduler.t ->
-  configuration:Configuration.Analysis.t ->
-  ?call_graph_builder:(module Callgraph.Builder) ->
-  t ->
-  Ast.Reference.t list ->
-  unit
-
-val store : t -> unit
-
-val load : Configuration.Analysis.t -> t
+val populate_for_modules : scheduler:Scheduler.t -> t -> Ast.Reference.t list -> unit

@@ -52,6 +52,8 @@ module ReadOnly = struct
 
   let ast_environment { ast_environment; _ } = ast_environment
 
+  let controls { ast_environment; _ } = AstEnvironment.ReadOnly.controls ast_environment
+
   let unannotated_global_environment = Fn.id
 
   let all_classes { all_classes; _ } = all_classes ()
@@ -275,21 +277,19 @@ end
 
 module UpdateResult = struct
   type t = {
-    define_additions: Reference.Set.t;
     triggered_dependencies: DependencyKey.RegisteredSet.t;
-    invalidated_modules: Reference.t list;
-    module_updates: ModuleTracker.IncrementalUpdate.t list;
+    upstream: AstEnvironment.UpdateResult.t;
   }
-
-  let define_additions { define_additions; _ } = define_additions
 
   let locally_triggered_dependencies { triggered_dependencies; _ } = triggered_dependencies
 
-  let all_triggered_dependencies environment = [locally_triggered_dependencies environment]
+  let all_triggered_dependencies { triggered_dependencies; upstream; _ } =
+    [triggered_dependencies; AstEnvironment.UpdateResult.triggered_dependencies upstream]
 
-  let invalidated_modules { invalidated_modules; _ } = invalidated_modules
 
-  let module_updates { module_updates; _ } = module_updates
+  let invalidated_modules { upstream; _ } = AstEnvironment.UpdateResult.invalidated_modules upstream
+
+  let module_updates { upstream; _ } = AstEnvironment.UpdateResult.module_updates upstream
 
   let unannotated_global_environment_update_result = Fn.id
 end
@@ -395,7 +395,7 @@ module FromReadOnlyUpstream = struct
 
     let description = "Module"
 
-    let compare = Module.compare
+    let equal = Module.equal
   end
 
   module Modules = struct
@@ -411,7 +411,7 @@ module FromReadOnlyUpstream = struct
   end
 
   module DefineNamesValue = struct
-    type t = Reference.t list [@@deriving compare]
+    type t = Reference.t list [@@deriving equal]
 
     let prefix = Prefix.make ()
 
@@ -443,7 +443,7 @@ module FromReadOnlyUpstream = struct
 
     let description = "ClassSummary"
 
-    let compare = Node.compare ClassSummary.compare
+    let equal = Memory.equal_from_compare (Node.compare ClassSummary.compare)
   end
 
   module ClassSummaries = struct
@@ -465,7 +465,8 @@ module FromReadOnlyUpstream = struct
 
     let prefix = Prefix.make ()
 
-    let compare = FunctionDefinition.compare
+    let equal definition0 definition1 =
+      Int.equal 0 (FunctionDefinition.compare definition0 definition1)
   end
 
   module FunctionDefinitions = struct
@@ -487,7 +488,7 @@ module FromReadOnlyUpstream = struct
 
     let description = "UnannotatedGlobal"
 
-    let compare = UnannotatedGlobal.compare
+    let equal = Memory.equal_from_compare UnannotatedGlobal.compare
   end
 
   module UnannotatedGlobals = struct
@@ -525,7 +526,7 @@ module FromReadOnlyUpstream = struct
       }
 
 
-    let configuration { ast_environment; _ } = AstEnvironment.ReadOnly.configuration ast_environment
+    let controls { ast_environment; _ } = AstEnvironment.ReadOnly.controls ast_environment
   end
 
   include ReadWrite
@@ -898,12 +899,8 @@ module FromReadOnlyUpstream = struct
     }
 
 
-  let update
-      ({ ast_environment; key_tracker; define_names; _ } as environment)
-      ~scheduler
-      invalidated_modules
-      module_updates
-    =
+  let update ({ ast_environment; key_tracker; define_names; _ } as environment) ~scheduler upstream =
+    let invalidated_modules = AstEnvironment.UpdateResult.invalidated_modules upstream in
     let map sources =
       let register qualifier =
         AstEnvironment.ReadOnly.get_processed_source
@@ -938,7 +935,7 @@ module FromReadOnlyUpstream = struct
       KeyTracker.get_previous_keys_and_clear key_tracker invalidated_modules
     in
     let previous_defines_list = DefineNames.get_define_names define_names invalidated_modules in
-    let define_additions, triggered_dependencies =
+    let triggered_dependencies =
       Profiling.track_duration_and_shared_memory_with_dynamic_tags
         "TableUpdate(Unannotated globals)"
         ~f:(fun _ ->
@@ -988,9 +985,9 @@ module FromReadOnlyUpstream = struct
               "number_of_triggered_dependencies", triggered_dependencies_size;
             ]
           in
-          { Profiling.result = define_additions, triggered_dependencies; tags })
+          { Profiling.result = triggered_dependencies; tags })
     in
-    { UpdateResult.define_additions; triggered_dependencies; invalidated_modules; module_updates }
+    { UpdateResult.triggered_dependencies; upstream }
 end
 
 module Base = struct
@@ -999,8 +996,8 @@ module Base = struct
     from_read_only_upstream: FromReadOnlyUpstream.t;
   }
 
-  let create configuration =
-    let ast_environment = AstEnvironment.create configuration in
+  let create controls =
+    let ast_environment = AstEnvironment.create controls in
     let from_read_only_upstream =
       AstEnvironment.read_only ast_environment |> FromReadOnlyUpstream.create
     in
@@ -1008,8 +1005,8 @@ module Base = struct
     { ast_environment; from_read_only_upstream }
 
 
-  let create_for_testing configuration module_path_code_pairs =
-    let ast_environment = AstEnvironment.create_for_testing configuration module_path_code_pairs in
+  let create_for_testing controls module_path_code_pairs =
+    let ast_environment = AstEnvironment.create_for_testing controls module_path_code_pairs in
     let from_read_only_upstream =
       AstEnvironment.read_only ast_environment |> FromReadOnlyUpstream.create
     in
@@ -1022,24 +1019,16 @@ module Base = struct
       ~scheduler
       artifact_paths
     =
-    let invalidated_modules, module_updates =
-      let update_result = AstEnvironment.update ~scheduler ast_environment artifact_paths in
-      ( AstEnvironment.UpdateResult.invalidated_modules update_result,
-        AstEnvironment.UpdateResult.module_updates update_result )
-    in
-    FromReadOnlyUpstream.update
-      from_read_only_upstream
-      ~scheduler
-      invalidated_modules
-      module_updates
+    let update_result = AstEnvironment.update ~scheduler ast_environment artifact_paths in
+    FromReadOnlyUpstream.update from_read_only_upstream ~scheduler update_result
 
 
   let read_only { from_read_only_upstream; _ } =
     FromReadOnlyUpstream.read_only from_read_only_upstream
 
 
-  let configuration { from_read_only_upstream; _ } =
-    FromReadOnlyUpstream.configuration from_read_only_upstream
+  let controls { from_read_only_upstream; _ } =
+    FromReadOnlyUpstream.controls from_read_only_upstream
 
 
   let ast_environment { ast_environment; _ } = ast_environment
@@ -1047,8 +1036,8 @@ module Base = struct
   (* All SharedMemory tables are populated and stored in separate, imperative steps that must be run
      before loading / after storing. These functions only handle serializing and deserializing the
      non-SharedMemory data *)
-  let load configuration =
-    let ast_environment = AstEnvironment.load configuration in
+  let load controls =
+    let ast_environment = AstEnvironment.load controls in
     let from_read_only_upstream =
       AstEnvironment.read_only ast_environment |> FromReadOnlyUpstream.create
     in
@@ -1075,39 +1064,27 @@ module Overlay = struct
 
   let module_tracker { ast_environment; _ } = AstEnvironment.Overlay.module_tracker ast_environment
 
-  let owns_qualifier environment qualifier =
-    ModuleTracker.Overlay.owns_qualifier (module_tracker environment) qualifier
-
-
-  let owns_reference environment reference =
-    Reference.possible_qualifiers reference |> List.exists ~f:(owns_qualifier environment)
-
-
-  let owns_qualified_class_name environment name =
-    Reference.create name |> owns_reference environment
-
-
   let update_overlaid_code
       ({ ast_environment; from_read_only_upstream; _ } as environment)
       ~code_updates
     =
-    let invalidated_modules, module_updates =
+    let filtered_update_result =
       let update_result =
         AstEnvironment.Overlay.update_overlaid_code ast_environment ~code_updates
       in
-      ( (* The invalidated_modules coming from AstEnvironment can include fanout to modules that
-           aren't part of the overlay due to wildcard imports, so they have to be filtered. *)
+      let filtered_invalidated_modules =
         AstEnvironment.UpdateResult.invalidated_modules update_result
-        |> List.filter ~f:(owns_qualifier environment),
-        (* The module_updates come directly from ModuleTracker and correspond exactly to changes in
-           `code_updates`, so they do not require filtering. *)
-        AstEnvironment.UpdateResult.module_updates update_result )
+        |> List.filter ~f:(module_tracker environment |> ModuleTracker.Overlay.owns_qualifier)
+      in
+      {
+        update_result with
+        AstEnvironment.UpdateResult.invalidated_modules = filtered_invalidated_modules;
+      }
     in
     FromReadOnlyUpstream.update
       from_read_only_upstream
       ~scheduler:(Scheduler.create_sequential ())
-      invalidated_modules
-      module_updates
+      filtered_update_result
 
 
   let read_only ({ parent; from_read_only_upstream; _ } as environment) =
@@ -1115,10 +1092,16 @@ module Overlay = struct
     let { ReadOnly.all_classes; all_indices; all_unannotated_globals; _ } = parent in
     let { ReadOnly.ast_environment; _ } = this_read_only in
     let if_owns ~owns ~f ?dependency key =
-      if owns environment key then
+      if owns key then
         f this_read_only ?dependency key
       else
         f parent ?dependency key
+    in
+    let owns_qualifier, owns_reference, owns_qualified_class_name =
+      let module_tracker = module_tracker environment in
+      ( ModuleTracker.Overlay.owns_qualifier module_tracker,
+        ModuleTracker.Overlay.owns_reference module_tracker,
+        ModuleTracker.Overlay.owns_identifier module_tracker )
     in
     {
       ReadOnly.ast_environment;

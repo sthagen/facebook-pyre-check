@@ -6078,9 +6078,20 @@ end
 
 module CheckResult = struct
   type t = {
-    errors: Error.t list;
-    local_annotations: LocalAnnotationMap.t option;
+    errors: Error.t list option;
+    local_annotations: LocalAnnotationMap.ReadOnly.t option;
   }
+
+  let errors { errors; _ } = errors
+
+  let local_annotations { local_annotations; _ } = local_annotations
+
+  let equal
+      { errors = errors0; local_annotations = local_annotations0 }
+      { errors = errors1; local_annotations = local_annotations1 }
+    =
+    [%compare.equal: Error.t list option] errors0 errors1
+    && [%equal: LocalAnnotationMap.ReadOnly.t option] local_annotations0 local_annotations1
 end
 
 module DummyContext = struct
@@ -6899,14 +6910,20 @@ let compute_local_annotations ~global_environment name =
 
 
 let check_define
-    ~configuration:{ Configuration.Analysis.debug; constraint_solving_style; _ }
+    ~type_check_controls:
+      {
+        EnvironmentControls.TypeCheckControls.constraint_solving_style;
+        include_type_errors;
+        include_local_annotations;
+        debug;
+      }
+    ~call_graph_builder:(module Builder : Callgraph.Builder)
     ~resolution
     ~qualifier
-    ~call_graph_builder:(module Builder : Callgraph.Builder)
     ({ Node.location; value = { Define.signature = { name; _ }; _ } as define } as define_node)
   =
-  try
-    let type_errors, local_annotations, callees =
+  let errors, local_annotations, callees =
+    try
       let module Context = struct
         let qualifier = qualifier
 
@@ -6923,65 +6940,73 @@ let check_define
         module Builder = Builder
       end
       in
-      exit_state ~resolution (module Context)
-    in
-    let uninitialized_local_errors =
-      if Define.is_toplevel define then
-        []
-      else
-        UninitializedLocalCheck.check_define ~qualifier define_node
-    in
-    (if not (Define.is_overloaded_function define) then
-       let caller =
-         if Define.is_property_setter define then
-           Callgraph.PropertySetterCaller name
-         else
-           Callgraph.FunctionCaller name
-       in
-       Option.iter callees ~f:(fun callees -> Callgraph.set ~caller ~callees));
-    { CheckResult.errors = List.append uninitialized_local_errors type_errors; local_annotations }
-  with
-  | ClassHierarchy.Untracked annotation ->
-      Statistics.event
-        ~name:"undefined type"
-        ~integers:[]
-        ~normals:
-          ["module", Reference.show qualifier; "define", Reference.show name; "type", annotation]
-        ();
-      if Define.dump define then
-        Log.dump "Analysis crashed because of untracked type `%s`." (Log.Color.red annotation);
-      let undefined_error =
-        Error.create
-          ~location:(Location.with_module ~module_reference:qualifier location)
-          ~kind:(Error.AnalysisFailure (UnexpectedUndefinedType annotation))
-          ~define:define_node
+      let type_errors, local_annotations, callees = exit_state ~resolution (module Context) in
+      let errors =
+        if include_type_errors then
+          let uninitialized_local_errors =
+            if Define.is_toplevel define then
+              []
+            else
+              UninitializedLocalCheck.check_define ~qualifier define_node
+          in
+          Some (List.append uninitialized_local_errors type_errors)
+        else
+          None
       in
-      { errors = [undefined_error]; local_annotations = None }
+      errors, local_annotations, callees
+    with
+    | ClassHierarchy.Untracked annotation ->
+        Statistics.event
+          ~name:"undefined type"
+          ~integers:[]
+          ~normals:
+            ["module", Reference.show qualifier; "define", Reference.show name; "type", annotation]
+          ();
+        if Define.dump define then
+          Log.dump "Analysis crashed because of untracked type `%s`." (Log.Color.red annotation);
+        let undefined_error =
+          Error.create
+            ~location:(Location.with_module ~module_reference:qualifier location)
+            ~kind:(Error.AnalysisFailure (UnexpectedUndefinedType annotation))
+            ~define:define_node
+        in
+        Some [undefined_error], None, None
+  in
+  (if not (Define.is_overloaded_function define) then
+     let caller =
+       if Define.is_property_setter define then
+         Callgraph.PropertySetterCaller name
+       else
+         Callgraph.FunctionCaller name
+     in
+     Option.iter callees ~f:(fun callees -> Callgraph.set ~caller ~callees));
+  let local_annotations =
+    if include_local_annotations then
+      Some
+        (Option.value local_annotations ~default:(LocalAnnotationMap.empty ())
+        |> LocalAnnotationMap.read_only)
+    else
+      None
+  in
+  { CheckResult.errors; local_annotations }
 
 
 let check_function_definition
-    ~configuration
+    ~type_check_controls
+    ~call_graph_builder
     ~resolution
     ~name
-    ?call_graph_builder
     { FunctionDefinition.body; siblings; qualifier }
   =
   let timer = Timer.start () in
 
-  let check_define =
-    let call_graph_builder =
-      match call_graph_builder with
-      | Some call_graph_builder -> call_graph_builder
-      | None -> (module Callgraph.DefaultBuilder : Callgraph.Builder)
-    in
-    check_define ~configuration ~resolution ~call_graph_builder ~qualifier
-  in
+  let check_define = check_define ~type_check_controls ~resolution ~qualifier ~call_graph_builder in
   let sibling_bodies = List.map siblings ~f:(fun { FunctionDefinition.Sibling.body; _ } -> body) in
   let sibling_results = List.map sibling_bodies ~f:(fun define_node -> check_define define_node) in
   let result =
     let aggregate_errors results =
-      List.fold results ~init:[] ~f:(fun errors_sofar { CheckResult.errors; _ } ->
-          List.append errors errors_sofar)
+      List.map results ~f:CheckResult.errors
+      |> List.fold ~init:(Some []) ~f:(Option.map2 ~f:List.append)
     in
     match body with
     | None -> { CheckResult.errors = aggregate_errors sibling_results; local_annotations = None }
@@ -7010,9 +7035,15 @@ let check_function_definition
   result
 
 
-let check_define_by_name ~configuration ~global_environment ?call_graph_builder (name, dependency) =
+let check_define_by_name
+    ~type_check_controls
+    ~call_graph_builder
+    ~global_environment
+    ~dependency
+    name
+  =
   let global_resolution = GlobalResolution.create global_environment ?dependency in
   (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
   let resolution = resolution global_resolution (module DummyContext) in
   GlobalResolution.function_definition global_resolution name
-  >>| check_function_definition ~configuration ~resolution ~name ?call_graph_builder
+  >>| check_function_definition ~type_check_controls ~call_graph_builder ~resolution ~name

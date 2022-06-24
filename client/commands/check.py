@@ -87,9 +87,7 @@ def create_check_arguments(
             checked_directory_allowlist=backend_arguments.get_checked_directory_allowlist(
                 configuration, source_paths
             ),
-            checked_directory_blocklist=(
-                configuration.get_existent_ignore_all_errors_paths()
-            ),
+            checked_directory_blocklist=(configuration.ignore_all_errors),
             debug=check_arguments.debug,
             excludes=configuration.excludes,
             extensions=configuration.get_valid_extension_suffixes(),
@@ -213,9 +211,4 @@ def run(
     configuration: configuration_module.Configuration,
     check_arguments: command_arguments.CheckArguments,
 ) -> commands.ExitCode:
-    try:
-        return run_check(configuration, check_arguments)
-    except Exception as error:
-        raise commands.ClientException(
-            f"Exception occurred during Pyre check: {error}"
-        ) from error
+    return run_check(configuration, check_arguments)

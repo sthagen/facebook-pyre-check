@@ -35,6 +35,8 @@ module ReadOnly : sig
 
   val ast_environment : t -> AstEnvironment.ReadOnly.t
 
+  val controls : t -> EnvironmentControls.t
+
   val unannotated_global_environment : t -> t
 
   (* These functions are not dependency tracked and should only be used:
@@ -130,8 +132,6 @@ module UpdateResult : sig
      preenvironment updates *)
   type t
 
-  val define_additions : t -> Reference.Set.t
-
   val locally_triggered_dependencies : t -> DependencyKey.RegisteredSet.t
 
   val invalidated_modules : t -> Reference.t list
@@ -145,13 +145,13 @@ end
 
 type t
 
-val create : Configuration.Analysis.t -> t
+val create : EnvironmentControls.t -> t
 
-val create_for_testing : Configuration.Analysis.t -> (Ast.ModulePath.t * string) list -> t
+val create_for_testing : EnvironmentControls.t -> (Ast.ModulePath.t * string) list -> t
 
 val ast_environment : t -> AstEnvironment.t
 
-val configuration : t -> Configuration.Analysis.t
+val controls : t -> EnvironmentControls.t
 
 val read_only : t -> ReadOnly.t
 
@@ -163,7 +163,7 @@ val update_this_and_all_preceding_environments
 
 val store : t -> unit
 
-val load : Configuration.Analysis.t -> t
+val load : EnvironmentControls.t -> t
 
 module Overlay : sig
   type t

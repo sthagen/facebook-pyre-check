@@ -90,14 +90,20 @@ val compute_local_annotations
 
 module CheckResult : sig
   type t = {
-    errors: Error.t list;
-    local_annotations: LocalAnnotationMap.t option;
+    errors: Error.t list option;
+    local_annotations: LocalAnnotationMap.ReadOnly.t option;
   }
+  [@@deriving equal]
+
+  val errors : t -> Error.t list option
+
+  val local_annotations : t -> LocalAnnotationMap.ReadOnly.t option
 end
 
 val check_define_by_name
-  :  configuration:Configuration.Analysis.t ->
+  :  type_check_controls:EnvironmentControls.TypeCheckControls.t ->
+  call_graph_builder:(module Callgraph.Builder) ->
   global_environment:AnnotatedGlobalEnvironment.ReadOnly.t ->
-  ?call_graph_builder:(module Callgraph.Builder) ->
-  Ast.Reference.t * SharedMemoryKeys.DependencyKey.registered option ->
+  dependency:SharedMemoryKeys.DependencyKey.registered option ->
+  Ast.Reference.t ->
   CheckResult.t option

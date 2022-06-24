@@ -12,311 +12,226 @@ open Test
 let test_transform_environment context =
   let assert_equivalent_attributes = assert_equivalent_attributes ~context in
   assert_equivalent_attributes
-    {|
+    ~source:{|
       import attr
       @attr.s
       class Foo:
         ...
     |}
-    [
-      {|
-        class Foo:
-          def __init__(self) -> None:
-            pass
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
-      |};
-    ];
-  assert_equivalent_attributes
+    ~class_name:"Foo"
     {|
+        class Foo:
+          def __init__(self) -> None: ...
+          def __repr__(self) -> str: ...
+          def __eq__(self, o: object) -> bool: ...
+          def __lt__(self, o: object) -> bool: ...
+          def __le__(self, o: object) -> bool: ...
+          def __gt__(self, o: object) -> bool: ...
+          def __ge__(self, o: object) -> bool: ...
+      |};
+  assert_equivalent_attributes
+    ~source:
+      {|
       import attr
       if 1 > 2:
         @attr.s
         class Foo:
           ...
     |}
-    [
-      {|
-        class Foo:
-          def __init__(self) -> None:
-            pass
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
-      |};
-    ];
-  assert_equivalent_attributes
+    ~class_name:"Foo"
     {|
+        class Foo:
+          def __init__(self) -> None: ...
+          def __repr__(self) -> str: ...
+          def __eq__(self, o: object) -> bool: ...
+          def __lt__(self, o: object) -> bool: ...
+          def __le__(self, o: object) -> bool: ...
+          def __gt__(self, o: object) -> bool: ...
+          def __ge__(self, o: object) -> bool: ...
+      |};
+  assert_equivalent_attributes
+    ~source:
+      {|
       import attr
       @attr.s
       class Foo:
-        def foo() -> None:
-          pass
+        def foo() -> None: ...
     |}
-    [
-      {|
+    ~class_name:"Foo"
+    {|
         # spacer
         class Foo:
-          def foo() -> None:
-            pass
-          def __init__(self) -> None:
-            pass
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
+          def foo() -> None: ...
+          def __init__(self) -> None: ...
+          def __repr__(self) -> str: ...
+          def __eq__(self, o: object) -> bool: ...
+          def __lt__(self, o: object) -> bool: ...
+          def __le__(self, o: object) -> bool: ...
+          def __gt__(self, o: object) -> bool: ...
+          def __ge__(self, o: object) -> bool: ...
       |};
-    ];
   assert_equivalent_attributes
-    {|
+    ~source:
+      {|
       import attr
       @attr.s
       class Foo:
-        def __init__(self) -> None:
-          pass
-        def __repr__(self) -> str:
-          pass
+        def __init__(self) -> None: ...
+        def __repr__(self) -> str: ...
     |}
-    [
-      {|
+    ~class_name:"Foo"
+    {|
        # spacer
        class Foo:
-         def __init__(self) -> None:
-           pass
-         def __repr__(self) -> str:
-           pass
-         def __eq__(self, o: object) -> bool:
-           pass
-         def __lt__(self, o: object) -> bool:
-           pass
-         def __le__(self, o: object) -> bool:
-           pass
-         def __gt__(self, o: object) -> bool:
-           pass
-         def __ge__(self, o: object) -> bool:
-           pass
+         def __init__(self) -> None: ...
+         def __repr__(self) -> str: ...
+         def __eq__(self, o: object) -> bool: ...
+         def __lt__(self, o: object) -> bool: ...
+         def __le__(self, o: object) -> bool: ...
+         def __gt__(self, o: object) -> bool: ...
+         def __ge__(self, o: object) -> bool: ...
       |};
-    ];
   assert_equivalent_attributes
-    {|
+    ~source:{|
       import attr
       @attr.s
       class Foo:
         name = 'abc'
     |}
-    [
-      {|
+    ~class_name:"Foo"
+    {|
         class Foo:
           name = 'abc'
           def __init__(self, name: str ='abc') -> None:
             self.name = name
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
+          def __repr__(self) -> str: ...
+          def __eq__(self, o: object) -> bool: ...
+          def __lt__(self, o: object) -> bool: ...
+          def __le__(self, o: object) -> bool: ...
+          def __gt__(self, o: object) -> bool: ...
+          def __ge__(self, o: object) -> bool: ...
       |};
-    ];
   assert_equivalent_attributes
-    {|
+    ~source:{|
       import attr
       @attr.s
       class Foo:
         name: str
     |}
-    [
-      {|
+    ~class_name:"Foo"
+    {|
         class Foo:
           name: str
           def __init__(self, name: str) -> None:
             self.name = name
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
+          def __repr__(self) -> str: ...
+          def __eq__(self, o: object) -> bool: ...
+          def __lt__(self, o: object) -> bool: ...
+          def __le__(self, o: object) -> bool: ...
+          def __gt__(self, o: object) -> bool: ...
+          def __ge__(self, o: object) -> bool: ...
       |};
-    ];
   assert_equivalent_attributes
-    {|
+    ~source:
+      {|
       import attr
       @attr.s
       class Foo:
         name: str
         age: int
-        def __init__(self) -> None:
-          pass
+        def __init__(self) -> None: ...
     |}
-    [
-      {|
+    ~class_name:"Foo"
+    {|
         class Foo:
           name: str
           age: int
-          def __init__(self) -> None:
-            pass
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
+          def __init__(self) -> None: ...
+          def __repr__(self) -> str: ...
+          def __eq__(self, o: object) -> bool: ...
+          def __lt__(self, o: object) -> bool: ...
+          def __le__(self, o: object) -> bool: ...
+          def __gt__(self, o: object) -> bool: ...
+          def __ge__(self, o: object) -> bool: ...
       |};
-    ];
-
   (* Boolean arguments *)
   assert_equivalent_attributes
-    {|
+    ~source:
+      {|
       import attr
       @attr.s(init = False)
       class Foo:
-        def foo(self) -> None:
-          pass
+        def foo(self) -> None: ...
     |}
-    [
-      {|
-        class Foo:
-          def foo(self) -> None:
-            pass
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
-      |};
-    ];
-  assert_equivalent_attributes
+    ~class_name:"Foo"
     {|
+        class Foo:
+          def foo(self) -> None: ...
+          def __repr__(self) -> str: ...
+          def __eq__(self, o: object) -> bool: ...
+          def __lt__(self, o: object) -> bool: ...
+          def __le__(self, o: object) -> bool: ...
+          def __gt__(self, o: object) -> bool: ...
+          def __ge__(self, o: object) -> bool: ...
+      |};
+  assert_equivalent_attributes
+    ~source:
+      {|
       import attr
       @attr.s(repr = False)
       class Foo:
-        def foo(self) -> None:
-          pass
+        def foo(self) -> None: ...
     |}
-    [
-      {|
-        class Foo:
-          def foo(self) -> None:
-            pass
-          def __init__(self) -> None:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
-      |};
-    ];
-  assert_equivalent_attributes
+    ~class_name:"Foo"
     {|
+        class Foo:
+          def foo(self) -> None: ...
+          def __init__(self) -> None: ...
+          def __eq__(self, o: object) -> bool: ...
+          def __lt__(self, o: object) -> bool: ...
+          def __le__(self, o: object) -> bool: ...
+          def __gt__(self, o: object) -> bool: ...
+          def __ge__(self, o: object) -> bool: ...
+      |};
+  assert_equivalent_attributes
+    ~source:
+      {|
       import attr
       @attr.s(cmp = False)
       class Foo:
-        def foo(self) -> None:
-          pass
+        def foo(self) -> None: ...
     |}
-    [
-      {|
-        class Foo:
-          def foo(self) -> None:
-            pass
-          def __init__(self) -> None:
-            pass
-          def __repr__(self) -> str:
-            pass
-      |};
-    ];
-  assert_equivalent_attributes
+    ~class_name:"Foo"
     {|
+        class Foo:
+          def foo(self) -> None: ...
+          def __init__(self) -> None: ...
+          def __repr__(self) -> str: ...
+      |};
+  assert_equivalent_attributes
+    ~source:
+      {|
       import attr
       @attr.s(auto_attribs = True)
       class Foo:
-        def foo(self) -> None:
-          pass
+        def foo(self) -> None: ...
     |}
-    [
-      {|
+    ~class_name:"Foo"
+    {|
         class Foo:
-          def foo(self) -> None:
-            pass
-          def __init__(self) -> None:
-            pass
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
+          def foo(self) -> None: ...
+          def __init__(self) -> None: ...
+          def __repr__(self) -> str: ...
+          def __eq__(self, o: object) -> bool: ...
+          def __lt__(self, o: object) -> bool: ...
+          def __le__(self, o: object) -> bool: ...
+          def __gt__(self, o: object) -> bool: ...
+          def __ge__(self, o: object) -> bool: ...
       |};
-    ];
-
   (* Inheritance *)
   assert_equivalent_attributes
-    {|
+    ~source:
+      {|
       import attr
       @attr.s
       class C(Base):
@@ -328,49 +243,22 @@ let test_transform_environment context =
         y: int = 0
         z: str = "a"
     |}
-    [
-      {|
+    ~class_name:"C"
+    {|
         class C(Base):
           z: int = 10
           x: int = 15
-          def __init__(self, x: int = 15, y: int = 0, z: int = 10) -> None:
-            pass
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
+          def __init__(self, x: int = 15, y: int = 0, z: int = 10) -> None: ...
+          def __repr__(self) -> str: ...
+          def __eq__(self, o: object) -> bool: ...
+          def __lt__(self, o: object) -> bool: ...
+          def __le__(self, o: object) -> bool: ...
+          def __gt__(self, o: object) -> bool: ...
+          def __ge__(self, o: object) -> bool: ...
       |};
-      {|
-        class Base:
-          x: typing.Any = 15.0
-          y: int = 0
-          z: str = "a"
-          def __init__(self, x: typing.Any = 15.0, y: int = 0, z: str = "a") -> None:
-            pass
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
-      |};
-    ];
   assert_equivalent_attributes
-    {|
+    ~source:
+      {|
       import attr
       @attr.s
       class C(Base):
@@ -382,49 +270,22 @@ let test_transform_environment context =
         y: int = 0
         z: str = "a"
     |}
-    [
-      {|
+    ~class_name:"C"
+    {|
         class C(Base):
           z: int = 10
           x: int = 15
-          def __init__(self, x: int = 15, y: int = 0, z: int = 10) -> None:
-            pass
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
+          def __init__(self, x: int = 15, y: int = 0, z: int = 10) -> None: ...
+          def __repr__(self) -> str: ...
+          def __eq__(self, o: object) -> bool: ...
+          def __lt__(self, o: object) -> bool: ...
+          def __le__(self, o: object) -> bool: ...
+          def __gt__(self, o: object) -> bool: ...
+          def __ge__(self, o: object) -> bool: ...
       |};
-      {|
-        class Base:
-          x: typing.Any = 15.0
-          y: int = 0
-          z: str = "a"
-          def __init__(self, x: typing.Any = 15.0, y: int = 0, z: str = "a") -> None:
-            pass
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
-      |};
-    ];
   assert_equivalent_attributes
-    {|
+    ~source:
+      {|
       import attr
       @attr.s
       class C(Base):
@@ -435,48 +296,41 @@ let test_transform_environment context =
         x: str = "a"
         y: int = 0
     |}
-    [
-      {|
+    ~class_name:"C"
+    {|
         class C(Base):
           z: int = 10
           x: int
           def __init__(self, x: int = "a", y: int = 0, z: int = 10) -> None:
             self.x = x
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
+          def __repr__(self) -> str: ...
+          def __eq__(self, o: object) -> bool: ...
+          def __lt__(self, o: object) -> bool: ...
+          def __le__(self, o: object) -> bool: ...
+          def __gt__(self, o: object) -> bool: ...
+          def __ge__(self, o: object) -> bool: ...
       |};
-      {|
-        class Base:
-          x: str = "a"
-          y: int = 0
-          def __init__(self, x: str = "a", y: int = 0) -> None:
-            pass
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
-      |};
-    ];
   assert_equivalent_attributes
+    ~source:
+      {|
+      import attr
+      class B(Base):
+        z: str = "a"
+        y: int = 20
+      @attr.s
+      class Base:
+        x: typing.Any = 15.0
+        y: int = 0
+    |}
+    ~class_name:"B"
     {|
+        class B(Base):
+          z: str = "a"
+          y: int = 20
+      |};
+  assert_equivalent_attributes
+    ~source:
+      {|
       import attr
       @attr.s
       class C(B):
@@ -490,53 +344,22 @@ let test_transform_environment context =
         x: typing.Any = 15.0
         y: int = 0
     |}
-    [
-      {|
+    ~class_name:"C"
+    {|
         class C(B):
           z: int = 10
           x: int = 15
-          def __init__(self, x: int = 15, y: int = 0, z: int = 10) -> None:
-            pass
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
+          def __init__(self, x: int = 15, y: int = 0, z: int = 10) -> None: ...
+          def __repr__(self) -> str: ...
+          def __eq__(self, o: object) -> bool: ...
+          def __lt__(self, o: object) -> bool: ...
+          def __le__(self, o: object) -> bool: ...
+          def __gt__(self, o: object) -> bool: ...
+          def __ge__(self, o: object) -> bool: ...
       |};
-      {|
-        class B(Base):
-          z: str = "a"
-          y: int = 20
-      |};
-      {|
-        class Base:
-          x: typing.Any = 15.0
-          y: int = 0
-          def __init__(self, x: typing.Any = 15.0, y: int = 0) -> None:
-            pass
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
-      |};
-    ];
   assert_equivalent_attributes
-    {|
+    ~source:
+      {|
       import attr
       @attr.s
       class C1(B1, A1):
@@ -548,64 +371,21 @@ let test_transform_environment context =
       class A1:
         x: int = 15
     |}
-    [
-      {|
+    ~class_name:"C1"
+    {|
         class C1(B1, A1):
           z: int = 10
-          def __init__(self, x: int = 15, y: int = 5, z: int = 10) -> None:
-            pass
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
+          def __init__(self, x: int = 15, y: int = 5, z: int = 10) -> None: ...
+          def __repr__(self) -> str: ...
+          def __eq__(self, o: object) -> bool: ...
+          def __lt__(self, o: object) -> bool: ...
+          def __le__(self, o: object) -> bool: ...
+          def __gt__(self, o: object) -> bool: ...
+          def __ge__(self, o: object) -> bool: ...
       |};
-      {|
-        class B1:
-          y: int = 5
-          def __init__(self, y: int = 5) -> None:
-            pass
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
-      |};
-      {|
-        class A1:
-          x: int = 15
-          def __init__(self, x: int = 15) -> None:
-            pass
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
-      |};
-    ];
   assert_equivalent_attributes
-    {|
+    ~source:
+      {|
       import attr
       class NoAttr:
         x: int = 15
@@ -613,30 +393,19 @@ let test_transform_environment context =
       class WithAttr(NoAttr):
         y: int = 5
     |}
-    [
-      {|
-        class NoAttr:
-          x: int = 15
-      |};
-      {|
+    ~class_name:"WithAttr"
+    {|
         class WithAttr(NoAttr):
           y: int = 5
-          def __init__(self, y: int = 5) -> None:
-            pass
-          def __repr__(self) -> str:
-            pass
-          def __eq__(self, o: object) -> bool:
-            pass
-          def __lt__(self, o: object) -> bool:
-            pass
-          def __le__(self, o: object) -> bool:
-            pass
-          def __gt__(self, o: object) -> bool:
-            pass
-          def __ge__(self, o: object) -> bool:
-            pass
+          def __init__(self, y: int = 5) -> None: ...
+          def __repr__(self) -> str: ...
+          def __eq__(self, o: object) -> bool: ...
+          def __lt__(self, o: object) -> bool: ...
+          def __le__(self, o: object) -> bool: ...
+          def __gt__(self, o: object) -> bool: ...
+          def __ge__(self, o: object) -> bool: ...
       |};
-    ]
+  ()
 
 
 let () =

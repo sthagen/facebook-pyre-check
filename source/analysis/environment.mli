@@ -11,6 +11,8 @@ module type ReadOnly = sig
   type t
 
   val unannotated_global_environment : t -> UnannotatedGlobalEnvironment.ReadOnly.t
+
+  val controls : t -> EnvironmentControls.t
 end
 
 module UpdateResult : sig
@@ -37,13 +39,11 @@ module PreviousEnvironment : sig
 
     type t
 
-    val create : Configuration.Analysis.t -> t
+    val create : EnvironmentControls.t -> t
 
-    val create_for_testing : Configuration.Analysis.t -> (Ast.ModulePath.t * string) list -> t
+    val create_for_testing : EnvironmentControls.t -> (Ast.ModulePath.t * string) list -> t
 
     val ast_environment : t -> AstEnvironment.t
-
-    val configuration : t -> Configuration.Analysis.t
 
     val read_only : t -> ReadOnly.t
 
@@ -55,7 +55,7 @@ module PreviousEnvironment : sig
 
     val store : t -> unit
 
-    val load : Configuration.Analysis.t -> t
+    val load : EnvironmentControls.t -> t
   end
 end
 
@@ -87,7 +87,7 @@ module EnvironmentTable : sig
 
     module Key : Memory.KeyType
 
-    module Value : Memory.ComparableValueType
+    module Value : Memory.ValueTypeWithEquivalence
 
     (* This is the data type of the key that we are being told to compute. This sometimes
        unfortunately has to differ from the actual key of the table, but the difference should be
@@ -131,19 +131,19 @@ module EnvironmentTable : sig
       val upstream_environment : t -> In.PreviousEnvironment.ReadOnly.t
 
       val unannotated_global_environment : t -> UnannotatedGlobalEnvironment.ReadOnly.t
+
+      val controls : t -> EnvironmentControls.t
     end
 
     module UpdateResult : UpdateResult.S
 
     type t
 
-    val create : Configuration.Analysis.t -> t
+    val create : EnvironmentControls.t -> t
 
-    val create_for_testing : Configuration.Analysis.t -> (Ast.ModulePath.t * string) list -> t
+    val create_for_testing : EnvironmentControls.t -> (Ast.ModulePath.t * string) list -> t
 
     val ast_environment : t -> AstEnvironment.t
-
-    val configuration : t -> Configuration.Analysis.t
 
     val read_only : t -> ReadOnly.t
 
@@ -155,7 +155,11 @@ module EnvironmentTable : sig
 
     val store : t -> unit
 
-    val load : Configuration.Analysis.t -> t
+    val load : EnvironmentControls.t -> t
+
+    module Unsafe : sig
+      val upstream : t -> In.PreviousEnvironment.t
+    end
 
     module Testing : sig
       module ReadOnly : sig
