@@ -50,6 +50,7 @@ from ..persistent import (
     PyreServerShutdown,
     PyreServerStartOptions,
     PyreServerStartOptionsReader,
+    ReferencesQuery,
     ServerState,
     to_coverage_result,
     try_initialize,
@@ -1042,6 +1043,78 @@ class PersistentTest(testslide.TestCase):
             actual_json = json.loads(actual[actual.index("{") :])
             self.assertDictEqual(actual_json, expected_response.json())
 
+    @setup.async_test
+    async def test_references(self) -> None:
+        def assert_references_response(
+            references: Sequence[lsp.ReferencesResponse],
+        ) -> None:
+            client_messages = memory_bytes_writer.items()
+            expected_response = json_rpc.SuccessResponse(
+                id=42,
+                # pyre-ignore[16]: Pyre does not understand
+                # `dataclasses_json`.
+                result=lsp.ReferencesResponse.schema().dump(references, many=True),
+            )
+            response_string = json.dumps(expected_response.json())
+            self.assertEqual(
+                client_messages[-1].decode(),
+                f"Content-Length: {len(response_string)}\r\n\r\n" + response_string,
+            )
+
+        test_path = Path("/foo.py")
+        not_tracked_path = Path("/not_tracked.py")
+        fake_task_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
+        fake_task_manager2 = BackgroundTaskManager(WaitForeverBackgroundTask())
+        memory_bytes_writer: MemoryBytesWriter = MemoryBytesWriter()
+        server = PyreServer(
+            input_channel=create_memory_text_reader(""),
+            output_channel=TextWriter(memory_bytes_writer),
+            state=ServerState(
+                opened_documents={test_path},
+            ),
+            pyre_manager=fake_task_manager,
+            pyre_query_manager=fake_task_manager2,
+        )
+
+        await fake_task_manager.ensure_task_running()
+
+        await server.process_find_all_references_request(
+            lsp.ReferencesTextDocumentParameters(
+                text_document=lsp.TextDocumentIdentifier(
+                    uri=lsp.DocumentUri.from_file_path(test_path).unparse(),
+                ),
+                position=lsp.LspPosition(line=3, character=4),
+            ),
+            request_id=42,
+        )
+        await asyncio.sleep(0)
+
+        self.assertTrue(fake_task_manager.is_task_running())
+        self.assertEqual(len(memory_bytes_writer.items()), 0)
+        self.assertEqual(server.state.query_state.queries.qsize(), 1)
+        self.assertEqual(
+            server.state.query_state.queries.get_nowait(),
+            ReferencesQuery(
+                id=42,
+                path=test_path,
+                position=lsp.LspPosition(line=3, character=4).to_pyre_position(),
+            ),
+        )
+
+        await server.process_find_all_references_request(
+            lsp.ReferencesTextDocumentParameters(
+                text_document=lsp.TextDocumentIdentifier(
+                    uri=lsp.DocumentUri.from_file_path(not_tracked_path).unparse(),
+                ),
+                position=lsp.LspPosition(line=3, character=4),
+            ),
+            request_id=42,
+        )
+        await asyncio.sleep(0)
+
+        self.assertTrue(fake_task_manager.is_task_running())
+        assert_references_response([])
+
 
 class PyreQueryStateTest(testslide.TestCase):
     def test_hover_response_for_position(self) -> None:
@@ -1413,6 +1486,145 @@ class PyreQueryHandlerTest(testslide.TestCase):
         with patch_connect_in_text_mode(input_channel, output_channel):
             await pyre_query_manager._query_and_send_definition_location(
                 query=DefinitionLocationQuery(
+                    id=99,
+                    path=Path("bar.py"),
+                    position=lsp.Position(line=42, character=10),
+                ),
+                socket_path=Path("fake_socket_path"),
+            )
+
+        self.assertEqual(len(client_output_writer.items()), 1)
+        response = client_output_writer.items()[0].splitlines()[2]
+        self.assertEqual(json.loads(response)["result"], [])
+
+    @setup.async_test
+    async def test_query_references(self) -> None:
+        json_output = """
+        {
+            "response": [
+                {
+                    "path": "/foo.py",
+                    "range": {
+                        "start": {
+                            "line": 9,
+                            "character": 6
+                        },
+                        "end": {
+                            "line": 10,
+                            "character": 11
+                        }
+                    }
+                },
+                {
+                    "path": "/bar.py",
+                    "range": {
+                        "start": {
+                            "line": 2,
+                            "character": 3
+                        },
+                        "end": {
+                            "line": 2,
+                            "character": 4
+                        }
+                    }
+                }
+            ]
+        }
+        """
+        client_output_writer = MemoryBytesWriter()
+        pyre_query_manager = PyreQueryHandler(
+            state=PyreQueryState(path_to_location_type_lookup={}),
+            server_start_options_reader=_create_server_start_options_reader(
+                binary="/bin/pyre",
+                server_identifier="foo",
+                start_arguments=start.Arguments(
+                    base_arguments=backend_arguments.BaseArguments(
+                        source_paths=backend_arguments.SimpleSourcePath(),
+                        log_path="/log/path",
+                        global_root="/global/root",
+                    )
+                ),
+                ide_features=configuration_module.IdeFeatures(
+                    find_all_references_enabled=True
+                ),
+            ),
+            client_output_channel=TextWriter(client_output_writer),
+        )
+        memory_bytes_writer = MemoryBytesWriter()
+        flat_json = "".join(json_output.splitlines())
+        input_channel = create_memory_text_reader(f'["Query", {flat_json}]\n')
+        output_channel = TextWriter(memory_bytes_writer)
+
+        with patch_connect_in_text_mode(input_channel, output_channel):
+            await pyre_query_manager._handle_find_all_references_query(
+                query=ReferencesQuery(
+                    id=99,
+                    path=Path("bar.py"),
+                    position=lsp.Position(line=42, character=10),
+                ),
+                socket_path=Path("fake_socket_path"),
+            )
+
+        self.assertEqual(
+            memory_bytes_writer.items(),
+            [
+                b'["Query", "find_references(path=\'bar.py\','
+                b' line=42, column=10)"]\n'
+            ],
+        )
+        self.assertEqual(len(client_output_writer.items()), 1)
+        response = client_output_writer.items()[0].splitlines()[2]
+        result = json.loads(response)["result"]
+        self.assertEqual(
+            # pyre-ignore[16]: Pyre does not understand
+            # `dataclasses_json`.
+            lsp.LspDefinitionResponse.schema().load(result, many=True),
+            [
+                lsp.LspDefinitionResponse(
+                    uri="/foo.py",
+                    range=lsp.LspRange(
+                        start=lsp.LspPosition(line=8, character=6),
+                        end=lsp.LspPosition(line=9, character=11),
+                    ),
+                ),
+                lsp.LspDefinitionResponse(
+                    uri="/bar.py",
+                    range=lsp.LspRange(
+                        start=lsp.LspPosition(line=1, character=3),
+                        end=lsp.LspPosition(line=1, character=4),
+                    ),
+                ),
+            ],
+        )
+
+    @setup.async_test
+    async def test_query_references__bad_json(self) -> None:
+        client_output_writer = MemoryBytesWriter()
+        pyre_query_manager = PyreQueryHandler(
+            state=PyreQueryState(),
+            server_start_options_reader=_create_server_start_options_reader(
+                binary="/bin/pyre",
+                server_identifier="foo",
+                start_arguments=start.Arguments(
+                    base_arguments=backend_arguments.BaseArguments(
+                        source_paths=backend_arguments.SimpleSourcePath(),
+                        log_path="/log/path",
+                        global_root="/global/root",
+                    )
+                ),
+                ide_features=configuration_module.IdeFeatures(
+                    find_all_references_enabled=True
+                ),
+            ),
+            client_output_channel=TextWriter(client_output_writer),
+        )
+
+        input_channel = create_memory_text_reader("""{ "error": "Oops" }\n""")
+        memory_bytes_writer = MemoryBytesWriter()
+        output_channel = TextWriter(memory_bytes_writer)
+        with patch_connect_in_text_mode(input_channel, output_channel):
+            await pyre_query_manager._handle_find_all_references_query(
+                query=ReferencesQuery(
                     id=99,
                     path=Path("bar.py"),
                     position=lsp.Position(line=42, character=10),

@@ -383,6 +383,7 @@ class ServerCapabilities:
     hover_provider: Optional[bool] = None
     definition_provider: Optional[bool] = None
     document_symbol_provider: Optional[bool] = None
+    references_provider: Optional[bool] = None
 
 
 @dataclasses_json.dataclass_json(
@@ -576,8 +577,13 @@ class ReferencesTextDocumentParameters:
 class ReferencesResponse:
     """Contains code location of one reference."""
 
-    uri: str
-    range: LspRange
+    path: str
+    range: Range
+
+    def to_lsp_definition_response(
+        self,
+    ) -> "LspDefinitionResponse":
+        return LspDefinitionResponse(uri=self.path, range=self.range.to_lsp_range())
 
 
 @dataclasses_json.dataclass_json(

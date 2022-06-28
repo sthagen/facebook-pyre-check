@@ -204,6 +204,7 @@ def process_initialize_request(
                 "hover_provider": ide_features.is_hover_enabled(),
                 "definition_provider": ide_features.is_go_to_definition_enabled(),
                 "document_symbol_provider": ide_features.is_find_symbols_enabled(),
+                "references_provider": ide_features.is_find_all_references_enabled(),
             }
             if ide_features is not None
             else {}
@@ -445,7 +446,26 @@ class DefinitionLocationResponse:
     response: List[lsp.PyreDefinitionResponse]
 
 
-QueryTypes = Union[TypeCoverageQuery, TypesQuery, DefinitionLocationQuery]
+@dataclasses.dataclass(frozen=True)
+class ReferencesQuery:
+    id: Union[int, str, None]
+    path: Path
+    position: lsp.Position
+    activity_key: Optional[Dict[str, object]] = None
+
+
+@dataclasses_json.dataclass_json(
+    letter_case=dataclasses_json.LetterCase.CAMEL,
+    undefined=dataclasses_json.Undefined.EXCLUDE,
+)
+@dataclasses.dataclass(frozen=True)
+class ReferencesResponse:
+    response: List[lsp.ReferencesResponse]
+
+
+QueryTypes = Union[
+    TypeCoverageQuery, TypesQuery, DefinitionLocationQuery, ReferencesQuery
+]
 
 
 @dataclasses.dataclass
@@ -834,6 +854,40 @@ class PyreServer:
             ),
         )
 
+    async def process_find_all_references_request(
+        self,
+        parameters: lsp.ReferencesTextDocumentParameters,
+        request_id: Union[int, str, None],
+        activity_key: Optional[Dict[str, object]] = None,
+    ) -> None:
+        document_path = parameters.text_document.document_uri().to_file_path()
+        if document_path is None:
+            raise json_rpc.InvalidRequestError(
+                f"Document URI is not a file: {parameters.text_document.uri}"
+            )
+
+        if document_path not in self.state.opened_documents:
+            await lsp.write_json_rpc(
+                self.output_channel,
+                json_rpc.SuccessResponse(
+                    id=request_id,
+                    activity_key=activity_key,
+                    # pyre-ignore[16]: Pyre does not understand
+                    # `dataclasses_json`.
+                    result=lsp.LspDefinitionResponse.schema().dump([], many=True),
+                ),
+            )
+            return
+
+        self.state.query_state.queries.put_nowait(
+            ReferencesQuery(
+                id=request_id,
+                activity_key=activity_key,
+                path=document_path,
+                position=parameters.position.to_pyre_position(),
+            )
+        )
+
     async def process_shutdown_request(self, request_id: Union[int, str, None]) -> int:
         try:
             await lsp.write_json_rpc(
@@ -944,6 +998,19 @@ class PyreServer:
                         )
                     await self.process_document_symbols_request(
                         lsp.DocumentSymbolsTextDocumentParameters.from_json_rpc_parameters(
+                            parameters
+                        ),
+                        request.id,
+                        request.activity_key,
+                    )
+                elif request.method == "textDocument/references":
+                    parameters = request.parameters
+                    if parameters is None:
+                        raise json_rpc.InvalidRequestError(
+                            "Missing parameters for find all references"
+                        )
+                    await self.process_find_all_references_request(
+                        lsp.ReferencesTextDocumentParameters.from_json_rpc_parameters(
                             parameters
                         ),
                         request.id,
@@ -1292,6 +1359,39 @@ class PyreQueryHandler(connection.BackgroundTask):
             ),
         )
 
+    async def _handle_find_all_references_query(
+        self, query: ReferencesQuery, socket_path: Path
+    ) -> None:
+        path_string = f"'{query.path}'"
+        query_text = (
+            f"find_references(path={path_string},"
+            f" line={query.position.line}, column={query.position.character})"
+        )
+        find_all_references_response = await self._query_and_interpret_response(
+            query_text, socket_path, ReferencesResponse
+        )
+        reference_locations = (
+            [
+                response.to_lsp_definition_response()
+                for response in find_all_references_response.response
+            ]
+            if find_all_references_response is not None
+            else []
+        )
+        await lsp.write_json_rpc(
+            self.client_output_channel,
+            json_rpc.SuccessResponse(
+                id=query.id,
+                activity_key=query.activity_key,
+                # pyre-ignore[16]: Pyre does not understand
+                # `dataclasses_json`.
+                result=lsp.LspDefinitionResponse.schema().dump(
+                    reference_locations,
+                    many=True,
+                ),
+            ),
+        )
+
     async def _run(self, server_start_options: "PyreServerStartOptions") -> None:
         start_arguments = server_start_options.start_arguments
         socket_path = server_connection.get_default_socket_path(
@@ -1314,6 +1414,8 @@ class PyreQueryHandler(connection.BackgroundTask):
                 )
             elif isinstance(query, DefinitionLocationQuery):
                 await self._query_and_send_definition_location(query, socket_path)
+            elif isinstance(query, ReferencesQuery):
+                await self._handle_find_all_references_query(query, socket_path)
 
     def read_server_start_options(self) -> "PyreServerStartOptions":
         try:
