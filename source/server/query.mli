@@ -18,6 +18,10 @@ module Request : sig
     | DumpCallGraph
     | ExpressionLevelCoverage of string list
     | Help of string
+    | HoverInfoForPosition of {
+        path: PyrePath.t;
+        position: Location.position;
+      }
     | InlineDecorators of {
         function_reference: Reference.t;
         decorators_to_skip: Reference.t list;
@@ -80,6 +84,17 @@ module Response : sig
       total_expressions: int;
       coverage_gaps: LocationBasedLookup.coverage_gap_by_location list;
     }
+    [@@deriving sexp, compare, to_yojson]
+
+    type error_at_path = {
+      path: string;
+      error: string;
+    }
+    [@@deriving sexp, compare, to_yojson, show]
+
+    type coverage_response_at_path =
+      | CoverageAtPath of coverage_at_path
+      | ErrorAtPath of error_at_path
     [@@deriving sexp, compare, to_yojson]
 
     type compatibility = {
@@ -145,7 +160,7 @@ module Response : sig
       | Callgraph of callees list
       | Compatibility of compatibility
       | Errors of Analysis.AnalysisError.Instantiated.t list
-      | ExpressionLevelCoverageResponse of coverage_at_path list
+      | ExpressionLevelCoverageResponse of coverage_response_at_path list
       | FoundAttributes of attribute list
       | FoundDefines of define list
       | FoundLocationsOfDefinitions of code_location list
@@ -155,6 +170,7 @@ module Response : sig
       | FoundReferences of code_location list
       | FunctionDefinition of Statement.Define.t
       | Help of string
+      | HoverInfoForPosition of string
       | ModelVerificationErrors of Taint.ModelVerificationError.t list
       | Success of string
       | Superclasses of superclasses_mapping list

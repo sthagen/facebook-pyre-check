@@ -13,6 +13,63 @@ open Pyre
 open Expression
 open Test
 
+(* Find position of the indicator in [source].
+
+   `# ^- <indicator>` refers to the position on the previous line. *)
+let find_indicator_position ~source indicator_name =
+  let extract_indicator_position line_number line =
+    match String.substr_index line ~pattern:("^- " ^ indicator_name) with
+    | Some column -> Some { Location.line = line_number; column }
+    | _ -> None
+  in
+  let indicator_position =
+    trim_extra_indentation source
+    |> String.split_lines
+    |> List.find_mapi ~f:extract_indicator_position
+  in
+  Option.value_exn
+    ~message:(Format.asprintf "Expected a comment with an arrow (`^- %s`)" indicator_name)
+    indicator_position
+
+
+let find_indicated_multi_line_range source =
+  let find_start line_number line =
+    match String.substr_index line ~pattern:"start line" with
+    | Some _ ->
+        (* The indicator points to the start of the current line. *)
+        let start_column = String.lfindi line ~f:(fun _ character -> character != ' ') in
+        Some { Location.line = line_number + 1; column = Option.value_exn start_column }
+    | None -> None
+  in
+  let find_stop line_number line =
+    match String.substr_index line ~pattern:"stop line" with
+    | Some _ ->
+        (* The indicator points to the end of the current line. *)
+        let stop_column =
+          String.chop_suffix_exn ~suffix:"# stop line" line |> String.rstrip |> String.length
+        in
+        Some { Location.line = line_number + 1; column = stop_column }
+    | _ -> None
+  in
+  let lines = trim_extra_indentation source |> String.split_lines in
+  Option.both (List.find_mapi lines ~f:find_start) (List.find_mapi lines ~f:find_stop)
+  >>| fun (start, stop) -> { Location.start; stop }
+
+
+let find_indicated_single_line_range source =
+  let extract_indicator_range line_number line =
+    match String.substr_index_all line ~pattern:"^" ~may_overlap:false with
+    | [start; stop] ->
+        Some
+          {
+            Location.start = { Location.line = line_number; column = start };
+            stop = { Location.line = line_number; column = stop };
+          }
+    | _ -> None
+  in
+  trim_extra_indentation source |> String.split_lines |> List.find_mapi ~f:extract_indicator_range
+
+
 let show_location { Location.start; stop } =
   Format.asprintf "%a-%a" Location.pp_position start Location.pp_position stop
 
@@ -196,19 +253,6 @@ let test_find_narrowest_spanning_symbol context =
   in
   let open LocationBasedLookup in
   let assert_narrowest_expression ?(external_sources = []) ~source expected =
-    let cursor_position =
-      let cursor_pattern = "^-- CURSOR" in
-      let extract_cursor_position line_number line =
-        String.substr_index line ~pattern:cursor_pattern
-        >>| fun column -> { Location.line = line_number; column }
-      in
-      let cursor_position =
-        trim_extra_indentation source
-        |> String.split_lines
-        |> List.find_mapi ~f:extract_cursor_position
-      in
-      Option.value_exn ~message:"Expected a comment pointing to the cursor" cursor_position
-    in
     let type_environment =
       let { ScratchProject.BuiltTypeEnvironment.type_environment; _ } =
         ScratchProject.setup ~context ["test.py", source] ~external_sources
@@ -224,12 +268,12 @@ let test_find_narrowest_spanning_symbol context =
       (LocationBasedLookup.find_narrowest_spanning_symbol
          ~type_environment
          ~module_reference:!&"test"
-         cursor_position)
+         (find_indicator_position ~source "cursor"))
   in
   assert_narrowest_expression
     ~source:{|
         def getint() -> int:
-        #   ^-- CURSOR
+        #   ^- cursor
           return 12
     |}
     (Some
@@ -241,7 +285,7 @@ let test_find_narrowest_spanning_symbol context =
   assert_narrowest_expression
     ~source:{|
         def getint() -> int:
-        #  ^-- CURSOR
+        #  ^- cursor
           return 12
     |}
     None;
@@ -249,7 +293,7 @@ let test_find_narrowest_spanning_symbol context =
     ~source:
       {|
         def getint() -> int:
-        #               ^-- CURSOR
+        #               ^- cursor
           return 12
     |}
     (Some
@@ -262,7 +306,7 @@ let test_find_narrowest_spanning_symbol context =
     ~external_sources
     ~source:{|
         from library import Base
-        #                   ^-- CURSOR
+        #                   ^- cursor
     |}
     (Some
        {
@@ -273,8 +317,136 @@ let test_find_narrowest_spanning_symbol context =
   assert_narrowest_expression
     ~source:
       {|
+        from .library import Base as MyBase
+                                    # ^- cursor
+    |}
+    (Some
+       {
+         symbol_with_definition = Expression (parse_single_expression "library.Base");
+         cfg_data = { define_name = !&"test.$toplevel"; node_id = 4; statement_index = 0 };
+         use_postcondition_info = false;
+       });
+  assert_narrowest_expression
+    ~source:{|
+        import library
+        #        ^- cursor
+    |}
+    (Some
+       {
+         symbol_with_definition = Expression (parse_single_expression "library");
+         cfg_data = { define_name = !&"test.$toplevel"; node_id = 4; statement_index = 0 };
+         use_postcondition_info = false;
+       });
+  assert_narrowest_expression
+    ~source:
+      {|
+        from . import library as my_library
+                                    # ^- cursor
+    |}
+    (Some
+       {
+         symbol_with_definition = Expression (parse_single_expression "library");
+         cfg_data = { define_name = !&"test.$toplevel"; node_id = 4; statement_index = 0 };
+         use_postcondition_info = false;
+       });
+  assert_narrowest_expression
+    ~source:
+      {|
+        from . import library as my_library
+
+        x = my_library.Base()
+        #    ^- cursor
+    |}
+    (Some
+       {
+         symbol_with_definition = Expression (parse_single_expression "library");
+         cfg_data = { define_name = !&"test.$toplevel"; node_id = 4; statement_index = 1 };
+         use_postcondition_info = false;
+       });
+  assert_narrowest_expression
+    ~external_sources:["a.py", {| |}; "b.py", {| import a as x |}]
+    ~source:{|
+        from b import x
+        print(x)
+           #  ^- cursor
+    |}
+    (Some
+       {
+         symbol_with_definition = Expression (parse_single_expression "b.x");
+         cfg_data = { define_name = !&"test.$toplevel"; node_id = 4; statement_index = 1 };
+         use_postcondition_info = false;
+       });
+  assert_narrowest_expression
+    ~external_sources:["a.py", {| |}; "b.py", {| import a as x |}]
+    ~source:{|
+        from b import x as y
+        print(y)
+           #  ^- cursor
+    |}
+    (Some
+       {
+         symbol_with_definition = Expression (parse_single_expression "b.x");
+         cfg_data = { define_name = !&"test.$toplevel"; node_id = 4; statement_index = 1 };
+         use_postcondition_info = false;
+       });
+  assert_narrowest_expression
+    ~external_sources:["a.py", {| class Foo: ... |}; "b.py", {| import a as x |}]
+    ~source:{|
+        from b import x as y
+        print(y.Foo)
+              #  ^- cursor
+    |}
+    (Some
+       {
+         symbol_with_definition = Expression (parse_single_expression "b.x.Foo");
+         cfg_data = { define_name = !&"test.$toplevel"; node_id = 4; statement_index = 1 };
+         use_postcondition_info = false;
+       });
+  assert_narrowest_expression
+    ~external_sources:["foo/a.py", {| class Foo: ... |}; "b.py", {| import foo.a as x |}]
+    ~source:{|
+        from b import x as y
+        print(y)
+           #  ^- cursor
+    |}
+    (Some
+       {
+         symbol_with_definition = Expression (parse_single_expression "b.x");
+         cfg_data = { define_name = !&"test.$toplevel"; node_id = 4; statement_index = 1 };
+         use_postcondition_info = false;
+       });
+  assert_narrowest_expression
+    ~external_sources:["my_placeholder_stub.pyi", {| # pyre-placeholder-stub |}]
+    ~source:
+      {|
+        import my_placeholder_stub
+        print(my_placeholder_stub)
+           #  ^- cursor
+    |}
+    (Some
+       {
+         symbol_with_definition = Expression (parse_single_expression "my_placeholder_stub");
+         cfg_data = { define_name = !&"test.$toplevel"; node_id = 4; statement_index = 1 };
+         use_postcondition_info = false;
+       });
+  assert_narrowest_expression
+    ~external_sources:["my_placeholder_stub.pyi", {| # pyre-placeholder-stub |}]
+    ~source:
+      {|
+        from my_placeholder_stub import x as y
+        print(y.Foo)
+              #  ^- cursor
+    |}
+    (Some
+       {
+         symbol_with_definition = Expression (parse_single_expression "my_placeholder_stub.x.Foo");
+         cfg_data = { define_name = !&"test.$toplevel"; node_id = 4; statement_index = 1 };
+         use_postcondition_info = false;
+       });
+  assert_narrowest_expression
+    ~source:{|
         def foo(a: int, b: str) -> None: ...
-        #               ^-- CURSOR
+        #               ^- cursor
     |}
     (Some
        {
@@ -289,7 +461,7 @@ let test_find_narrowest_spanning_symbol context =
       {|
         def foo(a: int, b: str) -> None:
           x = a
-        #     ^-- CURSOR
+        #     ^- cursor
     |}
     (Some
        {
@@ -304,7 +476,7 @@ let test_find_narrowest_spanning_symbol context =
       {|
         def foo() -> None:
           xs: list[str] = ["a", "b"]
-        # ^-- CURSOR
+        # ^- cursor
     |}
     (Some
        {
@@ -320,7 +492,7 @@ let test_find_narrowest_spanning_symbol context =
       {|
         def foo() -> None:
           xs: list[str] = ["a", "b"]
-        #                 ^-- CURSOR
+        #                 ^- cursor
     |}
     (Some
        {
@@ -333,7 +505,7 @@ let test_find_narrowest_spanning_symbol context =
       {|
         def foo() -> None:
           xs: list[str] = ["a", "b"]
-        #     ^-- CURSOR
+        #     ^- cursor
     |}
     (Some
        {
@@ -348,7 +520,7 @@ let test_find_narrowest_spanning_symbol context =
         from library import Base
         def foo() -> None:
           print(Base())
-        #       ^-- CURSOR
+        #       ^- cursor
     |}
     (Some
        {
@@ -366,7 +538,7 @@ let test_find_narrowest_spanning_symbol context =
 
         def foo() -> None:
           getint() + 2
-        #          ^-- CURSOR
+        #          ^- cursor
     |}
     (Some
        {
@@ -382,7 +554,7 @@ let test_find_narrowest_spanning_symbol context =
 
         def foo() -> None:
           return_str().capitalize().lower()
-        #              ^-- CURSOR
+        #              ^- cursor
     |}
     (Some
        {
@@ -397,7 +569,7 @@ let test_find_narrowest_spanning_symbol context =
       class Foo:
         def bar(self) -> None:
             print(self.foo())
-        #         ^-- CURSOR
+        #         ^- cursor
     |}
     (Some
        {
@@ -414,7 +586,7 @@ let test_find_narrowest_spanning_symbol context =
       class Foo:
         def bar(self) -> None:
             print(self.foo())
-        #              ^-- CURSOR
+        #              ^- cursor
         def foo(self) -> int:
           return 42
     |}
@@ -442,7 +614,7 @@ let test_find_narrowest_spanning_symbol context =
 
         def foo() -> None:
           takes_int(x=42)
-        #             ^-- CURSOR
+        #             ^- cursor
     |}
     (Some
        {
@@ -459,7 +631,7 @@ let test_find_narrowest_spanning_symbol context =
           some_attribute: Foo = Foo()
 
         Bar().some_attribute
-        #             ^-- CURSOR
+        #             ^- cursor
     |}
     (Some
        {
@@ -474,7 +646,7 @@ let test_find_narrowest_spanning_symbol context =
 
         class Bar:
           some_attribute: Foo = Foo()
-        #                 ^-- CURSOR
+        #                 ^- cursor
     |}
     (Some
        {
@@ -497,7 +669,7 @@ let test_find_narrowest_spanning_symbol context =
 
         def test() -> None:
           Bar().foo().bar()
-        #             ^-- CURSOR
+        #             ^- cursor
     |}
     (Some
        {
@@ -509,7 +681,7 @@ let test_find_narrowest_spanning_symbol context =
     ~source:{|
         def foo(x: str) -> None:
           print(x)
-        #       ^-- CURSOR
+        #       ^- cursor
     |}
     (Some
        {
@@ -525,7 +697,7 @@ let test_find_narrowest_spanning_symbol context =
         def foo() -> None:
           x = 42
           print(x)
-        #       ^-- CURSOR
+        #       ^- cursor
     |}
     (Some
        {
@@ -542,7 +714,7 @@ let test_find_narrowest_spanning_symbol context =
         def foo() -> None:
           with open() as f:
             f.readline()
-        #   ^-- CURSOR
+        #   ^- cursor
     |}
     (Some
        {
@@ -558,7 +730,7 @@ let test_find_narrowest_spanning_symbol context =
         def foo() -> None:
           for x in [1]:
             print(x)
-        #         ^-- CURSOR
+        #         ^- cursor
     |}
     (Some
        {
@@ -577,7 +749,7 @@ let test_find_narrowest_spanning_symbol context =
 
         def foo() -> None:
           Foo.my_static_method()
-        #         ^-- CURSOR
+        #         ^- cursor
     |}
     (Some
        {
@@ -594,7 +766,7 @@ let test_find_narrowest_spanning_symbol context =
 
         def foo() -> None:
           Foo.my_class_method()
-        #         ^-- CURSOR
+        #         ^- cursor
     |}
     (Some
        {
@@ -610,7 +782,7 @@ let test_find_narrowest_spanning_symbol context =
 
         def foo() -> None:
           Foo.my_method()
-        #         ^-- CURSOR
+        #         ^- cursor
     |}
     (Some
        {
@@ -625,7 +797,7 @@ let test_find_narrowest_spanning_symbol context =
 
         def foo(my_dictionary: Dict[str, int]) -> None:
           my_dictionary["hello"]
-        #         ^-- CURSOR
+        #         ^- cursor
     |}
     (Some
        {
@@ -643,7 +815,7 @@ let test_find_narrowest_spanning_symbol context =
 
         def foo(my_dictionary: Dict[str, int]) -> None:
           my_dictionary.__getitem__("hello")
-        #                 ^-- CURSOR
+        #                 ^- cursor
     |}
     (Some
        {
@@ -670,7 +842,7 @@ let test_find_narrowest_spanning_symbol context =
 
         def foo(my_dictionary: Dict[str, int]) -> None:
           my_dictionary["hello"]
-        #              ^-- CURSOR
+        #              ^- cursor
     |}
     (Some
        {
@@ -714,7 +886,7 @@ let test_find_narrowest_spanning_symbol context =
 
         def main(foo: Foo) -> None:
           print(foo.my_attribute)
-        #              ^-- CURSOR
+        #              ^- cursor
     |}
     (Some
        {
@@ -744,7 +916,7 @@ let test_find_narrowest_spanning_symbol context =
 
         def main(foo: Foo) -> None:
           if foo.my_attribute:
-            #        ^-- CURSOR
+            #        ^- cursor
             print("hello")
     |}
     (Some
@@ -776,7 +948,7 @@ let test_find_narrowest_spanning_symbol context =
 
         def main(foo: Foo) -> None:
           if foo.my_attribute and not foo.other_attribute:
-            #                               ^-- CURSOR
+            #                               ^- cursor
             print("hello")
     |}
     (Some
@@ -801,7 +973,7 @@ let test_find_narrowest_spanning_symbol context =
       {|
         def getint(xs: list[int]) -> None:
           for x in xs:
-            #      ^-- CURSOR
+            #      ^- cursor
             pass
     |}
     (Some
@@ -812,28 +984,63 @@ let test_find_narrowest_spanning_symbol context =
          cfg_data = { define_name = !&"test.getint"; node_id = 6; statement_index = 0 };
          use_postcondition_info = false;
        });
+  assert_narrowest_expression
+    ~source:
+      {|
+        def foo(xs: list[int]) -> None:
+          print(f"xs: {xs}")
+          #            ^- cursor
+    |}
+    (Some
+       {
+         symbol_with_definition =
+           Expression
+             (Node.create_with_default_location (Expression.Name (Name.Identifier "$parameter$xs")));
+         cfg_data = { define_name = !&"test.foo"; node_id = 4; statement_index = 0 };
+         use_postcondition_info = false;
+       });
+  assert_narrowest_expression
+    ~source:
+      {|
+        def foo(xs: list[int]) -> None:
+          print(f"xs: {xs.append(xs)}")
+          #                  ^- cursor
+    |}
+    (Some
+       {
+         symbol_with_definition =
+           Expression
+             (Expression.Name
+                (Name.Attribute
+                   {
+                     base =
+                       Node.create_with_default_location
+                         (Expression.Name (Name.Identifier "$parameter$xs"));
+                     attribute = "append";
+                     special = false;
+                   })
+             |> Node.create_with_default_location);
+         cfg_data = { define_name = !&"test.foo"; node_id = 4; statement_index = 0 };
+         use_postcondition_info = false;
+       });
+  assert_narrowest_expression
+    ~source:{|
+        from typing import Callable
+
+        f: Callable
+        #   ^- cursor
+    |}
+    (Some
+       {
+         symbol_with_definition = TypeAnnotation (parse_single_expression "typing.Callable");
+         cfg_data = { define_name = !&"test.$toplevel"; node_id = 4; statement_index = 1 };
+         use_postcondition_info = false;
+       });
   ()
 
 
 let test_resolve_definition_for_symbol context =
-  let assert_resolved_definition ?(external_sources = []) ~source symbol_data expected =
-    let type_environment =
-      let { ScratchProject.BuiltTypeEnvironment.type_environment; _ } =
-        ScratchProject.setup ~context ["test.py", source] ~external_sources
-        |> ScratchProject.build_type_environment
-      in
-      type_environment
-    in
-    assert_equal
-      ~cmp:[%compare.equal: Location.WithModule.t option]
-      ~printer:[%show: Location.WithModule.t option]
-      (expected >>| parse_location_with_module)
-      (LocationBasedLookup.resolve_definition_for_symbol
-         ~type_environment
-         ~module_reference:!&"test"
-         symbol_data)
-  in
-  let external_sources =
+  let default_external_sources =
     [
       ( "library.py",
         {|
@@ -844,118 +1051,147 @@ let test_resolve_definition_for_symbol context =
     |} );
     ]
   in
-  let open LocationBasedLookup in
+  let module_reference = !&"test" in
+  let assert_resolved_definition_with_location
+      ?(external_sources = default_external_sources)
+      ~source
+      expected
+    =
+    let type_environment =
+      let { ScratchProject.BuiltTypeEnvironment.type_environment; _ } =
+        ScratchProject.setup ~context ["test.py", source] ~external_sources
+        |> ScratchProject.build_type_environment
+      in
+      type_environment
+    in
+    let symbol_data =
+      LocationBasedLookup.find_narrowest_spanning_symbol
+        ~type_environment
+        ~module_reference
+        (find_indicator_position ~source "cursor")
+    in
+    assert_equal
+      ~cmp:[%compare.equal: Location.WithModule.t option]
+      ~printer:[%show: Location.WithModule.t option]
+      expected
+      (symbol_data
+      >>= LocationBasedLookup.resolve_definition_for_symbol ~type_environment ~module_reference)
+  in
+  let assert_resolved_definition ?external_sources source =
+    let expected_definition_location =
+      if String.is_substring ~substring:"# No definition found" source then
+        None
+      else
+        let location =
+          Option.first_some
+            (find_indicated_single_line_range source)
+            (find_indicated_multi_line_range source)
+        in
+        Option.value_exn
+          ~message:
+            "Expected either a comment with two carets (e.g., ^____^) or comments with `start \
+             line` and `stop line`"
+          location
+        |> Location.with_module ~module_reference
+        |> Option.some
+    in
+    assert_resolved_definition_with_location ?external_sources ~source expected_definition_location
+  in
+  let assert_resolved_definition_with_location_string ?external_sources ~source expected =
+    assert_resolved_definition_with_location
+      ?external_sources
+      ~source
+      (expected >>| parse_location_with_module)
+  in
   assert_resolved_definition
-    ~source:{|
-        def getint() -> int:
-          return 42
-    |}
-    {
-      symbol_with_definition = Expression (parse_single_expression "test.getint");
-      cfg_data = { define_name = !&"test.getint"; node_id = 0; statement_index = 0 };
-      use_postcondition_info = false;
-    }
-    (Some "test:2:0-3:11");
+    {|
+        def getint() -> int: # start line
+          #    ^- cursor
+
+          return 42          # stop line
+    |};
   assert_resolved_definition
-    ~source:{|
+    {|
         def foo(a: int, b: str) -> None: ...
-    |}
-    {
-      symbol_with_definition =
-        Expression
-          (Node.create_with_default_location (Expression.Name (Name.Identifier "$parameter$b")));
-      cfg_data = { define_name = !&"test.foo"; node_id = 0; statement_index = 0 };
-      use_postcondition_info = true;
-    }
-    None;
+          #             ^- cursor
+
+        # No definition found.
+    |};
   assert_resolved_definition
-    ~source:{|
+    {|
         def foo(x: str) -> None:
+          #     ^     ^
+
           print(x)
-    |}
-    {
-      symbol_with_definition =
-        Expression
-          (Node.create_with_default_location (Expression.Name (Name.Identifier "$parameter$x")));
-      cfg_data = { define_name = !&"test.foo"; node_id = 4; statement_index = 0 };
-      use_postcondition_info = false;
-    }
-    (Some "test:2:8-2:14");
-  assert_resolved_definition
-    ~source:{|
-        def getint() -> int:
-          return 42
-    |}
-    {
-      symbol_with_definition = TypeAnnotation (parse_single_expression "int");
-      cfg_data = { define_name = !&"test.getint"; node_id = 0; statement_index = 0 };
-      use_postcondition_info = false;
-    }
-    (Some ":120:0-181:32");
-  assert_resolved_definition
-    ~source:{|
-        def foo() -> None:
-          xs: list[str] = ["a", "b"]
-    |}
-    {
-      symbol_with_definition = TypeAnnotation (parse_single_expression "list[str]");
-      cfg_data = { define_name = !&"test.foo"; node_id = 4; statement_index = 4 };
-      use_postcondition_info = false;
-    }
-    None;
-  assert_resolved_definition
-    ~source:{|
-      class Foo:
-        def bar(self) -> None:
-            print(self.foo())
-    |}
-    {
-      symbol_with_definition =
-        Expression
-          (Node.create_with_default_location (Expression.Name (Name.Identifier "$parameter$self")));
-      cfg_data = { define_name = !&"test.Foo.bar"; node_id = 4; statement_index = 0 };
-      use_postcondition_info = false;
-    }
-    (Some "test:3:10-3:14");
-  assert_resolved_definition
+          #     ^- cursor
+    |};
+  assert_resolved_definition_with_location_string
     ~source:
       {|
+        def getint() -> int:
+                      # ^- cursor
+          return 42
+    |}
+    (* This points to builtins.pyi. *)
+    (Some ":120:0-181:32");
+  assert_resolved_definition
+    {|
+        def foo() -> None:
+          xs: list[str] = ["a", "b"]
+          #    ^- cursor
+
+          # No definition found.
+    |};
+  assert_resolved_definition
+    {|
+      class Foo:
+        def bar(self) -> None:
+          #     ^   ^
+
+            print(self.foo())
+            #      ^- cursor
+    |};
+  assert_resolved_definition
+    {|
       class Foo:
         def bar(self) -> None:
             print(self.foo())
+            #           ^- cursor
 
-        def foo(self) -> int:
-          return 42
-    |}
-    {
-      symbol_with_definition =
-        Expression
-          (Node.create_with_default_location
-             (Expression.Name
-                (Name.Attribute
-                   {
-                     base =
-                       Node.create_with_default_location
-                         (Expression.Name (Name.Identifier "$parameter$self"));
-                     attribute = "foo";
-                     special = false;
-                   })));
-      cfg_data = { define_name = !&"test.Foo.bar"; node_id = 4; statement_index = 0 };
-      use_postcondition_info = false;
-    }
-    (Some "test:6:2-7:13");
-  assert_resolved_definition
-    ~external_sources
+
+        def foo(self) -> int:  # start line
+          return 42            # stop line
+
+    |};
+  assert_resolved_definition_with_location_string
     ~source:{|
         from library import Base
+                           # ^- cursor
     |}
-    {
-      symbol_with_definition = Expression (parse_single_expression "library.Base");
-      cfg_data = { define_name = !&"test.$toplevel"; node_id = 4; statement_index = 0 };
-      use_postcondition_info = false;
-    }
     (Some "library:2:0-2:15");
-  assert_resolved_definition
+  assert_resolved_definition_with_location_string
+    ~source:{|
+        import library
+        #        ^- cursor
+    |}
+    (Some "library:1:0-1:0");
+  assert_resolved_definition_with_location_string
+    ~source:
+      {|
+        from . import library as my_library
+                                    # ^- cursor
+    |}
+    (Some "library:1:0-1:0");
+  assert_resolved_definition_with_location_string
+    ~source:
+      {|
+        from . import library as my_library
+
+        x = my_library.Base()
+        #    ^- cursor
+    |}
+    (Some "library:1:0-1:0");
+  assert_resolved_definition_with_location_string
     ~source:
       {|
         def return_str() -> str:
@@ -963,19 +1199,15 @@ let test_resolve_definition_for_symbol context =
 
         def foo() -> None:
           return_str().capitalize().lower()
+                     # ^- cursor
     |}
-    {
-      symbol_with_definition = Expression (parse_single_expression "(test.return_str()).capitalize");
-      cfg_data = { define_name = !&"test.foo"; node_id = 4; statement_index = 0 };
-      use_postcondition_info = false;
-    }
+    (* This points to builtins.pyi. *)
     (Some ":201:2-201:34");
   assert_resolved_definition
-    ~source:
-      {|
+    {|
         class Foo:
-          def bar(self) -> None:
-              pass
+          def bar(self) -> None:  # start line
+              pass                # stop line
 
         class Bar:
           some_attribute: Foo = Foo()
@@ -985,196 +1217,204 @@ let test_resolve_definition_for_symbol context =
 
         def test() -> None:
           Bar().foo().bar()
-    |}
-    {
-      symbol_with_definition = Expression (parse_single_expression "(test.Bar()).foo().bar");
-      cfg_data = { define_name = !&"test.test"; node_id = 4; statement_index = 0 };
-      use_postcondition_info = false;
-    }
-    (Some "test:3:2-4:10");
+          #           ^- cursor
+    |};
   assert_resolved_definition
-    ~source:
-      {|
+    {|
         class Foo: ...
 
         class Bar:
           some_attribute: Foo = Foo()
+        # ^                          ^
 
         Bar().some_attribute
-    |}
-    {
-      symbol_with_definition = Expression (parse_single_expression "test.Bar().some_attribute");
-      cfg_data = { define_name = !&"test.$toplevel"; node_id = 4; statement_index = 2 };
-      use_postcondition_info = false;
-    }
-    (Some "test:5:2-5:29");
+        #       ^- cursor
+    |};
   assert_resolved_definition
-    ~source:{|
+    {|
         def foo() -> None:
           x = 42
+        # ^^
+
+
           print(x)
-    |}
-    {
-      symbol_with_definition =
-        Expression
-          (Node.create_with_default_location
-             (Expression.Name (Name.Identifier "$local_test?foo$x")));
-      cfg_data = { define_name = !&"test.foo"; node_id = 4; statement_index = 1 };
-      use_postcondition_info = false;
-    }
-    (Some "test:3:2-3:3");
+          #     ^- cursor
+    |};
   assert_resolved_definition
-    ~source:
-      {|
+    {|
         def foo() -> None:
           with open() as f:
+                      #  ^^
             f.readline()
-    |}
-    {
-      symbol_with_definition =
-        Expression
-          (Node.create_with_default_location (Expression.Name (Name.Identifier "$target$f")));
-      cfg_data = { define_name = !&"test.foo"; node_id = 5; statement_index = 1 };
-      use_postcondition_info = false;
-    }
-    (Some "test:3:17-3:18");
+          # ^- cursor
+    |};
   assert_resolved_definition
-    ~source:{|
+    {|
         def foo(x: str) -> None:
           for x in [1]:
+            # ^^
+
             print(x)
-    |}
-    {
-      symbol_with_definition =
-        Expression
-          (Node.create_with_default_location (Expression.Name (Name.Identifier "$target$x")));
-      cfg_data = { define_name = !&"test.foo"; node_id = 6; statement_index = 1 };
-      use_postcondition_info = false;
-    }
-    (Some "test:3:6-3:7");
+            #     ^- cursor
+    |};
   assert_resolved_definition
-    ~source:
-      {|
+    {|
         class Foo:
           @classmethod
           def my_class_method(cls) -> None: ...
+        # ^                                    ^
 
         def foo() -> None:
           Foo.my_class_method()
-    |}
-    {
-      symbol_with_definition = Expression (parse_single_expression "(test.Foo).my_class_method");
-      cfg_data = { define_name = !&"test.foo"; node_id = 4; statement_index = 0 };
-      use_postcondition_info = false;
-    }
-    (Some "test:4:2-4:39");
+          #    ^- cursor
+    |};
   assert_resolved_definition
-    ~source:
-      {|
+    {|
         class Foo:
           def my_method() -> None: ...
+        # ^                           ^
 
         def foo() -> None:
           Foo.my_method()
-    |}
-    {
-      symbol_with_definition = Expression (parse_single_expression "(test.Foo).my_method");
-      cfg_data = { define_name = !&"test.foo"; node_id = 4; statement_index = 0 };
-      use_postcondition_info = false;
-    }
-    (Some "test:3:2-3:30");
+          #    ^- cursor
+    |};
   assert_resolved_definition
-    ~source:
-      {|
+    {|
         class Foo:
           @staticmethod
           def my_static_method() -> None: ...
+        # ^                                  ^
 
         def foo() -> None:
           Foo.my_static_method()
-    |}
-    {
-      symbol_with_definition = Expression (parse_single_expression "(test.Foo).my_static_method");
-      cfg_data = { define_name = !&"test.foo"; node_id = 4; statement_index = 0 };
-      use_postcondition_info = false;
-    }
-    (Some "test:4:2-4:37");
+          #     ^- cursor
+    |};
   assert_resolved_definition
-    ~source:
-      {|
+    {|
         from dataclasses import dataclass
 
         @dataclass(frozen=True)
         class Foo:
           my_attribute: int
+        # ^                ^
 
         def main(foo: Foo) -> None:
           print(foo.my_attribute)
-    |}
-    {
-      symbol_with_definition =
-        Expression
-          (Expression.Name
-             (Name.Attribute
-                {
-                  base =
-                    Node.create_with_default_location
-                      (Expression.Name (Name.Identifier "$parameter$foo"));
-                  attribute = "my_attribute";
-                  special = false;
-                })
-          |> Node.create_with_default_location);
-      cfg_data = { define_name = !&"test.main"; node_id = 4; statement_index = 0 };
-      use_postcondition_info = false;
-    }
-    (Some "test:6:2-6:19");
+          #           ^- cursor
+    |};
   assert_resolved_definition
-    ~source:
-      {|
+    {|
         from dataclasses import dataclass
 
         @dataclass(frozen=True)
         class Foo:
           my_attribute: int
+        # ^                ^
 
         def main(foo: Foo) -> None:
           if foo.my_attribute:
-            #        ^-- CURSOR
+            #        ^- cursor
             print("hello")
-    |}
-    {
-      symbol_with_definition =
-        Expression
-          (Expression.Name
-             (Name.Attribute
-                {
-                  base =
-                    Node.create_with_default_location
-                      (Expression.Name (Name.Identifier "$parameter$foo"));
-                  attribute = "my_attribute";
-                  special = false;
-                })
-          |> Node.create_with_default_location);
-      cfg_data = { define_name = !&"test.main"; node_id = 7; statement_index = 0 };
-      use_postcondition_info = false;
-    }
-    (Some "test:6:2-6:19");
+    |};
   assert_resolved_definition
+    {|
+        def getint(xs: list[int]) -> None:
+          #        ^            ^
+
+          for x in xs:
+            #      ^- cursor
+            pass
+    |};
+  assert_resolved_definition
+    {|
+        def foo(xs: list[int]) -> None:
+          #     ^            ^
+
+          print(f"xs: {xs}")
+          #            ^- cursor
+    |};
+  assert_resolved_definition_with_location_string
     ~source:
       {|
-        def getint(xs: list[int]) -> None:
-          for x in xs:
-            #      ^-- CURSOR
-            pass
+        def foo(xs: list[int]) -> None:
+          print(f"xs: {xs.append(xs)}")
+                        # ^- cursor
     |}
-    {
-      symbol_with_definition =
-        Expression
-          (Node.create_with_default_location (Expression.Name (Name.Identifier "$parameter$xs")));
-      cfg_data = { define_name = !&"test.getint"; node_id = 6; statement_index = 0 };
-      use_postcondition_info = false;
-    }
-    (Some "test:2:11-2:24");
+    (* This points to builtins.pyi. *)
+    (Some ":272:2-272:44");
+  (* TODO(T112570623): The target variable points to the `Exception`. This is unavoidable right now,
+     because we don't store its location in `Try.t`. *)
+  assert_resolved_definition
+    {|
+        try:
+          print("hello")
+        except Exception as exception:
+             # ^        ^
+          print(exception)
+          #      ^- cursor
+    |};
+  (* We create special stubs in `MissingFromStubs` for special forms like `Callable`. They end up
+     making the location be `any` (with all positions as `-1`), which the IDE doesn't recognize. We
+     should translate that to something sensible, so that the IDE at least goes to the relevant
+     file. *)
+  assert_resolved_definition_with_location_string
+    ~source:{|
+        from typing import Callable
+
+        f: Callable
+        #   ^- cursor
+    |}
+    (Some "typing:1:0-1:0");
+  assert_resolved_definition_with_location_string
+    ~external_sources:["a.py", {| |}; "b.py", {| import a as x |}]
+    ~source:{|
+        from b import x as y
+        print(y)
+           #  ^- cursor
+    |}
+    (Some "a:1:0-1:0");
+  assert_resolved_definition_with_location_string
+    ~external_sources:["a.py", {| |}; "b.py", {| import a as x |}]
+    ~source:{|
+        from b import x
+        print(x)
+           #  ^- cursor
+    |}
+    (Some "a:1:0-1:0");
+  assert_resolved_definition_with_location_string
+    ~external_sources:["foo/a.py", {| class Foo: ... |}; "b.py", {| import foo.a as x |}]
+    ~source:{|
+        from b import x as y
+        print(y)
+           #  ^- cursor
+    |}
+    (Some "foo.a:1:0-1:0");
+  assert_resolved_definition_with_location_string
+    ~external_sources:["a.py", {| class Foo: ... |}; "b.py", {| import a as x |}]
+    ~source:{|
+        from b import x as y
+        print(y.Foo)
+              #  ^- cursor
+    |}
+    (Some "a:1:0-1:14");
+  assert_resolved_definition_with_location_string
+    ~external_sources:["my_placeholder_stub.pyi", {| # pyre-placeholder-stub |}]
+    ~source:
+      {|
+        import my_placeholder_stub
+        print(my_placeholder_stub)
+           #  ^- cursor
+    |}
+    (Some "my_placeholder_stub:1:0-1:0");
+  assert_resolved_definition_with_location_string
+    ~external_sources:["my_placeholder_stub.pyi", {| # pyre-placeholder-stub |}]
+    ~source:
+      {|
+        from my_placeholder_stub import x as y
+        print(y.Foo)
+              #  ^- cursor
+    |}
+    (Some "my_placeholder_stub:1:0-1:0");
   ()
 
 
@@ -1994,7 +2234,7 @@ let test_classify_coverage_data _ =
               ])
          ~annotation:Type.bytes
          ())
-    None;
+    (Some LocationBasedLookup.CallableParameterIsUnknownOrAny);
   assert_coverage_gap_callable
     ~expression:"foo"
     ~type_:
@@ -2008,7 +2248,7 @@ let test_classify_coverage_data _ =
               ])
          ~annotation:Type.bytes
          ())
-    None;
+    (Some LocationBasedLookup.CallableParameterIsUnknownOrAny);
   assert_coverage_gap_callable
     ~expression:"foo"
     ~type_:(Type.Callable.create ~parameters:(Type.Callable.Defined []) ~annotation:Type.bytes ())
@@ -2420,6 +2660,441 @@ let test_coverage_gaps_in_module context =
   ()
 
 
+let test_resolve_type_for_symbol context =
+  let default_external_sources =
+    [
+      ( "library.py",
+        {|
+      class Base: ...
+
+      def return_str() -> str:
+          return "hello"
+    |} );
+    ]
+  in
+  let module_reference = !&"test" in
+  let assert_resolved_explicit_type ?(external_sources = default_external_sources) source expected =
+    let type_environment =
+      let { ScratchProject.BuiltTypeEnvironment.type_environment; _ } =
+        ScratchProject.setup ~context ["test.py", source] ~external_sources
+        |> ScratchProject.build_type_environment
+      in
+      type_environment
+    in
+    let symbol_data =
+      LocationBasedLookup.find_narrowest_spanning_symbol
+        ~type_environment
+        ~module_reference
+        (find_indicator_position ~source "cursor")
+    in
+    assert_equal
+      ~cmp:[%compare.equal: Type.t option]
+      ~printer:[%show: Type.t option]
+      expected
+      (symbol_data >>= LocationBasedLookup.resolve_type_for_symbol ~type_environment)
+  in
+  let assert_resolved_type ?external_sources ?(aliases = Type.empty_aliases) source expected_type =
+    let parse_type type_ = Type.create ~aliases (parse_single_expression type_) in
+    assert_resolved_explicit_type ?external_sources source (expected_type >>| parse_type)
+  in
+  assert_resolved_type
+    {|
+        def getint() -> int:
+          return 42
+
+        def main() -> None:
+          x = getint()
+        # ^- cursor
+    |}
+    (Some "int");
+  assert_resolved_type {|
+        x = SomeUntrackedClass()
+          #    ^- cursor
+    |} None;
+  assert_resolved_type
+    {|
+        def foo(a: int, b: str) -> None: ...
+          #             ^- cursor
+
+        # No definition found.
+    |}
+    None;
+  assert_resolved_type
+    {|
+        def foo(x: str) -> None:
+          print(x)
+          #     ^- cursor
+    |}
+    (Some "str");
+  assert_resolved_type
+    {|
+        def getint() -> int:
+                      # ^- cursor
+          return 42
+    |}
+    (Some "typing.Type[int]");
+  assert_resolved_type
+    {|
+        def foo() -> None:
+          xs: list[str] = ["a", "b"]
+          #    ^- cursor
+    |}
+    (Some "typing.Type[typing.List[str]]");
+  assert_resolved_type
+    {|
+      class Foo:
+        def bar(self) -> None:
+            print(self.foo())
+            #      ^- cursor
+    |}
+    (Some "test.Foo");
+  assert_resolved_explicit_type
+    {|
+      class Foo:
+        def bar(self) -> None:
+            print(self.foo())
+            #           ^- cursor
+
+        def foo(self) -> int:
+          return 42
+
+    |}
+    (Type.parametric
+       "BoundMethod"
+       [
+         Single
+           (Type.Callable
+              {
+                kind = Type.Callable.Named (Reference.create "test.Foo.foo");
+                implementation =
+                  {
+                    annotation = Type.integer;
+                    parameters =
+                      Type.Callable.Defined
+                        [
+                          Type.Callable.Parameter.Named
+                            {
+                              name = "$parameter$self";
+                              annotation = Type.Primitive "test.Foo";
+                              default = false;
+                            };
+                        ];
+                  };
+                overloads = [];
+              });
+         Single (Type.Primitive "test.Foo");
+       ]
+    |> Option.some);
+  assert_resolved_type
+    {|
+        from library import Base
+                           # ^- cursor
+    |}
+    (Some "typing.Type[library.Base]");
+  assert_resolved_type {|
+        import library
+        #        ^- cursor
+    |} None;
+  assert_resolved_type
+    {|
+        from . import library as my_library
+                                    # ^- cursor
+    |}
+    None;
+  assert_resolved_type
+    {|
+        from . import library as my_library
+
+        x = my_library.Base() #    ^- cursor
+    |}
+    None;
+  assert_resolved_explicit_type
+    {|
+        def return_str() -> str:
+          return "hello"
+
+        def foo() -> None:
+          return_str().capitalize().lower()
+                     # ^- cursor
+    |}
+    (Type.parametric
+       "BoundMethod"
+       [
+         Single
+           (Type.Callable
+              {
+                kind = Type.Callable.Named (Reference.create "str.capitalize");
+                implementation =
+                  {
+                    annotation = Type.string;
+                    parameters =
+                      Type.Callable.Defined
+                        [
+                          Type.Callable.Parameter.Named
+                            { name = "$parameter$self"; annotation = Type.string; default = false };
+                        ];
+                  };
+                overloads = [];
+              });
+         Single Type.string;
+       ]
+    |> Option.some);
+  assert_resolved_explicit_type
+    {|
+        class Foo:
+          def bar(self) -> None:
+              pass
+
+        class Bar:
+          some_attribute: Foo = Foo()
+
+          def foo(self) -> Foo:
+              return Foo()
+
+        def test() -> None:
+          Bar().foo().bar()
+          #           ^- cursor
+    |}
+    (Type.parametric
+       "BoundMethod"
+       [
+         Single
+           (Type.Callable
+              {
+                kind = Type.Callable.Named (Reference.create "test.Foo.bar");
+                implementation =
+                  {
+                    annotation = Type.none;
+                    parameters =
+                      Type.Callable.Defined
+                        [
+                          Type.Callable.Parameter.Named
+                            {
+                              name = "$parameter$self";
+                              annotation = Type.Primitive "test.Foo";
+                              default = false;
+                            };
+                        ];
+                  };
+                overloads = [];
+              });
+         Single (Type.Primitive "test.Foo");
+       ]
+    |> Option.some);
+  assert_resolved_type
+    {|
+        class Foo: ...
+
+        class Bar:
+          some_attribute: Foo = Foo()
+
+        Bar().some_attribute
+        #       ^- cursor
+    |}
+    (Some "test.Foo");
+  assert_resolved_type
+    {|
+        def foo() -> None:
+          x = 42
+          print(x)
+          #     ^- cursor
+    |}
+    (Some "typing.Literal[42]");
+  assert_resolved_type
+    {|
+        from typing import Iterator
+        from contextlib import contextmanager
+
+        @contextmanager
+        def open() -> Iterator[str]: ...
+
+        def foo() -> None:
+          with open() as f:
+            f.readline()
+          # ^- cursor
+    |}
+    (Some "str");
+  assert_resolved_type
+    {|
+        def foo(x: str) -> None:
+          for x in [1]:
+            print(x)
+            #     ^- cursor
+    |}
+    (Some "int");
+  assert_resolved_explicit_type
+    {|
+        class Foo:
+          @classmethod
+          def my_class_method(cls) -> None: ...
+
+        def foo() -> None:
+          Foo.my_class_method()
+          #    ^- cursor
+    |}
+    (Type.parametric
+       "typing.ClassMethod"
+       [
+         Single
+           (Type.Callable
+              {
+                kind = Type.Callable.Named (Reference.create "test.Foo.my_class_method");
+                implementation =
+                  {
+                    annotation = Type.none;
+                    parameters =
+                      Type.Callable.Defined
+                        [
+                          Type.Callable.Parameter.Named
+                            {
+                              name = "$parameter$cls";
+                              annotation = Type.meta (Type.Primitive "test.Foo");
+                              default = false;
+                            };
+                        ];
+                  };
+                overloads = [];
+              });
+       ]
+    |> Option.some);
+  assert_resolved_explicit_type
+    {|
+        class Foo:
+          def my_method() -> None: ...
+
+        def foo() -> None:
+          Foo.my_method()
+          #    ^- cursor
+    |}
+    (Type.Callable
+       {
+         kind = Type.Callable.Named (Reference.create "test.Foo.my_method");
+         implementation = { annotation = Type.none; parameters = Type.Callable.Defined [] };
+         overloads = [];
+       }
+    |> Option.some);
+  assert_resolved_explicit_type
+    {|
+        class Foo:
+          @staticmethod
+          def my_static_method() -> None: ...
+
+        def foo() -> None:
+          Foo.my_static_method()
+          #     ^- cursor
+    |}
+    (Type.parametric
+       "typing.StaticMethod"
+       [
+         Single
+           (Type.Callable
+              {
+                kind = Type.Callable.Named (Reference.create "test.Foo.my_static_method");
+                implementation = { annotation = Type.none; parameters = Type.Callable.Defined [] };
+                overloads = [];
+              });
+       ]
+    |> Option.some);
+  assert_resolved_type
+    {|
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class Foo:
+          my_attribute: int
+
+        def main(foo: Foo) -> None:
+          print(foo.my_attribute)
+          #           ^- cursor
+    |}
+    (Some "int");
+  assert_resolved_type
+    {|
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class Foo:
+          my_attribute: int
+
+        def main(foo: Foo) -> None:
+          if foo.my_attribute:
+            #        ^- cursor
+            print("hello")
+    |}
+    (Some "int");
+  assert_resolved_type
+    {|
+        def getint(xs: list[int]) -> None:
+          for x in xs:
+            #      ^- cursor
+            pass
+    |}
+    (Some "typing.List[int]");
+  assert_resolved_type
+    {|
+        def foo(xs: list[int]) -> None:
+          print(f"xs: {xs}")
+          #            ^- cursor
+    |}
+    (Some "typing.List[int]");
+  assert_resolved_explicit_type
+    {|
+        def foo(xs: list[int]) -> None:
+          print(f"xs: {xs.append(xs)}")
+                        # ^- cursor
+    |}
+    (Type.parametric
+       "BoundMethod"
+       [
+         Single
+           (Type.Callable
+              {
+                kind = Type.Callable.Named (Reference.create "list.append");
+                implementation =
+                  {
+                    annotation = Type.none;
+                    parameters =
+                      Type.Callable.Defined
+                        [
+                          Type.Callable.Parameter.Named
+                            {
+                              name = "$parameter$self";
+                              annotation = Type.list Type.integer;
+                              default = false;
+                            };
+                          Type.Callable.Parameter.Named
+                            {
+                              name = "$parameter$element";
+                              annotation = Type.integer;
+                              default = false;
+                            };
+                        ];
+                  };
+                overloads = [];
+              });
+         Single (Type.list Type.integer);
+       ]
+    |> Option.some);
+  assert_resolved_type
+    {|
+        try:
+          print("hello")
+        except Exception as exception:
+          print(exception)
+          #      ^- cursor
+    |}
+    (Some "Exception");
+  assert_resolved_type
+    {|
+        from typing import Callable
+
+        f: Callable
+        #   ^- cursor
+    |}
+    (Some "typing.Type[typing.Callable]");
+  ()
+
+
 let () =
   "lookup"
   >::: [
@@ -2442,5 +3117,6 @@ let () =
          "classify_coverage_data" >:: test_classify_coverage_data;
          "lookup_expression" >:: test_lookup_expression;
          "coverage_gaps_in_module" >:: test_coverage_gaps_in_module;
+         "resolve_type_for_symbol" >:: test_resolve_type_for_symbol;
        ]
   |> Test.run

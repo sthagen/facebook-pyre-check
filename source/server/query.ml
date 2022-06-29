@@ -24,6 +24,10 @@ module Request = struct
     | DumpCallGraph
     | ExpressionLevelCoverage of string list
     | Help of string
+    | HoverInfoForPosition of {
+        path: PyrePath.t;
+        position: Location.position;
+      }
     | InlineDecorators of {
         function_reference: Reference.t;
         decorators_to_skip: Reference.t list;
@@ -87,6 +91,17 @@ module Response = struct
       total_expressions: int;
       coverage_gaps: LocationBasedLookup.coverage_gap_by_location list;
     }
+    [@@deriving sexp, compare, to_yojson]
+
+    type error_at_path = {
+      path: string;
+      error: string;
+    }
+    [@@deriving sexp, compare, to_yojson, show]
+
+    type coverage_response_at_path =
+      | CoverageAtPath of coverage_at_path
+      | ErrorAtPath of error_at_path
     [@@deriving sexp, compare, to_yojson]
 
     type compatibility = {
@@ -156,7 +171,7 @@ module Response = struct
       | Callgraph of callees list
       | Compatibility of compatibility
       | Errors of Analysis.AnalysisError.Instantiated.t list
-      | ExpressionLevelCoverageResponse of coverage_at_path list
+      | ExpressionLevelCoverageResponse of coverage_response_at_path list
       | FoundAttributes of attribute list
       | FoundDefines of define list
       | FoundLocationsOfDefinitions of code_location list
@@ -166,6 +181,7 @@ module Response = struct
       | FoundReferences of code_location list
       | FunctionDefinition of Statement.Define.t
       | Help of string
+      | HoverInfoForPosition of string
       | ModelVerificationErrors of Taint.ModelVerificationError.t list
       | Success of string
       | Superclasses of superclasses_mapping list
@@ -206,7 +222,7 @@ module Response = struct
               );
             ]
       | ExpressionLevelCoverageResponse paths ->
-          `List (List.map paths ~f:coverage_at_path_to_yojson)
+          `List (List.map paths ~f:coverage_response_at_path_to_yojson)
       | Help string -> `Assoc ["help", `String string]
       | ModelVerificationErrors errors ->
           `Assoc ["errors", `List (List.map errors ~f:Taint.ModelVerificationError.to_json)]
@@ -267,6 +283,7 @@ module Response = struct
                   (Statement.show
                      (Statement.Statement.Define define |> Node.create_with_default_location)) );
             ]
+      | HoverInfoForPosition message -> `Assoc ["message", `String message]
       | Success message -> `Assoc ["message", `String message]
       | Superclasses class_to_superclasses_mapping ->
           let reference_to_yojson reference = `String (Reference.show reference) in
@@ -322,6 +339,10 @@ let help () =
           "expression_level_coverage(path='path') or expression_level_coverage('path1', 'path2', \
            ...): Return JSON output containing the number of covered and uncovered expressions \
            from above, along with a list of known coverage gaps."
+    | HoverInfoForPosition _ ->
+        Some
+          "hover_info_for_position(path='<absolute path>', line=<line>, character=<character>): \
+           Return JSON output containing the type of the symbol at the given position."
     | InlineDecorators _ ->
         Some
           "inline_decorators(qualified_function_name, optional decorators_to_skip=[decorator1, \
@@ -373,6 +394,7 @@ let help () =
       Defines [Reference.create ""];
       DumpCallGraph;
       ExpressionLevelCoverage [""];
+      HoverInfoForPosition { path; position = Location.any_position };
       IsCompatibleWith (empty, empty);
       LessOrEqual (empty, empty);
       ModelQuery { path; query_name = "" };
@@ -488,6 +510,12 @@ let rec parse_request_exn query =
       | "expression_level_coverage", paths ->
           Request.ExpressionLevelCoverage (List.map ~f:string paths)
       | "help", _ -> Request.Help (help ())
+      | "hover_info_for_position", [path; line; column] ->
+          Request.HoverInfoForPosition
+            {
+              path = PyrePath.create_absolute (string path);
+              position = { Location.line = integer line; column = integer column };
+            }
       | "inline_decorators", arguments -> parse_inline_decorators arguments
       | "is_compatible_with", [left; right] -> Request.IsCompatibleWith (access left, access right)
       | "less_or_equal", [left; right] -> Request.LessOrEqual (access left, access right)
@@ -669,6 +697,15 @@ let rec process_request ~environment ~build_system request =
           };
       }
     in
+    let module_of_path path =
+      let relative_path =
+        let { Configuration.Analysis.local_root = root; _ } = configuration in
+        PyrePath.create_relative ~root ~relative:(PyrePath.absolute path) |> SourcePath.create
+      in
+      match modules_of_path relative_path with
+      | [found_module] -> Some found_module
+      | _ -> None
+    in
     let open Response in
     match request with
     | Request.Attributes annotation ->
@@ -829,27 +866,57 @@ let rec process_request ~environment ~build_system request =
           | Some arguments_path -> get_text_file_path_list arguments_path
         in
         let find_resolved_types result =
+          let has_valid_suffix path =
+            let valid_suffixes =
+              ".py" :: ".pyi" :: Configuration.Analysis.extension_suffixes configuration
+            in
+            let extension =
+              Filename.split_extension path
+              |> snd
+              >>| (fun extension -> "." ^ extension)
+              |> Option.value ~default:""
+            in
+            List.exists ~f:(String.equal extension) valid_suffixes
+          in
+          let format_error error =
+            Format.asprintf "Not able to get lookups in: %s" (get_error_paths error)
+          in
           match result with
-          | Result.Error error -> Either.Second error
-          | Result.Ok path -> (
-              match
-                LocationBasedLookupProcessor.find_expression_level_coverage_for_path
-                  ~environment
-                  ~build_system
-                  path
-              with
-              | Result.Ok { total_expressions; coverage_gaps } ->
-                  Either.First { Base.path; total_expressions; coverage_gaps }
-              | Result.Error error_reason -> Either.Second (path, error_reason))
+          | Result.Error (path, error_reason) ->
+              Base.ErrorAtPath { Base.path; error = format_error [path, error_reason] }
+          | Result.Ok path ->
+              if has_valid_suffix path then
+                match
+                  LocationBasedLookupProcessor.find_expression_level_coverage_for_path
+                    ~environment
+                    ~build_system
+                    path
+                with
+                | Result.Ok { total_expressions; coverage_gaps } ->
+                    Base.CoverageAtPath { Base.path; total_expressions; coverage_gaps }
+                | Result.Error error_reason ->
+                    Base.ErrorAtPath { Base.path; error = format_error [path, error_reason] }
+              else
+                Base.ErrorAtPath
+                  {
+                    Base.path;
+                    error = format_error [path, LocationBasedLookupProcessor.FileNotFound];
+                  }
         in
-        let results, errors =
-          List.concat_map paths ~f:extract_paths |> List.partition_map ~f:find_resolved_types
-        in
-        if List.is_empty errors then
-          Single (Base.ExpressionLevelCoverageResponse results)
-        else
-          Error (Format.asprintf "Not able to get lookups in: %s" (get_error_paths errors))
+
+        let results = List.concat_map paths ~f:extract_paths |> List.map ~f:find_resolved_types in
+        Single (Base.ExpressionLevelCoverageResponse results)
     | Help help_list -> Single (Base.Help help_list)
+    | HoverInfoForPosition { path; position } ->
+        module_of_path path
+        >>| (fun module_reference ->
+              LocationBasedLookup.hover_info_for_position
+                ~type_environment:environment
+                ~module_reference
+                position)
+        >>| (fun hover_info -> Single (Base.HoverInfoForPosition hover_info))
+        |> Option.value
+             ~default:(Error (Format.sprintf "No module found for path `%s`" (PyrePath.show path)))
     | InlineDecorators { function_reference; decorators_to_skip } ->
         InlineDecorators.inline_decorators
           ~environment
@@ -996,15 +1063,6 @@ let rec process_request ~environment ~build_system request =
         GlobalResolution.less_or_equal global_resolution ~left ~right
         |> fun response -> Single (Base.Boolean response)
     | LocationOfDefinition { path; position } ->
-        let module_of_path path =
-          let relative_path =
-            let { Configuration.Analysis.local_root = root; _ } = configuration in
-            PyrePath.create_relative ~root ~relative:(PyrePath.absolute path) |> SourcePath.create
-          in
-          match modules_of_path relative_path with
-          | [found_module] -> Some found_module
-          | _ -> None
-        in
         module_of_path path
         >>= (fun module_reference ->
               LocationBasedLookup.location_of_definition

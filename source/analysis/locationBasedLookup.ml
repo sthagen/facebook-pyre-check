@@ -399,6 +399,8 @@ type symbol_and_cfg_data = {
 }
 [@@deriving compare, show, sexp]
 
+let symbol_with_definition { symbol_with_definition; _ } = symbol_with_definition
+
 let location_insensitive_compare_symbol_and_cfg_data
     ({ symbol_with_definition = left_symbol_with_definition; _ } as left)
     ({ symbol_with_definition = right_symbol_with_definition; _ } as right)
@@ -450,7 +452,7 @@ module FindNarrowestSpanningExpression (PositionData : PositionData) = struct
 
   let visit_expression_children _ _ = true
 
-  let visit_format_string_children _ _ = false
+  let visit_format_string_children _ _ = true
 end
 
 (** This is a simple wrapper around [FindNarrowestSpanningExpression]. It visits imported symbols
@@ -618,11 +620,18 @@ let find_narrowest_spanning_symbol ~type_environment ~module_reference position 
   in
   let timer = Timer.start () in
   let symbols_covering_position = List.fold all_defines ~init:[] ~f:walk_define in
+  let symbol_data = narrowest_match symbols_covering_position in
   Log.log
     ~section:`Performance
-    "locationBasedLookup: Find narrowest symbol spanning position: %d"
-    (Timer.stop_in_ms timer);
-  narrowest_match symbols_covering_position
+    "locationBasedLookup: Narrowest symbol spanning position `%s:%s`: Found `%s` in %d ms\n\
+     All symbols spanning the position: %s\n"
+    (Reference.show module_reference)
+    ([%show: Location.position] position)
+    ([%show: symbol_with_definition option] (symbol_data >>| symbol_with_definition))
+    (Timer.stop_in_ms timer)
+    (List.map symbols_covering_position ~f:symbol_with_definition
+    |> [%show: symbol_with_definition list]);
+  symbol_data
 
 
 let resolve ~resolution expression =
@@ -657,18 +666,53 @@ let find_definition ~resolution ~module_reference ~define_name ~statement_key re
     Reference.single reference
     >>| Identifier.sanitized
     >>= look_up_local_definition ~resolution ~define_name ~statement_key
-    >>| fun { Scope.Binding.location; _ } -> location |> Location.with_module ~module_reference
+    >>= function
+    | { Scope.Binding.kind = ImportName _; _ } ->
+        (* If we import `import foo`, go-to-def on uses of `foo` should go to the module `foo`, not
+           the import location in the current module. So, don't treat `foo` as a locally defined
+           variable. *)
+        None
+    | { Scope.Binding.location; _ } ->
+        location |> Location.with_module ~module_reference |> Option.some
   in
-  let definition =
+  let definition_from_resolved_reference ~global_resolution = function
+    | UnannotatedGlobalEnvironment.ResolvedReference.Module resolved_reference ->
+        Location.with_module ~module_reference:resolved_reference Location.any |> Option.some
+    | UnannotatedGlobalEnvironment.ResolvedReference.ModuleAttribute { from; name; remaining; _ } ->
+        let resolved_reference =
+          Reference.combine
+            (Reference.create ~prefix:from name)
+            (Reference.create_from_list remaining)
+        in
+        GlobalResolution.global_location global_resolution resolved_reference
+    | UnannotatedGlobalEnvironment.ResolvedReference.PlaceholderStub { stub_module; _ } ->
+        Location.with_module ~module_reference:stub_module Location.any |> Option.some
+  in
+  let definition_location =
     match local_definition with
     | Some definition -> Some definition
-    | None -> GlobalResolution.global_location (Resolution.global_resolution resolution) reference
+    | None -> (
+        let global_resolution = Resolution.global_resolution resolution in
+        match GlobalResolution.global_location global_resolution reference with
+        | Some definition -> Some definition
+        | None ->
+            GlobalResolution.resolve_exports global_resolution reference
+            >>= definition_from_resolved_reference ~global_resolution)
   in
-  definition
-  >>= fun location ->
-  Option.some_if
-    (not ([%compare.equal: Location.WithModule.t] location Location.WithModule.any))
-    location
+  let sanitize_location ({ Location.WithModule.module_reference; start; stop } as location) =
+    if [%compare.equal: Location.WithModule.t] location Location.WithModule.any then
+      None
+    else if [%compare.equal: Location.t] { Location.start; stop } Location.any then
+      (* Special forms have location as `any`. So, just point to the start of the file where they
+         are defined. *)
+      let dummy_position = { Location.line = 1; column = 0 } in
+      { Location.start = dummy_position; stop = dummy_position }
+      |> Location.with_module ~module_reference
+      |> Option.some
+    else
+      Some location
+  in
+  definition_location >>= sanitize_location
 
 
 let resolve_definition_for_name ~resolution ~module_reference ~define_name ~statement_key expression
@@ -706,43 +750,48 @@ let resolve_definition_for_name ~resolution ~module_reference ~define_name ~stat
   | _ -> None
 
 
+let resolution_from_cfg_data
+    ~type_environment
+    ~use_postcondition_info
+    { define_name; node_id; statement_index }
+  =
+  let global_resolution = TypeEnvironment.ReadOnly.global_resolution type_environment in
+  let coverage_data_lookup_map =
+    TypeEnvironment.ReadOnly.get_or_recompute_local_annotations type_environment define_name
+    |> function
+    | Some coverage_data_lookup_map -> coverage_data_lookup_map
+    | None -> LocalAnnotationMap.empty () |> LocalAnnotationMap.read_only
+  in
+  let annotation_store =
+    let statement_key = [%hash: int * int] (node_id, statement_index) in
+    if use_postcondition_info then
+      LocalAnnotationMap.ReadOnly.get_postcondition coverage_data_lookup_map ~statement_key
+      |> Option.value ~default:Refinement.Store.empty
+    else
+      LocalAnnotationMap.ReadOnly.get_precondition coverage_data_lookup_map ~statement_key
+      |> Option.value ~default:Refinement.Store.empty
+  in
+  (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
+  TypeCheck.resolution global_resolution ~annotation_store (module TypeCheck.DummyContext)
+
+
 let resolve_definition_for_symbol
     ~type_environment
     ~module_reference
     {
       symbol_with_definition;
-      cfg_data = { define_name; node_id; statement_index };
+      cfg_data = { define_name; node_id; statement_index } as cfg_data;
       use_postcondition_info;
     }
   =
   let timer = Timer.start () in
-  let resolution =
-    let global_resolution = TypeEnvironment.ReadOnly.global_resolution type_environment in
-    let coverage_data_lookup_map =
-      TypeEnvironment.ReadOnly.get_or_recompute_local_annotations type_environment define_name
-      |> function
-      | Some coverage_data_lookup_map -> coverage_data_lookup_map
-      | None -> LocalAnnotationMap.empty () |> LocalAnnotationMap.read_only
-    in
-    let annotation_store =
-      let statement_key = [%hash: int * int] (node_id, statement_index) in
-      if use_postcondition_info then
-        LocalAnnotationMap.ReadOnly.get_postcondition coverage_data_lookup_map ~statement_key
-        |> Option.value ~default:Refinement.Store.empty
-      else
-        LocalAnnotationMap.ReadOnly.get_precondition coverage_data_lookup_map ~statement_key
-        |> Option.value ~default:Refinement.Store.empty
-    in
-    (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
-    TypeCheck.resolution global_resolution ~annotation_store (module TypeCheck.DummyContext)
-  in
   let definition_location =
     match symbol_with_definition with
     | Expression expression
     | TypeAnnotation expression ->
         let statement_key = [%hash: int * int] (node_id, statement_index) in
         resolve_definition_for_name
-          ~resolution
+          ~resolution:(resolution_from_cfg_data ~type_environment ~use_postcondition_info cfg_data)
           ~module_reference
           ~define_name
           ~statement_key
@@ -750,14 +799,23 @@ let resolve_definition_for_symbol
   in
   Log.log
     ~section:`Performance
-    "locationBasedLookup: Resolve definition for symbol: %d"
+    "locationBasedLookup: Resolve definition for symbol: %d ms"
     (Timer.stop_in_ms timer);
   definition_location
 
 
 let location_of_definition ~type_environment ~module_reference position =
-  let result = find_narrowest_spanning_symbol ~type_environment ~module_reference position in
-  result >>= resolve_definition_for_symbol ~type_environment ~module_reference
+  let symbol_data = find_narrowest_spanning_symbol ~type_environment ~module_reference position in
+  let location =
+    symbol_data >>= resolve_definition_for_symbol ~type_environment ~module_reference
+  in
+  Log.log
+    ~section:`Server
+    "Definition for symbol at position `%s:%s`: %s"
+    (Reference.show module_reference)
+    ([%show: Location.position] position)
+    ([%show: Location.WithModule.t option] location);
+  location
 
 
 let classify_coverage_data { expression; type_ } =
@@ -772,8 +830,9 @@ let classify_coverage_data { expression; type_ } =
         | Type.Callable.Parameter.Named { annotation = Type.Any | Type.Top; _ } -> true
         | _ -> false
       in
-      let all_parameters_are_top_or_any = List.for_all ~f:parameter_is_top_or_any parameter_list in
-      if all_parameters_are_top_or_any then
+      (* This will treat parameters that use default values, which will never have a runtime error,
+         as a coverage gap. *)
+      if List.exists ~f:parameter_is_top_or_any parameter_list then
         make_coverage_gap CallableParameterIsUnknownOrAny
       else
         None
@@ -801,3 +860,42 @@ let get_expression_level_coverage coverage_data_lookup =
     List.sort coverage_gap_by_locations ~compare:[%compare: coverage_gap_by_location]
   in
   { total_expressions; coverage_gaps = sorted_coverage_gap_by_locations }
+
+
+let resolve_type_for_symbol
+    ~type_environment
+    { symbol_with_definition; cfg_data; use_postcondition_info }
+  =
+  let timer = Timer.start () in
+  let type_ =
+    match symbol_with_definition with
+    | Expression expression
+    | TypeAnnotation expression ->
+        resolve
+          ~resolution:(resolution_from_cfg_data ~type_environment ~use_postcondition_info cfg_data)
+          expression
+  in
+  Log.log
+    ~section:`Performance
+    "locationBasedLookup: Resolve type for symbol: %d ms"
+    (Timer.stop_in_ms timer);
+  type_
+
+
+let empty_hover_message = ""
+
+let hover_info_for_position ~type_environment ~module_reference position =
+  let symbol_data = find_narrowest_spanning_symbol ~type_environment ~module_reference position in
+  let hover_message =
+    symbol_data
+    >>= resolve_type_for_symbol ~type_environment
+    >>| (fun type_ -> Format.asprintf "`%s`" (Type.show_concise type_))
+    |> Option.value ~default:empty_hover_message
+  in
+  Log.log
+    ~section:`Server
+    "Hover info for symbol at position `%s:%s`: %s"
+    (Reference.show module_reference)
+    ([%show: Location.position] position)
+    hover_message;
+  hover_message

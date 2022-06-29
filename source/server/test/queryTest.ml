@@ -148,6 +148,13 @@ let test_parse_query context =
   assert_fails_to_parse "expression_level_coverage(a.py:1:2)";
   assert_fails_to_parse "expression_level_coverage(a.py)";
   assert_fails_to_parse "expression_level_coverage('a.py', 1, 2)";
+  assert_parses
+    "hover_info_for_position(path='/foo.py', line=42, column=10)"
+    (HoverInfoForPosition
+       { path = PyrePath.create_absolute "/foo.py"; position = Location.{ line = 42; column = 10 } });
+  assert_fails_to_parse "hover_info_for_position(path='/foo.py', line=42)";
+  assert_fails_to_parse "hover_info_for_position(path='/foo.py', column=10)";
+  assert_fails_to_parse "hover_info_for_position(path=99, line=42, column=10)";
   ()
 
 
@@ -304,6 +311,28 @@ let test_handle_query_basic context =
     ~source:""
     ~query:"batch(less_or_equal(int, str), less_or_equal(int, Unknown))"
     (Batch [Single (Base.Boolean false); Error "Type `Unknown` was not found in the type order."])
+  >>= fun () ->
+  assert_type_query_response
+    ~source:""
+    ~handle:"Foo.java"
+    ~query:"expression_level_coverage(path='Foo.java')"
+    (Single
+       (Base.ExpressionLevelCoverageResponse
+          [
+            ErrorAtPath
+              {
+                path = "Foo.java";
+                error = "Not able to get lookups in: `Foo.java` (file not found)";
+              };
+          ]))
+  >>= fun () ->
+  assert_type_query_response
+    ~source:""
+    ~handle:"foo.pyi"
+    ~query:"expression_level_coverage(path='foo.pyi')"
+    (Single
+       (Base.ExpressionLevelCoverageResponse
+          [CoverageAtPath { Base.path = "foo.pyi"; total_expressions = 0; coverage_gaps = [] }]))
   >>= fun () ->
   assert_compatibility_response
     ~source:""
@@ -1882,6 +1911,13 @@ let test_expression_level_coverage context =
               def fizz(x) -> None:
                 print(x + 1)
             |};
+      ( "two.py",
+        {|
+              # pyre-strict
+              def two(x):
+                print(x + 1)
+            |}
+      );
       "bar.pyi", {|
             def foo(x) -> None:
               ...
@@ -1915,6 +1951,8 @@ let test_expression_level_coverage context =
           {|
             {
               "response": [
+                [
+                "CoverageAtPath",
                   {
                       "path": "%s/foo.py",
                       "total_expressions": 8,
@@ -1985,6 +2023,92 @@ let test_expression_level_coverage context =
                           }
                       ]
                   }
+                ]
+              ]
+          }
+         |}
+          (PyrePath.absolute custom_source_root) );
+      (* No type annotations in signature. *)
+      ( Format.sprintf
+          "expression_level_coverage('%s')"
+          (PyrePath.append custom_source_root ~element:"two.py" |> PyrePath.absolute),
+        Format.asprintf
+          {|
+            {
+              "response": [
+                [
+                "CoverageAtPath",
+                  {
+                      "path": "%s/two.py",
+                      "total_expressions": 7,
+                      "coverage_gaps": [
+                          {
+                              "location": {
+                                  "start": {
+                                      "line": 3,
+                                      "column": 4
+                                  },
+                                  "stop": {
+                                      "line": 3,
+                                      "column": 7
+                                  }
+                              },
+                              "type_": "typing.Callable(two.two)[[Named(x, unknown)], typing.Any]",
+                              "reason": [
+                                  "CallableParameterIsUnknownOrAny"
+                              ]
+                          },
+                          {
+                              "location": {
+                                  "start": {
+                                      "line": 3,
+                                      "column": 8
+                                  },
+                                  "stop": {
+                                      "line": 3,
+                                      "column": 9
+                                  }
+                              },
+                              "type_": "typing.Any",
+                              "reason": [
+                                  "TypeIsAny"
+                              ]
+                          },
+                          {
+                              "location": {
+                                  "start": {
+                                      "line": 4,
+                                      "column": 8
+                                  },
+                                  "stop": {
+                                      "line": 4,
+                                      "column": 9
+                                  }
+                              },
+                              "type_": "typing.Any",
+                              "reason": [
+                                  "TypeIsAny"
+                              ]
+                          },
+                          {
+                              "location": {
+                                  "start": {
+                                      "line": 4,
+                                      "column": 8
+                                  },
+                                  "stop": {
+                                      "line": 4,
+                                      "column": 13
+                                  }
+                              },
+                              "type_": "typing.Any",
+                              "reason": [
+                                  "TypeIsAny"
+                              ]
+                          }
+                      ]
+                  }
+                ]
               ]
           }
          |}
@@ -1994,21 +2118,48 @@ let test_expression_level_coverage context =
           "expression_level_coverage('%s')"
           (PyrePath.append custom_source_root ~element:"file_not_found.py" |> PyrePath.absolute),
         Format.asprintf
-          {| {"error":"Not able to get lookups in: `%s` (file not found)"} |}
+          {|
+          {"response":
+            [
+              ["ErrorAtPath",
+                {"path":"%s","error":"Not able to get lookups in: `%s` (file not found)"}
+              ]
+            ]
+          }
+          |}
+          (PyrePath.append custom_source_root ~element:"file_not_found.py" |> PyrePath.absolute)
           (PyrePath.append custom_source_root ~element:"file_not_found.py" |> PyrePath.absolute) );
       (* Test Error StubShadowing *)
       ( Format.sprintf
           "expression_level_coverage('%s')"
           (PyrePath.append custom_source_root ~element:"bar.py" |> PyrePath.absolute),
         Format.asprintf
-          {| {"error":"Not able to get lookups in: `%s` (file shadowed by .pyi stub file)"} |}
+          {|
+          {"response":
+            [
+              ["ErrorAtPath",
+                {"path":"%s","error":"Not able to get lookups in: `%s` (file shadowed by .pyi stub file)"}
+              ]
+            ]
+          }
+          |}
+          (PyrePath.append custom_source_root ~element:"bar.py" |> PyrePath.absolute)
           (PyrePath.append custom_source_root ~element:"bar.py" |> PyrePath.absolute) );
       (* Test @not_existing.txt not found *)
       ( Format.sprintf
           "expression_level_coverage('@%s')"
           (PyrePath.append custom_source_root ~element:"not_existing.txt" |> PyrePath.absolute),
         Format.asprintf
-          {| {"error":"Not able to get lookups in: `%s` (file not found)"} |}
+          {|
+          {"response":
+            [
+              ["ErrorAtPath",
+                {"path":"%s","error":"Not able to get lookups in: `%s` (file not found)"}
+              ]
+            ]
+          }
+          |}
+          (PyrePath.append custom_source_root ~element:"not_existing.txt" |> PyrePath.absolute)
           (PyrePath.append custom_source_root ~element:"not_existing.txt" |> PyrePath.absolute) );
       (* Test @empty.txt not found *)
       ( Format.sprintf
@@ -2021,6 +2172,97 @@ let test_expression_level_coverage context =
               ]
           }
          |} );
+      (* Test Response and Error *)
+      ( Format.sprintf
+          "expression_level_coverage('%s','%s')"
+          (PyrePath.append custom_source_root ~element:"foo.py" |> PyrePath.absolute)
+          (PyrePath.append custom_source_root ~element:"not_existing.py" |> PyrePath.absolute),
+        Format.asprintf
+          {|
+            {
+              "response": [
+                [
+                "CoverageAtPath",
+                  {
+                      "path": "%s",
+                      "total_expressions": 8,
+                      "coverage_gaps": [
+                          {
+                              "location": {
+                                  "start": {
+                                      "line": 2,
+                                      "column": 4
+                                  },
+                                  "stop": {
+                                      "line": 2,
+                                      "column": 7
+                                  }
+                              },
+                              "type_": "typing.Callable(foo.foo)[[Named(x, unknown)], None]",
+                              "reason": [
+                                  "CallableParameterIsUnknownOrAny"
+                              ]
+                          },
+                          {
+                              "location": {
+                                  "start": {
+                                      "line": 2,
+                                      "column": 8
+                                  },
+                                  "stop": {
+                                      "line": 2,
+                                      "column": 9
+                                  }
+                              },
+                              "type_": "typing.Any",
+                              "reason": [
+                                  "TypeIsAny"
+                              ]
+                          },
+                          {
+                              "location": {
+                                  "start": {
+                                      "line": 3,
+                                      "column": 8
+                                  },
+                                  "stop": {
+                                      "line": 3,
+                                      "column": 9
+                                  }
+                              },
+                              "type_": "typing.Any",
+                              "reason": [
+                                  "TypeIsAny"
+                              ]
+                          },
+                          {
+                              "location": {
+                                  "start": {
+                                      "line": 3,
+                                      "column": 8
+                                  },
+                                  "stop": {
+                                      "line": 3,
+                                      "column": 13
+                                  }
+                              },
+                              "type_": "typing.Any",
+                              "reason": [
+                                  "TypeIsAny"
+                              ]
+                          }
+                      ]
+                  }
+                ],
+              ["ErrorAtPath",
+                {"path":"%s","error":"Not able to get lookups in: `%s` (file not found)"}
+              ]
+            ]
+          }
+         |}
+          (PyrePath.append custom_source_root ~element:"foo.py" |> PyrePath.absolute)
+          (PyrePath.append custom_source_root ~element:"not_existing.py" |> PyrePath.absolute)
+          (PyrePath.append custom_source_root ~element:"not_existing.py" |> PyrePath.absolute) );
       (* Test @arguments.txt *)
       ( Format.sprintf
           "expression_level_coverage('@%s')"
@@ -2029,6 +2271,8 @@ let test_expression_level_coverage context =
           {|
             {
               "response": [
+                [
+                "CoverageAtPath",
                   {
                       "path": "foo.py",
                       "total_expressions": 8,
@@ -2099,6 +2343,7 @@ let test_expression_level_coverage context =
                           }
                       ]
                   }
+                ]
               ]
           }
          |}
@@ -2111,6 +2356,8 @@ let test_expression_level_coverage context =
           {|
             {
     "response": [
+      [
+      "CoverageAtPath",
         {
             "path": "foo.py",
             "total_expressions": 8,
@@ -2180,7 +2427,10 @@ let test_expression_level_coverage context =
                     ]
                 }
             ]
-        },
+      }
+      ],
+      [
+      "CoverageAtPath",
         {
             "path": "fizz.py",
             "total_expressions": 8,
@@ -2251,10 +2501,49 @@ let test_expression_level_coverage context =
                 }
             ]
         }
+      ]
     ]
 }
          |}
       );
+    ]
+  in
+  assert_queries_with_local_root
+    ~custom_source_root
+    ~context
+    ~sources
+    (List.map queries_and_expected_responses ~f:(fun (query, response) ->
+         ( query,
+           fun _ ->
+             response
+             |> Yojson.Safe.from_string
+             |> fun json -> `List [`String "Query"; json] |> Yojson.Safe.to_string )))
+
+
+let test_hover context =
+  let sources =
+    ["foo.py", {|
+              def foo(x: int) -> int:
+                return x
+            |}]
+  in
+  let custom_source_root =
+    OUnit2.bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true
+  in
+  let queries_and_expected_responses =
+    [
+      ( "hover_info_for_position(path='foo.py', line=2, column=0)",
+        {|
+      {
+      "response": { "message": "" }
+      }
+    |} );
+      ( "hover_info_for_position(path='foo.py', line=3, column=9)",
+        {|
+      {
+      "response": { "message": "`int`" }
+      }
+    |} );
     ]
   in
   assert_queries_with_local_root
@@ -2283,5 +2572,6 @@ let () =
          >:: OUnitLwt.lwt_wrapper test_location_of_definition_with_build_system;
          "find_references" >:: OUnitLwt.lwt_wrapper test_find_references;
          "expression_level_coverage" >:: OUnitLwt.lwt_wrapper test_expression_level_coverage;
+         "hover" >:: OUnitLwt.lwt_wrapper test_hover;
        ]
   |> Test.run
