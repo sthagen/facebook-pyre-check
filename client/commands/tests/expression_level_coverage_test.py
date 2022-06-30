@@ -22,9 +22,9 @@ from .. import (
 
 
 class ExpressionLevelTest(testslide.TestCase):
-    def test_get_expression_level_coverage_response(self) -> None:
+    def test_make_expression_level_coverage_response(self) -> None:
         self.assertEqual(
-            expression_level_coverage._get_expression_level_coverage_response(
+            expression_level_coverage._make_expression_level_coverage_response(
                 query.Response(
                     {
                         "response": [
@@ -49,28 +49,60 @@ class ExpressionLevelTest(testslide.TestCase):
                     }
                 ).payload,
             ),
-            [
-                [
-                    "CoverageAtPath",
+            expression_level_coverage.ExpressionLevelCoverageResponse(
+                response=[
+                    expression_level_coverage.CoverageAtPathResponse(
+                        CoverageAtPath=expression_level_coverage.CoverageAtPath(
+                            path="test.py",
+                            total_expressions=7,
+                            coverage_gaps=[
+                                expression_level_coverage.CoverageGap(
+                                    location=expression_level_coverage.Location(
+                                        start=expression_level_coverage.Pair(
+                                            line=11, column=16
+                                        ),
+                                        stop=expression_level_coverage.Pair(
+                                            line=11, column=17
+                                        ),
+                                    ),
+                                    type_="typing.Any",
+                                    reason=["TypeIsAny"],
+                                )
+                            ],
+                        )
+                    )
+                ],
+            ),
+        )
+        self.assertEqual(
+            expression_level_coverage._make_expression_level_coverage_response(
+                query.Response(
                     {
-                        "path": "test.py",
-                        "total_expressions": 7,
-                        "coverage_gaps": [
-                            {
-                                "location": {
-                                    "start": {"line": 11, "column": 16},
-                                    "stop": {"line": 11, "column": 17},
+                        "response": [
+                            [
+                                "ErrorAtPath",
+                                {
+                                    "path": "test.py",
+                                    "error": "Not able to get lookups in: `test.py` (file not found)",
                                 },
-                                "type_": "typing.Any",
-                                "reason": ["TypeIsAny"],
-                            },
-                        ],
-                    },
-                ]
-            ],
+                            ],
+                        ]
+                    }
+                ).payload,
+            ),
+            expression_level_coverage.ExpressionLevelCoverageResponse(
+                response=[
+                    expression_level_coverage.ErrorAtPathResponse(
+                        expression_level_coverage.ErrorAtPath(
+                            path="test.py",
+                            error="Not able to get lookups in: `test.py` (file not found)",
+                        )
+                    )
+                ],
+            ),
         )
         with self.assertRaises(expression_level_coverage.ErrorParsingFailure):
-            expression_level_coverage._get_expression_level_coverage_response(
+            expression_level_coverage._make_expression_level_coverage_response(
                 "garbage input"
             )
 
