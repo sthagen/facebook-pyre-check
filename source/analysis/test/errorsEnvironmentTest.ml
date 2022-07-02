@@ -33,6 +33,18 @@ let assert_errors ~context ~project expected =
   assert_equal ~ctxt:context ~printer:[%show: string list] expected actual
 
 
+let assert_overlay_errors ~context ~project ~overlay qualifier expected =
+  let actual =
+    ErrorsEnvironment.ReadOnly.get_errors_for_qualifier
+      (ErrorsEnvironment.Overlay.read_only overlay)
+      qualifier
+    |> instantiate_and_stringify
+         ~lookup:
+           (ScratchProject.ast_environment project |> AstEnvironment.ReadOnly.get_real_path_relative)
+  in
+  assert_equal ~ctxt:context ~printer:[%show: string list] expected actual
+
+
 let test_postprocessing context =
   let code header_comment =
     Format.asprintf
@@ -201,11 +213,73 @@ let test_update_mode context =
   ()
 
 
+let test_overlay context =
+  let project =
+    ScratchProject.setup
+      ~context
+      [
+        "code_changes.py", {|
+          class Foo:
+            x: int = "x"
+        |};
+        "unsafe_to_strict.py", {|
+          # pyre-unsafe
+          x = 1 + 2
+        |};
+      ]
+  in
+  let parent = ScratchProject.errors_environment project in
+  let overlay = ErrorsEnvironment.Overlay.create parent in
+  assert_overlay_errors
+    ~context
+    ~project
+    ~overlay
+    !&"code_changes"
+    ["code_changes.py 3: Incompatible attribute type [8]: Attribute has type `int`; used as `str`."];
+  assert_overlay_errors ~context ~project ~overlay !&"unsafe_to_strict" [];
+  let { Configuration.Analysis.local_root; _ } = ScratchProject.configuration_of project in
+  ErrorsEnvironment.Overlay.update_overlaid_code
+    overlay
+    ~code_updates:
+      [
+        ( Test.relative_artifact_path ~root:local_root ~relative:"code_changes.py",
+          Test.trim_extra_indentation
+            {|
+            class Foo:
+              x: int = 42.0
+            |} );
+        ( Test.relative_artifact_path ~root:local_root ~relative:"unsafe_to_strict.py",
+          Test.trim_extra_indentation
+            {|
+            # pyre-strict
+            x = 1 + 2
+            |} );
+      ]
+  |> ignore;
+  assert_overlay_errors
+    ~context
+    ~project
+    ~overlay
+    !&"code_changes"
+    [
+      "code_changes.py 3: Incompatible attribute type [8]: Attribute has type `int`; used as \
+       `float`.";
+    ];
+  assert_overlay_errors
+    ~context
+    ~project
+    ~overlay
+    !&"unsafe_to_strict"
+    ["unsafe_to_strict.py 3: Missing global annotation [5]: Global expression must be annotated."];
+  ()
+
+
 let () =
   "environment"
   >::: [
          "postprocessing" >:: test_postprocessing;
          "update_ancestor" >:: test_update_ancestor;
          "update_mode" >:: test_update_mode;
+         "overlay" >:: test_overlay;
        ]
   |> Test.run

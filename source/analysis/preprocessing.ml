@@ -467,11 +467,14 @@ module Qualify (Context : QualifyContext) = struct
         in
         let target_scope, target =
           if not (Set.mem skip location) then
-            let rec qualify_target ~scope:({ aliases; immutables; locals; _ } as scope) target =
+            let rec qualify_assignment_target
+                ~scope:({ aliases; immutables; locals; _ } as scope)
+                target
+              =
               let scope, value =
                 let qualify_targets scope elements =
                   let qualify_element (scope, reversed_elements) element =
-                    let scope, element = qualify_target ~scope element in
+                    let scope, element = qualify_assignment_target ~scope element in
                     scope, element :: reversed_elements
                   in
                   let scope, reversed_elements =
@@ -509,7 +512,7 @@ module Qualify (Context : QualifyContext) = struct
                     in
                     scope, Name qualified
                 | Starred (Starred.Once name) ->
-                    let scope, name = qualify_target ~scope name in
+                    let scope, name = qualify_assignment_target ~scope name in
                     scope, Starred (Starred.Once name)
                 | Name (Name.Identifier name) ->
                     (* Incrementally number local variables to avoid shadowing. *)
@@ -557,7 +560,7 @@ module Qualify (Context : QualifyContext) = struct
               in
               scope, { target with Node.value }
             in
-            qualify_target ~scope target
+            qualify_assignment_target ~scope target
           else
             scope, target
         in
@@ -4077,6 +4080,153 @@ let expand_pytorch_register_buffer source =
   in
   TransformConstructor.transform () source |> TransformConstructor.source
 
+
+module SelfType = struct
+  let self_variable_name class_reference =
+    Format.asprintf "_Self_%s__" (Reference.as_list class_reference |> String.concat ~sep:"_")
+
+
+  let replace_self_type_with ~synthetic_type_variable =
+    let map_name ~mapper:_ = function
+      | Name.Attribute
+          {
+            base = { Node.value = Name (Identifier ("typing_extensions" | "typing")); location };
+            attribute = "Self";
+            _;
+          } ->
+          create_name_from_reference ~location synthetic_type_variable
+      | name -> name
+    in
+    Mapper.map ~mapper:(Mapper.create_transformer ~map_name ())
+
+
+  (* Ideally, we would return the potentially-transformed expression along with an indication of
+     whether it was changed. But our current `Visit.Transformer` or `Expression.Mapper` APIs aren't
+     powerful enough to express such a use. So, we do a separate check to decide whether we want to
+     replace Self types in a signature. *)
+  let signature_uses_self_type { Define.Signature.return_annotation; _ } =
+    let expression_uses_self_type expression =
+      let fold_name ~folder:_ ~state = function
+        | Name.Attribute
+            {
+              base = { Node.value = Name (Identifier ("typing_extensions" | "typing")); _ };
+              attribute = "Self";
+              _;
+            } ->
+            true
+        | _ -> state
+      in
+      let folder = Folder.create_with_uniform_location_fold ~fold_name () in
+      Folder.fold ~folder ~state:false expression
+    in
+    return_annotation >>| expression_uses_self_type |> Option.value ~default:false
+
+
+  let replace_self_type_in_signature
+      ~qualifier
+      ({ Define.Signature.parameters; return_annotation; parent; _ } as signature)
+    =
+    match parent, parameters, return_annotation with
+    | ( Some parent,
+        ({ Node.value = { Parameter.annotation = None; _ } as self_parameter_value; location } as
+        self_parameter)
+        :: rest_parameters,
+        return_annotation )
+      when signature_uses_self_type signature ->
+        let mangled_self_type_variable_reference =
+          self_variable_name parent |> qualify_local_identifier ~qualifier |> Reference.create
+        in
+        let self_parameter =
+          {
+            self_parameter with
+            value =
+              {
+                self_parameter_value with
+                annotation = Some (from_reference ~location mangled_self_type_variable_reference);
+              };
+          }
+        in
+        ( {
+            signature with
+            parameters = self_parameter :: rest_parameters;
+            return_annotation =
+              return_annotation
+              >>| replace_self_type_with
+                    ~synthetic_type_variable:mangled_self_type_variable_reference;
+          },
+          parent )
+        |> Option.some
+    | _ -> None
+
+
+  let make_type_variable_definition ~qualifier class_reference =
+    let location = Location.any in
+    let self_variable_reference =
+      self_variable_name class_reference |> qualify_local_identifier ~qualifier |> Reference.create
+    in
+    Statement.Assign
+      {
+        target = from_reference ~location self_variable_reference;
+        value =
+          Expression.Call
+            {
+              callee = Reference.create "typing.TypeVar" |> from_reference ~location;
+              arguments =
+                [
+                  {
+                    Call.Argument.name = None;
+                    value =
+                      Expression.Constant
+                        (Constant.String
+                           {
+                             StringLiteral.kind = String;
+                             value = self_variable_name class_reference;
+                           })
+                      |> Node.create_with_default_location;
+                  };
+                  {
+                    Call.Argument.name = Some (Node.create_with_default_location "$parameter$bound");
+                    value =
+                      Expression.Constant
+                        (Constant.String
+                           { StringLiteral.kind = String; value = Reference.show class_reference })
+                      |> Node.create_with_default_location;
+                  };
+                ];
+            }
+          |> Node.create_with_default_location;
+        annotation = None;
+      }
+    |> Node.create_with_default_location
+
+
+  let expand_self_type ({ Source.module_path = { qualifier; _ }; _ } as source) =
+    let module Transform = Transform.MakeStatementTransformer (struct
+      type classes_with_self = Reference.Set.t
+
+      type t = classes_with_self
+
+      let statement sofar { Node.location; value } =
+        let classes_with_self, value =
+          match value with
+          | Statement.Define ({ signature; _ } as define) -> (
+              match replace_self_type_in_signature ~qualifier signature with
+              | Some (signature, class_with_self) ->
+                  Set.add sofar class_with_self, Statement.Define { define with signature }
+              | None -> sofar, value)
+          | _ -> sofar, value
+        in
+        classes_with_self, [{ Node.location; value }]
+    end)
+    in
+    let { Transform.source; state = classes_with_self } =
+      Transform.transform Reference.Set.empty source
+    in
+    let type_variable_definitions =
+      Set.to_list classes_with_self |> List.map ~f:(make_type_variable_definition ~qualifier)
+    in
+    { source with statements = type_variable_definitions @ Source.statements source }
+end
 
 let preprocess_phase0 source =
   source
