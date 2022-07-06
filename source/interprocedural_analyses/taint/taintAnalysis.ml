@@ -66,8 +66,13 @@ let type_check ~scheduler ~configuration ~cache =
            schedule a type check for external files. *)
         { configuration with Configuration.Analysis.analyze_external_sources = true }
       in
-      Service.Check.check ~scheduler ~configuration ~populate_call_graph:false
-      |> Analysis.ErrorsEnvironment.type_environment)
+      let type_environment =
+        Analysis.EnvironmentControls.create ~populate_call_graph:false configuration
+        |> Analysis.ErrorsEnvironment.create_for_production
+        |> Analysis.ErrorsEnvironment.type_environment
+      in
+      let () = Analysis.TypeEnvironment.populate_for_project_modules ~scheduler type_environment in
+      type_environment)
 
 
 let join_parse_result
