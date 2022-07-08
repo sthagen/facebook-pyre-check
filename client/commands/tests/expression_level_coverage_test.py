@@ -16,6 +16,7 @@ from .. import (
     commands,
     expression_level_coverage,
     frontend_configuration,
+    language_server_protocol as lsp,
     query,
     server_connection,
 )
@@ -132,6 +133,48 @@ class ExpressionLevelTest(testslide.TestCase):
         self.assertEqual(
             expression_level_coverage._get_total_and_uncovered_expressions(coverage),
             (7, 1),
+        )
+
+    def test_get_percent_covered_per_path(self) -> None:
+        def assert_get_percent_covered_per_path(
+            response: expression_level_coverage.CoverageAtPathResponse, expected: float
+        ) -> None:
+            self.assertEqual(
+                expression_level_coverage.get_percent_covered_per_path(response),
+                expected,
+            )
+
+        assert_get_percent_covered_per_path(
+            expression_level_coverage.CoverageAtPathResponse(
+                CoverageAtPath=expression_level_coverage.CoverageAtPath(
+                    path="test.py",
+                    total_expressions=0,
+                    coverage_gaps=[],
+                )
+            ),
+            100.0,
+        )
+
+        assert_get_percent_covered_per_path(
+            expression_level_coverage.CoverageAtPathResponse(
+                CoverageAtPath=expression_level_coverage.CoverageAtPath(
+                    path="test.py",
+                    total_expressions=5,
+                    coverage_gaps=[
+                        expression_level_coverage.CoverageGap(
+                            location=expression_level_coverage.Location(
+                                start=expression_level_coverage.Pair(
+                                    line=11, column=16
+                                ),
+                                stop=expression_level_coverage.Pair(line=11, column=17),
+                            ),
+                            type_="typing.Any",
+                            reason=["TypeIsAny"],
+                        )
+                    ],
+                )
+            ),
+            80.0,
         )
 
     def test_summary_expression_level_coverage(self) -> None:
@@ -383,3 +426,166 @@ class ExpressionLevelTest(testslide.TestCase):
                 ),
                 commands.ExitCode.SERVER_NOT_FOUND,
             )
+
+    def test_location_to_range(self) -> None:
+        def assert_location_to_range(
+            response: expression_level_coverage.Location, expected: lsp.Range
+        ) -> None:
+            self.assertEqual(
+                expression_level_coverage.location_to_range(response),
+                expected,
+            )
+
+        assert_location_to_range(
+            expression_level_coverage.Location(
+                start=expression_level_coverage.Pair(line=1, column=1),
+                stop=expression_level_coverage.Pair(line=1, column=7),
+            ),
+            lsp.Range(
+                start=lsp.Position(line=0, character=1),
+                end=lsp.Position(line=0, character=7),
+            ),
+        )
+
+    def test_make_diagnostic_for_coverage_gap(self) -> None:
+        def assert_make_diagnostic_for_coverage_gap(
+            response: expression_level_coverage.CoverageGap, expected: lsp.Diagnostic
+        ) -> None:
+            self.assertEqual(
+                expression_level_coverage.make_diagnostic_for_coverage_gap(response),
+                expected,
+            )
+
+        assert_make_diagnostic_for_coverage_gap(
+            expression_level_coverage.CoverageGap(
+                location=expression_level_coverage.Location(
+                    start=expression_level_coverage.Pair(line=1, column=1),
+                    stop=expression_level_coverage.Pair(line=1, column=7),
+                ),
+                type_="typing.Any",
+                reason=["TypeIsAny"],
+            ),
+            lsp.Diagnostic(
+                range=lsp.Range(
+                    start=lsp.Position(line=0, character=1),
+                    end=lsp.Position(line=0, character=7),
+                ),
+                message="This expression has a TypeIsAny coverage gap.",
+            ),
+        )
+
+    def test_get_uncovered_expression_diagnostics(self) -> None:
+        def assert_get_uncovered_expression_diagnostics(
+            response: expression_level_coverage.ExpressionLevelCoverageResponse,
+            expected: List[lsp.Diagnostic],
+        ) -> None:
+            self.assertEqual(
+                expression_level_coverage.get_uncovered_expression_diagnostics(
+                    response
+                ),
+                expected,
+            )
+
+        assert_get_uncovered_expression_diagnostics(
+            expression_level_coverage.ExpressionLevelCoverageResponse(
+                response=[
+                    expression_level_coverage.ErrorAtPathResponse(
+                        ErrorAtPath=expression_level_coverage.ErrorAtPath(
+                            path="test.py",
+                            error="error",
+                        )
+                    )
+                ],
+            ),
+            [],
+        )
+
+        assert_get_uncovered_expression_diagnostics(
+            expression_level_coverage.ExpressionLevelCoverageResponse(
+                response=[
+                    expression_level_coverage.CoverageAtPathResponse(
+                        CoverageAtPath=expression_level_coverage.CoverageAtPath(
+                            path="test.py",
+                            total_expressions=7,
+                            coverage_gaps=[
+                                expression_level_coverage.CoverageGap(
+                                    location=expression_level_coverage.Location(
+                                        start=expression_level_coverage.Pair(
+                                            line=1, column=1
+                                        ),
+                                        stop=expression_level_coverage.Pair(
+                                            line=1, column=7
+                                        ),
+                                    ),
+                                    type_="typing.Any",
+                                    reason=["TypeIsAny"],
+                                )
+                            ],
+                        )
+                    )
+                ],
+            ),
+            [
+                lsp.Diagnostic(
+                    range=lsp.Range(
+                        start=lsp.Position(line=0, character=1),
+                        end=lsp.Position(line=0, character=7),
+                    ),
+                    message="This expression has a TypeIsAny coverage gap.",
+                )
+            ],
+        )
+        assert_get_uncovered_expression_diagnostics(
+            expression_level_coverage.ExpressionLevelCoverageResponse(
+                response=[
+                    expression_level_coverage.CoverageAtPathResponse(
+                        CoverageAtPath=expression_level_coverage.CoverageAtPath(
+                            path="test.py",
+                            total_expressions=7,
+                            coverage_gaps=[
+                                expression_level_coverage.CoverageGap(
+                                    location=expression_level_coverage.Location(
+                                        start=expression_level_coverage.Pair(
+                                            line=1, column=1
+                                        ),
+                                        stop=expression_level_coverage.Pair(
+                                            line=1, column=7
+                                        ),
+                                    ),
+                                    type_="typing.List[typing.Any]",
+                                    reason=["ContainerParameterIsAny"],
+                                ),
+                                expression_level_coverage.CoverageGap(
+                                    location=expression_level_coverage.Location(
+                                        start=expression_level_coverage.Pair(
+                                            line=2, column=4
+                                        ),
+                                        stop=expression_level_coverage.Pair(
+                                            line=2, column=7
+                                        ),
+                                    ),
+                                    type_="typing.Callable(foo.foo)[[Named(x, unknown)], None]",
+                                    reason=["CallableParameterIsUnknownOrAny"],
+                                ),
+                            ],
+                        )
+                    )
+                ],
+            ),
+            [
+                lsp.Diagnostic(
+                    range=lsp.Range(
+                        start=lsp.Position(line=0, character=1),
+                        end=lsp.Position(line=0, character=7),
+                    ),
+                    message="This expression has a ContainerParameterIsAny coverage gap.",
+                ),
+                lsp.Diagnostic(
+                    range=lsp.Range(
+                        start=lsp.Position(line=1, character=4),
+                        end=lsp.Position(line=1, character=7),
+                    ),
+                    message="This expression has a CallableParameterIsUnknownOrAny coverage gap.",
+                ),
+            ],
+        )

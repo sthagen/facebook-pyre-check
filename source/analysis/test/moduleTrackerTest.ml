@@ -1634,13 +1634,24 @@ let test_overlay_basic context =
   assert_raw_code !&"has_stub" content_on_disk;
   (* Run an update. Both modules should be registered as in the overlay *)
   update_overlay_and_assert_result
-    ~code_updates:["code.py", unsaved_content; "has_stub.py", unsaved_content]
+    ~code_updates:
+      [
+        "code.py", ModuleTracker.Overlay.CodeUpdate.NewCode unsaved_content;
+        "has_stub.py", ModuleTracker.Overlay.CodeUpdate.NewCode unsaved_content;
+      ]
     ~expected:["code.py"; "has_stub.py"];
   (* Check read-only behavior after update; the "has_stub.py" file should be masked by its stub *)
   overlay_owns !&"code" |> assert_true;
   assert_raw_code !&"code" unsaved_content;
   overlay_owns !&"has_stub" |> assert_true;
   assert_raw_code !&"has_stub" content_on_disk;
+  (* Run an update where we reset code.py to read from disk. It stays owned by the overlay because
+     we have no efficient way to clear ownership should match the parent environment *)
+  update_overlay_and_assert_result
+    ~code_updates:["code.py", ModuleTracker.Overlay.CodeUpdate.ResetCode]
+    ~expected:["code.py"];
+  overlay_owns !&"code" |> assert_true;
+  assert_raw_code !&"code" content_on_disk;
   ()
 
 
@@ -1676,7 +1687,7 @@ let test_overlay_code_hiding context =
   assert_raw_code !&"code" content_on_disk;
   (* Add "code.py" to the overlay, and make sure we pick it up *)
   update_overlay_and_assert_result
-    ~code_updates:["code.py", unsaved_content_0]
+    ~code_updates:["code.py", ModuleTracker.Overlay.CodeUpdate.NewCode unsaved_content_0]
     ~expected:["code.py"];
   overlay_owns !&"code" |> assert_true;
   assert_raw_code !&"code" unsaved_content_0;
@@ -1689,7 +1700,7 @@ let test_overlay_code_hiding context =
   assert_raw_code !&"code" content_on_disk;
   (* Update the overlaid code. It should still be shadowed by the parent *)
   update_overlay_and_assert_result
-    ~code_updates:["code.py", unsaved_content_1]
+    ~code_updates:["code.py", ModuleTracker.Overlay.CodeUpdate.NewCode unsaved_content_1]
     ~expected:["code.py"];
   overlay_owns !&"code" |> assert_true;
   assert_raw_code !&"code" content_on_disk;

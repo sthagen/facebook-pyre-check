@@ -32,6 +32,7 @@ from libcst.metadata import CodeRange
 from .. import (
     command_arguments,
     configuration as configuration_module,
+    dataclasses_json_extensions as json_mixins,
     error,
     json_rpc,
     log,
@@ -44,6 +45,7 @@ from . import (
     async_server_connection as connection,
     backend_arguments,
     commands,
+    expression_level_coverage,
     frontend_configuration,
     incremental,
     language_server_protocol as lsp,
@@ -290,7 +292,6 @@ async def try_initialize(
             json_rpc.SuccessResponse(
                 id=request_id,
                 activity_key=request.activity_key,
-                # pyre-fixme[16]: Pyre doesn't understand `dataclasses_json`
                 result=result.to_dict(),
             ),
         )
@@ -390,11 +391,7 @@ async def _publish_diagnostics(
             parameters=json_rpc.ByNameParameters(
                 {
                     "uri": lsp.DocumentUri.from_file_path(path).unparse(),
-                    "diagnostics": [
-                        # pyre-fixme[16]: Pyre doesn't understand `dataclasses_json`
-                        diagnostic.to_dict()
-                        for diagnostic in diagnostics
-                    ],
+                    "diagnostics": [diagnostic.to_dict() for diagnostic in diagnostics],
                 }
             ),
         ),
@@ -438,12 +435,8 @@ class DefinitionLocationQuery:
     activity_key: Optional[Dict[str, object]] = None
 
 
-@dataclasses_json.dataclass_json(
-    letter_case=dataclasses_json.LetterCase.CAMEL,
-    undefined=dataclasses_json.Undefined.EXCLUDE,
-)
 @dataclasses.dataclass(frozen=True)
-class DefinitionLocationResponse:
+class DefinitionLocationResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
     response: List[lsp.PyreDefinitionResponse]
 
 
@@ -455,12 +448,8 @@ class ReferencesQuery:
     activity_key: Optional[Dict[str, object]] = None
 
 
-@dataclasses_json.dataclass_json(
-    letter_case=dataclasses_json.LetterCase.CAMEL,
-    undefined=dataclasses_json.Undefined.EXCLUDE,
-)
 @dataclasses.dataclass(frozen=True)
-class ReferencesResponse:
+class ReferencesResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
     response: List[lsp.ReferencesResponse]
 
 
@@ -499,12 +488,8 @@ class PyreQueryState:
         return lsp.HoverResponse(contents=f"```{type_info}```")
 
 
-@dataclasses_json.dataclass_json(
-    letter_case=dataclasses_json.LetterCase.CAMEL,
-    undefined=dataclasses_json.Undefined.EXCLUDE,
-)
 @dataclasses.dataclass(frozen=True)
-class LineColumn:
+class LineColumn(json_mixins.CamlCaseAndExcludeJsonMixin):
     line: int
     column: int
 
@@ -512,32 +497,20 @@ class LineColumn:
         return lsp.Position(line=self.line, character=self.column)
 
 
-@dataclasses_json.dataclass_json(
-    letter_case=dataclasses_json.LetterCase.CAMEL,
-    undefined=dataclasses_json.Undefined.EXCLUDE,
-)
 @dataclasses.dataclass(frozen=True)
-class LocationInfo:
+class LocationInfo(json_mixins.CamlCaseAndExcludeJsonMixin):
     start: LineColumn
     stop: LineColumn
 
 
-@dataclasses_json.dataclass_json(
-    letter_case=dataclasses_json.LetterCase.CAMEL,
-    undefined=dataclasses_json.Undefined.EXCLUDE,
-)
 @dataclasses.dataclass(frozen=True)
-class LocationAnnotation:
+class LocationAnnotation(json_mixins.CamlCaseAndExcludeJsonMixin):
     location: LocationInfo
     annotation: str
 
 
-@dataclasses_json.dataclass_json(
-    letter_case=dataclasses_json.LetterCase.CAMEL,
-    undefined=dataclasses_json.Undefined.EXCLUDE,
-)
 @dataclasses.dataclass(frozen=True)
-class PathTypeInfo:
+class PathTypeInfo(json_mixins.CamlCaseAndExcludeJsonMixin):
     path: str
     types: List[LocationAnnotation]
 
@@ -576,21 +549,13 @@ async def _receive_query_response(
             return None
 
 
-@dataclasses_json.dataclass_json(
-    letter_case=dataclasses_json.LetterCase.CAMEL,
-    undefined=dataclasses_json.Undefined.EXCLUDE,
-)
 @dataclasses.dataclass(frozen=True)
-class QueryTypesResponse:
+class QueryTypesResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
     response: List[PathTypeInfo]
 
 
-@dataclasses_json.dataclass_json(
-    letter_case=dataclasses_json.LetterCase.CAMEL,
-    undefined=dataclasses_json.Undefined.EXCLUDE,
-)
 @dataclasses.dataclass(frozen=True)
-class QueryModulesOfPathResponse:
+class QueryModulesOfPathResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
     response: List[str]
 
 
@@ -761,8 +726,6 @@ class PyreServer:
             json_rpc.SuccessResponse(
                 id=request_id,
                 activity_key=activity_key,
-                # pyre-ignore[16]: Pyre does not understand
-                # `dataclasses_json`.
                 result=response.to_dict(),
             ),
         )
@@ -802,8 +765,6 @@ class PyreServer:
                 json_rpc.SuccessResponse(
                     id=request_id,
                     activity_key=activity_key,
-                    # pyre-ignore[16]: Pyre does not understand
-                    # `dataclasses_json`.
                     result=lsp.LspDefinitionResponse.schema().dump([], many=True),
                 ),
             )
@@ -849,8 +810,6 @@ class PyreServer:
             json_rpc.SuccessResponse(
                 id=request_id,
                 activity_key=activity_key,
-                # pyre-ignore[16]: Pyre does not understand
-                # `dataclasses_json`.
                 result=[s.to_dict() for s in symbols],
             ),
         )
@@ -873,8 +832,6 @@ class PyreServer:
                 json_rpc.SuccessResponse(
                     id=request_id,
                     activity_key=activity_key,
-                    # pyre-ignore[16]: Pyre does not understand
-                    # `dataclasses_json`.
                     result=lsp.LspDefinitionResponse.schema().dump([], many=True),
                 ),
             )
@@ -1206,6 +1163,30 @@ def path_to_coverage_response(
     return to_coverage_result(covered_and_uncovered_lines, uncovered_ranges)
 
 
+def path_to_expression_coverage_response(
+    strict_default: bool,
+    expression_coverage: expression_level_coverage.ExpressionLevelCoverageResponse,
+) -> lsp.TypeCoverageResponse:
+    path_coverage = expression_coverage.response[0]
+    if isinstance(path_coverage, expression_level_coverage.ErrorAtPathResponse):
+        uncovered_expressions_diagnostics = []
+        covered_percent = 0
+    else:
+        uncovered_expressions_diagnostics = (
+            expression_level_coverage.get_uncovered_expression_diagnostics(
+                expression_coverage
+            )
+        )
+        covered_percent = expression_level_coverage.get_percent_covered_per_path(
+            path_coverage
+        )
+    return lsp.TypeCoverageResponse(
+        covered_percent=covered_percent,
+        uncovered_ranges=uncovered_expressions_diagnostics,
+        default_message="Consider adding type annotations.",
+    )
+
+
 class PyreQueryHandler(connection.BackgroundTask):
     def __init__(
         self,
@@ -1297,10 +1278,27 @@ class PyreQueryHandler(connection.BackgroundTask):
         path: Path,
         strict_default: bool,
         socket_path: Path,
+        expression_level_coverage_enabled: bool,
     ) -> Optional[lsp.TypeCoverageResponse]:
         is_typechecked = await self._query_is_typechecked(path, socket_path)
         if is_typechecked is None:
             return None
+        elif expression_level_coverage_enabled:
+            query_response = await self._query(
+                f"expression_level_coverage('{path}')", socket_path
+            )
+            if query_response is None:
+                return None
+            expression_coverage = (
+                expression_level_coverage._make_expression_level_coverage_response(
+                    query_response.payload
+                )
+            )
+            if expression_coverage is None:
+                return file_not_typechecked_coverage_result()
+            return path_to_expression_coverage_response(
+                strict_default, expression_coverage
+            )
         elif is_typechecked:
             return path_to_coverage_response(path, strict_default)
         else:
@@ -1311,11 +1309,10 @@ class PyreQueryHandler(connection.BackgroundTask):
         query: TypeCoverageQuery,
         strict_default: bool,
         socket_path: Path,
+        expression_level_coverage_enabled: bool,
     ) -> None:
         type_coverage_result = await self._query_type_coverage(
-            query.path,
-            strict_default,
-            socket_path,
+            query.path, strict_default, socket_path, expression_level_coverage_enabled
         )
         if type_coverage_result is not None:
             await lsp.write_json_rpc(
@@ -1323,8 +1320,6 @@ class PyreQueryHandler(connection.BackgroundTask):
                 json_rpc.SuccessResponse(
                     id=query.id,
                     activity_key=query.activity_key,
-                    # pyre-ignore[16]: Pyre does not understand
-                    # `dataclasses_json`.
                     result=type_coverage_result.to_dict(),
                 ),
             )
@@ -1353,8 +1348,6 @@ class PyreQueryHandler(connection.BackgroundTask):
             json_rpc.SuccessResponse(
                 id=query.id,
                 activity_key=query.activity_key,
-                # pyre-ignore[16]: Pyre does not understand
-                # `dataclasses_json`.
                 result=lsp.LspDefinitionResponse.schema().dump(
                     definitions,
                     many=True,
@@ -1386,8 +1379,6 @@ class PyreQueryHandler(connection.BackgroundTask):
             json_rpc.SuccessResponse(
                 id=query.id,
                 activity_key=query.activity_key,
-                # pyre-ignore[16]: Pyre does not understand
-                # `dataclasses_json`.
                 result=lsp.LspDefinitionResponse.schema().dump(
                     reference_locations,
                     many=True,
@@ -1406,6 +1397,10 @@ class PyreQueryHandler(connection.BackgroundTask):
             server_start_options.ide_features is not None
             and server_start_options.ide_features.is_hover_enabled()
         )
+        expression_level_coverage_enabled = (
+            server_start_options.ide_features is not None
+            and server_start_options.ide_features.is_expression_level_coverage_enabled()
+        )
         while True:
             query = await self.state.queries.get()
             if isinstance(query, TypesQuery):
@@ -1413,7 +1408,10 @@ class PyreQueryHandler(connection.BackgroundTask):
                     await self._update_types_for_paths([query.path], socket_path)
             elif isinstance(query, TypeCoverageQuery):
                 await self._handle_type_coverage_query(
-                    query, strict_default, socket_path
+                    query,
+                    strict_default,
+                    socket_path,
+                    expression_level_coverage_enabled,
                 )
             elif isinstance(query, DefinitionLocationQuery):
                 await self._query_and_send_definition_location(query, socket_path)

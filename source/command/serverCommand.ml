@@ -20,6 +20,7 @@ module ServerConfiguration = struct
     store_type_check_resolution: bool;
     critical_files: CriticalFile.t list;
     saved_state_action: SavedStateAction.t option;
+    skip_initial_type_check: bool;
   }
   [@@deriving sexp, compare, hash]
 
@@ -54,6 +55,9 @@ module ServerConfiguration = struct
           let additional_logging_sections =
             json |> string_list_member "additional_logging_sections" ~default:[]
           in
+          let skip_initial_type_check =
+            json |> bool_member "skip_initial_type_check" ~default:false
+          in
           Result.Ok
             {
               base;
@@ -66,6 +70,7 @@ module ServerConfiguration = struct
               saved_state_action;
               store_type_check_resolution;
               additional_logging_sections;
+              skip_initial_type_check;
             }
     with
     | Type_error (message, _)
@@ -81,10 +86,18 @@ module ServerConfiguration = struct
         watchman_root;
         critical_files;
         saved_state_action;
+        skip_initial_type_check;
         _;
       }
     =
-    { StartOptions.source_paths; socket_path; watchman_root; critical_files; saved_state_action }
+    {
+      StartOptions.source_paths;
+      socket_path;
+      watchman_root;
+      critical_files;
+      saved_state_action;
+      skip_initial_type_check;
+    }
 
 
   let analysis_configuration_of
@@ -120,6 +133,7 @@ module ServerConfiguration = struct
         critical_files = _;
         saved_state_action = _;
         additional_logging_sections = _;
+        skip_initial_type_check = _;
       }
     =
     Configuration.Analysis.create

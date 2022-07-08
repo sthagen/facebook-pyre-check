@@ -9,66 +9,65 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Tuple, Union
 
-from dataclasses_json import dataclass_json
+import dataclasses_json
 
 from .. import configuration as configuration_module, log
-from . import commands, coverage, frontend_configuration, query, server_connection
+from . import (
+    commands,
+    coverage,
+    frontend_configuration,
+    language_server_protocol as lsp,
+    query,
+    server_connection,
+)
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
 
-@dataclass_json
 @dataclass(frozen=True)
-class Pair:
+class Pair(dataclasses_json.DataClassJsonMixin):
     line: int
     column: int
 
 
-@dataclass_json
 @dataclass(frozen=True)
-class Location:
+class Location(dataclasses_json.DataClassJsonMixin):
     start: Pair
     stop: Pair
 
 
-@dataclass_json
 @dataclass(frozen=True)
-class CoverageGap:
+class CoverageGap(dataclasses_json.DataClassJsonMixin):
     location: Location
     type_: str
     reason: List[str]
 
 
-@dataclass_json
 @dataclass(frozen=True)
-class CoverageAtPath:
+class CoverageAtPath(dataclasses_json.DataClassJsonMixin):
     path: str
     total_expressions: int
     coverage_gaps: List[CoverageGap]
 
 
-@dataclass_json
 @dataclass(frozen=True)
-class CoverageAtPathResponse:
+class CoverageAtPathResponse(dataclasses_json.DataClassJsonMixin):
     CoverageAtPath: CoverageAtPath
 
 
-@dataclass_json
 @dataclass(frozen=True)
-class ErrorAtPath:
+class ErrorAtPath(dataclasses_json.DataClassJsonMixin):
     path: str
     error: str
 
 
-@dataclass_json
 @dataclass(frozen=True)
-class ErrorAtPathResponse:
+class ErrorAtPathResponse(dataclasses_json.DataClassJsonMixin):
     ErrorAtPath: ErrorAtPath
 
 
-@dataclass_json
 @dataclass(frozen=True)
-class ExpressionLevelCoverageResponse:
+class ExpressionLevelCoverageResponse(dataclasses_json.DataClassJsonMixin):
     response: List[Union[CoverageAtPathResponse, ErrorAtPathResponse]]
 
 
@@ -84,17 +83,19 @@ def _make_expression_level_coverage_response(
     ) -> Union[CoverageAtPathResponse, ErrorAtPathResponse]:
         if path[0] == "CoverageAtPath":
             return CoverageAtPathResponse(
-                # pyre-ignore[16]: Pyre doesn't understand dataclasses_json
+                # pyre-ignore[6]: For 1st param expected `Union[None,
+                #  List[typing.Any], Dict[typing.Any, typing.Any], bool, float, int,
+                #  str]` but got `object`.
                 CoverageAtPath=CoverageAtPath.from_dict(path[1])
             )
         else:
-            return ErrorAtPathResponse(
-                # pyre-ignore[16]: Pyre doesn't understand dataclasses_json
-                ErrorAtPath=ErrorAtPath.from_dict(path[1])
-            )
+            # pyre-ignore[6]: For 1st param expected `Union[None, List[typing.Any],
+            #  Dict[typing.Any, typing.Any], bool, float, int, str]` but got `object`.
+            return ErrorAtPathResponse(ErrorAtPath=ErrorAtPath.from_dict(path[1]))
 
     try:
-        # pyre-ignore[16]: Pyre doesn't understand Union of dataclasses_json within dataclasses_json
+        if not isinstance(json, dict):
+            raise ErrorParsingFailure(f"Error: expect a dictionary JSON but got {json}")
         response = [parse_path_response(path) for path in json["response"]]
         return ExpressionLevelCoverageResponse(response=response)
     except (AssertionError, AttributeError, KeyError, TypeError) as error:
@@ -145,6 +146,13 @@ def _get_total_and_uncovered_expressions(
     return coverage.total_expressions, len(coverage.coverage_gaps)
 
 
+def get_percent_covered_per_path(path_response: CoverageAtPathResponse) -> float:
+    total_expressions, uncovered_expressions = _get_total_and_uncovered_expressions(
+        path_response.CoverageAtPath
+    )
+    return _calculate_percent_covered(uncovered_expressions, total_expressions)
+
+
 def summary_expression_level(response: object) -> str:
     percent_output = ""
     overall_total_expressions = 0
@@ -158,15 +166,40 @@ def summary_expression_level(response: object) -> str:
         )
         overall_total_expressions += total_expressions
         overall_uncovered_expressions += uncovered_expressions
-        percent_covered = _calculate_percent_covered(
-            uncovered_expressions, total_expressions
-        )
+        percent_covered = get_percent_covered_per_path(path_response)
         percent_output += f"{expression_level_coverage.path}: {percent_covered}% expressions are covered\n"
     percent_covered = _calculate_percent_covered(
         overall_uncovered_expressions, overall_total_expressions
     )
     percent_output += f"Overall: {percent_covered}% expressions are covered"
     return percent_output
+
+
+def location_to_range(location: Location) -> lsp.Range:
+    return lsp.Range(
+        start=lsp.Position(
+            line=location.start.line - 1, character=location.start.column
+        ),
+        end=lsp.Position(line=location.stop.line - 1, character=location.stop.column),
+    )
+
+
+def make_diagnostic_for_coverage_gap(coverage_gap: CoverageGap) -> lsp.Diagnostic:
+    range = location_to_range(coverage_gap.location)
+    message = f"This expression has a {coverage_gap.reason[0]} coverage gap."
+    return lsp.Diagnostic(range=range, message=message)
+
+
+def get_uncovered_expression_diagnostics(
+    expression_coverage: ExpressionLevelCoverageResponse,
+) -> List[lsp.Diagnostic]:
+    if not isinstance(expression_coverage.response[0], CoverageAtPathResponse):
+        return []
+    # pyre-ignore[16]: Pyre doesn't understand Union of dataclasses_json within dataclasses_json
+    coverage_gaps = expression_coverage.response[0].CoverageAtPath.coverage_gaps
+    return [
+        make_diagnostic_for_coverage_gap(coverage_gap) for coverage_gap in coverage_gaps
+    ]
 
 
 def run_query(

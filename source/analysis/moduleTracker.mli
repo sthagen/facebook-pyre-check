@@ -72,6 +72,12 @@ end
 val read_only : t -> ReadOnly.t
 
 module Overlay : sig
+  module CodeUpdate : sig
+    type t =
+      | NewCode of raw_code
+      | ResetCode
+  end
+
   type t
 
   val create : ReadOnly.t -> t
@@ -84,7 +90,7 @@ module Overlay : sig
 
   val update_overlaid_code
     :  t ->
-    code_updates:(ArtifactPath.t * string) list ->
+    code_updates:(ArtifactPath.t * CodeUpdate.t) list ->
     IncrementalUpdate.t list
 
   val read_only : t -> ReadOnly.t
