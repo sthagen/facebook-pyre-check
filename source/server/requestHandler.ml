@@ -6,6 +6,7 @@
  *)
 
 open Core
+open Pyre
 open Ast
 open Analysis
 
@@ -33,10 +34,10 @@ let instantiate_errors ~build_system ~configuration ~ast_environment errors =
 
 let process_display_type_error_request
     ~configuration
-    ~state:{ ServerState.multi_environment; build_system; _ }
+    ~state:{ ServerState.overlaid_environment; build_system; _ }
     paths
   =
-  let errors_environment = OverlaidEnvironment.root multi_environment in
+  let errors_environment = OverlaidEnvironment.root overlaid_environment in
   let module_tracker = ErrorsEnvironment.ReadOnly.module_tracker errors_environment in
   let modules =
     match paths with
@@ -88,13 +89,13 @@ let create_info_response
 
 let process_incremental_update_request
     ~properties:({ ServerProperties.configuration; critical_files; _ } as properties)
-    ~state:({ ServerState.multi_environment; subscriptions; build_system; _ } as state)
+    ~state:({ ServerState.overlaid_environment; subscriptions; build_system; _ } as state)
     paths
   =
   let open Lwt.Infix in
   let paths = List.map paths ~f:PyrePath.create_absolute in
   let subscriptions = ServerState.Subscriptions.all subscriptions in
-  let errors_environment = OverlaidEnvironment.root multi_environment in
+  let errors_environment = OverlaidEnvironment.root overlaid_environment in
   match CriticalFile.find critical_files ~within:paths with
   | Some path ->
       let message =
@@ -139,15 +140,51 @@ let process_incremental_update_request
       in
       let () =
         Scheduler.with_scheduler ~configuration ~f:(fun scheduler ->
-            OverlaidEnvironment.run_update_root multi_environment ~scheduler changed_paths)
+            OverlaidEnvironment.run_update_root overlaid_environment ~scheduler changed_paths)
       in
       Subscription.batch_send ~response:create_type_errors_response subscriptions
       >>= fun () -> Lwt.return state
 
 
+let process_overlay_update ~build_system ~overlaid_environment ~overlay_id ~source_path ~code_update
+  =
+  let artifact_paths = BuildSystem.lookup_artifact build_system source_path in
+  let code_updates = List.map artifact_paths ~f:(fun artifact_path -> artifact_path, code_update) in
+  let _ =
+    OverlaidEnvironment.update_overlay_with_code overlaid_environment ~code_updates overlay_id
+  in
+  let type_errors_for_module errors_environment =
+    let module_tracker = ErrorsEnvironment.ReadOnly.module_tracker errors_environment in
+    let qualifier_for_artifact_path artifact_path =
+      (* TODO(T126093907) Handle shadowed files correctly; this is not possible without a refactor
+         of ModuleTracker and isn't necessary to get early feedback, but what we actually want to do
+         is overlay the artifact path even though it is shadowed; this will be a no-op but it is
+         needed to behave correctly if the user then deletes the shadowing file. *)
+      ModuleTracker.ReadOnly.lookup_path module_tracker artifact_path
+      |> function
+      | ModuleTracker.PathLookup.Found module_path -> Some (ModulePath.qualifier module_path)
+      | ModuleTracker.PathLookup.ShadowedBy _
+      | ModuleTracker.PathLookup.NotFound ->
+          None
+    in
+    List.filter_map artifact_paths ~f:qualifier_for_artifact_path
+    |> List.concat_map ~f:(ErrorsEnvironment.ReadOnly.get_errors_for_qualifier errors_environment)
+    |> instantiate_errors
+         ~build_system
+         ~configuration:
+           (ModuleTracker.ReadOnly.controls module_tracker |> EnvironmentControls.configuration)
+         ~ast_environment:(ErrorsEnvironment.ReadOnly.ast_environment errors_environment)
+  in
+  OverlaidEnvironment.overlay overlaid_environment overlay_id
+  >>| type_errors_for_module
+  |> function
+  | Some errors -> Response.TypeErrors errors
+  | None -> Response.Error ("Unable to update overlay " ^ overlay_id)
+
+
 let process_request
     ~properties:({ ServerProperties.configuration; _ } as properties)
-    ~state:({ ServerState.multi_environment; build_system; _ } as state)
+    ~state:({ ServerState.overlaid_environment; build_system; _ } as state)
     request
   =
   match request with
@@ -164,8 +201,22 @@ let process_request
           (Query.parse_and_process_request
              ~build_system
              ~environment:
-               (OverlaidEnvironment.root multi_environment
+               (OverlaidEnvironment.root overlaid_environment
                |> ErrorsEnvironment.ReadOnly.type_environment)
              query_text)
+      in
+      Lwt.return (state, response)
+  | Request.OverlayUpdate { overlay_id; source_path; code_update } ->
+      let response =
+        process_overlay_update
+          ~build_system
+          ~overlaid_environment
+          ~overlay_id
+          ~source_path:(PyrePath.create_absolute source_path |> SourcePath.create)
+          ~code_update:
+            (match code_update with
+            | Request.OverlayCodeUpdate.NewCode code ->
+                ModuleTracker.Overlay.CodeUpdate.NewCode code
+            | Request.OverlayCodeUpdate.ResetCode -> ModuleTracker.Overlay.CodeUpdate.ResetCode)
       in
       Lwt.return (state, response)
