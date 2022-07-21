@@ -219,7 +219,7 @@ class Repository:
         return output.decode("utf-8")
 
 
-def run_integration_test(
+def run_incremental_test(
     typeshed_zip_path: str, repository_path: str, debug: bool
 ) -> int:
     if not shutil.which("watchman"):
@@ -256,9 +256,9 @@ def run_integration_test(
             print(repository.run_pyre("rage"), file=sys.stderr)
             LOG.error("Found discrepancies between incremental and complete checks!")
             for revision, (actual_error, expected_error) in discrepancies.items():
-                print("Difference found for revision: {}".format(revision))
-                print("Actual errors (pyre incremental): {}".format(actual_error))
-                print("Expected errors (pyre check): {}".format(expected_error))
+                print("Difference found for revision: {}".format(revision), file=sys.stderr)
+                print("Actual errors (pyre incremental): {}".format(actual_error), file=sys.stderr)
+                print("Expected errors (pyre check): {}".format(expected_error), file=sys.stderr)
             return 1
 
     return 0
@@ -267,7 +267,7 @@ def run_integration_test(
 # In general, saved state load/saves are a distributed system problem - the file systems
 # are completely different. Make sure that Pyre doesn't rely on absolute paths when
 # loading via this test.
-def run_saved_state_test(typeshed_zip_path: str, repository_path: str) -> int:
+def run_saved_state_test(typeshed_zip_path: str, repository_path: str, debug: bool) -> int:
     # Copy files over to a temporary directory.
     original_directory = os.getcwd()
     saved_state_path = tempfile.NamedTemporaryFile().name
@@ -276,7 +276,7 @@ def run_saved_state_test(typeshed_zip_path: str, repository_path: str) -> int:
             typeshed_zip_path,
             saved_state_create_directory,
             repository_path,
-            debug=False,
+            debug,
         )
         repository.run_pyre(
             "--save-initial-state-to", saved_state_path, "incremental", "--no-watchman"
@@ -315,8 +315,8 @@ def run_saved_state_test(typeshed_zip_path: str, repository_path: str) -> int:
 
     if actual_errors != expected_errors:
         LOG.error("Actual errors are not equal to expected errors.")
-        print("Actual errors (pyre incremental): {}".format(actual_errors))
-        print("Expected errors (pyre check): {}".format(expected_errors))
+        print("Actual errors (pyre incremental): {}".format(actual_errors), file=sys.stderr)
+        print("Expected errors (pyre check): {}".format(expected_errors), file=sys.stderr)
         return 1
     return 0
 
@@ -345,19 +345,24 @@ def run(repository_location: str, typeshed_zip_path: Optional[str], debug: bool)
     while retries > 0:
         try:
             os.chdir(original_directory)
-            exit_code = run_integration_test(
+            exit_code = run_incremental_test(
                 typeshed_zip_path, repository_location, debug
             )
             if exit_code != 0:
                 sys.exit(exit_code)
-            print("### Running Saved State Test ###")
+            print("### Running Saved State Test ###", file=sys.stderr)
             os.chdir(original_directory)
-            return run_saved_state_test(typeshed_zip_path, repository_location)
+            return run_saved_state_test(typeshed_zip_path, repository_location, debug)
         except Exception as e:
-            LOG.error("Exception raised in integration test:\n %s \nretrying...", e)
             # Retry the integration test for uncaught exceptions. Caught issues will
             # result in an exit code of 1.
             retries = retries - 1
+            message = (
+                "retrying..."
+                if retries > 0 else
+                "Retries exceeded, try running with the --debug flag for more information"
+            )
+            LOG.error("Exception raised in integration test:\n %s \n%s", e, message)
     return 1
 
 
