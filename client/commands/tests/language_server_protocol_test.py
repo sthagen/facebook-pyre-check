@@ -19,6 +19,7 @@ from ..async_server_connection import (
 )
 from ..language_server_protocol import (
     ClientCapabilities,
+    ContentChange,
     DiagnosticTag,
     DidChangeTextDocumentParameters,
     DidCloseTextDocumentParameters,
@@ -360,10 +361,12 @@ class LSPParsingTest(testslide.TestCase):
             {
                 "textDocument": {
                     "uri": "file:///home/user/test.py",
-                }
+                },
+                "contentChanges": [{"text": "x = 5"}],
             },
             expected=DidChangeTextDocumentParameters(
-                text_document=TextDocumentIdentifier(uri="file:///home/user/test.py")
+                text_document=TextDocumentIdentifier(uri="file:///home/user/test.py"),
+                content_changes=[ContentChange("x = 5")],
             ),
         )
         assert_parsed(
@@ -371,9 +374,10 @@ class LSPParsingTest(testslide.TestCase):
                 "textDocument": {
                     "uri": "file:///home/user/test.py",
                 },
-                "text": "foo",
+                "contentChanges": [{"text": "x = 5"}, {"text": "file2: str"}],
             },
             expected=DidChangeTextDocumentParameters(
                 text_document=TextDocumentIdentifier(uri="file:///home/user/test.py"),
+                content_changes=[ContentChange("x = 5"), ContentChange("file2: str")],
             ),
         )

@@ -19,13 +19,14 @@ type coverage_data = {
 
 type typeisany =
   | ParameterIsAny
-  | ExpressionIsAny
+  | OtherExpressionIsAny
 [@@deriving compare, sexp, show, hash, to_yojson]
 
 type reason =
   | TypeIsAny of typeisany
   | ContainerParameterIsAny
   | CallableParameterIsUnknownOrAny
+  | CallableReturnIsAny
 [@@deriving compare, sexp, show, hash, to_yojson]
 
 type coverage_gap = {
@@ -36,6 +37,7 @@ type coverage_gap = {
 
 type coverage_gap_by_location = {
   location: Location.t;
+  function_name: string option;
   type_: Type.t;
   reason: string list;
 }
@@ -831,11 +833,13 @@ let classify_coverage_data { expression; type_ } =
       | Some { value = Expression.Name (Name.Identifier name); _ } -> (
           match String.chop_prefix name ~prefix:"$parameter$" with
           | Some _ -> make_coverage_gap (TypeIsAny ParameterIsAny)
-          | None -> make_coverage_gap (TypeIsAny ExpressionIsAny))
-      | _ -> make_coverage_gap (TypeIsAny ExpressionIsAny))
+          | None -> make_coverage_gap (TypeIsAny OtherExpressionIsAny))
+      | _ -> make_coverage_gap (TypeIsAny OtherExpressionIsAny))
   | Parametric { name = "list" | "set"; parameters = [Single Any] }
   | Parametric { name = "dict"; parameters = [Single Any; Single Any] } ->
       make_coverage_gap ContainerParameterIsAny
+  | Callable { implementation = { annotation = Type.Any; _ }; _ } ->
+      make_coverage_gap CallableReturnIsAny
   | Callable { implementation = { parameters = Defined (_ :: _ as parameter_list); _ }; _ } ->
       let parameter_is_top_or_any = function
         | Type.Callable.Parameter.Named { annotation = Type.Any | Type.Top; _ } -> true
@@ -874,6 +878,8 @@ let callable_parameter_is_unknown_or_any_message =
   ["Consider adding stronger annotations to the parameters."]
 
 
+let callable_return_is_any_message = ["Consider adding stronger annotations to the return type."]
+
 let get_expression_level_coverage coverage_data_lookup =
   let all_nodes = get_all_nodes_and_coverage_data coverage_data_lookup in
   let total_expressions = List.length all_nodes in
@@ -882,17 +888,24 @@ let get_expression_level_coverage coverage_data_lookup =
         location, classify_coverage_data coverage_data)
   in
   let coverage_gap_by_locations =
-    List.filter_map coverage_gap_and_locations ~f:(fun (location, coverage_gap) ->
-        match coverage_gap with
+    let message reason =
+      match reason with
+      | TypeIsAny ParameterIsAny -> parameter_is_any_message
+      | TypeIsAny OtherExpressionIsAny -> expression_is_any_message
+      | ContainerParameterIsAny -> container_parameter_is_any_message
+      | CallableParameterIsUnknownOrAny -> callable_parameter_is_unknown_or_any_message
+      | CallableReturnIsAny -> callable_return_is_any_message
+    in
+    List.filter_map coverage_gap_and_locations ~f:(fun (location, coverage_gap_option) ->
+        let get_function_name type_ =
+          match type_ with
+          | Type.Callable { kind = Named name; _ } -> Some (Reference.show name)
+          | _ -> None
+        in
+        match coverage_gap_option with
         | Some { coverage_data = { type_; _ }; reason } ->
-            let message reason =
-              match reason with
-              | TypeIsAny ParameterIsAny -> parameter_is_any_message
-              | TypeIsAny ExpressionIsAny -> expression_is_any_message
-              | ContainerParameterIsAny -> container_parameter_is_any_message
-              | CallableParameterIsUnknownOrAny -> callable_parameter_is_unknown_or_any_message
-            in
-            Some { location; type_; reason = message reason }
+            Some
+              { location; function_name = get_function_name type_; type_; reason = message reason }
         | None -> None)
   in
   let sorted_coverage_gap_by_locations =

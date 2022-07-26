@@ -15,13 +15,14 @@ type coverage_data = {
 
 type typeisany =
   | ParameterIsAny
-  | ExpressionIsAny
+  | OtherExpressionIsAny
 [@@deriving compare, sexp, show, hash, to_yojson]
 
 type reason =
   | TypeIsAny of typeisany
   | ContainerParameterIsAny
   | CallableParameterIsUnknownOrAny
+  | CallableReturnIsAny
 [@@deriving compare, sexp, show, hash, to_yojson]
 
 type coverage_gap = {
@@ -32,6 +33,7 @@ type coverage_gap = {
 
 type coverage_gap_by_location = {
   location: Location.t;
+  function_name: string option;
   type_: Type.t;
   reason: string list;
 }
@@ -122,3 +124,5 @@ val expression_is_any_message : string list
 val container_parameter_is_any_message : string list
 
 val callable_parameter_is_unknown_or_any_message : string list
+
+val callable_return_is_any_message : string list

@@ -1967,6 +1967,7 @@ let test_expression_level_coverage context =
                               "column": 7
                           }
                       },
+                      "function_name": "%s.%s",
                       "type_": "typing.Callable(%s.%s)[[Named(x, unknown)], None]",
                       "reason": ["%s"]
                   },
@@ -1981,6 +1982,7 @@ let test_expression_level_coverage context =
                               "column": 9
                           }
                       },
+                      "function_name": null,
                       "type_": "typing.Any",
                       "reason": ["%s"]
                   },
@@ -1995,6 +1997,7 @@ let test_expression_level_coverage context =
                               "column": 9
                           }
                       },
+                      "function_name": null,
                       "type_": "typing.Any",
                       "reason": ["%s"]
                   },
@@ -2009,6 +2012,7 @@ let test_expression_level_coverage context =
                               "column": 13
                           }
                       },
+                      "function_name": null,
                       "type_": "typing.Any",
                       "reason": ["%s"]
                   }
@@ -2017,6 +2021,8 @@ let test_expression_level_coverage context =
         ]
         |}
       path
+      function_name
+      function_name
       function_name
       function_name
       (List.nth_exn LocationBasedLookup.callable_parameter_is_unknown_or_any_message 0)
@@ -2083,6 +2089,7 @@ let test_expression_level_coverage context =
                                       "column": 7
                                   }
                               },
+                              "function_name": "two.two",
                               "type_": "typing.Callable(two.two)[[Named(x, unknown)], typing.Any]",
                               "reason": ["%s"]
                           },
@@ -2097,6 +2104,7 @@ let test_expression_level_coverage context =
                                       "column": 9
                                   }
                               },
+                              "function_name": null,
                               "type_": "typing.Any",
                               "reason": ["%s"]
                           },
@@ -2111,6 +2119,7 @@ let test_expression_level_coverage context =
                                       "column": 9
                                   }
                               },
+                              "function_name": null,
                               "type_": "typing.Any",
                               "reason": ["%s"]
                           },
@@ -2125,6 +2134,7 @@ let test_expression_level_coverage context =
                                       "column": 13
                                   }
                               },
+                              "function_name": null,
                               "type_": "typing.Any",
                               "reason": ["%s"]
                           }
@@ -2135,7 +2145,7 @@ let test_expression_level_coverage context =
           }
          |}
           (PyrePath.absolute custom_source_root)
-          (List.nth_exn LocationBasedLookup.callable_parameter_is_unknown_or_any_message 0)
+          (List.nth_exn LocationBasedLookup.callable_return_is_any_message 0)
           (List.nth_exn LocationBasedLookup.parameter_is_any_message 0)
           (List.nth_exn LocationBasedLookup.parameter_is_any_message 0)
           (List.nth_exn LocationBasedLookup.expression_is_any_message 0) );
