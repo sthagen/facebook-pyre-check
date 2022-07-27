@@ -7,6 +7,20 @@
 
 open Core
 
+module Raw : sig
+  type t = {
+    relative: string;
+    priority: int;
+  }
+  [@@deriving compare, hash, sexp]
+
+  module Set : Caml.Set.S with type elt = t
+
+  val create : configuration:Configuration.Analysis.t -> ArtifactPath.t -> t option
+
+  val full_path : configuration:Configuration.Analysis.t -> t -> ArtifactPath.t
+end
+
 type t = private {
   relative: string;
   qualifier: Reference.t;

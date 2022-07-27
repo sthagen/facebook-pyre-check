@@ -74,16 +74,62 @@ module ReadOnly = struct
     |> List.map ~f:ModulePath.qualifier
 end
 
-let find_module_paths
-    ({ Configuration.Analysis.source_paths; search_paths; excludes; _ } as configuration)
-  =
-  let visited_paths = String.Hash_set.create () in
-  let valid_suffixes = ".py" :: ".pyi" :: Configuration.Analysis.extension_suffixes configuration in
-  let mark_visited set path =
-    match Hash_set.strict_add set path with
+module ModuleFinder = struct
+  type t = {
+    valid_suffixes: String.Set.t;
+    excludes: Str.regexp list;
+    configuration: Configuration.Analysis.t;
+  }
+
+  let create ({ Configuration.Analysis.excludes; _ } as configuration) =
+    {
+      valid_suffixes =
+        ".py" :: ".pyi" :: Configuration.Analysis.extension_suffixes configuration
+        |> String.Set.of_list;
+      excludes;
+      configuration;
+    }
+
+
+  let is_valid_filename_raw { valid_suffixes; _ } raw_path =
+    let extension =
+      Filename.split_extension raw_path
+      |> snd
+      >>| (fun extension -> "." ^ extension)
+      |> Option.value ~default:""
+    in
+    (* Don't bother with hidden files as they are non-importable in Python by default *)
+    (not (String.is_prefix (Filename.basename raw_path) ~prefix:"."))
+    (* Only consider files with valid suffix *)
+    && Set.mem valid_suffixes extension
+
+
+  let is_valid_filename finder artifact_path =
+    ArtifactPath.raw artifact_path |> PyrePath.absolute |> is_valid_filename_raw finder
+
+
+  let mark_visited visited_paths path =
+    match Hash_set.strict_add visited_paths path with
     | Result.Ok () -> false
     | _ -> true
-  in
+
+
+  let python_file_filter finder ~visited_paths path =
+    is_valid_filename_raw finder path && not (mark_visited visited_paths path)
+
+
+  let package_directory_filter { excludes; _ } ~visited_paths ~root_path path =
+    (* Don't bother with hidden directories (except in the case where the root itself is hidden) as
+       they are non-importable in Python by default *)
+    ((not (String.is_prefix (Filename.basename path) ~prefix:".")) || String.equal path root_path)
+    (* Do not scan excluding directories to speed up the traversal *)
+    && (not (List.exists excludes ~f:(fun regexp -> Str.string_match regexp path 0)))
+    && not (mark_visited visited_paths path)
+end
+
+let find_module_paths ({ Configuration.Analysis.source_paths; search_paths; _ } as configuration) =
+  let module_finder = ModuleFinder.create configuration in
+  let visited_paths = String.Hash_set.create () in
   let search_roots =
     List.append
       (List.map ~f:SearchPath.to_path source_paths)
@@ -91,28 +137,10 @@ let find_module_paths
   in
   List.map search_roots ~f:(fun root ->
       let root_path = PyrePath.absolute root in
-      let directory_filter path =
-        (* Don't bother with hidden directories (except in the case where the root itself is hidden)
-           as they are non-importable in Python by default *)
-        ((not (String.is_prefix (Filename.basename path) ~prefix:"."))
-        || String.equal path root_path)
-        (* Do not scan excluding directories to speed up the traversal *)
-        && (not (List.exists excludes ~f:(fun regexp -> Str.string_match regexp path 0)))
-        && not (mark_visited visited_paths path)
+      let directory_filter =
+        ModuleFinder.package_directory_filter module_finder ~visited_paths ~root_path
       in
-      let file_filter path =
-        let extension =
-          Filename.split_extension path
-          |> snd
-          >>| (fun extension -> "." ^ extension)
-          |> Option.value ~default:""
-        in
-        (* Don't bother with hidden files as they are non-importable in Python by default *)
-        (not (String.is_prefix (Filename.basename path) ~prefix:"."))
-        (* Only consider files with valid suffix *)
-        && List.exists ~f:(String.equal extension) valid_suffixes
-        && not (mark_visited visited_paths path)
-      in
+      let file_filter = ModuleFinder.python_file_filter module_finder ~visited_paths in
       PyrePath.list ~file_filter ~directory_filter ~root () |> List.map ~f:ArtifactPath.create)
   |> List.concat
   |> List.filter_map ~f:(ModulePath.create ~configuration)
@@ -211,12 +239,28 @@ module Base = struct
 
     module FileSystemEvent = struct
       type t =
-        | Update of ArtifactPath.t
-        | Remove of ArtifactPath.t
+        | Update of ModulePath.t
+        | Remove of ModulePath.t
 
-      let create path =
-        if PyrePath.file_exists (ArtifactPath.raw path) then Update path else Remove path
+      let create ~configuration path =
+        match ModulePath.create ~configuration path with
+        | None ->
+            Log.log ~section:`Server "`%a` not found in search path." ArtifactPath.pp path;
+            None
+        | Some module_path ->
+            if PyrePath.file_exists (ArtifactPath.raw path) then
+              Some (Update module_path)
+            else
+              Some (Remove module_path)
     end
+
+    let create_filesystem_events ~configuration artifact_paths =
+      (* Since the logic in `process_filesystem_event` is not idempotent, we don't want any
+         duplicate ArtifactPaths in our filesystem events. *)
+      List.dedup_and_sort ~compare:ArtifactPath.compare artifact_paths
+      |> List.filter ~f:(ModuleFinder.is_valid_filename (ModuleFinder.create configuration))
+      |> List.filter_map ~f:(FileSystemEvent.create ~configuration)
+
 
     module IncrementalExplicitUpdate = struct
       type t =
@@ -233,57 +277,47 @@ module Base = struct
       [@@deriving sexp, compare]
     end
 
-    let update_explicit_modules ~configuration ~artifact_paths qualifier_to_modules =
+    let update_explicit_modules ~configuration qualifier_to_modules filesystem_events =
       (* Process a single filesystem event *)
       let process_filesystem_event ~configuration = function
-        | FileSystemEvent.Update path -> (
-            match ModulePath.create ~configuration path with
+        | FileSystemEvent.Update ({ ModulePath.qualifier; _ } as module_path) -> (
+            match Hashtbl.find qualifier_to_modules qualifier with
             | None ->
-                Log.log ~section:`Server "`%a` not found in search path." ArtifactPath.pp path;
+                (* New file for a new module *)
+                Hashtbl.set qualifier_to_modules ~key:qualifier ~data:[module_path];
+                Some (IncrementalExplicitUpdate.New module_path)
+            | Some module_paths ->
+                let new_module_paths =
+                  insert_module_path ~configuration ~to_insert:module_path module_paths
+                in
+                let new_module_path = List.hd_exn new_module_paths in
+                Hashtbl.set qualifier_to_modules ~key:qualifier ~data:new_module_paths;
+                if ModulePath.equal new_module_path module_path then
+                  (* Updating a shadowing file means the module gets changed *)
+                  Some (IncrementalExplicitUpdate.Changed module_path)
+                else (* Updating a shadowed file should not trigger any reanalysis *)
+                  None)
+        | FileSystemEvent.Remove ({ ModulePath.qualifier; _ } as module_path) -> (
+            Hashtbl.find qualifier_to_modules qualifier
+            >>= fun module_paths ->
+            match module_paths with
+            | [] ->
+                (* This should never happen but handle it just in case *)
+                Hashtbl.remove qualifier_to_modules qualifier;
                 None
-            | Some ({ ModulePath.qualifier; _ } as module_path) -> (
-                match Hashtbl.find qualifier_to_modules qualifier with
-                | None ->
-                    (* New file for a new module *)
-                    Hashtbl.set qualifier_to_modules ~key:qualifier ~data:[module_path];
-                    Some (IncrementalExplicitUpdate.New module_path)
-                | Some module_paths ->
-                    let new_module_paths =
-                      insert_module_path ~configuration ~to_insert:module_path module_paths
-                    in
-                    let new_module_path = List.hd_exn new_module_paths in
-                    Hashtbl.set qualifier_to_modules ~key:qualifier ~data:new_module_paths;
-                    if ModulePath.equal new_module_path module_path then
-                      (* Updating a shadowing file means the module gets changed *)
-                      Some (IncrementalExplicitUpdate.Changed module_path)
-                    else (* Updating a shadowed file should not trigger any reanalysis *)
-                      None))
-        | FileSystemEvent.Remove path -> (
-            match ModulePath.create ~configuration path with
-            | None ->
-                Log.log ~section:`Server "`%a` not found in search path." ArtifactPath.pp path;
-                None
-            | Some ({ ModulePath.qualifier; _ } as module_path) -> (
-                Hashtbl.find qualifier_to_modules qualifier
-                >>= fun module_paths ->
-                match module_paths with
+            | old_module_path :: _ -> (
+                match remove_module_path ~configuration ~to_remove:module_path module_paths with
                 | [] ->
-                    (* This should never happen but handle it just in case *)
+                    (* Last remaining file for the module gets removed. *)
                     Hashtbl.remove qualifier_to_modules qualifier;
-                    None
-                | old_module_path :: _ -> (
-                    match remove_module_path ~configuration ~to_remove:module_path module_paths with
-                    | [] ->
-                        (* Last remaining file for the module gets removed. *)
-                        Hashtbl.remove qualifier_to_modules qualifier;
-                        Some (IncrementalExplicitUpdate.Delete qualifier)
-                    | new_module_path :: _ as new_module_paths ->
-                        Hashtbl.set qualifier_to_modules ~key:qualifier ~data:new_module_paths;
-                        if ModulePath.equal old_module_path new_module_path then
-                          (* Removing a shadowed file should not trigger any reanalysis *)
-                          None
-                        else (* Removing module_path un-shadows another source file. *)
-                          Some (IncrementalExplicitUpdate.Changed new_module_path))))
+                    Some (IncrementalExplicitUpdate.Delete qualifier)
+                | new_module_path :: _ as new_module_paths ->
+                    Hashtbl.set qualifier_to_modules ~key:qualifier ~data:new_module_paths;
+                    if ModulePath.equal old_module_path new_module_path then
+                      (* Removing a shadowed file should not trigger any reanalysis *)
+                      None
+                    else (* Removing module_path un-shadows another source file. *)
+                      Some (IncrementalExplicitUpdate.Changed new_module_path)))
       in
       (* Make sure we have only one update per module *)
       let merge_updates updates =
@@ -354,11 +388,7 @@ module Base = struct
         List.iter updates ~f:process_update;
         Hashtbl.data table
       in
-      (* Since `process_filesystem_event` is not idempotent, we don't want duplicated filesystem
-         events *)
-      List.dedup_and_sort ~compare:ArtifactPath.compare artifact_paths
-      |> List.map ~f:FileSystemEvent.create
-      |> List.filter_map ~f:(process_filesystem_event ~configuration)
+      List.filter_map filesystem_events ~f:(process_filesystem_event ~configuration)
       |> merge_updates
 
 
@@ -422,7 +452,8 @@ module Base = struct
 
     let update ~configuration ~artifact_paths { qualifier_to_modules; submodule_refcounts } =
       let explicit_updates =
-        update_explicit_modules qualifier_to_modules ~configuration ~artifact_paths
+        create_filesystem_events ~configuration artifact_paths
+        |> update_explicit_modules qualifier_to_modules ~configuration
       in
       let implicit_updates = update_submodules submodule_refcounts ~events:explicit_updates in
       (* Explicit updates should shadow implicit updates *)
