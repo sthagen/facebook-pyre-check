@@ -46,6 +46,7 @@ from . import (
     backend_arguments,
     commands,
     expression_level_coverage,
+    find_symbols,
     frontend_configuration,
     incremental,
     language_server_protocol as lsp,
@@ -57,7 +58,6 @@ from . import (
     statistics,
     subscription,
 )
-from .find_symbols import parse_source_and_collect_symbols, UnparseableError
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
@@ -292,7 +292,7 @@ async def try_initialize(
                 server_start_options_reader, remote_logging=None
             )
         except configuration_module.InvalidConfiguration as e:
-            raise lsp.ServerNotInitializedError(str(e))
+            raise lsp.ServerNotInitializedError(str(e)) from None
 
         result = process_initialize_request(
             initialize_parameters, server_start_options.ide_features
@@ -310,14 +310,13 @@ async def try_initialize(
         if initialized_notification.method == "shutdown":
             try:
                 await _wait_for_exit(input_channel, output_channel)
-            except (ConnectionError, json_rpc.ParseError) as error:
-                # These errors can happen when the connection gets dropped unilaterally
+            except lsp.ReadChannelClosedError:
+                # This error can happen when the connection gets closed unilaterally
                 # from the language client, which causes issue when we try to access
-                # the I/O channel.
-                # Since the language client has explicitly notified us it wants to
-                # shutdown at this point, it should be safe to just ignore the error
-                # and terminate the language server immediately.
-                LOG.info(f"Initialization connection dropped by LSP client: {error}")
+                # the input channel. This usually signals that the language client
+                # has exited, which implies that the language server should do that
+                # as well.
+                LOG.info("Initialization connection closed by LSP client")
             return InitializationExit()
         elif initialized_notification.method != "initialized":
             actual_message = json.dumps(initialized_notification.json())
@@ -332,7 +331,7 @@ async def try_initialize(
             initialization_options=initialize_parameters.initialization_options,
         )
     except json_rpc.JSONRPCException as json_rpc_error:
-        await lsp.write_json_rpc(
+        await lsp.write_json_rpc_ignore_connection_error(
             output_channel,
             json_rpc.ErrorResponse(
                 id=request.id if request is not None else None,
@@ -354,7 +353,7 @@ async def _read_lsp_request(
         message = await lsp.read_json_rpc(input_channel)
         yield message
     except json_rpc.JSONRPCException as json_rpc_error:
-        await lsp.write_json_rpc(
+        await lsp.write_json_rpc_ignore_connection_error(
             output_channel,
             json_rpc.ErrorResponse(
                 # pyre-ignore[16] - refinement doesn't work here for some reason
@@ -856,23 +855,23 @@ class PyreServer:
             )
         try:
             source = document_path.read_text()
-        except Exception:
-            raise json_rpc.InvalidRequestError(
-                f"Document URI is not a readable file: {parameters.text_document.uri}"
+            symbols = find_symbols.parse_source_and_collect_symbols(source)
+            await lsp.write_json_rpc(
+                self.output_channel,
+                json_rpc.SuccessResponse(
+                    id=request_id,
+                    activity_key=activity_key,
+                    result=[s.to_dict() for s in symbols],
+                ),
             )
-        try:
-            symbols = parse_source_and_collect_symbols(source)
-        except UnparseableError as e:
-            raise json_rpc.ParseError(e)
-
-        await lsp.write_json_rpc(
-            self.output_channel,
-            json_rpc.SuccessResponse(
-                id=request_id,
-                activity_key=activity_key,
-                result=[s.to_dict() for s in symbols],
-            ),
-        )
+        except find_symbols.UnparseableError as error:
+            raise lsp.RequestFailedError(
+                f"Document URI is not parsable: {parameters.text_document.uri}"
+            ) from error
+        except OSError as error:
+            raise lsp.RequestFailedError(
+                f"Document URI is not a readable file: {parameters.text_document.uri}"
+            ) from error
 
     async def process_find_all_references_request(
         self,
@@ -909,21 +908,11 @@ class PyreServer:
         )
 
     async def process_shutdown_request(self, request_id: Union[int, str, None]) -> int:
-        try:
-            await lsp.write_json_rpc(
-                self.output_channel,
-                json_rpc.SuccessResponse(id=request_id, activity_key=None, result=None),
-            )
-            return await self.wait_for_exit()
-        except (ConnectionError, json_rpc.ParseError) as error:
-            # These errors can happen when the connection gets dropped unilaterally
-            # from the language client, which causes issue when we try to access the
-            # I/O channel.
-            # Since the language client has explicitly notified us it wants to
-            # shutdown at this point, it should be safe to just ignore the error and
-            # terminate the language server immediately.
-            LOG.info(f"Connection dropped by LSP client: {error}")
-            return commands.ExitCode.SUCCESS
+        await lsp.write_json_rpc_ignore_connection_error(
+            self.output_channel,
+            json_rpc.SuccessResponse(id=request_id, activity_key=None, result=None),
+        )
+        return await self.wait_for_exit()
 
     async def _run(self) -> int:
         while True:
@@ -1055,6 +1044,13 @@ class PyreServer:
             await self.pyre_manager.ensure_task_running()
             await self.pyre_query_manager.ensure_task_running()
             return await self._run()
+        except lsp.ReadChannelClosedError:
+            # This error can happen when the connection gets closed unilaterally
+            # from the language client, which causes issue when we try to access the
+            # input channel. This usually signals that the language client has exited,
+            # which implies that the language server should do that as well.
+            LOG.info("Connection closed by LSP client.")
+            return commands.ExitCode.SUCCESS
         finally:
             await self.pyre_manager.ensure_task_stop()
             await self.pyre_query_manager.ensure_task_stop()
@@ -1589,7 +1585,7 @@ async def _write_telemetry(
     activity_key: Optional[Dict[str, object]],
 ) -> None:
     if enabled:
-        await lsp.write_json_rpc(
+        await lsp.write_json_rpc_ignore_connection_error(
             output_channel,
             json_rpc.Request(
                 activity_key=activity_key,

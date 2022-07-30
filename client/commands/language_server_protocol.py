@@ -30,10 +30,20 @@ class ServerNotInitializedError(json_rpc.JSONRPCException):
         return -32002
 
 
+class RequestFailedError(json_rpc.JSONRPCException):
+    @override
+    def error_code(self) -> int:
+        return -32803
+
+
 class RequestCancelledError(json_rpc.JSONRPCException):
     @override
     def error_code(self) -> int:
         return -32800
+
+
+class ReadChannelClosedError(Exception):
+    pass
 
 
 async def _read_headers(input_channel: async_server_connection.TextReader) -> List[str]:
@@ -47,6 +57,7 @@ async def _read_headers(input_channel: async_server_connection.TextReader) -> Li
 
 def _get_content_length(headers: Iterable[str]) -> int:
     try:
+        parts: List[str] = []
         for header in headers:
             parts = [part.strip().lower() for part in header.split(":", maxsplit=1)]
             if len(parts) <= 1:
@@ -55,10 +66,11 @@ def _get_content_length(headers: Iterable[str]) -> int:
             if parts[0] == "content-length":
                 return int(parts[1])
 
-        # pyre-fixme[61]: `parts` may not be initialized here.
         raise json_rpc.ParseError(f"Failed to find content length header from {parts}")
     except ValueError as error:
-        raise json_rpc.ParseError(f"Cannot parse content length into integer: {error}")
+        raise json_rpc.ParseError(
+            "Cannot parse content length into integer."
+        ) from error
 
 
 async def read_json_rpc(
@@ -66,8 +78,8 @@ async def read_json_rpc(
 ) -> json_rpc.Request:
     """
     Asynchronously read a JSON-RPC request from the given input channel.
-    May raise `json_rpc.ParseError`, `json_rpc.InvalidRequestError` and
-    `json_prc.InvalidParameterError`.
+    May raise `json_rpc.ParseError`, `json_rpc.InvalidRequestError`,
+    `json_prc.InvalidParameterError`, and `ReadChannelClosedError`.
     """
     try:
         headers = await _read_headers(input_channel)
@@ -76,7 +88,12 @@ async def read_json_rpc(
         payload = await input_channel.read_exactly(content_length)
         return json_rpc.Request.from_string(payload)
     except asyncio.IncompleteReadError as error:
-        raise json_rpc.ParseError(str(error)) from error
+        if len(error.partial) == 0:
+            raise ReadChannelClosedError(
+                "Trying to read from a closed input channel"
+            ) from None
+        else:
+            raise json_rpc.ParseError(str(error)) from None
 
 
 async def write_json_rpc(
@@ -87,6 +104,19 @@ async def write_json_rpc(
     """
     payload = response.serialize()
     await output_channel.write(f"Content-Length: {len(payload)}\r\n\r\n{payload}")
+
+
+async def write_json_rpc_ignore_connection_error(
+    output_channel: async_server_connection.TextWriter, response: json_rpc.JSONRPC
+) -> None:
+    """
+    Asynchronously write a JSON-RPC response to the given output channel, and ignore
+    any `ConnectionError` that occurred.
+    """
+    try:
+        write_json_rpc(output_channel, response)
+    except ConnectionError as error:
+        LOG.info(f"Ignoring connection error while writing JSON RPC. Error: {error}")
 
 
 def _parse_parameters(parameters: json_rpc.Parameters, target: Type[T]) -> T:

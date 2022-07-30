@@ -100,7 +100,7 @@ module ReadOnly = struct
 
   let get_relative read_only qualifier =
     let open Option in
-    get_module_path read_only qualifier >>| fun { ModulePath.relative; _ } -> relative
+    get_module_path read_only qualifier >>| ModulePath.relative
 
 
   let configuration environment = controls environment |> EnvironmentControls.configuration
@@ -211,7 +211,11 @@ module ReadOnly = struct
         |> InlineDecorator.inline_decorators ~get_source:(fun qualifier ->
                get_raw_source ?dependency environment qualifier >>= Result.ok)
     | Result.Error
-        { ParserError.module_path = { ModulePath.qualifier; relative; _ } as module_path; _ } ->
+        {
+          ParserError.module_path =
+            { ModulePath.raw = { relative; _ }; qualifier; _ } as module_path;
+          _;
+        } ->
         (* Files that have parser errors fall back into getattr-any. *)
         let fallback_source = ["import typing"; "def __getattr__(name: str) -> typing.Any: ..."] in
         let typecheck_flags = Source.TypecheckFlags.parse ~qualifier fallback_source in
@@ -517,10 +521,6 @@ module Base = struct
 
 
   let create controls = ModuleTracker.create controls |> from_module_tracker
-
-  let create_for_testing controls module_path_code_pairs =
-    ModuleTracker.create_for_testing controls module_path_code_pairs |> from_module_tracker
-
 
   let load controls =
     ModuleTracker.Serializer.from_stored_layouts ~controls () |> from_module_tracker

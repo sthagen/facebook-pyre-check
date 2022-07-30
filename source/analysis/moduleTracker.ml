@@ -21,22 +21,13 @@ module PathLookup = struct
   [@@deriving show, sexp, compare]
 end
 
-module IncrementalUpdate = struct
-  type t =
-    | NewExplicit of Ast.ModulePath.t
-    | NewImplicit of Ast.Reference.t
-    | Delete of Reference.t
-  [@@deriving show, sexp, compare]
-
-  let equal = [%compare.equal: t]
-end
-
 module ReadOnly = struct
   type t = {
     lookup_module_path: Reference.t -> ModulePath.t option;
     is_module_tracked: Reference.t -> bool;
     get_raw_code: ModulePath.t -> (raw_code, message) Result.t;
     module_paths: unit -> ModulePath.t list;
+    all_module_paths: unit -> ModulePath.t list;
     controls: unit -> EnvironmentControls.t;
   }
 
@@ -46,19 +37,19 @@ module ReadOnly = struct
 
   let module_paths { module_paths; _ } = module_paths ()
 
+  let all_module_paths { all_module_paths; _ } = all_module_paths ()
+
   let is_module_tracked { is_module_tracked; _ } = is_module_tracked
 
   let lookup_path tracker path =
     let configuration = controls tracker |> EnvironmentControls.configuration in
     match ModulePath.create ~configuration path with
     | None -> PathLookup.NotFound
-    | Some { ModulePath.relative; priority; qualifier; _ } -> (
+    | Some { ModulePath.raw; qualifier; _ } -> (
         match lookup_module_path tracker qualifier with
         | None -> PathLookup.NotFound
-        | Some
-            ({ ModulePath.relative = tracked_relative; priority = tracked_priority; _ } as
-            module_path) ->
-            if String.equal relative tracked_relative && Int.equal priority tracked_priority then
+        | Some ({ ModulePath.raw = tracked_raw; _ } as module_path) ->
+            if ModulePath.Raw.equal raw tracked_raw then
               PathLookup.Found module_path
             else
               PathLookup.ShadowedBy module_path)
@@ -74,84 +65,116 @@ module ReadOnly = struct
     |> List.map ~f:ModulePath.qualifier
 end
 
-module ModuleFinder = struct
-  type t = {
-    valid_suffixes: String.Set.t;
-    excludes: Str.regexp list;
-    configuration: Configuration.Analysis.t;
-  }
-
-  let create ({ Configuration.Analysis.excludes; _ } as configuration) =
-    {
-      valid_suffixes =
-        ".py" :: ".pyi" :: Configuration.Analysis.extension_suffixes configuration
-        |> String.Set.of_list;
-      excludes;
-      configuration;
+module ModulePaths = struct
+  module Finder = struct
+    type t = {
+      valid_suffixes: String.Set.t;
+      excludes: Str.regexp list;
+      configuration: Configuration.Analysis.t;
     }
 
+    let create ({ Configuration.Analysis.excludes; _ } as configuration) =
+      {
+        valid_suffixes =
+          ".py" :: ".pyi" :: Configuration.Analysis.extension_suffixes configuration
+          |> String.Set.of_list;
+        excludes;
+        configuration;
+      }
 
-  let is_valid_filename_raw { valid_suffixes; _ } raw_path =
-    let extension =
-      Filename.split_extension raw_path
-      |> snd
-      >>| (fun extension -> "." ^ extension)
-      |> Option.value ~default:""
+
+    let is_valid_filename_raw { valid_suffixes; _ } raw_path =
+      let extension =
+        Filename.split_extension raw_path
+        |> snd
+        >>| (fun extension -> "." ^ extension)
+        |> Option.value ~default:""
+      in
+      (* Don't bother with hidden files as they are non-importable in Python by default *)
+      (not (String.is_prefix (Filename.basename raw_path) ~prefix:"."))
+      (* Only consider files with valid suffix *)
+      && Set.mem valid_suffixes extension
+
+
+    let is_valid_filename finder artifact_path =
+      ArtifactPath.raw artifact_path |> PyrePath.absolute |> is_valid_filename_raw finder
+
+
+    let mark_visited visited_paths path =
+      match Hash_set.strict_add visited_paths path with
+      | Result.Ok () -> false
+      | _ -> true
+
+
+    let python_file_filter finder ~visited_paths path =
+      is_valid_filename_raw finder path && not (mark_visited visited_paths path)
+
+
+    let package_directory_filter { excludes; _ } ~visited_paths ~root_path path =
+      (* Don't bother with hidden directories (except in the case where the root itself is hidden)
+         as they are non-importable in Python by default *)
+      ((not (String.is_prefix (Filename.basename path) ~prefix:".")) || String.equal path root_path)
+      (* Do not scan excluding directories to speed up the traversal *)
+      && (not (List.exists excludes ~f:(fun regexp -> Str.string_match regexp path 0)))
+      && not (mark_visited visited_paths path)
+  end
+
+  module Update = struct
+    type t =
+      | NewOrChanged of ModulePath.t
+      | Remove of ModulePath.t
+
+    let create ~configuration path =
+      match ModulePath.create ~configuration path with
+      | None ->
+          Log.log ~section:`Server "`%a` not found in search path." ArtifactPath.pp path;
+          None
+      | Some module_path ->
+          if PyrePath.file_exists (ArtifactPath.raw path) then
+            Some (NewOrChanged module_path)
+          else
+            Some (Remove module_path)
+
+
+    let module_path = function
+      | NewOrChanged module_path
+      | Remove module_path ->
+          module_path
+  end
+
+  let find_all ({ Configuration.Analysis.source_paths; search_paths; _ } as configuration) =
+    let finder = Finder.create configuration in
+    let visited_paths = String.Hash_set.create () in
+    let search_roots =
+      List.append
+        (List.map ~f:SearchPath.to_path source_paths)
+        (List.map ~f:SearchPath.to_path search_paths)
     in
-    (* Don't bother with hidden files as they are non-importable in Python by default *)
-    (not (String.is_prefix (Filename.basename raw_path) ~prefix:"."))
-    (* Only consider files with valid suffix *)
-    && Set.mem valid_suffixes extension
+    List.map search_roots ~f:(fun root ->
+        let root_path = PyrePath.absolute root in
+        let directory_filter = Finder.package_directory_filter finder ~visited_paths ~root_path in
+        let file_filter = Finder.python_file_filter finder ~visited_paths in
+        PyrePath.list ~file_filter ~directory_filter ~root () |> List.map ~f:ArtifactPath.create)
+    |> List.concat
+    |> List.filter_map ~f:(ModulePath.create ~configuration)
 
 
-  let is_valid_filename finder artifact_path =
-    ArtifactPath.raw artifact_path |> PyrePath.absolute |> is_valid_filename_raw finder
-
-
-  let mark_visited visited_paths path =
-    match Hash_set.strict_add visited_paths path with
-    | Result.Ok () -> false
-    | _ -> true
-
-
-  let python_file_filter finder ~visited_paths path =
-    is_valid_filename_raw finder path && not (mark_visited visited_paths path)
-
-
-  let package_directory_filter { excludes; _ } ~visited_paths ~root_path path =
-    (* Don't bother with hidden directories (except in the case where the root itself is hidden) as
-       they are non-importable in Python by default *)
-    ((not (String.is_prefix (Filename.basename path) ~prefix:".")) || String.equal path root_path)
-    (* Do not scan excluding directories to speed up the traversal *)
-    && (not (List.exists excludes ~f:(fun regexp -> Str.string_match regexp path 0)))
-    && not (mark_visited visited_paths path)
+  let create_updates ~configuration artifact_paths =
+    (* Since the logic in `process_module_path_update` is not idempotent, we don't want any
+       duplicate ArtifactPaths in our module_path updates *)
+    List.dedup_and_sort ~compare:ArtifactPath.compare artifact_paths
+    |> List.filter ~f:(Finder.is_valid_filename (Finder.create configuration))
+    |> List.filter_map ~f:(Update.create ~configuration)
 end
 
-let find_module_paths ({ Configuration.Analysis.source_paths; search_paths; _ } as configuration) =
-  let module_finder = ModuleFinder.create configuration in
-  let visited_paths = String.Hash_set.create () in
-  let search_roots =
-    List.append
-      (List.map ~f:SearchPath.to_path source_paths)
-      (List.map ~f:SearchPath.to_path search_paths)
-  in
-  List.map search_roots ~f:(fun root ->
-      let root_path = PyrePath.absolute root in
-      let directory_filter =
-        ModuleFinder.package_directory_filter module_finder ~visited_paths ~root_path
-      in
-      let file_filter = ModuleFinder.python_file_filter module_finder ~visited_paths in
-      PyrePath.list ~file_filter ~directory_filter ~root () |> List.map ~f:ArtifactPath.create)
-  |> List.concat
-  |> List.filter_map ~f:(ModulePath.create ~configuration)
+module ExplicitModules = struct
+  module Value = struct
+    type t = ModulePath.t list
 
+    let module_path = function
+      | module_path :: _ -> Some module_path
+      | [] -> None
 
-module Base = struct
-  module Layouts = struct
-    type t = {
-      qualifier_to_modules: ModulePath.t list Reference.Table.t;
-      submodule_refcounts: int Reference.Table.t;
-    }
 
     let insert_module_path ~configuration ~to_insert existing_paths =
       let rec insert sofar = function
@@ -181,12 +204,8 @@ module Base = struct
                   (* For removed files, we only check for equality on relative path & priority. *)
                   (* There's a corner case (where symlink is involved) that may cause `removed` to
                      have a different `is_external` flag. *)
-                  let partially_equal
-                      { ModulePath.relative = left_relative; priority = left_priority; _ }
-                      { ModulePath.relative = right_relative; priority = right_priority; _ }
-                    =
-                    String.equal left_relative right_relative
-                    && Int.equal left_priority right_priority
+                  let partially_equal { ModulePath.raw = left; _ } { ModulePath.raw = right; _ } =
+                    ModulePath.Raw.equal left right
                   in
                   assert (partially_equal to_remove current_path)
                 in
@@ -195,317 +214,428 @@ module Base = struct
             | _ -> remove (current_path :: sofar) rest)
       in
       remove [] existing_paths
+  end
 
+  module Update = struct
+    type t =
+      | New of ModulePath.t
+      | Changed of ModulePath.t
+      | Delete of Reference.t
+    [@@deriving sexp, compare]
 
-    let create_qualifier_to_modules ~configuration module_paths =
-      let qualifier_to_modules = Reference.Table.create () in
-      let process_module_path ({ ModulePath.qualifier; _ } as module_path) =
-        let update_table = function
-          | None -> [module_path]
-          | Some module_paths ->
-              insert_module_path ~configuration ~to_insert:module_path module_paths
-        in
-        Hashtbl.update qualifier_to_modules qualifier ~f:update_table
-      in
-      List.iter module_paths ~f:process_module_path;
-      qualifier_to_modules
-
-
-    let create_submodule_refcounts qualifier_to_modules =
-      let submodule_refcounts = Reference.Table.create () in
-      let process_module qualifier =
-        let rec process_submodule ?(process_parent = true) maybe_qualifier =
-          match maybe_qualifier with
-          | None -> ()
-          | Some qualifier when Reference.is_empty qualifier -> ()
-          | Some qualifier ->
-              Reference.Table.update submodule_refcounts qualifier ~f:(function
-                  | None -> 1
-                  | Some count -> count + 1);
-              if process_parent then
-                process_submodule ~process_parent:false (Reference.prefix qualifier)
-        in
-        process_submodule (Some qualifier)
-      in
-      Hashtbl.keys qualifier_to_modules |> List.iter ~f:process_module;
-      submodule_refcounts
-
-
-    let create ~configuration module_paths =
-      let qualifier_to_modules = create_qualifier_to_modules ~configuration module_paths in
-      let submodule_refcounts = create_submodule_refcounts qualifier_to_modules in
-      { qualifier_to_modules; submodule_refcounts }
-
-
-    module FileSystemEvent = struct
-      type t =
-        | Update of ModulePath.t
-        | Remove of ModulePath.t
-
-      let create ~configuration path =
-        match ModulePath.create ~configuration path with
-        | None ->
-            Log.log ~section:`Server "`%a` not found in search path." ArtifactPath.pp path;
-            None
-        | Some module_path ->
-            if PyrePath.file_exists (ArtifactPath.raw path) then
-              Some (Update module_path)
-            else
-              Some (Remove module_path)
-    end
-
-    let create_filesystem_events ~configuration artifact_paths =
-      (* Since the logic in `process_filesystem_event` is not idempotent, we don't want any
-         duplicate ArtifactPaths in our filesystem events. *)
-      List.dedup_and_sort ~compare:ArtifactPath.compare artifact_paths
-      |> List.filter ~f:(ModuleFinder.is_valid_filename (ModuleFinder.create configuration))
-      |> List.filter_map ~f:(FileSystemEvent.create ~configuration)
-
-
-    module IncrementalExplicitUpdate = struct
-      type t =
-        | New of ModulePath.t
-        | Changed of ModulePath.t
-        | Delete of Reference.t
-      [@@deriving sexp, compare]
-    end
-
-    module IncrementalImplicitUpdate = struct
-      type t =
-        | New of Reference.t
-        | Delete of Reference.t
-      [@@deriving sexp, compare]
-    end
-
-    let update_explicit_modules ~configuration qualifier_to_modules filesystem_events =
-      (* Process a single filesystem event *)
-      let process_filesystem_event ~configuration = function
-        | FileSystemEvent.Update ({ ModulePath.qualifier; _ } as module_path) -> (
-            match Hashtbl.find qualifier_to_modules qualifier with
-            | None ->
-                (* New file for a new module *)
-                Hashtbl.set qualifier_to_modules ~key:qualifier ~data:[module_path];
-                Some (IncrementalExplicitUpdate.New module_path)
-            | Some module_paths ->
-                let new_module_paths =
-                  insert_module_path ~configuration ~to_insert:module_path module_paths
-                in
-                let new_module_path = List.hd_exn new_module_paths in
-                Hashtbl.set qualifier_to_modules ~key:qualifier ~data:new_module_paths;
-                if ModulePath.equal new_module_path module_path then
-                  (* Updating a shadowing file means the module gets changed *)
-                  Some (IncrementalExplicitUpdate.Changed module_path)
-                else (* Updating a shadowed file should not trigger any reanalysis *)
-                  None)
-        | FileSystemEvent.Remove ({ ModulePath.qualifier; _ } as module_path) -> (
-            Hashtbl.find qualifier_to_modules qualifier
-            >>= fun module_paths ->
-            match module_paths with
-            | [] ->
-                (* This should never happen but handle it just in case *)
-                Hashtbl.remove qualifier_to_modules qualifier;
-                None
-            | old_module_path :: _ -> (
-                match remove_module_path ~configuration ~to_remove:module_path module_paths with
-                | [] ->
-                    (* Last remaining file for the module gets removed. *)
-                    Hashtbl.remove qualifier_to_modules qualifier;
-                    Some (IncrementalExplicitUpdate.Delete qualifier)
-                | new_module_path :: _ as new_module_paths ->
-                    Hashtbl.set qualifier_to_modules ~key:qualifier ~data:new_module_paths;
-                    if ModulePath.equal old_module_path new_module_path then
-                      (* Removing a shadowed file should not trigger any reanalysis *)
-                      None
-                    else (* Removing module_path un-shadows another source file. *)
-                      Some (IncrementalExplicitUpdate.Changed new_module_path)))
-      in
-      (* Make sure we have only one update per module *)
-      let merge_updates updates =
-        let table = Reference.Table.create () in
-        let process_update update =
-          match update with
-          | IncrementalExplicitUpdate.New ({ ModulePath.qualifier; _ } as module_path) ->
-              let update = function
-                | None -> update
-                | Some (IncrementalExplicitUpdate.Delete _) ->
-                    IncrementalExplicitUpdate.Changed module_path
-                | Some (IncrementalExplicitUpdate.New _) ->
-                    let message =
-                      Format.asprintf "Illegal state: double new module %a" Reference.pp qualifier
-                    in
-                    failwith message
-                | Some (IncrementalExplicitUpdate.Changed _) ->
-                    let message =
-                      Format.asprintf
-                        "Illegal state: new after changed module %a"
-                        Reference.pp
-                        qualifier
-                    in
-                    failwith message
-              in
-              Hashtbl.update table qualifier ~f:update
-          | IncrementalExplicitUpdate.Changed ({ ModulePath.qualifier; _ } as module_path) ->
-              let update = function
-                | None
-                | Some (IncrementalExplicitUpdate.Changed _) ->
-                    update
-                | Some (IncrementalExplicitUpdate.New _) ->
-                    IncrementalExplicitUpdate.New module_path
-                | Some (IncrementalExplicitUpdate.Delete _) ->
-                    let message =
-                      Format.asprintf
-                        "Illegal state: changing a deleted module %a"
-                        Reference.pp
-                        qualifier
-                    in
-                    failwith message
-              in
-              Hashtbl.update table qualifier ~f:update
-          | IncrementalExplicitUpdate.Delete qualifier ->
-              let update = function
-                | None
-                | Some (IncrementalExplicitUpdate.Changed _) ->
-                    Some update
-                | Some (IncrementalExplicitUpdate.New _) ->
-                    let message =
-                      Format.asprintf
-                        "Illegal state: delete after new module %a"
-                        Reference.pp
-                        qualifier
-                    in
-                    failwith message
-                | Some (IncrementalExplicitUpdate.Delete _) ->
-                    let message =
-                      Format.asprintf
-                        "Illegal state: double delete module %a"
-                        Reference.pp
-                        qualifier
-                    in
-                    failwith message
-              in
-              Hashtbl.change table qualifier ~f:update
-        in
-        List.iter updates ~f:process_update;
-        Hashtbl.data table
-      in
-      List.filter_map filesystem_events ~f:(process_filesystem_event ~configuration)
-      |> merge_updates
-
-
-    let update_submodules ~events submodule_refcounts =
-      let aggregate_updates events =
-        let aggregated_refcounts = Reference.Table.create () in
-        let process_event event =
-          let rec do_update ?(parent = false) ~f = function
-            | None -> ()
-            | Some qualifier when Reference.is_empty qualifier -> ()
-            | Some qualifier ->
-                Hashtbl.update aggregated_refcounts qualifier ~f:(function
-                    | None -> f 0
-                    | Some count -> f count);
-                if not parent then
-                  do_update (Reference.prefix qualifier) ~parent:true ~f
-          in
-          match event with
-          | IncrementalExplicitUpdate.Changed _ -> ()
-          | IncrementalExplicitUpdate.New { ModulePath.qualifier; _ } ->
-              do_update (Some qualifier) ~f:(fun count -> count + 1)
-          | IncrementalExplicitUpdate.Delete qualifier ->
-              do_update (Some qualifier) ~f:(fun count -> count - 1)
-        in
-        List.iter events ~f:process_event;
-        aggregated_refcounts
-      in
-      let commit_updates update_table =
-        let commit_update ~key ~data sofar =
-          match data with
-          | 0 -> List.rev sofar
-          | delta -> (
-              let original_refcount =
-                Hashtbl.find submodule_refcounts key |> Option.value ~default:0
-              in
-              let new_refcount = original_refcount + delta in
-              match new_refcount with
-              | 0 ->
-                  Hashtbl.remove submodule_refcounts key;
-                  IncrementalImplicitUpdate.Delete key :: sofar
-              | count when count < 0 ->
+    let merge_updates updates =
+      let table = Reference.Table.create () in
+      let process_update update =
+        match update with
+        | New ({ ModulePath.qualifier; _ } as module_path) ->
+            let update = function
+              | None -> update
+              | Some (Delete _) -> Changed module_path
+              | Some (New _) ->
                   let message =
-                    Format.asprintf
-                      "Illegal state: negative refcount (%d) for module %a"
-                      count
-                      Reference.pp
-                      key
+                    Format.asprintf "Illegal state: double new module %a" Reference.pp qualifier
                   in
                   failwith message
-              | _ ->
-                  Hashtbl.set submodule_refcounts ~key ~data:new_refcount;
-                  if Int.equal original_refcount 0 then
-                    IncrementalImplicitUpdate.New key :: sofar
-                  else
-                    sofar)
-        in
-        Hashtbl.fold update_table ~init:[] ~f:commit_update
+              | Some (Changed _) ->
+                  let message =
+                    Format.asprintf
+                      "Illegal state: new after changed module %a"
+                      Reference.pp
+                      qualifier
+                  in
+                  failwith message
+            in
+            Hashtbl.update table qualifier ~f:update
+        | Changed ({ ModulePath.qualifier; _ } as module_path) ->
+            let update = function
+              | None
+              | Some (Changed _) ->
+                  update
+              | Some (New _) -> New module_path
+              | Some (Delete _) ->
+                  let message =
+                    Format.asprintf
+                      "Illegal state: changing a deleted module %a"
+                      Reference.pp
+                      qualifier
+                  in
+                  failwith message
+            in
+            Hashtbl.update table qualifier ~f:update
+        | Delete qualifier ->
+            let update = function
+              | None
+              | Some (Changed _) ->
+                  Some update
+              | Some (New _) ->
+                  let message =
+                    Format.asprintf
+                      "Illegal state: delete after new module %a"
+                      Reference.pp
+                      qualifier
+                  in
+                  failwith message
+              | Some (Delete _) ->
+                  let message =
+                    Format.asprintf "Illegal state: double delete module %a" Reference.pp qualifier
+                  in
+                  failwith message
+            in
+            Hashtbl.change table qualifier ~f:update
       in
-      aggregate_updates events |> commit_updates
+      List.iter updates ~f:process_update;
+      Hashtbl.data table
+  end
+
+  module Table = struct
+    module Api = struct
+      type t = {
+        find: qualifier:Reference.t -> Value.t option;
+        set: qualifier:Reference.t -> Value.t -> unit;
+        remove: qualifier:Reference.t -> unit;
+        data: unit -> Value.t list;
+      }
+
+      let update_module_paths ~configuration ~module_path_updates { find; set; remove; _ } =
+        (* Process a single module_path update *)
+        let process_module_path_update ~configuration = function
+          | ModulePaths.Update.NewOrChanged ({ ModulePath.qualifier; _ } as module_path) -> (
+              match find ~qualifier with
+              | None ->
+                  (* New file for a new module *)
+                  set ~qualifier [module_path];
+                  Some (Update.New module_path)
+              | Some module_paths ->
+                  let new_module_paths =
+                    Value.insert_module_path ~configuration ~to_insert:module_path module_paths
+                  in
+                  let new_module_path = List.hd_exn new_module_paths in
+                  set ~qualifier new_module_paths;
+                  if ModulePath.equal new_module_path module_path then
+                    (* Updating a shadowing file means the module gets changed *)
+                    Some (Update.Changed module_path)
+                  else (* Updating a shadowed file should not trigger any reanalysis *)
+                    None)
+          | ModulePaths.Update.Remove ({ ModulePath.qualifier; _ } as module_path) -> (
+              find ~qualifier
+              >>= fun module_paths ->
+              match module_paths with
+              | [] ->
+                  (* This should never happen but handle it just in case *)
+                  remove ~qualifier;
+                  None
+              | old_module_path :: _ -> (
+                  match
+                    Value.remove_module_path ~configuration ~to_remove:module_path module_paths
+                  with
+                  | [] ->
+                      (* Last remaining file for the module gets removed. *)
+                      remove ~qualifier;
+                      Some (Update.Delete qualifier)
+                  | new_module_path :: _ as new_module_paths ->
+                      set ~qualifier new_module_paths;
+                      if ModulePath.equal old_module_path new_module_path then
+                        (* Removing a shadowed file should not trigger any reanalysis *)
+                        None
+                      else (* Removing module_path un-shadows another source file. *)
+                        Some (Update.Changed new_module_path)))
+        in
+        (* Make sure we have only one update per module *)
+        List.filter_map module_path_updates ~f:(process_module_path_update ~configuration)
+        |> Update.merge_updates
+    end
+
+    module Eager = struct
+      type t = Value.t Reference.Table.t
+
+      let create ~configuration module_paths =
+        let explicit_modules = Reference.Table.create () in
+        let process_module_path ({ ModulePath.qualifier; _ } as module_path) =
+          let update_table = function
+            | None -> [module_path]
+            | Some module_paths ->
+                Value.insert_module_path ~configuration ~to_insert:module_path module_paths
+          in
+          Hashtbl.update explicit_modules qualifier ~f:update_table
+        in
+        List.iter module_paths ~f:process_module_path;
+        explicit_modules
 
 
-    let update ~configuration ~artifact_paths { qualifier_to_modules; submodule_refcounts } =
+      let to_api eager =
+        let find ~qualifier = Reference.Table.find eager qualifier in
+        let set ~qualifier value = Reference.Table.set eager ~key:qualifier ~data:value in
+        let remove ~qualifier = Reference.Table.remove eager qualifier in
+        let data () = Hashtbl.data eager in
+        Api.{ find; set; remove; data }
+    end
+  end
+end
+
+module ImplicitModules = struct
+  (* Given a ModulePath.t, determine the qualifier of the parent (the key in our
+     ImplicitModules.Table) and the ModulePath.Raw.t representing this child *)
+  let parent_qualifier_and_raw { ModulePath.raw; qualifier; _ } =
+    Reference.prefix qualifier >>| fun parent_qualifier -> parent_qualifier, raw
+
+
+  module Value = struct
+    type t = ModulePath.Raw.Set.t
+
+    let is_importable explicit_children = not (ModulePath.Raw.Set.is_empty explicit_children)
+  end
+
+  module Update = struct
+    type t =
+      | New of Reference.t
+      | Delete of Reference.t
+    [@@deriving sexp, compare]
+  end
+
+  module Table = struct
+    module Api = struct
+      type t = {
+        find: qualifier:Reference.t -> Value.t option;
+        update: qualifier:Reference.t -> f:(Value.t option -> Value.t) -> unit;
+      }
+
+      module Existence = struct
+        type t = {
+          existed_before: bool;
+          exists_after: bool;
+        }
+
+        let to_update ~qualifier { existed_before; exists_after } =
+          match existed_before, exists_after with
+          | false, true -> Some (Update.New qualifier)
+          | true, false -> Some (Update.Delete qualifier)
+          | true, true
+          | false, false ->
+              None
+      end
+
+      let update_module_paths ~module_path_updates { find; update; _ } =
+        let process_module_path_update previous_existence module_path_update =
+          let module_path = ModulePaths.Update.module_path module_path_update in
+          match parent_qualifier_and_raw module_path with
+          | None -> previous_existence
+          | Some (qualifier, raw_child) ->
+              (* Get the previous state and new state *)
+              let previous_explicit_children =
+                find ~qualifier |> Option.value ~default:ModulePath.Raw.Set.empty
+              in
+              let next_explicit_children =
+                match module_path_update with
+                | ModulePaths.Update.NewOrChanged _ ->
+                    ModulePath.Raw.Set.add raw_child previous_explicit_children
+                | ModulePaths.Update.Remove _ ->
+                    ModulePath.Raw.Set.remove raw_child previous_explicit_children
+              in
+              (* update implicit_modules as a side effect *)
+              let () = update ~qualifier ~f:(fun _ -> next_explicit_children) in
+              (* As we fold the updates, track existince before-and-after *)
+              let next_existence =
+                let open Existence in
+                Reference.Map.update previous_existence qualifier ~f:(function
+                    | None ->
+                        {
+                          existed_before = Value.is_importable previous_explicit_children;
+                          exists_after = Value.is_importable next_explicit_children;
+                        }
+                    | Some { existed_before; _ } ->
+                        {
+                          existed_before;
+                          exists_after = Value.is_importable next_explicit_children;
+                        })
+              in
+              next_existence
+        in
+        List.fold module_path_updates ~init:Reference.Map.empty ~f:process_module_path_update
+        |> Reference.Map.filter_mapi ~f:(fun ~key ~data -> Existence.to_update ~qualifier:key data)
+        |> Reference.Map.data
+    end
+
+    module Eager = struct
+      type t = Value.t Reference.Table.t
+
+      let create explicit_modules =
+        let implicit_modules = Reference.Table.create () in
+        let process_module_path module_path =
+          match parent_qualifier_and_raw module_path with
+          | None -> ()
+          | Some (parent_qualifier, raw) ->
+              Reference.Table.update implicit_modules parent_qualifier ~f:(function
+                  | None -> ModulePath.Raw.Set.singleton raw
+                  | Some paths -> ModulePath.Raw.Set.add raw paths)
+        in
+        Reference.Table.iter explicit_modules ~f:(List.iter ~f:process_module_path);
+        implicit_modules
+
+
+      let to_api eager =
+        let find ~qualifier = Reference.Table.find eager qualifier in
+        let update ~qualifier = Reference.Table.update eager qualifier in
+        Api.{ find; update }
+    end
+  end
+end
+
+module IncrementalUpdate = struct
+  type t =
+    | NewExplicit of Ast.ModulePath.t
+    | NewImplicit of Ast.Reference.t
+    | Delete of Reference.t
+  [@@deriving show, sexp, compare]
+
+  let equal = [%compare.equal: t]
+
+  let combine_explicits_and_implicits explicit_updates implicit_updates =
+    (* Explicit updates should shadow implicit updates *)
+    let explicitly_modified_qualifiers = Reference.Hash_set.create () in
+    let explicits =
+      let process_explicit_update = function
+        | ExplicitModules.Update.New ({ ModulePath.qualifier; _ } as module_path)
+        | ExplicitModules.Update.Changed ({ ModulePath.qualifier; _ } as module_path) ->
+            Hash_set.add explicitly_modified_qualifiers qualifier;
+            NewExplicit module_path
+        | ExplicitModules.Update.Delete qualifier ->
+            Hash_set.add explicitly_modified_qualifiers qualifier;
+            Delete qualifier
+      in
+      List.map explicit_updates ~f:process_explicit_update
+    in
+    let implicits =
+      let process_implicit_update = function
+        | ImplicitModules.Update.New qualifier ->
+            if Hash_set.mem explicitly_modified_qualifiers qualifier then
+              None
+            else
+              Some (NewImplicit qualifier)
+        | ImplicitModules.Update.Delete qualifier ->
+            if Hash_set.mem explicitly_modified_qualifiers qualifier then
+              None
+            else
+              Some (Delete qualifier)
+      in
+      List.filter_map implicit_updates ~f:process_implicit_update
+    in
+    List.append explicits implicits
+end
+
+module Layouts = struct
+  module Api = struct
+    type t = {
+      explicit_modules: ExplicitModules.Table.Api.t;
+      implicit_modules: ImplicitModules.Table.Api.t;
+      store: unit -> unit;
+    }
+
+    let update ~configuration ~artifact_paths { explicit_modules; implicit_modules; _ } =
+      let module_path_updates = ModulePaths.create_updates ~configuration artifact_paths in
       let explicit_updates =
-        create_filesystem_events ~configuration artifact_paths
-        |> update_explicit_modules qualifier_to_modules ~configuration
+        ExplicitModules.Table.Api.update_module_paths
+          ~configuration
+          ~module_path_updates
+          explicit_modules
       in
-      let implicit_updates = update_submodules submodule_refcounts ~events:explicit_updates in
-      (* Explicit updates should shadow implicit updates *)
+      let implicit_updates =
+        ImplicitModules.Table.Api.update_module_paths ~module_path_updates implicit_modules
+      in
       let updates =
-        let new_qualifiers = Reference.Hash_set.create () in
-        let deleted_qualifiers = Reference.Hash_set.create () in
-        let explicits =
-          let process_explicit_update = function
-            | IncrementalExplicitUpdate.New ({ ModulePath.qualifier; _ } as module_path)
-            | IncrementalExplicitUpdate.Changed ({ ModulePath.qualifier; _ } as module_path) ->
-                Hash_set.add new_qualifiers qualifier;
-                IncrementalUpdate.NewExplicit module_path
-            | IncrementalExplicitUpdate.Delete qualifier ->
-                Hash_set.add deleted_qualifiers qualifier;
-                IncrementalUpdate.Delete qualifier
-          in
-          List.map explicit_updates ~f:process_explicit_update
-        in
-        let implicits =
-          let process_implicit_update = function
-            | IncrementalImplicitUpdate.New qualifier ->
-                if Hash_set.mem new_qualifiers qualifier then
-                  None
-                else
-                  Some (IncrementalUpdate.NewImplicit qualifier)
-            | IncrementalImplicitUpdate.Delete qualifier ->
-                if Hash_set.mem deleted_qualifiers qualifier then
-                  None
-                else
-                  Some (IncrementalUpdate.Delete qualifier)
-          in
-          List.filter_map implicit_updates ~f:process_implicit_update
-        in
-        List.append explicits implicits
+        IncrementalUpdate.combine_explicits_and_implicits explicit_updates implicit_updates
       in
       Log.log
         ~section:`Server
         "Explicit Module Update: %a"
         Sexp.pp
-        [%message (explicit_updates : IncrementalExplicitUpdate.t list)];
+        [%message (explicit_updates : ExplicitModules.Update.t list)];
       Log.log
         ~section:`Server
         "Implicit Module Update: %a"
         Sexp.pp
-        [%message (implicit_updates : IncrementalImplicitUpdate.t list)];
+        [%message (implicit_updates : ImplicitModules.Update.t list)];
       updates
+
+
+    let is_implicit_module { implicit_modules = { find; _ }; _ } ~qualifier =
+      find ~qualifier >>| ImplicitModules.Value.is_importable |> Option.value ~default:false
+
+
+    let lookup_module_path { explicit_modules = { find; _ }; _ } ~qualifier =
+      find ~qualifier >>= ExplicitModules.Value.module_path
+
+
+    let is_explicit_module layouts ~qualifier =
+      lookup_module_path layouts ~qualifier |> Option.is_some
+
+
+    let all_module_paths { explicit_modules = { data; _ }; _ } = data () |> List.concat
+
+    let module_paths { explicit_modules = { data; _ }; _ } =
+      data () |> List.filter_map ~f:ExplicitModules.Value.module_path
+
+
+    let store { store; _ } = store ()
   end
 
+  module Eager = struct
+    type t = {
+      explicit_modules: ExplicitModules.Table.Eager.t;
+      implicit_modules: ImplicitModules.Table.Eager.t;
+    }
+
+    let create ~controls =
+      let configuration = EnvironmentControls.configuration controls in
+      let module_paths =
+        match EnvironmentControls.in_memory_sources controls with
+        | None -> ModulePaths.find_all configuration
+        | Some in_memory_sources -> List.map in_memory_sources ~f:fst
+      in
+      let explicit_modules = ExplicitModules.Table.Eager.create ~configuration module_paths in
+      let implicit_modules = ImplicitModules.Table.Eager.create explicit_modules in
+      { explicit_modules; implicit_modules }
+
+
+    module Serializer = Memory.Serializer (struct
+      type nonrec t = t
+
+      module Serialized = struct
+        type t = (Reference.t * ModulePath.t list) list * (Reference.t * ModulePath.Raw.Set.t) list
+
+        let prefix = Prefix.make ()
+
+        let description = "Module tracker"
+      end
+
+      let serialize { explicit_modules; implicit_modules } =
+        Hashtbl.to_alist explicit_modules, Hashtbl.to_alist implicit_modules
+
+
+      let deserialize (module_data, implicits_data) =
+        {
+          explicit_modules = Reference.Table.of_alist_exn module_data;
+          implicit_modules = Reference.Table.of_alist_exn implicits_data;
+        }
+    end)
+
+    let to_api ({ explicit_modules; implicit_modules } as layouts) =
+      Api.
+        {
+          explicit_modules = ExplicitModules.Table.Eager.to_api explicit_modules;
+          implicit_modules = ImplicitModules.Table.Eager.to_api implicit_modules;
+          store = (fun () -> Serializer.store layouts);
+        }
+  end
+
+  let create ~controls = Eager.create ~controls |> Eager.to_api
+
+  let load ~controls:_ = Eager.Serializer.load () |> Eager.to_api
+end
+
+module Base = struct
   type t = {
-    layouts: Layouts.t;
+    layouts: Layouts.Api.t;
     controls: EnvironmentControls.t;
-    is_updatable: bool;
     get_raw_code: ModulePath.t -> (raw_code, message) Result.t;
   }
 
@@ -516,131 +646,79 @@ module Base = struct
         Error (Format.asprintf "Cannot open file `%a` due to: %s" ArtifactPath.pp path error)
 
 
-  let configuration_allows_update { Configuration.Analysis.incremental_style; _ } =
-    match incremental_style with
-    | Configuration.Analysis.Shallow -> false
-    | Configuration.Analysis.FineGrained -> true
+  let make_get_raw_code ~controls =
+    let configuration = EnvironmentControls.configuration controls in
+    match EnvironmentControls.in_memory_sources controls with
+    | None -> load_raw_code ~configuration
+    | Some in_memory_sources ->
+        let in_memory_sources =
+          let table = Reference.Table.create () in
+          let add_pair (module_path, code) =
+            Reference.Table.set table ~key:(ModulePath.qualifier module_path) ~data:code
+          in
+          List.iter in_memory_sources ~f:add_pair;
+          table
+        in
+        let get_raw_code ({ ModulePath.qualifier; _ } as module_path) =
+          match Reference.Table.find in_memory_sources qualifier with
+          | Some code -> Ok code
+          | None -> load_raw_code ~configuration module_path
+        in
+        get_raw_code
 
 
   let create controls =
     Log.info "Building module tracker...";
     let timer = Timer.start () in
-    let configuration = EnvironmentControls.configuration controls in
-    let source_paths = find_module_paths configuration in
-    let layouts = Layouts.create ~configuration source_paths in
-    let get_raw_code = load_raw_code ~configuration in
-    let is_updatable = configuration_allows_update configuration in
+    let layouts = Layouts.create ~controls in
+    let get_raw_code = make_get_raw_code ~controls in
     Statistics.performance ~name:"module tracker built" ~timer ~phase_name:"Module tracking" ();
-    { layouts; controls; is_updatable; get_raw_code }
-
-
-  let create_for_testing controls module_path_code_pairs =
-    let configuration = EnvironmentControls.configuration controls in
-    let layouts =
-      let module_paths = List.map ~f:fst module_path_code_pairs in
-      Layouts.create ~configuration module_paths
-    in
-    let in_memory_sources =
-      let table = Reference.Table.create () in
-      let add_pair (module_path, code) =
-        Reference.Table.set table ~key:(ModulePath.qualifier module_path) ~data:code
-      in
-      List.iter module_path_code_pairs ~f:add_pair;
-      table
-    in
-    let get_raw_code ({ ModulePath.qualifier; _ } as module_path) =
-      match Reference.Table.find in_memory_sources qualifier with
-      | Some code -> Ok code
-      | None -> load_raw_code ~configuration module_path
-    in
-    { layouts; controls; is_updatable = false; get_raw_code }
-
-
-  let all_module_paths { layouts = { qualifier_to_modules; _ }; _ } =
-    Hashtbl.data qualifier_to_modules |> List.concat
-
-
-  let module_paths { layouts = { qualifier_to_modules; _ }; _ } =
-    Hashtbl.data qualifier_to_modules |> List.filter_map ~f:List.hd
+    { layouts; controls; get_raw_code }
 
 
   let controls { controls; _ } = controls
 
-  let assert_can_update { controls; is_updatable; _ } =
-    if not (EnvironmentControls.track_dependencies controls) then
-      failwith "Environments without dependency tracking cannot be updated";
-    if not is_updatable then
-      failwith
-        "Environments created via create_for_testing with in-memory sources cannot be updated";
-    ()
-
-
-  let update ({ layouts; controls; _ } as tracker) ~artifact_paths =
+  let update { layouts; controls; _ } ~artifact_paths =
     let timer = Timer.start () in
-    assert_can_update tracker;
+    EnvironmentControls.assert_allow_updates controls;
     let result =
       let configuration = EnvironmentControls.configuration controls in
-      Layouts.update ~configuration ~artifact_paths layouts
+      Layouts.Api.update layouts ~configuration ~artifact_paths
     in
     Statistics.performance ~name:"module tracker updated" ~timer ~phase_name:"Module tracking" ();
     result
 
 
   module Serializer = struct
-    module Layouts = Memory.Serializer (struct
-      type nonrec t = Layouts.t
-
-      module Serialized = struct
-        type t = (Reference.t * ModulePath.t list) list * (Reference.t * int) list
-
-        let prefix = Prefix.make ()
-
-        let description = "Module tracker"
-      end
-
-      let serialize { Layouts.qualifier_to_modules; submodule_refcounts } =
-        Hashtbl.to_alist qualifier_to_modules, Hashtbl.to_alist submodule_refcounts
-
-
-      let deserialize (module_data, submodule_data) =
-        {
-          Layouts.qualifier_to_modules = Reference.Table.of_alist_exn module_data;
-          submodule_refcounts = Reference.Table.of_alist_exn submodule_data;
-        }
-    end)
-
-    let store_layouts { layouts; _ } = Layouts.store layouts
+    let store_layouts { layouts; _ } = Layouts.Api.store layouts
 
     let from_stored_layouts ~controls () =
       let configuration = EnvironmentControls.configuration controls in
-      let layouts = Layouts.load () in
-      {
-        layouts;
-        controls;
-        is_updatable = configuration_allows_update configuration;
-        get_raw_code = load_raw_code ~configuration;
-      }
+      let layouts = Layouts.load ~controls in
+      { layouts; controls; get_raw_code = load_raw_code ~configuration }
   end
 
-  let read_only
-      ({ layouts = { qualifier_to_modules; submodule_refcounts }; controls; get_raw_code; _ } as
-      tracker)
-    =
-    let lookup_module_path module_name =
-      match Hashtbl.find qualifier_to_modules module_name with
-      | Some (module_path :: _) -> Some module_path
-      | _ -> None
-    in
+  let read_only { layouts; controls; get_raw_code; _ } =
+    let lookup_module_path qualifier = Layouts.Api.lookup_module_path layouts ~qualifier in
     let is_module_tracked qualifier =
-      Hashtbl.mem qualifier_to_modules qualifier || Hashtbl.mem submodule_refcounts qualifier
+      Layouts.Api.is_explicit_module layouts ~qualifier
+      || Layouts.Api.is_implicit_module layouts ~qualifier
     in
+    let module_paths () = Layouts.Api.module_paths layouts in
+    let all_module_paths () = Layouts.Api.all_module_paths layouts in
     {
       ReadOnly.lookup_module_path;
       is_module_tracked;
       get_raw_code;
-      module_paths = (fun () -> module_paths tracker);
+      module_paths;
+      all_module_paths;
       controls = (fun () -> controls);
     }
+
+
+  let module_paths tracker = read_only tracker |> ReadOnly.module_paths
+
+  let all_module_paths tracker = read_only tracker |> ReadOnly.all_module_paths
 end
 
 module Overlay = struct

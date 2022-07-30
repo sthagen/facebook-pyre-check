@@ -851,6 +851,18 @@ let test_aliases context =
     ~context
     {|
       import typing
+
+      async def awaitable() -> typing.Awaitable[int]: ...
+
+      async def foo() -> None:
+        x = awaitable()
+        x = 42
+    |}
+    ["Unawaited awaitable [1001]: Awaitable assigned to `x` is never awaited."];
+  assert_awaitable_errors
+    ~context
+    {|
+      import typing
       async def awaitable() -> typing.Awaitable[int]: ...
       async def foo() -> None:
         a = [awaitable()]
@@ -1018,8 +1030,26 @@ let test_if context =
   ()
 
 
+let test_pass_to_callee context =
+  let assert_awaitable_errors = assert_awaitable_errors ~context in
+  assert_awaitable_errors
+    {|
+      from typing import Awaitable
+
+      def awaitable() -> Awaitable[int]: ...
+
+      def expect_awaitable(x: Awaitable[int]) -> None: ...
+
+      def foo(b: bool) -> None:
+        unawaited = awaitable()
+        expect_awaitable(unawaited)
+    |}
+    [];
+  ()
+
+
 let () =
-  "awaitableCheck"
+  "unawaited"
   >::: [
          "forward" >:: test_forward;
          "initial" >:: test_initial;
@@ -1030,5 +1060,6 @@ let () =
          "return" >:: test_return;
          "globals" >:: test_globals;
          "if" >:: test_if;
+         "pass_to_callee" >:: test_pass_to_callee;
        ]
   |> Test.run
