@@ -117,6 +117,23 @@ module ModulePaths = struct
       (* Do not scan excluding directories to speed up the traversal *)
       && (not (List.exists excludes ~f:(fun regexp -> Str.string_match regexp path 0)))
       && not (mark_visited visited_paths path)
+
+
+    let find_all ({ Configuration.Analysis.source_paths; search_paths; _ } as configuration) =
+      let finder = create configuration in
+      let visited_paths = String.Hash_set.create () in
+      let search_roots =
+        List.append
+          (List.map ~f:SearchPath.to_path source_paths)
+          (List.map ~f:SearchPath.to_path search_paths)
+      in
+      List.map search_roots ~f:(fun root ->
+          let root_path = PyrePath.absolute root in
+          let directory_filter = package_directory_filter finder ~visited_paths ~root_path in
+          let file_filter = python_file_filter finder ~visited_paths in
+          PyrePath.list ~file_filter ~directory_filter ~root () |> List.map ~f:ArtifactPath.create)
+      |> List.concat
+      |> List.filter_map ~f:(ModulePath.create ~configuration)
   end
 
   module Update = struct
@@ -140,31 +157,15 @@ module ModulePaths = struct
       | NewOrChanged module_path
       | Remove module_path ->
           module_path
+
+
+    let from_artifact_paths ~configuration artifact_paths =
+      (* Since the logic in `process_module_path_update` is not idempotent, we don't want any
+         duplicate ArtifactPaths in our module_path updates *)
+      List.dedup_and_sort ~compare:ArtifactPath.compare artifact_paths
+      |> List.filter ~f:(Finder.is_valid_filename (Finder.create configuration))
+      |> List.filter_map ~f:(create ~configuration)
   end
-
-  let find_all ({ Configuration.Analysis.source_paths; search_paths; _ } as configuration) =
-    let finder = Finder.create configuration in
-    let visited_paths = String.Hash_set.create () in
-    let search_roots =
-      List.append
-        (List.map ~f:SearchPath.to_path source_paths)
-        (List.map ~f:SearchPath.to_path search_paths)
-    in
-    List.map search_roots ~f:(fun root ->
-        let root_path = PyrePath.absolute root in
-        let directory_filter = Finder.package_directory_filter finder ~visited_paths ~root_path in
-        let file_filter = Finder.python_file_filter finder ~visited_paths in
-        PyrePath.list ~file_filter ~directory_filter ~root () |> List.map ~f:ArtifactPath.create)
-    |> List.concat
-    |> List.filter_map ~f:(ModulePath.create ~configuration)
-
-
-  let create_updates ~configuration artifact_paths =
-    (* Since the logic in `process_module_path_update` is not idempotent, we don't want any
-       duplicate ArtifactPaths in our module_path updates *)
-    List.dedup_and_sort ~compare:ArtifactPath.compare artifact_paths
-    |> List.filter ~f:(Finder.is_valid_filename (Finder.create configuration))
-    |> List.filter_map ~f:(Update.create ~configuration)
 end
 
 module ExplicitModules = struct
@@ -380,9 +381,12 @@ module ImplicitModules = struct
 
 
   module Value = struct
+    (* This represents the raw paths of all *explicit* children. We treat a namespace package as
+       importable only when it has regular python files as children, i.e. when this set is nonempty. *)
     type t = ModulePath.Raw.Set.t
 
-    let is_importable explicit_children = not (ModulePath.Raw.Set.is_empty explicit_children)
+    let should_treat_as_importable explicit_children =
+      not (ModulePath.Raw.Set.is_empty explicit_children)
   end
 
   module Update = struct
@@ -396,7 +400,7 @@ module ImplicitModules = struct
     module Api = struct
       type t = {
         find: qualifier:Reference.t -> Value.t option;
-        update: qualifier:Reference.t -> f:(Value.t option -> Value.t) -> unit;
+        set: qualifier:Reference.t -> Value.t -> unit;
       }
 
       module Existence = struct
@@ -414,7 +418,7 @@ module ImplicitModules = struct
               None
       end
 
-      let update_module_paths ~module_path_updates { find; update; _ } =
+      let update_module_paths ~module_path_updates { find; set } =
         let process_module_path_update previous_existence module_path_update =
           let module_path = ModulePaths.Update.module_path module_path_update in
           match parent_qualifier_and_raw module_path with
@@ -432,20 +436,21 @@ module ImplicitModules = struct
                     ModulePath.Raw.Set.remove raw_child previous_explicit_children
               in
               (* update implicit_modules as a side effect *)
-              let () = update ~qualifier ~f:(fun _ -> next_explicit_children) in
+              let () = set ~qualifier next_explicit_children in
               (* As we fold the updates, track existince before-and-after *)
               let next_existence =
                 let open Existence in
                 Reference.Map.update previous_existence qualifier ~f:(function
                     | None ->
                         {
-                          existed_before = Value.is_importable previous_explicit_children;
-                          exists_after = Value.is_importable next_explicit_children;
+                          existed_before =
+                            Value.should_treat_as_importable previous_explicit_children;
+                          exists_after = Value.should_treat_as_importable next_explicit_children;
                         }
                     | Some { existed_before; _ } ->
                         {
                           existed_before;
-                          exists_after = Value.is_importable next_explicit_children;
+                          exists_after = Value.should_treat_as_importable next_explicit_children;
                         })
               in
               next_existence
@@ -474,8 +479,8 @@ module ImplicitModules = struct
 
       let to_api eager =
         let find ~qualifier = Reference.Table.find eager qualifier in
-        let update ~qualifier = Reference.Table.update eager qualifier in
-        Api.{ find; update }
+        let set ~qualifier data = Reference.Table.set eager ~key:qualifier ~data in
+        Api.{ find; set }
     end
   end
 end
@@ -531,7 +536,9 @@ module Layouts = struct
     }
 
     let update ~configuration ~artifact_paths { explicit_modules; implicit_modules; _ } =
-      let module_path_updates = ModulePaths.create_updates ~configuration artifact_paths in
+      let module_path_updates =
+        ModulePaths.Update.from_artifact_paths ~configuration artifact_paths
+      in
       let explicit_updates =
         ExplicitModules.Table.Api.update_module_paths
           ~configuration
@@ -557,16 +564,22 @@ module Layouts = struct
       updates
 
 
-    let is_implicit_module { implicit_modules = { find; _ }; _ } ~qualifier =
-      find ~qualifier >>| ImplicitModules.Value.is_importable |> Option.value ~default:false
-
-
     let lookup_module_path { explicit_modules = { find; _ }; _ } ~qualifier =
       find ~qualifier >>= ExplicitModules.Value.module_path
 
 
     let is_explicit_module layouts ~qualifier =
       lookup_module_path layouts ~qualifier |> Option.is_some
+
+
+    let is_implicit_module { implicit_modules = { find; _ }; _ } ~qualifier =
+      find ~qualifier
+      >>| ImplicitModules.Value.should_treat_as_importable
+      |> Option.value ~default:false
+
+
+    let is_module_tracked layouts ~qualifier =
+      is_explicit_module layouts ~qualifier || is_implicit_module layouts ~qualifier
 
 
     let all_module_paths { explicit_modules = { data; _ }; _ } = data () |> List.concat
@@ -588,7 +601,7 @@ module Layouts = struct
       let configuration = EnvironmentControls.configuration controls in
       let module_paths =
         match EnvironmentControls.in_memory_sources controls with
-        | None -> ModulePaths.find_all configuration
+        | None -> ModulePaths.Finder.find_all configuration
         | Some in_memory_sources -> List.map in_memory_sources ~f:fst
       in
       let explicit_modules = ExplicitModules.Table.Eager.create ~configuration module_paths in
@@ -700,10 +713,7 @@ module Base = struct
 
   let read_only { layouts; controls; get_raw_code; _ } =
     let lookup_module_path qualifier = Layouts.Api.lookup_module_path layouts ~qualifier in
-    let is_module_tracked qualifier =
-      Layouts.Api.is_explicit_module layouts ~qualifier
-      || Layouts.Api.is_implicit_module layouts ~qualifier
-    in
+    let is_module_tracked qualifier = Layouts.Api.is_module_tracked layouts ~qualifier in
     let module_paths () = Layouts.Api.module_paths layouts in
     let all_module_paths () = Layouts.Api.all_module_paths layouts in
     {
