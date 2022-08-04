@@ -297,7 +297,7 @@ async def try_initialize(
         result = process_initialize_request(
             initialize_parameters, server_start_options.ide_features
         )
-        await lsp.write_json_rpc(
+        await lsp.write_json_rpc_ignore_connection_error(
             output_channel,
             json_rpc.SuccessResponse(
                 id=request_id,
@@ -342,17 +342,20 @@ async def try_initialize(
             ),
         )
         return InitializationFailure(exception=json_rpc_error)
+    except lsp.ReadChannelClosedError:
+        return InitializationExit()
 
 
 @connection.asynccontextmanager
-async def _read_lsp_request(
+async def read_lsp_request(
     input_channel: connection.TextReader, output_channel: connection.TextWriter
-) -> AsyncIterator[json_rpc.Request]:
+) -> AsyncIterator[Optional[json_rpc.Request]]:
     message = None
     try:
         message = await lsp.read_json_rpc(input_channel)
         yield message
     except json_rpc.JSONRPCException as json_rpc_error:
+        LOG.debug(f"Exception occurred while reading JSON RPC: {json_rpc_error}")
         await lsp.write_json_rpc_ignore_connection_error(
             output_channel,
             json_rpc.ErrorResponse(
@@ -364,6 +367,7 @@ async def _read_lsp_request(
                 message=str(json_rpc_error),
             ),
         )
+        yield None
 
 
 async def _wait_for_exit(
@@ -378,13 +382,15 @@ async def _wait_for_exit(
     "exit" request.
     """
     while True:
-        async with _read_lsp_request(input_channel, output_channel) as request:
-            if request.method == "exit":
-                return
-            else:
-                raise json_rpc.InvalidRequestError(
-                    f"Only exit requests are accepted after shutdown. Got {request}."
-                )
+        async with read_lsp_request(input_channel, output_channel) as request:
+            if request is None:
+                LOG.debug("Request read error after shutdown")
+                continue
+            if request.method != "exit":
+                LOG.debug(f"Non-exit request received after shutdown: {request}")
+                continue
+            # Got an exit request. Stop the wait.
+            return
 
 
 async def _publish_diagnostics(
@@ -918,9 +924,12 @@ class PyreServer:
 
     async def _run(self) -> int:
         while True:
-            async with _read_lsp_request(
+            async with read_lsp_request(
                 self.input_channel, self.output_channel
             ) as request:
+                if request is None:
+                    LOG.debug("LSP request reading failed. Trying again...")
+                    continue
                 LOG.debug(f"Received LSP request: {log.truncate(str(request), 400)}")
 
                 if request.method == "exit":

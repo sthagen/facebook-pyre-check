@@ -43,8 +43,8 @@ module Analysis = struct
       result
 
 
-    let reached_fixpoint ~iteration ~callable ~previous ~next =
-      let result = Model.reached_fixpoint ~iteration ~previous ~next in
+    let less_or_equal ~callable ~left ~right =
+      let result = Model.less_or_equal ~left ~right in
       let () =
         if result then
           Log.log
@@ -53,7 +53,7 @@ module Analysis = struct
             Interprocedural.Target.pp_pretty
             callable
             Model.pp
-            previous
+            right
       in
       result
   end
@@ -119,7 +119,8 @@ module Analysis = struct
             ~define
             ~call_graph_of_define
             ~get_callee_model
-            ~existing_model:previous_model)
+            ~existing_model:previous_model
+            ())
     in
     let backward =
       TaintProfiler.track_duration ~profiler ~name:"Backward analysis" ~f:(fun () ->
@@ -133,7 +134,8 @@ module Analysis = struct
             ~call_graph_of_define
             ~get_callee_model
             ~existing_model:previous_model
-            ~triggered_sinks)
+            ~triggered_sinks
+            ())
     in
     let forward, backward =
       if Model.ModeSet.contains Model.Mode.SkipAnalysis modes then

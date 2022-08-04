@@ -151,7 +151,7 @@ let assert_same_module_less
   assert_bool message (compare_result < 0)
 
 
-let test_module_path context =
+let test_module_path_create context =
   let ({ Configuration.Analysis.local_root; _ } as configuration), external_root =
     create_test_configuration
       ~context
@@ -307,7 +307,7 @@ let test_module_path context =
   ()
 
 
-let test_search_path_subdirectory context =
+let test_module_path_search_path_subdirectory context =
   let local_root = bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true in
   let search_root =
     bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true
@@ -340,251 +340,7 @@ let test_search_path_subdirectory context =
     (ModulePath.full_path ~configuration module_path_b)
 
 
-let test_initialization context =
-  let ({ Configuration.Analysis.local_root; _ } as configuration), external_root =
-    create_test_configuration
-      ~context
-      ~local_tree:
-        [
-          TestFiles.File "a.py";
-          TestFiles.File "b.py";
-          TestFiles.File "c.py";
-          TestFiles.File "c.pyi";
-          TestFiles.File "d.py";
-          TestFiles.Directory { relative = "d"; children = [TestFiles.File "__init__.py"] };
-          TestFiles.File "e.py";
-        ]
-      ~external_tree:
-        [
-          TestFiles.File "a.py";
-          TestFiles.File "b.pyi";
-          TestFiles.Directory { relative = "b"; children = [TestFiles.File "__init__.py"] };
-          TestFiles.File "c.py";
-          TestFiles.File "c.pyi";
-        ]
-  in
-  let assert_module_path = assert_module_path ~configuration in
-  (* ModuleTracker initialization test *)
-  let tracker =
-    EnvironmentControls.create configuration |> ModuleTracker.create |> ModuleTracker.read_only
-  in
-  assert_module_path
-    (lookup_exn tracker (Reference.create "a"))
-    ~search_root:external_root
-    ~relative:"a.py"
-    ~is_stub:false
-    ~is_external:true
-    ~is_init:false;
-  assert_module_path
-    (lookup_exn tracker (Reference.create "b"))
-    ~search_root:external_root
-    ~relative:"b.pyi"
-    ~is_stub:true
-    ~is_external:true
-    ~is_init:false;
-  assert_module_path
-    (lookup_exn tracker (Reference.create "c"))
-    ~search_root:external_root
-    ~relative:"c.pyi"
-    ~is_stub:true
-    ~is_external:true
-    ~is_init:false;
-  assert_module_path
-    (lookup_exn tracker (Reference.create "d"))
-    ~search_root:local_root
-    ~relative:"d/__init__.py"
-    ~is_stub:false
-    ~is_external:false
-    ~is_init:true;
-  assert_module_path
-    (lookup_exn tracker (Reference.create "e"))
-    ~search_root:local_root
-    ~relative:"e.py"
-    ~is_stub:false
-    ~is_external:false
-    ~is_init:false
-
-
-let test_priority context =
-  let local_root = bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true in
-  let external_root0 =
-    bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true
-  in
-  let external_root1 =
-    bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true
-  in
-  let external_paths0 = ["a.py"; "b.py"; "c.pyi"; "d.py"; "e.pyi"; "f.pyi"; "g.pyi"] in
-  List.iter ~f:(create_file external_root0) external_paths0;
-  let external_paths1 = ["a.py"; "b.py"; "c.py"; "d.pyi"; "e.py"; "f.pyi"; "g.pyi"] in
-  List.iter ~f:(create_file external_root1) external_paths1;
-  let local_paths = ["a.py"; "b.pyi"; "c.py"; "d.py"; "e.pyi"; "f.py"; "g.pyi"] in
-  List.iter ~f:(create_file local_root) local_paths;
-  let configuration =
-    Configuration.Analysis.create
-      ~local_root
-      ~source_paths:[SearchPath.Root local_root]
-      ~search_paths:[SearchPath.Root external_root0; SearchPath.Root external_root1]
-      ~filter_directories:[local_root]
-      ()
-  in
-  let create_exn = create_module_path_exn ~configuration in
-  let assert_module_path = assert_module_path ~configuration in
-  (* Make sure ModulePath behavior is as expected *)
-  List.iter local_paths ~f:(fun path ->
-      assert_module_path
-        (create_exn local_root path)
-        ~search_root:local_root
-        ~relative:path
-        ~is_external:false
-        ~is_init:false);
-  List.iter external_paths0 ~f:(fun path ->
-      assert_module_path
-        (create_exn external_root0 path)
-        ~search_root:external_root0
-        ~relative:path
-        ~priority:0
-        ~is_external:true
-        ~is_init:false);
-  List.iter external_paths1 ~f:(fun path ->
-      assert_module_path
-        (create_exn external_root1 path)
-        ~search_root:external_root1
-        ~relative:path
-        ~priority:1
-        ~is_external:true
-        ~is_init:false);
-  (* Test ModuleTracker behavior *)
-  let tracker =
-    EnvironmentControls.create configuration |> ModuleTracker.create |> ModuleTracker.read_only
-  in
-  assert_module_path
-    (lookup_exn tracker (Reference.create "a"))
-    ~search_root:external_root0
-    ~relative:"a.py"
-    ~priority:0
-    ~is_stub:false
-    ~is_external:true;
-  assert_module_path
-    (lookup_exn tracker (Reference.create "b"))
-    ~search_root:local_root
-    ~relative:"b.pyi"
-    ~is_stub:true
-    ~is_external:false;
-  assert_module_path
-    (lookup_exn tracker (Reference.create "c"))
-    ~search_root:external_root0
-    ~relative:"c.pyi"
-    ~is_stub:true
-    ~is_external:true;
-  assert_module_path
-    (lookup_exn tracker (Reference.create "d"))
-    ~search_root:external_root1
-    ~relative:"d.pyi"
-    ~is_stub:true
-    ~is_external:true;
-  assert_module_path
-    (lookup_exn tracker (Reference.create "e"))
-    ~search_root:external_root0
-    ~relative:"e.pyi"
-    ~is_stub:true
-    ~is_external:true;
-  assert_module_path
-    (lookup_exn tracker (Reference.create "f"))
-    ~search_root:external_root0
-    ~relative:"f.pyi"
-    ~is_stub:true
-    ~is_external:true;
-  assert_module_path
-    (lookup_exn tracker (Reference.create "g"))
-    ~search_root:external_root0
-    ~relative:"g.pyi"
-    ~is_stub:true
-    ~is_external:true
-
-
-let test_priority_multi_source_paths context =
-  let local_root = bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true in
-  let source_root0_path = PyrePath.absolute local_root ^ "/source0" in
-  Sys_utils.mkdir_no_fail source_root0_path;
-  let source_root0 = PyrePath.create_absolute source_root0_path in
-  let source_root1_path = PyrePath.absolute local_root ^ "/source1" in
-  Sys_utils.mkdir_no_fail source_root1_path;
-  let source_root1 = PyrePath.create_absolute source_root1_path in
-  let source_paths0 = ["a.py"; "b.py"; "c.pyi"; "d.py"; "e.pyi"; "f.pyi"; "g.pyi"] in
-  List.iter ~f:(create_file source_root0) source_paths0;
-  let source_paths1 = ["a.py"; "b.py"; "c.py"; "d.pyi"; "e.py"; "f.pyi"; "g.pyi"] in
-  List.iter ~f:(create_file source_root1) source_paths1;
-  let configuration =
-    Configuration.Analysis.create
-      ~local_root
-      ~source_paths:[SearchPath.Root source_root0; SearchPath.Root source_root1]
-      ~filter_directories:[local_root]
-      ()
-  in
-  let create_exn = create_module_path_exn ~configuration in
-  let assert_module_path = assert_module_path ~configuration in
-  (* Creation test *)
-  List.iter source_paths0 ~f:(fun path ->
-      assert_module_path
-        (create_exn source_root0 path)
-        ~search_root:source_root0
-        ~relative:path
-        ~priority:0
-        ~is_external:false
-        ~is_init:false);
-  List.iter source_paths1 ~f:(fun path ->
-      assert_module_path
-        (create_exn source_root1 path)
-        ~search_root:source_root1
-        ~relative:path
-        ~priority:1
-        ~is_external:false
-        ~is_init:false);
-
-  (* ModuleTracker initialization test *)
-  let tracker =
-    EnvironmentControls.create configuration |> ModuleTracker.create |> ModuleTracker.read_only
-  in
-  assert_module_path
-    (lookup_exn tracker (Reference.create "a"))
-    ~search_root:source_root0
-    ~relative:"a.py"
-    ~priority:0
-    ~is_stub:false
-    ~is_external:false;
-  assert_module_path
-    (lookup_exn tracker (Reference.create "c"))
-    ~search_root:source_root0
-    ~relative:"c.pyi"
-    ~is_stub:true
-    ~is_external:false;
-  assert_module_path
-    (lookup_exn tracker (Reference.create "d"))
-    ~search_root:source_root1
-    ~relative:"d.pyi"
-    ~is_stub:true
-    ~is_external:false;
-  assert_module_path
-    (lookup_exn tracker (Reference.create "e"))
-    ~search_root:source_root0
-    ~relative:"e.pyi"
-    ~is_stub:true
-    ~is_external:false;
-  assert_module_path
-    (lookup_exn tracker (Reference.create "f"))
-    ~search_root:source_root0
-    ~relative:"f.pyi"
-    ~is_stub:true
-    ~is_external:false;
-  assert_module_path
-    (lookup_exn tracker (Reference.create "g"))
-    ~search_root:source_root0
-    ~relative:"g.pyi"
-    ~is_stub:true
-    ~is_external:false
-
-
-let test_exclude context =
+let test_module_path_exclude context =
   (* Test that ${SOURCE_DIRECTORY} gets correctly replaced *)
   let local_root = bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true in
   let external_root =
@@ -625,7 +381,7 @@ let test_exclude context =
     ~relative:"baz.py"
 
 
-let test_directory_filter context =
+let test_module_path_directory_filter context =
   (* SETUP:
    * - all_root is the parent of both local_root and external_root
    * - local_root is the local root
@@ -687,7 +443,7 @@ let test_directory_filter context =
     ~is_external:true
 
 
-let test_directory_filter2 context =
+let test_module_path_directory_filter2 context =
   (* SETUP:
    * - local_root is the local root
    * - search_root is the root of other search paths
@@ -725,7 +481,7 @@ let test_directory_filter2 context =
     ~is_external:true
 
 
-let test_directory_filter3 context =
+let test_module_path_directory_filter3 context =
   (* We want test that filter_directories follows symlinks *)
   let local_root = bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true in
   let search_root =
@@ -771,7 +527,7 @@ let test_directory_filter3 context =
     ~is_external:true
 
 
-let test_overlapping context =
+let test_module_path_overlapping context =
   (* SETUP:
    * - external_root0 lives under local_root
    * - external_root1 lives under external_root0
@@ -928,7 +684,7 @@ let test_overlapping context =
   ()
 
 
-let test_overlapping2 context =
+let test_module_path_overlapping2 context =
   (* SETUP:
    * - stubs_root lives under local_root (project-internal stubs)
    * - venv_root lives outside local_root (project-external stubs)
@@ -1006,6 +762,270 @@ let test_overlapping2 context =
   assert_same_module_less (create_exn local_root "c.pyi") (create_exn venv_root "c.py")
 
 
+let run_lazy_and_nonlazy ~f = List.iter [true; false] ~f
+
+let test_initialization context =
+  let ({ Configuration.Analysis.local_root; _ } as configuration), external_root =
+    create_test_configuration
+      ~context
+      ~local_tree:
+        [
+          TestFiles.File "a.py";
+          TestFiles.File "b.py";
+          TestFiles.File "c.py";
+          TestFiles.File "c.pyi";
+          TestFiles.File "d.py";
+          TestFiles.Directory { relative = "d"; children = [TestFiles.File "__init__.py"] };
+          TestFiles.File "e.py";
+        ]
+      ~external_tree:
+        [
+          TestFiles.File "a.py";
+          TestFiles.File "b.pyi";
+          TestFiles.Directory { relative = "b"; children = [TestFiles.File "__init__.py"] };
+          TestFiles.File "c.py";
+          TestFiles.File "c.pyi";
+        ]
+  in
+  let assert_module_path = assert_module_path ~configuration in
+  (* ModuleTracker initialization test *)
+  let run_tracker_tests use_lazy_module_tracking =
+    let tracker =
+      EnvironmentControls.create ~use_lazy_module_tracking configuration
+      |> ModuleTracker.create
+      |> ModuleTracker.read_only
+    in
+    assert_module_path
+      (lookup_exn tracker (Reference.create "a"))
+      ~search_root:external_root
+      ~relative:"a.py"
+      ~is_stub:false
+      ~is_external:true
+      ~is_init:false;
+    assert_module_path
+      (lookup_exn tracker (Reference.create "b"))
+      ~search_root:external_root
+      ~relative:"b.pyi"
+      ~is_stub:true
+      ~is_external:true
+      ~is_init:false;
+    assert_module_path
+      (lookup_exn tracker (Reference.create "c"))
+      ~search_root:external_root
+      ~relative:"c.pyi"
+      ~is_stub:true
+      ~is_external:true
+      ~is_init:false;
+    assert_module_path
+      (lookup_exn tracker (Reference.create "d"))
+      ~search_root:local_root
+      ~relative:"d/__init__.py"
+      ~is_stub:false
+      ~is_external:false
+      ~is_init:true;
+    assert_module_path
+      (lookup_exn tracker (Reference.create "e"))
+      ~search_root:local_root
+      ~relative:"e.py"
+      ~is_stub:false
+      ~is_external:false
+      ~is_init:false;
+    ()
+  in
+  run_lazy_and_nonlazy ~f:run_tracker_tests
+
+
+let test_priority context =
+  let local_root = bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true in
+  let external_root0 =
+    bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true
+  in
+  let external_root1 =
+    bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true
+  in
+  let external_paths0 = ["a.py"; "b.py"; "c.pyi"; "d.py"; "e.pyi"; "f.pyi"; "g.pyi"] in
+  List.iter ~f:(create_file external_root0) external_paths0;
+  let external_paths1 = ["a.py"; "b.py"; "c.py"; "d.pyi"; "e.py"; "f.pyi"; "g.pyi"] in
+  List.iter ~f:(create_file external_root1) external_paths1;
+  let local_paths = ["a.py"; "b.pyi"; "c.py"; "d.py"; "e.pyi"; "f.py"; "g.pyi"] in
+  List.iter ~f:(create_file local_root) local_paths;
+  let configuration =
+    Configuration.Analysis.create
+      ~local_root
+      ~source_paths:[SearchPath.Root local_root]
+      ~search_paths:[SearchPath.Root external_root0; SearchPath.Root external_root1]
+      ~filter_directories:[local_root]
+      ()
+  in
+  let create_exn = create_module_path_exn ~configuration in
+  let assert_module_path = assert_module_path ~configuration in
+  (* Make sure ModulePath behavior is as expected *)
+  List.iter local_paths ~f:(fun path ->
+      assert_module_path
+        (create_exn local_root path)
+        ~search_root:local_root
+        ~relative:path
+        ~is_external:false
+        ~is_init:false);
+  List.iter external_paths0 ~f:(fun path ->
+      assert_module_path
+        (create_exn external_root0 path)
+        ~search_root:external_root0
+        ~relative:path
+        ~priority:0
+        ~is_external:true
+        ~is_init:false);
+  List.iter external_paths1 ~f:(fun path ->
+      assert_module_path
+        (create_exn external_root1 path)
+        ~search_root:external_root1
+        ~relative:path
+        ~priority:1
+        ~is_external:true
+        ~is_init:false);
+  (* Test ModuleTracker behavior *)
+  let run_tracker_tests use_lazy_module_tracking =
+    let tracker =
+      EnvironmentControls.create configuration ~use_lazy_module_tracking
+      |> ModuleTracker.create
+      |> ModuleTracker.read_only
+    in
+    assert_module_path
+      (lookup_exn tracker (Reference.create "a"))
+      ~search_root:external_root0
+      ~relative:"a.py"
+      ~priority:0
+      ~is_stub:false
+      ~is_external:true;
+    assert_module_path
+      (lookup_exn tracker (Reference.create "b"))
+      ~search_root:local_root
+      ~relative:"b.pyi"
+      ~is_stub:true
+      ~is_external:false;
+    assert_module_path
+      (lookup_exn tracker (Reference.create "c"))
+      ~search_root:external_root0
+      ~relative:"c.pyi"
+      ~is_stub:true
+      ~is_external:true;
+    assert_module_path
+      (lookup_exn tracker (Reference.create "d"))
+      ~search_root:external_root1
+      ~relative:"d.pyi"
+      ~is_stub:true
+      ~is_external:true;
+    assert_module_path
+      (lookup_exn tracker (Reference.create "e"))
+      ~search_root:external_root0
+      ~relative:"e.pyi"
+      ~is_stub:true
+      ~is_external:true;
+    assert_module_path
+      (lookup_exn tracker (Reference.create "f"))
+      ~search_root:external_root0
+      ~relative:"f.pyi"
+      ~is_stub:true
+      ~is_external:true;
+    assert_module_path
+      (lookup_exn tracker (Reference.create "g"))
+      ~search_root:external_root0
+      ~relative:"g.pyi"
+      ~is_stub:true
+      ~is_external:true;
+    ()
+  in
+  run_lazy_and_nonlazy ~f:run_tracker_tests
+
+
+let test_priority_multi_source_paths context =
+  let local_root = bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true in
+  let source_root0_path = PyrePath.absolute local_root ^ "/source0" in
+  Sys_utils.mkdir_no_fail source_root0_path;
+  let source_root0 = PyrePath.create_absolute source_root0_path in
+  let source_root1_path = PyrePath.absolute local_root ^ "/source1" in
+  Sys_utils.mkdir_no_fail source_root1_path;
+  let source_root1 = PyrePath.create_absolute source_root1_path in
+  let source_paths0 = ["a.py"; "b.py"; "c.pyi"; "d.py"; "e.pyi"; "f.pyi"; "g.pyi"] in
+  List.iter ~f:(create_file source_root0) source_paths0;
+  let source_paths1 = ["a.py"; "b.py"; "c.py"; "d.pyi"; "e.py"; "f.pyi"; "g.pyi"] in
+  List.iter ~f:(create_file source_root1) source_paths1;
+  let configuration =
+    Configuration.Analysis.create
+      ~local_root
+      ~source_paths:[SearchPath.Root source_root0; SearchPath.Root source_root1]
+      ~filter_directories:[local_root]
+      ()
+  in
+  let create_exn = create_module_path_exn ~configuration in
+  let assert_module_path = assert_module_path ~configuration in
+  (* Creation test *)
+  List.iter source_paths0 ~f:(fun path ->
+      assert_module_path
+        (create_exn source_root0 path)
+        ~search_root:source_root0
+        ~relative:path
+        ~priority:0
+        ~is_external:false
+        ~is_init:false);
+  List.iter source_paths1 ~f:(fun path ->
+      assert_module_path
+        (create_exn source_root1 path)
+        ~search_root:source_root1
+        ~relative:path
+        ~priority:1
+        ~is_external:false
+        ~is_init:false);
+
+  (* ModuleTracker initialization test *)
+  let run_tracker_tests use_lazy_module_tracking =
+    let tracker =
+      EnvironmentControls.create configuration ~use_lazy_module_tracking
+      |> ModuleTracker.create
+      |> ModuleTracker.read_only
+    in
+    assert_module_path
+      (lookup_exn tracker (Reference.create "a"))
+      ~search_root:source_root0
+      ~relative:"a.py"
+      ~priority:0
+      ~is_stub:false
+      ~is_external:false;
+    assert_module_path
+      (lookup_exn tracker (Reference.create "c"))
+      ~search_root:source_root0
+      ~relative:"c.pyi"
+      ~is_stub:true
+      ~is_external:false;
+    assert_module_path
+      (lookup_exn tracker (Reference.create "d"))
+      ~search_root:source_root1
+      ~relative:"d.pyi"
+      ~is_stub:true
+      ~is_external:false;
+    assert_module_path
+      (lookup_exn tracker (Reference.create "e"))
+      ~search_root:source_root0
+      ~relative:"e.pyi"
+      ~is_stub:true
+      ~is_external:false;
+    assert_module_path
+      (lookup_exn tracker (Reference.create "f"))
+      ~search_root:source_root0
+      ~relative:"f.pyi"
+      ~is_stub:true
+      ~is_external:false;
+    assert_module_path
+      (lookup_exn tracker (Reference.create "g"))
+      ~search_root:source_root0
+      ~relative:"g.pyi"
+      ~is_stub:true
+      ~is_external:false;
+    ()
+  in
+  run_lazy_and_nonlazy ~f:run_tracker_tests
+
+
 let test_root_independence context =
   (* We want to test that `ModuleTracker` creation is independent of where the root is located at. *)
   let local_root = bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true in
@@ -1048,7 +1068,8 @@ let test_root_independence context =
     ~cmp:(List.equal ModulePath.equal)
     ~printer:(List.to_string ~f:(Format.asprintf "%a" ModulePath.pp))
     module_paths_original
-    module_paths_copy
+    module_paths_copy;
+  ()
 
 
 let test_hidden_files context =
@@ -1069,7 +1090,8 @@ let test_hidden_files context =
     ~cmp:Int.equal
     ~printer:Int.to_string
     0
-    (ModuleTracker.ReadOnly.module_paths module_tracker |> List.length)
+    (ModuleTracker.ReadOnly.module_paths module_tracker |> List.length);
+  ()
 
 
 let test_hidden_files2 context =
@@ -1167,7 +1189,28 @@ module IncrementalTest = struct
 
   open Test
 
-  let assert_incremental ?(external_setups = []) ~context ~expected setups =
+  module LoadingStyle = struct
+    type t =
+      | NonLazy
+      | LazyLookUpQualifiers of Reference.t list
+
+    let look_up_qualifiers = function
+      | NonLazy -> []
+      | LazyLookUpQualifiers qualifiers -> qualifiers
+
+
+    let use_lazy_module_tracking = function
+      | NonLazy -> false
+      | LazyLookUpQualifiers _ -> true
+  end
+
+  let assert_incremental
+      ?(external_setups = [])
+      ?(loading_style = LoadingStyle.NonLazy)
+      ~context
+      ~expected
+      setups
+    =
     let get_old_inputs setups =
       List.filter_map setups ~f:(fun { handle; operation } ->
           match operation with
@@ -1205,10 +1248,20 @@ module IncrementalTest = struct
           ~context
           ~external_sources:old_external_sources
           ~in_memory:false
+          ~use_lazy_module_tracking:(LoadingStyle.use_lazy_module_tracking loading_style)
           old_sources
       in
       let configuration = ScratchProject.configuration_of project in
       let module_tracker = ScratchProject.ReadWrite.module_tracker project in
+      (* For lazy module tracker tests, we have to populate tables by looking up qualifiers
+         explicitly *)
+      let () =
+        let read_only = ModuleTracker.read_only module_tracker in
+        List.map
+          (LoadingStyle.look_up_qualifiers loading_style)
+          ~f:(ModuleTracker.ReadOnly.is_module_tracked read_only)
+        |> ignore
+      in
       configuration, module_tracker
     in
     (* Compute the updates *)
@@ -1233,23 +1286,26 @@ module IncrementalTest = struct
       (List.sort ~compare:Event.compare expected)
       (List.sort ~compare:Event.compare actual);
 
-    (* Also check that the module tracker is in a consistent state: we should track exactly the same
-       modules and source files after the update as if we build a fresh module tracker from scratch. *)
-    let actual_module_paths =
-      ModuleTracker.all_module_paths module_tracker |> List.sort ~compare:ModulePath.compare
-    in
-    let expected_module_paths =
-      EnvironmentControls.create configuration
-      |> ModuleTracker.create
-      |> ModuleTracker.all_module_paths
-      |> List.sort ~compare:ModulePath.compare
-    in
-    assert_equal
-      ~cmp:(List.equal ModulePath.equal)
-      ~printer:(fun module_paths ->
-        [%message (module_paths : ModulePath.t list)] |> Sexp.to_string_hum)
-      expected_module_paths
-      actual_module_paths
+    (if not (LoadingStyle.use_lazy_module_tracking loading_style) then
+       (* Also check that the module tracker is in a consistent state: we should track exactly the
+          same modules and source files after the update as if we build a fresh module tracker from
+          scratch. Skip this in lazy tests, because the `all_module_paths` API is nonlazy-only. *)
+       let actual_module_paths =
+         ModuleTracker.all_module_paths module_tracker |> List.sort ~compare:ModulePath.compare
+       in
+       let expected_module_paths =
+         EnvironmentControls.create configuration
+         |> ModuleTracker.create
+         |> ModuleTracker.all_module_paths
+         |> List.sort ~compare:ModulePath.compare
+       in
+       assert_equal
+         ~cmp:(List.equal ModulePath.equal)
+         ~printer:(fun module_paths ->
+           [%message (module_paths : ModulePath.t list)] |> Sexp.to_string_hum)
+         expected_module_paths
+         actual_module_paths);
+    ()
 end
 
 let test_update_new_files context =
@@ -1589,6 +1645,90 @@ let test_update_implicits context =
   ()
 
 
+(* The update code is mostly shared between eager and lazy tracking (the only difference is really
+   that the lazy tracker skips processing qualifiers that are not yet in its cache). So rather than
+   duplicating all the tests - which are a bit slow - we just exercise each known edge case once *)
+let test_update_lazy_tracker context =
+  let open IncrementalTest in
+  let assert_incremental =
+    let open Test in
+    assert_incremental
+      ~context
+      ~loading_style:
+        (LazyLookUpQualifiers [!&"looked_up"; !&"inner.looked_up"; !&"implicit_looked_up"])
+  in
+  (* TODO: get rid of this; without it the compiler will not let us include a not-yet-used variant. *)
+  let _ = LoadingStyle.LazyLookUpQualifiers [] in
+  (* Adding new entirely new modules *)
+  assert_incremental
+    [
+      { handle = "looked_up.py"; operation = FileOperation.Add };
+      { handle = "inner/looked_up.py"; operation = FileOperation.Add };
+      { handle = "not_looked_up.py"; operation = FileOperation.Add };
+    ]
+    ~expected:
+      [Event.create_new_explicit "looked_up.py"; Event.create_new_explicit "inner/looked_up.py"];
+  (* Updating modules *)
+  assert_incremental
+    [
+      { handle = "looked_up.py"; operation = FileOperation.Update };
+      { handle = "inner/looked_up.py"; operation = FileOperation.Update };
+      { handle = "not_looked_up.py"; operation = FileOperation.Update };
+    ]
+    ~expected:
+      [Event.create_new_explicit "looked_up.py"; Event.create_new_explicit "inner/looked_up.py"];
+  (* Shadowing existing modules *)
+  assert_incremental
+    [
+      { handle = "looked_up.py"; operation = FileOperation.LeftAlone };
+      { handle = "looked_up/__init__.py"; operation = FileOperation.Add };
+      { handle = "inner/looked_up.py"; operation = FileOperation.LeftAlone };
+      { handle = "inner/looked_up.pyi"; operation = FileOperation.Add };
+      { handle = "not_looked_up.py"; operation = FileOperation.LeftAlone };
+      { handle = "not_looked_up.pyi"; operation = FileOperation.Add };
+    ]
+    ~expected:
+      [
+        Event.create_new_explicit "looked_up/__init__.py";
+        Event.create_new_explicit "inner/looked_up.pyi";
+      ];
+  (* Un-shadowing existing modules *)
+  assert_incremental
+    [
+      { handle = "looked_up.py"; operation = FileOperation.LeftAlone };
+      { handle = "looked_up/__init__.py"; operation = FileOperation.Remove };
+      { handle = "inner/looked_up.py"; operation = FileOperation.LeftAlone };
+      { handle = "inner/looked_up.pyi"; operation = FileOperation.Remove };
+      { handle = "not_looked_up.py"; operation = FileOperation.LeftAlone };
+      { handle = "not_looked_up.pyi"; operation = FileOperation.Remove };
+    ]
+    ~expected:
+      [Event.create_new_explicit "looked_up.py"; Event.create_new_explicit "inner/looked_up.py"];
+  (* Removing modules *)
+  assert_incremental
+    [
+      { handle = "looked_up.py"; operation = FileOperation.Remove };
+      { handle = "inner/looked_up.py"; operation = FileOperation.Remove };
+      { handle = "not_looked_up.py"; operation = FileOperation.Remove };
+    ]
+    ~expected:[Event.Delete "looked_up"; Event.Delete "inner.looked_up"];
+  (* New implicits *)
+  assert_incremental
+    [
+      { handle = "implicit_looked_up/submodule.py"; operation = FileOperation.Add };
+      { handle = "implicit_not_looked_up/submodule.py"; operation = FileOperation.Add };
+    ]
+    ~expected:[Event.NewImplicit "implicit_looked_up"];
+  (* Removing implicits *)
+  assert_incremental
+    [
+      { handle = "implicit_looked_up/submodule.py"; operation = FileOperation.Remove };
+      { handle = "implicit_not_looked_up/submodule.py"; operation = FileOperation.Remove };
+    ]
+    ~expected:[Event.Delete "implicit_looked_up"];
+  ()
+
+
 let make_overlay_testing_functions ~context ~configuration ~local_root ~parent_tracker =
   let tracker = ModuleTracker.read_only parent_tracker |> ModuleTracker.Overlay.create in
   let read_only = ModuleTracker.Overlay.read_only tracker in
@@ -1737,17 +1877,17 @@ let test_overlay_code_hiding context =
 let () =
   "environment"
   >::: [
-         "module_path" >:: test_module_path;
-         "search_path_subdirectory " >:: test_search_path_subdirectory;
+         "module_path_create" >:: test_module_path_create;
+         "module_path_search_path_subdirectory " >:: test_module_path_search_path_subdirectory;
+         "module_path_exclude " >:: test_module_path_exclude;
+         "module_path_directory_filter " >:: test_module_path_directory_filter;
+         "module_path_directory_filter2 " >:: test_module_path_directory_filter2;
+         "module_path_directory_filter3 " >:: test_module_path_directory_filter3;
+         "module_path_overlapping " >:: test_module_path_overlapping;
+         "module_path_overlapping2 " >:: test_module_path_overlapping2;
          "initialization" >:: test_initialization;
-         "exclude " >:: test_exclude;
-         "directory_filter " >:: test_directory_filter;
-         "directory_filter2 " >:: test_directory_filter2;
-         "directory_filter3 " >:: test_directory_filter3;
          "priority " >:: test_priority;
          "priority_multi_source_paths " >:: test_priority_multi_source_paths;
-         "overlapping " >:: test_overlapping;
-         "overlapping2 " >:: test_overlapping2;
          "root_independence " >:: test_root_independence;
          "hidden_files " >:: test_hidden_files;
          "hidden_files2 " >:: test_hidden_files2;
@@ -1756,6 +1896,7 @@ let () =
          "update_remove_files" >:: test_update_remove_files;
          "update_changed_files" >:: test_update_changed_files;
          "update_implicits" >:: test_update_implicits;
+         "update_lazy_tracker" >:: test_update_lazy_tracker;
          "overlay_basic" >:: test_overlay_basic;
          "overlay_code_hiding" >:: test_overlay_code_hiding;
        ]
