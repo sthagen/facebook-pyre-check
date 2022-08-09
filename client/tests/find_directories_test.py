@@ -484,28 +484,60 @@ class FindGlobalAndLocalRootTest(testslide.TestCase):
 
 
 class FindTypeshedTest(testslide.TestCase):
+    def assert_typeshed_roots(
+        self, relative_directories: Iterable[str], expected_roots: Iterable[str]
+    ):
+        self.maxDiff = None
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            ensure_directories_exists(root_path, relative_directories)
+            self.assertListEqual(
+                find_typeshed_search_paths(root_path),
+                [root_path / subdirectory for subdirectory in expected_roots],
+            )
+
     def test_find_typeshed_search_paths__no_third_party(self) -> None:
-        self.maxDiff = None
-        with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
-            ensure_directories_exists(root_path, ["stdlib"])
-            ensure_files_exist(root_path, ["stubs"])
+        self.assert_typeshed_roots(
+            relative_directories=["stdlib"],
+            expected_roots=["stdlib"],
+        )
 
-            self.assertListEqual(
-                find_typeshed_search_paths(root_path),
-                [root_path / subdirectory for subdirectory in ["stdlib"]],
-            )
+    def test_find_typeshed_search_paths__empty_third_party(self) -> None:
+        self.assert_typeshed_roots(
+            relative_directories=["stdlib", "stubs"],
+            expected_roots=["stdlib"],
+        )
 
-    def test_find_typeshed_search_paths__with_third_party(self) -> None:
-        self.maxDiff = None
-        with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
-            ensure_directories_exists(root_path, ["stdlib", "stubs/foo", "stubs/bar"])
+    def test_find_typeshed_search_paths__with_standard_stubs(self) -> None:
+        self.assert_typeshed_roots(
+            relative_directories=["stdlib", "stubs/foo/foo", "stubs/bar/bar"],
+            expected_roots=[
+                "stdlib",
+                "stubs/bar",
+                "stubs/foo",
+            ],
+        )
 
-            self.assertListEqual(
-                find_typeshed_search_paths(root_path),
-                [
-                    root_path / subdirectory
-                    for subdirectory in ["stdlib", "stubs/bar", "stubs/foo"]
-                ],
-            )
+    def test_find_typeshed_search_paths__with_combined_stubs(self) -> None:
+        self.assert_typeshed_roots(
+            relative_directories=["stdlib", "combined_stubs/foo", "combined_stubs/bar"],
+            expected_roots=[
+                "stdlib",
+                "combined_stubs",
+            ],
+        )
+
+    def test_find_typeshed_search_paths__with_both_stubs(self) -> None:
+        self.assert_typeshed_roots(
+            relative_directories=[
+                "stdlib",
+                "stubs/foo/foo",
+                "stubs/bar/bar",
+                "combined_stubs/foo",
+                "combined_stubs/bar",
+            ],
+            expected_roots=[
+                "stdlib",
+                "combined_stubs",
+            ],
+        )
