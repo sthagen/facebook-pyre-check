@@ -7,7 +7,6 @@
 
 import argparse
 import logging
-import multiprocessing
 import os
 import shutil
 import subprocess
@@ -22,21 +21,20 @@ LOG: logging.Logger = logging.getLogger(__name__)
 
 
 COMPILER_VERSION = "4.10.2"
-DEVELOPMENT_COMPILER: str = COMPILER_VERSION
-RELEASE_COMPILER = f"{COMPILER_VERSION}+flambda"
 DEPENDENCIES = [
     "base64.3.5.0",
     "core.v0.14.1",
     "re2.v0.14.0",
-    "dune.2.9.1",
-    "yojson.1.7.0",
+    "dune.3.4.1",
+    "yojson.2.0.1",
     "ppx_deriving_yojson.3.6.1",
-    "ounit.2.2.4",
-    "menhir.20211230",
-    "lwt.5.5.0",
-    "ounit2-lwt.2.2.4",
+    "ounit.2.2.6",
+    "menhir.20220210",
+    "lwt.5.6.1",
+    "lwt_ppx.2.1.0",
+    "ounit2-lwt.2.2.6",
     "pyre-ast.0.1.8",
-    "mtime.1.3.0",
+    "mtime.1.4.0",
 ]
 
 
@@ -69,27 +67,13 @@ def _custom_linker_option(pyre_directory: Path, build_type: BuildType) -> str:
 class Setup(NamedTuple):
     opam_root: Path
 
-    development: bool = False
     release: bool = False
 
-    @property
-    def compiler_override(self) -> Optional[str]:
-        if self.development:
-            return DEVELOPMENT_COMPILER
-        if self.release:
-            return RELEASE_COMPILER
-        return None
+    def switch_name(self) -> str:
+        return f"{COMPILER_VERSION}+flambda" if self.release else COMPILER_VERSION
 
-    @property
     def compiler(self) -> str:
-        return self.compiler_override or DEVELOPMENT_COMPILER
-
-    @property
-    def make_arguments(self) -> str:
-        if self.release:
-            return "release"
-        else:
-            return "dev"
+        return f"ocaml-variants.{self.switch_name()}"
 
     @property
     def environment_variables(self) -> Mapping[str, str]:
@@ -145,7 +129,7 @@ class Setup(NamedTuple):
                 "env",
                 "--yes",
                 "--switch",
-                self.compiler,
+                self.switch_name(),
                 "--root",
                 self.opam_root.as_posix(),
                 "--set-root",
@@ -174,6 +158,7 @@ class Setup(NamedTuple):
                 "init",
                 "--bare",
                 "--yes",
+                "--disable-sandboxing",
                 "--root",
                 self.opam_root.as_posix(),
                 "default",
@@ -185,8 +170,8 @@ class Setup(NamedTuple):
                 "opam",
                 "switch",
                 "create",
-                self.compiler,
-                "--packages=ocaml-option-flambda",
+                self.switch_name(),
+                self.compiler(),
                 "--yes",
                 "--root",
                 self.opam_root.as_posix(),
@@ -215,7 +200,7 @@ class Setup(NamedTuple):
                 "opam",
                 "switch",
                 "set",
-                self.compiler,
+                self.switch_name(),
                 "--root",
                 self.opam_root.as_posix(),
             ]
@@ -238,29 +223,19 @@ class Setup(NamedTuple):
     ) -> None:
         self.produce_dune_file(pyre_directory, build_type_override)
 
-        opam_environment_variables = self.set_opam_switch_and_install_dependencies()
+        opam_environment_variables: Mapping[str, str] = self.set_opam_switch_and_install_dependencies()
+        def run_make(target: str) -> None:
+            self.run(
+                ["make", target],
+                current_working_directory=pyre_directory / "source",
+                add_environment_variables=opam_environment_variables,
+            )
 
         if run_clean:
-            self.run(
-                ["dune", "clean"],
-                pyre_directory / "source",
-                add_environment_variables=opam_environment_variables,
-            )
-
-        jobs = str(multiprocessing.cpu_count())
-
+            run_make("clean")
+        run_make("release" if self.release else "dev")
         if run_tests:
-            self.run(
-                ["make", "--jobs", jobs, "test", "--directory", "source"],
-                pyre_directory,
-                add_environment_variables=opam_environment_variables,
-            )
-
-        self.run(
-            ["make", self.make_arguments, "--jobs", jobs, "--directory", "source"],
-            pyre_directory,
-            add_environment_variables=opam_environment_variables,
-        )
+            run_make("release_test" if self.release else "test")
 
     def run(
         self,
@@ -316,7 +291,6 @@ def setup(runner_type: Type[Setup]) -> None:
     parser.add_argument("--opam-root", type=Path)
     parser.add_argument("--configure", action="store_true")
     parser.add_argument("--environment-only", action="store_true")
-    parser.add_argument("--development", action="store_true")
     parser.add_argument("--release", action="store_true")
     parser.add_argument("--build-type", type=BuildType)
     parser.add_argument("--no-tests", action="store_true")
@@ -330,22 +304,10 @@ def setup(runner_type: Type[Setup]) -> None:
     opam_root = _make_opam_root(parsed.local, parsed.temporary_root, parsed.opam_root)
 
     runner = runner_type(
-        opam_root=opam_root, development=parsed.development, release=parsed.release
+        opam_root=opam_root, release=parsed.release
     )
     if parsed.configure:
         runner.produce_dune_file(pyre_directory, parsed.build_type)
-        compiler_override = runner.compiler_override
-        if compiler_override:
-            runner.run(
-                [
-                    "opam",
-                    "switch",
-                    "set",
-                    compiler_override,
-                    "--root",
-                    runner.opam_root.as_posix(),
-                ]
-            )
     elif parsed.environment_only:
         runner.produce_dune_file(pyre_directory, parsed.build_type)
         runner.initialize_opam_switch()
