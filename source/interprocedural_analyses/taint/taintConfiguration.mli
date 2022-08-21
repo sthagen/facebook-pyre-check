@@ -55,23 +55,50 @@ val missing_flows_kind_from_string : string -> missing_flows_kind option
 
 val missing_flows_kind_to_string : missing_flows_kind -> string
 
+module SourceSinkFilter : sig
+  type t
+
+  val create
+    :  rules:Rule.t list ->
+    filtered_rule_codes:Int.Set.t option ->
+    filtered_sources:Sources.Set.t option ->
+    filtered_sinks:Sinks.Set.t option ->
+    filtered_transforms:TaintTransform.t list option ->
+    t
+
+  val should_keep_source : t -> Sources.t -> bool
+
+  val should_keep_sink : t -> Sinks.t -> bool
+
+  (* Exposed for testing purpose *)
+  val matching_sources : t -> Sources.Set.t Sinks.Map.t
+
+  (* Exposed for testing purpose *)
+  val matching_sinks : t -> Sinks.Set.t Sources.Map.t
+
+  (* Exposed for testing purpose *)
+  val possible_tito_transforms : t -> TaintTransforms.Set.t
+end
+
 type t = {
   sources: AnnotationParser.source_or_sink list;
   sinks: AnnotationParser.source_or_sink list;
   transforms: TaintTransform.t list;
+  filtered_sources: Sources.Set.t option;
+  filtered_sinks: Sinks.Set.t option;
+  filtered_transforms: TaintTransform.t list option;
   features: string list;
   rules: Rule.t list;
+  filtered_rule_codes: Int.Set.t option;
   implicit_sinks: implicit_sinks;
   implicit_sources: implicit_sources;
   partial_sink_converter: partial_sink_converter;
   partial_sink_labels: string list Core.String.Map.Tree.t;
-  matching_sources: Sources.Set.t Sinks.Map.t;
-  matching_sinks: Sinks.Set.t Sources.Map.t;
-  possible_tito_transforms: TaintTransforms.Set.t;
   find_missing_flows: missing_flows_kind option;
   dump_model_query_results_path: PyrePath.t option;
   analysis_model_constraints: analysis_model_constraints;
   lineage_analysis: bool;
+  source_sink_filter: SourceSinkFilter.t option;
 }
 
 val empty : t
@@ -127,28 +154,43 @@ module Error : sig
   val to_json : t -> Yojson.Safe.t
 end
 
-val parse : (PyrePath.t * Yojson.Safe.t) list -> (t, Error.t list) Result.t
+val from_json_list : (PyrePath.t * Yojson.Safe.t) list -> (t, Error.t list) Result.t
+(** Parse json files to create a taint configuration. *)
 
 val register : t -> unit
 
 val default : t
 
-val create
-  :  rule_filter:int list option ->
+val from_taint_model_paths : PyrePath.t list -> (t, Error.t list) Result.t
+(** Create a taint configuration by finding `.config` files in the given directories. *)
+
+val with_command_line_options
+  :  t ->
+  rule_filter:int list option ->
+  source_filter:string list option ->
+  sink_filter:string list option ->
+  transform_filter:string list option ->
   find_missing_flows:missing_flows_kind option ->
   dump_model_query_results_path:PyrePath.t option ->
   maximum_trace_length:int option ->
   maximum_tito_depth:int option ->
-  taint_model_paths:PyrePath.t list ->
   (t, Error.t list) Result.t
+(** Update a taint configuration with the given command line options. *)
 
 val validate : t -> (t, Error.t list) Result.t
+(** Perform additional checks on the taint configuration. *)
 
 exception TaintConfigurationError of Error.t list
 
 val exception_on_error : (t, Error.t list) Result.t -> t
 
 val apply_missing_flows : t -> missing_flows_kind -> t
+
+val source_can_match_rule : t -> Sources.t -> bool
+
+val sink_can_match_rule : t -> Sinks.t -> bool
+
+val code_metadata : unit -> Yojson.Safe.t
 
 val conditional_test_sinks : unit -> Sinks.t list
 

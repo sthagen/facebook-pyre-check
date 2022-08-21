@@ -453,8 +453,8 @@ module FindNarrowestSpanningExpression (PositionData : PositionData) = struct
 
   let node_using_postcondition = node_common ~use_postcondition_info:true
 
-  let visit_statement_children _ { Node.location; _ } =
-    Location.contains ~location PositionData.position
+  let visit_statement_children _ statement =
+    covers_position ~position:PositionData.position statement
 
 
   let visit_expression_children _ _ = true
@@ -468,28 +468,37 @@ end
 module FindNarrowestSpanningExpressionOrTypeAnnotation (PositionData : PositionData) = struct
   include Visit.MakeNodeVisitor (FindNarrowestSpanningExpression (PositionData))
 
+  let collect_type_annotation_symbols annotation_expression =
+    let expression_symbol_to_type_annotation_symbol = function
+      | { symbol_with_definition = Expression expression; _ } ->
+          {
+            symbol_with_definition = TypeAnnotation expression;
+            cfg_data = PositionData.cfg_data;
+            use_postcondition_info = false;
+          }
+      | type_annotation_symbol -> type_annotation_symbol
+    in
+    let symbols = ref [] in
+    visit_expression ~state:symbols annotation_expression;
+    List.map !symbols ~f:expression_symbol_to_type_annotation_symbol
+
+
   let visit state source =
     let visit_statement_for_type_annotations_and_parameters
         ~state
-        ({ Node.location; _ } as statement)
+        ({ Node.value = statement_value; _ } as statement)
       =
       let module Visitor = FindNarrowestSpanningExpression (PositionData) in
       let visit_using_precondition_info = visit_expression ~state ~visitor_override:Visitor.node in
       let visit_using_postcondition_info =
         visit_expression ~state ~visitor_override:Visitor.node_using_postcondition
       in
-      let store_type_annotation ({ Node.location; _ } as annotation) =
+      let store_type_annotation ({ Node.location; _ } as annotation_expression) =
         if Location.contains ~location PositionData.position then
-          state :=
-            {
-              symbol_with_definition = TypeAnnotation annotation;
-              cfg_data = PositionData.cfg_data;
-              use_postcondition_info = false;
-            }
-            :: !state
+          state := collect_type_annotation_symbols annotation_expression @ !state
       in
-      if Location.contains ~location PositionData.position then
-        match Node.value statement with
+      if covers_position ~position:PositionData.position statement then
+        match statement_value with
         | Statement.Assign { Assign.target; annotation; value; _ } ->
             visit_using_postcondition_info target;
             Option.iter annotation ~f:store_type_annotation;
@@ -607,13 +616,15 @@ let find_narrowest_spanning_symbol ~type_environment ~module_reference position 
       let statements = Cfg.Node.statements cfg_node in
       List.foldi statements ~init:names_so_far ~f:(walk_statement ~node_id)
     in
+    let walk_define_signature ~define_signature names_so_far =
+      (* Special-case define signature processing, since this is not included in the define's cfg. *)
+      walk_statement ~node_id:Cfg.entry_index 0 names_so_far define_signature
+    in
     let cfg = Cfg.create define in
-    let names_so_far = Hashtbl.fold cfg ~init:names_so_far ~f:walk_cfg_node in
-    (* Special-case define signature processing, since this is not included in the define's cfg. *)
     let define_signature =
       { define_node with value = Statement.Define { define with Define.body = [] } }
     in
-    walk_statement ~node_id:Cfg.entry_index 0 names_so_far define_signature
+    Hashtbl.fold cfg ~init:names_so_far ~f:walk_cfg_node |> walk_define_signature ~define_signature
   in
   let all_defines =
     let unannotated_global_environment =
@@ -643,16 +654,8 @@ let find_narrowest_spanning_symbol ~type_environment ~module_reference position 
 
 let resolve ~resolution expression =
   try
-    let annotation = Resolution.resolve_expression_to_annotation resolution expression in
-    let original = Annotation.original annotation in
-    if Type.is_top original || Type.is_unbound original then
-      let annotation = Annotation.annotation annotation in
-      if Type.is_top annotation || Type.is_unbound annotation then
-        None
-      else
-        Some annotation
-    else
-      Some original
+    let resolved = Resolution.resolve_expression_to_type resolution expression in
+    Option.some_if ((not (Type.is_top resolved)) && not (Type.is_unbound resolved)) resolved
   with
   | ClassHierarchy.Untracked _ -> None
 
@@ -699,6 +702,10 @@ let find_definition ~resolution ~module_reference ~define_name ~statement_key re
     match local_definition with
     | Some definition -> Some definition
     | None -> (
+        (* A global variable will be qualified as a local. So, delocalize it. *)
+        let reference =
+          if Reference.is_local reference then Reference.delocalize reference else reference
+        in
         let global_resolution = Resolution.global_resolution resolution in
         match GlobalResolution.global_location global_resolution reference with
         | Some definition -> Some definition
@@ -741,12 +748,21 @@ let resolve_definition_for_name ~resolution ~module_reference ~define_name ~stat
                 Some (Type.single_parameter annotation)
             | annotation -> annotation
           in
-          let base_class_summary =
+          let parent_class_summary =
             base_type
-            >>= GlobalResolution.class_summary (Resolution.global_resolution resolution)
+            >>= (fun parent ->
+                  GlobalResolution.attribute_from_annotation
+                    (Resolution.global_resolution resolution)
+                    ~parent
+                    ~name:attribute)
+            >>| AnnotatedAttribute.parent
+            >>= (fun parent ->
+                  GlobalResolution.class_summary
+                    (Resolution.global_resolution resolution)
+                    (Type.Primitive parent))
             >>| Node.value
           in
-          match base_class_summary with
+          match parent_class_summary with
           | Some ({ ClassSummary.qualifier; _ } as base_class_summary) ->
               base_class_summary
               |> ClassSummary.attributes
@@ -934,20 +950,20 @@ let resolve_type_for_symbol
   type_
 
 
-let empty_hover_message = ""
+let empty_hover_contents = ""
 
 let hover_info_for_position ~type_environment ~module_reference position =
   let symbol_data = find_narrowest_spanning_symbol ~type_environment ~module_reference position in
-  let hover_message =
+  let hover_contents =
     symbol_data
     >>= resolve_type_for_symbol ~type_environment
     >>| (fun type_ -> Format.asprintf "`%s`" (Type.show_concise type_))
-    |> Option.value ~default:empty_hover_message
+    |> Option.value ~default:empty_hover_contents
   in
   Log.log
     ~section:`Server
     "Hover info for symbol at position `%s:%s`: %s"
     (Reference.show module_reference)
     ([%show: Location.position] position)
-    hover_message;
-  hover_message
+    hover_contents;
+  hover_contents

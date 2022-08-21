@@ -82,12 +82,9 @@ type issue = t
 val canonical_location : t -> Location.WithModule.t
 
 val to_json
-  :  expand_overrides:Interprocedural.OverrideGraph.SharedMemory.t option ->
+  :  expand_overrides:OverrideGraph.SharedMemory.t option ->
   is_valid_callee:
-    (port:AccessPath.Root.t ->
-    path:Abstract.TreeDomain.Label.path ->
-    callee:Interprocedural.Target.t ->
-    bool) ->
+    (port:AccessPath.Root.t -> path:Abstract.TreeDomain.Label.path -> callee:Target.t -> bool) ->
   filename_lookup:(Reference.t -> string option) ->
   t ->
   Yojson.Safe.t
@@ -124,9 +121,3 @@ module Candidates : sig
 
   val generate_issues : t -> define:Define.t Node.t -> issue list
 end
-
-val code_metadata : unit -> Yojson.Safe.t
-
-val source_can_match_rule : Sources.t -> bool
-
-val sink_can_match_rule : Sinks.t -> bool

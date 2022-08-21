@@ -71,8 +71,6 @@ module ScratchProject = struct
     context: test_ctxt;
     configuration: Configuration.Analysis.t;
     start_options: StartOptions.t;
-    watchman: Watchman.Raw.t option;
-    build_system_initializer: BuildSystem.Initializer.t;
   }
 
   let setup
@@ -115,8 +113,6 @@ module ScratchProject = struct
     let log_root = bracket_tmpdir context in
     List.iter sources ~f:(add_source ~root:source_root);
     List.iter external_sources ~f:(add_source ~root:external_root);
-    (* We assume that watchman root is the same as global root. *)
-    let watchman_root = Option.map watchman ~f:(fun _ -> source_root) in
     let configuration =
       Configuration.Analysis.create
         ~parallel:false
@@ -139,27 +135,27 @@ module ScratchProject = struct
         ()
     in
     let start_options =
+      let watchman =
+        Option.map watchman ~f:(fun raw ->
+            (* We assume that watchman root is the same as global root. *)
+            { StartOptions.Watchman.root = source_root; raw })
+      in
       {
         StartOptions.source_paths = Configuration.SourcePaths.Simple [SearchPath.Root source_root];
         socket_path =
           PyrePath.create_relative
             ~root:(PyrePath.create_absolute (bracket_tmpdir context))
             ~relative:"pyre_server_hash.sock";
-        watchman_root;
+        watchman;
+        build_system_initializer =
+          Option.value build_system_initializer ~default:BuildSystem.Initializer.null;
         critical_files = [];
         saved_state_action = None;
         skip_initial_type_check = false;
         use_lazy_module_tracking = false;
       }
     in
-    {
-      context;
-      configuration;
-      start_options;
-      watchman;
-      build_system_initializer =
-        Option.value build_system_initializer ~default:BuildSystem.Initializer.null;
-    }
+    { context; configuration; start_options }
 
 
   let configuration_of { configuration; _ } = configuration
@@ -167,26 +163,30 @@ module ScratchProject = struct
   let start_options_of { start_options; _ } = start_options
 
   let test_server_with
-      ?(expected_exit_status = Start.ExitStatus.Ok)
+      ?(expect_server_error = false)
       ?on_server_socket_ready
       ~f
-      { context; configuration; start_options; watchman; build_system_initializer }
+      { context; configuration; start_options }
     =
     let open Lwt.Infix in
     Memory.reset_shared_memory ();
     Start.start_server
       start_options
       ~configuration
-      ?watchman
-      ~build_system_initializer
       ?on_server_socket_ready
       ~on_exception:(function
         | OUnitTest.OUnit_failure _ as exn ->
             (* We need to re-raise OUnit test failures since OUnit relies on it for error reporting. *)
             raise exn
+        | Start.ServerStopped ->
+            if expect_server_error then
+              assert_failure "Test server unexpectedly stopped without error";
+            Lwt.return_unit
         | exn ->
-            Log.error "Uncaught exception: %s" (Exn.to_string exn);
-            Lwt.return Start.ExitStatus.Error)
+            if not expect_server_error then
+              raise exn
+            else
+              Lwt.return_unit)
       ~on_started:(fun ({ ServerProperties.socket_path; _ } as server_properties) server_state ->
         (* Open a connection to the started server and send some test messages. *)
         ExclusiveLock.Lazy.read server_state ~f:Lwt.return
@@ -194,15 +194,8 @@ module ScratchProject = struct
         let socket_address = Lwt_unix.ADDR_UNIX (PyrePath.absolute socket_path) in
         let test_client (input_channel, output_channel) =
           f { Client.context; server_properties; server_state; input_channel; output_channel }
-          >>= fun () -> Lwt.return Start.ExitStatus.Ok
+          >>= fun () -> Lwt.return_unit
         in
         Lwt_io.with_connection socket_address test_client)
-    >>= fun actual_exit_status ->
-    assert_equal
-      ~ctxt:context
-      ~printer:(fun status -> Sexp.to_string (Start.ExitStatus.sexp_of_t status))
-      ~cmp:[%compare.equal: Start.ExitStatus.t]
-      expected_exit_status
-      actual_exit_status;
-    Lwt.return_unit
+    >>= fun () -> Lwt.return_unit
 end

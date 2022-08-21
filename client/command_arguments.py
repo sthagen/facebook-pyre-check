@@ -51,7 +51,7 @@ class CommandArguments:
     logger: Optional[str] = None
     targets: List[str] = field(default_factory=list)
     source_directories: List[str] = field(default_factory=list)
-    do_not_ignore_errors_in: List[str] = field(default_factory=list)
+    only_check_paths: List[str] = field(default_factory=list)
     buck_mode: Optional[str] = None
     no_saved_state: bool = False
     search_path: List[str] = field(default_factory=list)
@@ -181,6 +181,9 @@ class AnalyzeArguments:
     output: str = TEXT
     repository_root: Optional[str] = None
     rule: List[int] = field(default_factory=list)
+    source: List[str] = field(default_factory=list)
+    sink: List[str] = field(default_factory=list)
+    transform: List[str] = field(default_factory=list)
     save_results_to: Optional[str] = None
     sequential: bool = False
     taint_models_path: List[str] = field(default_factory=list)

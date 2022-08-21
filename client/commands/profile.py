@@ -38,7 +38,7 @@ class Event:
     metadata: EventMetadata
 
     def __init__(self, metadata: EventMetadata) -> None:
-        raise NotImplementedError
+        raise NotImplementedError()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -362,7 +362,7 @@ def print_total_shared_memory_size_over_time_graph(log_directory: Path) -> None:
 
 def print_trace_event(log_directory: Path) -> None:
     events = _read_profiling_events(log_directory)
-    print(json.dumps(to_traceevents(events)))
+    print(json.dumps({"traceEvents": to_traceevents(events)}))
 
 
 def print_cold_start_phases(log_directory: Path) -> None:

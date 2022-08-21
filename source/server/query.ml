@@ -283,7 +283,7 @@ module Response = struct
                   (Statement.show
                      (Statement.Statement.Define define |> Node.create_with_default_location)) );
             ]
-      | HoverInfoForPosition message -> `Assoc ["message", `String message]
+      | HoverInfoForPosition contents -> `Assoc ["contents", `String contents]
       | Success message -> `Assoc ["message", `String message]
       | Superclasses class_to_superclasses_mapping ->
           let reference_to_yojson reference = `String (Reference.show reference) in
@@ -938,24 +938,11 @@ let rec process_request ~environment ~build_system request =
         if not (PyrePath.file_exists path) then
           Error (Format.sprintf "File path `%s` does not exist" (PyrePath.show path))
         else
-          let taint_configuration_result =
-            Taint.TaintConfiguration.create
-              ~rule_filter:None
-              ~find_missing_flows:None
-              ~dump_model_query_results_path:None
-              ~maximum_trace_length:None
-              ~maximum_tito_depth:None
-              ~taint_model_paths:[path]
-          in
+          let taint_configuration_result = Taint.TaintConfiguration.from_taint_model_paths [path] in
           match taint_configuration_result with
           | Error (error :: _) -> Error (Taint.TaintConfiguration.Error.show error)
           | Error _ -> failwith "Taint.TaintConfiguration.create returned empty errors list"
           | Ok taint_configuration -> (
-              let static_analysis_configuration =
-                Configuration.StaticAnalysis.create
-                  (Configuration.Analysis.create ~source_paths:[SearchPath.Root path] ())
-                  ()
-              in
               let get_model_queries (path, source) =
                 Taint.ModelParser.parse
                   ~resolution:
@@ -966,6 +953,7 @@ let rec process_request ~environment ~build_system request =
                   ~path
                   ~source
                   ~configuration:taint_configuration
+                  ~source_sink_filter:None
                   ~callables:None
                   ~stubs:(Interprocedural.Target.HashSet.create ())
                   ()
@@ -1024,15 +1012,28 @@ let rec process_request ~environment ~build_system request =
                               ();
                             initial_callables)
                       in
+                      let qualifiers =
+                        Analysis.TypeEnvironment.ReadOnly.module_tracker environment
+                        |> Analysis.ModuleTracker.ReadOnly.tracked_explicit_modules
+                      in
+                      let class_hierarchy_graph =
+                        Interprocedural.ClassHierarchyGraph.Heap.from_qualifiers
+                          ~scheduler
+                          ~environment
+                          ~qualifiers
+                      in
                       TaintModelQuery.ModelQuery.generate_models_from_queries
-                        ~static_analysis_configuration
+                        ~configuration:taint_configuration
+                        ~class_hierarchy_graph:
+                          (Interprocedural.ClassHierarchyGraph.SharedMemory.from_heap
+                             class_hierarchy_graph)
                         ~scheduler
                         ~environment
+                        ~source_sink_filter:None
                         ~callables:(Interprocedural.FetchCallables.get_callables initial_callables)
                         ~stubs:
                           (Interprocedural.Target.HashSet.of_list
                              (Interprocedural.FetchCallables.get_stubs initial_callables))
-                        ~taint_configuration
                         rules
                     in
                     let models_and_names, errors =
@@ -1264,13 +1265,7 @@ let rec process_request ~environment ~build_system request =
             | None -> configuration.Configuration.Analysis.taint_model_paths
           in
           let configuration =
-            Taint.TaintConfiguration.create
-              ~rule_filter:None
-              ~find_missing_flows:None
-              ~dump_model_query_results_path:None
-              ~maximum_trace_length:None
-              ~maximum_tito_depth:None
-              ~taint_model_paths:paths
+            Taint.TaintConfiguration.from_taint_model_paths paths
             |> Taint.TaintConfiguration.exception_on_error
           in
           let get_model_errors sources =
@@ -1284,6 +1279,7 @@ let rec process_request ~environment ~build_system request =
                 ~path
                 ~source
                 ~configuration
+                ~source_sink_filter:None
                 ~callables:None
                 ~stubs:(Interprocedural.Target.HashSet.create ())
                 ()

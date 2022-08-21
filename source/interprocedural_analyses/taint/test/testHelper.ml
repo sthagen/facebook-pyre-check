@@ -334,18 +334,18 @@ let check_expectation
   assert_equal
     ~cmp:Domains.Sanitize.equal
     ~printer:Domains.Sanitize.show
-    sanitizers.global
-    global_sanitizer;
+    global_sanitizer
+    sanitizers.global;
   assert_equal
     ~cmp:Domains.Sanitize.equal
     ~printer:Domains.Sanitize.show
-    sanitizers.parameters
-    parameters_sanitizer;
+    parameters_sanitizer
+    sanitizers.parameters;
   assert_equal
     ~cmp:Domains.Sanitize.equal
     ~printer:Domains.Sanitize.show
-    (Domains.SanitizeRootMap.get AccessPath.Root.LocalResult sanitizers.roots)
-    return_sanitizer;
+    return_sanitizer
+    (Domains.SanitizeRootMap.get AccessPath.Root.LocalResult sanitizers.roots);
 
   assert_equal
     (Map.length expected_parameter_sanitizers)
@@ -405,8 +405,9 @@ let get_initial_models ~context =
            (module TypeCheck.DummyContext))
       ~source:initial_models_source
       ~configuration:TaintConfiguration.default
+      ~source_sink_filter:None
       ~callables:None
-      ~stubs:(Interprocedural.Target.HashSet.create ())
+      ~stubs:(Target.HashSet.create ())
       ()
   in
   assert_bool
@@ -497,14 +498,15 @@ let initialize
       (module TypeCheck.DummyContext)
   in
   let initial_callables =
-    Interprocedural.FetchCallables.from_source
+    FetchCallables.from_source
       ~configuration
       ~resolution:global_resolution
       ~include_unit_tests:false
       ~source
   in
-  let stubs = Interprocedural.FetchCallables.get_stubs initial_callables in
-  let callables = Interprocedural.FetchCallables.get_callables initial_callables in
+  let stubs = FetchCallables.get_stubs initial_callables in
+  let callables = FetchCallables.get_callables initial_callables in
+  let class_hierarchy_graph = ClassHierarchyGraph.Heap.from_source ~environment ~source in
   let user_models, skip_overrides =
     let models_source =
       match models_source, add_initial_models with
@@ -521,6 +523,7 @@ let initialize
             ~resolution
             ~source:(Test.trim_extra_indentation source)
             ~configuration:taint_configuration
+            ~source_sink_filter:taint_configuration.source_sink_filter
             ~callables:(Some (Target.HashSet.of_list callables))
             ~stubs:(Target.HashSet.of_list stubs)
             ()
@@ -536,12 +539,14 @@ let initialize
           TaintModelQuery.ModelQuery.apply_all_rules
             ~resolution
             ~configuration:taint_configuration
+            ~class_hierarchy_graph:
+              (ClassHierarchyGraph.SharedMemory.from_heap class_hierarchy_graph)
             ~scheduler:(Test.mock_scheduler ())
-            ~rule_filter:None
-            ~rules
+            ~environment
+            ~source_sink_filter:taint_configuration.source_sink_filter
             ~callables:(List.rev_append stubs callables)
             ~stubs:(Target.HashSet.of_list stubs)
-            ~environment
+            ~rules
         in
         let models_and_names, errors = fst models_result, snd models_result in
         (match taint_configuration.dump_model_query_results_path, expected_dump_string with
@@ -586,8 +591,8 @@ let initialize
   (* Initialize models *)
   let () = TaintConfiguration.register taint_configuration in
   (* The call graph building depends on initial models for global targets. *)
-  let { Interprocedural.CallGraph.whole_program_call_graph; define_call_graphs } =
-    Interprocedural.CallGraph.build_whole_program_call_graph
+  let { CallGraph.whole_program_call_graph; define_call_graphs } =
+    CallGraph.build_whole_program_call_graph
       ~scheduler:(Test.mock_scheduler ())
       ~static_analysis_configuration
       ~environment
@@ -602,10 +607,9 @@ let initialize
       ~call_graph:whole_program_call_graph
       ~initial_models
   in
-  let class_hierarchy_graph = ClassHierarchyGraph.from_source ~environment ~source in
   let class_interval_graph =
-    Interprocedural.ClassIntervalSetGraph.Heap.from_class_hierarchy class_hierarchy_graph
-    |> Interprocedural.ClassIntervalSetGraph.SharedMemory.from_heap
+    ClassIntervalSetGraph.Heap.from_class_hierarchy class_hierarchy_graph
+    |> ClassIntervalSetGraph.SharedMemory.from_heap
   in
   {
     static_analysis_configuration;
@@ -689,7 +693,7 @@ let end_to_end_integration_test path context =
         File.create path
         |> File.content
         |> Option.map ~f:(fun content ->
-               Taint.TaintConfiguration.parse [path, Yojson.Safe.from_string content]
+               Taint.TaintConfiguration.from_json_list [path, Yojson.Safe.from_string content]
                |> Taint.TaintConfiguration.exception_on_error)
       with
       | Unix.Unix_error _ -> None

@@ -19,6 +19,7 @@ from libcst.metadata import CodePosition, CodeRange
 from ... import configuration as configuration_module, error, json_rpc
 from ...commands.language_server_protocol import SymbolKind
 from ...coverage_collector import CoveredAndUncoveredLines
+from ...tests import setup
 from .. import (
     async_server_connection,
     backend_arguments,
@@ -39,6 +40,7 @@ from ..async_server_connection import (
 from ..persistent import (
     CONSECUTIVE_START_ATTEMPT_THRESHOLD,
     DefinitionLocationQuery,
+    HoverQuery,
     InitializationExit,
     InitializationFailure,
     InitializationSuccess,
@@ -59,7 +61,6 @@ from ..persistent import (
     type_error_to_diagnostic,
     type_errors_to_diagnostics,
     TypeCoverageQuery,
-    TypesQuery,
     uncovered_range_to_diagnostic,
 )
 from .language_server_protocol_test import ExceptionRaisingBytesWriter
@@ -120,53 +121,55 @@ def _fake_option_reader() -> PyreServerStartOptionsReader:
 
 
 class PersistentTest(testslide.TestCase):
+    @setup.async_test
     async def test_read_lsp_request_success(self) -> None:
-        input_channel = await _create_input_channel_with_requests(
-            [
-                json_rpc.Request(
-                    id=0,
-                    method="derp",
-                ),
-            ]
+        expected_request = json_rpc.Request(
+            id=0,
+            method="derp",
         )
+        input_channel = await _create_input_channel_with_requests([expected_request])
         bytes_writer = MemoryBytesWriter()
         output_channel = TextWriter(bytes_writer)
-        async with read_lsp_request(input_channel, output_channel) as request:
-            self.assertIsNotNone(request)
+        actual_request = await read_lsp_request(input_channel, output_channel)
+        self.assertEquals(actual_request, expected_request)
         self.assertEqual(len(bytes_writer.items()), 0)
 
+    @setup.async_test
     async def test_read_lsp_request_fail_channel_closed(self) -> None:
         input_channel = create_memory_text_reader("")
         bytes_writer = MemoryBytesWriter()
         output_channel = TextWriter(bytes_writer)
         with self.assertRaises(lsp.ReadChannelClosedError):
-            async with read_lsp_request(input_channel, output_channel) as request:
-                self.assertIsNone(request)
+            await read_lsp_request(input_channel, output_channel)
         self.assertEqual(len(bytes_writer.items()), 0)
 
+    @setup.async_test
     async def test_read_lsp_request_fail_incomplete_read(self) -> None:
         input_channel = create_memory_text_reader("derp\n")
         bytes_writer = MemoryBytesWriter()
         output_channel = TextWriter(bytes_writer)
-        async with read_lsp_request(input_channel, output_channel) as request:
-            self.assertIsNone(request)
+        with self.assertRaises(lsp.ReadChannelClosedError):
+            await read_lsp_request(input_channel, output_channel)
+        # One message for one failed read
         self.assertEqual(len(bytes_writer.items()), 1)
 
-    async def test_read_lsp_request_fail_processing_error(self) -> None:
-        input_channel = await _create_input_channel_with_requests(
-            [
-                json_rpc.Request(
-                    id=0,
-                    method="derp",
-                ),
-            ]
+    @setup.async_test
+    async def test_read_lsp_request_success_after_failed_reads(self) -> None:
+        expected_request = json_rpc.Request(
+            id=0,
+            method="derp",
+        )
+        input_channel = create_memory_text_reader(
+            f"foo\r\n\r\nbar\r\n\r\n{lsp.json_rpc_payload(expected_request)}"
         )
         bytes_writer = MemoryBytesWriter()
         output_channel = TextWriter(bytes_writer)
-        async with read_lsp_request(input_channel, output_channel):
-            raise lsp.RequestFailedError()
-        self.assertEqual(len(bytes_writer.items()), 1)
+        actual_request = await read_lsp_request(input_channel, output_channel)
+        self.assertEquals(actual_request, expected_request)
+        # Two messages for two failed reads
+        self.assertEqual(len(bytes_writer.items()), 2)
 
+    @setup.async_test
     async def test_try_initialize_success(self) -> None:
         input_channel = await _create_input_channel_with_requests(
             [
@@ -200,6 +203,7 @@ class PersistentTest(testslide.TestCase):
         self.assertIsInstance(result, InitializationSuccess)
         self.assertEqual(len(bytes_writer.items()), 1)
 
+    @setup.async_test
     async def test_try_initialize_failure__not_a_request(self) -> None:
         input_channel = await _create_input_channel_with_requests(
             [json_rpc.Request(method="derp", parameters=None)]
@@ -210,6 +214,7 @@ class PersistentTest(testslide.TestCase):
         )
         self.assertIsInstance(result, InitializationFailure)
 
+    @setup.async_test
     async def test_try_initialize_failure__invalid_parameters(self) -> None:
         input_channel = await _create_input_channel_with_requests(
             [json_rpc.Request(id=0, method="initialize", parameters=None)]
@@ -220,6 +225,7 @@ class PersistentTest(testslide.TestCase):
         )
         self.assertIsInstance(result, InitializationFailure)
 
+    @setup.async_test
     async def test_try_initialize_failure__no_initialized(self) -> None:
         input_channel = await _create_input_channel_with_requests(
             [
@@ -252,6 +258,7 @@ class PersistentTest(testslide.TestCase):
         )
         self.assertIsInstance(result, InitializationFailure)
 
+    @setup.async_test
     async def test_try_initialize_exit(self) -> None:
         input_channel = await _create_input_channel_with_requests(
             [json_rpc.Request(method="exit", parameters=None)]
@@ -262,6 +269,7 @@ class PersistentTest(testslide.TestCase):
         )
         self.assertIsInstance(result, InitializationExit)
 
+    @setup.async_test
     async def test_try_initialize_exit__shutdown_after_initialize(self) -> None:
         input_channel = await _create_input_channel_with_requests(
             [
@@ -293,6 +301,7 @@ class PersistentTest(testslide.TestCase):
         )
         self.assertIsInstance(result, InitializationExit)
 
+    @setup.async_test
     async def test_try_initialize_exit__shutdown_without_exit(self) -> None:
         input_channel = await _create_input_channel_with_requests(
             [
@@ -316,6 +325,7 @@ class PersistentTest(testslide.TestCase):
         )
         self.assertIsInstance(result, InitializationExit)
 
+    @setup.async_test
     async def test_try_initialize_exit__without_anything(self) -> None:
         result = await try_initialize(
             create_memory_text_reader(""),
@@ -324,6 +334,7 @@ class PersistentTest(testslide.TestCase):
         )
         self.assertIsInstance(result, InitializationExit)
 
+    @setup.async_test
     async def test_server_exit(self) -> None:
         server_state = ServerState()
         noop_task_manager = BackgroundTaskManager(NoOpBackgroundTask())
@@ -336,7 +347,7 @@ class PersistentTest(testslide.TestCase):
         server = PyreServer(
             input_channel=input_channel,
             output_channel=create_memory_text_writer(),
-            state=server_state,
+            server_state=server_state,
             pyre_manager=noop_task_manager,
             pyre_query_manager=noop_task_manager,
         )
@@ -344,6 +355,7 @@ class PersistentTest(testslide.TestCase):
         exit_code = await server.run()
         self.assertEqual(exit_code, 0)
 
+    @setup.async_test
     async def test_server_exit_unknown_request_after_shutdown(self) -> None:
         server_state = ServerState()
         noop_task_manager = BackgroundTaskManager(NoOpBackgroundTask())
@@ -357,7 +369,7 @@ class PersistentTest(testslide.TestCase):
         server = PyreServer(
             input_channel=input_channel,
             output_channel=create_memory_text_writer(),
-            state=server_state,
+            server_state=server_state,
             pyre_manager=noop_task_manager,
             pyre_query_manager=noop_task_manager,
         )
@@ -365,6 +377,7 @@ class PersistentTest(testslide.TestCase):
         exit_code = await server.run()
         self.assertEqual(exit_code, 0)
 
+    @setup.async_test
     async def test_server_exit_gracefully_after_shutdown(self) -> None:
         server_state = ServerState()
         noop_task_manager = BackgroundTaskManager(NoOpBackgroundTask())
@@ -380,7 +393,7 @@ class PersistentTest(testslide.TestCase):
             output_channel=TextWriter(
                 ExceptionRaisingBytesWriter(ConnectionResetError())
             ),
-            state=server_state,
+            server_state=server_state,
             pyre_manager=noop_task_manager,
             pyre_query_manager=noop_task_manager,
         )
@@ -388,6 +401,7 @@ class PersistentTest(testslide.TestCase):
         exit_code = await server.run()
         self.assertEqual(exit_code, 0)
 
+    @setup.async_test
     async def test_server_exit_gracefully_on_channel_closure(self) -> None:
         server_state = ServerState()
         noop_task_manager = BackgroundTaskManager(NoOpBackgroundTask())
@@ -398,7 +412,7 @@ class PersistentTest(testslide.TestCase):
             output_channel=TextWriter(
                 ExceptionRaisingBytesWriter(ConnectionResetError())
             ),
-            state=server_state,
+            server_state=server_state,
             pyre_manager=noop_task_manager,
             pyre_query_manager=noop_task_manager,
         )
@@ -406,13 +420,14 @@ class PersistentTest(testslide.TestCase):
         exit_code = await server.run()
         self.assertEqual(exit_code, 0)
 
+    @setup.async_test
     async def test_open_close(self) -> None:
         server_state = ServerState()
         fake_task_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
         server = PyreServer(
             input_channel=create_memory_text_reader(""),
             output_channel=create_memory_text_writer(),
-            state=server_state,
+            server_state=server_state,
             pyre_manager=BackgroundTaskManager(NoOpBackgroundTask()),
             pyre_query_manager=fake_task_manager,
         )
@@ -430,14 +445,6 @@ class PersistentTest(testslide.TestCase):
             )
         )
         self.assertIn(test_path0, server_state.opened_documents)
-        self.assertEqual(
-            server.state.query_state.queries.qsize(),
-            1,
-        )
-        self.assertEqual(
-            server.state.query_state.queries.get_nowait(),
-            TypesQuery(test_path0),
-        )
 
         await server.process_open_request(
             lsp.DidOpenTextDocumentParameters(
@@ -450,14 +457,6 @@ class PersistentTest(testslide.TestCase):
             )
         )
         self.assertIn(test_path1, server_state.opened_documents)
-        self.assertEqual(
-            server.state.query_state.queries.qsize(),
-            1,
-        )
-        self.assertEqual(
-            server.state.query_state.queries.get_nowait(),
-            TypesQuery(test_path1),
-        )
 
         await server.process_close_request(
             lsp.DidCloseTextDocumentParameters(
@@ -467,11 +466,8 @@ class PersistentTest(testslide.TestCase):
             )
         )
         self.assertNotIn(test_path0, server_state.opened_documents)
-        self.assertEqual(
-            server.state.query_state.queries.qsize(),
-            0,
-        )
 
+    @setup.async_test
     async def test_subscription_protocol(self) -> None:
         server_state = ServerState(
             client_capabilities=lsp.ClientCapabilities(
@@ -484,7 +480,7 @@ class PersistentTest(testslide.TestCase):
 
         def fake_server_start_options_reader() -> PyreServerStartOptions:
             # Server start option is not relevant to this test
-            raise NotImplementedError
+            raise NotImplementedError()
 
         server_handler = PyreServerHandler(
             server_start_options_reader=fake_server_start_options_reader,
@@ -525,10 +521,11 @@ class PersistentTest(testslide.TestCase):
         # Notify the user that incremental check has finished
         self.assertIn("window/showStatus", client_messages[3])
 
+    @setup.async_test
     async def test_subscription_error(self) -> None:
         def fake_server_start_options_reader() -> PyreServerStartOptions:
             # Server start option is not relevant to this test
-            raise NotImplementedError
+            raise NotImplementedError()
 
         server_handler = PyreServerHandler(
             server_start_options_reader=fake_server_start_options_reader,
@@ -540,6 +537,7 @@ class PersistentTest(testslide.TestCase):
                 subscription.Error(message="Doom Eternal")
             )
 
+    @setup.async_test
     async def test_busy_status_clear_diagnostics(self) -> None:
         path = Path("foo.py")
         server_state = ServerState(diagnostics={path: []})
@@ -547,7 +545,7 @@ class PersistentTest(testslide.TestCase):
 
         def fake_server_start_options_reader() -> PyreServerStartOptions:
             # Server start option is not relevant to this test
-            raise NotImplementedError
+            raise NotImplementedError()
 
         server_handler = PyreServerHandler(
             server_start_options_reader=fake_server_start_options_reader,
@@ -567,13 +565,14 @@ class PersistentTest(testslide.TestCase):
         self.assertIn('"diagnostics": []', client_messages[0])
         self.assertIn('"diagnostics": []', client_messages[1])
 
+    @setup.async_test
     async def test_open_triggers_pyre_restart(self) -> None:
         fake_task_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
         fake_task_manager2 = BackgroundTaskManager(WaitForeverBackgroundTask())
         server = PyreServer(
             input_channel=create_memory_text_reader(""),
             output_channel=create_memory_text_writer(),
-            state=ServerState(),
+            server_state=ServerState(),
             pyre_manager=fake_task_manager,
             pyre_query_manager=fake_task_manager2,
         )
@@ -593,13 +592,14 @@ class PersistentTest(testslide.TestCase):
         await asyncio.sleep(0)
         self.assertTrue(fake_task_manager.is_task_running())
 
+    @setup.async_test
     async def test_open_triggers_pyre_restart__limit_reached(self) -> None:
         fake_task_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
         fake_task_manager2 = BackgroundTaskManager(WaitForeverBackgroundTask())
         server = PyreServer(
             input_channel=create_memory_text_reader(""),
             output_channel=create_memory_text_writer(),
-            state=ServerState(
+            server_state=ServerState(
                 consecutive_start_failure=CONSECUTIVE_START_ATTEMPT_THRESHOLD
             ),
             pyre_manager=fake_task_manager,
@@ -621,6 +621,7 @@ class PersistentTest(testslide.TestCase):
         await asyncio.sleep(0)
         self.assertFalse(fake_task_manager.is_task_running())
 
+    @setup.async_test
     async def test_save_triggers_pyre_restart(self) -> None:
         test_path = Path("/foo.py")
         fake_task_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
@@ -628,7 +629,7 @@ class PersistentTest(testslide.TestCase):
         server = PyreServer(
             input_channel=create_memory_text_reader(""),
             output_channel=create_memory_text_writer(),
-            state=ServerState(opened_documents={test_path}),
+            server_state=ServerState(opened_documents={test_path}),
             pyre_manager=fake_task_manager,
             pyre_query_manager=fake_task_manager2,
         )
@@ -644,6 +645,7 @@ class PersistentTest(testslide.TestCase):
         await asyncio.sleep(0)
         self.assertTrue(fake_task_manager.is_task_running())
 
+    @setup.async_test
     async def test_save_triggers_pyre_restart__limit_reached(self) -> None:
         test_path = Path("/foo.py")
         fake_task_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
@@ -651,7 +653,7 @@ class PersistentTest(testslide.TestCase):
         server = PyreServer(
             input_channel=create_memory_text_reader(""),
             output_channel=create_memory_text_writer(),
-            state=ServerState(
+            server_state=ServerState(
                 opened_documents={test_path},
                 consecutive_start_failure=CONSECUTIVE_START_ATTEMPT_THRESHOLD,
             ),
@@ -670,6 +672,7 @@ class PersistentTest(testslide.TestCase):
         await asyncio.sleep(0)
         self.assertFalse(fake_task_manager.is_task_running())
 
+    @setup.async_test
     async def test_save_adds_path_to_queue(self) -> None:
         test_path = Path("/root/test.py")
         fake_task_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
@@ -677,7 +680,7 @@ class PersistentTest(testslide.TestCase):
         server = PyreServer(
             input_channel=create_memory_text_reader(""),
             output_channel=create_memory_text_writer(),
-            state=ServerState(opened_documents={test_path}),
+            server_state=ServerState(opened_documents={test_path}),
             pyre_manager=fake_task_manager,
             pyre_query_manager=fake_task_manager2,
         )
@@ -693,115 +696,6 @@ class PersistentTest(testslide.TestCase):
             )
         )
         await asyncio.sleep(0)
-        self.assertEqual(server.state.query_state.queries.qsize(), 1)
-        self.assertEqual(
-            server.state.query_state.queries.get_nowait(), TypesQuery(test_path)
-        )
-
-    async def test_close_clears_hover_data(self) -> None:
-        test_path = Path("/root/test.py")
-        fake_task_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
-        fake_task_manager2 = BackgroundTaskManager(WaitForeverBackgroundTask())
-        server = PyreServer(
-            input_channel=create_memory_text_reader(""),
-            output_channel=create_memory_text_writer(),
-            state=ServerState(
-                opened_documents={test_path},
-                query_state=PyreQueryState(
-                    path_to_location_type_lookup={
-                        test_path: LocationTypeLookup(
-                            [
-                                (lsp.Position(4, 4), lsp.Position(4, 15), "str"),
-                            ]
-                        ),
-                    }
-                ),
-            ),
-            pyre_manager=fake_task_manager,
-            pyre_query_manager=fake_task_manager2,
-        )
-
-        await server.process_close_request(
-            lsp.DidCloseTextDocumentParameters(
-                text_document=lsp.TextDocumentIdentifier(
-                    uri=lsp.DocumentUri.from_file_path(test_path).unparse()
-                )
-            )
-        )
-        await asyncio.sleep(0)
-        self.assertEqual(server.state.query_state.path_to_location_type_lookup, {})
-
-    async def test_hover_always_responds(self) -> None:
-        def assert_hover_response(expected_hover_contents: str) -> None:
-            expected_response = json_rpc.SuccessResponse(
-                id=42,
-                result=lsp.HoverResponse(contents=expected_hover_contents).to_dict(),
-            )
-            response_string = json.dumps(expected_response.json())
-            client_messages = memory_bytes_writer.items()
-            self.assertEqual(
-                client_messages[-1].decode(),
-                f"Content-Length: {len(response_string)}\r\n\r\n" + response_string,
-            )
-
-        test_path = Path("/foo.py")
-        not_tracked_path = Path("/not_tracked.py")
-        fake_task_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
-        fake_task_manager2 = BackgroundTaskManager(WaitForeverBackgroundTask())
-        memory_bytes_writer: MemoryBytesWriter = MemoryBytesWriter()
-        server = PyreServer(
-            input_channel=create_memory_text_reader(""),
-            output_channel=TextWriter(memory_bytes_writer),
-            state=ServerState(
-                opened_documents={test_path},
-                query_state=PyreQueryState(
-                    path_to_location_type_lookup={
-                        test_path: LocationTypeLookup(
-                            [
-                                (lsp.Position(4, 4), lsp.Position(4, 15), "str"),
-                            ]
-                        ),
-                    }
-                ),
-            ),
-            pyre_manager=fake_task_manager,
-            pyre_query_manager=fake_task_manager2,
-        )
-
-        await fake_task_manager.ensure_task_running()
-
-        await server.process_hover_request(
-            lsp.HoverTextDocumentParameters(
-                text_document=lsp.TextDocumentIdentifier(
-                    uri=lsp.DocumentUri.from_file_path(test_path).unparse(),
-                ),
-                position=lsp.LspPosition(line=3, character=4),
-            ),
-            request_id=42,
-        )
-        await asyncio.sleep(0)
-
-        assert_hover_response("```str```")
-        self.assertTrue(fake_task_manager.is_task_running())
-        self.assertEqual(server.state.query_state.queries.qsize(), 1)
-        self.assertEqual(
-            server.state.query_state.queries.get_nowait(), TypesQuery(test_path)
-        )
-
-        await server.process_hover_request(
-            lsp.HoverTextDocumentParameters(
-                text_document=lsp.TextDocumentIdentifier(
-                    uri=lsp.DocumentUri.from_file_path(not_tracked_path).unparse(),
-                ),
-                position=lsp.LspPosition(line=3, character=4),
-            ),
-            request_id=42,
-        )
-        await asyncio.sleep(0)
-
-        self.assertTrue(fake_task_manager.is_task_running())
-        assert_hover_response("")
-        self.assertEqual(server.state.query_state.queries.qsize(), 0)
 
     def test_type_diagnostics(self) -> None:
         self.assertEqual(
@@ -932,6 +826,7 @@ class PersistentTest(testslide.TestCase):
         self.assertEqual(coverage_result.covered_percent, 50.0)
         self.assertEqual(len(coverage_result.uncovered_ranges), 1)
 
+    @setup.async_test
     async def test_server_connection_lost(self) -> None:
         test_path = Path("/foo.py")
         server_state = ServerState(
@@ -984,6 +879,7 @@ class PersistentTest(testslide.TestCase):
         )
         self.assertEqual(server_state.diagnostics, {})
 
+    @setup.async_test
     async def test_send_message_to_status_bar(self) -> None:
         bytes_writer = MemoryBytesWriter()
         server_handler = PyreServerHandler(
@@ -1025,6 +921,7 @@ class PersistentTest(testslide.TestCase):
             ),
         )
 
+    @setup.async_test
     async def test_type_coverage_request(self) -> None:
         test_path = Path("/foo")
         bytes_writer = MemoryBytesWriter()
@@ -1033,7 +930,7 @@ class PersistentTest(testslide.TestCase):
         server = PyreServer(
             input_channel=create_memory_text_reader(""),
             output_channel=TextWriter(bytes_writer),
-            state=ServerState(),
+            server_state=ServerState(),
             pyre_manager=fake_pyre_manager,
             pyre_query_manager=fake_pyre_query_manager,
         )
@@ -1048,10 +945,80 @@ class PersistentTest(testslide.TestCase):
         )
 
         self.assertEqual(
-            server.state.query_state.queries.get_nowait(),
+            server.server_state.query_state.queries.get_nowait(),
             TypeCoverageQuery(1, test_path),
         )
 
+    @setup.async_test
+    async def test_hover(self) -> None:
+        def assert_hover_response(
+            response: lsp.LspHoverResponse,
+        ) -> None:
+            client_messages = memory_bytes_writer.items()
+            expected_response = json_rpc.SuccessResponse(
+                id=42, result=lsp.LspHoverResponse.cached_schema().dump(response)
+            )
+            response_string = json.dumps(expected_response.json())
+            self.assertEqual(
+                client_messages[-1].decode(),
+                f"Content-Length: {len(response_string)}\r\n\r\n" + response_string,
+            )
+
+        test_path = Path("/foo.py")
+        not_tracked_path = Path("/not_tracked.py")
+        fake_task_manager = BackgroundTaskManager(WaitForeverBackgroundTask())
+        fake_task_manager2 = BackgroundTaskManager(WaitForeverBackgroundTask())
+        memory_bytes_writer: MemoryBytesWriter = MemoryBytesWriter()
+        server = PyreServer(
+            input_channel=create_memory_text_reader(""),
+            output_channel=TextWriter(memory_bytes_writer),
+            server_state=ServerState(
+                opened_documents={test_path},
+            ),
+            pyre_manager=fake_task_manager,
+            pyre_query_manager=fake_task_manager2,
+        )
+
+        await fake_task_manager.ensure_task_running()
+
+        await server.process_hover_request(
+            lsp.HoverTextDocumentParameters(
+                text_document=lsp.TextDocumentIdentifier(
+                    uri=lsp.DocumentUri.from_file_path(test_path).unparse(),
+                ),
+                position=lsp.LspPosition(line=3, character=4),
+            ),
+            request_id=42,
+        )
+        await asyncio.sleep(0)
+
+        self.assertTrue(fake_task_manager.is_task_running())
+        self.assertEqual(len(memory_bytes_writer.items()), 0)
+        self.assertEqual(server.server_state.query_state.queries.qsize(), 1)
+        self.assertEqual(
+            server.server_state.query_state.queries.get_nowait(),
+            HoverQuery(
+                id=42,
+                path=test_path,
+                position=lsp.LspPosition(line=3, character=4).to_pyre_position(),
+            ),
+        )
+
+        await server.process_hover_request(
+            lsp.HoverTextDocumentParameters(
+                text_document=lsp.TextDocumentIdentifier(
+                    uri=lsp.DocumentUri.from_file_path(not_tracked_path).unparse(),
+                ),
+                position=lsp.LspPosition(line=3, character=4),
+            ),
+            request_id=42,
+        )
+        await asyncio.sleep(0)
+
+        self.assertTrue(fake_task_manager.is_task_running())
+        assert_hover_response(lsp.LspHoverResponse.empty())
+
+    @setup.async_test
     async def test_definition(self) -> None:
         def assert_definition_response(
             definitions: Sequence[lsp.LspDefinitionResponse],
@@ -1077,7 +1044,7 @@ class PersistentTest(testslide.TestCase):
         server = PyreServer(
             input_channel=create_memory_text_reader(""),
             output_channel=TextWriter(memory_bytes_writer),
-            state=ServerState(
+            server_state=ServerState(
                 opened_documents={test_path},
             ),
             pyre_manager=fake_task_manager,
@@ -1099,9 +1066,9 @@ class PersistentTest(testslide.TestCase):
 
         self.assertTrue(fake_task_manager.is_task_running())
         self.assertEqual(len(memory_bytes_writer.items()), 0)
-        self.assertEqual(server.state.query_state.queries.qsize(), 1)
+        self.assertEqual(server.server_state.query_state.queries.qsize(), 1)
         self.assertEqual(
-            server.state.query_state.queries.get_nowait(),
+            server.server_state.query_state.queries.get_nowait(),
             DefinitionLocationQuery(
                 id=42,
                 path=test_path,
@@ -1123,6 +1090,7 @@ class PersistentTest(testslide.TestCase):
         self.assertTrue(fake_task_manager.is_task_running())
         assert_definition_response([])
 
+    @setup.async_test
     async def test_document_symbols_request(self) -> None:
         self.maxDiff = None
         with tempfile.NamedTemporaryFile(suffix=".py") as temporary_file:
@@ -1135,7 +1103,7 @@ class PersistentTest(testslide.TestCase):
             server = PyreServer(
                 input_channel=create_memory_text_reader(""),
                 output_channel=TextWriter(memory_bytes_writer),
-                state=ServerState(
+                server_state=ServerState(
                     opened_documents={test_path},
                 ),
                 pyre_manager=fake_task_manager,
@@ -1183,6 +1151,7 @@ class PersistentTest(testslide.TestCase):
             actual_json = json.loads(actual[actual.index("{") :])
             self.assertDictEqual(actual_json, expected_response.json())
 
+    @setup.async_test
     async def test_references(self) -> None:
         def assert_references_response(
             references: Sequence[lsp.ReferencesResponse],
@@ -1208,7 +1177,7 @@ class PersistentTest(testslide.TestCase):
         server = PyreServer(
             input_channel=create_memory_text_reader(""),
             output_channel=TextWriter(memory_bytes_writer),
-            state=ServerState(
+            server_state=ServerState(
                 opened_documents={test_path},
             ),
             pyre_manager=fake_task_manager,
@@ -1230,9 +1199,9 @@ class PersistentTest(testslide.TestCase):
 
         self.assertTrue(fake_task_manager.is_task_running())
         self.assertEqual(len(memory_bytes_writer.items()), 0)
-        self.assertEqual(server.state.query_state.queries.qsize(), 1)
+        self.assertEqual(server.server_state.query_state.queries.qsize(), 1)
         self.assertEqual(
-            server.state.query_state.queries.get_nowait(),
+            server.server_state.query_state.queries.get_nowait(),
             ReferencesQuery(
                 id=42,
                 path=test_path,
@@ -1294,45 +1263,6 @@ class PersistentTest(testslide.TestCase):
             )
 
 
-class PyreQueryStateTest(testslide.TestCase):
-    def test_hover_response_for_position(self) -> None:
-        pyre_query_state = PyreQueryState(
-            {
-                Path("test.py"): LocationTypeLookup(
-                    [
-                        (lsp.Position(4, 4), lsp.Position(4, 15), "str"),
-                        (lsp.Position(8, 16), lsp.Position(8, 17), "int"),
-                    ]
-                ),
-            }
-        )
-
-        self.assertEqual(
-            pyre_query_state.hover_response_for_position(
-                Path("test.py"), lsp.LspPosition(3, 5)
-            ),
-            lsp.HoverResponse(contents="```str```"),
-        )
-        self.assertEqual(
-            pyre_query_state.hover_response_for_position(
-                Path("test.py"), lsp.LspPosition(7, 16)
-            ),
-            lsp.HoverResponse(contents="```int```"),
-        )
-        self.assertEqual(
-            pyre_query_state.hover_response_for_position(
-                Path("test.py"), lsp.LspPosition(99, 99)
-            ),
-            lsp.HoverResponse(contents=""),
-        )
-        self.assertEqual(
-            pyre_query_state.hover_response_for_position(
-                Path("non_existent.py"), lsp.LspPosition(3, 4)
-            ),
-            lsp.HoverResponse(contents=""),
-        )
-
-
 @contextmanager
 def patch_connect_in_text_mode(
     input_channel: TextReader, output_channel: TextWriter
@@ -1354,6 +1284,7 @@ def patch_connect_in_text_mode(
 
 
 class PyreQueryHandlerTest(testslide.TestCase):
+    @setup.async_test
     async def test_query_types(self) -> None:
         json_output = """
         {
@@ -1394,7 +1325,7 @@ class PyreQueryHandlerTest(testslide.TestCase):
         """
         bytes_writer = MemoryBytesWriter()
         pyre_query_manager = PyreQueryHandler(
-            state=PyreQueryState(path_to_location_type_lookup={}),
+            query_state=PyreQueryState(),
             server_start_options_reader=_create_server_start_options_reader(
                 binary="/bin/pyre",
                 server_identifier="foo",
@@ -1440,10 +1371,11 @@ class PyreQueryHandlerTest(testslide.TestCase):
             ],
         )
 
+    @setup.async_test
     async def test_query_types__bad_json(self) -> None:
         bytes_writer = MemoryBytesWriter()
         pyre_query_manager = PyreQueryHandler(
-            state=PyreQueryState(),
+            query_state=PyreQueryState(),
             server_start_options_reader=_create_server_start_options_reader(
                 binary="/bin/pyre",
                 server_identifier="foo",
@@ -1469,6 +1401,7 @@ class PyreQueryHandlerTest(testslide.TestCase):
 
         self.assertEqual(result, None)
 
+    @setup.async_test
     async def test_query_type_coverage(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".py") as tmpfile:
             tmpfile.write(b"def foo(x):\n  pass\n")
@@ -1477,7 +1410,7 @@ class PyreQueryHandlerTest(testslide.TestCase):
             bytes_writer = MemoryBytesWriter()
             server_start_options_reader = _fake_option_reader()
             pyre_query_manager = PyreQueryHandler(
-                state=PyreQueryState(),
+                query_state=PyreQueryState(),
                 server_start_options_reader=server_start_options_reader,
                 client_output_channel=TextWriter(bytes_writer),
             )
@@ -1505,9 +1438,10 @@ class PyreQueryHandlerTest(testslide.TestCase):
             self.assertEqual(len(result.uncovered_ranges), 1)
             self.assertTrue(result.covered_percent < 100.0)
 
+    @setup.async_test
     async def test_query_type_coverage__bad_json(self) -> None:
         pyre_query_manager = PyreQueryHandler(
-            state=PyreQueryState(),
+            query_state=PyreQueryState(),
             server_start_options_reader=_fake_option_reader(),
             client_output_channel=TextWriter(MemoryBytesWriter()),
         )
@@ -1523,13 +1457,14 @@ class PyreQueryHandlerTest(testslide.TestCase):
             )
         self.assertTrue(result is None)
 
+    @setup.async_test
     async def test_query_type_coverage__strict(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".py") as tmpfile:
             tmpfile.write(b"def foo(x):\n  pass\n")
             tmpfile.flush()
             test_path = Path(tmpfile.name)
             pyre_query_manager = PyreQueryHandler(
-                state=PyreQueryState(),
+                query_state=PyreQueryState(),
                 server_start_options_reader=_fake_option_reader(),
                 client_output_channel=TextWriter(MemoryBytesWriter()),
             )
@@ -1550,9 +1485,10 @@ class PyreQueryHandlerTest(testslide.TestCase):
             self.assertEqual(len(result.uncovered_ranges), 0)
             self.assertEqual(result.covered_percent, 100.0)
 
+    @setup.async_test
     async def test_query_type_coverage__not_typechecked(self) -> None:
         pyre_query_manager = PyreQueryHandler(
-            state=PyreQueryState(),
+            query_state=PyreQueryState(),
             server_start_options_reader=_fake_option_reader(),
             client_output_channel=TextWriter(MemoryBytesWriter()),
         )
@@ -1573,6 +1509,7 @@ class PyreQueryHandlerTest(testslide.TestCase):
             result.uncovered_ranges[0].message, "This file is not type checked by Pyre."
         )
 
+    @setup.async_test
     async def test_query_expression_coverage(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".py") as tmpfile:
             tmpfile.write(b"def foo(x):\n  pass\n")
@@ -1581,7 +1518,7 @@ class PyreQueryHandlerTest(testslide.TestCase):
             bytes_writer = MemoryBytesWriter()
             server_start_options_reader = _fake_option_reader()
             pyre_query_manager = PyreQueryHandler(
-                state=PyreQueryState(),
+                query_state=PyreQueryState(),
                 server_start_options_reader=server_start_options_reader,
                 client_output_channel=TextWriter(bytes_writer),
             )
@@ -1609,6 +1546,7 @@ class PyreQueryHandlerTest(testslide.TestCase):
             self.assertEqual(len(result.uncovered_ranges), 0)
             self.assertTrue(result.covered_percent == 100.0)
 
+    @setup.async_test
     async def test_query_expression_coverage_gaps(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".py") as tmpfile:
             tmpfile.write(b"def foo(x):\n  pass\n")
@@ -1617,7 +1555,7 @@ class PyreQueryHandlerTest(testslide.TestCase):
             bytes_writer = MemoryBytesWriter()
             server_start_options_reader = _fake_option_reader()
             pyre_query_manager = PyreQueryHandler(
-                state=PyreQueryState(),
+                query_state=PyreQueryState(),
                 server_start_options_reader=server_start_options_reader,
                 client_output_channel=TextWriter(bytes_writer),
             )
@@ -1645,9 +1583,10 @@ class PyreQueryHandlerTest(testslide.TestCase):
             self.assertEqual(len(result.uncovered_ranges), 1)
             self.assertTrue(result.covered_percent == 75.0)
 
+    @setup.async_test
     async def test_query_expression_coverage__bad_json(self) -> None:
         pyre_query_manager = PyreQueryHandler(
-            state=PyreQueryState(),
+            query_state=PyreQueryState(),
             server_start_options_reader=_fake_option_reader(),
             client_output_channel=TextWriter(MemoryBytesWriter()),
         )
@@ -1665,13 +1604,14 @@ class PyreQueryHandlerTest(testslide.TestCase):
             )
         self.assertTrue(result is None)
 
+    @setup.async_test
     async def test_query_expression_coverage__strict(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".py") as tmpfile:
             tmpfile.write(b"def foo(x):\n  pass\n")
             tmpfile.flush()
             test_path = Path(tmpfile.name)
             pyre_query_manager = PyreQueryHandler(
-                state=PyreQueryState(),
+                query_state=PyreQueryState(),
                 server_start_options_reader=_fake_option_reader(),
                 client_output_channel=TextWriter(MemoryBytesWriter()),
             )
@@ -1692,9 +1632,10 @@ class PyreQueryHandlerTest(testslide.TestCase):
             self.assertEqual(len(result.uncovered_ranges), 0)
             self.assertEqual(result.covered_percent, 100.0)
 
+    @setup.async_test
     async def test_query_expression_coverage__not_typechecked(self) -> None:
         pyre_query_manager = PyreQueryHandler(
-            state=PyreQueryState(),
+            query_state=PyreQueryState(),
             server_start_options_reader=_fake_option_reader(),
             client_output_channel=TextWriter(MemoryBytesWriter()),
         )
@@ -1714,6 +1655,98 @@ class PyreQueryHandlerTest(testslide.TestCase):
         self.assertEqual(result.covered_percent, 100.0)
         self.assertEqual(len(result.uncovered_ranges), 0)
 
+    @setup.async_test
+    async def test_query_hover(self) -> None:
+        json_output = """{ "response": {"contents": "```foo.bar.Bar```"} }"""
+        client_output_writer = MemoryBytesWriter()
+        pyre_query_manager = PyreQueryHandler(
+            query_state=PyreQueryState(),
+            server_start_options_reader=_create_server_start_options_reader(
+                binary="/bin/pyre",
+                server_identifier="foo",
+                start_arguments=start.Arguments(
+                    base_arguments=backend_arguments.BaseArguments(
+                        source_paths=backend_arguments.SimpleSourcePath(),
+                        log_path="/log/path",
+                        global_root="/global/root",
+                    )
+                ),
+                ide_features=configuration_module.IdeFeatures(hover_enabled=True),
+            ),
+            client_output_channel=TextWriter(client_output_writer),
+        )
+        memory_bytes_writer = MemoryBytesWriter()
+        flat_json = "".join(json_output.splitlines())
+        input_channel = create_memory_text_reader(f'["Query", {flat_json}]\n')
+        output_channel = TextWriter(memory_bytes_writer)
+
+        with patch_connect_in_text_mode(input_channel, output_channel):
+            await pyre_query_manager._query_and_send_hover_contents(
+                query=HoverQuery(
+                    id=99,
+                    path=Path("bar.py"),
+                    position=lsp.Position(line=42, character=10),
+                ),
+                socket_path=Path("fake_socket_path"),
+                enabled_telemetry_event=False,
+                consume_unsaved_changes_enabled=False,
+            )
+
+        self.assertEqual(
+            memory_bytes_writer.items(),
+            [
+                b'["QueryWithOverlay", {"query_text": "hover_info_for_position(path=\'bar.py\','
+                b' line=42, column=10)", "overlay_id": null}]\n'
+            ],
+        )
+        self.assertEqual(len(client_output_writer.items()), 1)
+        response = client_output_writer.items()[0].splitlines()[2]
+        result = json.loads(response)["result"]
+        self.assertEqual(
+            lsp.LspHoverResponse.cached_schema().load(result),
+            lsp.LspHoverResponse(contents="```foo.bar.Bar```"),
+        )
+
+    @setup.async_test
+    async def test_query_hover__bad_json(self) -> None:
+        client_output_writer = MemoryBytesWriter()
+        pyre_query_manager = PyreQueryHandler(
+            query_state=PyreQueryState(),
+            server_start_options_reader=_create_server_start_options_reader(
+                binary="/bin/pyre",
+                server_identifier="foo",
+                start_arguments=start.Arguments(
+                    base_arguments=backend_arguments.BaseArguments(
+                        source_paths=backend_arguments.SimpleSourcePath(),
+                        log_path="/log/path",
+                        global_root="/global/root",
+                    )
+                ),
+                ide_features=configuration_module.IdeFeatures(hover_enabled=True),
+            ),
+            client_output_channel=TextWriter(client_output_writer),
+        )
+
+        input_channel = create_memory_text_reader("""{ "error": "Oops" }\n""")
+        memory_bytes_writer = MemoryBytesWriter()
+        output_channel = TextWriter(memory_bytes_writer)
+        with patch_connect_in_text_mode(input_channel, output_channel):
+            await pyre_query_manager._query_and_send_hover_contents(
+                query=HoverQuery(
+                    id=99,
+                    path=Path("bar.py"),
+                    position=lsp.Position(line=42, character=10),
+                ),
+                socket_path=Path("fake_socket_path"),
+                enabled_telemetry_event=False,
+                consume_unsaved_changes_enabled=False,
+            )
+
+        self.assertEqual(len(client_output_writer.items()), 1)
+        response = client_output_writer.items()[0].splitlines()[2]
+        self.assertEqual(json.loads(response)["result"], {"contents": ""})
+
+    @setup.async_test
     async def test_query_definition_location(self) -> None:
         json_output = """
         {
@@ -1736,7 +1769,7 @@ class PyreQueryHandlerTest(testslide.TestCase):
         """
         client_output_writer = MemoryBytesWriter()
         pyre_query_manager = PyreQueryHandler(
-            state=PyreQueryState(path_to_location_type_lookup={}),
+            query_state=PyreQueryState(),
             server_start_options_reader=_create_server_start_options_reader(
                 binary="/bin/pyre",
                 server_identifier="foo",
@@ -1791,10 +1824,11 @@ class PyreQueryHandlerTest(testslide.TestCase):
             ],
         )
 
+    @setup.async_test
     async def test_query_definition_location__bad_json(self) -> None:
         client_output_writer = MemoryBytesWriter()
         pyre_query_manager = PyreQueryHandler(
-            state=PyreQueryState(),
+            query_state=PyreQueryState(),
             server_start_options_reader=_create_server_start_options_reader(
                 binary="/bin/pyre",
                 server_identifier="foo",
@@ -1829,6 +1863,7 @@ class PyreQueryHandlerTest(testslide.TestCase):
         response = client_output_writer.items()[0].splitlines()[2]
         self.assertEqual(json.loads(response)["result"], [])
 
+    @setup.async_test
     async def test_query_references(self) -> None:
         json_output = """
         {
@@ -1864,7 +1899,7 @@ class PyreQueryHandlerTest(testslide.TestCase):
         """
         client_output_writer = MemoryBytesWriter()
         pyre_query_manager = PyreQueryHandler(
-            state=PyreQueryState(path_to_location_type_lookup={}),
+            query_state=PyreQueryState(),
             server_start_options_reader=_create_server_start_options_reader(
                 binary="/bin/pyre",
                 server_identifier="foo",
@@ -1927,10 +1962,11 @@ class PyreQueryHandlerTest(testslide.TestCase):
             ],
         )
 
+    @setup.async_test
     async def test_query_references__bad_json(self) -> None:
         client_output_writer = MemoryBytesWriter()
         pyre_query_manager = PyreQueryHandler(
-            state=PyreQueryState(),
+            query_state=PyreQueryState(),
             server_start_options_reader=_create_server_start_options_reader(
                 binary="/bin/pyre",
                 server_identifier="foo",

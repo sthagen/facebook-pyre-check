@@ -13,7 +13,16 @@ open TestHelper
 module Target = Interprocedural.Target
 open Taint
 
-let set_up_environment ?source ?rules ~context ~model_source () =
+let set_up_environment
+    ?source
+    ?rules
+    ?filtered_sources
+    ?filtered_sinks
+    ?filtered_transforms
+    ~context
+    ~model_source
+    ()
+  =
   let source =
     match source with
     | None -> model_source
@@ -21,36 +30,63 @@ let set_up_environment ?source ?rules ~context ~model_source () =
   in
   let project = ScratchProject.setup ~context ["test.py", source] in
   let configuration =
+    let named name = { AnnotationParser.name; kind = Named } in
+    let sources =
+      [
+        named "TestTest";
+        named "UserControlled";
+        named "Test";
+        named "Demo";
+        { AnnotationParser.name = "WithSubkind"; kind = Parametric };
+      ]
+    in
+    let sinks =
+      [
+        named "TestSink";
+        named "OtherSink";
+        named "Test";
+        named "Demo";
+        named "XSS";
+        { AnnotationParser.name = "TestSinkWithSubkind"; kind = Parametric };
+      ]
+    in
+    let transforms = [TaintTransform.Named "TestTransform"; TaintTransform.Named "DemoTransform"] in
     let rules =
       match rules with
       | Some rules -> rules
-      | None -> []
+      | None ->
+          [
+            {
+              TaintConfiguration.Rule.sources =
+                List.map sources ~f:(fun { AnnotationParser.name; _ } -> Sources.NamedSource name);
+              sinks = List.map sinks ~f:(fun { AnnotationParser.name; _ } -> Sinks.NamedSink name);
+              transforms = [];
+              code = 1;
+              name = "rule 1";
+              message_format = "";
+            };
+          ]
     in
-    let named name = { AnnotationParser.name; kind = Named } in
-    Taint.TaintConfiguration.
+    TaintConfiguration.
       {
         empty with
-        sources =
-          [
-            named "TestTest";
-            named "UserControlled";
-            named "Test";
-            named "Demo";
-            { AnnotationParser.name = "WithSubkind"; kind = Parametric };
-          ];
-        sinks =
-          [
-            named "TestSink";
-            named "OtherSink";
-            named "Test";
-            named "Demo";
-            named "XSS";
-            { AnnotationParser.name = "TestSinkWithSubkind"; kind = Parametric };
-          ];
-        transforms = [TaintTransform.Named "TestTransform"; TaintTransform.Named "DemoTransform"];
+        sources;
+        sinks;
+        transforms;
         features = ["special"];
         partial_sink_labels = String.Map.Tree.of_alist_exn ["Test", ["a"; "b"]];
         rules;
+        filtered_rule_codes = None;
+        filtered_sources;
+        filtered_sinks;
+        source_sink_filter =
+          Some
+            (TaintConfiguration.SourceSinkFilter.create
+               ~rules
+               ~filtered_rule_codes:None
+               ~filtered_sources
+               ~filtered_sinks
+               ~filtered_transforms);
       }
   in
   let source = Test.trim_extra_indentation model_source in
@@ -59,17 +95,12 @@ let set_up_environment ?source ?rules ~context ~model_source () =
     TypeCheck.resolution global_resolution (module TypeCheck.DummyContext)
   in
 
-  let rule_filter =
-    match rules with
-    | Some rules -> Some (List.map rules ~f:(fun { Taint.TaintConfiguration.Rule.code; _ } -> code))
-    | None -> None
-  in
   let ({ ModelParser.errors; skip_overrides; _ } as parse_result) =
     ModelParser.parse
       ~resolution
-      ?rule_filter
       ~source
       ~configuration
+      ~source_sink_filter:configuration.source_sink_filter
       ~callables:None
       ~stubs:(Target.HashSet.create ())
       ()
@@ -84,9 +115,19 @@ let set_up_environment ?source ?rules ~context ~model_source () =
   parse_result, environment, skip_overrides
 
 
-let assert_model ?source ?rules ?expected_skipped_overrides ~context ~model_source ~expect () =
+let assert_model
+    ?source
+    ?rules
+    ?filtered_sources
+    ?filtered_sinks
+    ?expected_skipped_overrides
+    ~context
+    ~model_source
+    ~expect
+    ()
+  =
   let { ModelParser.models; _ }, environment, skip_overrides =
-    set_up_environment ?source ?rules ~context ~model_source ()
+    set_up_environment ?source ?rules ?filtered_sources ?filtered_sinks ~context ~model_source ()
   in
   begin
     match expected_skipped_overrides with
@@ -149,6 +190,7 @@ let assert_invalid_model ?path ?source ?(sources = []) ~context ~model_source ~e
     ModelParser.parse
       ~resolution
       ~configuration
+      ~source_sink_filter:None
       ?path
       ~source:(Test.trim_extra_indentation model_source)
       ~callables:None
@@ -2573,7 +2615,9 @@ let test_invalid_models context =
         model = ReturnModel(TaintSource[Test])
       )
     |}
-    ~expect:"The Extends is_transitive must be either True or False, got: `foobar`."
+    ~expect:
+      "The Extends and AnyChild `is_transitive` attribute must be either True or False, got: \
+       `foobar`."
     ();
   assert_invalid_model
     ~model_source:
@@ -3408,7 +3452,31 @@ Unexpected statement: `food(y)`
       )
     |}
     ~expect:
-      {|`Decorator(arguments.contains("1"), name.matches("d"))` is not a valid any_child clause. Constraints within any_child should only be parent constraints.|}
+      {|`Decorator(arguments.contains("1"), name.matches("d"))` is not a valid any_child clause. Constraints within any_child should be either parent constraints or any of `AnyOf`, `AllOf`, and `Not`.|}
+    ();
+  assert_valid_model
+    ~source:{|
+      @d("1")
+      class A:
+        def foo(x):
+          ...
+    |}
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "valid_model",
+        find = "methods",
+        where = [
+            parent.any_child(
+              AnyOf(
+                parent.decorator(arguments.contains("1"), name.matches("d")),
+                parent.matches("A")
+              )
+            )
+        ],
+        model = Returns(TaintSource[A])
+      )
+    |}
     ();
 
   (* Test Decorator clause in model queries *)
@@ -3945,7 +4013,281 @@ let test_filter_by_rules context =
             ]
           "test.partial_sink";
       ]
-    ()
+    ();
+  assert_model
+    ~rules:
+      [
+        {
+          Taint.TaintConfiguration.Rule.sources = [Sources.NamedSource "WithSubkind"];
+          sinks = [Sinks.NamedSink "Test"];
+          transforms = [];
+          code = 5022;
+          message_format = "";
+          name = "test rule";
+        };
+      ]
+    ~model_source:"def test.taint() -> TaintSource[WithSubkind[A]]: ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~returns:[Sources.ParametricSource { source_name = "WithSubkind"; subkind = "A" }]
+          "test.taint";
+      ]
+    ();
+  assert_model
+    ~rules:
+      [
+        {
+          Taint.TaintConfiguration.Rule.sources = [Sources.NamedSource "TestTest"];
+          sinks = [Sinks.NamedSink "TestSinkWithSubkind"];
+          transforms = [];
+          code = 5023;
+          message_format = "";
+          name = "test rule";
+        };
+      ]
+    ~model_source:"def test.taint(x: TaintSink[TestSinkWithSubkind[A]]): ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~sink_parameters:
+            [
+              {
+                name = "x";
+                sinks = [Sinks.ParametricSink { sink_name = "TestSinkWithSubkind"; subkind = "A" }];
+              };
+            ]
+          "test.taint";
+      ]
+    ();
+  ()
+
+
+let test_filter_by_sources context =
+  let assert_model = assert_model ~context in
+  assert_model
+    ~filtered_sources:(Sources.Set.of_list [Sources.NamedSource "Test"])
+    ~model_source:"def test.taint() -> TaintSource[Test]: ..."
+    ~expect:[outcome ~kind:`Function ~returns:[Sources.NamedSource "Test"] "test.taint"]
+    ();
+  assert_model
+    ~filtered_sources:(Sources.Set.of_list [Sources.NamedSource "Test"])
+    ~model_source:"def test.taint() -> TaintSource[TestTest]: ..."
+    ~expect:[outcome ~kind:`Function ~returns:[] "test.taint"]
+    ();
+  assert_model
+    ~filtered_sources:(Sources.Set.of_list [Sources.NamedSource "WithSubkind"])
+    ~model_source:"def test.taint() -> TaintSource[WithSubkind[A]]: ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~returns:[Sources.ParametricSource { source_name = "WithSubkind"; subkind = "A" }]
+          "test.taint";
+      ]
+    ();
+  assert_model
+    ~filtered_sources:(Sources.Set.of_list [Sources.NamedSource "Test"])
+    ~model_source:"def test.taint() -> TaintSource[WithSubkind[A]]: ..."
+    ~expect:[outcome ~kind:`Function ~returns:[] "test.taint"]
+    ();
+  (* Does not affect AttachTo *)
+  assert_model
+    ~filtered_sources:(Sources.Set.of_list [Sources.NamedSource "Test"])
+    ~model_source:"def test.source() -> AttachToSource[Via[special]]: ..."
+    ~expect:[outcome ~kind:`Function ~returns:[Sources.Attach] "test.source"]
+    ();
+  (* Filters sanitizers *)
+  assert_model
+    ~filtered_sources:(Sources.Set.of_list [Sources.NamedSource "Test"])
+    ~model_source:{|
+      def test.taint(x: Sanitize[TaintSource[Test]]): ...
+    |}
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~parameter_sanitizers:
+            [
+              {
+                name = "x";
+                sanitize =
+                  {
+                    Taint.Domains.Sanitize.sources =
+                      Some (Specific (Sources.Set.singleton (Sources.NamedSource "Test")));
+                    sinks = None;
+                    tito = None;
+                  };
+              };
+            ]
+          "test.taint";
+      ]
+    ();
+  assert_model
+    ~filtered_sources:(Sources.Set.of_list [Sources.NamedSource "Test"])
+    ~model_source:{|
+      def test.taint(x: Sanitize[TaintSource[TestTest]]): ...
+    |}
+    ~expect:[outcome ~kind:`Function ~parameter_sanitizers:[] "test.taint"]
+    ();
+  assert_model
+    ~filtered_sources:(Sources.Set.of_list [Sources.NamedSource "Test"])
+    ~model_source:{|
+      @SanitizeSingleTrace(TaintSource)
+      def test.taint(x): ...
+    |}
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~global_sanitizer:{ Taint.Domains.Sanitize.sources = Some All; sinks = None; tito = None }
+          "test.taint";
+      ]
+    ();
+  assert_model
+    ~filtered_sources:(Sources.Set.of_list [Sources.NamedSource "Test"])
+    ~model_source:
+      {|
+      @SanitizeSingleTrace(TaintSource[TestTest])
+      def test.taint(x): ...
+    |}
+    ~expect:[outcome ~kind:`Function "test.taint"]
+    ();
+  assert_model
+    ~filtered_sources:(Sources.Set.of_list [Sources.NamedSource "Test"])
+    ~model_source:{|
+      def test.taint(x) -> Sanitize[TaintSource[TestTest]]: ...
+    |}
+    ~expect:[outcome ~kind:`Function "test.taint"]
+    ();
+  ()
+
+
+let test_filter_by_sinks context =
+  let assert_model = assert_model ~context in
+  assert_model
+    ~filtered_sinks:(Sinks.Set.of_list [Sinks.NamedSink "TestSink"])
+    ~model_source:"def test.taint(x: TaintSink[TestSink]): ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~sink_parameters:[{ name = "x"; sinks = [Sinks.NamedSink "TestSink"] }]
+          "test.taint";
+      ]
+    ();
+  assert_model
+    ~filtered_sinks:(Sinks.Set.of_list [Sinks.NamedSink "TestSink"])
+    ~model_source:"def test.taint(x: TaintSink[OtherSink]): ..."
+    ~expect:[outcome ~kind:`Function ~sink_parameters:[] "test.taint"]
+    ();
+  assert_model
+    ~filtered_sinks:(Sinks.Set.of_list [Sinks.NamedSink "TestSinkWithSubkind"])
+    ~model_source:"def test.taint(x: TaintSink[TestSinkWithSubkind[A]]): ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~sink_parameters:
+            [
+              {
+                name = "x";
+                sinks = [Sinks.ParametricSink { sink_name = "TestSinkWithSubkind"; subkind = "A" }];
+              };
+            ]
+          "test.taint";
+      ]
+    ();
+  assert_model
+    ~filtered_sinks:(Sinks.Set.of_list [Sinks.NamedSink "TestSink"])
+    ~model_source:"def test.taint(x: TaintSink[TestSinkWithSubkind[A]]): ..."
+    ~expect:[outcome ~kind:`Function ~sink_parameters:[] "test.taint"]
+    ();
+  (* Does not affect AttachTo, Tito, Transform *)
+  assert_model
+    ~filtered_sinks:(Sinks.Set.of_list [Sinks.NamedSink "TestSink"])
+    ~model_source:"def test.sink(arg: AttachToSink[Via[special]]): ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~sink_parameters:[{ name = "arg"; sinks = [Sinks.Attach] }]
+          "test.sink";
+      ]
+    ();
+  assert_model
+    ~filtered_sinks:(Sinks.Set.of_list [Sinks.NamedSink "TestSink"])
+    ~model_source:"def test.tito(parameter: TaintInTaintOut): ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~tito_parameters:[{ name = "parameter"; sinks = [Sinks.LocalReturn] }]
+          "test.tito";
+      ]
+    ();
+  assert_model
+    ~filtered_sinks:(Sinks.Set.of_list [Sinks.NamedSink "TestSink"])
+    ~model_source:"def test.update(self: TaintInTaintOut[LocalReturn, Updates[arg1]], arg1): ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~tito_parameters:[{ name = "self"; sinks = [Sinks.LocalReturn; Sinks.ParameterUpdate 1] }]
+          "test.update";
+      ]
+    ();
+  (* Filters sanitizers *)
+  assert_model
+    ~filtered_sinks:(Sinks.Set.of_list [Sinks.NamedSink "TestSink"])
+    ~model_source:{|
+      def test.taint(x: Sanitize[TaintSink[TestSink]]): ...
+    |}
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~parameter_sanitizers:
+            [
+              {
+                name = "x";
+                sanitize =
+                  {
+                    Taint.Domains.Sanitize.sources = None;
+                    sinks = Some (Specific (Sinks.Set.singleton (Sinks.NamedSink "TestSink")));
+                    tito = None;
+                  };
+              };
+            ]
+          "test.taint";
+      ]
+    ();
+  assert_model
+    ~filtered_sinks:(Sinks.Set.of_list [Sinks.NamedSink "TestSink"])
+    ~model_source:{|
+      def test.taint(x: Sanitize[TaintSink[OtherSink]]): ...
+    |}
+    ~expect:[outcome ~kind:`Function "test.taint"]
+    ();
+  assert_model
+    ~filtered_sinks:(Sinks.Set.of_list [Sinks.NamedSink "TestSink"])
+    ~model_source:{|
+      def test.taint(x) -> Sanitize[TaintSink[OtherSink]]: ...
+    |}
+    ~expect:[outcome ~kind:`Function "test.taint"]
+    ();
+  assert_model
+    ~filtered_sinks:(Sinks.Set.of_list [Sinks.NamedSink "TestSink"])
+    ~model_source:
+      {|
+      @SanitizeSingleTrace(TaintSink[OtherSink])
+      def test.taint(x): ...
+    |}
+    ~expect:[outcome ~kind:`Function "test.taint"]
+    ();
+  ()
 
 
 let test_query_parsing context =
@@ -5211,6 +5553,214 @@ let test_query_parsing context =
         };
       ]
     ();
+
+  (* AnyChild *)
+  assert_queries
+    ~source:
+      {|@d1
+      class Foo:
+        def __init__(self, a, b):
+          ...
+      @d1
+      class Bar(Foo):
+        def __init__(self, a, b):
+          ...
+      @d1
+      class Baz:
+        def __init__(self, a, b):
+          ...|}
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+      name = "get_parent_of_d1_decorator_sources",
+      find = "methods",
+      where = [
+        parent.any_child(
+          AllOf(
+            parent.decorator(
+              name.matches("d1")
+            ),
+            AnyOf(
+              Not(parent.matches("Foo")),
+              parent.matches("Baz")
+            )
+          ),
+          is_transitive=False
+        ),
+        name.matches("\.__init__$")
+      ],
+      model = [
+        Parameters(TaintSource[Test], where=[
+            Not(name.equals("self")),
+            Not(name.equals("a"))
+        ])
+      ]
+    )
+    |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 26; column = 1 } };
+          name = "get_parent_of_d1_decorator_sources";
+          query =
+            [
+              ParentConstraint
+                (ClassConstraint.AnyChildSatisfies
+                   {
+                     class_constraint =
+                       ClassConstraint.AllOf
+                         [
+                           ClassConstraint.DecoratorSatisfies
+                             {
+                               name_constraint = Matches (Re2.create_exn "d1");
+                               arguments_constraint = None;
+                             };
+                           ClassConstraint.AnyOf
+                             [
+                               ClassConstraint.Not
+                                 (ClassConstraint.NameSatisfies (Matches (Re2.create_exn "Foo")));
+                               ClassConstraint.NameSatisfies (Matches (Re2.create_exn "Baz"));
+                             ];
+                         ];
+                     is_transitive = false;
+                   });
+              NameConstraint (Matches (Re2.create_exn "\\.__init__$"));
+            ];
+          rule_kind = MethodModel;
+          productions =
+            [
+              ParameterTaint
+                {
+                  where =
+                    [
+                      ParameterConstraint.Not (ParameterConstraint.NameConstraint (Equals "self"));
+                      ParameterConstraint.Not (ParameterConstraint.NameConstraint (Equals "a"));
+                    ];
+                  taint =
+                    [
+                      TaintAnnotation
+                        (ModelParser.Source
+                           {
+                             source = Sources.NamedSource "Test";
+                             breadcrumbs = [];
+                             via_features = [];
+                             path = [];
+                             leaf_names = [];
+                             leaf_name_provided = false;
+                             trace_length = None;
+                           });
+                    ];
+                };
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  assert_queries
+    ~source:
+      {|@d1
+      class Foo:
+        def __init__(self, a, b):
+          ...
+      @d1
+      class Bar(Foo):
+        def __init__(self, a, b):
+          ...
+      @d1
+      class Baz:
+        def __init__(self, a, b):
+          ...|}
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+      name = "get_parent_of_d1_decorator_transitive_sources",
+      find = "methods",
+      where = [
+        parent.any_child(
+          AllOf(
+            parent.decorator(
+              name.matches("d1")
+            ),
+            AnyOf(
+              Not(parent.matches("Foo")),
+              parent.matches("Baz")
+            )
+          ),
+          is_transitive=True
+        ),
+        name.matches("\.__init__$")
+      ],
+      model = [
+        Parameters(TaintSource[Test], where=[
+            Not(name.equals("self")),
+            Not(name.equals("a"))
+        ])
+      ]
+    )
+    |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 26; column = 1 } };
+          name = "get_parent_of_d1_decorator_transitive_sources";
+          query =
+            [
+              ParentConstraint
+                (ClassConstraint.AnyChildSatisfies
+                   {
+                     class_constraint =
+                       ClassConstraint.AllOf
+                         [
+                           ClassConstraint.DecoratorSatisfies
+                             {
+                               name_constraint = Matches (Re2.create_exn "d1");
+                               arguments_constraint = None;
+                             };
+                           ClassConstraint.AnyOf
+                             [
+                               ClassConstraint.Not
+                                 (ClassConstraint.NameSatisfies (Matches (Re2.create_exn "Foo")));
+                               ClassConstraint.NameSatisfies (Matches (Re2.create_exn "Baz"));
+                             ];
+                         ];
+                     is_transitive = true;
+                   });
+              NameConstraint (Matches (Re2.create_exn "\\.__init__$"));
+            ];
+          rule_kind = MethodModel;
+          productions =
+            [
+              ParameterTaint
+                {
+                  where =
+                    [
+                      ParameterConstraint.Not (ParameterConstraint.NameConstraint (Equals "self"));
+                      ParameterConstraint.Not (ParameterConstraint.NameConstraint (Equals "a"));
+                    ];
+                  taint =
+                    [
+                      TaintAnnotation
+                        (ModelParser.Source
+                           {
+                             source = Sources.NamedSource "Test";
+                             breadcrumbs = [];
+                             via_features = [];
+                             path = [];
+                             leaf_names = [];
+                             leaf_name_provided = false;
+                             trace_length = None;
+                           });
+                    ];
+                };
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
   ()
 
 
@@ -5222,6 +5772,8 @@ let () =
          "cross_repository_models" >:: test_cross_repository_models;
          "demangle_class_attributes" >:: test_demangle_class_attributes;
          "filter_by_rules" >:: test_filter_by_rules;
+         "filter_by_sources" >:: test_filter_by_sources;
+         "filter_by_sinks" >:: test_filter_by_sinks;
          "invalid_models" >:: test_invalid_models;
          "partial_sinks" >:: test_partial_sinks;
          "query_parsing" >:: test_query_parsing;

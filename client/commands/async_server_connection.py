@@ -5,15 +5,11 @@
 
 import abc
 import asyncio
+import contextlib
 import logging
 import sys
 from pathlib import Path
 from typing import AsyncIterator, List, Optional, Tuple
-
-if sys.version_info >= (3, 7):
-    from contextlib import asynccontextmanager
-else:
-    from async_generator import asynccontextmanager
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
@@ -34,7 +30,7 @@ class BytesReader(abc.ABC):
         If EOF is reached before the complete separator is found, raise
         `asyncio.IncompleteReadError`.
         """
-        raise NotImplementedError
+        raise NotImplementedError()
 
     @abc.abstractmethod
     async def read_exactly(self, count: int) -> bytes:
@@ -43,7 +39,7 @@ class BytesReader(abc.ABC):
         If EOF is reached before the complete separator is found, raise
         `asyncio.IncompleteReadError`.
         """
-        raise NotImplementedError
+        raise NotImplementedError()
 
     async def readline(self) -> bytes:
         """
@@ -68,7 +64,7 @@ class BytesWriter(abc.ABC):
         The method attempts to write the data to the underlying channel and
         flushes immediately.
         """
-        raise NotImplementedError
+        raise NotImplementedError()
 
     @abc.abstractmethod
     async def close(self) -> None:
@@ -76,7 +72,7 @@ class BytesWriter(abc.ABC):
         The method closes the underlying channel and wait until the channel is
         fully closed.
         """
-        raise NotImplementedError
+        raise NotImplementedError()
 
 
 class TextReader:
@@ -267,7 +263,7 @@ class StreamBytesWriter(BytesWriter):
                 await asyncio.sleep(0)
 
 
-@asynccontextmanager
+@contextlib.asynccontextmanager
 async def connect(
     socket_path: Path, buffer_size: Optional[int] = None
 ) -> AsyncIterator[Tuple[BytesReader, BytesWriter]]:
@@ -306,7 +302,7 @@ async def connect(
             await writer.close()
 
 
-@asynccontextmanager
+@contextlib.asynccontextmanager
 async def connect_in_text_mode(
     socket_path: Path, buffer_size: Optional[int] = None
 ) -> AsyncIterator[Tuple[TextReader, TextWriter]]:
@@ -356,7 +352,7 @@ async def create_async_stdin_stdout() -> Tuple[TextReader, TextWriter]:
 class BackgroundTask(abc.ABC):
     @abc.abstractmethod
     async def run(self) -> None:
-        raise NotImplementedError
+        raise NotImplementedError()
 
 
 class BackgroundTaskManager:

@@ -7,40 +7,9 @@
 
 open Core
 
-module ServerEvent = struct
-  module ErrorKind = struct
-    type t =
-      | Watchman
-      | BuckInternal
-      | BuckUser
-      | Pyre
-      | Unknown
-    [@@deriving sexp, compare, hash, to_yojson]
-  end
+exception ServerStopped
 
-  type t =
-    | SocketCreated of PyrePath.t
-    | ServerInitialized
-    | Exception of string * ErrorKind.t
-  [@@deriving sexp, compare, hash, to_yojson]
-
-  let serialize event = to_yojson event |> Yojson.Safe.to_string
-
-  let write ~output_channel event =
-    let open Lwt.Infix in
-    serialize event |> Lwt_io.fprintl output_channel >>= fun () -> Lwt_io.flush output_channel
-end
-
-module ExitStatus = struct
-  type t =
-    | Ok
-    | Error
-  [@@deriving sexp, compare, hash]
-
-  let exit_code = function
-    | Ok -> 0
-    | Error -> 1
-end
+exception ServerInterrupted of Core.Signal.t
 
 let with_performance_logging ?(normals = []) ~name f =
   let open Lwt.Infix in
@@ -231,10 +200,6 @@ let handle_connection
         >>= fun () -> handle_line new_connection_state
   in
   ConnectionState.create () |> handle_line
-
-
-let create_server_properties ~configuration { StartOptions.socket_path; critical_files; _ } =
-  ServerProperties.create ~socket_path ~critical_files ~configuration ()
 
 
 let initialize_server_state
@@ -486,17 +451,10 @@ let initialize_server_state
   Lwt.return state
 
 
-let get_watchman_subscriber ?watchman ~watchman_root ~critical_files ~extensions ~source_paths () =
-  let open Lwt.Infix in
-  match watchman_root with
+let get_watchman_subscriber ~critical_files ~extensions ~source_paths = function
   | None -> Lwt.return_none
-  | Some root ->
-      let get_raw_watchman = function
-        | Some watchman -> Lwt.return watchman
-        | None -> Watchman.Raw.create_exn ()
-      in
-      get_raw_watchman watchman
-      >>= fun raw ->
+  | Some { StartOptions.Watchman.root; raw } ->
+      let open Lwt.Infix in
       let subscriber_setting =
         {
           Watchman.Subscriber.Setting.raw;
@@ -518,77 +476,8 @@ let on_watchman_update ~server_properties ~server_state paths =
       Lwt.return (new_state, ()))
 
 
-let with_server
-    ?watchman
-    ?build_system_initializer
-    ~configuration:({ Configuration.Analysis.extensions; _ } as configuration)
-    ~f
-    ({
-       StartOptions.socket_path;
-       source_paths;
-       watchman_root;
-       critical_files;
-       saved_state_action;
-       skip_initial_type_check;
-       use_lazy_module_tracking;
-     } as start_options)
-  =
-  let open Lwt in
-  (* Watchman connection needs to be up before server can start -- otherwise we risk missing
-     filesystem updates during server establishment. *)
-  get_watchman_subscriber ?watchman ~watchman_root ~critical_files ~extensions ~source_paths ()
-  >>= fun watchman_subscriber ->
-  let build_system_initializer =
-    match build_system_initializer with
-    | Some build_system_initializer -> build_system_initializer
-    | None -> BuildSystem.get_initializer source_paths
-  in
-  LwtSocketServer.PreparedSocket.create_from_path socket_path
-  >>= fun prepared_socket ->
-  (* We do not want the expensive server initialization to happen before we start to accept client
-     requests. *)
-  let server_properties = create_server_properties ~configuration start_options in
-  let server_state =
-    ExclusiveLock.Lazy.create (fun () ->
-        initialize_server_state
-          ?watchman_subscriber
-          ~build_system_initializer
-          ~saved_state_action
-          ~skip_initial_type_check
-          ~use_lazy_module_tracking
-          server_properties)
-  in
-  LwtSocketServer.establish prepared_socket ~f:(handle_connection ~server_properties ~server_state)
-  >>= fun server ->
-  let server_waiter () = f (socket_path, server_properties, server_state) in
-  let server_destructor () =
-    Log.info "Server is going down. Cleaning up...";
-    BuildSystem.Initializer.cleanup build_system_initializer
-    >>= fun () -> LwtSocketServer.shutdown server
-  in
-  finalize
-    (fun () ->
-      Log.info "Server has started listening on socket `%a`" PyrePath.pp socket_path;
-      match watchman_subscriber with
-      | None ->
-          (* Only wait for the server if we do not have a watchman subscriber. *)
-          server_waiter ()
-      | Some subscriber ->
-          let watchman_waiter =
-            Watchman.Subscriber.listen
-              ~f:(on_watchman_update ~server_properties ~server_state)
-              subscriber
-            >>= fun () ->
-            (* Lost watchman connection is considered an error. *)
-            return ExitStatus.Error
-          in
-          (* Make sure when the watchman subscriber crashes, the server would go down as well. *)
-          Lwt.choose [server_waiter (); watchman_waiter])
-    server_destructor
-
-
 (* Invoke `on_caught` when given unix signals are received. *)
-let wait_on_signals ~on_caught signals =
+let wait_for_signal ~on_caught signals =
   let open Lwt in
   let waiter, resolver = wait () in
   List.iter signals ~f:(fun signal ->
@@ -601,9 +490,78 @@ let wait_on_signals ~on_caught signals =
   on_caught signal
 
 
+let with_server
+    ~configuration:({ Configuration.Analysis.extensions; _ } as configuration)
+    ~when_started
+    {
+      StartOptions.socket_path;
+      source_paths;
+      watchman;
+      build_system_initializer;
+      critical_files;
+      saved_state_action;
+      skip_initial_type_check;
+      use_lazy_module_tracking;
+    }
+  =
+  let open Lwt in
+  (* Watchman connection needs to be up before server can start -- otherwise we risk missing
+     filesystem updates during server establishment. *)
+  get_watchman_subscriber ~critical_files ~extensions ~source_paths watchman
+  >>= fun watchman_subscriber ->
+  let server_properties = ServerProperties.create ~socket_path ~critical_files ~configuration () in
+  let server_state =
+    (* Use a lazy lock so we do not initialize the expensive server until we know server can be
+       established (without conflicting with a pre-existing server). *)
+    ExclusiveLock.Lazy.create (fun () ->
+        initialize_server_state
+          ?watchman_subscriber
+          ~build_system_initializer
+          ~saved_state_action
+          ~skip_initial_type_check
+          ~use_lazy_module_tracking
+          server_properties)
+  in
+  let after_server_starts () =
+    Log.info "Server has started listening on socket `%a`" PyrePath.pp socket_path;
+    let waiters =
+      let server_waiter () = when_started (socket_path, server_properties, server_state) in
+      let signal_waiters =
+        [
+          (* We rely on SIGINT for normal server shutdown. *)
+          wait_for_signal [Signal.int] ~on_caught:(fun _ -> Lwt.fail ServerStopped);
+          (* Getting these signals usually indicates something serious went wrong. *)
+          wait_for_signal
+            [Signal.abrt; Signal.term; Signal.quit; Signal.segv]
+            ~on_caught:(fun signal ->
+              let { ServerProperties.start_time; _ } = server_properties in
+              Stop.log_stopped_server ~reason:(Signal.to_string signal) ~start_time ();
+              Lwt.fail (ServerInterrupted signal));
+        ]
+      in
+      let watchman_waiter =
+        Option.map watchman_subscriber ~f:(fun subscriber ->
+            Watchman.Subscriber.listen
+              ~f:(on_watchman_update ~server_properties ~server_state)
+              subscriber
+            >>= fun () ->
+            Lwt.fail (Watchman.SubscriptionError "Lost subscription connection to watchman"))
+      in
+      List.concat_no_order [[server_waiter ()]; signal_waiters; Option.to_list watchman_waiter]
+    in
+    Lwt.choose waiters
+  in
+  let after_server_stops () =
+    Log.info "Server is going down. Cleaning up...";
+    BuildSystem.Initializer.cleanup build_system_initializer
+  in
+  LwtSocketServer.SocketAddress.create_from_path socket_path
+  |> LwtSocketServer.with_server
+       ~handle_connection:(handle_connection ~server_properties ~server_state)
+       ~f:(fun () -> Lwt.finalize after_server_starts after_server_stops)
+
+
 let start_server
-    ?watchman
-    ?build_system_initializer
     ?(on_server_socket_ready = fun _ -> Lwt.return_unit)
     ~on_started
     ~on_exception
@@ -611,111 +569,7 @@ let start_server
     start_options
   =
   let open Lwt in
-  let f (socket_path, server_properties, server_state) =
+  let when_started (socket_path, server_properties, server_state) =
     on_server_socket_ready socket_path >>= fun _ -> on_started server_properties server_state
   in
-  catch
-    (fun () -> with_server ?watchman ?build_system_initializer ~configuration start_options ~f)
-    on_exception
-
-
-let start_server_and_wait ?event_channel ~configuration start_options =
-  let open Lwt in
-  let write_event event =
-    match event_channel with
-    | None -> return_unit
-    | Some output_channel ->
-        catch
-          (fun () -> ServerEvent.write ~output_channel event)
-          (function
-            | Lwt_io.Channel_closed _
-            | Caml.Unix.Unix_error (Caml.Unix.EPIPE, _, _) ->
-                return_unit
-            | exn -> Lwt.fail exn)
-  in
-  start_server
-    start_options
-    ~configuration
-    ~on_server_socket_ready:(fun socket_path ->
-      (* An empty message signals that server socket has been created. *)
-      write_event (ServerEvent.SocketCreated socket_path))
-    ~on_started:(fun { ServerProperties.start_time; _ } server_state ->
-      ExclusiveLock.Lazy.force server_state
-      >>= fun _ ->
-      write_event ServerEvent.ServerInitialized
-      >>= fun () ->
-      choose
-        [
-          (* We rely on SIGINT for normal server shutdown. *)
-          wait_on_signals [Signal.int] ~on_caught:(fun _ -> return ExitStatus.Ok);
-          (* Getting these signals usually indicates something serious went wrong. *)
-          wait_on_signals
-            [Signal.abrt; Signal.term; Signal.quit; Signal.segv]
-            ~on_caught:(fun signal ->
-              Stop.log_stopped_server ~reason:(Signal.to_string signal) ~start_time ();
-              return ExitStatus.Error);
-        ])
-    ~on_exception:(fun exn ->
-      let kind, message =
-        match exn with
-        | Buck.Raw.BuckError { buck_command; arguments; description; exit_code; additional_logs } ->
-            (* Buck exit code >=10 are considered internal:
-               https://buck.build/command/exit_codes.html *)
-            let kind =
-              match exit_code with
-              | Some exit_code when exit_code < 10 -> ServerEvent.ErrorKind.BuckUser
-              | _ -> ServerEvent.ErrorKind.BuckInternal
-            in
-            let reproduce_message =
-              if Buck.Raw.ArgumentList.length arguments <= 20 then
-                [
-                  Format.sprintf
-                    "To reproduce this error, run `%s`."
-                    (Buck.Raw.ArgumentList.to_buck_command ~buck_command arguments);
-                ]
-              else
-                []
-            in
-            let additional_messages =
-              if List.is_empty additional_logs then
-                []
-              else
-                "Here are the last few lines of Buck log:"
-                :: "  ..." :: List.map additional_logs ~f:(String.( ^ ) " ")
-            in
-            ( kind,
-              Format.sprintf
-                "Cannot build the project: %s.\n%s"
-                description
-                (String.concat ~sep:"\n" (List.append reproduce_message additional_messages)) )
-        | Buck.Interface.JsonError message ->
-            ( ServerEvent.ErrorKind.Pyre,
-              Format.sprintf
-                "Cannot build the project because Buck returns malformed JSON: %s"
-                message )
-        | Buck.Builder.LinkTreeConstructionError message ->
-            ( ServerEvent.ErrorKind.Pyre,
-              Format.sprintf
-                "Cannot build the project because Pyre encounters a fatal error while constructing \
-                 a link tree: %s"
-                message )
-        | ChecksumMap.LoadError message ->
-            ( ServerEvent.ErrorKind.Pyre,
-              Format.sprintf
-                "Cannot build the project because Pyre encounters a fatal error while loading \
-                 external wheel: %s"
-                message )
-        | Watchman.ConnectionError message ->
-            ServerEvent.ErrorKind.Watchman, Format.sprintf "Watchman connection error: %s" message
-        | Watchman.SubscriptionError message ->
-            ServerEvent.ErrorKind.Watchman, Format.sprintf "Watchman subscription error: %s" message
-        | Watchman.QueryError message ->
-            ServerEvent.ErrorKind.Watchman, Format.sprintf "Watchman query error: %s" message
-        | Unix.Unix_error (Unix.EADDRINUSE, _, _) ->
-            ( ServerEvent.ErrorKind.Pyre,
-              "A Pyre server is already running for the current project. Use `pyre stop` to stop \
-               it before starting another one." )
-        | _ -> ServerEvent.ErrorKind.Unknown, Printexc.get_backtrace ()
-      in
-      Log.info "%s" message;
-      write_event (ServerEvent.Exception (message, kind)) >>= fun () -> return ExitStatus.Error)
+  catch (fun () -> with_server ~configuration ~when_started start_options) on_exception

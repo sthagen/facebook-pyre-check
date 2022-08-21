@@ -96,14 +96,18 @@ async def read_json_rpc(
             raise json_rpc.ParseError(str(error)) from None
 
 
+def json_rpc_payload(message: json_rpc.JSONRPC) -> str:
+    payload = message.serialize()
+    return f"Content-Length: {len(payload)}\r\n\r\n{payload}"
+
+
 async def write_json_rpc(
     output_channel: async_server_connection.TextWriter, response: json_rpc.JSONRPC
 ) -> None:
     """
     Asynchronously write a JSON-RPC response to the given output channel.
     """
-    payload = response.serialize()
-    await output_channel.write(f"Content-Length: {len(payload)}\r\n\r\n{payload}")
+    await output_channel.write(json_rpc_payload(response))
 
 
 async def write_json_rpc_ignore_connection_error(
@@ -475,14 +479,14 @@ class HoverTextDocumentParameters(json_mixins.CamlCaseAndExcludeJsonMixin):
 
 
 @dataclasses.dataclass(frozen=True)
-class HoverResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
+class LspHoverResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
     """Contains the Markdown response to be shown in the hover card."""
 
     contents: str
 
     @staticmethod
-    def empty() -> "HoverResponse":
-        return HoverResponse(contents="")
+    def empty() -> "LspHoverResponse":
+        return LspHoverResponse(contents="")
 
 
 @dataclasses.dataclass(frozen=True)

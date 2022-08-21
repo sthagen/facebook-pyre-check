@@ -53,7 +53,7 @@ let issues_to_json ~fixpoint_state ~filename_lookup ~override_graph issues =
 
 
 let metadata () =
-  let codes = Issue.code_metadata () in
+  let codes = TaintConfiguration.code_metadata () in
   `Assoc ["codes", codes]
 
 
@@ -242,8 +242,8 @@ let report
      we dumped to a directory) to summarize *)
   let error_to_json error =
     error
-    |> Interprocedural.Error.instantiate ~show_error_traces ~lookup:filename_lookup
-    |> Interprocedural.Error.Instantiated.to_yojson
+    |> Error.instantiate ~show_error_traces ~lookup:filename_lookup
+    |> Error.Instantiated.to_yojson
   in
   let errors = List.map errors ~f:error_to_json in
   match result_json_path with

@@ -500,6 +500,15 @@ let test_find_narrowest_spanning_symbol context =
          cfg_data = { define_name = !&"test.foo"; node_id = 4; statement_index = 0 };
          use_postcondition_info = false;
        });
+  (* This is a judgment call. We could either show `list` or `list[str]`.
+
+     Doing the latter - always returning the entire annotation - would mean that go-to-def would
+     break for cases where we want to get the precise element type, e.g., `dict[int, Foo]` would
+     jump to `dict` instead of `Foo`. So, we will go with the closest symbol within the annotation
+     that spans the cursor position.
+
+     Given that `hover` on a type annotation isn't as valuable as go-to-def, this should be a
+     reasonable tradeoff. *)
   assert_narrowest_expression
     ~source:
       {|
@@ -509,7 +518,7 @@ let test_find_narrowest_spanning_symbol context =
     |}
     (Some
        {
-         symbol_with_definition = TypeAnnotation (parse_single_expression "list[str]");
+         symbol_with_definition = TypeAnnotation (parse_single_expression "list");
          cfg_data = { define_name = !&"test.foo"; node_id = 4; statement_index = 0 };
          use_postcondition_info = false;
        });
@@ -1036,6 +1045,32 @@ let test_find_narrowest_spanning_symbol context =
          cfg_data = { define_name = !&"test.$toplevel"; node_id = 4; statement_index = 1 };
          use_postcondition_info = false;
        });
+  assert_narrowest_expression
+    ~source:{|
+        from typing import Callable
+
+        f: Callable
+        #   ^- cursor
+    |}
+    (Some
+       {
+         symbol_with_definition = TypeAnnotation (parse_single_expression "typing.Callable");
+         cfg_data = { define_name = !&"test.$toplevel"; node_id = 4; statement_index = 1 };
+         use_postcondition_info = false;
+       });
+  assert_narrowest_expression
+    ~source:
+      {|
+        class Foo:
+          def my_method(self, x: "Foo") -> None: ...
+            #                      ^- cursor
+    |}
+    (Some
+       {
+         symbol_with_definition = TypeAnnotation (parse_single_expression "test.Foo");
+         cfg_data = { define_name = !&"test.Foo.my_method"; node_id = 0; statement_index = 0 };
+         use_postcondition_info = false;
+       });
   ()
 
 
@@ -1134,14 +1169,17 @@ let test_resolve_definition_for_symbol context =
     |}
     (* This points to builtins.pyi. *)
     (Some ":120:0-181:32");
-  assert_resolved_definition
-    {|
+  assert_resolved_definition_with_location_string
+    ~source:
+      {|
         def foo() -> None:
           xs: list[str] = ["a", "b"]
           #    ^- cursor
 
           # No definition found.
-    |};
+    |}
+    (* This points to builtins.pyi. *)
+    (Some ":263:0-279:31");
   assert_resolved_definition
     {|
       class Foo:
@@ -1415,6 +1453,182 @@ let test_resolve_definition_for_symbol context =
               #  ^- cursor
     |}
     (Some "my_placeholder_stub:1:0-1:0");
+  assert_resolved_definition
+    {|
+        class Base:
+          def base_method(self) -> None: ...
+        # ^                                 ^
+
+        class Child(Base): ...
+
+        def foo(x: Child) -> None:
+          x.base_method()
+          #    ^- cursor
+    |};
+  assert_resolved_definition
+    {|
+        class Base:
+          base_attribute: int
+        # ^                  ^
+
+        class Child(Base): ...
+
+        def foo(x: Child) -> None:
+          x.base_attribute
+          #    ^- cursor
+    |};
+  assert_resolved_definition_with_location_string
+    ~source:
+      {|
+        MY_GLOBAL = "hello"
+
+        def main() -> int:
+          MY_GLOBAL.capitalize()
+          #    ^- cursor
+    |}
+    (Some "test:2:0-2:9");
+  assert_resolved_definition_with_location_string
+    ~source:
+      {|
+        from typing import Callable
+
+        Foo = list[int]
+
+        def main(x: Foo) -> None:
+          #          ^- cursor
+          pass
+    |}
+    (Some "test:4:0-4:3");
+  assert_resolved_definition
+    {|
+        from typing import Optional
+
+        class Foo:
+          some_attribute: int
+        # ^                  ^
+
+        def main(foo: Optional[Foo]) -> None:
+
+          if foo is not None:
+            print(foo.some_attribute)
+            #           ^- cursor
+    |};
+  (* TODO(T129228930): Handle refinement within a statement. *)
+  assert_resolved_definition
+    {|
+        from typing import Optional
+
+        class Foo:
+          some_attribute: int
+
+        def main(foo: Optional[Foo]) -> None:
+          d = foo.some_attribute if foo is not None else None
+            #           ^- cursor
+
+        # No definition found.
+    |};
+  assert_resolved_definition
+    {|
+        from typing import Optional
+
+        class Foo:              # start line
+          some_attribute: int   # stop line
+
+        def main(foo: Optional[Foo]) -> None:
+          #                     ^- cursor
+          pass
+    |};
+  assert_resolved_definition_with_location_string
+    ~source:
+      {|
+        from typing import Optional
+
+        foo: Optional[int]
+        #      ^- cursor
+    |}
+    (* `Optional` is a special form, so it points to the start of the file. *)
+    (Some "typing:1:0-1:0");
+  assert_resolved_definition_with_location_string
+    ~source:
+      {|
+        from typing import Union
+
+        foo: Union[int, str, bool]
+        #      ^- cursor
+    |}
+    (* `Union` is a special form, so it points to the start of the file. *)
+    (Some "typing:1:0-1:0");
+  assert_resolved_definition
+    {|
+        from typing import Generic, TypeVar
+
+        T = TypeVar("T")
+
+        class MyContainer(Generic[T]):  # start line
+          pass                          # stop line
+
+        foo: MyContainer[int]
+        #      ^- cursor
+    |};
+  assert_resolved_definition
+    {|
+        class Foo:                                     # start line
+          def my_method(self, x: "Foo") -> None: ...   # stop line
+            #                      ^- cursor
+    |};
+  assert_resolved_definition
+    {|
+        def main() -> None:
+          while (x := True):
+            #    ^^
+              print(x)
+                #   ^- cursor
+    |};
+  assert_resolved_definition
+    {|
+        from typing import Callable
+
+        def my_decorator(f: Callable[[], int]) -> Callable[[], int]:  # start line
+          pass                                                        # stop line
+
+        @my_decorator
+        #   ^- cursor
+        def foo() -> int: ...
+    |};
+  (* TODO(T129228930): We don't handle files that are shadowed by stubs. *)
+  assert_resolved_definition_with_location_string
+    ~external_sources:["test.pyi", {|
+        FOO: int = ...
+      |}]
+    ~source:{|
+        FOO = 1
+        # ^- cursor
+    |}
+    None;
+  assert_resolved_definition_with_location_string
+    ~external_sources:["test.pyi", {|
+        FOO: int = ...
+      |}]
+    ~source:{|
+        FOO = 1
+
+        print(FOO)
+          #    ^- cursor
+    |}
+    None;
+  assert_resolved_definition_with_location_string
+    ~source:
+      {|
+        from typing import Optional
+        from dataclasses import dataclass
+
+        @dataclass
+        # ^- cursor
+        class Foo: ...
+
+        # No definition found.
+    |}
+    (Some "dataclasses:5:0-5:46");
   ()
 
 
@@ -2752,7 +2966,7 @@ let test_resolve_type_for_symbol context =
           xs: list[str] = ["a", "b"]
           #    ^- cursor
     |}
-    (Some "typing.Type[typing.List[str]]");
+    (Some "typing.Type[list]");
   assert_resolved_type
     {|
       class Foo:
@@ -2946,7 +3160,7 @@ let test_resolve_type_for_symbol context =
           #    ^- cursor
     |}
     (Type.parametric
-       "typing.ClassMethod"
+       "BoundMethod"
        [
          Single
            (Type.Callable
@@ -2968,6 +3182,7 @@ let test_resolve_type_for_symbol context =
                   };
                 overloads = [];
               });
+         Single (Type.meta (Type.Primitive "test.Foo"));
        ]
     |> Option.some);
   assert_resolved_explicit_type
@@ -2996,17 +3211,12 @@ let test_resolve_type_for_symbol context =
           Foo.my_static_method()
           #     ^- cursor
     |}
-    (Type.parametric
-       "typing.StaticMethod"
-       [
-         Single
-           (Type.Callable
-              {
-                kind = Type.Callable.Named (Reference.create "test.Foo.my_static_method");
-                implementation = { annotation = Type.none; parameters = Type.Callable.Defined [] };
-                overloads = [];
-              });
-       ]
+    (Type.Callable
+       {
+         kind = Type.Callable.Named (Reference.create "test.Foo.my_static_method");
+         implementation = { annotation = Type.none; parameters = Type.Callable.Defined [] };
+         overloads = [];
+       }
     |> Option.some);
   assert_resolved_type
     {|

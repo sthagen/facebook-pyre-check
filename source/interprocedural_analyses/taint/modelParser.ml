@@ -166,7 +166,13 @@ module Internal = struct
             is_transitive: bool;
           }
         | DecoratorSatisfies of DecoratorConstraint.t
-        | AnyChildSatisfies of t
+        | AnyOf of t list
+        | AllOf of t list
+        | Not of t
+        | AnyChildSatisfies of {
+            class_constraint: t;
+            is_transitive: bool;
+          }
       [@@deriving equal, show]
     end
 
@@ -981,7 +987,7 @@ let rec parse_annotations
 
 let introduce_sink_taint
     ~root
-    ~sinks_to_keep
+    ~source_sink_filter
     ~path
     ~leaf_names
     ~leaf_name_provided
@@ -992,12 +998,12 @@ let introduce_sink_taint
     breadcrumbs
   =
   let open Core.Result in
-  let should_keep_taint =
-    match sinks_to_keep with
-    | None -> true
-    | Some sinks_to_keep -> Sinks.Set.mem taint_sink_kind sinks_to_keep
-  in
-  if should_keep_taint then
+  if
+    source_sink_filter
+    |> Option.map ~f:(fun source_sink_filter ->
+           TaintConfiguration.SourceSinkFilter.should_keep_sink source_sink_filter taint_sink_kind)
+    |> Option.value ~default:true
+  then
     let backward =
       let assign_backward_taint environment taint =
         BackwardState.assign ~weak:true ~root ~path taint environment
@@ -1101,7 +1107,7 @@ let introduce_taint_in_taint_out
 
 let introduce_source_taint
     ~root
-    ~sources_to_keep
+    ~source_sink_filter
     ~path
     ~leaf_names
     ~leaf_name_provided
@@ -1112,18 +1118,20 @@ let introduce_source_taint
     breadcrumbs
   =
   let open Core.Result in
-  let should_keep_taint =
-    match sources_to_keep with
-    | None -> true
-    | Some sources_to_keep -> Sources.Set.mem taint_source_kind sources_to_keep
-  in
   if
     Sources.equal taint_source_kind Sources.Attach
     && List.is_empty breadcrumbs
     && List.is_empty via_features
   then
     Error "`Attach` must be accompanied by a list of features to attach."
-  else if should_keep_taint then
+  else if
+    source_sink_filter
+    |> Option.map ~f:(fun source_sink_filter ->
+           TaintConfiguration.SourceSinkFilter.should_keep_source
+             source_sink_filter
+             taint_source_kind)
+    |> Option.value ~default:true
+  then
     let breadcrumbs = Features.BreadcrumbSet.of_approximation breadcrumbs in
     let via_features = Features.ViaFeatureSet.of_list via_features in
     let source_taint =
@@ -1165,34 +1173,54 @@ let introduce_source_taint
     Ok taint
 
 
-let sanitize_from_annotations annotations =
+let sanitize_from_annotations ~source_sink_filter annotations =
+  let should_keep_source source =
+    match source_sink_filter with
+    | None -> true
+    | Some source_sink_filter ->
+        TaintConfiguration.SourceSinkFilter.should_keep_source source_sink_filter source
+  in
+  let should_keep_sink sink =
+    match source_sink_filter with
+    | None -> true
+    | Some source_sink_filter ->
+        TaintConfiguration.SourceSinkFilter.should_keep_sink source_sink_filter sink
+  in
   let open Domains in
   let to_sanitize = function
     | AllSources -> { Sanitize.empty with sources = Some All }
-    | SpecificSource source ->
+    | SpecificSource source when should_keep_source source ->
         { Sanitize.empty with sources = Some (Specific (Sources.Set.singleton source)) }
+    | SpecificSource _ -> Sanitize.empty
     | AllSinks -> { Sanitize.empty with sinks = Some All }
-    | SpecificSink sink ->
+    | SpecificSink sink when should_keep_sink sink ->
         { Sanitize.empty with sinks = Some (Specific (Sinks.Set.singleton sink)) }
+    | SpecificSink _ -> Sanitize.empty
     | AllTito -> { Sanitize.empty with tito = Some All }
     | SpecificTito { sources; sinks } ->
-        {
-          Sanitize.empty with
-          tito =
-            Some
-              (Specific
-                 {
-                   sanitized_tito_sources = Sources.Set.of_list sources;
-                   sanitized_tito_sinks = Sinks.Set.of_list sinks;
-                 });
-        }
+        let sources = List.filter sources ~f:should_keep_source in
+        let sinks = List.filter sinks ~f:should_keep_sink in
+        if (not (List.is_empty sources)) || not (List.is_empty sinks) then
+          {
+            Sanitize.empty with
+            tito =
+              Some
+                (Specific
+                   {
+                     sanitized_tito_sources = Sources.Set.of_list sources;
+                     sanitized_tito_sinks = Sinks.Set.of_list sinks;
+                   });
+          }
+        else
+          Sanitize.empty
   in
   annotations |> List.map ~f:to_sanitize |> List.fold ~init:Sanitize.empty ~f:Sanitize.join
 
 
-let introduce_sanitize ~root model annotations =
+let introduce_sanitize ~source_sink_filter ~root model annotations =
   let roots =
-    Domains.SanitizeRootMap.of_list [root, sanitize_from_annotations annotations]
+    Domains.SanitizeRootMap.of_list
+      [root, sanitize_from_annotations ~source_sink_filter annotations]
     |> Domains.SanitizeRootMap.join model.Model.sanitizers.roots
   in
   let sanitizers = { model.sanitizers with roots } in
@@ -1391,6 +1419,19 @@ let parse_parent_equals_matches_clause ~path ~location ~callee ~attribute ~argum
            (InvalidModelQueryClauseArguments { callee; arguments }))
 
 
+let is_transitive
+    ~path
+    ~location
+    ({ Node.value = is_transitive_value; _ } as is_transitive_expression)
+  =
+  match is_transitive_value with
+  | Expression.Constant Constant.True -> Ok true
+  | Expression.Constant Constant.False -> Ok false
+  | _ ->
+      Error
+        (model_verification_error ~path ~location (InvalidIsTransitive is_transitive_expression))
+
+
 let parse_parent_extends_clause ~path ~location ~callee ~arguments =
   match arguments with
   | [
@@ -1413,21 +1454,10 @@ let parse_parent_extends_clause ~path ~location ~callee ~arguments =
        };
      _;
    };
-   {
-     Call.Argument.name = Some { Node.value = "is_transitive"; _ };
-     value = { Node.value = is_transitive_value; _ } as is_transitive_expression;
-   };
+   { Call.Argument.name = Some { Node.value = "is_transitive"; _ }; value };
   ] ->
       let open Core.Result in
-      (match is_transitive_value with
-      | Expression.Constant Constant.True -> Ok true
-      | Expression.Constant Constant.False -> Ok false
-      | _ ->
-          Error
-            (model_verification_error
-               ~path
-               ~location
-               (InvalidExtendsIsTransitive is_transitive_expression)))
+      is_transitive ~path ~location value
       >>= fun is_transitive -> Ok (ModelQuery.ClassConstraint.Extends { class_name; is_transitive })
   | _ ->
       Error
@@ -1482,48 +1512,82 @@ let parse_decorator_constraint ~path ~location ({ Node.value; _ } as constraint_
         (model_verification_error ~path ~location (InvalidDecoratorClause constraint_expression))
 
 
-let parse_any_child_constraint ~path ~location ~callee ~arguments =
+let rec parse_class_constraint ~path ~location ({ Node.value; _ } as constraint_expression) =
   let open Core.Result in
-  match arguments with
-  | [{ Call.Argument.value = { Node.value; _ } as constraint_expression; _ }] -> (
-      match value with
-      | Expression.Call
+  match value with
+  | Expression.Call
+      {
+        Call.callee =
           {
-            Call.callee =
-              {
-                Node.value =
-                  Expression.Name
-                    (Name.Attribute
-                      { base = { Node.value = Name (Name.Identifier "parent"); _ }; attribute; _ });
-                _;
-              } as callee;
-            arguments;
-          } -> (
-          match attribute with
-          | "equals"
-          | "matches" ->
-              parse_parent_equals_matches_clause ~path ~location ~callee ~attribute ~arguments
-          | "extends" -> parse_parent_extends_clause ~path ~location ~callee ~arguments
-          | "decorator" ->
-              parse_decorator_constraint ~path ~location constraint_expression
-              >>= fun decorator_constraint ->
-              Ok (ModelQuery.ClassConstraint.DecoratorSatisfies decorator_constraint)
-          | _ ->
-              Error
-                (model_verification_error
-                   ~path
-                   ~location
-                   (InvalidAnyChildClause constraint_expression)))
+            Node.value =
+              Expression.Name
+                (Name.Attribute
+                  { base = { Node.value = Name (Name.Identifier "parent"); _ }; attribute; _ });
+            _;
+          } as callee;
+        arguments;
+      } -> (
+      match attribute with
+      | "equals"
+      | "matches" ->
+          parse_parent_equals_matches_clause ~path ~location ~callee ~attribute ~arguments
+      | "extends" -> parse_parent_extends_clause ~path ~location ~callee ~arguments
+      | "decorator" ->
+          parse_decorator_constraint ~path ~location constraint_expression
+          >>= fun decorator_constraint ->
+          Ok (ModelQuery.ClassConstraint.DecoratorSatisfies decorator_constraint)
       | _ ->
           Error
             (model_verification_error ~path ~location (InvalidAnyChildClause constraint_expression))
       )
+  | Expression.Call
+      {
+        Call.callee = { Node.value = Expression.Name (Name.Identifier "AnyOf"); _ };
+        arguments = constraints;
+      } ->
+      List.map constraints ~f:(fun { Call.Argument.value; _ } ->
+          parse_class_constraint ~path ~location value)
+      |> all
+      >>| fun constraints -> ModelQuery.ClassConstraint.AnyOf constraints
+  | Expression.Call
+      {
+        Call.callee = { Node.value = Expression.Name (Name.Identifier "AllOf"); _ };
+        arguments = constraints;
+      } ->
+      List.map constraints ~f:(fun { Call.Argument.value; _ } ->
+          parse_class_constraint ~path ~location value)
+      |> all
+      >>| fun constraints -> ModelQuery.ClassConstraint.AllOf constraints
+  | Expression.Call
+      {
+        Call.callee = { Node.value = Expression.Name (Name.Identifier "Not"); _ };
+        arguments = [{ Call.Argument.value; _ }];
+      } ->
+      parse_class_constraint ~path ~location value
+      >>= fun model_constraint -> Ok (ModelQuery.ClassConstraint.Not model_constraint)
+  | _ ->
+      Error (model_verification_error ~path ~location (InvalidAnyChildClause constraint_expression))
+
+
+let parse_any_child_constraint ~path ~location ~callee ~arguments =
+  let open Core.Result in
+  (match arguments with
+  | [{ Call.Argument.value = constraint_expression; _ }] -> Ok (constraint_expression, false)
+  | [
+   { Call.Argument.value = constraint_expression; _ };
+   { Call.Argument.name = Some { Node.value = "is_transitive"; _ }; value };
+  ] ->
+      is_transitive ~path ~location value
+      >>= fun is_transitive -> Ok (constraint_expression, is_transitive)
   | _ ->
       Error
         (model_verification_error
            ~path
            ~location
-           (InvalidModelQueryClauseArguments { callee; arguments }))
+           (InvalidModelQueryClauseArguments { callee; arguments })))
+  >>= fun (constraint_expression, is_transitive) ->
+  parse_class_constraint ~path ~location constraint_expression
+  >>| fun class_constraint -> class_constraint, is_transitive
 
 
 let parse_where_clause ~path ~find_clause ({ Node.value; location } as expression) =
@@ -1681,8 +1745,10 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
               Ok (ModelQuery.ParentConstraint (DecoratorSatisfies decorator_constraint))
           | "any_child" ->
               parse_any_child_constraint ~path ~location ~callee ~arguments
-              >>= fun any_child_constraint ->
-              Ok (ModelQuery.ParentConstraint (AnyChildSatisfies any_child_constraint))
+              >>= fun (class_constraint, is_transitive) ->
+              Ok
+                (ModelQuery.ParentConstraint
+                   (ModelQuery.ClassConstraint.AnyChildSatisfies { class_constraint; is_transitive }))
           | _ -> Error (model_verification_error ~path ~location (UnsupportedCallee callee)))
     | Expression.Call { Call.callee; arguments = _ } ->
         Error (model_verification_error ~path ~location (UnsupportedCallee callee))
@@ -2078,8 +2144,7 @@ let add_taint_annotation_to_model
     ~model_name
     ~annotation_kind
     ~callable_annotation
-    ~sources_to_keep
-    ~sinks_to_keep
+    ~source_sink_filter
     model
     annotation
   =
@@ -2106,7 +2171,7 @@ let add_taint_annotation_to_model
                ~leaf_names
                ~leaf_name_provided
                ~trace_length
-               ~sinks_to_keep
+               ~source_sink_filter
                model
                sink
                via_features
@@ -2124,7 +2189,7 @@ let add_taint_annotation_to_model
                ~leaf_names
                ~leaf_name_provided
                ~trace_length
-               ~sources_to_keep
+               ~source_sink_filter
                model
                source
                via_features
@@ -2141,7 +2206,7 @@ let add_taint_annotation_to_model
                ~path
                ~location
                (InvalidReturnAnnotation { model_name; annotation = "AddFeatureToArgument" }))
-      | Sanitize annotations -> Ok (introduce_sanitize ~root model annotations))
+      | Sanitize annotations -> Ok (introduce_sanitize ~source_sink_filter ~root model annotations))
   | ParameterAnnotation root -> (
       match annotation with
       | Sink { sink; breadcrumbs; via_features; path; leaf_names; leaf_name_provided; trace_length }
@@ -2156,7 +2221,7 @@ let add_taint_annotation_to_model
                ~leaf_names
                ~leaf_name_provided
                ~trace_length
-               ~sinks_to_keep
+               ~source_sink_filter
                model
                sink
                via_features
@@ -2174,7 +2239,7 @@ let add_taint_annotation_to_model
                ~leaf_names
                ~leaf_name_provided
                ~trace_length
-               ~sources_to_keep
+               ~source_sink_filter
                model
                source
                via_features
@@ -2202,12 +2267,12 @@ let add_taint_annotation_to_model
                ~leaf_names:[]
                ~leaf_name_provided:false
                ~trace_length:None
-               ~sinks_to_keep
+               ~source_sink_filter
                model
                Sinks.AddFeatureToArgument
                via_features
           |> map_error ~f:invalid_model_for_taint
-      | Sanitize annotations -> Ok (introduce_sanitize ~root model annotations))
+      | Sanitize annotations -> Ok (introduce_sanitize ~source_sink_filter ~root model annotations))
 
 
 let parse_return_taint
@@ -2295,6 +2360,7 @@ let adjust_sanitize_and_modes_and_skipped_override
     ~path
     ~define_name
     ~configuration
+    ~source_sink_filter
     ~top_level_decorators
     ~is_object_target
     model
@@ -2323,7 +2389,8 @@ let adjust_sanitize_and_modes_and_skipped_override
       ~is_object_target
       expression
     |> function
-    | Ok [Sanitize sanitize_annotations] -> Ok (sanitize_from_annotations sanitize_annotations)
+    | Ok [Sanitize sanitize_annotations] ->
+        Ok (sanitize_from_annotations ~source_sink_filter sanitize_annotations)
     | Ok _ -> failwith "impossible case"
     | Error ({ ModelVerificationError.kind = InvalidTaintAnnotation { reason; _ }; _ } as error) ->
         Error
@@ -2483,45 +2550,11 @@ let adjust_sanitize_and_modes_and_skipped_override
   { model with sanitizers; modes }, skipped_override
 
 
-let compute_sources_and_sinks_to_keep ~configuration ~rule_filter =
-  match rule_filter with
-  | None -> None, None
-  | Some rule_filter ->
-      let rule_filter = Int.Set.of_list rule_filter in
-      let sources_to_keep, sinks_to_keep =
-        let { TaintConfiguration.rules; _ } = configuration in
-        let rules =
-          (* The user annotations for partial sinks will be the untriggered ones, even though the
-             rule expects triggered sinks. *)
-          let untrigger_partial_sinks sink =
-            match sink with
-            | Sinks.TriggeredPartialSink { kind; label } -> Sinks.PartialSink { kind; label }
-            | _ -> sink
-          in
-          List.filter_map rules ~f:(fun { TaintConfiguration.Rule.code; sources; sinks; _ } ->
-              if Core.Set.mem rule_filter code then
-                Some (sources, List.map sinks ~f:untrigger_partial_sinks)
-              else
-                None)
-        in
-        List.fold
-          rules
-          ~init:
-            ( Sources.Set.singleton Sources.Attach,
-              Sinks.Set.of_list [Sinks.AddFeatureToArgument; Sinks.Attach] )
-          ~f:(fun (sources, sinks) (rule_sources, rule_sinks) ->
-            ( Sources.Set.union sources (Sources.Set.of_list rule_sources),
-              Sinks.Set.union sinks (Sinks.Set.of_list rule_sinks) ))
-      in
-      Some sources_to_keep, Some sinks_to_keep
-
-
 let create_model_from_signature
     ~resolution
     ~path
     ~configuration
-    ~sources_to_keep
-    ~sinks_to_keep
+    ~source_sink_filter
     ~is_obscure
     {
       signature =
@@ -2719,8 +2752,7 @@ let create_model_from_signature
           ~resolution:(Resolution.global_resolution resolution)
           ~annotation_kind
           ~callable_annotation
-          ~sources_to_keep
-          ~sinks_to_keep
+          ~source_sink_filter
           accumulator
           annotation)
   in
@@ -2728,6 +2760,7 @@ let create_model_from_signature
   >>= adjust_sanitize_and_modes_and_skipped_override
         ~path
         ~configuration
+        ~source_sink_filter
         ~top_level_decorators
         ~define_name:callable_name
         ~is_object_target
@@ -2739,8 +2772,7 @@ let create_model_from_attribute
     ~resolution
     ~path
     ~configuration
-    ~sources_to_keep
-    ~sinks_to_keep
+    ~source_sink_filter
     { name; source_annotation; sink_annotation; decorators; location; call_target }
   =
   let open Core.Result in
@@ -2795,13 +2827,13 @@ let create_model_from_attribute
         ~resolution:(Resolution.global_resolution resolution)
         ~annotation_kind
         ~callable_annotation:None
-        ~sources_to_keep
-        ~sinks_to_keep
+        ~source_sink_filter
         accumulator
         annotation)
   >>= adjust_sanitize_and_modes_and_skipped_override
         ~path
         ~configuration
+        ~source_sink_filter
         ~top_level_decorators:decorators
         ~define_name:name
         ~is_object_target
@@ -2816,10 +2848,7 @@ let is_obscure ~callables ~stubs call_target =
   || callables >>| Core.Fn.flip Hash_set.mem call_target >>| not |> Option.value ~default:false
 
 
-let parse_models ~resolution ~rule_filter ~configuration ~callables ~stubs models =
-  let sources_to_keep, sinks_to_keep =
-    compute_sources_and_sinks_to_keep ~configuration ~rule_filter
-  in
+let parse_models ~resolution ~configuration ~source_sink_filter ~callables ~stubs models =
   let open Core.Result in
   List.map
     models
@@ -2828,8 +2857,7 @@ let parse_models ~resolution ~rule_filter ~configuration ~callables ~stubs model
         ~resolution
         ~path:None
         ~configuration
-        ~sources_to_keep
-        ~sinks_to_keep
+        ~source_sink_filter
         ~is_obscure:(is_obscure ~callables ~stubs call_target)
         parsed_signature
       >>| fun model_or_query ->
@@ -2846,7 +2874,15 @@ let parse_models ~resolution ~rule_filter ~configuration ~callables ~stubs model
   >>| List.filter_map ~f:(fun x -> x)
 
 
-let rec parse_statement ~resolution ~path ~rule_filter ~configuration ~callables ~stubs statement =
+let rec parse_statement
+    ~resolution
+    ~path
+    ~configuration
+    ~source_sink_filter
+    ~callables
+    ~stubs
+    statement
+  =
   let open Core.Result in
   let global_resolution = Resolution.global_resolution resolution in
   match statement with
@@ -3165,8 +3201,8 @@ let rec parse_statement ~resolution ~path ~rule_filter ~configuration ~callables
                     (parse_statement
                        ~resolution
                        ~path
-                       ~rule_filter
                        ~configuration
+                       ~source_sink_filter
                        ~callables
                        ~stubs)
             >>| List.partition_result
@@ -3221,8 +3257,8 @@ let rec parse_statement ~resolution ~path ~rule_filter ~configuration ~callables
                 | Ok parsed_signatures ->
                     parse_models
                       ~resolution
-                      ~rule_filter
                       ~configuration
+                      ~source_sink_filter
                       ~callables
                       ~stubs
                       parsed_signatures))
@@ -3374,10 +3410,7 @@ let verify_no_duplicate_model_query_names ~path (results, errors) =
   | None -> results, errors
 
 
-let create ~resolution ~path ~configuration ~rule_filter ~callables ~stubs source =
-  let sources_to_keep, sinks_to_keep =
-    compute_sources_and_sinks_to_keep ~configuration ~rule_filter
-  in
+let create ~resolution ~path ~configuration ~source_sink_filter ~callables ~stubs source =
   let signatures_and_queries, errors =
     let open Core.Result in
     String.split ~on:'\n' source
@@ -3385,7 +3418,8 @@ let create ~resolution ~path ~configuration ~rule_filter ~callables ~stubs sourc
     >>| Source.create
     >>| Source.statements
     >>| List.map
-          ~f:(parse_statement ~resolution ~path ~rule_filter ~configuration ~callables ~stubs)
+          ~f:
+            (parse_statement ~resolution ~path ~configuration ~source_sink_filter ~callables ~stubs)
     >>| List.partition_result
     >>| (fun (results, errors) -> List.concat results, errors)
     >>| verify_no_duplicate_model_query_names ~path
@@ -3400,8 +3434,7 @@ let create ~resolution ~path ~configuration ~rule_filter ~callables ~stubs sourc
           ~resolution
           ~path
           ~configuration
-          ~sources_to_keep
-          ~sinks_to_keep
+          ~source_sink_filter
           ~is_obscure:(is_obscure ~callables ~stubs call_target)
           parsed_signature
     | ParsedAttribute parsed_attribute ->
@@ -3409,8 +3442,7 @@ let create ~resolution ~path ~configuration ~rule_filter ~callables ~stubs sourc
           ~resolution
           ~path
           ~configuration
-          ~sources_to_keep
-          ~sinks_to_keep
+          ~source_sink_filter
           parsed_attribute
     | ParsedQuery query -> Core.Result.return (Query query)
   in
@@ -3436,9 +3468,9 @@ let get_model_sources ~paths =
   model_files |> List.map ~f:File.create |> List.filter_map ~f:path_and_content
 
 
-let parse ~resolution ?path ?rule_filter ~source ~configuration ~callables ~stubs () =
+let parse ~resolution ?path ~source ~configuration ~source_sink_filter ~callables ~stubs () =
   let new_models_and_queries, errors =
-    create ~resolution ~path ~rule_filter ~configuration ~callables ~stubs source
+    create ~resolution ~path ~configuration ~source_sink_filter ~callables ~stubs source
     |> List.partition_result
   in
   let new_models, new_queries =
@@ -3469,15 +3501,14 @@ let invalid_model_query_error error =
 let create_callable_model_from_annotations
     ~resolution
     ~callable
-    ~sources_to_keep
-    ~sinks_to_keep
+    ~source_sink_filter
     ~is_obscure
     annotations
   =
   let open Core.Result in
   let open ModelVerifier in
   let global_resolution = Resolution.global_resolution resolution in
-  match Interprocedural.Target.get_module_and_definition ~resolution:global_resolution callable with
+  match Target.get_module_and_definition ~resolution:global_resolution callable with
   | None ->
       Error (invalid_model_query_error (NoCorrespondingCallable (Target.show_pretty callable)))
   | Some (_, { Node.value = { Define.signature = define; _ }; _ }) ->
@@ -3513,19 +3544,12 @@ let create_callable_model_from_annotations
             ~resolution:global_resolution
             ~annotation_kind
             ~callable_annotation
-            ~sources_to_keep
-            ~sinks_to_keep
+            ~source_sink_filter
             accumulator
             annotation)
 
 
-let create_attribute_model_from_annotations
-    ~resolution
-    ~name
-    ~sources_to_keep
-    ~sinks_to_keep
-    annotations
-  =
+let create_attribute_model_from_annotations ~resolution ~name ~source_sink_filter annotations =
   let open Core.Result in
   let global_resolution = Resolution.global_resolution resolution in
   List.fold annotations ~init:(Ok Model.empty_model) ~f:(fun accumulator annotation ->
@@ -3555,8 +3579,7 @@ let create_attribute_model_from_annotations
         ~resolution:global_resolution
         ~annotation_kind
         ~callable_annotation:None
-        ~sources_to_keep
-        ~sinks_to_keep
+        ~source_sink_filter
         accumulator
         annotation)
 

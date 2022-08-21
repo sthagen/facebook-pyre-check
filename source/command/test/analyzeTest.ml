@@ -35,6 +35,9 @@ let test_json_parsing context =
       maximum_trace_length = None;
       repository_root = None;
       rule_filter = None;
+      source_filter = None;
+      sink_filter = None;
+      transform_filter = None;
       save_results_to = None;
       strict = false;
       taint_model_paths = [];
@@ -84,6 +87,22 @@ let test_json_parsing context =
   assert_parsed
     (`Assoc (("rule_filter", `List [`Int 1; `Int 2]) :: BaseConfigurationTest.dummy_base_json))
     ~expected:{ dummy_analyze_configuration with rule_filter = Some [1; 2] };
+  assert_parsed
+    (`Assoc
+      (("source_filter", `List [`String "UserControlled"; `String "Header"])
+       :: BaseConfigurationTest.dummy_base_json))
+    ~expected:{ dummy_analyze_configuration with source_filter = Some ["UserControlled"; "Header"] };
+  assert_parsed
+    (`Assoc
+      (("sink_filter", `List [`String "SQL"; `String "RCE"])
+       :: BaseConfigurationTest.dummy_base_json))
+    ~expected:{ dummy_analyze_configuration with sink_filter = Some ["SQL"; "RCE"] };
+  assert_parsed
+    (`Assoc
+      (("transform_filter", `List [`String "FileSystem"; `String "MyTransform"])
+       :: BaseConfigurationTest.dummy_base_json))
+    ~expected:
+      { dummy_analyze_configuration with transform_filter = Some ["FileSystem"; "MyTransform"] };
   assert_parsed
     (`Assoc (("save_results_to", `String "/result") :: BaseConfigurationTest.dummy_base_json))
     ~expected:

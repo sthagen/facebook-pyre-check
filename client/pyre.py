@@ -224,6 +224,16 @@ def _check_open_source_version(
     ),
 )
 @click.option(
+    "--only-check-paths",
+    type=str,
+    multiple=True,
+    help=(
+        "Report type errors for the given locations, rather than the default "
+        "directories."
+    ),
+    hidden=True,
+)
+@click.option(
     "--search-path",
     type=str,
     multiple=True,
@@ -323,6 +333,7 @@ def pyre(
     logging_sections: Optional[str],
     dot_pyre_directory: Optional[str],
     source_directory: Iterable[str],
+    only_check_paths: Iterable[str],
     search_path: Iterable[str],
     binary: Optional[str],
     exclude: Iterable[str],
@@ -357,7 +368,7 @@ def pyre(
         logger=None,
         targets=[],
         source_directories=list(source_directory),
-        do_not_ignore_errors_in=[],
+        only_check_paths=list(only_check_paths),
         buck_mode=None,
         no_saved_state=True,
         search_path=list(search_path),
@@ -431,7 +442,25 @@ def pyre(
     "--rule",
     type=int,
     multiple=True,
-    help="Only track taint flows for the given rule.",
+    help="Only track taint flows for the given rule(s).",
+)
+@click.option(
+    "--source",
+    type=str,
+    multiple=True,
+    help="Only track taint flows for the given source(s).",
+)
+@click.option(
+    "--sink",
+    type=str,
+    multiple=True,
+    help="Only track taint flows for the given sink(s).",
+)
+@click.option(
+    "--transform",
+    type=str,
+    multiple=True,
+    help="Only track taint flows for the given transform(s).",
 )
 @click.option(
     "--find-missing-flows",
@@ -477,6 +506,9 @@ def analyze(
     dump_call_graph: Optional[str],
     repository_root: Optional[str],
     rule: Iterable[int],
+    source: Iterable[str],
+    sink: Iterable[str],
+    transform: Iterable[str],
     find_missing_flows: Optional[str],
     dump_model_query_results: Optional[str],
     use_cache: bool,
@@ -517,6 +549,9 @@ def analyze(
             output=command_argument.output,
             repository_root=repository_root,
             rule=list(rule),
+            source=list(source),
+            sink=list(sink),
+            transform=list(transform),
             save_results_to=save_results_to,
             sequential=command_argument.sequential,
             taint_models_path=list(taint_models_path),
@@ -719,16 +754,18 @@ def init(context: click.Context) -> int:
 
 
 @pyre.command()
+@click.option(
+    "--skip-environment-setup",
+    is_flag=True,
+    default=False,
+    help="Skip setting up an environment to run Pysa",
+)
 @click.pass_context
-def init_pysa(context: click.Context) -> int:
+def init_pysa(context: click.Context, skip_environment_setup: bool) -> int:
     """
     Creates a suitable environment for running pyre analyze.
     """
-    create_configuration_return_code: int = commands.initialize.run()
-    if create_configuration_return_code == commands.ExitCode.SUCCESS:
-        return commands.initialize_pysa.run()
-    else:
-        return create_configuration_return_code
+    return commands.initialize_pysa.run(skip_environment_setup)
 
 
 @pyre.command()

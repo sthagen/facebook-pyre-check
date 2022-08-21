@@ -12,15 +12,24 @@ open Pyre
 module Error = TaintConfiguration.Error
 module Result = Core.Result
 
-let parse configuration =
+let parse ?rule_filter ?source_filter ?sink_filter ?transform_filter configuration =
   let open Result in
-  TaintConfiguration.parse
+  TaintConfiguration.from_json_list
     [PyrePath.create_absolute "/taint.config", Yojson.Safe.from_string configuration]
+  >>= TaintConfiguration.with_command_line_options
+        ~rule_filter
+        ~source_filter
+        ~sink_filter
+        ~transform_filter
+        ~find_missing_flows:None
+        ~dump_model_query_results_path:None
+        ~maximum_trace_length:None
+        ~maximum_tito_depth:None
   >>= TaintConfiguration.validate
 
 
-let assert_parse configuration =
-  match parse configuration with
+let assert_parse ?rule_filter ?source_filter ?sink_filter ?transform_filter configuration =
+  match parse ?rule_filter ?source_filter ?sink_filter ?transform_filter configuration with
   | Error errors ->
       let errors = List.map ~f:Error.show errors |> String.concat ~sep:"\n" in
       Format.sprintf "Unexpected error when parsing configuration: %s" errors |> assert_failure
@@ -82,7 +91,8 @@ let test_simple _ =
     (Some 50);
   assert_equal
     (Sources.Map.of_alist_exn [Sources.NamedSource "A", Sinks.Set.of_list [Sinks.NamedSink "D"]])
-    configuration.matching_sinks
+    (TaintConfiguration.SourceSinkFilter.matching_sinks
+       (Option.value_exn configuration.source_sink_filter))
 
 
 let test_transform _ =
@@ -479,7 +489,7 @@ let test_partial_sink_converter _ =
 
 let test_multiple_configurations _ =
   let configuration =
-    TaintConfiguration.parse
+    TaintConfiguration.from_json_list
       [
         ( PyrePath.create_absolute "/a.config",
           Yojson.Safe.from_string
@@ -546,7 +556,7 @@ let test_validate _ =
       configurations
       |> List.map ~f:(fun (path, content) ->
              PyrePath.create_absolute path, Yojson.Safe.from_string content)
-      |> Taint.TaintConfiguration.parse
+      |> Taint.TaintConfiguration.from_json_list
       |> Core.Result.map_error
            ~f:(List.map ~f:(fun { Error.path; kind } -> path >>| PyrePath.absolute, kind))
     in
@@ -913,8 +923,20 @@ let test_implicit_sinks _ =
 
 
 let test_matching_kinds _ =
-  let assert_matching ~configuration ~matching_sources ~matching_sinks ~possible_tito_transforms =
-    let configuration = assert_parse configuration in
+  let assert_matching
+      ?rule_filter
+      ?source_filter
+      ?sink_filter
+      ?transform_filter
+      ~configuration
+      ~matching_sources
+      ~matching_sinks
+      ~possible_tito_transforms
+      ()
+    =
+    let configuration =
+      assert_parse ?rule_filter ?source_filter ?sink_filter ?transform_filter configuration
+    in
     let matching_sources_printer matching =
       matching
       |> Sources.Map.to_alist
@@ -923,11 +945,12 @@ let test_matching_kinds _ =
       |> String.concat ~sep:", "
       |> Format.asprintf "{%s}"
     in
+    let source_sink_filter = Option.value_exn configuration.source_sink_filter in
     assert_equal
       ~printer:matching_sources_printer
       ~cmp:(Sources.Map.equal Sinks.Set.equal)
       (Sources.Map.of_alist_exn matching_sinks)
-      configuration.matching_sinks;
+      (TaintConfiguration.SourceSinkFilter.matching_sinks source_sink_filter);
     let matching_sinks_printer matching =
       matching
       |> Sinks.Map.to_alist
@@ -940,7 +963,7 @@ let test_matching_kinds _ =
       ~printer:matching_sinks_printer
       ~cmp:(Sinks.Map.equal Sources.Set.equal)
       (Sinks.Map.of_alist_exn matching_sources)
-      configuration.matching_sources;
+      (TaintConfiguration.SourceSinkFilter.matching_sources source_sink_filter);
     let possible_tito_transforms_printer possible =
       possible
       |> TaintTransforms.Set.elements
@@ -952,7 +975,7 @@ let test_matching_kinds _ =
       ~printer:possible_tito_transforms_printer
       ~cmp:TaintTransforms.Set.equal
       (TaintTransforms.Set.of_list possible_tito_transforms)
-      configuration.possible_tito_transforms
+      (TaintConfiguration.SourceSinkFilter.possible_tito_transforms source_sink_filter)
   in
   assert_matching
     ~configuration:
@@ -983,7 +1006,8 @@ let test_matching_kinds _ =
         Sinks.NamedSink "C", Sources.Set.of_list [Sources.NamedSource "A"];
         Sinks.NamedSink "D", Sources.Set.of_list [Sources.NamedSource "A"];
       ]
-    ~possible_tito_transforms:[TaintTransforms.empty];
+    ~possible_tito_transforms:[TaintTransforms.empty]
+    ();
   assert_matching
     ~configuration:
       {|
@@ -1013,7 +1037,8 @@ let test_matching_kinds _ =
       ]
     ~matching_sources:
       [Sinks.NamedSink "D", Sources.Set.of_list [Sources.NamedSource "A"; Sources.NamedSource "B"]]
-    ~possible_tito_transforms:[TaintTransforms.empty];
+    ~possible_tito_transforms:[TaintTransforms.empty]
+    ();
   assert_matching
     ~configuration:
       {|
@@ -1050,7 +1075,8 @@ let test_matching_kinds _ =
         Sinks.NamedSink "C", Sources.Set.of_list [Sources.NamedSource "A"];
         Sinks.NamedSink "D", Sources.Set.of_list [Sources.NamedSource "A"];
       ]
-    ~possible_tito_transforms:[TaintTransforms.empty];
+    ~possible_tito_transforms:[TaintTransforms.empty]
+    ();
   let transformed_source transform_names source_name =
     Sources.Transform
       {
@@ -1122,7 +1148,454 @@ let test_matching_kinds _ =
         TaintTransforms.of_named_transforms [TaintTransform.Named "X"];
         TaintTransforms.of_named_transforms [TaintTransform.Named "X"; TaintTransform.Named "Y"];
         TaintTransforms.of_named_transforms [TaintTransform.Named "Y"];
-      ];
+      ]
+    ();
+  assert_matching
+    ~rule_filter:[1]
+    ~configuration:
+      {|
+        { sources: [
+            { name: "A" },
+            { name: "B" }
+          ],
+          sinks: [
+            { name: "C" },
+            { name: "D" }
+          ],
+          rules: [
+            {
+               name: "test rule",
+               sources: ["A"],
+               sinks: ["C"],
+               code: 1,
+               message_format: ""
+            },
+            {
+               name: "test rule 2",
+               sources: ["A"],
+               sinks: ["D"],
+               code: 2,
+               message_format: ""
+            }
+          ]
+        }
+      |}
+    ~matching_sinks:[Sources.NamedSource "A", Sinks.Set.of_list [Sinks.NamedSink "C"]]
+    ~matching_sources:[Sinks.NamedSink "C", Sources.Set.of_list [Sources.NamedSource "A"]]
+    ~possible_tito_transforms:[TaintTransforms.empty]
+    ();
+  assert_matching
+    ~source_filter:["A"; "B"]
+    ~configuration:
+      {|
+        { sources: [
+            { name: "A" },
+            { name: "B", kind: "parametric" },
+            { name: "C" },
+            { name: "D" }
+          ],
+          sinks: [
+            { name: "X" },
+            { name: "Y" },
+            { name: "Z" }
+          ],
+          rules: [
+            {
+               name: "test rule",
+               sources: ["A"],
+               sinks: ["X"],
+               code: 1,
+               message_format: ""
+            },
+            {
+               name: "test rule 2",
+               sources: ["B", "C"],
+               sinks: ["Y"],
+               code: 2,
+               message_format: ""
+            },
+            {
+               name: "test rule 2",
+               sources: ["C", "D"],
+               sinks: ["Z"],
+               code: 3,
+               message_format: ""
+            }
+          ]
+        }
+      |}
+    ~matching_sinks:
+      [
+        Sources.NamedSource "A", Sinks.Set.of_list [Sinks.NamedSink "X"];
+        Sources.NamedSource "B", Sinks.Set.of_list [Sinks.NamedSink "Y"];
+      ]
+    ~matching_sources:
+      [
+        Sinks.NamedSink "X", Sources.Set.of_list [Sources.NamedSource "A"];
+        Sinks.NamedSink "Y", Sources.Set.of_list [Sources.NamedSource "B"];
+      ]
+    ~possible_tito_transforms:[TaintTransforms.empty]
+    ();
+  assert_matching
+    ~source_filter:["A"; "B"]
+    ~configuration:
+      {|
+        { sources: [
+            { name: "A" },
+            { name: "B" },
+            { name: "C" },
+            { name: "D" }
+          ],
+          sinks: [
+            { name: "X" },
+            { name: "Y" },
+            { name: "Z" }
+          ],
+          combined_source_rules: [
+            {
+              "name": "test combined rule",
+              "sources": { "a": "A", "b": "B" },
+              "partial_sink": "PartialSink1",
+              "code": 1,
+              "message_format": ""
+            },
+            {
+              "name": "test combined rule 2",
+              "sources": { "c": "C", "d": "D" },
+              "partial_sink": "PartialSink2",
+              "code": 2,
+              "message_format": ""
+            },
+            {
+              "name": "test combined rule 3",
+              "sources": { "a": "A", "d": "D" },
+              "partial_sink": "PartialSink3",
+              "code": 3,
+              "message_format": ""
+            }
+          ]
+        }
+      |}
+    ~matching_sinks:
+      [
+        ( Sources.NamedSource "A",
+          Sinks.Set.of_list
+            [
+              Sinks.TriggeredPartialSink { kind = "PartialSink1"; label = "a" };
+              Sinks.TriggeredPartialSink { kind = "PartialSink3"; label = "a" };
+            ] );
+        ( Sources.NamedSource "B",
+          Sinks.Set.of_list [Sinks.TriggeredPartialSink { kind = "PartialSink1"; label = "b" }] );
+      ]
+    ~matching_sources:
+      [
+        ( Sinks.TriggeredPartialSink { kind = "PartialSink1"; label = "a" },
+          Sources.Set.of_list [Sources.NamedSource "A"] );
+        ( Sinks.TriggeredPartialSink { kind = "PartialSink1"; label = "b" },
+          Sources.Set.of_list [Sources.NamedSource "B"] );
+        ( Sinks.TriggeredPartialSink { kind = "PartialSink3"; label = "a" },
+          Sources.Set.of_list [Sources.NamedSource "A"] );
+      ]
+    ~possible_tito_transforms:[TaintTransforms.empty]
+    ();
+  assert_matching
+    ~sink_filter:["X"; "Y"]
+    ~configuration:
+      {|
+        { sources: [
+            { name: "A" },
+            { name: "B", kind: "parametric" },
+            { name: "C" },
+            { name: "D" }
+          ],
+          sinks: [
+            { name: "X" },
+            { name: "Y", kind: "parametric" },
+            { name: "Z" }
+          ],
+          rules: [
+            {
+               name: "test rule",
+               sources: ["A"],
+               sinks: ["X"],
+               code: 1,
+               message_format: ""
+            },
+            {
+               name: "test rule 2",
+               sources: ["B"],
+               sinks: ["Y", "Z"],
+               code: 2,
+               message_format: ""
+            },
+            {
+               name: "test rule 2",
+               sources: ["C"],
+               sinks: ["Z"],
+               code: 3,
+               message_format: ""
+            }
+          ]
+        }
+      |}
+    ~matching_sinks:
+      [
+        Sources.NamedSource "A", Sinks.Set.of_list [Sinks.NamedSink "X"];
+        Sources.NamedSource "B", Sinks.Set.of_list [Sinks.NamedSink "Y"];
+      ]
+    ~matching_sources:
+      [
+        Sinks.NamedSink "X", Sources.Set.of_list [Sources.NamedSource "A"];
+        Sinks.NamedSink "Y", Sources.Set.of_list [Sources.NamedSource "B"];
+      ]
+    ~possible_tito_transforms:[TaintTransforms.empty]
+    ();
+  assert_matching
+    ~transform_filter:["TU"]
+    ~configuration:
+      {|
+        { sources: [
+            { name: "A" },
+            { name: "B", kind: "parametric" },
+            { name: "C" },
+            { name: "D" }
+          ],
+          sinks: [
+            { name: "X" },
+            { name: "Y", kind: "parametric" },
+            { name: "Z" }
+          ],
+          transforms: [
+            { name: "TU" },
+            { name: "TV" },
+            { name: "TW" }
+          ],
+          rules: [
+            {
+               name: "test rule",
+               sources: ["A"],
+               sinks: ["X"],
+               code: 1,
+               message_format: ""
+            },
+            {
+               name: "test rule 2",
+               sources: ["B"],
+               transforms: ["TU"],
+               sinks: ["Y"],
+               code: 2,
+               message_format: ""
+            },
+            {
+               name: "test rule 3",
+               sources: ["C"],
+               transforms: ["TV"],
+               sinks: ["Z"],
+               code: 3,
+               message_format: ""
+            },
+            {
+               name: "test rule 4",
+               sources: ["C"],
+               transforms: ["TU", "TW"],
+               sinks: ["Z"],
+               code: 4,
+               message_format: ""
+            }
+          ]
+        }
+      |}
+    ~matching_sinks:
+      [
+        Sources.NamedSource "A", Sinks.Set.of_list [Sinks.NamedSink "X"];
+        ( Sources.NamedSource "B",
+          Sinks.Set.of_list
+            [
+              Sinks.Transform
+                {
+                  local = TaintTransforms.empty;
+                  global = TaintTransforms.of_named_transforms [TaintTransform.Named "TU"];
+                  base = Sinks.NamedSink "Y";
+                };
+            ] );
+        ( Sources.Transform
+            {
+              local = TaintTransforms.empty;
+              global = TaintTransforms.of_named_transforms [TaintTransform.Named "TU"];
+              base = Sources.NamedSource "B";
+            },
+          Sinks.Set.of_list [Sinks.NamedSink "Y"] );
+      ]
+    ~matching_sources:
+      [
+        Sinks.NamedSink "X", Sources.Set.of_list [Sources.NamedSource "A"];
+        ( Sinks.NamedSink "Y",
+          Sources.Set.of_list
+            [
+              Sources.Transform
+                {
+                  local = TaintTransforms.empty;
+                  global = TaintTransforms.of_named_transforms [TaintTransform.Named "TU"];
+                  base = Sources.NamedSource "B";
+                };
+            ] );
+        ( Sinks.Transform
+            {
+              local = TaintTransforms.empty;
+              global = TaintTransforms.of_named_transforms [TaintTransform.Named "TU"];
+              base = Sinks.NamedSink "Y";
+            },
+          Sources.Set.of_list [Sources.NamedSource "B"] );
+      ]
+    ~possible_tito_transforms:
+      [TaintTransforms.empty; TaintTransforms.of_named_transforms [TaintTransform.Named "TU"]]
+    ();
+  assert_matching
+    ~rule_filter:[1; 2; 4]
+    ~source_filter:["A"; "B"; "C"]
+    ~sink_filter:["X"; "Z"]
+    ~transform_filter:["TU"; "TW"]
+    ~configuration:
+      {|
+        { sources: [
+            { name: "A" },
+            { name: "B", kind: "parametric" },
+            { name: "C" },
+            { name: "D" }
+          ],
+          sinks: [
+            { name: "X" },
+            { name: "Y", kind: "parametric" },
+            { name: "Z" }
+          ],
+          transforms: [
+            { name: "TU" },
+            { name: "TV" },
+            { name: "TW" }
+          ],
+          rules: [
+            {
+               name: "test rule",
+               sources: ["A", "D"],
+               sinks: ["X", "Y"],
+               code: 1,
+               message_format: ""
+            },
+            {
+               name: "test rule 2",
+               sources: ["B"],
+               transforms: ["TU"],
+               sinks: ["Y"],
+               code: 2,
+               message_format: ""
+            },
+            {
+               name: "test rule 3",
+               sources: ["C"],
+               transforms: ["TV"],
+               sinks: ["Z"],
+               code: 3,
+               message_format: ""
+            },
+            {
+               name: "test rule 4",
+               sources: ["C"],
+               transforms: ["TU", "TW"],
+               sinks: ["Z"],
+               code: 4,
+               message_format: ""
+            }
+          ]
+        }
+      |}
+    ~matching_sinks:
+      [
+        Sources.NamedSource "A", Sinks.Set.of_list [Sinks.NamedSink "X"];
+        ( Sources.NamedSource "C",
+          Sinks.Set.of_list
+            [
+              Sinks.Transform
+                {
+                  local = TaintTransforms.empty;
+                  global =
+                    TaintTransforms.of_named_transforms
+                      [TaintTransform.Named "TU"; TaintTransform.Named "TW"];
+                  base = Sinks.NamedSink "Z";
+                };
+            ] );
+        ( Sources.Transform
+            {
+              local = TaintTransforms.empty;
+              global = TaintTransforms.of_named_transforms [TaintTransform.Named "TU"];
+              base = Sources.NamedSource "C";
+            },
+          Sinks.Set.of_list
+            [
+              Sinks.Transform
+                {
+                  local = TaintTransforms.empty;
+                  global = TaintTransforms.of_named_transforms [TaintTransform.Named "TW"];
+                  base = Sinks.NamedSink "Z";
+                };
+            ] );
+        ( Sources.Transform
+            {
+              local = TaintTransforms.empty;
+              global =
+                TaintTransforms.of_named_transforms
+                  [TaintTransform.Named "TW"; TaintTransform.Named "TU"];
+              base = Sources.NamedSource "C";
+            },
+          Sinks.Set.of_list [Sinks.NamedSink "Z"] );
+      ]
+    ~matching_sources:
+      [
+        Sinks.NamedSink "X", Sources.Set.of_list [Sources.NamedSource "A"];
+        ( Sinks.NamedSink "Z",
+          Sources.Set.of_list
+            [
+              Sources.Transform
+                {
+                  local = TaintTransforms.empty;
+                  global =
+                    TaintTransforms.of_named_transforms
+                      [TaintTransform.Named "TW"; TaintTransform.Named "TU"];
+                  base = Sources.NamedSource "C";
+                };
+            ] );
+        ( Sinks.Transform
+            {
+              local = TaintTransforms.empty;
+              global = TaintTransforms.of_named_transforms [TaintTransform.Named "TW"];
+              base = Sinks.NamedSink "Z";
+            },
+          Sources.Set.of_list
+            [
+              Sources.Transform
+                {
+                  local = TaintTransforms.empty;
+                  global = TaintTransforms.of_named_transforms [TaintTransform.Named "TU"];
+                  base = Sources.NamedSource "C";
+                };
+            ] );
+        ( Sinks.Transform
+            {
+              local = TaintTransforms.empty;
+              global =
+                TaintTransforms.of_named_transforms
+                  [TaintTransform.Named "TU"; TaintTransform.Named "TW"];
+              base = Sinks.NamedSink "Z";
+            },
+          Sources.Set.of_list [Sources.NamedSource "C"] );
+      ]
+    ~possible_tito_transforms:
+      [
+        TaintTransforms.empty;
+        TaintTransforms.of_named_transforms [TaintTransform.Named "TU"];
+        TaintTransforms.of_named_transforms [TaintTransform.Named "TW"];
+        TaintTransforms.of_named_transforms [TaintTransform.Named "TU"; TaintTransform.Named "TW"];
+      ]
+    ();
   ()
 
 
