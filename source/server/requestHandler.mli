@@ -6,9 +6,16 @@
  *)
 
 val instantiate_error
+  :  lookup_source:(ArtifactPath.t -> SourcePath.t option) ->
+  show_error_traces:bool ->
+  module_tracker:Analysis.ModuleTracker.ReadOnly.t ->
+  Analysis.AnalysisError.t ->
+  Analysis.AnalysisError.Instantiated.t
+
+val instantiate_error_with_build_system
   :  build_system:BuildSystem.t ->
   configuration:Configuration.Analysis.t ->
-  ast_environment:Analysis.AstEnvironment.ReadOnly.t ->
+  module_tracker:Analysis.ModuleTracker.ReadOnly.t ->
   Analysis.AnalysisError.t ->
   Analysis.AnalysisError.Instantiated.t
 

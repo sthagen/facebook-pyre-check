@@ -73,17 +73,7 @@ def _run_check_command(
     configuration = configuration_module.create_configuration(arguments, Path("."))
     _check_open_source_version(configuration)
     start_logging_to_directory(configuration.log_directory)
-    check_arguments = command_arguments.CheckArguments(
-        debug=arguments.debug,
-        enable_memory_profiling=arguments.enable_memory_profiling,
-        enable_profiling=arguments.enable_profiling,
-        log_identifier=arguments.log_identifier,
-        logging_sections=arguments.logging_sections,
-        noninteractive=arguments.noninteractive,
-        output=arguments.output,
-        sequential=arguments.sequential,
-        show_error_traces=arguments.show_error_traces,
-    )
+    check_arguments = command_arguments.CheckArguments.create(arguments)
     return commands.check.run(configuration, check_arguments)
 
 
@@ -95,21 +85,9 @@ def _run_incremental_command(
     configuration = configuration_module.create_configuration(arguments, Path("."))
     _check_open_source_version(configuration)
     start_logging_to_directory(configuration.log_directory)
-    start_arguments = command_arguments.StartArguments(
-        changed_files_path=arguments.changed_files_path,
-        debug=arguments.debug,
-        enable_memory_profiling=arguments.enable_memory_profiling,
-        enable_profiling=arguments.enable_profiling,
-        load_initial_state_from=arguments.load_initial_state_from,
-        log_identifier=arguments.log_identifier,
-        logging_sections=arguments.logging_sections,
-        no_saved_state=arguments.no_saved_state,
+    start_arguments = command_arguments.StartArguments.create(
+        arguments,
         no_watchman=no_watchman,
-        noninteractive=arguments.noninteractive,
-        save_initial_state_to=arguments.save_initial_state_to,
-        saved_state_project=arguments.saved_state_project,
-        sequential=arguments.sequential,
-        show_error_traces=arguments.show_error_traces,
         store_type_check_resolution=False,
         terminal=False,
         wait_on_initialization=True,
@@ -793,7 +771,7 @@ def persistent(context: click.Context) -> int:
     and responses from the Pyre server to stdout.
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
-    base_directory = Path(".")
+    base_directory: Path = Path(".")
     configuration = configuration_module.create_configuration(
         command_argument, base_directory
     )
@@ -801,9 +779,19 @@ def persistent(context: click.Context) -> int:
         configuration.log_directory,
     )
     return commands.persistent.run(
-        command_argument,
-        base_directory,
-        commands.backend_arguments.RemoteLogging.create(
+        read_server_start_options=commands.persistent.PyreDaemonStartOptions.create_reader(
+            command_argument=command_argument,
+            start_command_argument=command_arguments.StartArguments.create(
+                command_argument=command_argument,
+            ),
+            read_frontend_configuration=lambda: commands.frontend_configuration.OpenSource(
+                configuration_module.create_configuration(
+                    command_argument, base_directory
+                )
+            ),
+            enabled_telemetry_event=False,
+        ),
+        remote_logging=commands.backend_arguments.RemoteLogging.create(
             configuration.logger, command_argument.log_identifier
         ),
     )
@@ -853,21 +841,9 @@ def pysa_language_server(context: click.Context, no_watchman: bool) -> int:
     )
     return commands.pysa_server.run(
         configuration,
-        command_arguments.StartArguments(
-            changed_files_path=command_argument.changed_files_path,
-            debug=command_argument.debug,
-            enable_memory_profiling=command_argument.enable_memory_profiling,
-            enable_profiling=command_argument.enable_profiling,
-            load_initial_state_from=command_argument.load_initial_state_from,
-            log_identifier=command_argument.log_identifier,
-            logging_sections=command_argument.logging_sections,
-            no_saved_state=command_argument.no_saved_state,
+        command_arguments.StartArguments.create(
+            command_argument,
             no_watchman=no_watchman,
-            noninteractive=command_argument.noninteractive,
-            save_initial_state_to=command_argument.save_initial_state_to,
-            saved_state_project=command_argument.saved_state_project,
-            sequential=command_argument.sequential,
-            show_error_traces=command_argument.show_error_traces,
             store_type_check_resolution=False,
             terminal=False,
             wait_on_initialization=True,
@@ -981,21 +957,9 @@ def restart(
     )
     _check_open_source_version(configuration)
     start_logging_to_directory(configuration.log_directory)
-    start_arguments = command_arguments.StartArguments(
-        changed_files_path=command_argument.changed_files_path,
-        debug=command_argument.debug,
-        enable_memory_profiling=command_argument.enable_memory_profiling,
-        enable_profiling=command_argument.enable_profiling,
-        load_initial_state_from=command_argument.load_initial_state_from,
-        log_identifier=command_argument.log_identifier,
-        logging_sections=command_argument.logging_sections,
-        no_saved_state=command_argument.no_saved_state,
+    start_arguments = command_arguments.StartArguments.create(
+        command_argument=command_argument,
         no_watchman=no_watchman,
-        noninteractive=command_argument.noninteractive,
-        save_initial_state_to=command_argument.save_initial_state_to,
-        saved_state_project=command_argument.saved_state_project,
-        sequential=command_argument.sequential,
-        show_error_traces=command_argument.show_error_traces,
         store_type_check_resolution=store_type_check_resolution,
         terminal=terminal,
         wait_on_initialization=True,
@@ -1104,7 +1068,7 @@ def start(
     use_lazy_module_tracking: bool,
 ) -> int:
     """
-    Starts a pyre server as a daemon.
+    Starts a pyre server as a daemon_socket.
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = configuration_module.create_configuration(
@@ -1114,21 +1078,9 @@ def start(
     start_logging_to_directory(configuration.log_directory)
     return commands.start.run(
         configuration,
-        command_arguments.StartArguments(
-            changed_files_path=command_argument.changed_files_path,
-            debug=command_argument.debug,
-            enable_memory_profiling=command_argument.enable_memory_profiling,
-            enable_profiling=command_argument.enable_profiling,
-            load_initial_state_from=command_argument.load_initial_state_from,
-            log_identifier=command_argument.log_identifier,
-            logging_sections=command_argument.logging_sections,
-            no_saved_state=command_argument.no_saved_state,
+        command_arguments.StartArguments.create(
+            command_argument=command_argument,
             no_watchman=no_watchman,
-            noninteractive=command_argument.noninteractive,
-            save_initial_state_to=command_argument.save_initial_state_to,
-            saved_state_project=command_argument.saved_state_project,
-            sequential=command_argument.sequential,
-            show_error_traces=command_argument.show_error_traces,
             store_type_check_resolution=store_type_check_resolution,
             terminal=terminal,
             wait_on_initialization=wait_on_initialization,

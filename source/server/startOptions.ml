@@ -15,6 +15,7 @@ module Watchman = struct
 end
 
 type t = {
+  environment_controls: Analysis.EnvironmentControls.t;
   source_paths: Configuration.SourcePaths.t;
   socket_path: PyrePath.t;
   watchman: Watchman.t option;
@@ -22,5 +23,4 @@ type t = {
   critical_files: CriticalFile.t list;
   saved_state_action: SavedStateAction.t option;
   skip_initial_type_check: bool;
-  use_lazy_module_tracking: bool;
 }

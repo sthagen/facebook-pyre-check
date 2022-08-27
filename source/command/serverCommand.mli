@@ -7,6 +7,29 @@
 
 open Core
 
+module ExitStatus : sig
+  type t =
+    | Ok
+    | Error
+  [@@deriving sexp, compare, hash]
+
+  val exit_code : t -> int
+end
+
+module ErrorKind : sig
+  type t =
+    | Watchman
+    | BuckInternal
+    | BuckUser
+    | Pyre
+    | Unknown
+  [@@deriving sexp, compare, hash, to_yojson]
+end
+
+val error_kind_and_message_from_exception : exn -> ErrorKind.t * string
+
+val watchman_options_of : PyrePath.t option -> Server.StartOptions.Watchman.t option Lwt.t
+
 module ServerConfiguration : sig
   type t = {
     base: CommandStartup.BaseConfiguration.t;

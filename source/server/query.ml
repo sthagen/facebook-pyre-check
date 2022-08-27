@@ -664,17 +664,6 @@ let rec process_request ~environment ~build_system request =
             (print_reason error_reason))
         errors
     in
-    let modules_of_path path =
-      let module_of_path path =
-        match ModuleTracker.ReadOnly.lookup_path module_tracker path with
-        | ModuleTracker.PathLookup.Found { ModulePath.qualifier; _ } -> Some qualifier
-        | ShadowedBy _
-        | NotFound ->
-            None
-      in
-      let artifact_path = BuildSystem.lookup_artifact build_system path in
-      List.filter_map ~f:module_of_path artifact_path
-    in
     let instantiate_range
         Location.WithModule.
           {
@@ -683,10 +672,7 @@ let rec process_request ~environment ~build_system request =
             module_reference;
           }
       =
-      PathLookup.instantiate_path
-        ~build_system
-        ~ast_environment:(TypeEnvironment.ReadOnly.ast_environment environment)
-        module_reference
+      PathLookup.instantiate_path_with_build_system ~build_system ~module_tracker module_reference
       >>| fun path ->
       {
         Response.Base.path;
@@ -702,7 +688,12 @@ let rec process_request ~environment ~build_system request =
         let { Configuration.Analysis.local_root = root; _ } = configuration in
         PyrePath.create_relative ~root ~relative:(PyrePath.absolute path) |> SourcePath.create
       in
-      match modules_of_path relative_path with
+      match
+        PathLookup.modules_of_source_path_with_build_system
+          ~build_system
+          ~module_tracker
+          relative_path
+      with
       | [found_module] -> Some found_module
       | _ -> None
     in
@@ -751,9 +742,7 @@ let rec process_request ~environment ~build_system request =
     | CalleesWithLocation caller ->
         let instantiate =
           Location.WithModule.instantiate
-            ~lookup:
-              (AstEnvironment.ReadOnly.get_real_path_relative
-                 (TypeEnvironment.ReadOnly.ast_environment environment))
+            ~lookup:(ModuleTracker.ReadOnly.lookup_relative_path module_tracker)
         in
         let callees =
           (* We don't yet support a syntax for fetching property setters. *)
@@ -763,10 +752,9 @@ let rec process_request ~environment ~build_system request =
         in
         Single (Base.CalleesWithLocation callees)
     | Defines module_or_class_names ->
-        let ast_environment = TypeEnvironment.ReadOnly.ast_environment environment in
         let defines_of_module module_or_class_name =
           let module_name, filter_define =
-            if AstEnvironment.ReadOnly.is_module_tracked ast_environment module_or_class_name then
+            if ModuleTracker.ReadOnly.is_module_tracked module_tracker module_or_class_name then
               Some module_or_class_name, fun _ -> false
             else
               let filter
@@ -775,7 +763,7 @@ let rec process_request ~environment ~build_system request =
                 not (Option.equal Reference.equal parent (Some module_or_class_name))
               in
               let rec find_module_name current_reference =
-                if AstEnvironment.ReadOnly.is_module_tracked ast_environment current_reference then
+                if ModuleTracker.ReadOnly.is_module_tracked module_tracker current_reference then
                   Some current_reference
                 else
                   Reference.prefix current_reference >>= find_module_name
@@ -783,6 +771,7 @@ let rec process_request ~environment ~build_system request =
               find_module_name module_or_class_name, filter
           in
           let defines =
+            let ast_environment = TypeEnvironment.ReadOnly.ast_environment environment in
             module_name
             >>= AstEnvironment.ReadOnly.get_processed_source ast_environment
             >>| Analysis.FunctionDefinition.collect_defines
@@ -831,9 +820,7 @@ let rec process_request ~environment ~build_system request =
             =
             let instantiate =
               Location.WithModule.instantiate
-                ~lookup:
-                  (AstEnvironment.ReadOnly.get_real_path_relative
-                     (TypeEnvironment.ReadOnly.ast_environment environment))
+                ~lookup:(ModuleTracker.ReadOnly.lookup_relative_path module_tracker)
             in
             Callgraph.get ~caller:(Callgraph.FunctionCaller caller)
             |> List.map ~f:(fun { Callgraph.callee; locations } ->
@@ -914,7 +901,9 @@ let rec process_request ~environment ~build_system request =
                 ~type_environment:environment
                 ~module_reference
                 position)
-        >>| (fun hover_info -> Single (Base.HoverInfoForPosition hover_info))
+        >>| (fun hover_info ->
+              let hover_text = Option.value hover_info ~default:"" in
+              Single (Base.HoverInfoForPosition hover_text))
         |> Option.value
              ~default:(Error (Format.sprintf "No module found for path `%s`" (PyrePath.show path)))
     | InlineDecorators { function_reference; decorators_to_skip } ->
@@ -990,7 +979,13 @@ let rec process_request ~environment ~build_system request =
                          (PyrePath.show path))
                   else
                     let get_models_for_query scheduler =
-                      let cache = Taint.Cache.load ~scheduler ~configuration ~enabled:false in
+                      let cache =
+                        Taint.Cache.load
+                          ~scheduler
+                          ~configuration
+                          ~taint_configuration
+                          ~enabled:false
+                      in
                       let initial_callables =
                         Taint.Cache.initial_callables cache (fun () ->
                             let timer = Timer.start () in
@@ -1073,7 +1068,11 @@ let rec process_request ~environment ~build_system request =
                         `List (List.map models ~f:to_json) |> Yojson.Safe.to_string
                       in
                       Single (Base.FoundModels models_string)))
-    | ModulesOfPath path -> Single (Base.FoundModules (SourcePath.create path |> modules_of_path))
+    | ModulesOfPath path ->
+        Single
+          (Base.FoundModules
+             (SourcePath.create path
+             |> PathLookup.modules_of_source_path_with_build_system ~build_system ~module_tracker))
     | LessOrEqual (left, right) ->
         let left = parse_and_validate left in
         let right = parse_and_validate right in
@@ -1145,15 +1144,6 @@ let rec process_request ~environment ~build_system request =
           Single (Base.FoundReferences [])
         in
         let symbol =
-          let module_of_path path =
-            let relative_path =
-              let { Configuration.Analysis.local_root = root; _ } = configuration in
-              PyrePath.create_relative ~root ~relative:(PyrePath.absolute path) |> SourcePath.create
-            in
-            match modules_of_path relative_path with
-            | [found_module] -> Some found_module
-            | _ -> None
-          in
           module_of_path path
           >>= fun module_reference ->
           LocationBasedLookup.find_narrowest_spanning_symbol

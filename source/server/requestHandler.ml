@@ -10,26 +10,30 @@ open Pyre
 open Ast
 open Analysis
 
-let module_of_path ~module_tracker path =
-  match ModuleTracker.ReadOnly.lookup_path module_tracker path with
-  | ModuleTracker.PathLookup.Found { ModulePath.qualifier; _ } -> Some qualifier
-  | _ -> None
-
-
-let instantiate_error
-    ~build_system
-    ~configuration:{ Configuration.Analysis.show_error_traces; _ }
-    ~ast_environment
-    error
-  =
+let instantiate_error ~lookup_source ~show_error_traces ~module_tracker error =
   AnalysisError.instantiate
     ~show_error_traces
-    ~lookup:(PathLookup.instantiate_path ~build_system ~ast_environment)
+    ~lookup:(PathLookup.instantiate_path ~lookup_source ~module_tracker)
     error
 
 
-let instantiate_errors ~build_system ~configuration ~ast_environment errors =
-  List.map errors ~f:(instantiate_error ~build_system ~configuration ~ast_environment)
+let instantiate_error_with_build_system
+    ~build_system
+    ~configuration:{ Configuration.Analysis.show_error_traces; _ }
+    ~module_tracker
+    error
+  =
+  instantiate_error
+    ~lookup_source:(BuildSystem.lookup_source build_system)
+    ~show_error_traces
+    ~module_tracker
+    error
+
+
+let instantiate_errors_with_build_system ~build_system ~configuration ~module_tracker errors =
+  List.map
+    errors
+    ~f:(instantiate_error_with_build_system ~build_system ~configuration ~module_tracker)
 
 
 let process_display_type_error_request
@@ -44,30 +48,18 @@ let process_display_type_error_request
     | [] -> ModuleTracker.ReadOnly.project_qualifiers module_tracker
     | _ ->
         let get_module_for_source_path path =
-          let path = PyrePath.create_absolute path |> SourcePath.create in
-          match BuildSystem.lookup_artifact build_system path with
-          | [] -> None
-          | artifact_path :: _ ->
-              (* If the same source file is mapped to more than one artifact paths, all of the
-                 artifact paths will likely contain the same set of type errors. It does not matter
-                 which artifact path is picked.
-
-                 NOTE (grievejia): It is possible for the type errors to differ. We may need to
-                 reconsider how this is handled in the future. *)
-              module_of_path ~module_tracker artifact_path
+          PyrePath.create_absolute path
+          |> SourcePath.create
+          |> PathLookup.modules_of_source_path_with_build_system ~build_system ~module_tracker
         in
-        List.filter_map paths ~f:get_module_for_source_path
+        List.concat_map paths ~f:get_module_for_source_path
   in
   let errors =
     ErrorsEnvironment.ReadOnly.get_errors_for_qualifiers errors_environment modules
     |> List.sort ~compare:AnalysisError.compare
   in
   Response.TypeErrors
-    (instantiate_errors
-       errors
-       ~build_system
-       ~configuration
-       ~ast_environment:(ErrorsEnvironment.ReadOnly.ast_environment errors_environment))
+    (instantiate_errors_with_build_system errors ~build_system ~configuration ~module_tracker)
 
 
 let create_info_response
@@ -117,11 +109,11 @@ let process_incremental_update_request
              |> List.sort ~compare:AnalysisError.compare
            in
            Response.TypeErrors
-             (instantiate_errors
+             (instantiate_errors_with_build_system
                 errors
                 ~build_system
                 ~configuration
-                ~ast_environment:(ErrorsEnvironment.ReadOnly.ast_environment errors_environment)))
+                ~module_tracker:(ErrorsEnvironment.ReadOnly.module_tracker errors_environment)))
       in
       Subscription.batch_send
         ~response:(create_status_update_response Response.ServerStatus.Rebuilding)
@@ -169,11 +161,11 @@ let process_overlay_update ~build_system ~overlaid_environment ~overlay_id ~sour
     in
     List.filter_map artifact_paths ~f:qualifier_for_artifact_path
     |> List.concat_map ~f:(ErrorsEnvironment.ReadOnly.get_errors_for_qualifier errors_environment)
-    |> instantiate_errors
+    |> instantiate_errors_with_build_system
          ~build_system
          ~configuration:
            (ModuleTracker.ReadOnly.controls module_tracker |> EnvironmentControls.configuration)
-         ~ast_environment:(ErrorsEnvironment.ReadOnly.ast_environment errors_environment)
+         ~module_tracker
   in
   OverlaidEnvironment.overlay overlaid_environment overlay_id
   >>| type_errors_for_module

@@ -16,8 +16,8 @@ from typing import Union
 
 from .. import command_arguments, configuration as configuration_module, json_rpc, log
 from . import (
-    async_server_connection as connection,
     commands,
+    connections,
     frontend_configuration,
     language_server_protocol as lsp,
     start,
@@ -37,8 +37,8 @@ LOG: logging.Logger = logging.getLogger(__name__)
 
 
 async def try_initialize(
-    input_channel: connection.TextReader,
-    output_channel: connection.TextWriter,
+    input_channel: connections.AsyncTextReader,
+    output_channel: connections.AsyncTextWriter,
 ) -> Union[InitializationSuccess, InitializationFailure, InitializationExit]:
     """
     Read an LSP message from the input channel and try to initialize an LSP
@@ -114,27 +114,27 @@ async def try_initialize(
 
 class PysaServer:
     # I/O Channels
-    input_channel: connection.TextReader
-    output_channel: connection.TextWriter
+    input_channel: connections.AsyncTextReader
+    output_channel: connections.AsyncTextWriter
 
     # Immutable States
     client_capabilities: lsp.ClientCapabilities
 
     def __init__(
         self,
-        input_channel: connection.TextReader,
-        output_channel: connection.TextWriter,
+        input_channel: connections.AsyncTextReader,
+        output_channel: connections.AsyncTextWriter,
         client_capabilities: lsp.ClientCapabilities,
         pyre_arguments: start.Arguments,
         binary_location: str,
-        server_identifier: str,
+        project_identifier: str,
     ) -> None:
         self.input_channel = input_channel
         self.output_channel = output_channel
         self.client_capabilities = client_capabilities
         self.pyre_arguments = pyre_arguments
         self.binary_location = binary_location
-        self.server_identifier = server_identifier
+        self.project_identifier = project_identifier
 
     async def show_message_to_client(
         self, message: str, level: lsp.MessageType = lsp.MessageType.INFO
@@ -268,9 +268,9 @@ class PysaServer:
 
 
 async def run_persistent(
-    binary_location: str, server_identifier: str, pysa_arguments: start.Arguments
+    binary_location: str, project_identifier: str, pysa_arguments: start.Arguments
 ) -> int:
-    stdin, stdout = await connection.create_async_stdin_stdout()
+    stdin, stdout = await connections.create_async_stdin_stdout()
     while True:
         initialize_result = await try_initialize(stdin, stdout)
         if isinstance(initialize_result, InitializationExit):
@@ -299,7 +299,7 @@ async def run_persistent(
                 output_channel=stdout,
                 client_capabilities=client_capabilities,
                 binary_location=binary_location,
-                server_identifier=server_identifier,
+                project_identifier=project_identifier,
                 pyre_arguments=pysa_arguments,
             )
             return await server.run()
@@ -325,7 +325,7 @@ def run(
         )
 
     server_configuration = frontend_configuration.OpenSource(configuration)
-    server_identifier = start.get_server_identifier(server_configuration)
+    project_identifier = server_configuration.get_project_identifier()
     pyre_arguments = start.create_server_arguments(
         server_configuration, start_arguments
     )
@@ -338,5 +338,5 @@ def run(
         )
 
     return asyncio.get_event_loop().run_until_complete(
-        run_persistent(binary_location, server_identifier, pyre_arguments)
+        run_persistent(binary_location, project_identifier, pyre_arguments)
     )

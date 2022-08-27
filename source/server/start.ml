@@ -207,26 +207,19 @@ let initialize_server_state
     ~build_system_initializer
     ~saved_state_action
     ~skip_initial_type_check
-    ~use_lazy_module_tracking
-    ({
-       ServerProperties.configuration = { Configuration.Analysis.log_directory; _ } as configuration;
-       critical_files;
-       _;
-     } as server_properties)
+    ~environment_controls
+    ({ ServerProperties.critical_files; _ } as server_properties)
   =
   (* This is needed to initialize shared memory. *)
+  let ({ Configuration.Analysis.log_directory; _ } as configuration) =
+    Analysis.EnvironmentControls.configuration environment_controls
+  in
   let _ = Memory.get_heap_handle configuration in
   let start_from_scratch ~build_system () =
     Log.info "Initializing server state from scratch...";
     let overlaid_environment =
       Scheduler.with_scheduler ~configuration ~f:(fun scheduler ->
-          let environment =
-            Analysis.EnvironmentControls.create
-              ~populate_call_graph:true
-              ~use_lazy_module_tracking
-              configuration
-            |> Analysis.ErrorsEnvironment.create
-          in
+          let environment = Analysis.ErrorsEnvironment.create environment_controls in
           let () =
             if skip_initial_type_check then
               ()
@@ -476,7 +469,6 @@ let on_watchman_update ~server_properties ~server_state paths =
       Lwt.return (new_state, ()))
 
 
-(* Invoke `on_caught` when given unix signals are received. *)
 let wait_for_signal ~on_caught signals =
   let open Lwt in
   let waiter, resolver = wait () in
@@ -491,20 +483,22 @@ let wait_for_signal ~on_caught signals =
 
 
 let with_server
-    ~configuration:({ Configuration.Analysis.extensions; _ } as configuration)
     ~when_started
     {
-      StartOptions.socket_path;
+      StartOptions.environment_controls;
+      socket_path;
       source_paths;
       watchman;
       build_system_initializer;
       critical_files;
       saved_state_action;
       skip_initial_type_check;
-      use_lazy_module_tracking;
     }
   =
   let open Lwt in
+  let ({ Configuration.Analysis.extensions; _ } as configuration) =
+    Analysis.EnvironmentControls.configuration environment_controls
+  in
   (* Watchman connection needs to be up before server can start -- otherwise we risk missing
      filesystem updates during server establishment. *)
   get_watchman_subscriber ~critical_files ~extensions ~source_paths watchman
@@ -519,7 +513,7 @@ let with_server
           ~build_system_initializer
           ~saved_state_action
           ~skip_initial_type_check
-          ~use_lazy_module_tracking
+          ~environment_controls
           server_properties)
   in
   let after_server_starts () =
@@ -565,11 +559,10 @@ let start_server
     ?(on_server_socket_ready = fun _ -> Lwt.return_unit)
     ~on_started
     ~on_exception
-    ~configuration
     start_options
   =
   let open Lwt in
   let when_started (socket_path, server_properties, server_state) =
     on_server_socket_ready socket_path >>= fun _ -> on_started server_properties server_state
   in
-  catch (fun () -> with_server ~configuration ~when_started start_options) on_exception
+  catch (fun () -> with_server ~when_started start_options) on_exception

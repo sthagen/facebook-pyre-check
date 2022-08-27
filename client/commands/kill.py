@@ -15,7 +15,7 @@ from .. import (
     find_directories,
     recently_used_configurations,
 )
-from . import commands, frontend_configuration, server_connection, servers, stop
+from . import commands, daemon_socket, frontend_configuration, servers, stop
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
@@ -94,9 +94,9 @@ def _kill_client_processes(configuration: frontend_configuration.Base) -> None:
 
 
 def _delete_server_files(configuration: frontend_configuration.Base) -> None:
-    socket_root = server_connection.get_default_socket_root()
+    socket_root = daemon_socket.get_default_socket_root()
     LOG.info(f"Deleting socket files and lock files under {socket_root}")
-    for socket_path in servers.get_pyre_socket_files(socket_root):
+    for socket_path in daemon_socket.find_socket_files(socket_root):
         stop.remove_socket_if_exists(socket_path)
 
     log_directory = configuration.get_log_directory() / "new_server"

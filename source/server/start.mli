@@ -9,6 +9,9 @@ exception ServerStopped
 
 exception ServerInterrupted of Core.Signal.t
 
+(* Return a promise which will invoke [on_caught] when given unix signals are received. *)
+val wait_for_signal : on_caught:(Core.Signal.t -> 'a Lwt.t) -> Core.Signal.t list -> 'a Lwt.t
+
 (* Start the server from a given configuration. Then invoke `on_started` if the server starts and
    its state fully initialized. *)
 (* If `on_server_socket_ready` is provided, it will be invoked right after the server socket gets
@@ -22,6 +25,5 @@ val start_server
   :  ?on_server_socket_ready:(PyrePath.t -> unit Lwt.t) ->
   on_started:(ServerProperties.t -> ServerState.t ExclusiveLock.Lazy.t -> 'a Lwt.t) ->
   on_exception:(exn -> 'a Lwt.t) ->
-  configuration:Configuration.Analysis.t ->
   StartOptions.t ->
   'a Lwt.t

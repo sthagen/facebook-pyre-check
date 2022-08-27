@@ -15,11 +15,12 @@ import dataclasses_json
 from .. import configuration as configuration_module, log, statistics_logger
 from . import (
     commands,
+    connections,
     coverage,
+    daemon_query,
+    daemon_socket,
     frontend_configuration,
     language_server_protocol as lsp,
-    query,
-    server_connection,
 )
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -292,19 +293,19 @@ def run_query(
     query_text: str,
     print_summary: bool = False,
 ) -> commands.ExitCode:
-    socket_path = server_connection.get_default_socket_path(
+    socket_path = daemon_socket.get_default_socket_path(
         project_root=configuration.get_global_root(),
         relative_local_root=configuration.get_relative_local_root(),
     )
     try:
-        response = query.query_server(socket_path, query_text)
+        response = daemon_query.execute_query(socket_path, query_text)
         _log_expression_level_coverage_to_remote(configuration, response.payload)
         if not print_summary:
             log.stdout.write(json.dumps(response.payload))
         else:
             LOG.warning(summary_expression_level(response.payload))
         return commands.ExitCode.SUCCESS
-    except server_connection.ConnectionFailure:
+    except connections.ConnectionFailure:
         LOG.warning(
             "A running Pyre server is required for queries to be responded. "
             "Please run `pyre` first to set up a server."

@@ -41,6 +41,15 @@ module ReadOnly = struct
 
   let is_module_tracked { is_module_tracked; _ } = is_module_tracked
 
+  let lookup_full_path tracker qualifier =
+    let configuration = controls tracker |> EnvironmentControls.configuration in
+    lookup_module_path tracker qualifier |> Option.map ~f:(ModulePath.full_path ~configuration)
+
+
+  let lookup_relative_path tracker qualifier =
+    lookup_module_path tracker qualifier |> Option.map ~f:ModulePath.relative
+
+
   let lookup_path tracker path =
     let configuration = controls tracker |> EnvironmentControls.configuration in
     match ModulePath.create ~configuration path with

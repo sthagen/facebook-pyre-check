@@ -296,10 +296,9 @@ module State (Context : Context) = struct
         let errors =
           let error_to_string error =
             let error =
-              let lookup reference =
-                GlobalResolution.ast_environment global_resolution
-                |> fun ast_environment ->
-                AstEnvironment.ReadOnly.get_relative ast_environment reference
+              let lookup =
+                GlobalResolution.module_tracker global_resolution
+                |> ModuleTracker.ReadOnly.lookup_relative_path
               in
               Error.instantiate ~show_error_traces:true ~lookup error
             in
@@ -659,11 +658,12 @@ module State (Context : Context) = struct
 
 
   let instantiate_path ~global_resolution location =
-    let ast_environment = GlobalResolution.ast_environment global_resolution in
+    let lookup =
+      GlobalResolution.module_tracker global_resolution
+      |> ModuleTracker.ReadOnly.lookup_relative_path
+    in
     let location = Location.with_module ~module_reference:Context.qualifier location in
-    Location.WithModule.instantiate
-      ~lookup:(AstEnvironment.ReadOnly.get_relative ast_environment)
-      location
+    Location.WithModule.instantiate ~lookup location
 
 
   let define_signature =
@@ -966,8 +966,10 @@ module State (Context : Context) = struct
                 | Some qualifier when not (Reference.is_empty qualifier) ->
                     if GlobalResolution.module_exists global_resolution qualifier then
                       let origin =
-                        let ast_environment = GlobalResolution.ast_environment global_resolution in
-                        match AstEnvironment.ReadOnly.get_module_path ast_environment qualifier with
+                        let module_tracker = GlobalResolution.module_tracker global_resolution in
+                        match
+                          ModuleTracker.ReadOnly.lookup_module_path module_tracker qualifier
+                        with
                         | Some module_path -> Error.ExplicitModule module_path
                         | None -> Error.ImplicitModule qualifier
                       in
@@ -1033,11 +1035,11 @@ module State (Context : Context) = struct
           | None -> None
         in
         let module_path_of_parent_module class_type =
-          let ast_environment = GlobalResolution.ast_environment global_resolution in
+          let module_tracker = GlobalResolution.module_tracker global_resolution in
           GlobalResolution.class_summary global_resolution class_type
           >>| Node.value
           >>= fun { ClassSummary.qualifier; _ } ->
-          AstEnvironment.ReadOnly.get_module_path ast_environment qualifier
+          ModuleTracker.ReadOnly.lookup_module_path module_tracker qualifier
         in
         match Type.resolve_class resolved_base >>| List.map ~f:find_attribute >>= Option.all with
         | None ->
@@ -1075,18 +1077,12 @@ module State (Context : Context) = struct
               resolved_annotation = None;
               base = None;
             }
-        | Some (_ :: _ as attribute_info) ->
-            let name = attribute in
-            let class_datas, attributes, _ = List.unzip3 attribute_info in
-            let head_annotation, tail_annotations =
-              let annotations = attributes |> List.map ~f:Annotated.Attribute.annotation in
-              List.hd_exn annotations, List.tl_exn annotations
-            in
-            begin
+        | Some (head_attribute_info :: tail_attributes_info) ->
+            let add_attributes_to_context attribute_info =
+              let get_instantiated { Type.instantiated; _ } = instantiated in
               let attributes_with_instantiated =
-                List.zip_exn
-                  attributes
-                  (class_datas |> List.map ~f:(fun { Type.instantiated; _ } -> instantiated))
+                List.map attribute_info ~f:(fun (class_data, attribute, _) ->
+                    attribute, get_instantiated class_data)
               in
               Context.Builder.add_property_callees
                 ~global_resolution
@@ -1094,24 +1090,30 @@ module State (Context : Context) = struct
                 ~attributes:attributes_with_instantiated
                 ~location
                 ~qualifier:Context.qualifier
-                ~name
-            end;
+                ~name:attribute
+            in
+            add_attributes_to_context (head_attribute_info :: tail_attributes_info);
+
+            let _, head_attribute, _ = head_attribute_info in
+            let _, tail_attributes, _ = List.unzip3 tail_attributes_info in
+
             let errors =
               let attribute_name, target =
                 match
-                  List.find attribute_info ~f:(fun (_, _, undefined_target) ->
-                      Option.is_some undefined_target)
+                  List.find
+                    (head_attribute_info :: tail_attributes_info)
+                    ~f:(fun (_, _, undefined_target) -> Option.is_some undefined_target)
                 with
                 | Some (_, attribute, Some target) ->
                     AnnotatedAttribute.public_name attribute, Some target
                 | Some (_, attribute, _) -> AnnotatedAttribute.public_name attribute, None
-                | _ -> name, None
+                | _ -> attribute, None
               in
               match target with
               | Some target ->
                   if has_default then
                     errors
-                  else if Option.is_some (inverse_operator name) then
+                  else if Option.is_some (inverse_operator attribute) then
                     (* Defer any missing attribute error until the inverse operator has been
                        typechecked. *)
                     errors
@@ -1143,6 +1145,10 @@ module State (Context : Context) = struct
                            })
               | _ -> errors
             in
+
+            let head_annotation = Annotated.Attribute.annotation head_attribute in
+            let tail_annotations = List.map ~f:Annotated.Attribute.annotation tail_attributes in
+
             let resolved_annotation =
               let apply_local_override global_annotation =
                 let local_override =
@@ -1157,18 +1163,11 @@ module State (Context : Context) = struct
                 | Some local_annotation -> local_annotation
                 | None -> global_annotation
               in
-              let join sofar element =
-                let refined =
-                  Refinement.Unit.join
-                    ~global_resolution
-                    (Refinement.Unit.create sofar)
-                    (Refinement.Unit.create element)
-                  |> Refinement.Unit.base
-                  |> Option.value ~default:(Annotation.create_mutable Type.Bottom)
-                in
-                { refined with annotation = Type.union [sofar.annotation; element.annotation] }
-              in
-              List.fold ~init:head_annotation ~f:join tail_annotations |> apply_local_override
+              tail_annotations
+              |> Algorithms.fold_divide_and_conquer
+                   ~f:(Refinement.Unit.join_annotations ~global_resolution)
+                   ~init:head_annotation
+              |> apply_local_override
             in
             {
               resolution;
@@ -1448,11 +1447,11 @@ module State (Context : Context) = struct
                        (Binary { operator_name; left_operand = target; right_operand = resolved }))
               | _ ->
                   let class_module =
-                    let ast_environment = GlobalResolution.ast_environment global_resolution in
+                    let module_tracker = GlobalResolution.module_tracker global_resolution in
                     GlobalResolution.class_summary global_resolution target
                     >>| Node.value
                     >>= fun { ClassSummary.qualifier; _ } ->
-                    AstEnvironment.ReadOnly.get_module_path ast_environment qualifier
+                    ModuleTracker.ReadOnly.lookup_module_path module_tracker qualifier
                   in
                   Some
                     (Error.UndefinedAttribute
@@ -4108,13 +4107,13 @@ module State (Context : Context) = struct
                                  custom definition of `__setattr__`, we should run signature select
                                  against the value type. *)
                               let parent_module_path =
-                                let ast_environment =
-                                  GlobalResolution.ast_environment global_resolution
+                                let module_tracker =
+                                  GlobalResolution.module_tracker global_resolution
                                 in
                                 GlobalResolution.class_summary global_resolution parent
                                 >>| Node.value
                                 >>= fun { ClassSummary.qualifier; _ } ->
-                                AstEnvironment.ReadOnly.get_module_path ast_environment qualifier
+                                ModuleTracker.ReadOnly.lookup_module_path module_tracker qualifier
                               in
                               emit_error
                                 ~errors
@@ -4833,7 +4832,7 @@ module State (Context : Context) = struct
                   else
                     [Error.UndefinedModule from]
               | Some module_metadata ->
-                  let ast_environment = GlobalResolution.ast_environment global_resolution in
+                  let module_tracker = GlobalResolution.module_tracker global_resolution in
                   List.filter_map
                     imports
                     ~f:(fun { Node.value = { Import.name = name_reference; _ }; _ } ->
@@ -4860,7 +4859,7 @@ module State (Context : Context) = struct
                               else
                                 let origin_module =
                                   match
-                                    AstEnvironment.ReadOnly.get_module_path ast_environment from
+                                    ModuleTracker.ReadOnly.lookup_module_path module_tracker from
                                   with
                                   | Some source_path -> Error.ExplicitModule source_path
                                   | None -> Error.ImplicitModule from

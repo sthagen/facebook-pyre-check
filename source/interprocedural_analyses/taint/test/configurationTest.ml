@@ -14,18 +14,23 @@ module Result = Core.Result
 
 let parse ?rule_filter ?source_filter ?sink_filter ?transform_filter configuration =
   let open Result in
-  TaintConfiguration.from_json_list
-    [PyrePath.create_absolute "/taint.config", Yojson.Safe.from_string configuration]
-  >>= TaintConfiguration.with_command_line_options
-        ~rule_filter
-        ~source_filter
-        ~sink_filter
-        ~transform_filter
-        ~find_missing_flows:None
-        ~dump_model_query_results_path:None
-        ~maximum_trace_length:None
-        ~maximum_tito_depth:None
-  >>= TaintConfiguration.validate
+  let configuration =
+    TaintConfiguration.from_json_list
+      [PyrePath.create_absolute "/taint.config", Yojson.Safe.from_string configuration]
+    >>= TaintConfiguration.with_command_line_options
+          ~rule_filter
+          ~source_filter
+          ~sink_filter
+          ~transform_filter
+          ~find_missing_flows:None
+          ~dump_model_query_results_path:None
+          ~maximum_trace_length:None
+          ~maximum_tito_depth:None
+    >>= TaintConfiguration.validate
+  in
+  (* Test that the configuration can be written in shared memory. *)
+  let (_ : (unit, Error.t list) Result.t) = configuration >>| TaintConfiguration.register in
+  configuration
 
 
 let assert_parse ?rule_filter ?source_filter ?sink_filter ?transform_filter configuration =
@@ -867,9 +872,17 @@ let test_implicit_sources _ =
     assert_parse
       {|
           { sources: [{ name: "StringDigit" }],
-            sinks: [],
+            sinks: [{ name: "RCE" }],
             features: [],
-            rules: [],
+            rules: [
+              {
+                 name: "test rule",
+                 sources: ["StringDigit"],
+                 sinks: ["RCE"],
+                 code: 1,
+                 message_format: ""
+              }
+            ],
             implicit_sources: {
               literal_strings: [
                 {
@@ -896,10 +909,18 @@ let test_implicit_sinks _ =
   let configuration =
     assert_parse
       {|
-          { sources: [],
+          { sources: [{ name: "UserControlled" }],
             sinks: [{ name: "HTMLContainer" }],
             features: [],
-            rules: [],
+            rules: [
+              {
+                 name: "test rule",
+                 sources: ["UserControlled"],
+                 sinks: ["HTMLContainer"],
+                 code: 1,
+                 message_format: ""
+              }
+            ],
             implicit_sinks: {
               literal_strings: [
                 {

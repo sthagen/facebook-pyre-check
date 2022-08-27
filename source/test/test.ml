@@ -1226,10 +1226,23 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
     "django/__init__.pyi", "import django.http";
     ( "dataclasses.pyi",
       {|
-        from typing import TypeVar, Generic, Type
+        from typing import TypeVar, Generic, Type, Mapping, Any
+        import sys
         _T = TypeVar('_T')
         class InitVar(Generic[_T]): ...
         def dataclass(_cls: Type[_T]) -> Type[_T]: ...
+        if sys.version_info >= (3, 10):
+          class KW_ONLY: ...
+        def field(
+            *,
+            default: _T,
+            init: bool = ...,
+            repr: bool = ...,
+            hash: bool | None = ...,
+            compare: bool = ...,
+            metadata: Mapping[Any, Any] | None = ...,
+            kw_only: bool = ...,
+        ) -> _T: ...
         |}
     );
     ( "functools.pyi",
@@ -2866,7 +2879,7 @@ module ScratchProject = struct
   let qualifiers_of project = module_paths_of project |> List.map ~f:ModulePath.qualifier
 
   let project_qualifiers project =
-    ast_environment project |> AstEnvironment.ReadOnly.project_qualifiers
+    module_tracker project |> ModuleTracker.ReadOnly.project_qualifiers
 
 
   let get_project_sources project =
@@ -2970,7 +2983,7 @@ let assert_errors
 
   let descriptions =
     let errors =
-      let sources, ast_environment, environment =
+      let sources, environment =
         let project =
           let external_sources =
             List.map update_environment_with ~f:(fun { handle; source } -> handle, source)
@@ -2984,13 +2997,11 @@ let assert_errors
             ~debug
             [handle, source]
         in
-        let { ScratchProject.BuiltGlobalEnvironment.sources; global_environment } =
+        let { ScratchProject.BuiltGlobalEnvironment.sources; _ } =
           ScratchProject.build_global_environment project
         in
         let type_environment = ScratchProject.ReadWrite.type_environment project in
-        ( sources,
-          AnnotatedGlobalEnvironment.ReadOnly.ast_environment global_environment,
-          type_environment )
+        sources, type_environment
       in
       let source =
         List.find_exn sources ~f:(fun { Source.module_path; _ } ->
@@ -3001,7 +3012,9 @@ let assert_errors
            ~f:
              (AnalysisError.instantiate
                 ~show_error_traces
-                ~lookup:(AstEnvironment.ReadOnly.get_real_path_relative ast_environment))
+                ~lookup:
+                  (ModuleTracker.ReadOnly.lookup_relative_path
+                     (TypeEnvironment.module_tracker environment |> ModuleTracker.read_only)))
     in
     let errors_with_any_location =
       List.filter_map errors ~f:(fun error ->
