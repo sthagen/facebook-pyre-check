@@ -5,7 +5,4 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-open Core
-
-let fold_balanced list ~f ~init =
-  Option.value (List.reduce_balanced ~f (init :: list)) ~default:init
+(* Blank to catch unused tests *)

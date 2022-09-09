@@ -22,6 +22,7 @@ from .setup import run as run_setup
 
 
 MODULE_NAME = "pyre_check"
+EXPECTED_LD_PATH = "/lib64/ld-linux-x86-64.so.2"
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
@@ -174,8 +175,23 @@ def _patch_version(version: str, build_root: Path) -> None:
     (build_root / MODULE_NAME / "client/version.py").write_text(file_contents)
 
 
-def _binary_exists(pyre_directory: Path) -> bool:
-    return (pyre_directory / "source" / "_build/default/main.exe").is_file()
+def _ensure_usable_binary_exists(pyre_directory: Path) -> None:
+    binary_path = pyre_directory / "source" / "_build/default/main.exe"
+    if not binary_path.is_file():
+        raise ValueError(
+            "The binary file does not exist. \
+            Have you run 'make' in the toplevel directory?"
+        )
+    result = subprocess.run(
+        ["file", str(binary_path)],
+        stdout=subprocess.PIPE,
+        encoding="utf-8",
+    )
+    if "dynamically linked" in result.stdout and EXPECTED_LD_PATH not in result.stdout:
+        raise ValueError(
+            "The built executable appears to include an unreleasable ld path. "
+            f"The output of running `file` on it was {result.stdout}"
+        )
 
 
 def _sync_binary(pyre_directory: Path, build_root: Path) -> None:
@@ -285,11 +301,7 @@ def build_pypi_package(
 ) -> None:
     _validate_typeshed(typeshed_path)
     _validate_version(version)
-    if not _binary_exists(pyre_directory):
-        raise ValueError(
-            "The binary file does not exist. \
-            Have you run 'make' in the toplevel directory?"
-        )
+    _ensure_usable_binary_exists(pyre_directory)
 
     dependencies = [
         line.strip()

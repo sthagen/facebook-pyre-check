@@ -81,6 +81,25 @@ module Testing : sig
       [@@deriving sexp, compare, yojson { strict = false }]
     end
 
+    module FileUpdateEvent : sig
+      module Kind : sig
+        (** A helper type that help specifying the change associated with the event. *)
+        type t =
+          | CreatedOrChanged
+          | Deleted
+        [@@deriving sexp, compare, yojson { strict = false }]
+      end
+
+      (** A helper type that help specifying a file change event. *)
+      type t = {
+        kind: Kind.t;  (** The change type. *)
+        path: string;
+            (** The changed path. We currently do not support specifying the path by module name due
+                to how caching was done in {!Analysis.ModuleTracker} *)
+      }
+      [@@deriving sexp, compare, yojson { strict = false }]
+    end
+
     (** A type representing requests sent from the clients to the server.
 
         The code navigation server supports a primitive form of isolation between different clients.
@@ -103,6 +122,34 @@ module Testing : sig
               respond with a {!Response.ErrorKind.ModuleNotTracked} error. If the server cannot find
               the overlay with the given ID, it will respond with a
               {!Response.ErrorKind.OverlayNotFound} error. *)
+      | Hover of {
+          module_: Module.t;
+          position: Ast.Location.position;
+          overlay_id: string option;
+        }
+          (** A request that asks the server to return hover information at a given location in a
+              given module. The server will send back a {!Response.Hover} response as result. The
+              response will contain an empty list if the server do not have any hover text to show
+              at the location.
+
+              If the provided module is not covered by the code navigation server, the server will
+              respond with a {!Response.ErrorKind.ModuleNotTracked} error. If the server cannot find
+              the overlay with the given ID, it will respond with a
+              {!Response.ErrorKind.OverlayNotFound} error. *)
+      | LocationOfDefinition of {
+          module_: Module.t;
+          position: Ast.Location.position;
+          overlay_id: string option;
+        }
+          (** A request that asks the server to return the location of definitions for a given
+              cursor point in a given module. The server will send back a
+              {!Response.LocationOfDefinition} response as result. The response will contain an
+              empty list if a definition cannot be found.
+
+              If the provided module is not covered by the code navigation server, the server will
+              respond with a {!Response.ErrorKind.ModuleNotTracked} error. If the server cannot find
+              the overlay with the given ID, it will respond with a
+              {!Response.ErrorKind.OverlayNotFound} error. *)
       | LocalUpdate of {
           module_: Module.t;
           content: string;
@@ -115,6 +162,15 @@ module Testing : sig
 
               If the provided module is not covered by the code navigation server, the server will
               respond with a {!Response.ErrorKind.ModuleNotTracked} error. *)
+      | FileUpdate of FileUpdateEvent.t list
+          (** A request that notify the server that a file has changed on disk, so the server needs
+              to incrementally adjust its internal state accordingly. Events will get processed
+              in-order. An on-disk change may potentially affect existing overlays when those
+              overlays have dependency to the file being updated.
+
+              The server will send back a {!Response.Ok} response when the sever is done updating
+              its internal state. In particular, no errors will be returned if any of the provided
+              modules is not covered by the code navigation server. *)
     [@@deriving sexp, compare, yojson { strict = false }]
   end
 
@@ -133,6 +189,32 @@ module Testing : sig
       [@@deriving sexp, compare, yojson { strict = false }]
     end
 
+    module HoverContent : sig
+      module Kind : sig
+        (** TODO(T103574623): Support Markup. *)
+        type t = PlainText [@@deriving sexp, compare, yojson { strict = false }]
+      end
+
+      (** A type representing hovering text element. Roughly corresponds to LSP's [MarkupContent]
+          structure. *)
+      type t = {
+        kind: Kind.t;
+        value: string;
+      }
+      [@@deriving sexp, compare, yojson { strict = false }]
+    end
+
+    module DefinitionLocation : sig
+      (** A type representing location of a definition.
+
+          TODO: Support LSP [LocationLink] to enable the functionality of "peek definition". *)
+      type t = {
+        path: string;
+        range: Ast.Location.t;
+      }
+      [@@deriving sexp, compare, yojson { strict = false }]
+    end
+
     (** A type representing responses sent from the server to its clients *)
     type t =
       | Ok  (** This response will be used for acknowledging successful processing of a request. *)
@@ -140,6 +222,15 @@ module Testing : sig
           (** This response will be sent when the server runs into errors when processing a request. *)
       | TypeErrors of Analysis.AnalysisError.Instantiated.t list
           (** Response for {!Request.GetTypeErrors}. *)
+      | Hover of { contents: HoverContent.t list }
+          (** Response for {!Request.Hover}. [contents] contains a list of items that will be shown
+              to the user (there can be many because build system may map the same file to multiple
+              modules). TODO: Add an optional [range] field used to visualize a hover. *)
+      | LocationOfDefinition of DefinitionLocation.t list
+          (** Response for {!Request.LocationOfDefinition}. The associated value is a list since
+              there can be many potential definitions for a given item, either because build system
+              may map the same file to multiple modules, or because the same name may get redefined
+              multiple times.*)
     [@@deriving sexp, compare, yojson { strict = false }]
   end
 end

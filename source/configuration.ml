@@ -459,10 +459,37 @@ module Analysis = struct
     ()
 end
 
+module TaintOutputFormat = struct
+  type t =
+    | Json
+    | ShardedJson
+  [@@deriving sexp, compare, hash]
+
+  let of_string = function
+    | "json" -> Ok Json
+    | "sharded-json" -> Ok ShardedJson
+    | output_format -> Error (Format.sprintf "Invalid taint output format `%s`" output_format)
+end
+
+module MissingFlowKind = struct
+  type t =
+    (* Find missing flows through obscure models. *)
+    | Obscure
+    (* Find missing flows due to missing type information. *)
+    | Type
+  [@@deriving sexp, compare, equal, hash]
+
+  let of_string = function
+    | "obscure" -> Ok Obscure
+    | "type" -> Ok Type
+    | missing_flow -> Error (Format.sprintf "Invalid missing flow kind `%s`" missing_flow)
+end
+
 module StaticAnalysis = struct
   type t = {
     repository_root: PyrePath.t option;
-    result_json_path: PyrePath.t option;
+    save_results_to: PyrePath.t option;
+    output_format: TaintOutputFormat.t;
     dump_call_graph: PyrePath.t option;
     verify_models: bool;
     verify_dsl: bool;
@@ -472,7 +499,7 @@ module StaticAnalysis = struct
     source_filter: string list option;
     sink_filter: string list option;
     transform_filter: string list option;
-    find_missing_flows: string option;
+    find_missing_flows: MissingFlowKind.t option;
     dump_model_query_results: PyrePath.t option;
     use_cache: bool;
     inline_decorators: bool;
@@ -483,7 +510,8 @@ module StaticAnalysis = struct
   let create
       configuration
       ?repository_root
-      ?result_json_path
+      ?save_results_to
+      ?(output_format = TaintOutputFormat.Json)
       ?dump_call_graph
       ?(verify_models = true)
       ?(verify_dsl = true)
@@ -501,7 +529,8 @@ module StaticAnalysis = struct
     =
     {
       repository_root;
-      result_json_path;
+      save_results_to;
+      output_format;
       dump_call_graph;
       verify_models;
       verify_dsl;

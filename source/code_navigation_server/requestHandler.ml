@@ -77,6 +77,54 @@ let handle_get_type_errors ~module_ ~overlay_id { State.environment } =
   get_type_errors_in_overlay ~overlay module_ >>| fun type_errors -> Response.TypeErrors type_errors
 
 
+let get_hover_content_for_module ~overlay ~position module_reference =
+  let type_environment = ErrorsEnvironment.ReadOnly.type_environment overlay in
+  LocationBasedLookup.hover_info_for_position ~type_environment ~module_reference position
+  |> Option.map ~f:(fun value -> Response.HoverContent.{ kind = Kind.PlainText; value })
+
+
+let get_hover_in_overlay ~overlay ~position module_ =
+  let open Result in
+  let module_tracker = ErrorsEnvironment.ReadOnly.module_tracker overlay in
+  get_modules ~module_tracker module_
+  >>| List.filter_map ~f:(get_hover_content_for_module ~overlay ~position)
+
+
+let handle_hover ~module_ ~position ~overlay_id { State.environment } =
+  let open Result in
+  get_overlay ~environment overlay_id
+  >>= fun overlay ->
+  get_hover_in_overlay ~overlay ~position module_ >>| fun contents -> Response.(Hover { contents })
+
+
+let get_location_of_definition_for_module ~overlay ~position module_reference =
+  let open Option in
+  let type_environment = ErrorsEnvironment.ReadOnly.type_environment overlay in
+  let module_tracker = TypeEnvironment.ReadOnly.module_tracker type_environment in
+  LocationBasedLookup.location_of_definition ~type_environment ~module_reference position
+  >>= fun { Ast.Location.WithModule.module_reference; start; stop } ->
+  Server.PathLookup.instantiate_path
+    ~lookup_source:default_lookup_source
+    ~module_tracker
+    module_reference
+  >>| fun path -> { Response.DefinitionLocation.path; range = { Ast.Location.start; stop } }
+
+
+let get_location_of_definition_in_overlay ~overlay ~position module_ =
+  let open Result in
+  let module_tracker = ErrorsEnvironment.ReadOnly.module_tracker overlay in
+  get_modules ~module_tracker module_
+  >>| List.filter_map ~f:(get_location_of_definition_for_module ~overlay ~position)
+
+
+let handle_location_of_definition ~module_ ~position ~overlay_id { State.environment } =
+  let open Result in
+  get_overlay ~environment overlay_id
+  >>= fun overlay ->
+  get_location_of_definition_in_overlay ~overlay ~position module_
+  >>| fun definitions -> Response.(LocationOfDefinition definitions)
+
+
 let handle_local_update ~module_ ~content ~overlay_id { State.environment } =
   let open Result in
   let module_tracker =
@@ -96,6 +144,33 @@ let handle_local_update ~module_ ~content ~overlay_id { State.environment } =
   Response.Ok
 
 
+let get_artifact_path_event_kind = function
+  | Request.FileUpdateEvent.Kind.CreatedOrChanged -> ArtifactPath.Event.Kind.CreatedOrChanged
+  | Request.FileUpdateEvent.Kind.Deleted -> ArtifactPath.Event.Kind.Deleted
+
+
+let get_artifact_path_event { Request.FileUpdateEvent.kind; path } =
+  let kind = get_artifact_path_event_kind kind in
+  PyrePath.create_absolute path |> ArtifactPath.create |> ArtifactPath.Event.create ~kind
+
+
+let handle_file_update ~events { State.environment } =
+  let artifact_path_events =
+    (* TODO: Add support for Buck path translation. *)
+    List.map events ~f:get_artifact_path_event
+  in
+  let () =
+    let configuration =
+      OverlaidEnvironment.root environment
+      |> ErrorsEnvironment.ReadOnly.controls
+      |> EnvironmentControls.configuration
+    in
+    Scheduler.with_scheduler ~configuration ~f:(fun scheduler ->
+        OverlaidEnvironment.run_update_root environment ~scheduler artifact_path_events)
+  in
+  Lwt.return_unit
+
+
 let response_from_result = function
   | Result.Ok response -> response
   | Result.Error kind -> Response.Error kind
@@ -108,11 +183,29 @@ let handle_request ~server:{ ServerInternal.properties = _; state } = function
         handle_get_type_errors ~module_ ~overlay_id state |> response_from_result |> Lwt.return
       in
       Server.ExclusiveLock.read state ~f
+  | Request.Hover { module_; position; overlay_id } ->
+      let f state =
+        handle_hover ~module_ ~position ~overlay_id state |> response_from_result |> Lwt.return
+      in
+      Server.ExclusiveLock.read state ~f
+  | Request.LocationOfDefinition { module_; position; overlay_id } ->
+      let f state =
+        handle_location_of_definition ~module_ ~position ~overlay_id state
+        |> response_from_result
+        |> Lwt.return
+      in
+      Server.ExclusiveLock.read state ~f
   | Request.LocalUpdate { module_; content; overlay_id } ->
       let f state =
         handle_local_update ~module_ ~content ~overlay_id state
         |> response_from_result
         |> Lwt.return
+      in
+      Server.ExclusiveLock.read state ~f
+  | Request.FileUpdate events ->
+      let f state =
+        let%lwt () = handle_file_update ~events state in
+        Lwt.return Response.Ok
       in
       Server.ExclusiveLock.read state ~f
 

@@ -409,6 +409,11 @@ def pyre(
     help="Directory to write analysis results to.",
 )
 @click.option(
+    "--output-format",
+    type=click.Choice([kind.value for kind in command_arguments.TaintOutputFormat]),
+    help="Format of the taint output file(s).",
+)
+@click.option(
     "--dump-call-graph",
     type=str,
     help="Dump the call graph in the given file.",
@@ -481,6 +486,7 @@ def analyze(
     verify_dsl: bool,
     version: bool,
     save_results_to: Optional[str],
+    output_format: Optional[str],
     dump_call_graph: Optional[str],
     repository_root: Optional[str],
     rule: Iterable[int],
@@ -531,6 +537,9 @@ def analyze(
             sink=list(sink),
             transform=list(transform),
             save_results_to=save_results_to,
+            output_format=command_arguments.TaintOutputFormat(output_format)
+            if output_format is not None
+            else None,
             sequential=command_argument.sequential,
             taint_models_path=list(taint_models_path),
             use_cache=use_cache,
@@ -763,8 +772,71 @@ def kill(context: click.Context, with_fire: bool) -> int:
 
 
 @pyre.command()
+@click.option(
+    "--hover",
+    type=click.Choice([kind.value for kind in commands.persistent.HoverAvailability]),
+    help="Availability of the hover langauge server feature",
+    hidden=True,
+)
+@click.option(
+    "--definition",
+    type=click.Choice(
+        [kind.value for kind in commands.persistent.DefinitionAvailability]
+    ),
+    help="Availability of the definition langauge server feature",
+    hidden=True,
+)
+@click.option(
+    "--document-symbols",
+    type=click.Choice(
+        [kind.value for kind in commands.persistent.DocumentSymbolsAvailability]
+    ),
+    help="Availability of the document symbols langauge server feature",
+    hidden=True,
+)
+@click.option(
+    "--references",
+    type=click.Choice(
+        [kind.value for kind in commands.persistent.DocumentSymbolsAvailability]
+    ),
+    help="Availability of the references langauge server feature",
+    hidden=True,
+)
+@click.option(
+    "--type-errors",
+    type=click.Choice(
+        [kind.value for kind in commands.persistent.TypeErrorsAvailability]
+    ),
+    help="Availability of the type errors langauge server feature",
+    hidden=True,
+)
+@click.option(
+    "--type-coverage",
+    type=click.Choice(
+        [kind.value for kind in commands.persistent.TypeCoverageAvailability]
+    ),
+    help="Availability of the type coverage langauge server feature",
+    hidden=True,
+)
+@click.option(
+    "--unsaved-changes",
+    type=click.Choice(
+        [kind.value for kind in commands.persistent.DocumentSymbolsAvailability]
+    ),
+    help="Availability support for Pyre analyzing unsaved editor buffers",
+    hidden=True,
+)
 @click.pass_context
-def persistent(context: click.Context) -> int:
+def persistent(
+    context: click.Context,
+    hover: Optional[str],
+    definition: Optional[str],
+    document_symbols: Optional[str],
+    references: Optional[str],
+    type_errors: Optional[str],
+    type_coverage: Optional[str],
+    unsaved_changes: Optional[str],
+) -> int:
     """
     Entry point for IDE integration to Pyre. Communicates with a Pyre server using
     the Language Server Protocol, accepts input from stdin and writing diagnostics
@@ -779,8 +851,7 @@ def persistent(context: click.Context) -> int:
         configuration.log_directory,
     )
     return commands.persistent.run(
-        read_server_start_options=commands.persistent.PyreDaemonStartOptions.create_reader(
-            command_argument=command_argument,
+        read_server_options=commands.persistent.PyreServerOptions.create_reader(
             start_command_argument=command_arguments.StartArguments.create(
                 command_argument=command_argument,
             ),
@@ -790,6 +861,27 @@ def persistent(context: click.Context) -> int:
                 )
             ),
             enabled_telemetry_event=False,
+            hover=None
+            if hover is None
+            else commands.persistent.HoverAvailability(hover),
+            definition=None
+            if definition is None
+            else commands.persistent.DefinitionAvailability(definition),
+            document_symbols=None
+            if document_symbols is None
+            else commands.persistent.DocumentSymbolsAvailability(document_symbols),
+            references=None
+            if references is None
+            else commands.persistent.ReferencesAvailability(references),
+            type_errors=commands.persistent.TypeErrorsAvailability.ENABLED
+            if type_errors is None
+            else commands.persistent.TypeErrorsAvailability(type_errors),
+            type_coverage=None
+            if type_coverage is None
+            else commands.persistent.TypeCoverageAvailability(type_coverage),
+            unsaved_changes=None
+            if unsaved_changes is None
+            else commands.persistent.UnsavedChangesAvailability(unsaved_changes),
         ),
         remote_logging=commands.backend_arguments.RemoteLogging.create(
             configuration.logger, command_argument.log_identifier

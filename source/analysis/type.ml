@@ -1474,6 +1474,7 @@ module T = struct
     | ParameterVariadicComponent of
         Record.Variable.RecordVariadic.RecordParameters.RecordComponents.t
     | Primitive of Primitive.t
+    | ReadOnly of t
     | RecursiveType of t Record.RecursiveType.record
     | Top
     | Tuple of t Record.OrderedTypes.record
@@ -1966,7 +1967,9 @@ let rec is_falsy = function
   | Literal (String (LiteralValue ""))
   | Literal (Bytes "") ->
       true
-  | Annotated annotated -> is_falsy annotated
+  | Annotated annotated
+  | ReadOnly annotated ->
+      is_falsy annotated
   | Union types -> List.for_all types ~f:is_falsy
   | _ -> false
 
@@ -1975,12 +1978,13 @@ let rec is_truthy = function
   | Literal (Boolean true)
   | Callable _ ->
       true
-  | Literal (Integer i) when not (Int.equal i 0) -> true
+  | Literal (Integer i) -> not (Int.equal i 0)
   | Literal (String (LiteralValue value))
-  | Literal (Bytes value)
-    when not (String.is_empty value) ->
-      true
-  | Annotated annotated -> is_truthy annotated
+  | Literal (Bytes value) ->
+      not (String.is_empty value)
+  | Annotated annotated
+  | ReadOnly annotated ->
+      is_truthy annotated
   | Union types -> List.for_all types ~f:is_truthy
   | _ -> false
 
@@ -2088,6 +2092,7 @@ let rec pp format annotation =
   | ParameterVariadicComponent component ->
       Record.Variable.RecordVariadic.RecordParameters.RecordComponents.pp_concise format component
   | Primitive name -> Format.fprintf format "%a" String.pp name
+  | ReadOnly type_ -> Format.fprintf format "pyre_extensions.ReadOnly[%a]" pp type_
   | RecursiveType { name; body } -> Format.fprintf format "%s (resolves to %a)" name pp body
   | Top -> Format.fprintf format "unknown"
   | Tuple ordered_type -> Format.fprintf format "typing.Tuple[%s]" (pp_ordered_type ordered_type)
@@ -2174,6 +2179,7 @@ and pp_concise format annotation =
   | ParameterVariadicComponent component ->
       Record.Variable.RecordVariadic.RecordParameters.RecordComponents.pp_concise format component
   | Primitive name -> Format.fprintf format "%s" (strip_qualification name)
+  | ReadOnly type_ -> Format.fprintf format "pyre_extensions.ReadOnly[%a]" pp type_
   | RecursiveType { name; _ } -> Format.fprintf format "%s" name
   | Top -> Format.fprintf format "unknown"
   | Tuple (Concatenation { middle = UnboundedElements parameter; prefix = []; suffix = [] }) ->
@@ -2340,7 +2346,7 @@ let variable ?constraints ?variance name =
 
 let yield parameter = Parametric { name = "Yield"; parameters = [Single parameter] }
 
-let parametric_substitution_map =
+let alternate_name_to_canonical_name_map =
   [
     "typing.ChainMap", "collections.ChainMap";
     "typing.Counter", "collections.Counter";
@@ -2559,6 +2565,7 @@ let rec expression annotation =
         Expression.Name
           (Attribute { base = expression (Primitive variable_name); attribute; special = false })
     | Primitive name -> create_name name
+    | ReadOnly type_ -> get_item_call "pyre_extensions.ReadOnly" [expression type_]
     | RecursiveType { name; _ } -> create_name name
     | Top -> create_name "$unknown"
     | Tuple (Concrete []) ->
@@ -2751,6 +2758,7 @@ module Transform = struct
               | Unpacked (Broadcast broadcast) -> Unpacked (Broadcast (visit_broadcast broadcast))
             in
             Parametric { name; parameters = List.map parameters ~f:visit }
+        | ReadOnly type_ -> ReadOnly (visit_annotation type_ ~state)
         | RecursiveType { name; body } ->
             RecursiveType { name; body = visit_annotation ~state body }
         | Tuple ordered_type -> Tuple (visit_ordered_types ordered_type)
@@ -3692,6 +3700,12 @@ module TypeOperation = struct
   type t = type_t Record.TypeOperation.record
 end
 
+module ReadOnly = struct
+  let create = function
+    | ReadOnly _ as type_ -> type_
+    | type_ -> ReadOnly type_
+end
+
 let parameters_from_unpacked_annotation annotation ~variable_aliases =
   let open Record.OrderedTypes.Concatenation in
   let unpacked_variadic_to_parameter = function
@@ -4275,20 +4289,17 @@ let rec create_logic ~resolve_aliases ~variable_aliases { Node.value = expressio
       >>= IntExpression.create_product_from_ordered_type
       |> Option.value ~default:Top
   | Parametric { name; parameters } -> (
-      match
-        Identifier.Table.find parametric_substitution_map name, Parameter.all_singles parameters
-      with
-      | Some name, _ -> Parametric { name; parameters }
-      | None, Some parameters -> (
-          match name with
-          | "typing_extensions.Annotated"
-          | "typing.Annotated"
-            when List.length parameters > 0 ->
-              annotated (List.hd_exn parameters)
-          | "typing.Optional" when List.length parameters = 1 -> optional (List.hd_exn parameters)
-          | "typing.Union" -> union parameters
-          | _ -> result)
-      | _, None -> result)
+      let replace_with_special_form ~name parameters =
+        match name, Parameter.all_singles parameters with
+        | ("typing_extensions.Annotated" | "typing.Annotated"), Some (head :: _) -> annotated head
+        | "typing.Optional", Some [head] -> optional head
+        | "typing.Union", Some parameters -> union parameters
+        | "pyre_extensions.ReadOnly", Some [head] -> ReadOnly.create head
+        | _ -> result
+      in
+      match Identifier.Table.find alternate_name_to_canonical_name_map name with
+      | Some name -> Parametric { name; parameters }
+      | None -> replace_with_special_form ~name parameters)
   | Union elements -> union elements
   | Callable ({ implementation; overloads; _ } as callable) ->
       let collect_unpacked_parameters_if_any ({ parameters; _ } as overload) =
@@ -4429,6 +4440,7 @@ let elements annotation =
         | Tuple _ -> "tuple" :: sofar, recursive_type_names
         | TypeOperation (Compose _) -> "pyre_extensions.Compose" :: sofar, recursive_type_names
         | Union _ -> "typing.Union" :: sofar, recursive_type_names
+        | ReadOnly _ -> "pyre_extensions.ReadOnly" :: sofar, recursive_type_names
         | RecursiveType { name; _ } -> sofar, name :: recursive_type_names
         | ParameterVariadicComponent _
         | Bottom
@@ -6623,7 +6635,9 @@ let resolve_class annotation =
                       ~recursive_type
                       instantiated;
                 })
-    | Annotated annotation -> extract ~meta annotation
+    | Annotated annotation
+    | ReadOnly annotation ->
+        extract ~meta annotation
     | annotation when is_meta annotation ->
         (* Metaclasses return accessed_through_class=true since they allow looking up only class
            attribute, etc. *)

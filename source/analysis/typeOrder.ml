@@ -153,6 +153,8 @@ module OrderImplementation = struct
             union
         | Type.Annotated left, _ -> Type.annotated (join order left right)
         | _, Type.Annotated right -> Type.annotated (join order left right)
+        | Type.ReadOnly left, _ -> Type.ReadOnly.create (join order left right)
+        | _, Type.ReadOnly right -> Type.ReadOnly.create (join order left right)
         | Type.RecursiveType left_recursive_type, Type.RecursiveType right_recursive_type ->
             let new_name = Type.RecursiveType.Namespace.create_fresh_name () in
             (* Based on https://cstheory.stackexchange.com/a/38415. *)
@@ -474,11 +476,10 @@ module OrderImplementation = struct
         | Type.ParameterVariadicComponent _, _
         | _, Type.ParameterVariadicComponent _ ->
             Type.Bottom
-        | Type.NoneType, _
-        | _, Type.NoneType ->
-            Type.Bottom
         | Type.Annotated left, _ -> Type.annotated (meet order left right)
         | _, Type.Annotated right -> Type.annotated (meet order left right)
+        | Type.ReadOnly left, _ -> Type.ReadOnly.create (meet order left right)
+        | _, Type.ReadOnly right -> Type.ReadOnly.create (meet order left right)
         | (Type.Variable _ as variable), other
         | other, (Type.Variable _ as variable) ->
             if always_less_or_equal order ~left:variable ~right:other then
@@ -491,6 +492,9 @@ module OrderImplementation = struct
               other
             else
               List.map elements ~f:(meet order other) |> List.fold ~f:(join order) ~init:Type.Bottom
+        | Type.NoneType, _
+        | _, Type.NoneType ->
+            Type.Bottom
         | Type.Parametric _, Type.Parametric _
         | Type.Primitive _, Type.Primitive _ ->
             if always_less_or_equal order ~left ~right then

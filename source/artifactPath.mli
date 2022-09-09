@@ -5,8 +5,28 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-type t [@@deriving show, eq, compare, hash]
+type t [@@deriving show, compare, hash]
 
 val create : PyrePath.t -> t
 
 val raw : t -> PyrePath.t
+
+module Event : sig
+  module Kind : sig
+    type t =
+      | CreatedOrChanged
+      | Deleted
+      | Unknown
+    [@@deriving sexp, compare]
+  end
+
+  type artifact_path = t
+
+  type t = private {
+    kind: Kind.t;
+    path: artifact_path;
+  }
+  [@@deriving sexp, compare]
+
+  val create : kind:Kind.t -> artifact_path -> t
+end

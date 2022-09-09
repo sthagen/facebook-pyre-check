@@ -580,6 +580,15 @@ let test_less_or_equal context =
   assert_true
     (less_or_equal default ~left:(Type.annotated Type.integer) ~right:(Type.annotated Type.float));
 
+  (* ReadOnly types. *)
+  assert_true (less_or_equal default ~left:(Type.ReadOnly.create Type.integer) ~right:Type.float);
+  assert_true (less_or_equal default ~left:Type.integer ~right:(Type.ReadOnly.create Type.float));
+  assert_true
+    (less_or_equal
+       default
+       ~left:(Type.ReadOnly.create Type.integer)
+       ~right:(Type.ReadOnly.create Type.float));
+
   (* Parametric types. *)
   assert_true
     (less_or_equal default ~left:(Type.list Type.integer) ~right:(Type.iterator Type.integer));
@@ -1821,7 +1830,7 @@ let test_less_or_equal_variance _ =
   ()
 
 
-let test_join context =
+let test_join _ =
   let assert_join ?(order = default) ?(aliases = Type.empty_aliases) left right expected =
     let parse_annotation = function
       | "$bottom" -> Type.Bottom
@@ -1856,6 +1865,7 @@ let test_join context =
     assert_type_equal
       (parse_annotation expected)
       (join ~attributes order (parse_annotation left) (parse_annotation right));
+    (* Test that `join` is commutative. *)
     assert_type_equal
       (parse_annotation expected)
       (join ~attributes order (parse_annotation right) (parse_annotation left))
@@ -2076,6 +2086,14 @@ let test_join context =
     "typing.Callable[[int], int]"
     "ParametricCallableToStr[int]"
     "typing.Callable[[int], typing.Union[int, str]]";
+
+  (* ReadOnly: The type checking analysis ignores `ReadOnly`, so we don't really care about the
+     precise `join`. We just preserve the `ReadOnly` wrapper if either type has it. *)
+  assert_join "pyre_extensions.ReadOnly[int]" "float" "pyre_extensions.ReadOnly[float]";
+  assert_join
+    "pyre_extensions.ReadOnly[int]"
+    "pyre_extensions.ReadOnly[float]"
+    "pyre_extensions.ReadOnly[float]";
 
   (* Variables. *)
   assert_type_equal
@@ -2304,23 +2322,22 @@ let test_join context =
     (join order (Type.Literal (String AnyLiteral)) (Type.literal_string "hello"))
     (Type.Literal (String AnyLiteral));
   assert_type_equal (join order (Type.Literal (String AnyLiteral)) Type.string) Type.string;
+  ()
+
+
+(* Test using the type order created by `GlobalResolution`. *)
+let test_join_with_full_type_order context =
+  let parse_annotation ~resolution annotation =
+    annotation |> parse_single_expression |> GlobalResolution.parse_annotation resolution
+  in
+  let assert_join_direct ~source ~left ~right expected_annotation =
+    let resolution = resolution ~source context in
+    let left, right = parse_annotation ~resolution left, parse_annotation ~resolution right in
+    assert_type_equal expected_annotation (GlobalResolution.join resolution left right)
+  in
   let assert_join ?(source = "") ~left ~right expected_result =
     let resolution = resolution ~source context in
-    let parse_annotation annotation =
-      annotation |> parse_single_expression |> GlobalResolution.parse_annotation resolution
-    in
-    let left, right = parse_annotation left, parse_annotation right in
-    assert_type_equal
-      (parse_annotation expected_result)
-      (GlobalResolution.join resolution left right)
-  in
-  let assert_join_direct ?(source = "") ~left ~right expected_annotation =
-    let resolution = resolution ~source context in
-    let parse_annotation annotation =
-      annotation |> parse_single_expression |> GlobalResolution.parse_annotation resolution
-    in
-    let left, right = parse_annotation left, parse_annotation right in
-    assert_type_equal expected_annotation (GlobalResolution.join resolution left right)
+    assert_join_direct ~source ~left ~right (parse_annotation ~resolution expected_result)
   in
   assert_join
     ~source:
@@ -2334,6 +2351,42 @@ let test_join context =
     ~left:"test.NonGenericChild"
     ~right:"test.GenericBase[int, str]"
     "test.GenericBase[int, str]";
+  ()
+
+
+let test_join_recursive_types context =
+  let parse_annotation ~resolution annotation =
+    annotation |> parse_single_expression |> GlobalResolution.parse_annotation resolution
+  in
+  let assert_join_direct ~source ~left ~right expected_annotation =
+    let resolution = resolution ~source context in
+    let left, right = parse_annotation ~resolution left, parse_annotation ~resolution right in
+    (* Note: It's not enough to naively check `Type.equal` or even check if they are
+       alpha-equivalent (same body but different recursive type names). That would miss the cases
+       where one of the recursive types happens to be unrolled a few more times than the other, even
+       though both are equivalent to each other.
+
+       So, we need to use `less-or-equal` both ways. *)
+    let are_recursive_types_equivalent left right =
+      GlobalResolution.less_or_equal resolution ~left ~right
+      && GlobalResolution.less_or_equal resolution ~left:right ~right:left
+    in
+    assert_equal
+      ~printer:Type.show
+      ~cmp:are_recursive_types_equivalent
+      expected_annotation
+      (GlobalResolution.join resolution left right);
+    (* Test that `join` is commutative. *)
+    assert_equal
+      ~printer:Type.show
+      ~cmp:are_recursive_types_equivalent
+      expected_annotation
+      (GlobalResolution.join resolution right left)
+  in
+  let assert_join ?(source = "") ~left ~right expected_result =
+    let resolution = resolution ~source context in
+    assert_join_direct ~source ~left ~right (parse_annotation ~resolution expected_result)
+  in
   let recursive_alias_source =
     {|
       from typing import Tuple, Union
@@ -2404,14 +2457,17 @@ let test_meet _ =
     in
     assert_type_equal
       (parse_annotation expected)
-      (meet order (parse_annotation left) (parse_annotation right))
+      (meet order (parse_annotation left) (parse_annotation right));
+    (* Test that `meet` is commutative. *)
+    assert_type_equal
+      (parse_annotation expected)
+      (meet order (parse_annotation right) (parse_annotation left))
   in
   (* Special elements. *)
   assert_meet "typing.List[float]" "typing.Any" "typing.List[float]";
 
   (* Primitive types. *)
   assert_meet "list" "typing.Sized" "list";
-  assert_meet "typing.Sized" "list" "list";
   assert_meet "typing.List[int]" "typing.Sized" "typing.List[int]";
 
   (* Annotated types. *)
@@ -2424,6 +2480,13 @@ let test_meet _ =
     "typing_extensions.Annotated[float]"
     "typing_extensions.Annotated[int]";
 
+  (* ReadOnly. *)
+  assert_meet "pyre_extensions.ReadOnly[int]" "float" "pyre_extensions.ReadOnly[int]";
+  assert_meet
+    "pyre_extensions.ReadOnly[int]"
+    "pyre_extensions.ReadOnly[float]"
+    "pyre_extensions.ReadOnly[int]";
+
   (* Unions. *)
   assert_meet "typing.Union[int, str]" "typing.Union[int, bytes]" "int";
   assert_meet "typing.Union[int, str]" "typing.Union[str, int]" "typing.Union[int, str]";
@@ -2432,6 +2495,7 @@ let test_meet _ =
   assert_meet "typing.Union[int, str]" "typing.Union[float, bool]" "int";
   assert_meet "typing.Union[int, str]" "typing.Union[int, bool]" "int";
 
+  assert_meet "None" "typing.Optional[str]" "None";
   assert_meet
     "typing.Union[int, str]"
     "typing.Union[int, typing.Optional[str]]"
@@ -2603,7 +2667,8 @@ let test_meet _ =
 
 let test_meet_callable _ =
   let assert_meet ?(order = default) left right expected =
-    assert_type_equal expected (meet order left right)
+    assert_type_equal expected (meet order left right);
+    assert_type_equal expected (meet order right left)
   in
   let named_int_to_int =
     Type.Callable.create
@@ -2710,6 +2775,8 @@ let () =
   "order"
   >::: [
          "join" >:: test_join;
+         "join_with_full_type_order" >:: test_join_with_full_type_order;
+         "join_recursive_types" >:: test_join_recursive_types;
          "less_or_equal" >:: test_less_or_equal;
          "less_or_equal_variance" >:: test_less_or_equal_variance;
          "is_compatible_with" >:: test_is_compatible_with;

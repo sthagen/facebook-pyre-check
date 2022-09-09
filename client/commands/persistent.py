@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import abc
 import asyncio
 import dataclasses
 import enum
@@ -96,26 +97,149 @@ def _log_lsp_event(
             )
 
 
-PyreDaemonStartOptionsReader = Callable[[], "PyreDaemonStartOptions"]
+PyreServerOptionsReader = Callable[[], "PyreServerOptions"]
 FrontendConfigurationReader = Callable[[], frontend_configuration.Base]
 
 
+class _Availability(enum.Enum):
+    ENABLED = "enabled"
+    DISABLED = "disabled"
+
+    @staticmethod
+    def from_enabled(enabled: bool) -> _Availability:
+        return _Availability.ENABLED if enabled else _Availability.DISABLED
+
+    def is_enabled(self) -> bool:
+        return self == _Availability.ENABLED
+
+    def is_disabled(self) -> bool:
+        return self == _Availability.DISABLED
+
+
+class _AvailabilityWithShadow(enum.Enum):
+    ENABLED = "enabled"
+    DISABLED = "disabled"
+    SHADOW = "shadow"
+
+    @staticmethod
+    def from_enabled(enabled: bool) -> _AvailabilityWithShadow:
+        return (
+            _AvailabilityWithShadow.ENABLED
+            if enabled
+            else _AvailabilityWithShadow.DISABLED
+        )
+
+    def is_enabled(self) -> bool:
+        return self == _AvailabilityWithShadow.ENABLED
+
+    def is_shadow(self) -> bool:
+        return self == _AvailabilityWithShadow.SHADOW
+
+    def is_disabled(self) -> bool:
+        return self == _AvailabilityWithShadow.DISABLED
+
+
+class TypeCoverageAvailability(enum.Enum):
+    DISABLED = "disabled"
+    FUNCTION_LEVEL = "function_level"
+    EXPRESSION_LEVEL = "expression_level"
+
+
+HoverAvailability = _Availability
+DefinitionAvailability = _AvailabilityWithShadow
+ReferencesAvailability = _Availability
+DocumentSymbolsAvailability = _Availability
+TypeErrorsAvailability = _Availability
+UnsavedChangesAvailability = _Availability
+
+
 @dataclasses.dataclass(frozen=True)
-class PyreDaemonStartOptions:
+class LanguageServerFeatures:
+    hover: HoverAvailability = HoverAvailability.DISABLED
+    definition: DefinitionAvailability = DefinitionAvailability.DISABLED
+    document_symbols: DocumentSymbolsAvailability = DocumentSymbolsAvailability.DISABLED
+    references: ReferencesAvailability = ReferencesAvailability.DISABLED
+    type_coverage: TypeCoverageAvailability = TypeCoverageAvailability.DISABLED
+    type_errors: TypeErrorsAvailability = TypeErrorsAvailability.ENABLED
+    unsaved_changes: UnsavedChangesAvailability = UnsavedChangesAvailability.DISABLED
+
+    @staticmethod
+    def create(
+        configuration: frontend_configuration.Base,
+        hover: Optional[HoverAvailability],
+        definition: Optional[DefinitionAvailability],
+        document_symbols: Optional[DocumentSymbolsAvailability],
+        references: Optional[ReferencesAvailability],
+        type_coverage: Optional[TypeCoverageAvailability],
+        unsaved_changes: Optional[UnsavedChangesAvailability],
+        type_errors: TypeErrorsAvailability = TypeErrorsAvailability.ENABLED,
+    ) -> LanguageServerFeatures:
+        ide_features = configuration.get_ide_features()
+        if ide_features is None:
+            ide_features = configuration_module.IdeFeatures()
+        return LanguageServerFeatures(
+            hover=hover
+            or HoverAvailability.from_enabled(ide_features.is_hover_enabled()),
+            definition=definition
+            or DefinitionAvailability.from_enabled(
+                ide_features.is_go_to_definition_enabled()
+            ),
+            document_symbols=document_symbols
+            or DocumentSymbolsAvailability.from_enabled(
+                ide_features.is_find_symbols_enabled()
+            ),
+            references=references
+            or ReferencesAvailability.from_enabled(
+                ide_features.is_find_all_references_enabled()
+            ),
+            type_coverage=type_coverage
+            or (
+                TypeCoverageAvailability.EXPRESSION_LEVEL
+                if ide_features.is_expression_level_coverage_enabled()
+                else TypeCoverageAvailability.FUNCTION_LEVEL
+            ),
+            type_errors=type_errors,
+            unsaved_changes=unsaved_changes
+            or UnsavedChangesAvailability.from_enabled(
+                ide_features.is_consume_unsaved_changes_enabled()
+            ),
+        )
+
+    def capabilities(self) -> Dict[str, bool]:
+        return {
+            "hover_provider": not self.hover.is_disabled(),
+            "definition_provider": not self.definition.is_disabled(),
+            "document_symbol_provider": not self.document_symbols.is_disabled(),
+            "references_provider": not self.references.is_disabled(),
+        }
+
+
+@dataclasses.dataclass(frozen=True)
+class PyreServerOptions:
     binary: str
     project_identifier: str
     start_arguments: start.Arguments
-    ide_features: Optional[configuration_module.IdeFeatures]
+    language_server_features: LanguageServerFeatures
     strict_default: bool
     excludes: Sequence[str]
     enabled_telemetry_event: bool = False
+
+    def get_socket_path(self) -> Path:
+        return daemon_socket.get_default_socket_path(self.project_identifier)
 
     @staticmethod
     def create(
         start_command_argument: command_arguments.StartArguments,
         configuration: frontend_configuration.Base,
         enabled_telemetry_event: bool,
-    ) -> PyreDaemonStartOptions:
+        hover: Optional[HoverAvailability],
+        definition: Optional[DefinitionAvailability],
+        document_symbols: Optional[DocumentSymbolsAvailability],
+        references: Optional[ReferencesAvailability],
+        type_errors: TypeErrorsAvailability,
+        type_coverage: Optional[TypeCoverageAvailability],
+        unsaved_changes: Optional[UnsavedChangesAvailability],
+    ) -> PyreServerOptions:
         binary_location = configuration.get_binary_location(download_if_needed=True)
         if binary_location is None:
             raise configuration_module.InvalidConfiguration(
@@ -132,11 +256,20 @@ class PyreDaemonStartOptions:
                 "properly."
             )
 
-        return PyreDaemonStartOptions(
+        return PyreServerOptions(
             binary=str(binary_location),
             project_identifier=configuration.get_project_identifier(),
             start_arguments=start_arguments,
-            ide_features=configuration.get_ide_features(),
+            language_server_features=LanguageServerFeatures.create(
+                configuration=configuration,
+                hover=hover,
+                definition=definition,
+                document_symbols=document_symbols,
+                references=references,
+                type_errors=type_errors,
+                type_coverage=type_coverage,
+                unsaved_changes=unsaved_changes,
+            ),
             strict_default=configuration.is_strict(),
             excludes=configuration.get_excludes(),
             enabled_telemetry_event=enabled_telemetry_event,
@@ -144,28 +277,41 @@ class PyreDaemonStartOptions:
 
     @staticmethod
     def create_reader(
-        command_argument: command_arguments.CommandArguments,
         start_command_argument: command_arguments.StartArguments,
         read_frontend_configuration: FrontendConfigurationReader,
         enabled_telemetry_event: bool,
-    ) -> PyreDaemonStartOptionsReader:
-        def read() -> PyreDaemonStartOptions:
-            return PyreDaemonStartOptions.create(
+        hover: Optional[HoverAvailability],
+        definition: Optional[DefinitionAvailability],
+        document_symbols: Optional[DocumentSymbolsAvailability],
+        references: Optional[ReferencesAvailability],
+        type_errors: TypeErrorsAvailability,
+        type_coverage: Optional[TypeCoverageAvailability],
+        unsaved_changes: Optional[UnsavedChangesAvailability],
+    ) -> PyreServerOptionsReader:
+        def read() -> PyreServerOptions:
+            return PyreServerOptions.create(
                 start_command_argument=start_command_argument,
                 configuration=read_frontend_configuration(),
                 enabled_telemetry_event=enabled_telemetry_event,
+                hover=hover,
+                definition=definition,
+                document_symbols=document_symbols,
+                references=references,
+                type_errors=type_errors,
+                type_coverage=type_coverage,
+                unsaved_changes=unsaved_changes,
             )
 
         return read
 
 
-def read_server_start_options(
-    server_start_options_reader: PyreDaemonStartOptionsReader,
+def read_server_options(
+    server_options_reader: PyreServerOptionsReader,
     remote_logging: Optional[backend_arguments.RemoteLogging],
-) -> "PyreDaemonStartOptions":
+) -> "PyreServerOptions":
     try:
         LOG.info("Reading Pyre server configurations...")
-        return server_start_options_reader()
+        return server_options_reader()
     except Exception:
         _log_lsp_event(
             remote_logging=remote_logging,
@@ -179,18 +325,18 @@ def read_server_start_options(
 
 def process_initialize_request(
     parameters: lsp.InitializeParameters,
-    ide_features: Optional[configuration_module.IdeFeatures] = None,
+    language_server_features: Optional[LanguageServerFeatures] = None,
 ) -> lsp.InitializeResult:
     LOG.info(
         f"Received initialization request from {parameters.client_info} "
         f" (pid = {parameters.process_id})"
     )
-
+    if language_server_features is None:
+        language_server_features = LanguageServerFeatures()
     server_info = lsp.Info(name="pyre", version=version.__version__)
     did_change_result = (
         lsp.TextDocumentSyncKind.FULL
-        if ide_features is not None
-        and ide_features.is_consume_unsaved_changes_enabled()
+        if language_server_features.unsaved_changes.is_enabled()
         else lsp.TextDocumentSyncKind.NONE
     )
     server_capabilities = lsp.ServerCapabilities(
@@ -199,16 +345,7 @@ def process_initialize_request(
             change=did_change_result,
             save=lsp.SaveOptions(include_text=False),
         ),
-        **(
-            {
-                "hover_provider": ide_features.is_hover_enabled(),
-                "definition_provider": ide_features.is_go_to_definition_enabled(),
-                "document_symbol_provider": ide_features.is_find_symbols_enabled(),
-                "references_provider": ide_features.is_find_all_references_enabled(),
-            }
-            if ide_features is not None
-            else {}
-        ),
+        **language_server_features.capabilities(),
     )
     return lsp.InitializeResult(
         capabilities=server_capabilities, server_info=server_info
@@ -235,7 +372,7 @@ class InitializationExit:
 async def try_initialize(
     input_channel: connections.AsyncTextReader,
     output_channel: connections.AsyncTextWriter,
-    server_start_options_reader: PyreDaemonStartOptionsReader,
+    server_options: PyreServerOptions,
 ) -> Union[InitializationSuccess, InitializationFailure, InitializationExit]:
     """
     Read an LSP message from the input channel and try to initialize an LSP
@@ -274,15 +411,8 @@ async def try_initialize(
             request_parameters
         )
 
-        try:
-            server_start_options = read_server_start_options(
-                server_start_options_reader, remote_logging=None
-            )
-        except configuration_module.InvalidConfiguration as e:
-            raise lsp.ServerNotInitializedError(str(e)) from None
-
         result = process_initialize_request(
-            initialize_parameters, server_start_options.ide_features
+            initialize_parameters, server_options.language_server_features
         )
         await lsp.write_json_rpc_ignore_connection_error(
             output_channel,
@@ -400,132 +530,11 @@ async def _read_server_response(
     return await server_input_channel.read_until(separator="\n")
 
 
-@dataclasses.dataclass(frozen=True)
-class TypeCoverageQuery:
-    id: Union[int, str, None]
-    path: Path
-    activity_key: Optional[Dict[str, object]] = None
-
-
-@dataclasses.dataclass(frozen=True)
-class OverlayUpdate:
-    # TODO: T126924773 Consider making the overlay id also contain a GUID or PID
-    overlay_id: str
-    source_path: Path
-    code_update: str
-
-
-@dataclasses.dataclass(frozen=True)
-class HoverQuery:
-    id: Union[int, str, None]
-    path: Path
-    position: lsp.Position
-    activity_key: Optional[Dict[str, object]] = None
-
-
-@dataclasses.dataclass(frozen=True)
-class HoverResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
-    response: lsp.LspHoverResponse
-
-
-@dataclasses.dataclass(frozen=True)
-class DefinitionLocationQuery:
-    id: Union[int, str, None]
-    path: Path
-    position: lsp.Position
-    activity_key: Optional[Dict[str, object]] = None
-
-
-@dataclasses.dataclass(frozen=True)
-class DefinitionLocationResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
-    response: List[lsp.PyreDefinitionResponse]
-
-
-@dataclasses.dataclass(frozen=True)
-class ReferencesQuery:
-    id: Union[int, str, None]
-    path: Path
-    position: lsp.Position
-    activity_key: Optional[Dict[str, object]] = None
-
-
-@dataclasses.dataclass(frozen=True)
-class ReferencesResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
-    response: List[lsp.ReferencesResponse]
-
-
-RequestTypes = Union[
-    TypeCoverageQuery,
-    HoverQuery,
-    DefinitionLocationQuery,
-    ReferencesQuery,
-    OverlayUpdate,
-]
-
-
-@dataclasses.dataclass
-class PyreQueryState:
-    # Queue of queries.
-    queries: "asyncio.Queue[RequestTypes]" = dataclasses.field(
-        default_factory=asyncio.Queue
-    )
-
-
-@dataclasses.dataclass(frozen=True)
-class LineColumn(json_mixins.CamlCaseAndExcludeJsonMixin):
-    line: int
-    column: int
-
-    def to_position(self) -> lsp.Position:
-        return lsp.Position(line=self.line, character=self.column)
-
-
-@dataclasses.dataclass(frozen=True)
-class LocationInfo(json_mixins.CamlCaseAndExcludeJsonMixin):
-    start: LineColumn
-    stop: LineColumn
-
-
-@dataclasses.dataclass(frozen=True)
-class LocationAnnotation(json_mixins.CamlCaseAndExcludeJsonMixin):
-    location: LocationInfo
-    annotation: str
-
-
-async def _send_request(
-    output_channel: connections.AsyncTextWriter, request: str
-) -> None:
-    LOG.debug(f"Sending `{log.truncate(request, 400)}`")
-    await output_channel.write(f"{request}\n")
-
-
-async def _receive_response(
-    input_channel: connections.AsyncTextReader,
-) -> Optional[daemon_query.Response]:
-    raw_response = await _read_server_response(input_channel)
-    LOG.info(f"Received `{log.truncate(raw_response, 400)}`")
-    try:
-        return daemon_query.Response.parse(raw_response)
-    except daemon_query.InvalidQueryResponse as exception:
-        LOG.info(f"Failed to parse json {raw_response} due to exception: {exception}")
-        return None
-
-
-async def _consume_and_drop_response(
-    input_channel: connections.AsyncTextReader,
-) -> None:
-    raw_response = await _read_server_response(input_channel)
-    LOG.info(f"Received and will drop response: `{log.truncate(raw_response, 400)}`")
-    return None
-
-
-@dataclasses.dataclass(frozen=True)
-class QueryModulesOfPathResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
-    response: List[str]
-
-
 @dataclasses.dataclass
 class ServerState:
+    # State that can only change on config reload
+    server_options: PyreServerOptions
+
     # Immutable States
     client_capabilities: lsp.ClientCapabilities = lsp.ClientCapabilities()
 
@@ -539,7 +548,6 @@ class ServerState:
     last_diagnostic_update_timer: timer.Timer = dataclasses.field(
         default_factory=timer.Timer
     )
-    query_state: PyreQueryState = dataclasses.field(default_factory=PyreQueryState)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -621,9 +629,11 @@ async def _start_pyre_server(
 
 def type_error_to_diagnostic(type_error: error.Error) -> lsp.Diagnostic:
     return lsp.Diagnostic(
-        range=lsp.Range(
-            start=lsp.Position(line=type_error.line - 1, character=type_error.column),
-            end=lsp.Position(
+        range=lsp.LspRange(
+            start=lsp.LspPosition(
+                line=type_error.line - 1, character=type_error.column
+            ),
+            end=lsp.LspPosition(
                 line=type_error.stop_line - 1, character=type_error.stop_column
             ),
         ),
@@ -647,12 +657,12 @@ def type_errors_to_diagnostics(
 
 def uncovered_range_to_diagnostic(uncovered_range: CodeRange) -> lsp.Diagnostic:
     return lsp.Diagnostic(
-        range=lsp.Range(
-            start=lsp.Position(
+        range=lsp.LspRange(
+            start=lsp.LspPosition(
                 line=uncovered_range.start.line - 1,
                 character=uncovered_range.start.column,
             ),
-            end=lsp.Position(
+            end=lsp.LspPosition(
                 line=uncovered_range.end.line - 1, character=uncovered_range.end.column
             ),
         ),
@@ -690,12 +700,12 @@ def file_not_typechecked_coverage_result() -> lsp.TypeCoverageResponse:
         covered_percent=0.0,
         uncovered_ranges=[
             lsp.Diagnostic(
-                range=lsp.Range(
-                    start=lsp.Position(
+                range=lsp.LspRange(
+                    start=lsp.LspPosition(
                         line=0,
                         character=0,
                     ),
-                    end=lsp.Position(line=1, character=0),
+                    end=lsp.LspPosition(line=1, character=0),
                 ),
                 message="This file is not type checked by Pyre.",
             )
@@ -743,330 +753,6 @@ def path_to_expression_coverage_response(
     )
 
 
-class PyreQueryHandler(background.Task):
-    def __init__(
-        self,
-        query_state: PyreQueryState,
-        server_start_options_reader: PyreDaemonStartOptionsReader,
-        client_output_channel: connections.AsyncTextWriter,
-    ) -> None:
-        self.query_state = query_state
-        self.server_start_options_reader = server_start_options_reader
-        self.client_output_channel = client_output_channel
-
-    async def _query_modules_of_path(
-        self,
-        path: Path,
-        socket_path: Path,
-        consume_unsaved_changes_enabled: bool,
-    ) -> Optional[QueryModulesOfPathResponse]:
-        overlay_id = str(path) if consume_unsaved_changes_enabled else None
-        return await daemon_query.attempt_typed_async_query(
-            response_type=QueryModulesOfPathResponse,
-            socket_path=socket_path,
-            query_text=f"modules_of_path('{path}')",
-            overlay_id=overlay_id,
-        )
-
-    async def _query_is_typechecked(
-        self, path: Path, socket_path: Path, consume_unsaved_changes_enabled: bool
-    ) -> Optional[bool]:
-        response = await self._query_modules_of_path(
-            path, socket_path, consume_unsaved_changes_enabled
-        )
-        if response is None:
-            return None
-        else:
-            return len(response.response) > 0
-
-    async def _query_type_coverage(
-        self,
-        path: Path,
-        strict_default: bool,
-        socket_path: Path,
-        expression_level_coverage_enabled: bool,
-        consume_unsaved_changes_enabled: bool,
-    ) -> Optional[lsp.TypeCoverageResponse]:
-        is_typechecked = await self._query_is_typechecked(
-            path, socket_path, consume_unsaved_changes_enabled
-        )
-        if is_typechecked is None:
-            return None
-        elif expression_level_coverage_enabled:
-            response = await daemon_query.attempt_async_query(
-                socket_path=socket_path,
-                query_text=f"expression_level_coverage('{path}')",
-            )
-            if response is None:
-                return None
-            expression_coverage = (
-                expression_level_coverage._make_expression_level_coverage_response(
-                    response.payload
-                )
-            )
-            if expression_coverage is None:
-                return file_not_typechecked_coverage_result()
-            return path_to_expression_coverage_response(
-                strict_default, expression_coverage
-            )
-        elif is_typechecked:
-            return path_to_coverage_response(path, strict_default)
-        else:
-            return file_not_typechecked_coverage_result()
-
-    async def _handle_type_coverage_query(
-        self,
-        query: TypeCoverageQuery,
-        strict_default: bool,
-        socket_path: Path,
-        expression_level_coverage_enabled: bool,
-        consume_unsaved_changes_enabled: bool,
-    ) -> None:
-        type_coverage_result = await self._query_type_coverage(
-            query.path,
-            strict_default,
-            socket_path,
-            expression_level_coverage_enabled,
-            consume_unsaved_changes_enabled,
-        )
-        if type_coverage_result is not None:
-            await lsp.write_json_rpc(
-                self.client_output_channel,
-                json_rpc.SuccessResponse(
-                    id=query.id,
-                    activity_key=query.activity_key,
-                    result=type_coverage_result.to_dict(),
-                ),
-            )
-
-    async def _query_and_send_hover_contents(
-        self,
-        query: HoverQuery,
-        socket_path: Path,
-        enabled_telemetry_event: bool,
-        consume_unsaved_changes_enabled: bool,
-    ) -> None:
-        path_string = f"'{query.path}'"
-        query_text = (
-            f"hover_info_for_position(path={path_string},"
-            f" line={query.position.line}, column={query.position.character})"
-        )
-        overlay_id = str(query.path) if consume_unsaved_changes_enabled else None
-        daemon_response = await daemon_query.attempt_typed_async_query(
-            response_type=HoverResponse,
-            socket_path=socket_path,
-            query_text=query_text,
-            overlay_id=overlay_id,
-        )
-        response = (
-            daemon_response.response
-            if daemon_response
-            else lsp.LspHoverResponse.empty()
-        )
-        result = lsp.LspHoverResponse.cached_schema().dump(
-            response,
-        )
-        await lsp.write_json_rpc(
-            self.client_output_channel,
-            json_rpc.SuccessResponse(
-                id=query.id,
-                activity_key=query.activity_key,
-                result=result,
-            ),
-        )
-        await _write_telemetry(
-            enabled_telemetry_event,
-            self.client_output_channel,
-            {
-                "type": "LSP",
-                "operation": "hover",
-                "filePath": str(query.path),
-                "nonEmpty": len(response.contents) > 0,
-                "response": result,
-            },
-            query.activity_key,
-        )
-
-    async def _query_and_send_definition_location(
-        self,
-        query: DefinitionLocationQuery,
-        socket_path: Path,
-        enabled_telemetry_event: bool,
-        consume_unsaved_changes_enabled: bool,
-    ) -> None:
-        path_string = f"'{query.path}'"
-        query_text = (
-            f"location_of_definition(path={path_string},"
-            f" line={query.position.line}, column={query.position.character})"
-        )
-        overlay_id = str(query.path) if consume_unsaved_changes_enabled else None
-        daemon_response = await daemon_query.attempt_typed_async_query(
-            response_type=DefinitionLocationResponse,
-            socket_path=socket_path,
-            query_text=query_text,
-            overlay_id=overlay_id,
-        )
-        definitions = (
-            [
-                response.to_lsp_definition_response()
-                for response in daemon_response.response
-            ]
-            if daemon_response is not None
-            else []
-        )
-        result = lsp.LspDefinitionResponse.cached_schema().dump(
-            definitions,
-            many=True,
-        )
-        await lsp.write_json_rpc(
-            self.client_output_channel,
-            json_rpc.SuccessResponse(
-                id=query.id,
-                activity_key=query.activity_key,
-                result=result,
-            ),
-        )
-        await _write_telemetry(
-            enabled_telemetry_event,
-            self.client_output_channel,
-            {
-                "type": "LSP",
-                "operation": "definition",
-                "filePath": str(query.path),
-                "count": len(definitions),
-                "response": result,
-            },
-            query.activity_key,
-        )
-
-    async def _handle_find_all_references_query(
-        self,
-        query: ReferencesQuery,
-        socket_path: Path,
-        consume_unsaved_changes_enabled: bool,
-    ) -> None:
-        path_string = f"'{query.path}'"
-        query_text = (
-            f"find_references(path={path_string},"
-            f" line={query.position.line}, column={query.position.character})"
-        )
-        overlay_id = str(query.path) if consume_unsaved_changes_enabled else None
-        daemon_response = await daemon_query.attempt_typed_async_query(
-            response_type=ReferencesResponse,
-            socket_path=socket_path,
-            query_text=query_text,
-            overlay_id=overlay_id,
-        )
-        reference_locations = (
-            [
-                response.to_lsp_definition_response()
-                for response in daemon_response.response
-            ]
-            if daemon_response is not None
-            else []
-        )
-        await lsp.write_json_rpc(
-            self.client_output_channel,
-            json_rpc.SuccessResponse(
-                id=query.id,
-                activity_key=query.activity_key,
-                result=lsp.LspDefinitionResponse.cached_schema().dump(
-                    reference_locations,
-                    many=True,
-                ),
-            ),
-        )
-
-    async def _handle_overlay_update_request(
-        self, request: OverlayUpdate, socket_path: Path
-    ) -> None:
-        source_path = f"{request.source_path}"
-        overlay_update_dict = {
-            "overlay_id": request.overlay_id,
-            "source_path": source_path,
-            "code_update": ["NewCode", request.code_update],
-        }
-        # Drop the response (the daemon code will log it for us)
-        await daemon_connection.attempt_send_async_raw_request(
-            socket_path=socket_path,
-            request=json.dumps(overlay_update_dict),
-        )
-
-    async def run_request_handler(
-        self, server_start_options: "PyreDaemonStartOptions"
-    ) -> None:
-        start_arguments = server_start_options.start_arguments
-        socket_path = daemon_socket.get_default_socket_path(
-            project_root=Path(start_arguments.base_arguments.global_root),
-            relative_local_root=start_arguments.base_arguments.relative_local_root,
-        )
-        strict_default = server_start_options.strict_default
-        expression_level_coverage_enabled = (
-            server_start_options.ide_features is not None
-            and server_start_options.ide_features.is_expression_level_coverage_enabled()
-        )
-        enabled_telemetry_event = server_start_options.enabled_telemetry_event
-        consume_unsaved_changes_enabled = (
-            server_start_options.ide_features is not None
-            and server_start_options.ide_features.is_consume_unsaved_changes_enabled()
-        )
-        while True:
-            query = await self.query_state.queries.get()
-            if isinstance(query, TypeCoverageQuery):
-                await self._handle_type_coverage_query(
-                    query,
-                    strict_default,
-                    socket_path,
-                    expression_level_coverage_enabled,
-                    consume_unsaved_changes_enabled,
-                )
-            elif isinstance(query, HoverQuery):
-                await self._query_and_send_hover_contents(
-                    query,
-                    socket_path,
-                    enabled_telemetry_event,
-                    consume_unsaved_changes_enabled,
-                )
-            elif isinstance(query, DefinitionLocationQuery):
-                await self._query_and_send_definition_location(
-                    query,
-                    socket_path,
-                    enabled_telemetry_event,
-                    consume_unsaved_changes_enabled,
-                )
-            elif isinstance(query, ReferencesQuery):
-                await self._handle_find_all_references_query(
-                    query, socket_path, consume_unsaved_changes_enabled
-                )
-            elif isinstance(query, OverlayUpdate):
-                await self._handle_overlay_update_request(query, socket_path)
-
-    def read_server_start_options(self) -> "PyreDaemonStartOptions":
-        try:
-            LOG.info("Reading Pyre server configurations...")
-            return self.server_start_options_reader()
-        except Exception:
-            LOG.error("Pyre query handler failed to read server configuration")
-            raise
-
-    async def run(self) -> None:
-        """
-        Reread the server start options, which can change due to configuration
-        reloading, and run with error logging.
-        """
-        server_start_options = self.read_server_start_options()
-
-        try:
-            LOG.info(
-                "Running Pyre query manager using"
-                f" configuration: {server_start_options}"
-            )
-            await self.run_request_handler(server_start_options)
-        except Exception:
-            LOG.error("Failed to run the Pyre query handler")
-            raise
-
-
 def _client_has_status_bar_support(
     client_capabilities: lsp.ClientCapabilities,
 ) -> bool:
@@ -1075,23 +761,6 @@ def _client_has_status_bar_support(
         return window_capabilities.status is not None
     else:
         return False
-
-
-async def _write_telemetry(
-    enabled: bool,
-    output_channel: connections.AsyncTextWriter,
-    parameters: Dict[str, object],
-    activity_key: Optional[Dict[str, object]],
-) -> None:
-    if enabled:
-        await lsp.write_json_rpc_ignore_connection_error(
-            output_channel,
-            json_rpc.Request(
-                activity_key=activity_key,
-                method="telemetry/event",
-                parameters=json_rpc.ByNameParameters(parameters),
-            ),
-        )
 
 
 async def _write_status(
@@ -1147,19 +816,19 @@ class PyreDaemonShutdown(Exception):
 
 
 class PyreDaemonLaunchAndSubscribeHandler(background.Task):
-    server_start_options_reader: PyreDaemonStartOptionsReader
+    server_options_reader: PyreServerOptionsReader
     remote_logging: Optional[backend_arguments.RemoteLogging]
     client_output_channel: connections.AsyncTextWriter
     server_state: ServerState
 
     def __init__(
         self,
-        server_start_options_reader: PyreDaemonStartOptionsReader,
+        server_options_reader: PyreServerOptionsReader,
         client_output_channel: connections.AsyncTextWriter,
         server_state: ServerState,
         remote_logging: Optional[backend_arguments.RemoteLogging] = None,
     ) -> None:
-        self.server_start_options_reader = server_start_options_reader
+        self.server_options_reader = server_options_reader
         self.remote_logging = remote_logging
         self.client_output_channel = client_output_channel
         self.server_state = server_state
@@ -1241,15 +910,19 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
     async def handle_type_error_subscription(
         self, type_error_subscription: subscription.TypeErrors
     ) -> None:
-        await self.clear_type_errors_for_client()
-        self.update_type_errors(type_error_subscription.errors)
-        await self.show_type_errors_to_client()
-        await self.log_and_show_status_message_to_client(
-            "Pyre has completed an incremental check and is currently "
-            "watching on further source changes.",
-            short_message="Pyre Ready",
-            level=lsp.MessageType.INFO,
+        availability = (
+            self.server_state.server_options.language_server_features.type_errors
         )
+        if availability.is_enabled():
+            await self.clear_type_errors_for_client()
+            self.update_type_errors(type_error_subscription.errors)
+            await self.show_type_errors_to_client()
+            await self.log_and_show_status_message_to_client(
+                "Pyre has completed an incremental check and is currently "
+                "watching on further source changes.",
+                short_message="Pyre Ready",
+                level=lsp.MessageType.INFO,
+            )
 
     async def handle_status_update_subscription(
         self, status_update_subscription: subscription.StatusUpdate
@@ -1335,17 +1008,15 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
 
     @staticmethod
     def _auxiliary_logging_info(
-        server_start_options: PyreDaemonStartOptions,
+        server_options: PyreServerOptions,
     ) -> Dict[str, Optional[str]]:
         relative_local_root = (
-            server_start_options.start_arguments.base_arguments.relative_local_root
+            server_options.start_arguments.base_arguments.relative_local_root
         )
         return {
-            "binary": server_start_options.binary,
-            "log_path": server_start_options.start_arguments.base_arguments.log_path,
-            "global_root": (
-                server_start_options.start_arguments.base_arguments.global_root
-            ),
+            "binary": server_options.binary,
+            "log_path": server_options.start_arguments.base_arguments.log_path,
+            "global_root": (server_options.start_arguments.base_arguments.global_root),
             **(
                 {}
                 if relative_local_root is None
@@ -1355,12 +1026,12 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
 
     async def _try_connect_and_subscribe(
         self,
-        server_start_options: PyreDaemonStartOptions,
+        server_options: PyreServerOptions,
         socket_path: Path,
         connection_timer: timer.Timer,
         is_preexisting: bool,
     ) -> None:
-        project_identifier = server_start_options.project_identifier
+        project_identifier = server_options.project_identifier
         async with connections.connect_async(socket_path) as (
             input_channel,
             output_channel,
@@ -1392,25 +1063,20 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
                         if is_preexisting
                         else "newly_started_server"
                     ),
-                    **self._auxiliary_logging_info(server_start_options),
+                    **self._auxiliary_logging_info(server_options),
                 },
             )
             await self.subscribe_to_type_error(input_channel, output_channel)
 
-    async def launch_and_subscribe(
-        self, server_start_options: PyreDaemonStartOptions
-    ) -> None:
-        project_identifier = server_start_options.project_identifier
-        start_arguments = server_start_options.start_arguments
-        socket_path = daemon_socket.get_default_socket_path(
-            project_root=Path(start_arguments.base_arguments.global_root),
-            relative_local_root=start_arguments.base_arguments.relative_local_root,
-        )
+    async def launch_and_subscribe(self, server_options: PyreServerOptions) -> None:
+        project_identifier = server_options.project_identifier
+        start_arguments = server_options.start_arguments
+        socket_path = server_options.get_socket_path()
 
         connection_timer = timer.Timer()
         try:
             return await self._try_connect_and_subscribe(
-                server_start_options,
+                server_options,
                 socket_path,
                 connection_timer,
                 is_preexisting=True,
@@ -1425,12 +1091,10 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
             level=lsp.MessageType.WARNING,
             fallback_to_notification=True,
         )
-        start_status = await _start_pyre_server(
-            server_start_options.binary, start_arguments
-        )
+        start_status = await _start_pyre_server(server_options.binary, start_arguments)
         if isinstance(start_status, StartSuccess):
             await self._try_connect_and_subscribe(
-                server_start_options,
+                server_options,
                 socket_path,
                 connection_timer,
                 is_preexisting=False,
@@ -1444,7 +1108,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
                 event=LSPEvent.NOT_CONNECTED,
                 integers={"duration": int(connection_timer.stop_in_millisecond())},
                 normals={
-                    **self._auxiliary_logging_info(server_start_options),
+                    **self._auxiliary_logging_info(server_options),
                     "exception": str(start_status.message),
                 },
             )
@@ -1477,7 +1141,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
                     event=LSPEvent.NOT_CONNECTED,
                     integers={"duration": int(connection_timer.stop_in_millisecond())},
                     normals={
-                        **self._auxiliary_logging_info(server_start_options),
+                        **self._auxiliary_logging_info(server_options),
                         "exception": str(start_status.detail),
                     },
                 )
@@ -1494,7 +1158,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
                     event=LSPEvent.SUSPENDED,
                     integers={"duration": int(connection_timer.stop_in_millisecond())},
                     normals={
-                        **self._auxiliary_logging_info(server_start_options),
+                        **self._auxiliary_logging_info(server_options),
                         "exception": str(start_status.detail),
                     },
                 )
@@ -1513,14 +1177,16 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
         Reread the server start options, which can change due to configuration
         reloading, and run with error logging.
         """
-        server_start_options = read_server_start_options(
-            self.server_start_options_reader, self.remote_logging
+        server_options = read_server_options(
+            self.server_options_reader, self.remote_logging
         )
+        # Update the server options, which can change if the config is modified
+        self.server_state.server_options = server_options
         session_timer = timer.Timer()
         error_message: Optional[str] = None
         try:
-            LOG.info(f"Starting Pyre server from configuration: {server_start_options}")
-            await self.launch_and_subscribe(server_start_options)
+            LOG.info(f"Starting Pyre server from configuration: {server_options}")
+            await self.launch_and_subscribe(server_options)
         except asyncio.CancelledError:
             error_message = "Explicit termination request"
             raise
@@ -1535,7 +1201,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
                 event=LSPEvent.DISCONNECTED,
                 integers={"duration": int(session_timer.stop_in_millisecond())},
                 normals={
-                    **self._auxiliary_logging_info(server_start_options),
+                    **self._auxiliary_logging_info(server_options),
                     **(
                         {"exception": error_message}
                         if error_message is not None
@@ -1546,6 +1212,233 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
 
 
 @dataclasses.dataclass(frozen=True)
+class HoverResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
+    response: lsp.LspHoverResponse
+
+
+@dataclasses.dataclass(frozen=True)
+class DefinitionLocationResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
+    response: List[lsp.PyreDefinitionResponse]
+
+
+@dataclasses.dataclass(frozen=True)
+class ReferencesResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
+    response: List[lsp.ReferencesResponse]
+
+
+@dataclasses.dataclass(frozen=True)
+class QueryModulesOfPathResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
+    response: List[str]
+
+
+class AbstractRequestHandler(abc.ABC):
+    @abc.abstractmethod
+    async def get_type_coverage(
+        self,
+        path: Path,
+    ) -> Optional[lsp.TypeCoverageResponse]:
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    async def get_hover(
+        self,
+        path: Path,
+        position: lsp.PyrePosition,
+    ) -> lsp.LspHoverResponse:
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    async def get_definition_locations(
+        self,
+        path: Path,
+        position: lsp.PyrePosition,
+    ) -> List[lsp.LspDefinitionResponse]:
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    async def get_reference_locations(
+        self,
+        path: Path,
+        position: lsp.PyrePosition,
+    ) -> List[lsp.LspDefinitionResponse]:
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    async def update_overlay(
+        self,
+        path: Path,
+        code: str,
+    ) -> None:
+        raise NotImplementedError()
+
+
+class RequestHandler(AbstractRequestHandler):
+    def __init__(
+        self,
+        server_state: ServerState,
+    ) -> None:
+        self.server_state = server_state
+        self.socket_path: Path = server_state.server_options.get_socket_path()
+
+    def get_language_server_features(self) -> LanguageServerFeatures:
+        return self.server_state.server_options.language_server_features
+
+    async def _query_modules_of_path(
+        self,
+        path: Path,
+    ) -> Optional[QueryModulesOfPathResponse]:
+        overlay_id = (
+            str(path)
+            if self.get_language_server_features().unsaved_changes.is_enabled()
+            else None
+        )
+        return await daemon_query.attempt_typed_async_query(
+            response_type=QueryModulesOfPathResponse,
+            socket_path=self.socket_path,
+            query_text=f"modules_of_path('{path}')",
+            overlay_id=overlay_id,
+        )
+
+    async def _query_is_typechecked(
+        self,
+        path: Path,
+    ) -> Optional[bool]:
+        response = await self._query_modules_of_path(
+            path,
+        )
+        if response is None:
+            return None
+        else:
+            return len(response.response) > 0
+
+    def _get_overlay_id(self, path: Path) -> Optional[str]:
+        unsaved_changes_enabled = (
+            self.get_language_server_features().unsaved_changes.is_enabled()
+        )
+        return str(path) if unsaved_changes_enabled else None
+
+    async def get_type_coverage(
+        self,
+        path: Path,
+    ) -> Optional[lsp.TypeCoverageResponse]:
+        is_typechecked = await self._query_is_typechecked(path)
+        if is_typechecked is None:
+            return None
+        elif not is_typechecked:
+            return file_not_typechecked_coverage_result()
+        type_coverage = self.get_language_server_features().type_coverage
+        strict_by_default = self.server_state.server_options.strict_default
+        if type_coverage == TypeCoverageAvailability.EXPRESSION_LEVEL:
+            response = await daemon_query.attempt_async_query(
+                socket_path=self.socket_path,
+                query_text=f"expression_level_coverage('{path}')",
+            )
+            if response is None:
+                return None
+            else:
+                return path_to_expression_coverage_response(
+                    strict_by_default,
+                    expression_level_coverage._make_expression_level_coverage_response(
+                        response.payload
+                    ),
+                )
+        else:
+            return path_to_coverage_response(path, strict_by_default)
+
+    async def get_hover(
+        self,
+        path: Path,
+        position: lsp.PyrePosition,
+    ) -> lsp.LspHoverResponse:
+        path_string = f"'{path}'"
+        query_text = (
+            f"hover_info_for_position(path={path_string},"
+            f" line={position.line}, column={position.character})"
+        )
+        daemon_response = await daemon_query.attempt_typed_async_query(
+            response_type=HoverResponse,
+            socket_path=self.socket_path,
+            query_text=query_text,
+            overlay_id=self._get_overlay_id(path),
+        )
+        return (
+            daemon_response.response
+            if daemon_response
+            else lsp.LspHoverResponse.empty()
+        )
+
+    async def get_definition_locations(
+        self,
+        path: Path,
+        position: lsp.PyrePosition,
+    ) -> List[lsp.LspDefinitionResponse]:
+        path_string = f"'{path}'"
+        query_text = (
+            f"location_of_definition(path={path_string},"
+            f" line={position.line}, column={position.character})"
+        )
+        daemon_response = await daemon_query.attempt_typed_async_query(
+            response_type=DefinitionLocationResponse,
+            socket_path=self.socket_path,
+            query_text=query_text,
+            overlay_id=self._get_overlay_id(path),
+        )
+        definitions = (
+            [
+                response.to_lsp_definition_response()
+                for response in daemon_response.response
+            ]
+            if daemon_response is not None
+            else []
+        )
+        return definitions
+
+    async def get_reference_locations(
+        self,
+        path: Path,
+        position: lsp.PyrePosition,
+    ) -> List[lsp.LspDefinitionResponse]:
+        path_string = f"'{path}'"
+        query_text = (
+            f"find_references(path={path_string},"
+            f" line={position.line}, column={position.character})"
+        )
+        daemon_response = await daemon_query.attempt_typed_async_query(
+            response_type=ReferencesResponse,
+            socket_path=self.socket_path,
+            query_text=query_text,
+            overlay_id=self._get_overlay_id(path),
+        )
+        return (
+            [
+                response.to_lsp_definition_response()
+                for response in daemon_response.response
+            ]
+            if daemon_response is not None
+            else []
+        )
+
+    async def update_overlay(
+        self,
+        path: Path,
+        code: str,
+    ) -> None:
+        source_path = f"{path}"
+        overlay_update_dict = {
+            # TODO: T126924773 Include a language server identifier (e.g. PID of
+            # the current process) in this overlay id.
+            "overlay_id": path,
+            "source_path": source_path,
+            "code_update": ["NewCode", code],
+        }
+        # Drop the response (the daemon code will log it for us)
+        await daemon_connection.attempt_send_async_raw_request(
+            socket_path=self.socket_path,
+            request=json.dumps(overlay_update_dict),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class PyreServer:
     # I/O Channels
     input_channel: connections.AsyncTextReader
@@ -1553,10 +1446,31 @@ class PyreServer:
 
     # inside this task manager is a PyreDaemonLaunchAndSubscribeHandler
     pyre_manager: background.TaskManager
-    # inside this task manager is a PyreQueryHandler
-    pyre_query_manager: background.TaskManager
     # NOTE: The fields inside `server_state` are mutable and can be changed by `pyre_manager`
     server_state: ServerState
+
+    handler: AbstractRequestHandler
+
+    async def write_telemetry(
+        self,
+        parameters: Dict[str, object],
+        activity_key: Optional[Dict[str, object]],
+    ) -> None:
+        should_write_telemetry = (
+            self.server_state.server_options.enabled_telemetry_event
+        )
+        if should_write_telemetry:
+            await lsp.write_json_rpc_ignore_connection_error(
+                self.output_channel,
+                json_rpc.Request(
+                    activity_key=activity_key,
+                    method="telemetry/event",
+                    parameters=json_rpc.ByNameParameters(parameters),
+                ),
+            )
+
+    def get_language_server_features(self) -> LanguageServerFeatures:
+        return self.server_state.server_options.language_server_features
 
     async def wait_for_exit(self) -> int:
         await _wait_for_exit(self.input_channel, self.output_channel)
@@ -1619,10 +1533,9 @@ class PyreServer:
         if document_path not in self.server_state.opened_documents:
             return
 
-        overlay_update = OverlayUpdate(
-            str(document_path.resolve()),
-            document_path.resolve(),
-            str(
+        await self.handler.update_overlay(
+            path=document_path.resolve(),
+            code=str(
                 "".join(
                     [
                         content_change.text
@@ -1631,9 +1544,6 @@ class PyreServer:
                 )
             ),
         )
-
-        self.server_state.query_state.queries.put_nowait(overlay_update)
-
         # Attempt to trigger a background Pyre server start on each file change
         if not self.pyre_manager.is_task_running():
             await self._try_restart_pyre_server()
@@ -1658,7 +1568,7 @@ class PyreServer:
 
     async def process_type_coverage_request(
         self,
-        parameters: lsp.TypeCoverageTextDocumentParameters,
+        parameters: lsp.TypeCoverageParameters,
         request_id: Union[int, str, None],
         activity_key: Optional[Dict[str, object]] = None,
     ) -> None:
@@ -1667,15 +1577,20 @@ class PyreServer:
             raise json_rpc.InvalidRequestError(
                 f"Document URI is not a file: {parameters.text_document.uri}"
             )
-        await self.server_state.query_state.queries.put(
-            TypeCoverageQuery(
-                id=request_id, activity_key=activity_key, path=document_path
+        response = await self.handler.get_type_coverage(path=document_path)
+        if response is not None:
+            await lsp.write_json_rpc(
+                self.output_channel,
+                json_rpc.SuccessResponse(
+                    id=request_id,
+                    activity_key=activity_key,
+                    result=response.to_dict(),
+                ),
             )
-        )
 
     async def process_hover_request(
         self,
-        parameters: lsp.HoverTextDocumentParameters,
+        parameters: lsp.HoverParameters,
         request_id: Union[int, str, None],
         activity_key: Optional[Dict[str, object]] = None,
     ) -> None:
@@ -1700,22 +1615,58 @@ class PyreServer:
                 ),
             )
         else:
-            self.server_state.query_state.queries.put_nowait(
-                HoverQuery(
+            result = await self.handler.get_hover(
+                path=document_path,
+                position=parameters.position.to_pyre_position(),
+            )
+            raw_result = lsp.LspHoverResponse.cached_schema().dump(
+                result,
+            )
+            await lsp.write_json_rpc(
+                self.output_channel,
+                json_rpc.SuccessResponse(
                     id=request_id,
                     activity_key=activity_key,
-                    path=document_path,
-                    position=parameters.position.to_pyre_position(),
-                )
+                    result=raw_result,
+                ),
             )
+            await self.write_telemetry(
+                {
+                    "type": "LSP",
+                    "operation": "hover",
+                    "filePath": str(document_path),
+                    "nonEmpty": len(result.contents) > 0,
+                    "response": raw_result,
+                },
+                activity_key,
+            )
+
+    async def _get_definition_result(
+        self, document_path: Path, position: lsp.LspPosition
+    ) -> List[Dict[str, object]]:
+        """
+        Helper function to call the handler. Exists only to reduce code duplication
+        due to shadow mode, please don't make more of these - we already have enough
+        layers of handling.
+        """
+        definitions = await self.handler.get_definition_locations(
+            path=document_path,
+            position=position.to_pyre_position(),
+        )
+        return lsp.LspDefinitionResponse.cached_schema().dump(
+            definitions,
+            many=True,
+        )
 
     async def process_definition_request(
         self,
-        parameters: lsp.DefinitionTextDocumentParameters,
+        parameters: lsp.DefinitionParameters,
         request_id: Union[int, str, None],
         activity_key: Optional[Dict[str, object]] = None,
     ) -> None:
-        document_path = parameters.text_document.document_uri().to_file_path()
+        document_path: Optional[
+            Path
+        ] = parameters.text_document.document_uri().to_file_path()
         if document_path is None:
             raise json_rpc.InvalidRequestError(
                 f"Document URI is not a file: {parameters.text_document.uri}"
@@ -1732,20 +1683,52 @@ class PyreServer:
                     ),
                 ),
             )
-            return
-
-        self.server_state.query_state.queries.put_nowait(
-            DefinitionLocationQuery(
-                id=request_id,
-                activity_key=activity_key,
-                path=document_path,
-                position=parameters.position.to_pyre_position(),
+        else:
+            shadow_mode = self.get_language_server_features().definition.is_shadow()
+            if not shadow_mode:
+                raw_result = await self._get_definition_result(
+                    document_path=document_path,
+                    position=parameters.position,
+                )
+                await lsp.write_json_rpc(
+                    self.output_channel,
+                    json_rpc.SuccessResponse(
+                        id=request_id,
+                        activity_key=activity_key,
+                        result=raw_result,
+                    ),
+                )
+            else:
+                # send an empty result to the client first, then get the real
+                # result so we can log it (and realistic perf) in telemetry.
+                await lsp.write_json_rpc(
+                    self.output_channel,
+                    json_rpc.SuccessResponse(
+                        id=request_id,
+                        activity_key=activity_key,
+                        result=lsp.LspDefinitionResponse.cached_schema().dump(
+                            [], many=True
+                        ),
+                    ),
+                )
+                raw_result = await self._get_definition_result(
+                    document_path=document_path,
+                    position=parameters.position,
+                )
+            await self.write_telemetry(
+                {
+                    "type": "LSP",
+                    "operation": "definition",
+                    "filePath": str(document_path),
+                    "count": len(raw_result),
+                    "response": raw_result,
+                },
+                activity_key,
             )
-        )
 
     async def process_document_symbols_request(
         self,
-        parameters: lsp.DocumentSymbolsTextDocumentParameters,
+        parameters: lsp.DocumentSymbolsParameters,
         request_id: Union[int, str, None],
         activity_key: Optional[Dict[str, object]] = None,
     ) -> None:
@@ -1780,7 +1763,7 @@ class PyreServer:
 
     async def process_find_all_references_request(
         self,
-        parameters: lsp.ReferencesTextDocumentParameters,
+        parameters: lsp.ReferencesParameters,
         request_id: Union[int, str, None],
         activity_key: Optional[Dict[str, object]] = None,
     ) -> None:
@@ -1803,13 +1786,20 @@ class PyreServer:
             )
             return
 
-        self.server_state.query_state.queries.put_nowait(
-            ReferencesQuery(
+        reference_locations = await self.handler.get_reference_locations(
+            path=document_path,
+            position=parameters.position.to_pyre_position(),
+        )
+        await lsp.write_json_rpc(
+            self.output_channel,
+            json_rpc.SuccessResponse(
                 id=request_id,
                 activity_key=activity_key,
-                path=document_path,
-                position=parameters.position.to_pyre_position(),
-            )
+                result=lsp.LspDefinitionResponse.cached_schema().dump(
+                    reference_locations,
+                    many=True,
+                ),
+            ),
         )
 
     async def process_shutdown_request(self, request_id: Union[int, str, None]) -> int:
@@ -1836,9 +1826,7 @@ class PyreServer:
                             "Missing parameters for definition method"
                         )
                     await self.process_definition_request(
-                        lsp.DefinitionTextDocumentParameters.from_json_rpc_parameters(
-                            parameters
-                        ),
+                        lsp.DefinitionParameters.from_json_rpc_parameters(parameters),
                         request.id,
                         request.activity_key,
                     )
@@ -1895,9 +1883,7 @@ class PyreServer:
                             "Missing parameters for hover method"
                         )
                     await self.process_hover_request(
-                        lsp.HoverTextDocumentParameters.from_json_rpc_parameters(
-                            parameters
-                        ),
+                        lsp.HoverParameters.from_json_rpc_parameters(parameters),
                         request.id,
                         request.activity_key,
                     )
@@ -1908,9 +1894,7 @@ class PyreServer:
                             "Missing parameters for typeCoverage method"
                         )
                     await self.process_type_coverage_request(
-                        lsp.TypeCoverageTextDocumentParameters.from_json_rpc_parameters(
-                            parameters
-                        ),
+                        lsp.TypeCoverageParameters.from_json_rpc_parameters(parameters),
                         request.id,
                         request.activity_key,
                     )
@@ -1921,7 +1905,7 @@ class PyreServer:
                             "Mising Parameters for document symbols"
                         )
                     await self.process_document_symbols_request(
-                        lsp.DocumentSymbolsTextDocumentParameters.from_json_rpc_parameters(
+                        lsp.DocumentSymbolsParameters.from_json_rpc_parameters(
                             parameters
                         ),
                         request.id,
@@ -1934,9 +1918,7 @@ class PyreServer:
                             "Missing parameters for find all references"
                         )
                     await self.process_find_all_references_request(
-                        lsp.ReferencesTextDocumentParameters.from_json_rpc_parameters(
-                            parameters
-                        ),
+                        lsp.ReferencesParameters.from_json_rpc_parameters(parameters),
                         request.id,
                         request.activity_key,
                     )
@@ -1964,7 +1946,6 @@ class PyreServer:
         """
         try:
             await self.pyre_manager.ensure_task_running()
-            await self.pyre_query_manager.ensure_task_running()
             return await self.run_request_handler()
         except lsp.ReadChannelClosedError:
             # This error can happen when the connection gets closed unilaterally
@@ -1975,18 +1956,21 @@ class PyreServer:
             return commands.ExitCode.SUCCESS
         finally:
             await self.pyre_manager.ensure_task_stop()
-            await self.pyre_query_manager.ensure_task_stop()
 
 
 async def run_persistent(
-    server_start_options_reader: PyreDaemonStartOptionsReader,
+    server_options_reader: PyreServerOptionsReader,
     remote_logging: Optional[backend_arguments.RemoteLogging],
 ) -> int:
+    try:
+        initial_server_options = read_server_options(
+            server_options_reader, remote_logging=None
+        )
+    except configuration_module.InvalidConfiguration as e:
+        raise lsp.ServerNotInitializedError(str(e)) from None
     stdin, stdout = await connections.create_async_stdin_stdout()
     while True:
-        initialize_result = await try_initialize(
-            stdin, stdout, server_start_options_reader
-        )
+        initialize_result = await try_initialize(stdin, stdout, initial_server_options)
         if isinstance(initialize_result, InitializationExit):
             LOG.info("Received exit request before initialization.")
             return 0
@@ -2008,25 +1992,24 @@ async def run_persistent(
 
             client_capabilities = initialize_result.client_capabilities
             LOG.debug(f"Client capabilities: {client_capabilities}")
-            server_state = ServerState(client_capabilities=client_capabilities)
+            server_state = ServerState(
+                client_capabilities=client_capabilities,
+                server_options=initial_server_options,
+            )
             server = PyreServer(
                 input_channel=stdin,
                 output_channel=stdout,
                 server_state=server_state,
                 pyre_manager=background.TaskManager(
                     PyreDaemonLaunchAndSubscribeHandler(
-                        server_start_options_reader=server_start_options_reader,
+                        server_options_reader=server_options_reader,
                         remote_logging=remote_logging,
                         client_output_channel=stdout,
                         server_state=server_state,
                     )
                 ),
-                pyre_query_manager=background.TaskManager(
-                    PyreQueryHandler(
-                        query_state=server_state.query_state,
-                        server_start_options_reader=server_start_options_reader,
-                        client_output_channel=stdout,
-                    )
+                handler=RequestHandler(
+                    server_state=server_state,
                 ),
             )
             return await server.run()
@@ -2051,7 +2034,7 @@ async def run_persistent(
 
 
 def run(
-    read_server_start_options: PyreDaemonStartOptionsReader,
+    read_server_options: PyreServerOptionsReader,
     remote_logging: Optional[backend_arguments.RemoteLogging],
 ) -> int:
     command_timer = timer.Timer()
@@ -2059,7 +2042,7 @@ def run(
     try:
         return asyncio.get_event_loop().run_until_complete(
             run_persistent(
-                read_server_start_options,
+                read_server_options,
                 remote_logging,
             )
         )

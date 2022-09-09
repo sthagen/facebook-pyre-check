@@ -1164,7 +1164,7 @@ module State (Context : Context) = struct
                 | None -> global_annotation
               in
               tail_annotations
-              |> Algorithms.fold_divide_and_conquer
+              |> Algorithms.fold_balanced
                    ~f:(Refinement.Unit.join_annotations ~global_resolution)
                    ~init:head_annotation
               |> apply_local_override
@@ -1236,7 +1236,7 @@ module State (Context : Context) = struct
       in
       { resolved with base }
     in
-    let forward_callable ~resolution ~errors ~target ~dynamic ~callee ~arguments =
+    let forward_call ~resolution ~errors ~target ~dynamic ~callee ~arguments =
       let open CallableApplicationData in
       let unpack_callable_and_self_argument =
         unpack_callable_and_self_argument
@@ -1866,7 +1866,7 @@ module State (Context : Context) = struct
             }
         | None ->
             let { Resolved.resolved; _ } = forward_expression ~resolution callee in
-            forward_callable
+            forward_call
               ~resolution
               ~errors:[]
               ~target:None
@@ -2106,7 +2106,7 @@ module State (Context : Context) = struct
           in
           resolution, resolved, List.append assume_errors callee_errors, resolved_base
         in
-        forward_callable
+        forward_call
           ~resolution
           ~errors
           ~target:None
@@ -2145,7 +2145,7 @@ module State (Context : Context) = struct
           in
           resolution, resolved, List.append assume_errors callee_errors, resolved_base
         in
-        forward_callable
+        forward_call
           ~resolution
           ~errors
           ~target:None
@@ -2250,7 +2250,7 @@ module State (Context : Context) = struct
             ->
               let forward_inner_callable (resolution, errors, annotations) inner_resolved_callee =
                 let target, dynamic = target_and_dynamic inner_resolved_callee in
-                forward_callable
+                forward_call
                   ~resolution
                   ~errors:[]
                   ~target
@@ -2275,7 +2275,7 @@ module State (Context : Context) = struct
               }
           | _ ->
               let target, dynamic = target_and_dynamic resolved_callee in
-              forward_callable
+              forward_call
                 ~resolution:callee_resolution
                 ~errors:callee_errors
                 ~target
@@ -2347,7 +2347,7 @@ module State (Context : Context) = struct
                         };
                     }
                 in
-                forward_callable
+                forward_call
                   ~resolution
                   ~errors
                   ~target:(Some instantiated)
@@ -2391,7 +2391,7 @@ module State (Context : Context) = struct
                       |> Type.primitive_name
                       >>= (fun class_name -> resolve_method class_name parent method_name)
                       >>| fun callable ->
-                      forward_callable
+                      forward_call
                         ~dynamic:true
                         ~resolution
                         ~errors
@@ -2400,7 +2400,7 @@ module State (Context : Context) = struct
                         ~arguments:
                           (List.map arguments ~f:(fun value -> { Call.Argument.name = None; value }))
                     in
-                    forward_callable
+                    forward_call
                       ~dynamic:true
                       ~resolution
                       ~errors
@@ -3363,7 +3363,7 @@ module State (Context : Context) = struct
         | true, _ -> Unreachable
         | _, { Node.value = Name name; _ } when is_simple_name name -> Value (resolve ~name)
         | _ -> Value resolution)
-    (* Is/is not callable *)
+    (* Is callable *)
     | Call
         {
           callee = { Node.value = Name (Name.Identifier "callable"); _ };
@@ -3386,6 +3386,7 @@ module State (Context : Context) = struct
           | _ -> resolution
         in
         Value resolution
+    (* Is not callable *)
     | UnaryOperator
         {
           UnaryOperator.operator = UnaryOperator.Not;
@@ -3401,7 +3402,7 @@ module State (Context : Context) = struct
               _;
             };
         }
-      when is_simple_name name ->
+      when is_simple_name name -> (
         let resolution =
           match existing_annotation name with
           | Some existing_annotation ->
@@ -3414,13 +3415,12 @@ module State (Context : Context) = struct
                        ~annotation:Type.object_primitive
                        ())
               in
-              not_consistent_with_boundary
-              >>| Annotation.create_mutable
-              >>| refine_local ~name
-              |> Option.value ~default:resolution
-          | _ -> resolution
+              not_consistent_with_boundary >>| Annotation.create_mutable >>| refine_local ~name
+          | _ -> Some resolution
         in
-        Value resolution
+        match resolution with
+        | Some resolution -> Value resolution
+        | None -> Unreachable)
     (* `is` and `in` refinement *)
     | ComparisonOperator
         {

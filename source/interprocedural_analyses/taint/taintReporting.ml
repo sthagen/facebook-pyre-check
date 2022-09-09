@@ -109,8 +109,15 @@ let emit_externalization ~fixpoint_state ~filename_lookup ~override_graph emitte
   |> List.iter ~f:emitter
 
 
+type callable_shard = {
+  shard_index: int;
+  callables: Target.t list;
+}
+
 let save_results_to_directory
+    ~scheduler
     ~result_directory
+    ~output_format
     ~local_root
     ~filename_lookup
     ~override_graph
@@ -119,50 +126,76 @@ let save_results_to_directory
     ~fixpoint_state
     ~errors
   =
-  let module Buffer = Caml.Buffer in
-  let emit_json_array_elements out_buffer =
-    let seen_element = ref false in
-    fun json ->
-      if !seen_element then (
-        Buffer.add_string out_buffer "\n";
-        Json.to_buffer out_buffer json)
-      else (
-        seen_element := true;
-        Json.to_buffer out_buffer json)
-  in
   let timer = Timer.start () in
-  let models_path analysis_name = Format.sprintf "%s-output.json" analysis_name in
   let root = local_root |> PyrePath.absolute in
+  let open_file ~filename =
+    let path = PyrePath.append result_directory ~element:filename in
+    open_out (PyrePath.absolute path)
+  in
   let save_models () =
-    let filename = "taint-output.json" in
-    let out_buffer = Buffer.create 256 in
-    let array_emitter = emit_json_array_elements out_buffer in
-    let header_with_version =
+    let write_header ~out_channel =
       `Assoc ["file_version", `Int 3; "config", `Assoc ["repo", `String root]]
+      |> Json.to_channel out_channel;
+      Printf.fprintf out_channel "\n"
     in
-    Json.to_buffer out_buffer header_with_version;
-    Buffer.add_string out_buffer "\n";
-    Target.Set.iter
-      (emit_externalization ~fixpoint_state ~filename_lookup ~override_graph array_emitter)
-      callables;
-    let output_path = PyrePath.append result_directory ~element:filename in
-    let out_channel = open_out (PyrePath.absolute output_path) in
-    Buffer.output_buffer out_channel out_buffer;
-    close_out out_channel
+    let write_model ~out_channel callable =
+      let emitter json =
+        Json.to_channel out_channel json;
+        Printf.fprintf out_channel "\n"
+      in
+      emit_externalization ~fixpoint_state ~filename_lookup ~override_graph emitter callable
+    in
+    match output_format with
+    | Configuration.TaintOutputFormat.Json ->
+        let out_channel = open_file ~filename:"taint-output.json" in
+        write_header ~out_channel;
+        Target.Set.iter (write_model ~out_channel) callables;
+        close_out out_channel
+    | Configuration.TaintOutputFormat.ShardedJson ->
+        let shard_size =
+          Int.max 1 (Target.Set.cardinal callables / Scheduler.number_workers scheduler)
+        in
+        let shards =
+          callables
+          |> Target.Set.elements
+          |> List.chunks_of ~length:shard_size
+          |> List.mapi ~f:(fun shard_index callables -> { shard_index; callables })
+        in
+        let number_shards = List.length shards in
+        let write_json_shard { shard_index; callables } =
+          let filename =
+            Format.sprintf "taint-output@%05d-of-%05d.json" shard_index number_shards
+          in
+          let out_channel = open_file ~filename in
+          write_header ~out_channel;
+          List.iter ~f:(write_model ~out_channel) callables;
+          close_out out_channel
+        in
+        Scheduler.map_reduce
+          scheduler
+          ~policy:(Scheduler.Policy.legacy_fixed_chunk_size 1)
+          ~initial:()
+          ~map:(fun () shards -> List.iter shards ~f:write_json_shard)
+          ~reduce:(fun () () -> ())
+          ~inputs:shards
+          ()
+  in
+  let remove_existing_models () =
+    if PyrePath.is_directory result_directory then
+      PyrePath.read_directory_ordered result_directory
+      |> List.filter ~f:(fun path ->
+             let filename = PyrePath.last path in
+             String_utils.string_starts_with filename "taint-output@"
+             && String_utils.string_ends_with filename ".json")
+      |> List.iter ~f:PyrePath.remove
   in
   let save_errors () =
-    let filename = "errors.json" in
-    let out_buffer = Buffer.create 256 in
-    Json.to_buffer out_buffer (`List errors);
-    let output_path = PyrePath.append result_directory ~element:filename in
-    let out_channel = open_out (PyrePath.absolute output_path) in
-    Buffer.output_buffer out_channel out_buffer;
+    let out_channel = open_file ~filename:"errors.json" in
+    Json.to_channel out_channel (`List errors);
     close_out out_channel
   in
   let save_metadata () =
-    let filename = "taint-metadata.json" in
-    let out_buffer = Buffer.create 256 in
-    let filename_spec = models_path "taint" in
+    let out_channel = open_file ~filename:"taint-metadata.json" in
     let statistics =
       let global_statistics =
         `Assoc
@@ -178,7 +211,10 @@ let save_results_to_directory
     let toplevel_metadata =
       `Assoc
         [
-          "filename_spec", `String filename_spec;
+          ( "filename_spec",
+            match output_format with
+            | Configuration.TaintOutputFormat.Json -> `String "taint-output.json"
+            | Configuration.TaintOutputFormat.ShardedJson -> `String "taint-output@*.json" );
           "root", `String root;
           "tool", `String "pysa";
           "version", `String (Version.version ());
@@ -186,12 +222,10 @@ let save_results_to_directory
         ]
     in
     let analysis_metadata = metadata () in
-    Json.Util.combine toplevel_metadata analysis_metadata |> Json.to_buffer out_buffer;
-    let output_path = PyrePath.append result_directory ~element:filename in
-    let out_channel = open_out (PyrePath.absolute output_path) in
-    Buffer.output_buffer out_channel out_buffer;
+    Json.Util.combine toplevel_metadata analysis_metadata |> Json.to_channel out_channel;
     close_out out_channel
   in
+  remove_existing_models ();
   save_models ();
   save_metadata ();
   save_errors ();
@@ -207,7 +241,8 @@ let report
     ~scheduler
     ~static_analysis_configuration:
       {
-        Configuration.StaticAnalysis.result_json_path;
+        Configuration.StaticAnalysis.save_results_to;
+        output_format;
         configuration = { local_root; show_error_traces; _ };
         _;
       }
@@ -246,10 +281,12 @@ let report
     |> Error.Instantiated.to_yojson
   in
   let errors = List.map errors ~f:error_to_json in
-  match result_json_path with
+  match save_results_to with
   | Some result_directory ->
       save_results_to_directory
+        ~scheduler
         ~result_directory
+        ~output_format
         ~local_root
         ~filename_lookup
         ~override_graph

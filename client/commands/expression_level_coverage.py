@@ -178,12 +178,14 @@ def summary_expression_level(response: object) -> str:
     return percent_output
 
 
-def location_to_range(location: Location) -> lsp.Range:
-    return lsp.Range(
-        start=lsp.Position(
+def location_to_range(location: Location) -> lsp.LspRange:
+    return lsp.LspRange(
+        start=lsp.LspPosition(
             line=location.start.line - 1, character=location.start.column
         ),
-        end=lsp.Position(line=location.stop.line - 1, character=location.stop.column),
+        end=lsp.LspPosition(
+            line=location.stop.line - 1, character=location.stop.column
+        ),
     )
 
 
@@ -294,8 +296,7 @@ def run_query(
     print_summary: bool = False,
 ) -> commands.ExitCode:
     socket_path = daemon_socket.get_default_socket_path(
-        project_root=configuration.get_global_root(),
-        relative_local_root=configuration.get_relative_local_root(),
+        configuration.get_project_identifier()
     )
     try:
         response = daemon_query.execute_query(socket_path, query_text)

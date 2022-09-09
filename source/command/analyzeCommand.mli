@@ -21,7 +21,7 @@ module AnalyzeConfiguration : sig
     base: CommandStartup.BaseConfiguration.t;
     dump_call_graph: PyrePath.t option;
     dump_model_query_results: PyrePath.t option;
-    find_missing_flows: string option;
+    find_missing_flows: Configuration.MissingFlowKind.t option;
     inline_decorators: bool;
     maximum_tito_depth: int option;
     maximum_trace_length: int option;
@@ -33,6 +33,7 @@ module AnalyzeConfiguration : sig
     sink_filter: string list option;
     transform_filter: string list option;
     save_results_to: PyrePath.t option;
+    output_format: Configuration.TaintOutputFormat.t;
     strict: bool;
     taint_model_paths: PyrePath.t list;
     use_cache: bool;

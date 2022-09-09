@@ -1346,6 +1346,17 @@ let test_create_variadic_tuple _ =
   ()
 
 
+let test_create_readonly _ =
+  assert_create "pyre_extensions.ReadOnly[int]" (Type.ReadOnly.create Type.integer);
+  assert_create
+    "pyre_extensions.ReadOnly[pyre_extensions.ReadOnly[int]]"
+    (Type.ReadOnly.create Type.integer);
+  assert_create
+    "typing.List[pyre_extensions.ReadOnly[int]]"
+    (Type.list (Type.ReadOnly.create Type.integer));
+  ()
+
+
 let test_resolve_aliases _ =
   let assert_resolved ~aliases annotation expected =
     let aliases ?replace_unbound_parameters_with_any:_ = aliases in
@@ -1701,6 +1712,9 @@ let test_expression _ =
     (Type.TypeOperation (Compose (Type.OrderedTypes.Concrete [callable1; callable2])))
     "pyre_extensions.Compose[(typing.Callable[([PositionalOnly(int)], str)], \
      typing.Callable[([PositionalOnly(str)], bool)])]";
+  assert_expression
+    (Type.ReadOnly (Type.list Type.integer))
+    "pyre_extensions.ReadOnly[typing.List[int]]";
   ()
 
 
@@ -1941,6 +1955,9 @@ let test_elements _ =
   assert_equal
     ["str"; "typing_extensions.Literal"]
     (Type.elements (Type.Literal (Type.String AnyLiteral)));
+  assert_equal
+    ["int"; "list"; "pyre_extensions.ReadOnly"]
+    (Type.elements (Type.ReadOnly (Type.list Type.integer)));
   ()
 
 
@@ -2699,6 +2716,26 @@ let test_visit _ =
   in
   assert_types_equal transformed (create "Foo[Bar[Bro[typing.Optional[FooBarBroLand]]]]");
   assert_equal "" end_state;
+  let module CollectAnnotations = Type.Transform.Make (struct
+    type state = Type.t list
+
+    let visit state annotation =
+      { Type.Transform.transformed_annotation = annotation; new_state = annotation :: state }
+
+
+    let visit_children_before _ _ = false
+
+    let visit_children_after = true
+  end)
+  in
+  let visited_annotations =
+    CollectAnnotations.visit [] (create "pyre_extensions.ReadOnly[typing.List[int]]") |> fst
+  in
+  assert_equal
+    ~cmp:[%compare.equal: string list]
+    ~printer:[%show: string list]
+    ["int"; "typing.List[int]"; "pyre_extensions.ReadOnly[typing.List[int]]"]
+    (List.map visited_annotations ~f:Type.show);
   ()
 
 
@@ -6355,6 +6392,13 @@ let test_resolve_class _ =
   assert_resolved_class
     directly_recursive_type
     (Some [{ instantiated = Type.integer; accessed_through_class = false; class_name = "int" }]);
+
+  assert_resolved_class
+    (Type.annotated Type.integer)
+    (Some [{ instantiated = Type.integer; accessed_through_class = false; class_name = "int" }]);
+  assert_resolved_class
+    (Type.ReadOnly.create Type.integer)
+    (Some [{ instantiated = Type.integer; accessed_through_class = false; class_name = "int" }]);
   ()
 
 
@@ -6414,6 +6458,64 @@ let test_show _ =
        typing.Tuple[typing.Callable[[str], bool], *Ts]]]"
     ~expected_concise:
       "Compose[*Broadcast[typing.Tuple[(int) -> str], typing.Tuple[(str) -> bool, *Ts]]]";
+  assert_show
+    (Type.ReadOnly (Type.list Type.integer))
+    ~expected_full:"pyre_extensions.ReadOnly[typing.List[int]]"
+    ~expected_concise:"pyre_extensions.ReadOnly[typing.List[int]]";
+  ()
+
+
+let test_is_truthy _ =
+  let assert_truthy ~expected type_ =
+    parse_single_expression type_
+    |> Type.create ~aliases:Type.empty_aliases
+    |> Type.is_truthy
+    |> assert_bool_equals ~expected
+  in
+  assert_truthy ~expected:true "typing_extensions.Literal[True]";
+  assert_truthy ~expected:false "None";
+  assert_truthy ~expected:true "typing.Callable[[int, str], int]";
+  assert_truthy ~expected:true "typing_extensions.Literal[42]";
+  assert_truthy ~expected:false "typing_extensions.Literal[0]";
+  assert_truthy ~expected:false "typing_extensions.Literal['']";
+  assert_truthy ~expected:false "typing_extensions.Literal[b'']";
+  assert_truthy ~expected:true "typing_extensions.Literal['hello']";
+  assert_truthy ~expected:true "typing_extensions.Literal[b'hello']";
+  assert_truthy ~expected:true "typing.Annotated[typing_extensions.Literal[True]]";
+  assert_truthy ~expected:true "pyre_extensions.ReadOnly[typing_extensions.Literal[True]]";
+  assert_truthy
+    ~expected:true
+    "typing.Union[typing_extensions.Literal[True], typing_extensions.Literal[1]]";
+  assert_truthy
+    ~expected:false
+    "typing.Union[typing_extensions.Literal[True], typing_extensions.Literal[0]]";
+  ()
+
+
+let test_is_falsy _ =
+  let assert_falsy ~expected type_ =
+    parse_single_expression type_
+    |> Type.create ~aliases:Type.empty_aliases
+    |> Type.is_falsy
+    |> assert_bool_equals ~expected
+  in
+  assert_falsy ~expected:false "typing_extensions.Literal[True]";
+  assert_falsy ~expected:true "None";
+  assert_falsy ~expected:true "typing_extensions.Literal[False]";
+  assert_falsy ~expected:true "typing_extensions.Literal[0]";
+  assert_falsy ~expected:false "typing_extensions.Literal[42]";
+  assert_falsy ~expected:true "typing_extensions.Literal['']";
+  assert_falsy ~expected:true "typing_extensions.Literal[b'']";
+  assert_falsy ~expected:false "typing_extensions.Literal['hello']";
+  assert_falsy ~expected:false "typing_extensions.Literal[b'hello']";
+  assert_falsy ~expected:true "typing.Annotated[typing_extensions.Literal[False]]";
+  assert_falsy ~expected:true "pyre_extensions.ReadOnly[typing_extensions.Literal[False]]";
+  assert_falsy
+    ~expected:true
+    "typing.Union[typing_extensions.Literal[False], typing_extensions.Literal[0]]";
+  assert_falsy
+    ~expected:false
+    "typing.Union[typing_extensions.Literal[True], typing_extensions.Literal[0]]";
   ()
 
 
@@ -6425,6 +6527,7 @@ let () =
          "create_alias" >:: test_create_alias;
          "create_type_operator" >:: test_create_type_operator;
          "create_variadic_tuple" >:: test_create_variadic_tuple;
+         "create_readonly" >:: test_create_readonly;
          "resolve_aliases" >:: test_resolve_aliases;
          "instantiate" >:: test_instantiate;
          "expression" >:: test_expression;
@@ -6493,6 +6596,8 @@ let () =
          "divide_polynomial" >:: test_divide_polynomial;
          "resolve_class" >:: test_resolve_class;
          "show" >:: test_show;
+         "is_truthy" >:: test_is_truthy;
+         "is_falsy" >:: test_is_falsy;
        ]
   |> Test.run;
   "primitive" >::: ["is unit test" >:: test_is_unit_test] |> Test.run;

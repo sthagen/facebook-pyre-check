@@ -49,7 +49,11 @@ let test_basic context =
         assert_failure message
     | Some module_path ->
         let actual = ModulePath.full_path ~configuration module_path in
-        assert_equal ~cmp:ArtifactPath.equal ~printer:ArtifactPath.show expected actual
+        assert_equal
+          ~cmp:[%compare.equal: ArtifactPath.t]
+          ~printer:ArtifactPath.show
+          expected
+          actual
   in
   assert_module_path
     !&"a"
@@ -209,7 +213,10 @@ let test_parse_sources context =
     AstEnvironment.update
       ~scheduler:(mock_scheduler ())
       ast_environment
-      [Test.relative_artifact_path ~root:local_root ~relative:"c.py"]
+      [
+        (Test.relative_artifact_path ~root:local_root ~relative:"c.py"
+        |> ArtifactPath.Event.(create ~kind:Kind.CreatedOrChanged));
+      ]
     |> AstEnvironment.UpdateResult.triggered_dependencies
     |> SharedMemoryKeys.DependencyKey.RegisteredSet.to_seq
     |> Seq.fold_left
@@ -237,8 +244,10 @@ let test_parse_sources context =
         ~scheduler:(mock_scheduler ())
         ast_environment
         [
-          Test.relative_artifact_path ~root:local_root ~relative:"new_local.py";
-          Test.relative_artifact_path ~root:stub_root ~relative:"new_stub.pyi";
+          (Test.relative_artifact_path ~root:local_root ~relative:"new_local.py"
+          |> ArtifactPath.Event.(create ~kind:Kind.CreatedOrChanged));
+          (Test.relative_artifact_path ~root:stub_root ~relative:"new_stub.pyi"
+          |> ArtifactPath.Event.(create ~kind:Kind.CreatedOrChanged));
         ]
       |> AstEnvironment.UpdateResult.invalidated_modules
     in
@@ -691,11 +700,11 @@ module IncrementalTest = struct
         | _, Some source ->
             (* A file is added/updated *)
             File.create path ~content:(trim_extra_indentation source) |> File.write;
-            Some path
+            Some ArtifactPath.Event.(create ~kind:Kind.CreatedOrChanged (ArtifactPath.create path))
         | Some _, None ->
             (* A file is removed *)
             PyrePath.remove path;
-            Some path
+            Some ArtifactPath.Event.(create ~kind:Kind.Deleted (ArtifactPath.create path))
         | _, _ -> None
       in
       let paths = List.filter_map setups ~f:(update_file ~root:local_root) in
@@ -703,7 +712,7 @@ module IncrementalTest = struct
         let external_root = List.hd_exn search_paths |> SearchPath.get_root in
         List.filter_map external_setups ~f:(update_file ~root:external_root)
       in
-      List.append external_paths paths |> List.map ~f:ArtifactPath.create
+      List.append external_paths paths
     in
     (* Set up the initial project *)
     let old_external_sources = get_old_inputs external_setups in
