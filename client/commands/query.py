@@ -6,8 +6,16 @@
 import json
 import logging
 
-from .. import configuration as configuration_module, log
-from . import commands, connections, daemon_query, daemon_socket, frontend_configuration
+from .. import configuration as configuration_module, identifiers, log
+
+from . import (
+    commands,
+    connections,
+    daemon_query,
+    daemon_socket,
+    frontend_configuration,
+    no_daemon_query,
+)
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -60,8 +68,9 @@ def _print_help_message() -> None:
 def run_query(
     configuration: frontend_configuration.Base, query_text: str
 ) -> commands.ExitCode:
-    socket_path = daemon_socket.get_default_socket_path(
-        configuration.get_project_identifier()
+    socket_path = daemon_socket.get_socket_path(
+        configuration.get_project_identifier(),
+        flavor=identifiers.PyreFlavor.CLASSIC,
     )
     try:
         if query_text == "help":
@@ -80,6 +89,21 @@ def run_query(
 
 
 def run(
-    configuration: configuration_module.Configuration, query_text: str
+    configuration: configuration_module.Configuration,
+    query_text: str,
+    no_daemon: bool,
+    no_validation_on_class_lookup_failure: bool,
 ) -> commands.ExitCode:
-    return run_query(frontend_configuration.OpenSource(configuration), query_text)
+    if no_daemon:
+        response = no_daemon_query.execute_query(
+            frontend_configuration.OpenSource(configuration),
+            query_text,
+            no_validation_on_class_lookup_failure,
+        )
+        if response is not None:
+            log.stdout.write(json.dumps(response.payload))
+            return commands.ExitCode.SUCCESS
+        else:
+            return commands.ExitCode.FAILURE
+    else:
+        return run_query(frontend_configuration.OpenSource(configuration), query_text)

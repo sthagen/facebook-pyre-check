@@ -58,13 +58,13 @@ module Internal = struct
 
   type sanitize_annotation =
     | AllSources
-    | SpecificSource of Sources.t
+    | SpecificSource of SanitizeTransform.Source.t
     | AllSinks
-    | SpecificSink of Sinks.t
+    | SpecificSink of SanitizeTransform.Sink.t
     | AllTito
     | SpecificTito of {
-        sources: Sources.t list;
-        sinks: Sinks.t list;
+        sources: SanitizeTransform.Source.t list;
+        sinks: SanitizeTransform.Sink.t list;
       }
   [@@deriving show, equal]
 
@@ -938,7 +938,10 @@ let rec parse_annotations
         in
         parse_annotation expression
         >>= List.fold_result ~init:([], []) ~f:gather_sources_sinks
-        >>| fun (sources, sinks) -> [SpecificTito { sources; sinks }]
+        >>| fun (sources, sinks) ->
+        let sources = List.map ~f:(fun source -> Sources.to_sanitized_source_exn source) sources in
+        let sinks = List.map ~f:(fun sink -> Sinks.to_sanitized_sink_exn sink) sinks in
+        [SpecificTito { sources; sinks }]
     | Expression.Name (Name.Identifier ("TaintSource" as identifier))
     | Expression.Name (Name.Identifier ("TaintSink" as identifier)) ->
         Error
@@ -959,7 +962,7 @@ let rec parse_annotations
                 trace_length = None;
                 path = [];
               } ->
-              Ok (SpecificSource source)
+              Ok (SpecificSource (Sources.to_sanitized_source_exn source))
           | Sink
               {
                 sink;
@@ -970,7 +973,7 @@ let rec parse_annotations
                 trace_length = None;
                 path = [];
               } ->
-              Ok (SpecificSink sink)
+              Ok (SpecificSink (Sinks.to_sanitized_sink_exn sink))
           | taint_annotation ->
               Error
                 (annotation_error
@@ -1178,50 +1181,42 @@ let sanitize_from_annotations ~source_sink_filter annotations =
     match source_sink_filter with
     | None -> true
     | Some source_sink_filter ->
-        TaintConfiguration.SourceSinkFilter.should_keep_source source_sink_filter source
+        TaintConfiguration.SourceSinkFilter.should_keep_source
+          source_sink_filter
+          (Sources.from_sanitized_source source)
   in
   let should_keep_sink sink =
     match source_sink_filter with
     | None -> true
     | Some source_sink_filter ->
-        TaintConfiguration.SourceSinkFilter.should_keep_sink source_sink_filter sink
+        TaintConfiguration.SourceSinkFilter.should_keep_sink
+          source_sink_filter
+          (Sinks.from_sanitized_sink sink)
   in
-  let open Domains in
   let to_sanitize = function
-    | AllSources -> { Sanitize.empty with sources = Some All }
+    | AllSources -> Sanitize.from_sources_only SanitizeTransform.SourceSet.all
     | SpecificSource source when should_keep_source source ->
-        { Sanitize.empty with sources = Some (Specific (Sources.Set.singleton source)) }
+        Sanitize.from_sources_only (SanitizeTransform.SourceSet.singleton source)
     | SpecificSource _ -> Sanitize.empty
-    | AllSinks -> { Sanitize.empty with sinks = Some All }
+    | AllSinks -> Sanitize.from_sinks_only SanitizeTransform.SinkSet.all
     | SpecificSink sink when should_keep_sink sink ->
-        { Sanitize.empty with sinks = Some (Specific (Sinks.Set.singleton sink)) }
+        Sanitize.from_sinks_only (SanitizeTransform.SinkSet.singleton sink)
     | SpecificSink _ -> Sanitize.empty
-    | AllTito -> { Sanitize.empty with tito = Some All }
+    | AllTito -> Sanitize.from_tito_only SanitizeTransformSet.all
     | SpecificTito { sources; sinks } ->
-        let sources = List.filter sources ~f:should_keep_source in
-        let sinks = List.filter sinks ~f:should_keep_sink in
-        if (not (List.is_empty sources)) || not (List.is_empty sinks) then
-          {
-            Sanitize.empty with
-            tito =
-              Some
-                (Specific
-                   {
-                     sanitized_tito_sources = Sources.Set.of_list sources;
-                     sanitized_tito_sinks = Sinks.Set.of_list sinks;
-                   });
-          }
-        else
-          Sanitize.empty
+        let sources =
+          List.filter sources ~f:should_keep_source |> SanitizeTransform.SourceSet.of_list
+        in
+        let sinks = List.filter sinks ~f:should_keep_sink |> SanitizeTransform.SinkSet.of_list in
+        Sanitize.from_tito_only { SanitizeTransformSet.sources; sinks }
   in
   annotations |> List.map ~f:to_sanitize |> List.fold ~init:Sanitize.empty ~f:Sanitize.join
 
 
 let introduce_sanitize ~source_sink_filter ~root model annotations =
   let roots =
-    Domains.SanitizeRootMap.of_list
-      [root, sanitize_from_annotations ~source_sink_filter annotations]
-    |> Domains.SanitizeRootMap.join model.Model.sanitizers.roots
+    Sanitize.RootMap.of_list [root, sanitize_from_annotations ~source_sink_filter annotations]
+    |> Sanitize.RootMap.join model.Model.sanitizers.roots
   in
   let sanitizers = { model.sanitizers with roots } in
   { model with sanitizers }
@@ -2446,13 +2441,13 @@ let adjust_sanitize_and_modes_and_skipped_override
                  "`TaintSink` is not supported within `Sanitize()`. Did you mean to use \
                   `SanitizeSingleTrace(...)`?")
         | "TaintSource" ->
-            let global = { sanitizers.global with sources = Some All } in
+            let global = { sanitizers.global with sources = SanitizeTransform.SourceSet.all } in
             Ok { sanitizers with global }
         | "TaintSink" ->
-            let global = { sanitizers.global with sinks = Some All } in
+            let global = { sanitizers.global with sinks = SanitizeTransform.SinkSet.all } in
             Ok { sanitizers with global }
         | "TaintInTaintOut" ->
-            let global = { sanitizers.global with tito = Some All } in
+            let global = { sanitizers.global with tito = SanitizeTransformSet.all } in
             Ok { sanitizers with global }
         | "Parameters" -> Ok { sanitizers with parameters = Sanitize.all }
         | _ -> failwith "impossible")
@@ -2467,12 +2462,14 @@ let adjust_sanitize_and_modes_and_skipped_override
     | Some arguments -> (
         parse_sanitize_annotations ~location ~original_expression arguments
         >>= function
-        | { Sanitize.sources = Some _; _ } when not is_object_target ->
+        | { Sanitize.sources; _ }
+          when (not (SanitizeTransform.SourceSet.is_empty sources)) && not is_object_target ->
             Error
               (annotation_error
                  "`TaintSource` is not supported within `Sanitize(...)`. Did you mean to use \
                   `SanitizeSingleTrace(...)`?")
-        | { Sanitize.sinks = Some _; _ } when not is_object_target ->
+        | { Sanitize.sinks; _ }
+          when (not (SanitizeTransform.SinkSet.is_empty sinks)) && not is_object_target ->
             Error
               (annotation_error
                  "`TaintSink` is not supported within `Sanitize(...)`. Did you mean to use \
@@ -2501,7 +2498,9 @@ let adjust_sanitize_and_modes_and_skipped_override
             _;
           };
         ] ->
-        let global = { sanitizers.Model.Sanitizers.global with sources = Some All } in
+        let global =
+          { sanitizers.Model.Sanitizers.global with sources = SanitizeTransform.SourceSet.all }
+        in
         Ok { sanitizers with global }
     | Some
         [
@@ -2510,12 +2509,14 @@ let adjust_sanitize_and_modes_and_skipped_override
             _;
           };
         ] ->
-        let global = { sanitizers.Model.Sanitizers.global with sinks = Some All } in
+        let global =
+          { sanitizers.Model.Sanitizers.global with sinks = SanitizeTransform.SinkSet.all }
+        in
         Ok { sanitizers with global }
     | Some arguments -> (
         parse_sanitize_annotations ~location ~original_expression arguments
         >>= function
-        | { Sanitize.tito = Some _; _ } ->
+        | { Sanitize.tito; _ } when not (SanitizeTransformSet.is_empty tito) ->
             Error
               (annotation_error
                  "`TaintInTaintOut` is not supported within `SanitizeSingleTrace(...)`. Did you \

@@ -5,7 +5,7 @@
 
 import enum
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 
 def get_project_identifier(
@@ -39,5 +39,12 @@ class PyreFlavor(enum.Enum):
     CLASSIC = "classic"
     SHADOW = "shadow"
 
-    def socket_path_suffix(self) -> str:
-        return "" if self == PyreFlavor.CLASSIC else f"::{self.value}"
+    def path_suffix(self) -> str:
+        return "" if self == PyreFlavor.CLASSIC else f"__{self.value}"
+
+    @staticmethod
+    def persistent_choices() -> List[str]:
+        """
+        Valid flavors to use for the `pyre persistent` command.
+        """
+        return [PyreFlavor.CLASSIC.value, PyreFlavor.SHADOW.value]

@@ -22,16 +22,15 @@ from . import (
     language_server_protocol as lsp,
     start,
 )
+from .log_lsp_event import _log_lsp_event, LSPEvent
 from .persistent import (
-    _log_lsp_event,
-    _wait_for_exit,
     InitializationExit,
     InitializationFailure,
     InitializationSuccess,
-    LSPEvent,
     process_initialize_request,
-    read_lsp_request,
 )
+
+from .pyre_server import _wait_for_exit, read_lsp_request
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

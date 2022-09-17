@@ -48,6 +48,7 @@ module Request = struct
         path: PyrePath.t;
         position: Location.position;
       }
+    | ReferencesUsedByFile of string
     | SaveServerState of PyrePath.t
     | Superclasses of Reference.t list
     | Type of Expression.t
@@ -183,6 +184,7 @@ module Response = struct
       | Help of string
       | HoverInfoForPosition of string
       | ModelVerificationErrors of Taint.ModelVerificationError.t list
+      | ReferenceTypesInPath of types_at_path
       | Success of string
       | Superclasses of superclasses_mapping list
       | Type of Type.t
@@ -284,6 +286,7 @@ module Response = struct
                      (Statement.Statement.Define define |> Node.create_with_default_location)) );
             ]
       | HoverInfoForPosition contents -> `Assoc ["contents", `String contents]
+      | ReferenceTypesInPath referenceTypesInPath -> types_at_path_to_yojson referenceTypesInPath
       | Success message -> `Assoc ["message", `String message]
       | Superclasses class_to_superclasses_mapping ->
           let reference_to_yojson reference = `String (Reference.show reference) in
@@ -365,6 +368,12 @@ let help () =
         Some
           "find_references(path='<absolute path>', line=<line>, character=<character>): Returns \
            the locations of all references to the symbol at the given line and character."
+    | ReferencesUsedByFile _ ->
+        Some
+          "references_used_by_file(path='<absolute path>'): Similar to the `types` query, this \
+           query will return all the types of every symbol (for a given path). Unlike the `types` \
+           query response, types that are defined outside this project will be treated as valid \
+           types & also be included in the query response."
     | SaveServerState _ ->
         Some "save_server_state('path'): Saves Pyre's serialized state into `path`."
     | Superclasses _ ->
@@ -536,6 +545,7 @@ let rec parse_request_exn query =
               path = PyrePath.create_absolute (string path);
               position = { line = integer line; column = integer column };
             }
+      | "references_used_by_file", [path] -> Request.ReferencesUsedByFile (string path)
       | "save_server_state", [path] ->
           Request.SaveServerState (PyrePath.create_absolute (string path))
       | "superclasses", names -> Superclasses (List.map ~f:reference names)
@@ -1173,6 +1183,35 @@ let rec process_request ~environment ~build_system request =
         | _ ->
             (* Find-all-references is not supported for syntax, keywords, or literal values. *)
             Single (Base.FoundReferences []))
+    | ReferencesUsedByFile path ->
+        if
+          TypeEnvironment.ReadOnly.controls environment
+          |> EnvironmentControls.no_validation_on_class_lookup_failure
+        then
+          let resolved_types =
+            LocationBasedLookupProcessor.find_all_resolved_types_for_path
+              ~environment
+              ~build_system
+              path
+          in
+          match resolved_types with
+          | Result.Ok types ->
+              let result = { Base.path; types = List.map ~f:create_type_at_location types } in
+              Single (Base.ReferenceTypesInPath result)
+          | Error error_reason ->
+              Error
+                (Format.asprintf
+                   "Not able get lookups in: %s, with error: %s"
+                   path
+                   (LocationBasedLookupProcessor.show_error_reason error_reason))
+        else
+          Error
+            (Format.asprintf
+               "Cannot run query references_used_by_file(path='%s') because flag \
+                'no_validation_on_class_lookup_failure' flag is false, and it is expected to be \
+                set to true for all 'references_used_by_file queries'. Please set the value of \
+                'no_validation_on_class_lookup_failure' to true."
+               path)
     | SaveServerState path ->
         let path = PyrePath.absolute path in
         Log.info "Saving server state into `%s`" path;

@@ -191,9 +191,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
   let transform_non_leaves path taint =
     let f prefix = prefix @ path in
-    match path with
-    | Abstract.TreeDomain.Label.AnyIndex :: _ -> taint
-    | _ -> BackwardTaint.transform Features.ReturnAccessPathSet.Element Map ~f taint
+    BackwardTaint.transform Features.ReturnAccessPathSet.Element Map ~f taint
 
 
   let read_tree = BackwardState.Tree.read ~transform_non_leaves
@@ -427,6 +425,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       let taint_in_taint_out =
         CallModel.taint_in_taint_out_mapping
           ~transform_non_leaves
+          ~ignore_local_return:(BackwardState.Tree.is_bottom call_taint)
           ~model:taint_model
           ~tito_matches
           ~sanitize_matches
@@ -843,32 +842,14 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           let apply_attribute_sanitizers taint =
             let sanitizer = GlobalModel.get_sanitize global_model in
             let taint =
-              match sanitizer.sinks with
-              | Some All -> BackwardState.Tree.empty
-              | Some (Specific sanitized_sinks) ->
-                  let sanitized_sinks_transforms =
-                    Sinks.Set.to_sanitize_transforms_exn sanitized_sinks
-                    |> SanitizeTransformSet.from_sinks
-                  in
-                  BackwardState.Tree.apply_sanitize_transforms sanitized_sinks_transforms taint
-              | _ -> taint
-            in
-            let taint =
-              match sanitizer.sources with
-              | Some (Specific sanitized_sources) ->
-                  let sanitized_sources_transforms =
-                    Sources.Set.to_sanitize_transforms_exn sanitized_sources
-                    |> SanitizeTransformSet.from_sources
-                  in
-                  taint
-                  |> BackwardState.Tree.apply_sanitize_transforms sanitized_sources_transforms
-                  |> BackwardState.Tree.transform
-                       BackwardTaint.kind
-                       Filter
-                       ~f:
-                         (TaintConfiguration.sink_can_match_rule
-                            FunctionContext.taint_configuration)
-              | _ -> taint
+              let sanitizers =
+                { SanitizeTransformSet.sources = sanitizer.sources; sinks = sanitizer.sinks }
+              in
+              BackwardState.Tree.apply_sanitize_transforms sanitizers taint
+              |> BackwardState.Tree.transform
+                   BackwardTaint.kind
+                   Filter
+                   ~f:(TaintConfiguration.sink_can_match_rule FunctionContext.taint_configuration)
             in
             taint
           in
@@ -2103,13 +2084,7 @@ let extract_tito_and_sink_models
     ~taint_configuration:
       {
         TaintConfiguration.analysis_model_constraints =
-          {
-            maximum_model_width;
-            maximum_return_access_path_length;
-            maximum_trace_length;
-            maximum_tito_depth;
-            _;
-          };
+          { maximum_trace_length; maximum_tito_depth; _ };
         _;
       }
     ~existing_backward
@@ -2140,8 +2115,9 @@ let extract_tito_and_sink_models
     |> BackwardState.Tree.add_local_breadcrumbs type_breadcrumbs
     |> BackwardState.Tree.limit_to
          ~transform:(BackwardTaint.add_local_breadcrumbs (Features.widen_broadening_set ()))
-         ~width:maximum_model_width
-    |> BackwardState.Tree.approximate_return_access_paths ~maximum_return_access_path_length
+         ~width:TaintConfiguration.maximum_model_width
+    |> BackwardState.Tree.approximate_return_access_paths
+         ~maximum_return_access_path_length:TaintConfiguration.maximum_return_access_path_length
   in
 
   let split_and_simplify model (parameter, name, original) =
@@ -2235,6 +2211,7 @@ let run
     ~qualifier
     ~callable
     ~define
+    ~cfg
     ~call_graph_of_define
     ~get_callee_model
     ~existing_model
@@ -2242,19 +2219,12 @@ let run
     ()
   =
   let timer = Timer.start () in
-  let define =
-    (* Apply decorators to make sure we match parameters up correctly. *)
-    let resolution = TypeEnvironment.ReadOnly.global_resolution environment in
-    Annotated.Define.create define
-    |> Annotated.Define.decorate ~resolution
-    |> Annotated.Define.define
-  in
   let module FunctionContext = struct
     let qualifier = qualifier
 
     let definition = define
 
-    let debug = Statement.Define.dump define.value
+    let debug = Statement.Define.dump define.Node.value
 
     let profiler = profiler
 
@@ -2279,12 +2249,12 @@ let run
   let module State = State (FunctionContext) in
   let module Fixpoint = Analysis.Fixpoint.Make (State) in
   let initial = State.{ taint = initial_taint } in
-  let cfg = Cfg.create define.value in
   let () =
     State.log "Backward analysis of callable: `%a`" Interprocedural.Target.pp_pretty callable
   in
   let entry_state =
-    Metrics.with_alarm callable (fun () -> Fixpoint.backward ~cfg ~initial |> Fixpoint.entry) ()
+    TaintProfiler.track_duration ~profiler ~name:"Backward analysis - fixpoint" ~f:(fun () ->
+        Metrics.with_alarm callable (fun () -> Fixpoint.backward ~cfg ~initial |> Fixpoint.entry) ())
   in
   let () =
     match entry_state with
@@ -2294,13 +2264,14 @@ let run
   let resolution = TypeEnvironment.ReadOnly.global_resolution environment in
   let extract_model State.{ taint; _ } =
     let model =
-      extract_tito_and_sink_models
-        ~is_constructor:(State.is_constructor ())
-        define.value
-        ~resolution
-        ~taint_configuration:FunctionContext.taint_configuration
-        ~existing_backward:existing_model.Model.backward
-        taint
+      TaintProfiler.track_duration ~profiler ~name:"Backward analysis - extract model" ~f:(fun () ->
+          extract_tito_and_sink_models
+            ~is_constructor:(State.is_constructor ())
+            define.value
+            ~resolution
+            ~taint_configuration:FunctionContext.taint_configuration
+            ~existing_backward:existing_model.Model.backward
+            taint)
     in
     let () = State.log "Backward Model:@,%a" Model.Backward.pp model in
     model

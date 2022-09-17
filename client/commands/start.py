@@ -29,6 +29,7 @@ from .. import (
     command_arguments,
     configuration as configuration_module,
     find_directories,
+    identifiers,
     log,
 )
 from . import (
@@ -43,7 +44,37 @@ from . import (
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
-SERVER_LOG_FILE_FORMAT: str = "server.stderr.%Y_%m_%d_%H_%M_%S_%f"
+DAEMON_LOG_PATH_FORMAT: str = "server{flavor_suffix}.stderr.{time}"
+DAEMON_LOG_TIME_FORMAT: str = "%Y_%m_%d_%H_%M_%S_%f"
+DAEMON_CURRENT_LOG_PATH_FORMAT: str = "server{flavor_suffix}.stderr"
+
+
+def deamon_current_log_path(
+    log_directory: Path,
+    flavor: identifiers.PyreFlavor,
+) -> Path:
+    return log_directory / DAEMON_CURRENT_LOG_PATH_FORMAT.format(
+        flavor_suffix=flavor.path_suffix()
+    )
+
+
+def daemon_log_path(
+    log_directory: Path,
+    flavor: identifiers.PyreFlavor,
+    now: datetime.datetime,
+) -> Path:
+    return log_directory / DAEMON_LOG_PATH_FORMAT.format(
+        flavor_suffix=flavor.path_suffix(),
+        time=now.strftime(DAEMON_LOG_TIME_FORMAT),
+    )
+
+
+def datetime_from_log_path(path: Path) -> Optional[datetime.datetime]:
+    try:
+        time_portion = path.name.split(".")[-1]
+        return datetime.datetime.strptime(time_portion, DAEMON_LOG_TIME_FORMAT)
+    except (IndexError, ValueError):
+        return None
 
 
 class MatchPolicy(enum.Enum):
@@ -301,7 +332,8 @@ def create_server_arguments(
             python_version=configuration.get_python_version(),
             shared_memory=configuration.get_shared_memory(),
             remote_logging=backend_arguments.RemoteLogging.create(
-                configuration.get_remote_logger(), start_arguments.log_identifier
+                configuration.get_remote_logger(),
+                start_arguments.get_log_identifier(),
             ),
             search_paths=configuration.get_existent_search_paths(),
             source_paths=source_paths,
@@ -322,8 +354,9 @@ def create_server_arguments(
         ),
         skip_initial_type_check=start_arguments.skip_initial_type_check,
         use_lazy_module_tracking=start_arguments.use_lazy_module_tracking,
-        socket_path=daemon_socket.get_default_socket_path(
-            configuration.get_project_identifier()
+        socket_path=daemon_socket.get_socket_path(
+            configuration.get_project_identifier(),
+            flavor=start_arguments.flavor,
         ),
     )
 
@@ -373,18 +406,29 @@ def _create_symbolic_link(source: Path, target: Path) -> None:
 
 
 @contextlib.contextmanager
-def background_server_log_file(log_directory: Path) -> Iterator[TextIO]:
+def background_server_log_file(
+    log_directory: Path,
+    flavor: identifiers.PyreFlavor,
+) -> Iterator[TextIO]:
     new_server_log_directory = log_directory / "new_server"
     new_server_log_directory.mkdir(parents=True, exist_ok=True)
-    log_file_path = new_server_log_directory / datetime.datetime.now().strftime(
-        SERVER_LOG_FILE_FORMAT
+    log_file_path = daemon_log_path(
+        log_directory=new_server_log_directory,
+        flavor=flavor,
+        now=datetime.datetime.now(),
     )
     # lint-ignore: NoUnsafeFilesystemRule
     with open(str(log_file_path), "a") as log_file:
         yield log_file
     # Symlink the log file to a known location for subsequent `pyre incremental`
     # to find.
-    _create_symbolic_link(new_server_log_directory / "server.stderr", log_file_path)
+    _create_symbolic_link(
+        deamon_current_log_path(
+            log_directory=new_server_log_directory,
+            flavor=flavor,
+        ),
+        log_file_path,
+    )
 
 
 def _run_in_background(
@@ -392,6 +436,7 @@ def _run_in_background(
     environment: Mapping[str, str],
     log_directory: Path,
     socket_path: Path,
+    flavor: identifiers.PyreFlavor,
     event_waiter: server_event.Waiter,
 ) -> commands.ExitCode:
     # In background mode, we asynchronously start the server with `Popen` and
@@ -400,7 +445,7 @@ def _run_in_background(
     # Server stderr will be forwarded to dedicated log files.
     # Server stdout will be used as additional communication channel for status
     # updates.
-    with background_server_log_file(log_directory) as server_stderr:
+    with background_server_log_file(log_directory, flavor=flavor) as server_stderr:
         log_file = Path(server_stderr.name)
         # lint-ignore: NoUnsafeExecRule
         server_process = subprocess.Popen(
@@ -474,15 +519,17 @@ def run_start(
         if start_arguments.terminal:
             return _run_in_foreground(server_command, server_environment)
         else:
-            socket_path = daemon_socket.get_default_socket_path(
+            socket_path = daemon_socket.get_socket_path(
                 configuration.get_project_identifier(),
+                flavor=start_arguments.flavor,
             )
             return _run_in_background(
                 server_command,
                 server_environment,
                 log_directory,
                 socket_path,
-                server_event.Waiter(
+                flavor=start_arguments.flavor,
+                event_waiter=server_event.Waiter(
                     wait_on_initialization=start_arguments.wait_on_initialization
                 ),
             )

@@ -507,6 +507,8 @@ val literal_string : string -> t
 
 val literal_bytes : string -> t
 
+val literal_any_string : t
+
 val tuple : t list -> t
 
 val union : t list -> t
@@ -1064,6 +1066,8 @@ val is_concrete : t -> bool
 
 module TypedDictionary : sig
   open Record.TypedDictionary
+
+  val base_typed_dictionary : t
 
   val anonymous : t typed_dictionary_field list -> t record
 

@@ -24,7 +24,7 @@ def get_md5(identifier_string: str) -> str:
     return hashlib.md5(identifier_bytes).hexdigest()
 
 
-def get_socket_path(
+def _get_socket_path_in_root(
     socket_root: Path,
     project_identifier: str,
     flavor: PyreFlavor = PyreFlavor.CLASSIC,
@@ -35,8 +35,8 @@ def get_socket_path(
     file paths.
     """
     project_hash = get_md5(project_identifier)
-    suffix = flavor.socket_path_suffix()
-    return socket_root / f"pyre_server_{project_hash}{suffix}.sock"
+    flavor_suffix = flavor.path_suffix()
+    return socket_root / f"pyre_server_{project_hash}{flavor_suffix}.sock"
 
 
 def get_default_socket_root() -> Path:
@@ -45,11 +45,11 @@ def get_default_socket_root() -> Path:
     return Path(tempfile.gettempdir())
 
 
-def get_default_socket_path(
+def get_socket_path(
     project_identifier: str,
-    flavor: PyreFlavor = PyreFlavor.CLASSIC,
+    flavor: PyreFlavor,
 ) -> Path:
-    return get_socket_path(
+    return _get_socket_path_in_root(
         get_default_socket_root(),
         project_identifier,
         flavor,

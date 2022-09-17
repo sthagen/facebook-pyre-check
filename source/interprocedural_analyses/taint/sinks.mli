@@ -47,7 +47,7 @@ module Set : sig
 
   val show : t -> string
 
-  val to_sanitize_transforms_exn : t -> SanitizeTransform.SinkSet.t
+  val to_sanitize_transform_set_exn : t -> SanitizeTransformSet.t
 
   val as_singleton : t -> elt option
 end
@@ -67,6 +67,10 @@ val discard_transforms : t -> t
 val discard_sanitize_transforms : t -> t
 
 val extract_sanitized_sinks_from_transforms : SanitizeTransform.SinkSet.t -> Set.t
+
+val to_sanitized_sink_exn : t -> SanitizeTransform.Sink.t
+
+val from_sanitized_sink : SanitizeTransform.Sink.t -> t
 
 val extract_sanitize_transforms : t -> SanitizeTransformSet.t
 

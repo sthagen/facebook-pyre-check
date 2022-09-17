@@ -21,12 +21,14 @@ from . import (
     commands,
     configuration as configuration_module,
     filesystem,
+    identifiers,
     log,
 )
 from .version import __version__
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
+CLASSIC_FLAVOR: identifiers.PyreFlavor = identifiers.PyreFlavor.CLASSIC
 
 
 def _show_pyre_version_as_text(
@@ -61,10 +63,13 @@ def show_pyre_version(arguments: command_arguments.CommandArguments) -> None:
         _show_pyre_version_as_text(binary_version, client_version)
 
 
-def start_logging_to_directory(log_directory: str) -> None:
+def start_logging_to_directory(
+    log_directory: str,
+    flavor: identifiers.PyreFlavor,
+) -> None:
     log_directory_path = Path(log_directory)
     log_directory_path.mkdir(parents=True, exist_ok=True)
-    log.enable_file_logging(log_directory_path / "pyre.stderr")
+    log.enable_file_logging(log_directory_path / f"pyre{flavor.path_suffix()}.stderr")
 
 
 def _run_check_command(
@@ -72,7 +77,7 @@ def _run_check_command(
 ) -> commands.ExitCode:
     configuration = configuration_module.create_configuration(arguments, Path("."))
     _check_open_source_version(configuration)
-    start_logging_to_directory(configuration.log_directory)
+    start_logging_to_directory(configuration.log_directory, CLASSIC_FLAVOR)
     check_arguments = command_arguments.CheckArguments.create(arguments)
     return commands.check.run(configuration, check_arguments)
 
@@ -84,7 +89,7 @@ def _run_incremental_command(
 ) -> commands.ExitCode:
     configuration = configuration_module.create_configuration(arguments, Path("."))
     _check_open_source_version(configuration)
-    start_logging_to_directory(configuration.log_directory)
+    start_logging_to_directory(configuration.log_directory, CLASSIC_FLAVOR)
     start_arguments = command_arguments.StartArguments.create(
         arguments,
         no_watchman=no_watchman,
@@ -477,6 +482,12 @@ def pyre(
     type=int,
     help="Limit the depth of inferred taint-in-taint-out in taint flows.",
 )
+@click.option(
+    "--check-invariants",
+    is_flag=True,
+    default=False,
+    help="Perform additional assertions about analysis invariants.",
+)
 @click.pass_context
 def analyze(
     context: click.Context,
@@ -499,6 +510,7 @@ def analyze(
     inline_decorators: bool,
     maximum_trace_length: Optional[int],
     maximum_tito_depth: Optional[int],
+    check_invariants: bool,
 ) -> int:
     """
     Run Pysa, the inter-procedural static analysis tool.
@@ -512,7 +524,7 @@ def analyze(
         command_argument, Path(".")
     )
     _check_open_source_version(configuration)
-    start_logging_to_directory(configuration.log_directory)
+    start_logging_to_directory(configuration.log_directory, CLASSIC_FLAVOR)
     return commands.analyze.run(
         configuration,
         command_arguments.AnalyzeArguments(
@@ -543,6 +555,7 @@ def analyze(
             sequential=command_argument.sequential,
             taint_models_path=list(taint_models_path),
             use_cache=use_cache,
+            check_invariants=check_invariants,
         ),
     )
 
@@ -773,15 +786,41 @@ def kill(context: click.Context, with_fire: bool) -> int:
 
 @pyre.command()
 @click.option(
+    "--flavor",
+    type=click.Choice(identifiers.PyreFlavor.persistent_choices()),
+    help=(
+        "Flavor of the pyre server. "
+        "This is used to disambiguate paths and log handling."
+    ),
+    hidden=True,
+)
+@click.option(
+    "--skip-initial-type-check/--no-skip-initial-type-check",
+    default=False,
+    hidden=True,
+    help="Skip the initial type check of all in-project modules.",
+)
+@click.option(
+    "--use-lazy-module-tracking/--no-use-lazy-module-tracking",
+    default=False,
+    hidden=True,
+    help="Use lazy module tracking. This is experimental and cannot power full checks.",
+)
+@click.option(
     "--hover",
-    type=click.Choice([kind.value for kind in commands.persistent.HoverAvailability]),
+    type=click.Choice(
+        [kind.value for kind in commands.language_server_features.HoverAvailability]
+    ),
     help="Availability of the hover langauge server feature",
     hidden=True,
 )
 @click.option(
     "--definition",
     type=click.Choice(
-        [kind.value for kind in commands.persistent.DefinitionAvailability]
+        [
+            kind.value
+            for kind in commands.language_server_features.DefinitionAvailability
+        ]
     ),
     help="Availability of the definition langauge server feature",
     hidden=True,
@@ -789,7 +828,10 @@ def kill(context: click.Context, with_fire: bool) -> int:
 @click.option(
     "--document-symbols",
     type=click.Choice(
-        [kind.value for kind in commands.persistent.DocumentSymbolsAvailability]
+        [
+            kind.value
+            for kind in commands.language_server_features.DocumentSymbolsAvailability
+        ]
     ),
     help="Availability of the document symbols langauge server feature",
     hidden=True,
@@ -797,7 +839,10 @@ def kill(context: click.Context, with_fire: bool) -> int:
 @click.option(
     "--references",
     type=click.Choice(
-        [kind.value for kind in commands.persistent.DocumentSymbolsAvailability]
+        [
+            kind.value
+            for kind in commands.language_server_features.DocumentSymbolsAvailability
+        ]
     ),
     help="Availability of the references langauge server feature",
     hidden=True,
@@ -805,7 +850,10 @@ def kill(context: click.Context, with_fire: bool) -> int:
 @click.option(
     "--type-errors",
     type=click.Choice(
-        [kind.value for kind in commands.persistent.TypeErrorsAvailability]
+        [
+            kind.value
+            for kind in commands.language_server_features.TypeErrorsAvailability
+        ]
     ),
     help="Availability of the type errors langauge server feature",
     hidden=True,
@@ -813,7 +861,10 @@ def kill(context: click.Context, with_fire: bool) -> int:
 @click.option(
     "--type-coverage",
     type=click.Choice(
-        [kind.value for kind in commands.persistent.TypeCoverageAvailability]
+        [
+            kind.value
+            for kind in commands.language_server_features.TypeCoverageAvailability
+        ]
     ),
     help="Availability of the type coverage langauge server feature",
     hidden=True,
@@ -821,7 +872,10 @@ def kill(context: click.Context, with_fire: bool) -> int:
 @click.option(
     "--unsaved-changes",
     type=click.Choice(
-        [kind.value for kind in commands.persistent.DocumentSymbolsAvailability]
+        [
+            kind.value
+            for kind in commands.language_server_features.DocumentSymbolsAvailability
+        ]
     ),
     help="Availability support for Pyre analyzing unsaved editor buffers",
     hidden=True,
@@ -829,6 +883,9 @@ def kill(context: click.Context, with_fire: bool) -> int:
 @click.pass_context
 def persistent(
     context: click.Context,
+    flavor: Optional[str],
+    skip_initial_type_check: bool,
+    use_lazy_module_tracking: bool,
     hover: Optional[str],
     definition: Optional[str],
     document_symbols: Optional[str],
@@ -843,18 +900,23 @@ def persistent(
     and responses from the Pyre server to stdout.
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
+    start_command_argument = command_arguments.StartArguments.create(
+        command_argument=command_argument,
+        flavor=CLASSIC_FLAVOR if flavor is None else identifiers.PyreFlavor(flavor),
+        skip_initial_type_check=skip_initial_type_check,
+        use_lazy_module_tracking=use_lazy_module_tracking,
+    )
     base_directory: Path = Path(".")
     configuration = configuration_module.create_configuration(
         command_argument, base_directory
     )
     start_logging_to_directory(
         configuration.log_directory,
+        flavor=start_command_argument.flavor,
     )
     return commands.persistent.run(
-        read_server_options=commands.persistent.PyreServerOptions.create_reader(
-            start_command_argument=command_arguments.StartArguments.create(
-                command_argument=command_argument,
-            ),
+        read_server_options=commands.pyre_server_options.PyreServerOptions.create_reader(
+            start_command_argument=start_command_argument,
             read_frontend_configuration=lambda: commands.frontend_configuration.OpenSource(
                 configuration_module.create_configuration(
                     command_argument, base_directory
@@ -863,28 +925,35 @@ def persistent(
             enabled_telemetry_event=False,
             hover=None
             if hover is None
-            else commands.persistent.HoverAvailability(hover),
+            else commands.language_server_features.HoverAvailability(hover),
             definition=None
             if definition is None
-            else commands.persistent.DefinitionAvailability(definition),
+            else commands.language_server_features.DefinitionAvailability(definition),
             document_symbols=None
             if document_symbols is None
-            else commands.persistent.DocumentSymbolsAvailability(document_symbols),
+            else commands.language_server_features.DocumentSymbolsAvailability(
+                document_symbols
+            ),
             references=None
             if references is None
-            else commands.persistent.ReferencesAvailability(references),
-            type_errors=commands.persistent.TypeErrorsAvailability.ENABLED
+            else commands.language_server_features.ReferencesAvailability(references),
+            type_errors=commands.language_server_features.TypeErrorsAvailability.ENABLED
             if type_errors is None
-            else commands.persistent.TypeErrorsAvailability(type_errors),
+            else commands.language_server_features.TypeErrorsAvailability(type_errors),
             type_coverage=None
             if type_coverage is None
-            else commands.persistent.TypeCoverageAvailability(type_coverage),
+            else commands.language_server_features.TypeCoverageAvailability(
+                type_coverage
+            ),
             unsaved_changes=None
             if unsaved_changes is None
-            else commands.persistent.UnsavedChangesAvailability(unsaved_changes),
+            else commands.language_server_features.UnsavedChangesAvailability(
+                unsaved_changes
+            ),
         ),
         remote_logging=commands.backend_arguments.RemoteLogging.create(
-            configuration.logger, command_argument.log_identifier
+            configuration.logger,
+            start_command_argument.get_log_identifier(),
         ),
     )
 
@@ -928,9 +997,7 @@ def pysa_language_server(context: click.Context, no_watchman: bool) -> int:
     configuration = configuration_module.create_configuration(
         command_argument, Path(".")
     )
-    start_logging_to_directory(
-        configuration.log_directory,
-    )
+    start_logging_to_directory(configuration.log_directory, CLASSIC_FLAVOR)
     return commands.pysa_server.run(
         configuration,
         command_arguments.StartArguments.create(
@@ -945,8 +1012,15 @@ def pysa_language_server(context: click.Context, no_watchman: bool) -> int:
 
 @pyre.command()
 @click.argument("query", type=str)
+@click.option("--no-daemon", is_flag=True, default=False)
+@click.option("--no-validation-on-class-lookup-failure", is_flag=True, default=False)
 @click.pass_context
-def query(context: click.Context, query: str) -> int:
+def query(
+    context: click.Context,
+    query: str,
+    no_daemon: bool,
+    no_validation_on_class_lookup_failure: bool,
+) -> int:
     """
     Query a running Pyre server for type, function, and attribute information.
 
@@ -959,8 +1033,10 @@ def query(context: click.Context, query: str) -> int:
     configuration = configuration_module.create_configuration(
         command_argument, Path(".")
     )
-    start_logging_to_directory(configuration.log_directory)
-    return commands.query.run(configuration, query)
+    start_logging_to_directory(configuration.log_directory, CLASSIC_FLAVOR)
+    return commands.query.run(
+        configuration, query, no_daemon, no_validation_on_class_lookup_failure
+    )
 
 
 @pyre.command()
@@ -1048,7 +1124,7 @@ def restart(
         command_argument, Path(".")
     )
     _check_open_source_version(configuration)
-    start_logging_to_directory(configuration.log_directory)
+    start_logging_to_directory(configuration.log_directory, CLASSIC_FLAVOR)
     start_arguments = command_arguments.StartArguments.create(
         command_argument=command_argument,
         no_watchman=no_watchman,
@@ -1167,7 +1243,7 @@ def start(
         command_argument, Path(".")
     )
     _check_open_source_version(configuration)
-    start_logging_to_directory(configuration.log_directory)
+    start_logging_to_directory(configuration.log_directory, CLASSIC_FLAVOR)
     return commands.start.run(
         configuration,
         command_arguments.StartArguments.create(
@@ -1296,7 +1372,7 @@ def stop(context: click.Context) -> int:
     configuration = configuration_module.create_configuration(
         command_argument, Path(".")
     )
-    start_logging_to_directory(configuration.log_directory)
+    start_logging_to_directory(configuration.log_directory, CLASSIC_FLAVOR)
     return commands.stop.run(configuration)
 
 
@@ -1310,7 +1386,7 @@ def validate_models(context: click.Context) -> int:
     configuration = configuration_module.create_configuration(
         command_argument, Path(".")
     )
-    start_logging_to_directory(configuration.log_directory)
+    start_logging_to_directory(configuration.log_directory, CLASSIC_FLAVOR)
     return commands.validate_models.run(configuration, output=command_argument.output)
 
 

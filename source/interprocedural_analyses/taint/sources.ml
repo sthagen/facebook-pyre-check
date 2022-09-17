@@ -63,12 +63,16 @@ module Set = struct
 
   let pp format set = Format.fprintf format "%s" (show set)
 
-  let to_sanitize_transforms_exn set =
+  let to_sanitize_transform_set_exn set =
     let to_transform = function
       | NamedSource name -> SanitizeTransform.Source.Named name
       | source -> Format.asprintf "cannot sanitize the source `%a`" T.pp source |> failwith
     in
-    set |> elements |> List.map ~f:to_transform |> SanitizeTransform.SourceSet.of_list
+    set
+    |> elements
+    |> List.map ~f:to_transform
+    |> SanitizeTransform.SourceSet.of_list
+    |> SanitizeTransformSet.from_sources
 
 
   let is_singleton set =
@@ -134,6 +138,14 @@ let extract_sanitized_sources_from_transforms transforms =
   SanitizeTransform.SourceSet.fold extract transforms Set.empty
 
 
+let to_sanitized_source_exn = function
+  | NamedSource name -> SanitizeTransform.Source.Named name
+  | ParametricSource { source_name = name; _ } -> SanitizeTransform.Source.Named name
+  | _ -> failwith "Unsupported source sanitizer"
+
+
+let from_sanitized_source (SanitizeTransform.Source.Named name) = NamedSource name
+
 let extract_sanitize_transforms = function
   | Transform { local; global; _ } ->
       TaintTransforms.merge ~local ~global |> TaintTransforms.get_sanitize_transforms
@@ -161,6 +173,7 @@ let apply_sanitize_transforms transforms source =
           transforms
       with
       | None -> None
+      | _ when SanitizeTransformSet.is_all transforms -> None
       | Some local when TaintTransforms.is_empty local -> Some source
       | Some local -> Some (Transform { local; global = TaintTransforms.empty; base = source }))
   | Transform { local; global; base } -> (
@@ -219,4 +232,6 @@ let get_named_transforms = function
 
 
 let contains_sanitize_transforms source sanitize_transforms =
-  SanitizeTransformSet.subset sanitize_transforms (extract_sanitize_transforms source)
+  SanitizeTransformSet.less_or_equal
+    ~left:sanitize_transforms
+    ~right:(extract_sanitize_transforms source)

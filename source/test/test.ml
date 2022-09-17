@@ -1173,6 +1173,9 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         NotRequired: _SpecialForm = ...
 
         Self: _SpecialForm = ...
+
+        if sys.version_info >= (3, 10):
+          def is_typeddict(tp: object) -> bool: ...
       |}
     );
     "asyncio/coroutines.pyi", {|
@@ -2737,6 +2740,7 @@ module ScratchProject = struct
       ?(in_memory = true)
       ?(populate_call_graph = false)
       ?(use_lazy_module_tracking = false)
+      ?(no_validation_on_class_lookup_failure = false)
       ?debug
       ?strict
       sources
@@ -2789,7 +2793,11 @@ module ScratchProject = struct
           List.map sources ~f:(to_in_memory_source ~is_external:false)
           @ List.map external_sources ~f:(to_in_memory_source ~is_external:true)
         in
-        EnvironmentControls.create ~populate_call_graph ~in_memory_sources configuration
+        EnvironmentControls.create
+          ~populate_call_graph
+          ~in_memory_sources
+          ~no_validation_on_class_lookup_failure
+          configuration
       else
         let add_source ~root (relative, content) =
           let content = trim_extra_indentation content in
@@ -2798,7 +2806,11 @@ module ScratchProject = struct
         in
         let () = List.iter sources ~f:(add_source ~root:local_root) in
         let () = List.iter external_sources ~f:(add_source ~root:external_root) in
-        EnvironmentControls.create ~populate_call_graph ~use_lazy_module_tracking configuration
+        EnvironmentControls.create
+          ~populate_call_graph
+          ~use_lazy_module_tracking
+          ~no_validation_on_class_lookup_failure
+          configuration
     in
     let errors_environment = ErrorsEnvironment.create controls in
     let () =

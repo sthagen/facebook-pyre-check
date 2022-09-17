@@ -7,41 +7,81 @@
 
 open Core
 
-type t = {
+type sets = {
   sources: SanitizeTransform.SourceSet.t;
   sinks: SanitizeTransform.SinkSet.t;
 }
 [@@deriving compare, eq, hash, sexp]
 
-let empty = { sources = SanitizeTransform.SourceSet.empty; sinks = SanitizeTransform.SinkSet.empty }
+let pp_sets formatter { sources; sinks } =
+  let is_empty_sources = SanitizeTransform.SourceSet.is_empty sources in
+  let is_empty_sinks = SanitizeTransform.SinkSet.is_empty sinks in
+  if is_empty_sources then
+    if is_empty_sinks then
+      Format.fprintf formatter ""
+    else
+      SanitizeTransform.SinkSet.pp formatter sinks
+  else if is_empty_sinks then
+    SanitizeTransform.SourceSet.pp formatter sources
+  else
+    Format.fprintf
+      formatter
+      "%a:%a"
+      SanitizeTransform.SourceSet.pp
+      sources
+      SanitizeTransform.SinkSet.pp
+      sinks
 
-let is_empty { sources; sinks } =
-  SanitizeTransform.SourceSet.is_empty sources && SanitizeTransform.SinkSet.is_empty sinks
+
+let show_sets = Format.asprintf "%a" pp_sets
+
+include Abstract.SimpleDomain.Make (struct
+  type t = sets
+
+  let show = show_sets
+
+  let name = "sanitize tito"
+
+  let bottom =
+    { sources = SanitizeTransform.SourceSet.bottom; sinks = SanitizeTransform.SinkSet.bottom }
 
 
-let pp formatter { sources; sinks } =
-  let sources =
-    SanitizeTransform.SourceSet.elements sources |> List.map ~f:SanitizeTransform.Source.show
-  in
-  let sinks = SanitizeTransform.SinkSet.elements sinks |> List.map ~f:SanitizeTransform.Sink.show in
-  sources @ sinks |> String.concat ~sep:":" |> Format.fprintf formatter "%s"
+  let less_or_equal
+      ~left:({ sources = left_sources; sinks = left_sinks } as left)
+      ~right:({ sources = right_sources; sinks = right_sinks } as right)
+    =
+    if phys_equal left right then
+      true
+    else
+      SanitizeTransform.SourceSet.less_or_equal ~left:left_sources ~right:right_sources
+      && SanitizeTransform.SinkSet.less_or_equal ~left:left_sinks ~right:right_sinks
 
 
-let show = Format.asprintf "%a" pp
+  let join
+      ({ sources = left_sources; sinks = left_sinks } as left)
+      ({ sources = right_sources; sinks = right_sinks } as right)
+    =
+    if phys_equal left right then
+      left
+    else
+      {
+        sources = SanitizeTransform.SourceSet.join left_sources right_sources;
+        sinks = SanitizeTransform.SinkSet.join left_sinks right_sinks;
+      }
+
+
+  let meet a b = if less_or_equal ~left:b ~right:a then b else a
+end)
+
+type t = sets [@@deriving compare, eq, hash, sexp]
+
+let empty = bottom
+
+let is_empty = is_bottom
 
 let from_sources sources = { sources; sinks = SanitizeTransform.SinkSet.empty }
 
 let from_sinks sinks = { sources = SanitizeTransform.SourceSet.empty; sinks }
-
-let union
-    { sources = sources_left; sinks = sinks_left }
-    { sources = sources_right; sinks = sinks_right }
-  =
-  {
-    sources = SanitizeTransform.SourceSet.union sources_left sources_right;
-    sinks = SanitizeTransform.SinkSet.union sinks_left sinks_right;
-  }
-
 
 let diff
     { sources = sources_left; sinks = sinks_left }
@@ -53,14 +93,12 @@ let diff
   }
 
 
-let subset
-    { sources = sources_left; sinks = sinks_left }
-    { sources = sources_right; sinks = sinks_right }
-  =
-  SanitizeTransform.SourceSet.subset sources_left sources_right
-  && SanitizeTransform.SinkSet.subset sinks_left sinks_right
-
-
 let mem { sources; sinks } = function
   | SanitizeTransform.Source source -> SanitizeTransform.SourceSet.mem source sources
   | SanitizeTransform.Sink sink -> SanitizeTransform.SinkSet.mem sink sinks
+
+
+let all = { sources = SanitizeTransform.SourceSet.all; sinks = SanitizeTransform.SinkSet.all }
+
+let is_all { sources; sinks } =
+  SanitizeTransform.SourceSet.is_all sources && SanitizeTransform.SinkSet.is_all sinks

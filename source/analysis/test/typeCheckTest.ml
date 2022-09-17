@@ -877,8 +877,8 @@ let test_forward_expression context =
 
   (* String literals. *)
   assert_forward "'string'" (Type.literal_string "string");
-  assert_forward "f'string'" Type.string;
-  assert_forward "f'string{1}'" Type.string;
+  assert_forward "f'string'" Type.literal_any_string;
+  assert_forward "f'string{1}'" Type.literal_any_string;
   assert_forward "f'string{undefined}'" Type.string;
 
   (* Ternaries. *)
@@ -1029,9 +1029,9 @@ let test_forward_statement context =
       process_statement resolution parsed
     in
     match forwarded with
-    | None -> assert_true bottom
+    | None -> assert_bool "Expectd Resolution.Unreachable when `bottom` set to true" bottom
     | Some actual_resolution ->
-        assert_false bottom;
+        assert_bool "Expectd Resolution.Reachable when `bottom` set to false" (not bottom);
         assert_annotation_store
           ~expected:(create_annotation_store ~immutables:postcondition_immutables postcondition)
           actual_resolution
@@ -2322,7 +2322,7 @@ let test_unpack_callable_and_self_argument context =
 
 
 let () =
-  "type"
+  "typeCheck"
   >::: [
          "initial" >:: test_initial;
          "less_or_equal" >:: test_less_or_equal;

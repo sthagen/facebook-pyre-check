@@ -82,12 +82,16 @@ module Set = struct
 
   let pp format set = Format.fprintf format "%s" (show set)
 
-  let to_sanitize_transforms_exn set =
+  let to_sanitize_transform_set_exn set =
     let to_transform = function
       | NamedSink name -> SanitizeTransform.Sink.Named name
       | sink -> Format.asprintf "cannot sanitize the sink `%a`" T.pp sink |> failwith
     in
-    set |> elements |> List.map ~f:to_transform |> SanitizeTransform.SinkSet.of_list
+    set
+    |> elements
+    |> List.map ~f:to_transform
+    |> SanitizeTransform.SinkSet.of_list
+    |> SanitizeTransformSet.from_sinks
 
 
   let is_singleton set =
@@ -153,6 +157,14 @@ let extract_sanitized_sinks_from_transforms transforms =
   SanitizeTransform.SinkSet.fold extract transforms Set.empty
 
 
+let to_sanitized_sink_exn = function
+  | NamedSink name -> SanitizeTransform.Sink.Named name
+  | ParametricSink { sink_name = name; _ } -> SanitizeTransform.Sink.Named name
+  | _ -> failwith "Unsupported sink sanitizer"
+
+
+let from_sanitized_sink (SanitizeTransform.Sink.Named name) = NamedSink name
+
 let extract_sanitize_transforms = function
   | Transform { local; global; _ } ->
       TaintTransforms.merge ~local ~global |> TaintTransforms.get_sanitize_transforms
@@ -206,6 +218,7 @@ let apply_sanitize_transforms transforms sink =
           transforms
       with
       | None -> None
+      | _ when SanitizeTransformSet.is_all transforms -> None
       | Some local when TaintTransforms.is_empty local -> Some sink
       | Some local -> Some (Transform { local; global = TaintTransforms.empty; base = sink }))
   | Transform { local; global; base } -> (
@@ -270,4 +283,6 @@ let get_named_transforms = function
 
 
 let contains_sanitize_transforms sink sanitize_transforms =
-  SanitizeTransformSet.subset sanitize_transforms (extract_sanitize_transforms sink)
+  SanitizeTransformSet.less_or_equal
+    ~left:sanitize_transforms
+    ~right:(extract_sanitize_transforms sink)

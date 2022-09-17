@@ -16,7 +16,7 @@ from unittest.mock import CallableMixin, patch
 import testslide
 from libcst.metadata import CodePosition, CodeRange
 
-from ... import error, json_rpc
+from ... import error, identifiers, json_rpc
 from ...commands.language_server_protocol import SymbolKind
 from ...coverage_collector import CoveredAndUncoveredLines
 from ...tests import setup
@@ -36,33 +36,35 @@ from ..connections import (
     MemoryBytesReader,
     MemoryBytesWriter,
 )
-from ..persistent import (
-    AbstractRequestHandler,
-    CONSECUTIVE_START_ATTEMPT_THRESHOLD,
+from ..language_server_features import (
     DefinitionAvailability,
     HoverAvailability,
+    LanguageServerFeatures,
+    ReferencesAvailability,
+    TypeCoverageAvailability,
+    TypeErrorsAvailability,
+)
+from ..persistent import (
+    CONSECUTIVE_START_ATTEMPT_THRESHOLD,
     InitializationExit,
     InitializationFailure,
     InitializationSuccess,
-    LanguageServerFeatures,
-    path_to_coverage_response,
     PyreDaemonLaunchAndSubscribeHandler,
     PyreDaemonShutdown,
-    PyreServer,
-    PyreServerOptions,
-    PyreServerOptionsReader,
-    read_lsp_request,
-    ReferencesAvailability,
-    RequestHandler,
-    ServerState,
-    to_coverage_result,
     try_initialize,
     type_error_to_diagnostic,
     type_errors_to_diagnostics,
-    TypeCoverageAvailability,
-    TypeErrorsAvailability,
+)
+from ..pyre_server import PyreServer, read_lsp_request
+from ..pyre_server_options import PyreServerOptions, PyreServerOptionsReader
+from ..request_handler import (
+    AbstractRequestHandler,
+    path_to_coverage_response,
+    RequestHandler,
+    to_coverage_result,
     uncovered_range_to_diagnostic,
 )
+from ..server_state import ServerState
 from .language_server_protocol_test import ExceptionRaisingBytesWriter
 
 
@@ -81,6 +83,7 @@ DEFAULT_FEATURES: LanguageServerFeatures = LanguageServerFeatures(
 )
 DEFAULT_IS_STRICT = False
 DEFAULT_EXCLUDES: Optional[Sequence[str]] = None
+DEFAULT_FLAVOR: identifiers.PyreFlavor = identifiers.PyreFlavor.CLASSIC
 DEFAULT_ENABLE_TELEMETRY: bool = False
 
 
@@ -91,6 +94,7 @@ def _create_server_options(
     language_server_features: LanguageServerFeatures = DEFAULT_FEATURES,
     strict_default: bool = DEFAULT_IS_STRICT,
     excludes: Optional[Sequence[str]] = DEFAULT_EXCLUDES,
+    flavor: identifiers.PyreFlavor = DEFAULT_FLAVOR,
     enabled_telemetry_event: bool = DEFAULT_ENABLE_TELEMETRY,
 ) -> PyreServerOptions:
     return PyreServerOptions(
@@ -100,6 +104,7 @@ def _create_server_options(
         language_server_features,
         strict_default,
         excludes if excludes else [],
+        flavor,
         enabled_telemetry_event,
     )
 
@@ -111,6 +116,7 @@ def _create_server_options_reader(
     language_server_features: LanguageServerFeatures = DEFAULT_FEATURES,
     strict_default: bool = DEFAULT_IS_STRICT,
     excludes: Optional[Sequence[str]] = DEFAULT_EXCLUDES,
+    flavor: identifiers.PyreFlavor = DEFAULT_FLAVOR,
     enabled_telemetry_event: bool = DEFAULT_ENABLE_TELEMETRY,
 ) -> PyreServerOptionsReader:
     return lambda: _create_server_options(
@@ -120,6 +126,7 @@ def _create_server_options_reader(
         language_server_features,
         strict_default,
         excludes,
+        flavor,
         enabled_telemetry_event,
     )
 
@@ -131,6 +138,7 @@ def _create_server_state_with_options(
     language_server_features: LanguageServerFeatures = DEFAULT_FEATURES,
     strict_default: bool = DEFAULT_IS_STRICT,
     excludes: Optional[Sequence[str]] = DEFAULT_EXCLUDES,
+    flavor: identifiers.PyreFlavor = DEFAULT_FLAVOR,
     enabled_telemetry_event: bool = DEFAULT_ENABLE_TELEMETRY,
 ) -> ServerState:
     return ServerState(
@@ -141,6 +149,7 @@ def _create_server_state_with_options(
             language_server_features,
             strict_default,
             excludes,
+            flavor,
             enabled_telemetry_event,
         )
     )
@@ -156,8 +165,8 @@ class MockRequestHandler(AbstractRequestHandler):
         self,
         mock_type_coverage: Optional[lsp.TypeCoverageResponse] = None,
         mock_hover_response: Optional[lsp.LspHoverResponse] = None,
-        mock_definition_response: Optional[List[lsp.LspDefinitionResponse]] = None,
-        mock_references_response: Optional[List[lsp.LspDefinitionResponse]] = None,
+        mock_definition_response: Optional[List[lsp.LspLocation]] = None,
+        mock_references_response: Optional[List[lsp.LspLocation]] = None,
     ) -> None:
         self.requests: List[object] = []
         self.mock_type_coverage = mock_type_coverage
@@ -187,7 +196,7 @@ class MockRequestHandler(AbstractRequestHandler):
         self,
         path: Path,
         position: lsp.PyrePosition,
-    ) -> List[lsp.LspDefinitionResponse]:
+    ) -> List[lsp.LspLocation]:
         self.requests.append({"path": path, "position": position})
         if self.mock_definition_response is None:
             raise ValueError("You need to set hover response in the mock handler")
@@ -198,7 +207,7 @@ class MockRequestHandler(AbstractRequestHandler):
         self,
         path: Path,
         position: lsp.PyrePosition,
-    ) -> List[lsp.LspDefinitionResponse]:
+    ) -> List[lsp.LspLocation]:
         self.requests.append({"path": path, "position": position})
         if self.mock_references_response is None:
             raise ValueError("You need to set hover response in the mock handler")
@@ -1349,7 +1358,7 @@ class PyreServerTest(testslide.TestCase):
         lsp_line = 3
         daemon_line = lsp_line + 1
         expected_response = [
-            lsp.LspDefinitionResponse(
+            lsp.LspLocation(
                 uri="file:///path/to/foo.py",
                 range=lsp.LspRange(
                     start=lsp.LspPosition(line=5, character=6),
@@ -1386,7 +1395,7 @@ class PyreServerTest(testslide.TestCase):
                     }
                 ],
             )
-            raw_expected_response = lsp.LspDefinitionResponse.cached_schema().dump(
+            raw_expected_response = lsp.LspLocation.cached_schema().dump(
                 expected_response, many=True
             )
             expect_correct_response = self._expect_success_message(
@@ -1414,7 +1423,7 @@ class PyreServerTest(testslide.TestCase):
         daemon_line = lsp_line + 1
         expected_editor_response = []
         expected_telemetry_response = [
-            lsp.LspDefinitionResponse(
+            lsp.LspLocation(
                 uri="file:///path/to/foo.py",
                 range=lsp.LspRange(
                     start=lsp.LspPosition(line=5, character=6),
@@ -1457,13 +1466,13 @@ class PyreServerTest(testslide.TestCase):
             output_writer,
             [
                 self._expect_success_message(
-                    lsp.LspDefinitionResponse.cached_schema().dump(
+                    lsp.LspLocation.cached_schema().dump(
                         expected_editor_response, many=True
                     )
                 ),
                 self._expect_telemetry_event(
                     operation="definition",
-                    result=lsp.LspDefinitionResponse.cached_schema().dump(
+                    result=lsp.LspLocation.cached_schema().dump(
                         expected_telemetry_response, many=True
                     ),
                 ),
@@ -1500,7 +1509,7 @@ class PyreServerTest(testslide.TestCase):
         lsp_line = 3
         daemon_line = lsp_line + 1
         expected_response = [
-            lsp.LspDefinitionResponse(
+            lsp.LspLocation(
                 uri="file:///path/to/foo.py",
                 range=lsp.LspRange(
                     start=lsp.LspPosition(line=5, character=6),
@@ -1537,7 +1546,7 @@ class PyreServerTest(testslide.TestCase):
             output_writer,
             [
                 self._expect_success_message(
-                    result=lsp.LspDefinitionResponse.cached_schema().dump(
+                    result=lsp.LspLocation.cached_schema().dump(
                         expected_response, many=True
                     ),
                 )
@@ -1969,7 +1978,7 @@ class RequestHandlerTest(testslide.TestCase):
         self.assertEqual(
             response,
             [
-                lsp.LspDefinitionResponse(
+                lsp.LspLocation(
                     uri="/foo.py",
                     range=lsp.LspRange(
                         start=lsp.LspPosition(line=8, character=6),
@@ -2065,14 +2074,14 @@ class RequestHandlerTest(testslide.TestCase):
         self.assertEqual(
             result,
             [
-                lsp.LspDefinitionResponse(
+                lsp.LspLocation(
                     uri="/foo.py",
                     range=lsp.LspRange(
                         start=lsp.LspPosition(line=8, character=6),
                         end=lsp.LspPosition(line=9, character=11),
                     ),
                 ),
-                lsp.LspDefinitionResponse(
+                lsp.LspLocation(
                     uri="/bar.py",
                     range=lsp.LspRange(
                         start=lsp.LspPosition(line=1, character=3),

@@ -208,7 +208,8 @@ let test_check_undefined_type context =
     [
       "Unbound name [10]: Name `Generic` is used but not defined in the current scope.";
       "Invalid type variable [34]: The current class isn't generic with respect to the type \
-       variable `Variable[_T]`.";
+       variable `Variable[_T]`. To reference the type variable, you can modify the class to \
+       inherit from `typing.Generic[_T]`.";
     ];
   assert_type_errors
     {|
@@ -1260,7 +1261,8 @@ let test_check_invalid_type_variables context =
     |}
     [
       "Invalid type variable [34]: The current class isn't generic with respect to the type \
-       variable `Variable[T]`.";
+       variable `Variable[T]`. To reference the type variable, you can modify the class to inherit \
+       from `typing.Generic[T]`.";
     ];
   assert_type_errors
     {|
@@ -1899,7 +1901,7 @@ let test_check_variable_bounds_with_any context =
       from typing import TypeVar, Any, List
       T = TypeVar("T", bound=List[Any])
     |}
-    ["Prohibited any [33]: `T` cannot alias to a type containing `Any`."]
+    ["Prohibited any [33]: Type variable `T` cannot have a bound containing `Any`."]
 
 
 let test_check_variable_bounds_with_quoted_bound context =
@@ -1909,7 +1911,7 @@ let test_check_variable_bounds_with_quoted_bound context =
       from typing import TypeVar, Any, List
       T = TypeVar("T", bound="List[Any]")
     |}
-    ["Prohibited any [33]: `T` cannot alias to a type containing `Any`."]
+    ["Prohibited any [33]: Type variable `T` cannot have a bound containing `Any`."]
 
 
 let test_check_variable_bounds_with_quoted_any context =
@@ -1919,7 +1921,7 @@ let test_check_variable_bounds_with_quoted_any context =
       from typing import TypeVar, Any, List
       T = TypeVar("T", bound=List["Any"])
     |}
-    ["Prohibited any [33]: `T` cannot alias to a type containing `Any`."]
+    ["Prohibited any [33]: Type variable `T` cannot have a bound containing `Any`."]
 
 
 let test_check_typevar_arithmetic context =

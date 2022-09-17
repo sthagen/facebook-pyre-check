@@ -303,6 +303,27 @@ let is_final_class class_metadata_environment ~dependency class_name =
 
 let class_name { Node.value = { ClassSummary.name; _ }; _ } = name
 
+module ParsingValidation = struct
+  (** The environment controls can specify whether it wants to perform validation on annotated
+      attributes where its class fails lookup. One example in which a class fails lookup is when a
+      class is defined and imported in a missing file.
+
+      The downstream result of performing validation on missing classes is that we will treat that
+      attribute as having type Any or unknown, but if we skip that validation, we will preserve the
+      class information of that attribute.
+
+      This function extracts the value of the validation from the environment controls and returns a
+      corresponding validation type. **)
+  let parse_annotation_validation_kind controls =
+    let no_validation_on_class_lookup_failure =
+      EnvironmentControls.no_validation_on_class_lookup_failure controls
+    in
+    if no_validation_on_class_lookup_failure then
+      SharedMemoryKeys.ParseAnnotationKey.NoValidation
+    else
+      SharedMemoryKeys.ParseAnnotationKey.ValidatePrimitivesAndTypeParameters
+end
+
 module ClassDecorators = struct
   type options = {
     init: bool;
@@ -1004,11 +1025,13 @@ module ClassDecorators = struct
           methods
     in
     let dataclass_attributes () =
-      (* TODO (T43210531): Warn about inconsistent annotations *)
+      (* TODO (T43210531): Warn about inconsistent annotations
+       * TODO (T131540506): Decouple dataclass options from other options *)
       generate_attributes ~options:(dataclass_options ~class_metadata_environment ?dependency)
     in
     let attrs_attributes () =
-      (* TODO (T41039225): Add support for other methods *)
+      (* TODO (T41039225): Add support for other methods
+       * TODO (T129741558): support type annotations in attr *)
       generate_attributes ~options:(attrs_attributes ~class_metadata_environment ?dependency)
     in
     let dataclass_transform_attributes () =
@@ -2519,7 +2542,9 @@ class base class_metadata_environment dependency =
 
     method parse_annotation
         ~assumptions
-        ?(validation = SharedMemoryKeys.ParseAnnotationKey.ValidatePrimitivesAndTypeParameters)
+        ?(validation =
+          ClassMetadataEnvironment.MetadataReadOnly.controls class_metadata_environment
+          |> ParsingValidation.parse_annotation_validation_kind)
         expression =
       let modify_aliases ?replace_unbound_parameters_with_any = function
         | Type.TypeAlias alias ->
@@ -4722,6 +4747,7 @@ class base class_metadata_environment dependency =
         Statistics.performance
           ~flush:false
           ~randomly_log_every:500
+          ~always_log_time_threshold:1.0 (* Seconds *)
           ~section:`Check
           ~name:"SingleGlobalTypeCheck"
           ~timer
@@ -4789,7 +4815,7 @@ module ParseAnnotationCache = struct
 
         method! parse_annotation
             ~assumptions:_
-            ?(validation = SharedMemoryKeys.ParseAnnotationKey.ValidatePrimitivesAndTypeParameters)
+            ?(validation = controls read_only |> ParsingValidation.parse_annotation_validation_kind)
             expression =
           get read_only ?dependency { SharedMemoryKeys.ParseAnnotationKey.validation; expression }
       end

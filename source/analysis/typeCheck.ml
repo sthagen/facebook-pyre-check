@@ -1961,7 +1961,7 @@ module State (Context : Context) = struct
                          evidence_locations = [];
                          thrown_at_source = true;
                        };
-                     is_type_alias = false;
+                     annotation_kind = Annotation;
                    })
           else if Type.equal cast_annotation resolved then
             emit_error ~errors ~location ~kind:(Error.RedundantCast resolved)
@@ -2708,15 +2708,23 @@ module State (Context : Context) = struct
           base = None;
         }
     | FormatString substrings ->
-        let forward_substring ((resolution, errors) as sofar) = function
+        let forward_substring ((resolution, has_non_literal, errors) as sofar) = function
           | Substring.Literal _ -> sofar
           | Substring.Format expression ->
               forward_expression ~resolution expression
-              |> fun { resolution; errors = new_errors; _ } ->
-              resolution, List.append new_errors errors
+              |> fun { resolution; errors = new_errors; resolved; _ } ->
+              let has_non_literal =
+                match resolved with
+                | Type.Literal _ -> has_non_literal
+                | _ -> true
+              in
+              resolution, has_non_literal, List.append new_errors errors
         in
-        let resolution, errors = List.fold substrings ~f:forward_substring ~init:(resolution, []) in
-        { resolution; errors; resolved = Type.string; resolved_annotation = None; base = None }
+        let resolution, has_non_literal, errors =
+          List.fold substrings ~f:forward_substring ~init:(resolution, false, [])
+        in
+        let resolved = if has_non_literal then Type.string else Type.literal_any_string in
+        { resolution; errors; resolved; resolved_annotation = None; base = None }
     | Generator { Comprehension.element; generators } ->
         let { Resolved.resolution; resolved; errors; _ } =
           forward_comprehension ~resolution ~errors:[] ~element ~generators
@@ -3108,6 +3116,7 @@ module State (Context : Context) = struct
           List.map ~f:parse_meta elements |> fun elements -> Type.Union elements
       | _ -> parse_meta annotation
     in
+    (* TODO(T131546670) replace with meet *)
     let partition annotation ~boundary =
       let consistent_with_boundary, not_consistent_with_boundary =
         let unfolded_annotation =
@@ -3369,23 +3378,24 @@ module State (Context : Context) = struct
           callee = { Node.value = Name (Name.Identifier "callable"); _ };
           arguments = [{ Call.Argument.name = None; value = { Node.value = Name name; _ } }];
         }
-      when is_simple_name name ->
-        let resolution =
-          match existing_annotation name with
-          | Some existing_annotation ->
-              let undefined =
-                Type.Callable.create ~parameters:Undefined ~annotation:Type.object_primitive ()
-              in
-              let { consistent_with_boundary; _ } =
-                partition (Annotation.annotation existing_annotation) ~boundary:undefined
-              in
-              if Type.equal consistent_with_boundary Type.Bottom then
-                Annotation.create_mutable undefined |> refine_local ~name
-              else
-                Annotation.create_mutable consistent_with_boundary |> refine_local ~name
-          | _ -> resolution
-        in
-        Value resolution
+      when is_simple_name name -> (
+        match existing_annotation name with
+        | Some existing_annotation ->
+            let callable =
+              Type.Callable.create ~parameters:Undefined ~annotation:Type.object_primitive ()
+            in
+            let existing_type = Annotation.annotation existing_annotation in
+            let { consistent_with_boundary; _ } = partition existing_type ~boundary:callable in
+            (* Check for supertypes of callable: e.g. object is only returned on
+               not_consistent_with_boundary in partition *)
+            if GlobalResolution.less_or_equal global_resolution ~left:callable ~right:existing_type
+            then
+              Value (Annotation.create_mutable callable |> refine_local ~name)
+            else if not (Type.is_unbound consistent_with_boundary) then
+              Value (Annotation.create_mutable consistent_with_boundary |> refine_local ~name)
+            else
+              Unreachable
+        | _ -> Value resolution)
     (* Is not callable *)
     | UnaryOperator
         {
@@ -3403,24 +3413,96 @@ module State (Context : Context) = struct
             };
         }
       when is_simple_name name -> (
-        let resolution =
-          match existing_annotation name with
-          | Some existing_annotation ->
-              let { not_consistent_with_boundary; _ } =
-                partition
-                  (Annotation.annotation existing_annotation)
-                  ~boundary:
-                    (Type.Callable.create
-                       ~parameters:Undefined
-                       ~annotation:Type.object_primitive
-                       ())
-              in
-              not_consistent_with_boundary >>| Annotation.create_mutable >>| refine_local ~name
-          | _ -> Some resolution
-        in
-        match resolution with
-        | Some resolution -> Value resolution
-        | None -> Unreachable)
+        match existing_annotation name with
+        | Some existing_annotation -> (
+            let callable =
+              Type.Callable.create ~parameters:Undefined ~annotation:Type.object_primitive ()
+            in
+            let existing_type = Annotation.annotation existing_annotation in
+            let { not_consistent_with_boundary; _ } = partition existing_type ~boundary:callable in
+            match not_consistent_with_boundary with
+            | Some type_ -> Value (Annotation.create_mutable type_ |> refine_local ~name)
+            | None when Type.is_any existing_type ->
+                Value (Annotation.create_mutable existing_type |> refine_local ~name)
+            | None -> Unreachable)
+        | _ -> Value resolution)
+    (* Is typeddict *)
+    | Call
+        {
+          callee =
+            {
+              Node.value =
+                Name
+                  (Name.Attribute
+                    {
+                      base = { Node.location = _; value = Name (Name.Identifier "typing") };
+                      attribute = "is_typeddict";
+                      special = false;
+                    });
+              _;
+            };
+          arguments = [{ value = { Node.value = Name name; _ }; _ }];
+        }
+      when is_simple_name name -> (
+        match existing_annotation name with
+        | Some existing_annotation -> (
+            match Annotation.annotation existing_annotation with
+            | Type.Parametric { name = "type"; parameters = [Single typed_dictionary] } ->
+                if
+                  Type.is_any typed_dictionary
+                  or GlobalResolution.is_typed_dictionary
+                       ~resolution:global_resolution
+                       typed_dictionary
+                then
+                  Value resolution
+                else
+                  Unreachable
+            | Type.Any -> Value resolution
+            | _ -> Unreachable)
+        | _ -> Value resolution)
+    (* Is not typeddict *)
+    | UnaryOperator
+        {
+          UnaryOperator.operator = UnaryOperator.Not;
+          operand =
+            {
+              Node.value =
+                Call
+                  {
+                    callee =
+                      {
+                        Node.value =
+                          Name
+                            (Name.Attribute
+                              {
+                                base =
+                                  { Node.location = _; value = Name (Name.Identifier "typing") };
+                                attribute = "is_typeddict";
+                                special = false;
+                              });
+                        _;
+                      };
+                    arguments = [{ value = { Node.value = Name name; _ }; _ }];
+                  };
+              _;
+            };
+          _;
+        }
+      when is_simple_name name -> (
+        match existing_annotation name with
+        | Some existing_annotation -> (
+            match Annotation.annotation existing_annotation with
+            | Type.Parametric { name = "type"; parameters = [Single typed_dictionary] } ->
+                if
+                  GlobalResolution.is_typed_dictionary
+                    ~resolution:global_resolution
+                    typed_dictionary
+                then
+                  Unreachable
+                else
+                  Value resolution
+            | _ -> Value resolution)
+        | _ -> Value resolution)
     (* `is` and `in` refinement *)
     | ComparisonOperator
         {
@@ -3687,6 +3769,11 @@ module State (Context : Context) = struct
             | Expression.Name (Name.Identifier identifier) -> Reference.create identifier
             | _ -> failwith "not possible"
           in
+          let annotation_kind =
+            match parsed with
+            | Variable _ -> Error.TypeVariable
+            | _ -> Error.TypeAlias
+          in
           if Type.expression_contains_any value && Type.contains_prohibited_any parsed then
             emit_error
               ~errors
@@ -3702,7 +3789,7 @@ module State (Context : Context) = struct
                          evidence_locations = [instantiate_path ~global_resolution target.location];
                          thrown_at_source = true;
                        };
-                     is_type_alias = true;
+                     annotation_kind;
                    })
           else
             errors
@@ -4295,7 +4382,7 @@ module State (Context : Context) = struct
                                        evidence_locations;
                                        thrown_at_source = true;
                                      };
-                                   is_type_alias = false;
+                                   annotation_kind = Annotation;
                                  }),
                           true )
                       else
@@ -4321,7 +4408,7 @@ module State (Context : Context) = struct
                                        evidence_locations;
                                        thrown_at_source = true;
                                      };
-                                   is_type_alias = false;
+                                   annotation_kind = Annotation;
                                  }),
                           true )
                       else
@@ -4387,7 +4474,7 @@ module State (Context : Context) = struct
                                            evidence_locations;
                                            thrown_at_source = true;
                                          };
-                                       is_type_alias = false;
+                                       annotation_kind = Annotation;
                                      }),
                               true )
                           else
@@ -4413,7 +4500,7 @@ module State (Context : Context) = struct
                                            evidence_locations;
                                            thrown_at_source = true;
                                          };
-                                       is_type_alias = false;
+                                       annotation_kind = Annotation;
                                      }),
                               true )
                           else
@@ -7108,6 +7195,7 @@ let check_function_definition
   Statistics.performance
     ~flush:false
     ~randomly_log_every:1000
+    ~always_log_time_threshold:1.0 (* Seconds *)
     ~section:`Check
     ~name:"SingleDefineTypeCheck"
     ~timer
