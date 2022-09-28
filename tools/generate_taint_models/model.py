@@ -17,7 +17,12 @@ from .generator_specifications import (
     ParameterAnnotation,
     WhitelistSpecification,
 )
-from .inspect_parser import extract_parameters, extract_qualified_name
+from .inspect_parser import (
+    ast_to_pretty_string,
+    extract_parameters,
+    extract_qualified_name,
+    strip_custom_annotations,
+)
 from .parameter import Parameter
 
 
@@ -206,10 +211,21 @@ class FunctionDefinitionModel(RawCallableModel):
         )
 
     @staticmethod
-    def _get_annotation(ast_arg: ast.arg) -> Optional[str]:
+    def _get_annotation(
+        ast_arg: ast.arg, strip_annotated: bool = True
+    ) -> Optional[str]:
         annotation = ast_arg.annotation
-        if annotation and isinstance(annotation, _ast.Name):
-            return annotation.id
+        # ast tries to parse the annotation (e.g.
+        # Annotated[TestClass, ExampleAnnotation(accesses=(Access.REVIEWED,))]
+        # is treated as an _ast.Subscript instead of _ast.Name )
+        # We use the unparse function to get the annotation as a string and in the case of custom annotation
+        # use the strip_custom_annotations already defined to extract the actual type annotation
+        if annotation:
+            unparsed_annotation = ast_to_pretty_string(annotation)
+            if strip_annotated:
+                return strip_custom_annotations(unparsed_annotation)
+            else:
+                return unparsed_annotation
         else:
             return None
 

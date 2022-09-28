@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* TODO(T132410158) Add a module-level doc comment. *)
+
 open Core
 open Ast
 open Pyre
@@ -429,8 +431,6 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         in
         solve_less_or_equal order ~constraints ~left ~right
     | _, Type.ParameterVariadicComponent _ -> impossible
-    | Type.Annotated left, _ -> solve_less_or_equal order ~constraints ~left ~right
-    | _, Type.Annotated right -> solve_less_or_equal order ~constraints ~left ~right
     | Type.ReadOnly left, _ -> solve_less_or_equal order ~constraints ~left ~right
     | _, Type.ReadOnly right -> solve_less_or_equal order ~constraints ~left ~right
     | Type.Any, other -> [add_fallbacks other]

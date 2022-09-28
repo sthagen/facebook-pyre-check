@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* Error: represents a generic error. *)
+
 open Core
 open Ast
 

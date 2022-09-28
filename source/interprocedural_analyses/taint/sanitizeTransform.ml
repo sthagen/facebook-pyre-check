@@ -5,37 +5,14 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* SanitizeTransform: defines the representation of a sanitize transform.
+ * A transform is an operator that can be applied to a taint to change its
+ * semantic. A sanitize transform describes the information that the given
+ * taint was sanitized for a specific source or sink. That taint will still
+ * be propagated but cannot match with that source or sink.
+ *)
+
 open Core
-
-module type S = sig
-  type elt
-
-  type set [@@deriving compare, eq, hash, sexp, show]
-
-  include Abstract.Domain.S with type t = set
-
-  type t = set [@@deriving compare, eq, hash, sexp, show]
-
-  val empty : t
-
-  val is_empty : t -> bool
-
-  val mem : elt -> t -> bool
-
-  val diff : t -> t -> t
-
-  val singleton : elt -> t
-
-  val all : t
-
-  val is_all : t -> bool
-
-  val of_list : elt list -> t
-
-  val fold : (elt -> 'a -> 'a) -> t -> 'a -> 'a
-
-  val to_json : t -> Yojson.Safe.t option
-end
 
 module type TAINT_KIND = sig
   type t = Named of string [@@deriving compare, eq, hash, sexp]
@@ -75,6 +52,42 @@ end = struct
   let show = Format.asprintf "%a" pp
 
   let show_kind (Named taint_kind) = Format.sprintf "%s" taint_kind
+end
+
+type t =
+  | Source of Source.t
+  | Sink of Sink.t
+
+module type S = sig
+  type elt
+
+  type set [@@deriving compare, eq, hash, sexp, show]
+
+  include Abstract.Domain.S with type t = set
+
+  type t = set [@@deriving compare, eq, hash, sexp, show]
+
+  val empty : t
+
+  val is_empty : t -> bool
+
+  val add : elt -> t -> t
+
+  val mem : elt -> t -> bool
+
+  val diff : t -> t -> t
+
+  val singleton : elt -> t
+
+  val all : t
+
+  val is_all : t -> bool
+
+  val of_list : elt list -> t
+
+  val fold : (elt -> 'a -> 'a) -> t -> 'a -> 'a
+
+  val to_json : t -> Yojson.Safe.t option
 end
 
 module MakeSet (Kind : TAINT_KIND) = struct
@@ -119,7 +132,15 @@ module MakeSet (Kind : TAINT_KIND) = struct
         | Specific left, Specific right -> Specific (Set.union left right)
 
 
-    let meet a b = if less_or_equal ~left:b ~right:a then b else a
+    let meet left right =
+      if phys_equal left right then
+        left
+      else
+        match left, right with
+        | All, All -> All
+        | All, Specific _ -> right
+        | Specific _, All -> left
+        | Specific left, Specific right -> Specific (Set.inter left right)
   end)
 
   type t = set [@@deriving compare, eq, hash, sexp]
@@ -131,6 +152,11 @@ module MakeSet (Kind : TAINT_KIND) = struct
   let is_all = function
     | All -> true
     | Specific _ -> false
+
+
+  let add element = function
+    | All -> All
+    | Specific set -> Specific (Set.add element set)
 
 
   let mem element set =
@@ -187,7 +213,3 @@ end
 
 module SourceSet = MakeSet (Source)
 module SinkSet = MakeSet (Sink)
-
-type t =
-  | Source of Source.t
-  | Sink of Sink.t

@@ -5,6 +5,9 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* ClassHierarchyGraph: defines a class hierarchy graph. This can be used to
+ * find all classes deriving from a given class. *)
+
 open Core
 open Ast
 open Statement
@@ -30,6 +33,7 @@ module ClassNameMap = struct
   let show ~pp_value map = Format.asprintf "%a" (pp_map pp_value) map
 end
 
+(** Graph of root classes and their children, stored in the ocaml heap. *)
 module Heap = struct
   type t = {
     roots: ClassNameSet.t;
@@ -60,8 +64,10 @@ module Heap = struct
     | Some children -> children
 
 
+  (* Return the immediate children *)
   let children { edges; _ } parent = set_of_children (ClassNameMap.find_opt parent edges)
 
+  (* Add an edge in the graph *)
   let add { roots; edges } ~parent:parent_class ~child:child_class =
     let new_roots =
       let new_roots =
@@ -160,6 +166,7 @@ module Heap = struct
       ()
 end
 
+(** Mapping from a class name to the set of its direct children, stored in shared memory. *)
 module SharedMemory = struct
   include
     Memory.WithCache.Make
@@ -174,6 +181,7 @@ module SharedMemory = struct
 
   type t = Handle
 
+  (** Return the current classes and children in shared memory. Only exposed for tests. *)
   let get_for_testing_only () = Handle
 
   let add Handle ~class_name ~class_name_set = add class_name class_name_set

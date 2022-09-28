@@ -6,7 +6,7 @@
 
 """
 This is an implementation of Pysa's language server. It is a refactored
-version of persistent.py.
+version of the server run by `pyre persistent`.
 """
 
 import asyncio
@@ -30,7 +30,7 @@ from .persistent import (
     process_initialize_request,
 )
 
-from .pyre_server import _wait_for_exit, read_lsp_request
+from .pyre_language_server import _wait_for_exit, read_lsp_request
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

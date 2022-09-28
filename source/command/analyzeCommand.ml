@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* TODO(T132410158) Add a module-level doc comment. *)
+
 open Core
 
 (* Analyze command uses the same exit code scheme as check command. *)
@@ -28,8 +30,16 @@ module AnalyzeConfiguration = struct
     dump_model_query_results: PyrePath.t option;
     find_missing_flows: Configuration.MissingFlowKind.t option;
     inline_decorators: bool;
-    maximum_tito_depth: int option;
+    maximum_model_source_tree_width: int option;
+    maximum_model_sink_tree_width: int option;
+    maximum_model_tito_tree_width: int option;
+    maximum_tree_depth_after_widening: int option;
+    maximum_return_access_path_width: int option;
+    maximum_return_access_path_depth_after_widening: int option;
+    maximum_tito_positions: int option;
+    maximum_overrides_to_analyze: int option;
     maximum_trace_length: int option;
+    maximum_tito_depth: int option;
     no_verify: bool;
     verify_dsl: bool;
     repository_root: PyrePath.t option;
@@ -42,6 +52,7 @@ module AnalyzeConfiguration = struct
     strict: bool;
     taint_model_paths: PyrePath.t list;
     use_cache: bool;
+    check_invariants: bool;
   }
   [@@deriving sexp, compare, hash]
 
@@ -63,8 +74,30 @@ module AnalyzeConfiguration = struct
                | None -> Ok None)
           >>= fun find_missing_flows ->
           let inline_decorators = bool_member "inline_decorators" ~default:false json in
-          let maximum_tito_depth = optional_int_member "maximum_tito_depth" json in
+          let maximum_model_source_tree_width =
+            optional_int_member "maximum_model_source_tree_width" json
+          in
+          let maximum_model_sink_tree_width =
+            optional_int_member "maximum_model_sink_tree_width" json
+          in
+          let maximum_model_tito_tree_width =
+            optional_int_member "maximum_model_tito_tree_width" json
+          in
+          let maximum_tree_depth_after_widening =
+            optional_int_member "maximum_tree_depth_after_widening" json
+          in
+          let maximum_return_access_path_width =
+            optional_int_member "maximum_return_access_path_width" json
+          in
+          let maximum_return_access_path_depth_after_widening =
+            optional_int_member "maximum_return_access_path_depth_after_widening" json
+          in
+          let maximum_tito_positions = optional_int_member "maximum_tito_positions" json in
+          let maximum_overrides_to_analyze =
+            optional_int_member "maximum_overrides_to_analyze" json
+          in
           let maximum_trace_length = optional_int_member "maximum_trace_length" json in
+          let maximum_tito_depth = optional_int_member "maximum_tito_depth" json in
           let no_verify = bool_member "no_verify" ~default:false json in
           let verify_dsl = bool_member "verify_dsl" ~default:false json in
           let repository_root = optional_path_member "repository_root" json in
@@ -79,6 +112,7 @@ module AnalyzeConfiguration = struct
           let strict = bool_member "strict" ~default:false json in
           let taint_model_paths = json |> path_list_member "taint_model_paths" ~default:[] in
           let use_cache = bool_member "use_cache" ~default:false json in
+          let check_invariants = bool_member "check_invariants" ~default:false json in
 
           Result.Ok
             {
@@ -87,8 +121,16 @@ module AnalyzeConfiguration = struct
               dump_model_query_results;
               find_missing_flows;
               inline_decorators;
-              maximum_tito_depth;
+              maximum_model_source_tree_width;
+              maximum_model_sink_tree_width;
+              maximum_model_tito_tree_width;
+              maximum_tree_depth_after_widening;
+              maximum_return_access_path_width;
+              maximum_return_access_path_depth_after_widening;
+              maximum_tito_positions;
+              maximum_overrides_to_analyze;
               maximum_trace_length;
+              maximum_tito_depth;
               no_verify;
               verify_dsl;
               repository_root;
@@ -101,6 +143,7 @@ module AnalyzeConfiguration = struct
               strict;
               taint_model_paths;
               use_cache;
+              check_invariants;
             }
     with
     | Type_error (message, _)
@@ -136,8 +179,16 @@ module AnalyzeConfiguration = struct
         dump_call_graph;
         dump_model_query_results;
         find_missing_flows;
-        maximum_tito_depth;
+        maximum_model_source_tree_width;
+        maximum_model_sink_tree_width;
+        maximum_model_tito_tree_width;
+        maximum_tree_depth_after_widening;
+        maximum_return_access_path_width;
+        maximum_return_access_path_depth_after_widening;
+        maximum_tito_positions;
+        maximum_overrides_to_analyze;
         maximum_trace_length;
+        maximum_tito_depth;
         no_verify;
         verify_dsl;
         rule_filter;
@@ -151,6 +202,7 @@ module AnalyzeConfiguration = struct
         use_cache;
         inline_decorators;
         repository_root;
+        check_invariants;
       }
     =
     let configuration =
@@ -198,8 +250,17 @@ module AnalyzeConfiguration = struct
       dump_model_query_results;
       use_cache;
       inline_decorators;
+      maximum_model_source_tree_width;
+      maximum_model_sink_tree_width;
+      maximum_model_tito_tree_width;
+      maximum_tree_depth_after_widening;
+      maximum_return_access_path_width;
+      maximum_return_access_path_depth_after_widening;
+      maximum_tito_positions;
+      maximum_overrides_to_analyze;
       maximum_trace_length;
       maximum_tito_depth;
+      check_invariants;
     }
 end
 

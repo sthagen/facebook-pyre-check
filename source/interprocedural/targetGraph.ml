@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* TargetGraph: represents a mapping from a target to a list of targets. *)
+
 open Core
 
 type t = Target.t list Target.Map.t

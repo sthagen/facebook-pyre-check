@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* TODO(T132410158) Add a module-level doc comment. *)
+
 open Core
 
 exception ServerStopped
@@ -93,14 +95,6 @@ let handle_request ~properties ~state request =
   Lwt.return (new_state, response)
 
 
-let handle_subscription ~state:{ ServerState.subscriptions; _ } ~output_channel request =
-  match request with
-  | Subscription.Request.SubscribeToTypeErrors subscriber_name ->
-      let subscription = Subscription.create ~name:subscriber_name ~output_channel () in
-      ServerState.Subscriptions.add subscriptions ~name:subscriber_name ~subscription;
-      subscription
-
-
 module ConnectionState = struct
   (* Keep track of the subscriptions created from each connection, so when it is closed we could
      remove those subscriptions from the server state automatically. *)
@@ -118,6 +112,35 @@ module ConnectionState = struct
         Log.log ~section:`Server "Subscription removed: %s" name;
         ServerState.Subscriptions.remove ~name subscriptions)
 end
+
+let handle_subscription_request
+    ~server_properties
+    ~server_state
+    ~connection_state
+    ~output_channel
+    subscription_request
+  =
+  let open Lwt.Infix in
+  ExclusiveLock.Lazy.write
+    server_state
+    ~f:(fun ({ ServerState.subscriptions; _ } as old_server_state) ->
+      let subscription = Subscription.create ~subscription_request ~output_channel () in
+      let () = ServerState.Subscriptions.add subscriptions ~subscription in
+      let new_connection_state =
+        ConnectionState.add_subscription ~name:(Subscription.name_of subscription) connection_state
+      in
+      match subscription_request with
+      | Subscription.Request.SubscribeToTypeErrors _ ->
+          (* We send back the initial set of type errors when a subscription first gets established. *)
+          handle_request
+            ~properties:server_properties
+            ~state:old_server_state
+            (Request.DisplayTypeError [])
+          >>= fun (new_server_state, response) ->
+          Lwt.return (new_server_state, (new_connection_state, response))
+      | Subscription.Request.SubscribeToStateChanges _ ->
+          Lwt.return (old_server_state, (new_connection_state, Response.Ok)))
+
 
 let handle_connection
     ~server_properties
@@ -172,19 +195,13 @@ let handle_connection
                   handle_request ~properties:server_properties ~state request
                   >>= fun (new_state, response) ->
                   Lwt.return (new_state, (connection_state, response)))
-          | ClientRequest.Subscription subscription ->
-              ExclusiveLock.Lazy.write server_state ~f:(fun state ->
-                  let subscription = handle_subscription ~state ~output_channel subscription in
-                  (* We send back the initial set of type errors when a subscription first gets
-                     established. *)
-                  handle_request ~properties:server_properties ~state (Request.DisplayTypeError [])
-                  >>= fun (new_state, response) ->
-                  Lwt.return
-                    ( new_state,
-                      ( ConnectionState.add_subscription
-                          ~name:(Subscription.name_of subscription)
-                          connection_state,
-                        response ) ))
+          | ClientRequest.Subscription subscription_request ->
+              handle_subscription_request
+                ~server_properties
+                ~server_state
+                ~connection_state
+                ~output_channel
+                subscription_request
         in
         result
         >>= fun (new_connection_state, response) ->

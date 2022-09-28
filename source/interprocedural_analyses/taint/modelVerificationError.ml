@@ -5,6 +5,9 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* ModelVerificationError: defines any error that can be produced by parsing
+ * pysa model files (`.pysa`). *)
+
 open Core
 open Ast
 

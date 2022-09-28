@@ -3,6 +3,11 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+"""
+TODO(T132414938) Add a module-level docstring
+"""
+
+
 from __future__ import annotations
 
 import enum
@@ -248,6 +253,14 @@ class AnalyzeArguments:
     find_missing_flows: Optional[MissingFlowsKind] = None
     inline_decorators: bool = False
     log_identifier: Optional[str] = None
+    maximum_model_source_tree_width: Optional[int] = None
+    maximum_model_sink_tree_width: Optional[int] = None
+    maximum_model_tito_tree_width: Optional[int] = None
+    maximum_tree_depth_after_widening: Optional[int] = None
+    maximum_return_access_path_width: Optional[int] = None
+    maximum_return_access_path_depth_after_widening: Optional[int] = None
+    maximum_tito_positions: Optional[int] = None
+    maximum_overrides_to_analyze: Optional[int] = None
     maximum_tito_depth: Optional[int] = None
     maximum_trace_length: Optional[int] = None
     no_verify: bool = False
@@ -264,3 +277,11 @@ class AnalyzeArguments:
     taint_models_path: List[str] = field(default_factory=list)
     use_cache: bool = False
     check_invariants: bool = False
+
+
+@dataclass(frozen=True)
+class QueryArguments:
+    query: str
+    no_daemon: bool
+    no_validation_on_class_lookup_failure: bool
+    check_arguments: CheckArguments = field(default_factory=CheckArguments)

@@ -29,7 +29,7 @@ let set_up_environment
     | Some source -> source
   in
   let project = ScratchProject.setup ~context ["test.py", source] in
-  let configuration =
+  let taint_configuration =
     let named name = { AnnotationParser.name; kind = Named } in
     let sources =
       [
@@ -57,7 +57,7 @@ let set_up_environment
       | None ->
           [
             {
-              TaintConfiguration.Rule.sources =
+              Rule.sources =
                 List.map sources ~f:(fun { AnnotationParser.name; _ } -> Sources.NamedSource name);
               sinks = List.map sinks ~f:(fun { AnnotationParser.name; _ } -> Sinks.NamedSink name);
               transforms = [];
@@ -67,7 +67,7 @@ let set_up_environment
             };
           ]
     in
-    TaintConfiguration.
+    TaintConfiguration.Heap.
       {
         empty with
         sources;
@@ -80,13 +80,12 @@ let set_up_environment
         filtered_sources;
         filtered_sinks;
         source_sink_filter =
-          Some
-            (TaintConfiguration.SourceSinkFilter.create
-               ~rules
-               ~filtered_rule_codes:None
-               ~filtered_sources
-               ~filtered_sinks
-               ~filtered_transforms);
+          SourceSinkFilter.create
+            ~rules
+            ~filtered_rule_codes:None
+            ~filtered_sources
+            ~filtered_sinks
+            ~filtered_transforms;
       }
   in
   let source = Test.trim_extra_indentation model_source in
@@ -99,8 +98,8 @@ let set_up_environment
     ModelParser.parse
       ~resolution
       ~source
-      ~configuration
-      ~source_sink_filter:configuration.source_sink_filter
+      ~taint_configuration
+      ~source_sink_filter:(Some taint_configuration.source_sink_filter)
       ~callables:None
       ~stubs:(Target.HashSet.create ())
       ()
@@ -112,7 +111,7 @@ let set_up_environment
     (List.is_empty errors);
 
   let environment = ScratchProject.type_environment project in
-  parse_result, environment, skip_overrides
+  parse_result, environment, taint_configuration, skip_overrides
 
 
 let assert_model
@@ -126,7 +125,7 @@ let assert_model
     ~expect
     ()
   =
-  let { ModelParser.models; _ }, environment, skip_overrides =
+  let { ModelParser.models; _ }, type_environment, taint_configuration, skip_overrides =
     set_up_environment ?source ?rules ?filtered_sources ?filtered_sinks ~context ~model_source ()
   in
   begin
@@ -138,7 +137,9 @@ let assert_model
   end;
   let get_model = Registry.get models in
   let get_errors _ = [] in
-  List.iter ~f:(check_expectation ~environment ~get_model ~get_errors) expect
+  List.iter
+    ~f:(check_expectation ~type_environment ~taint_configuration ~get_model ~get_errors)
+    expect
 
 
 let assert_invalid_model ?path ?source ?(sources = []) ~context ~model_source ~expect () =
@@ -174,8 +175,8 @@ let assert_invalid_model ?path ?source ?(sources = []) ~context ~model_source ~e
   in
   let sources = ("test.py", source) :: sources in
   let resolution = ScratchProject.setup ~context sources |> ScratchProject.build_resolution in
-  let configuration =
-    TaintConfiguration.
+  let taint_configuration =
+    TaintConfiguration.Heap.
       {
         empty with
         sources = List.map ~f:(fun name -> { AnnotationParser.name; kind = Named }) ["A"; "B"];
@@ -189,7 +190,7 @@ let assert_invalid_model ?path ?source ?(sources = []) ~context ~model_source ~e
     let path = path >>| PyrePath.create_absolute in
     ModelParser.parse
       ~resolution
-      ~configuration
+      ~taint_configuration
       ~source_sink_filter:None
       ?path
       ~source:(Test.trim_extra_indentation model_source)
@@ -211,7 +212,7 @@ let assert_invalid_model ?path ?source ?(sources = []) ~context ~model_source ~e
 
 
 let assert_queries ?source ?rules ~context ~model_source ~expect () =
-  let { ModelParser.queries; _ }, _, _ =
+  let { ModelParser.queries; _ }, _, _, _ =
     set_up_environment ?source ?rules ~context ~model_source ()
   in
   assert_equal
@@ -1952,6 +1953,25 @@ let test_attach_features context =
 let test_partial_sinks context =
   let assert_model = assert_model ~context in
   assert_model
+    ~rules:
+      [
+        {
+          Rule.sources = [Sources.NamedSource "TestTest"];
+          sinks = [Sinks.TriggeredPartialSink { kind = "Test"; label = "a" }];
+          transforms = [];
+          code = 4321;
+          message_format = "";
+          name = "test multiple sources rule";
+        };
+        {
+          Rule.sources = [Sources.NamedSource "TestTest"];
+          sinks = [Sinks.TriggeredPartialSink { kind = "Test"; label = "b" }];
+          transforms = [];
+          code = 4321;
+          message_format = "";
+          name = "test multiple sources rule";
+        };
+      ]
     ~model_source:"def test.partial_sink(x: PartialSink[Test[a]], y: PartialSink[Test[b]]): ..."
     ~expect:
       [
@@ -3730,6 +3750,76 @@ Unexpected statement: `food(y)`
       test.C.x: TaintSink[X, ViaTypeOf] = ...
     |}
     ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "globals",
+        where = name.matches("foo"),
+        model = Returns(TaintSource[Test])
+      )
+    |}
+    ~expect:"`Returns` is not a valid model for model queries with find clause of kind `globals`."
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "globals",
+        where = name.matches("foo"),
+        model = AttributeModel(TaintSource[X])
+      )
+    |}
+    ~expect:
+      "`AttributeModel` is not a valid model for model queries with find clause of kind `globals`."
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "globals",
+        where = type_annotation.is_annotated_type(),
+        model = GlobalModel(TaintSource[X])
+      )
+    |}
+    ~expect:
+      "`type_annotation.is_annotated_type` is not a valid constraint for model queries with find \
+       clause of kind `globals`."
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "globals",
+        where = cls.any_child(Decorator(name.matches("d"))),
+        model = GlobalModel(TaintSource[X])
+      )
+    |}
+    ~expect:
+      "`cls.any_child` is not a valid constraint for model queries with find clause of kind \
+       `globals`."
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "globals",
+        where = [AnyOf(
+          name.matches("foo"),
+          any_parameter.annotation.is_annotated_type(),
+        )],
+        model = GlobalModel(TaintSource[X])
+      )
+    |}
+    ~expect:
+      "`any_parameter.annotation.is_annotated_type` is not a valid constraint for model queries \
+       with find clause of kind `globals`."
+    ();
   ()
 
 
@@ -3751,7 +3841,7 @@ let test_filter_by_rules context =
     ~rules:
       [
         {
-          Taint.TaintConfiguration.Rule.sources = [Sources.NamedSource "TestTest"];
+          Rule.sources = [Sources.NamedSource "TestTest"];
           sinks = [Sinks.NamedSink "TestSink"];
           transforms = [];
           code = 5021;
@@ -3766,7 +3856,7 @@ let test_filter_by_rules context =
     ~rules:
       [
         {
-          Taint.TaintConfiguration.Rule.sources = [Sources.NamedSource "Test"];
+          Rule.sources = [Sources.NamedSource "Test"];
           sinks = [Sinks.NamedSink "TestSink"];
           transforms = [];
           code = 5021;
@@ -3781,7 +3871,7 @@ let test_filter_by_rules context =
     ~rules:
       [
         {
-          Taint.TaintConfiguration.Rule.sources = [Sources.NamedSource "TestTest"];
+          Rule.sources = [Sources.NamedSource "TestTest"];
           sinks = [Sinks.NamedSink "TestSink"];
           transforms = [];
           code = 5021;
@@ -3802,7 +3892,7 @@ let test_filter_by_rules context =
     ~rules:
       [
         {
-          Taint.TaintConfiguration.Rule.sources = [Sources.NamedSource "TestTest"];
+          Rule.sources = [Sources.NamedSource "TestTest"];
           sinks = [Sinks.NamedSink "Test"];
           transforms = [];
           code = 5021;
@@ -3817,7 +3907,7 @@ let test_filter_by_rules context =
     ~rules:
       [
         {
-          Taint.TaintConfiguration.Rule.sources = [Sources.NamedSource "TestTest"];
+          Rule.sources = [Sources.NamedSource "TestTest"];
           sinks = [Sinks.TriggeredPartialSink { kind = "Test"; label = "a" }];
           transforms = [];
           code = 4321;
@@ -3825,7 +3915,7 @@ let test_filter_by_rules context =
           name = "test multiple sources rule";
         };
         {
-          Taint.TaintConfiguration.Rule.sources = [Sources.NamedSource "TestTest"];
+          Rule.sources = [Sources.NamedSource "TestTest"];
           sinks = [Sinks.TriggeredPartialSink { kind = "Test"; label = "b" }];
           transforms = [];
           code = 4321;
@@ -3850,7 +3940,7 @@ let test_filter_by_rules context =
     ~rules:
       [
         {
-          Taint.TaintConfiguration.Rule.sources = [Sources.NamedSource "WithSubkind"];
+          Rule.sources = [Sources.NamedSource "WithSubkind"];
           sinks = [Sinks.NamedSink "Test"];
           transforms = [];
           code = 5022;
@@ -3871,7 +3961,7 @@ let test_filter_by_rules context =
     ~rules:
       [
         {
-          Taint.TaintConfiguration.Rule.sources = [Sources.NamedSource "TestTest"];
+          Rule.sources = [Sources.NamedSource "TestTest"];
           sinks = [Sinks.NamedSink "TestSinkWithSubkind"];
           transforms = [];
           code = 5023;
@@ -5202,7 +5292,7 @@ let test_query_parsing context =
 
   (* Expected models *)
   let create_expected_model ?source ?rules ~model_source function_name =
-    let { Taint.ModelParser.models; _ }, _, _ =
+    let { Taint.ModelParser.models; _ }, _, _, _ =
       set_up_environment ?source ?rules ~context ~model_source ()
     in
     let model = Option.value_exn (Registry.get models (List.hd_exn (Registry.targets models))) in
@@ -5580,6 +5670,86 @@ let test_query_parsing context =
                            });
                     ];
                 };
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "foo_finders",
+     find = "globals",
+     where = name.matches("foo"),
+     model = [GlobalModel([TaintSource[Test]])]
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "foo_finders";
+          query = [NameConstraint (Matches (Re2.create_exn "foo"))];
+          rule_kind = GlobalModel;
+          productions =
+            [
+              GlobalTaint
+                [
+                  TaintAnnotation
+                    (ModelParser.Source
+                       {
+                         source = Sources.NamedSource "Test";
+                         breadcrumbs = [];
+                         via_features = [];
+                         path = [];
+                         leaf_names = [];
+                         leaf_name_provided = false;
+                         trace_length = None;
+                       });
+                ];
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "foo_finders",
+     find = "globals",
+     where = name.matches("foo"),
+     model = [GlobalModel([TaintSource[Test]])]
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "foo_finders";
+          query = [NameConstraint (Matches (Re2.create_exn "foo"))];
+          rule_kind = GlobalModel;
+          productions =
+            [
+              GlobalTaint
+                [
+                  TaintAnnotation
+                    (ModelParser.Source
+                       {
+                         source = Sources.NamedSource "Test";
+                         breadcrumbs = [];
+                         via_features = [];
+                         path = [];
+                         leaf_names = [];
+                         leaf_name_provided = false;
+                         trace_length = None;
+                       });
+                ];
             ];
           expected_models = [];
           unexpected_models = [];

@@ -5,6 +5,36 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* Domains: implements the taint representation as an abstract domain.
+ * This is the data structure used to represent taint during the forward and
+ * backward analysis, as well as within models.
+ *
+ * Most of the data structure uses generic abstract domains such as the map
+ * domain, the domain product and the set domain.
+ *
+ * Here is a high level representation of the taint representation for `ForwardState`:
+ * ForwardState: Map[
+ *   key: AccessPath.Root = Variable|NamedParameter|...,
+ *   value: Tree[
+ *     edges: Abstract.TreeDomain.Label.path = Index of string|Field of string|...,
+ *     nodes: ForwardTaint: Map[
+ *       key: CallInfo = Declaration|Origin of location|CallSite of {port; path; callees},
+ *       value: LocalTaint: Tuple[
+ *         BreadcrumbSet,
+ *         FirstIndexSet,
+ *         FirstFieldSet,
+ *         TitoPositionSet,
+ *         ...,
+ *         KindTaint: Map[
+ *           key: Sources.t,
+ *           value: Frame: Tuple[BreadcrumbSet, ViaFeatureSet, TraceLength, LeafNameSet, ...]
+ *         ]
+ *       ]
+ *     ]
+ *   ]
+ * ]
+ *)
+
 open Core
 open Ast
 open Interprocedural
@@ -60,6 +90,8 @@ module CallInfo = struct
         callees: Target.t list;
       }
   [@@deriving compare]
+
+  let declaration = Declaration { leaf_name_provided = false }
 
   let pp formatter = function
     | Declaration _ -> Format.fprintf formatter "Declaration"
@@ -135,20 +167,8 @@ module CallInfo = struct
     | Declaration _ -> Declaration { leaf_name_provided = false }
 end
 
-module TraceLength = Abstract.SimpleDomain.Make (struct
-  type t = int
-
+module TraceLength = Features.MakeScalarDomain (struct
   let name = "trace length"
-
-  let join = min
-
-  let meet = max
-
-  let less_or_equal ~left ~right = left >= right
-
-  let bottom = max_int
-
-  let show length = if Int.equal length max_int then "<bottom>" else string_of_int length
 end)
 
 (* This should be associated with every call site *)
@@ -298,7 +318,7 @@ module Frame = struct
     type 'a slot =
       | Breadcrumb : Features.BreadcrumbSet.t slot
       | ViaFeature : Features.ViaFeatureSet.t slot
-      | ReturnAccessPath : Features.ReturnAccessPathSet.t slot
+      | ReturnAccessPath : Features.ReturnAccessPathTree.t slot
       | TraceLength : TraceLength.t slot
       | LeafName : Features.LeafNameSet.t slot
       | FirstIndex : Features.FirstIndexSet.t slot
@@ -323,7 +343,7 @@ module Frame = struct
       | Breadcrumb -> (module Features.BreadcrumbSet : Abstract.Domain.S with type t = a)
       | ViaFeature -> (module Features.ViaFeatureSet : Abstract.Domain.S with type t = a)
       | ReturnAccessPath ->
-          (module Features.ReturnAccessPathSet : Abstract.Domain.S with type t = a)
+          (module Features.ReturnAccessPathTree : Abstract.Domain.S with type t = a)
       | TraceLength -> (module TraceLength : Abstract.Domain.S with type t = a)
       | LeafName -> (module Features.LeafNameSet : Abstract.Domain.S with type t = a)
       | FirstIndex -> (module Features.FirstIndexSet : Abstract.Domain.S with type t = a)
@@ -407,9 +427,20 @@ module type TAINT_DOMAIN = sig
 
   val sanitize_taint_kinds : kind_set -> t -> t
 
-  val apply_sanitize_transforms : SanitizeTransformSet.t -> t -> t
+  val apply_sanitize_transforms
+    :  taint_configuration:TaintConfiguration.Heap.t ->
+    SanitizeTransformSet.t ->
+    TaintTransformOperation.InsertLocation.t ->
+    t ->
+    t
 
-  val apply_transforms : TaintTransforms.t -> TaintTransforms.Order.t -> t -> t
+  val apply_transforms
+    :  taint_configuration:TaintConfiguration.Heap.t ->
+    TaintTransforms.t ->
+    TaintTransformOperation.InsertLocation.t ->
+    TaintTransforms.Order.t ->
+    t ->
+    t
 
   (* Add trace info at call-site *)
   val apply_call
@@ -427,7 +458,7 @@ module type TAINT_DOMAIN = sig
 
   (* Return the taint with only essential elements. *)
   val essential
-    :  return_access_paths:(Features.ReturnAccessPathSet.t -> Features.ReturnAccessPathSet.t) ->
+    :  return_access_paths:(Features.ReturnAccessPathTree.t -> Features.ReturnAccessPathTree.t) ->
     t ->
     t
 
@@ -462,9 +493,20 @@ module type KIND_ARG = sig
 
   val discard_sanitize_transforms : t -> t
 
-  val apply_sanitize_transforms : SanitizeTransformSet.t -> t -> t option
+  val apply_sanitize_transforms
+    :  taint_configuration:TaintConfiguration.Heap.t ->
+    SanitizeTransformSet.t ->
+    TaintTransformOperation.InsertLocation.t ->
+    t ->
+    t option
 
-  val apply_transforms : TaintTransforms.t -> TaintTransforms.Order.t -> t -> t option
+  val apply_transforms
+    :  taint_configuration:TaintConfiguration.Heap.t ->
+    TaintTransforms.t ->
+    TaintTransformOperation.InsertLocation.t ->
+    TaintTransforms.Order.t ->
+    t ->
+    t option
 
   module Set : sig
     include Stdlib.Set.S with type elt = t
@@ -575,9 +617,15 @@ module MakeTaint (Kind : KIND_ARG) : sig
 
   val kinds : t -> kind list
 
-  val singleton : ?location:Location.WithModule.t -> Kind.t -> Frame.t -> t
+  val singleton : CallInfo.t -> Kind.t -> Frame.t -> t
 
-  val of_list : ?location:Location.WithModule.t -> Kind.t list -> t
+  val transform_call_info
+    :  CallInfo.t ->
+    'a Abstract.Domain.part ->
+    ([ `Transform ], 'a, 'f, 'b) Abstract.Domain.operation ->
+    f:'f ->
+    t ->
+    t
 end = struct
   type kind = Kind.t [@@deriving compare, eq]
 
@@ -592,22 +640,9 @@ end = struct
   module Map = Abstract.MapDomain.Make (CallInfoKey) (LocalTaintDomain)
   include Map
 
-  let add ?location map kind frame =
-    let call_info =
-      match location with
-      | None -> CallInfo.Declaration { leaf_name_provided = false }
-      | Some location -> CallInfo.Origin location
-    in
+  let singleton call_info kind frame =
     let local_taint = LocalTaintDomain.singleton kind frame in
-    Map.update map call_info ~f:(function
-        | None -> local_taint
-        | Some existing -> LocalTaintDomain.join local_taint existing)
-
-
-  let singleton ?location kind frame = add ?location Map.bottom kind frame
-
-  let of_list ?location kinds =
-    List.fold kinds ~init:Map.bottom ~f:(fun taint kind -> add ?location taint kind Frame.initial)
+    Map.set Map.bottom ~key:call_info ~data:local_taint
 
 
   let kind = KindTaintDomain.Key
@@ -688,11 +723,13 @@ end = struct
         let json = cons_if_non_empty "leaves" leaves json in
 
         let return_paths =
-          Frame.get Frame.Slots.ReturnAccessPath frame
-          |> ReturnAccessPathSet.elements
-          |> List.map ~f:ReturnAccessPath.to_json
+          Frame.get Frame.Slots.ReturnAccessPath frame |> ReturnAccessPathTree.to_json
         in
-        let json = cons_if_non_empty "return_paths" return_paths json in
+        let json =
+          match return_paths with
+          | [] -> json
+          | _ -> ("return_paths", `Assoc return_paths) :: json
+        in
 
         let via_features =
           Frame.get Frame.Slots.ViaFeature frame
@@ -887,21 +924,34 @@ end = struct
         taint
 
 
-  let apply_sanitize_transforms ({ SanitizeTransformSet.sources; sinks } as transforms) taint =
+  let apply_sanitize_transforms
+      ~taint_configuration
+      ({ SanitizeTransformSet.sources; sinks } as transforms)
+      insert_location
+      taint
+    =
     if SanitizeTransformSet.is_empty transforms then
       taint
     else if SanitizeTransform.SourceSet.is_all sources || SanitizeTransform.SinkSet.is_all sinks
     then
       bottom
     else
-      transform KindTaintDomain.Key FilterMap ~f:(Kind.apply_sanitize_transforms transforms) taint
+      transform
+        KindTaintDomain.Key
+        FilterMap
+        ~f:(Kind.apply_sanitize_transforms ~taint_configuration transforms insert_location)
+        taint
 
 
-  let apply_transforms transforms order taint =
+  let apply_transforms ~taint_configuration transforms insert_location order taint =
     if TaintTransforms.is_empty transforms then
       taint
     else
-      transform KindTaintDomain.Key FilterMap ~f:(Kind.apply_transforms transforms order) taint
+      transform
+        KindTaintDomain.Key
+        FilterMap
+        ~f:(Kind.apply_transforms ~taint_configuration transforms insert_location order)
+        taint
 
 
   let apply_call
@@ -1095,22 +1145,53 @@ end = struct
         |> Frame.update Frame.Slots.FirstIndex Features.FirstIndexSet.bottom
         |> Frame.update Frame.Slots.FirstField Features.FirstFieldSet.bottom
         |> Frame.update Frame.Slots.LeafName Features.LeafNameSet.bottom
-        |> Frame.transform Features.ReturnAccessPathSet.Self Map ~f:return_access_paths
+        |> Frame.transform Features.ReturnAccessPathTree.Self Map ~f:return_access_paths
       in
       let local_taint = LocalTaintDomain.transform Frame.Self Map ~f:apply_frame local_taint in
       call_info, local_taint
     in
     Map.transform Map.KeyValue Map ~f:apply taint
+
+
+  (* Apply a transform operation for all parts under the given call info. *)
+  let transform_call_info
+      : type a b f.
+        CallInfo.t ->
+        a Abstract.Domain.part ->
+        ([ `Transform ], a, f, b) Abstract.Domain.operation ->
+        f:f ->
+        t ->
+        t
+    =
+   fun call_info part op ~f taint ->
+    Map.update taint call_info ~f:(function
+        | None -> LocalTaintDomain.bottom
+        | Some local_taint -> LocalTaintDomain.transform part op ~f local_taint)
 end
 
-module ForwardTaint = MakeTaint (Sources)
-module BackwardTaint = MakeTaint (Sinks)
+module ForwardTaint = MakeTaint (struct
+  include Sources
+  include TaintTransformOperation.Source
+end)
+
+module BackwardTaint = MakeTaint (struct
+  include Sinks
+  include TaintTransformOperation.Sink
+end)
 
 module MakeTaintTree (Taint : TAINT_DOMAIN) () = struct
   include
     Abstract.TreeDomain.Make
       (struct
-        let max_tree_depth_after_widening () = TaintConfiguration.maximum_tree_depth_after_widening
+        let max_tree_depth_after_widening =
+          let cache_first_call =
+            lazy
+              (TaintConfiguration.SharedMemory.get_global ()
+              |> Option.value ~default:TaintConfiguration.Heap.default
+              |> TaintConfiguration.maximum_tree_depth_after_widening)
+          in
+          fun () -> Lazy.force cache_first_call
+
 
         let check_invariants = TaintConfiguration.runtime_check_invariants ()
       end)
@@ -1153,24 +1234,12 @@ module MakeTaintTree (Taint : TAINT_DOMAIN) () = struct
 
   (* Return the taint tree with only the essential structure. *)
   let essential tree =
-    let return_access_paths _ = Features.ReturnAccessPathSet.bottom in
+    let return_access_paths _ = Features.ReturnAccessPathTree.bottom in
     transform Taint.Self Map ~f:(Taint.essential ~return_access_paths) tree
 
 
   let essential_for_constructor tree =
     transform Taint.Self Map ~f:(Taint.essential ~return_access_paths:Fn.id) tree
-
-
-  let approximate_return_access_paths ~maximum_return_access_path_length tree =
-    let cut_off paths =
-      if Features.ReturnAccessPathSet.count paths > maximum_return_access_path_length then
-        Features.ReturnAccessPathSet.elements paths
-        |> Features.ReturnAccessPath.common_prefix
-        |> Features.ReturnAccessPathSet.singleton
-      else
-        paths
-    in
-    transform Features.ReturnAccessPathSet.Self Map ~f:cut_off tree
 
 
   let prune_maximum_length maximum_length =
@@ -1193,6 +1262,23 @@ module MakeTaintTree (Taint : TAINT_DOMAIN) () = struct
       taint_tree
     else
       transform Taint.Self Map ~f:(Taint.add_local_breadcrumbs breadcrumbs) taint_tree
+
+
+  let add_local_type_breadcrumbs ~resolution ~expression taint =
+    let open Ast in
+    match expression.Node.value with
+    | Expression.Expression.Name (Expression.Name.Identifier _) ->
+        (* Add scalar breadcrumbs only for variables, for performance reasons *)
+        let type_breadcrumbs =
+          let type_ =
+            Interprocedural.CallResolution.resolve_ignoring_untracked ~resolution expression
+          in
+          Features.type_breadcrumbs_from_annotation
+            ~resolution:(Analysis.Resolution.global_resolution resolution)
+            (Some type_)
+        in
+        add_local_breadcrumbs type_breadcrumbs taint
+    | _ -> taint
 
 
   let add_local_first_index index = transform Taint.Self Map ~f:(Taint.add_local_first_index index)
@@ -1229,21 +1315,34 @@ module MakeTaintTree (Taint : TAINT_DOMAIN) () = struct
       transform Taint.Self Map ~f:(Taint.sanitize_taint_kinds sanitized_kinds) taint
 
 
-  let apply_sanitize_transforms ({ SanitizeTransformSet.sources; sinks } as transforms) taint =
+  let apply_sanitize_transforms
+      ~taint_configuration
+      ({ SanitizeTransformSet.sources; sinks } as transforms)
+      insert_location
+      taint
+    =
     if SanitizeTransformSet.is_empty transforms then
       taint
     else if SanitizeTransform.SourceSet.is_all sources || SanitizeTransform.SinkSet.is_all sinks
     then
       bottom
     else
-      transform Taint.Self Map ~f:(Taint.apply_sanitize_transforms transforms) taint
+      transform
+        Taint.Self
+        Map
+        ~f:(Taint.apply_sanitize_transforms ~taint_configuration transforms insert_location)
+        taint
 
 
-  let apply_transforms transforms order taint =
+  let apply_transforms ~taint_configuration transforms order insert_location taint =
     if TaintTransforms.is_empty transforms then
       taint
     else
-      transform Taint.Self Map ~f:(Taint.apply_transforms transforms order) taint
+      transform
+        Taint.Self
+        Map
+        ~f:(Taint.apply_transforms ~taint_configuration transforms order insert_location)
+        taint
 end
 
 module MakeTaintEnvironment (Taint : TAINT_DOMAIN) () = struct
@@ -1361,8 +1460,10 @@ module MakeTaintEnvironment (Taint : TAINT_DOMAIN) () = struct
       ?(sanitize_sink = false)
       ?(sanitize_tito = false)
       ?(ignore_if_sanitize_all = false)
+      ?(insert_location = TaintTransformOperation.InsertLocation.Front)
       ?parameter
       ~sanitizer:{ Sanitize.sources; sinks; tito }
+      ~taint_configuration
       taint
     =
     let apply ~sanitizers taint =
@@ -1376,10 +1477,20 @@ module MakeTaintEnvironment (Taint : TAINT_DOMAIN) () = struct
         | Some parameter ->
             let apply_taint_transforms = function
               | None -> Tree.bottom
-              | Some taint_tree -> Tree.apply_sanitize_transforms sanitizers taint_tree
+              | Some taint_tree ->
+                  Tree.apply_sanitize_transforms
+                    ~taint_configuration
+                    sanitizers
+                    insert_location
+                    taint_tree
             in
             update taint parameter ~f:apply_taint_transforms
-        | None -> transform Taint.Self Map ~f:(Taint.apply_sanitize_transforms sanitizers) taint
+        | None ->
+            transform
+              Taint.Self
+              Map
+              ~f:(Taint.apply_sanitize_transforms ~taint_configuration sanitizers insert_location)
+              taint
     in
     let source_sanitizers =
       if sanitize_source then
@@ -1413,10 +1524,13 @@ let local_return_frame =
   Frame.create
     [
       Part (TraceLength.Self, 0);
-      Part (Features.ReturnAccessPathSet.Element, []);
+      Part (Features.ReturnAccessPathTree.Path, ([], 0));
       Part (Features.BreadcrumbSet.Self, Features.BreadcrumbSet.empty);
     ]
 
 
+let local_return_call_info = CallInfo.Declaration { leaf_name_provided = false }
+
 (* Special sink as it needs the return access path *)
-let local_return_taint = BackwardTaint.singleton Sinks.LocalReturn local_return_frame
+let local_return_taint =
+  BackwardTaint.singleton local_return_call_info Sinks.LocalReturn local_return_frame

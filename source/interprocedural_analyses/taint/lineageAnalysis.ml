@@ -5,6 +5,11 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* LineageAnalysis: This implements small variants of the forward and backward
+ * analysis specifically for the lineage analysis. This is mostly unused right
+ * now.
+ *)
+
 open Core
 open Analysis
 open Ast

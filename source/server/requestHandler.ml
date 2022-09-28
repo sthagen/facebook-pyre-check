@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* TODO(T132410158) Add a module-level doc comment. *)
+
 open Core
 open Pyre
 open Ast
@@ -153,7 +155,8 @@ let process_incremental_update_request
         Scheduler.with_scheduler ~configuration ~f:(fun scheduler ->
             OverlaidEnvironment.run_update_root overlaid_environment ~scheduler changed_paths)
       in
-      Subscription.batch_send ~response:create_type_errors_response subscriptions
+      List.filter subscriptions ~f:Subscription.wants_type_errors
+      |> Subscription.batch_send ~response:create_type_errors_response
       >>= fun () -> Lwt.return state
 
 

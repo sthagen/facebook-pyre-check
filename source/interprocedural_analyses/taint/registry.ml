@@ -5,4 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* Registry: represents a mapping from targets to their model. *)
+
 include Fixpoint.Registry

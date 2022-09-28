@@ -3,6 +3,11 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+"""
+TODO(T132414938) Add a module-level docstring
+"""
+
+
 import abc
 import dataclasses
 import json
@@ -343,7 +348,7 @@ class RequestHandler(AbstractRequestHandler):
         overlay_update_dict = {
             # TODO: T126924773 Include a language server identifier (e.g. PID of
             # the current process) in this overlay id.
-            "overlay_id": path,
+            "overlay_id": source_path,
             "source_path": source_path,
             "code_update": ["NewCode", code],
         }

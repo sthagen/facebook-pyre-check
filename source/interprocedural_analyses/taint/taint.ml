@@ -5,9 +5,13 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* Taint: here we expose modules for the `pyrelib.taint` library *)
+
 module AccessPath = AccessPath
 module BackwardAnalysis = BackwardAnalysis
 module CallGraphBuilder = CallGraphBuilder
+module Rule = Rule
+module SourceSinkFilter = SourceSinkFilter
 module TaintConfiguration = TaintConfiguration
 module PartialSinkConverter = PartialSinkConverter
 module Domains = Domains

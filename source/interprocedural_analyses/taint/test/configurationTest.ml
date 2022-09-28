@@ -24,12 +24,22 @@ let parse ?rule_filter ?source_filter ?sink_filter ?transform_filter configurati
           ~transform_filter
           ~find_missing_flows:None
           ~dump_model_query_results_path:None
+          ~maximum_model_source_tree_width:None
+          ~maximum_model_sink_tree_width:None
+          ~maximum_model_tito_tree_width:None
+          ~maximum_tree_depth_after_widening:None
+          ~maximum_return_access_path_width:None
+          ~maximum_return_access_path_depth_after_widening:None
+          ~maximum_tito_positions:None
+          ~maximum_overrides_to_analyze:None
           ~maximum_trace_length:None
           ~maximum_tito_depth:None
     >>= TaintConfiguration.validate
   in
   (* Test that the configuration can be written in shared memory. *)
-  let (_ : (unit, Error.t list) Result.t) = configuration >>| TaintConfiguration.register in
+  let (_ : (TaintConfiguration.SharedMemory.t, Error.t list) Result.t) =
+    configuration >>| TaintConfiguration.SharedMemory.from_heap
+  in
   configuration
 
 
@@ -96,8 +106,7 @@ let test_simple _ =
     (Some 50);
   assert_equal
     (Sources.Map.of_alist_exn [Sources.NamedSource "A", Sinks.Set.of_list [Sinks.NamedSink "D"]])
-    (TaintConfiguration.SourceSinkFilter.matching_sinks
-       (Option.value_exn configuration.source_sink_filter))
+    (SourceSinkFilter.matching_sinks configuration.source_sink_filter)
 
 
 let test_transform _ =
@@ -149,14 +158,14 @@ let test_transform _ =
 
 
 let test_transform_splits _ =
-  assert_equal [[], []] (TaintConfiguration.transform_splits []);
-  assert_equal [["T1"], []; [], ["T1"]] (TaintConfiguration.transform_splits ["T1"]);
+  assert_equal [[], []] (Rule.transform_splits []);
+  assert_equal [["T1"], []; [], ["T1"]] (Rule.transform_splits ["T1"]);
   assert_equal
     [["T2"; "T1"], []; ["T1"], ["T2"]; [], ["T1"; "T2"]]
-    (TaintConfiguration.transform_splits ["T1"; "T2"]);
+    (Rule.transform_splits ["T1"; "T2"]);
   assert_equal
     [["T3"; "T2"; "T1"], []; ["T2"; "T1"], ["T3"]; ["T1"], ["T2"; "T3"]; [], ["T1"; "T2"; "T3"]]
-    (TaintConfiguration.transform_splits ["T1"; "T2"; "T3"]);
+    (Rule.transform_splits ["T1"; "T2"; "T3"]);
   ()
 
 
@@ -282,12 +291,12 @@ let test_combined_source_rules _ =
   assert_equal configuration.sources [named "A"; named "B"];
   assert_equal configuration.sinks [];
   assert_equal
-    ~printer:(List.to_string ~f:Taint.TaintConfiguration.Rule.show)
-    ~cmp:(List.equal [%compare.equal: Taint.TaintConfiguration.Rule.t])
+    ~printer:(List.to_string ~f:Rule.show)
+    ~cmp:(List.equal [%compare.equal: Rule.t])
     configuration.rules
     [
       {
-        Taint.TaintConfiguration.Rule.sources = [Sources.NamedSource "A"];
+        Rule.sources = [Sources.NamedSource "A"];
         sinks = [Sinks.TriggeredPartialSink { kind = "C"; label = "a" }];
         transforms = [];
         code = 2001;
@@ -295,7 +304,7 @@ let test_combined_source_rules _ =
         name = "test combined rule";
       };
       {
-        Taint.TaintConfiguration.Rule.sources = [Sources.NamedSource "B"];
+        Rule.sources = [Sources.NamedSource "B"];
         sinks = [Sinks.TriggeredPartialSink { kind = "C"; label = "b" }];
         transforms = [];
         code = 2001;
@@ -332,12 +341,12 @@ let test_combined_source_rules _ =
     (String.Map.Tree.to_alist configuration.partial_sink_labels)
     ["CombinedSink", ["a"; "b"]];
   assert_equal
-    ~printer:(List.to_string ~f:Taint.TaintConfiguration.Rule.show)
-    ~cmp:(List.equal [%compare.equal: Taint.TaintConfiguration.Rule.t])
+    ~printer:(List.to_string ~f:Rule.show)
+    ~cmp:(List.equal [%compare.equal: Rule.t])
     configuration.rules
     [
       {
-        Taint.TaintConfiguration.Rule.sources = [Sources.NamedSource "A"];
+        Rule.sources = [Sources.NamedSource "A"];
         sinks = [Sinks.TriggeredPartialSink { kind = "CombinedSink"; label = "a" }];
         transforms = [];
         code = 2001;
@@ -345,7 +354,7 @@ let test_combined_source_rules _ =
         name = "test combined rule";
       };
       {
-        Taint.TaintConfiguration.Rule.sources = [Sources.NamedSource "B"; Sources.NamedSource "C"];
+        Rule.sources = [Sources.NamedSource "B"; Sources.NamedSource "C"];
         sinks = [Sinks.TriggeredPartialSink { kind = "CombinedSink"; label = "b" }];
         transforms = [];
         code = 2001;
@@ -407,8 +416,8 @@ let test_lineage_analysis _ =
 
 let test_partial_sink_converter _ =
   let assert_triggered_sinks configuration ~partial_sink ~source ~expected_sink =
-    assert_parse configuration |> Taint.TaintConfiguration.register;
-    Taint.TaintConfiguration.get_triggered_sink ~partial_sink ~source
+    let configuration = assert_parse configuration in
+    Taint.TaintConfiguration.get_triggered_sink configuration ~partial_sink ~source
     |> assert_equal
          ~cmp:(Option.equal Sinks.equal)
          ~printer:(fun value -> value >>| Sinks.show |> Option.value ~default:"None")
@@ -966,12 +975,12 @@ let test_matching_kinds _ =
       |> String.concat ~sep:", "
       |> Format.asprintf "{%s}"
     in
-    let source_sink_filter = Option.value_exn configuration.source_sink_filter in
+    let source_sink_filter = configuration.source_sink_filter in
     assert_equal
       ~printer:matching_sources_printer
       ~cmp:(Sources.Map.equal Sinks.Set.equal)
       (Sources.Map.of_alist_exn matching_sinks)
-      (TaintConfiguration.SourceSinkFilter.matching_sinks source_sink_filter);
+      (SourceSinkFilter.matching_sinks source_sink_filter);
     let matching_sinks_printer matching =
       matching
       |> Sinks.Map.to_alist
@@ -984,7 +993,7 @@ let test_matching_kinds _ =
       ~printer:matching_sinks_printer
       ~cmp:(Sinks.Map.equal Sources.Set.equal)
       (Sinks.Map.of_alist_exn matching_sources)
-      (TaintConfiguration.SourceSinkFilter.matching_sources source_sink_filter);
+      (SourceSinkFilter.matching_sources source_sink_filter);
     let possible_tito_transforms_printer possible =
       possible
       |> TaintTransforms.Set.elements
@@ -996,7 +1005,7 @@ let test_matching_kinds _ =
       ~printer:possible_tito_transforms_printer
       ~cmp:TaintTransforms.Set.equal
       (TaintTransforms.Set.of_list possible_tito_transforms)
-      (TaintConfiguration.SourceSinkFilter.possible_tito_transforms source_sink_filter)
+      (SourceSinkFilter.possible_tito_transforms source_sink_filter)
   in
   assert_matching
     ~configuration:

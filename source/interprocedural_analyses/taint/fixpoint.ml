@@ -5,12 +5,23 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* Fixpoint: implements the global taint analysis fixpoint.
+ *
+ * Given a set of initial user models, this performs iterations to propagate
+ * sources and sinks, until reaching a fixpoint (i.e, nothing else can be
+ * propagated).
+ *
+ * Each iteration performs a forward and backward analysis on the set of
+ * callables that might have new sources or sinks.
+ *)
+
 open Core
 open Pyre
 module TypeEnvironment = Analysis.TypeEnvironment
 
 module Context = struct
   type t = {
+    taint_configuration: TaintConfiguration.SharedMemory.t;
     type_environment: TypeEnvironment.ReadOnly.t;
     class_interval_graph: Interprocedural.ClassIntervalSetGraph.SharedMemory.t;
     define_call_graphs: Interprocedural.CallGraph.DefineCallGraphSharedMemory.t;
@@ -82,6 +93,7 @@ module Analysis = struct
   end
 
   let analyze_define_with_sanitizers_and_modes
+      ~taint_configuration
       ~type_environment
       ~class_interval_graph
       ~define_call_graphs
@@ -93,18 +105,12 @@ module Analysis = struct
       ~previous_model
       ~get_callee_model
     =
+    let taint_configuration = TaintConfiguration.SharedMemory.get taint_configuration in
     let profiler =
       if Ast.Statement.Define.dump_perf (Ast.Node.value define) then
         TaintProfiler.create ()
       else
         TaintProfiler.none
-    in
-    let define =
-      (* Apply decorators to make sure we match parameters up correctly. *)
-      let resolution = TypeEnvironment.ReadOnly.global_resolution type_environment in
-      Analysis.Annotated.Define.create define
-      |> Analysis.Annotated.Define.decorate ~resolution
-      |> Analysis.Annotated.Define.define
     in
     let call_graph_of_define =
       match
@@ -123,6 +129,7 @@ module Analysis = struct
       TaintProfiler.track_duration ~profiler ~name:"Forward analysis" ~f:(fun () ->
           ForwardAnalysis.run
             ~profiler
+            ~taint_configuration
             ~environment:type_environment
             ~class_interval_graph
             ~qualifier
@@ -138,6 +145,7 @@ module Analysis = struct
       TaintProfiler.track_duration ~profiler ~name:"Backward analysis" ~f:(fun () ->
           BackwardAnalysis.run
             ~profiler
+            ~taint_configuration
             ~environment:type_environment
             ~class_interval_graph
             ~qualifier
@@ -159,14 +167,15 @@ module Analysis = struct
     let model = { Model.forward; backward; sanitizers; modes } in
     let model =
       TaintProfiler.track_duration ~profiler ~name:"Sanitize" ~f:(fun () ->
-          Model.apply_sanitizers model)
+          Model.apply_sanitizers ~taint_configuration model)
     in
     TaintProfiler.dump profiler;
     result, model
 
 
   let analyze_define
-      ~context:{ Context.type_environment; class_interval_graph; define_call_graphs }
+      ~context:
+        { Context.taint_configuration; type_environment; class_interval_graph; define_call_graphs }
       ~qualifier
       ~callable
       ~define:
@@ -199,6 +208,7 @@ module Analysis = struct
       [], previous_model
     else
       analyze_define_with_sanitizers_and_modes
+        ~taint_configuration
         ~type_environment
         ~class_interval_graph
         ~define_call_graphs

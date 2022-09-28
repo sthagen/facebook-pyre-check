@@ -5,6 +5,11 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* CallModel: implements utility functions used to perform the forward or backward
+ * taint analysis of a function or method call, which requires fetching the
+ * model of the callee.
+ *)
+
 open Core
 open Pyre
 open Ast
@@ -84,6 +89,8 @@ let tito_sanitize_of_argument ~model:{ Model.sanitizers; _ } ~sanitize_matches =
   |> SanitizeTransformSet.join (to_tito_sanitize sanitizers.parameters)
 
 
+(* A mapping from a taint-in-taint-out kind (e.g, `Sinks.LocalReturn`, `Sinks.ParameterUpdate` or
+   `Sinks.AddFeatureToArgument`) to a tito taint (including features, return paths, depth). *)
 module TaintInTaintOutMap = struct
   type t = (Sinks.t, BackwardState.Tree.t) Map.Poly.t
 
@@ -111,6 +118,7 @@ end
 
 let taint_in_taint_out_mapping
     ~transform_non_leaves
+    ~taint_configuration
     ~ignore_local_return
     ~model:({ Model.backward; modes; _ } as model)
     ~tito_matches
@@ -153,29 +161,23 @@ let taint_in_taint_out_mapping
         let return_tito =
           Domains.local_return_frame
           |> Frame.update Frame.Slots.Breadcrumb obscure_breadcrumbs
-          |> BackwardTaint.singleton Sinks.LocalReturn
+          |> BackwardTaint.singleton CallInfo.declaration Sinks.LocalReturn
           |> BackwardState.Tree.create_leaf
         in
         TaintInTaintOutMap.set mapping ~kind:Sinks.LocalReturn ~tito_tree:return_tito
       else
         let tito_kind =
-          Sinks.Transform
-            {
-              local =
-                TaintTransforms.of_sanitize_transforms
-                  ~preserve_sanitize_sources:true
-                  ~preserve_sanitize_sinks:true
-                  ~base:None
-                  obscure_sanitize
-                |> Option.value ~default:TaintTransforms.empty;
-              global = TaintTransforms.empty;
-              base = Sinks.LocalReturn;
-            }
+          Option.value_exn
+            (TaintTransformOperation.Sink.apply_sanitize_transforms
+               ~taint_configuration
+               obscure_sanitize
+               TaintTransformOperation.InsertLocation.Front
+               Sinks.LocalReturn)
         in
         let return_tito =
           Domains.local_return_frame
           |> Frame.update Frame.Slots.Breadcrumb obscure_breadcrumbs
-          |> BackwardTaint.singleton tito_kind
+          |> BackwardTaint.singleton local_return_call_info tito_kind
           |> BackwardState.Tree.create_leaf
         in
         TaintInTaintOutMap.set mapping ~kind:tito_kind ~tito_tree:return_tito
@@ -188,7 +190,18 @@ let taint_in_taint_out_mapping
 let return_paths ~kind ~tito_taint =
   match Sinks.discard_transforms kind with
   | Sinks.LocalReturn ->
-      BackwardTaint.fold Features.ReturnAccessPathSet.Element tito_taint ~f:List.cons ~init:[]
+      let paths =
+        BackwardTaint.fold
+          Features.ReturnAccessPathTree.Path
+          tito_taint
+          ~f:(fun (path, _collapse_depth) sofar -> path :: sofar)
+          ~init:[]
+      in
+      let () =
+        if List.is_empty paths then
+          failwith "unexpected empty return path set"
+      in
+      paths
   | _ ->
       (* No special handling of paths for side effects *)
       [[]]
@@ -224,3 +237,11 @@ let sink_trees_of_argument
     { Issue.SinkTreeWithHandle.sink_tree; handle = Issue.SinkHandle.make_call ~call_target ~root }
   in
   List.map sink_matches ~f:to_sink_tree_with_identifier |> Issue.SinkTreeWithHandle.filter_bottom
+
+
+let type_breadcrumbs_of_calls targets =
+  List.fold targets ~init:Features.BreadcrumbSet.bottom ~f:(fun so_far call_target ->
+      match call_target.CallGraph.CallTarget.return_type with
+      | None -> so_far
+      | Some return_type ->
+          return_type |> Features.type_breadcrumbs |> Features.BreadcrumbSet.join so_far)

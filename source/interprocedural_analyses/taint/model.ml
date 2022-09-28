@@ -5,6 +5,30 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* Model: represents the model of a given callable.
+ *
+ * A model contains all the information the global fixpoint needs about a given
+ * callable, which is:
+ * - The set of sources returned by the callable;
+ * - The set of sinks reached by the parameters of the callable;
+ * - Whether a parameter propagates its taint to the return value, which we call
+ * taint-in-taint-out (tito).
+ *
+ * For instance, for the following callable `foo`:
+ * ```
+ * def foo(x, y, cond):
+ *   if cond:
+ *     x = user_controlled()
+ *   sql(str(y))
+ *   return x
+ * ```
+ *
+ * The model of `foo` would be:
+ * - sources returned: UserControlled
+ * - sinks: y -> SQL
+ * - tito: x -> LocalReturn
+ *)
+
 open Core
 open Pyre
 open Analysis
@@ -306,7 +330,7 @@ let add_obscure_sink ~resolution ~call_target model =
       | Some (_, { value = { signature = { parameters; _ }; _ }; _ }) ->
           let open Domains in
           let sink =
-            BackwardTaint.singleton (Sinks.NamedSink "Obscure") Frame.initial
+            BackwardTaint.singleton CallInfo.declaration (Sinks.NamedSink "Obscure") Frame.initial
             |> BackwardState.Tree.create_leaf
           in
           let parameters = AccessPath.Root.normalize_parameters parameters in
@@ -370,6 +394,7 @@ let strip_for_callsite
 
 
 let apply_sanitizers
+    ~taint_configuration
     {
       forward = { source_taint };
       backward = { taint_in_taint_out; sink_taint };
@@ -382,15 +407,28 @@ let apply_sanitizers
    * sanitize the forward trace or the backward trace. *)
   let source_taint =
     (* @SanitizeSingleTrace(TaintSource[...]) *)
-    ForwardState.apply_sanitizers ~sanitize_source:true ~sanitizer:global source_taint
+    ForwardState.apply_sanitizers
+      ~taint_configuration
+      ~sanitize_source:true
+      ~sanitizer:global
+      source_taint
   in
   let taint_in_taint_out =
     (* @SanitizeSingleTrace(TaintInTaintOut[...]) *)
-    BackwardState.apply_sanitizers ~sanitize_tito:true ~sanitizer:global taint_in_taint_out
+    BackwardState.apply_sanitizers
+      ~taint_configuration
+      ~sanitize_tito:true
+      ~insert_location:TaintTransformOperation.InsertLocation.Back
+      ~sanitizer:global
+      taint_in_taint_out
   in
   let sink_taint =
     (* @SanitizeSingleTrace(TaintSink[...]) *)
-    BackwardState.apply_sanitizers ~sanitize_sink:true ~sanitizer:global sink_taint
+    BackwardState.apply_sanitizers
+      ~taint_configuration
+      ~sanitize_sink:true
+      ~sanitizer:global
+      sink_taint
   in
 
   (* Apply the parameters sanitizer. *)
@@ -400,6 +438,7 @@ let apply_sanitizers
   let sink_taint =
     (* Sanitize(Parameters[TaintSource[...]]) *)
     BackwardState.apply_sanitizers
+      ~taint_configuration
       ~sanitize_source:true
       ~ignore_if_sanitize_all:true
       ~sanitizer:parameters
@@ -408,6 +447,7 @@ let apply_sanitizers
   let taint_in_taint_out =
     (* Sanitize(Parameters[TaintSource[...]]) *)
     BackwardState.apply_sanitizers
+      ~taint_configuration
       ~sanitize_source:true
       ~ignore_if_sanitize_all:true
       ~sanitizer:parameters
@@ -415,15 +455,25 @@ let apply_sanitizers
   in
   let taint_in_taint_out =
     (* Sanitize(Parameters[TaintInTaintOut[...]]) *)
-    BackwardState.apply_sanitizers ~sanitize_tito:true ~sanitizer:parameters taint_in_taint_out
+    BackwardState.apply_sanitizers
+      ~taint_configuration
+      ~sanitize_tito:true
+      ~insert_location:TaintTransformOperation.InsertLocation.Back
+      ~sanitizer:parameters
+      taint_in_taint_out
   in
   let sink_taint =
     (* Sanitize(Parameters[TaintSink[...]]) *)
-    BackwardState.apply_sanitizers ~sanitize_sink:true ~sanitizer:parameters sink_taint
+    BackwardState.apply_sanitizers
+      ~taint_configuration
+      ~sanitize_sink:true
+      ~sanitizer:parameters
+      sink_taint
   in
   let taint_in_taint_out =
     (* Sanitize(Parameters[TaintSink[...]]) *)
     BackwardState.apply_sanitizers
+      ~taint_configuration
       ~sanitize_sink:true
       ~ignore_if_sanitize_all:true
       ~sanitizer:parameters
@@ -434,11 +484,16 @@ let apply_sanitizers
   let sanitize_return sanitizer (source_taint, taint_in_taint_out, sink_taint) =
     let source_taint =
       (* def foo() -> Sanitize[TaintSource[...]] *)
-      ForwardState.apply_sanitizers ~sanitize_source:true ~sanitizer source_taint
+      ForwardState.apply_sanitizers
+        ~taint_configuration
+        ~sanitize_source:true
+        ~sanitizer
+        source_taint
     in
     let taint_in_taint_out =
       (* def foo() -> Sanitize[TaintSource[...]] *)
       BackwardState.apply_sanitizers
+        ~taint_configuration
         ~sanitize_source:true
         ~ignore_if_sanitize_all:true
         ~sanitizer
@@ -446,24 +501,26 @@ let apply_sanitizers
     in
     let taint_in_taint_out =
       (* def foo() -> Sanitize[TaintInTaintOut[...]] *)
-      BackwardState.apply_sanitizers ~sanitize_tito:true ~sanitizer taint_in_taint_out
+      BackwardState.apply_sanitizers
+        ~taint_configuration
+        ~sanitize_tito:true
+        ~insert_location:TaintTransformOperation.InsertLocation.Back
+        ~sanitizer
+        taint_in_taint_out
     in
     let source_taint =
       (* def foo() -> Sanitize[TaintSink[...]] *)
       ForwardState.apply_sanitizers
+        ~taint_configuration
         ~sanitize_sink:true
         ~ignore_if_sanitize_all:true
         ~sanitizer
         source_taint
-      |> ForwardState.transform
-           ForwardTaint.kind
-           Filter
-           ~f:(TaintConfiguration.source_can_match_rule (TaintConfiguration.get ()))
     in
-
     let taint_in_taint_out =
       (* def foo() -> Sanitize[TaintSink[...]] *)
       BackwardState.apply_sanitizers
+        ~taint_configuration
         ~sanitize_sink:true
         ~ignore_if_sanitize_all:true
         ~sanitizer
@@ -477,19 +534,17 @@ let apply_sanitizers
     let sink_taint =
       (* def foo(x: Sanitize[TaintSource[...]]): ... *)
       BackwardState.apply_sanitizers
+        ~taint_configuration
         ~sanitize_source:true
         ~ignore_if_sanitize_all:true
         ~parameter
         ~sanitizer
         sink_taint
-      |> BackwardState.transform
-           BackwardTaint.kind
-           Filter
-           ~f:(TaintConfiguration.sink_can_match_rule (TaintConfiguration.get ()))
     in
     let taint_in_taint_out =
       (* def foo(x: Sanitize[TaintSource[...]]): ... *)
       BackwardState.apply_sanitizers
+        ~taint_configuration
         ~sanitize_source:true
         ~ignore_if_sanitize_all:true
         ~parameter
@@ -498,15 +553,27 @@ let apply_sanitizers
     in
     let taint_in_taint_out =
       (* def foo(x: Sanitize[TaintInTaintOut[...]]): ... *)
-      BackwardState.apply_sanitizers ~sanitize_tito:true ~parameter ~sanitizer taint_in_taint_out
+      BackwardState.apply_sanitizers
+        ~taint_configuration
+        ~sanitize_tito:true
+        ~insert_location:TaintTransformOperation.InsertLocation.Back
+        ~parameter
+        ~sanitizer
+        taint_in_taint_out
     in
     let sink_taint =
       (* def foo(x: Sanitize[TaintSink[...]]): ... *)
-      BackwardState.apply_sanitizers ~sanitize_sink:true ~parameter ~sanitizer sink_taint
+      BackwardState.apply_sanitizers
+        ~taint_configuration
+        ~sanitize_sink:true
+        ~parameter
+        ~sanitizer
+        sink_taint
     in
     let taint_in_taint_out =
       (* def foo(x: Sanitize[TaintSink[...]]): ... *)
       BackwardState.apply_sanitizers
+        ~taint_configuration
         ~sanitize_sink:true
         ~ignore_if_sanitize_all:true
         ~parameter
@@ -566,6 +633,7 @@ let join_every_frame_with_attach
   { forward = { source_taint }; backward = { taint_in_taint_out; sink_taint }; sanitizers; modes }
 
 
+(* A special case of join, only used for user-provided models. *)
 let join_user_models ({ modes = left_modes; _ } as left) ({ modes = right_modes; _ } as right) =
   let update_obscure_mode ({ modes; _ } as model) =
     (* If one model has @SkipObscure and the other does not, we expect the joined model to also have

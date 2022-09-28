@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* ModelVerifier: implements additional validation for model files. *)
+
 open Core
 open Pyre
 open Ast

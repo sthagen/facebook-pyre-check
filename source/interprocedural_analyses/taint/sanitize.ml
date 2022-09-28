@@ -5,6 +5,9 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* Sanitize: defines the representation of sanitizers in models, as an abstract
+ * domain. *)
+
 open Core
 
 type sanitize = {

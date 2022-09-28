@@ -5,7 +5,9 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-open Core
+(* TODO(T132410158) Add a module-level doc comment. *)
+
+open Core_kernel
 
 module type ELEMENT = sig
   type t [@@deriving show]

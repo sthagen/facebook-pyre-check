@@ -5,6 +5,11 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* Sinks: defines a sink kind in our taint representation.
+ *
+ * For instance, `TaintSink[SQL]` is represented as `Sinks.NamedSink "SQL"`.
+ *)
+
 open Core
 
 let name = "sink"
@@ -58,6 +63,12 @@ module T = struct
 end
 
 include T
+
+let make_transform ~local ~global ~base =
+  match local, global with
+  | [], [] -> base
+  | _ -> Transform { local; global; base }
+
 
 let ignore_kind_at_call = function
   | Attach -> true
@@ -143,12 +154,10 @@ let discard_transforms = function
 
 let discard_sanitize_transforms = function
   | Transform { base; local; global } ->
-      let local = TaintTransforms.discard_sanitize_transforms local in
-      let global = TaintTransforms.discard_sanitize_transforms global in
-      if TaintTransforms.is_empty local && TaintTransforms.is_empty global then
-        base
-      else
-        Transform { base; local; global }
+      make_transform
+        ~local:(TaintTransforms.discard_sanitize_transforms local)
+        ~global:(TaintTransforms.discard_sanitize_transforms global)
+        ~base
   | sink -> sink
 
 
@@ -175,105 +184,6 @@ let rec extract_partial_sink = function
   | Transform { base; _ } -> extract_partial_sink base
   | PartialSink { kind; label } -> Some { kind; label }
   | _ -> None
-
-
-let rec base_as_sanitizer = function
-  | NamedSink name
-  | ParametricSink { sink_name = name; _ } ->
-      Some (SanitizeTransform.Sink (SanitizeTransform.Sink.Named name))
-  | Transform { base; _ } -> base_as_sanitizer base
-  | Attach
-  | AddFeatureToArgument
-  | PartialSink _
-  | TriggeredPartialSink _
-  | LocalReturn
-  | ParameterUpdate _ ->
-      None
-
-
-(* We should only apply sink sanitizers on tito. *)
-let should_preserve_sanitize_sinks = function
-  | LocalReturn
-  | Transform { base = LocalReturn; _ } ->
-      true
-  | _ -> false
-
-
-let apply_sanitize_transforms transforms sink =
-  match sink with
-  | Attach
-  | AddFeatureToArgument ->
-      Some sink
-  | PartialSink _
-  | TriggeredPartialSink _
-  | LocalReturn
-  | NamedSink _
-  | ParametricSink _
-  | ParameterUpdate _ -> (
-      match
-        TaintTransforms.of_sanitize_transforms
-          ~preserve_sanitize_sources:true
-          ~preserve_sanitize_sinks:(should_preserve_sanitize_sinks sink)
-          ~base:(base_as_sanitizer sink)
-          transforms
-      with
-      | None -> None
-      | _ when SanitizeTransformSet.is_all transforms -> None
-      | Some local when TaintTransforms.is_empty local -> Some sink
-      | Some local -> Some (Transform { local; global = TaintTransforms.empty; base = sink }))
-  | Transform { local; global; base } -> (
-      match
-        TaintTransforms.add_sanitize_transforms
-          ~preserve_sanitize_sources:true
-          ~preserve_sanitize_sinks:(should_preserve_sanitize_sinks sink)
-          ~base:(base_as_sanitizer base)
-          ~local
-          ~global
-          transforms
-      with
-      | None -> None
-      | Some local -> Some (Transform { local; global; base }))
-
-
-let apply_transforms transforms order sink =
-  match sink with
-  | Attach
-  | AddFeatureToArgument ->
-      Some sink
-  | PartialSink _
-  | TriggeredPartialSink _
-  | LocalReturn
-  | NamedSink _
-  | ParametricSink _
-  | ParameterUpdate _ -> (
-      match
-        TaintTransforms.add_transforms
-          ~preserve_sanitize_sources:true
-          ~preserve_sanitize_sinks:(should_preserve_sanitize_sinks sink)
-          ~base:(base_as_sanitizer sink)
-          ~local:TaintTransforms.empty
-          ~global:TaintTransforms.empty
-          ~order:TaintTransforms.Order.Backward
-          ~to_add:transforms
-          ~to_add_order:order
-      with
-      | None -> None
-      | Some local when TaintTransforms.is_empty local -> Some sink
-      | Some local -> Some (Transform { local; global = TaintTransforms.empty; base = sink }))
-  | Transform { local; global; base } -> (
-      match
-        TaintTransforms.add_transforms
-          ~preserve_sanitize_sources:true
-          ~preserve_sanitize_sinks:(should_preserve_sanitize_sinks base)
-          ~base:(base_as_sanitizer base)
-          ~local
-          ~global
-          ~order:TaintTransforms.Order.Backward
-          ~to_add:transforms
-          ~to_add_order:order
-      with
-      | None -> None
-      | Some local -> Some (Transform { local; global; base }))
 
 
 let get_named_transforms = function

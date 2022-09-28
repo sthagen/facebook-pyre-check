@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* ClassIntervalSet: a set of class intervals. *)
+
 open Core
 
 (* A list of non-overlapping intervals sorted with the lower bounds of intervals *)

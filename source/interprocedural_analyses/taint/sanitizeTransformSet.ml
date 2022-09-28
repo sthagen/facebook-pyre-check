@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* SanitizeTransformSet: defines a set of sanitize transforms. *)
+
 open Core
 
 type sets = {
@@ -70,7 +72,17 @@ include Abstract.SimpleDomain.Make (struct
       }
 
 
-  let meet a b = if less_or_equal ~left:b ~right:a then b else a
+  let meet
+      ({ sources = left_sources; sinks = left_sinks } as left)
+      ({ sources = right_sources; sinks = right_sinks } as right)
+    =
+    if phys_equal left right then
+      left
+    else
+      {
+        sources = SanitizeTransform.SourceSet.meet left_sources right_sources;
+        sinks = SanitizeTransform.SinkSet.meet left_sinks right_sinks;
+      }
 end)
 
 type t = sets [@@deriving compare, eq, hash, sexp]
@@ -78,6 +90,12 @@ type t = sets [@@deriving compare, eq, hash, sexp]
 let empty = bottom
 
 let is_empty = is_bottom
+
+let add_source source { sources; sinks } =
+  { sources = SanitizeTransform.SourceSet.add source sources; sinks }
+
+
+let add_sink sink { sources; sinks } = { sinks = SanitizeTransform.SinkSet.add sink sinks; sources }
 
 let from_sources sources = { sources; sinks = SanitizeTransform.SinkSet.empty }
 

@@ -3,6 +3,14 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+"""
+This module is responsible for handling requests from the VScode language server and generating an appropriate response.
+
+The response typically will be generated through the Pyre daemon, and the name PyreLanguageServer was chosen for this module
+because it illustrates that this is the intermediary between the Language server and the Pyre daemon.
+"""
+
+
 import dataclasses
 import logging
 from pathlib import Path
@@ -67,7 +75,7 @@ async def _wait_for_exit(
 
 
 @dataclasses.dataclass(frozen=True)
-class PyreServer:
+class PyreLanguageServer:
     # I/O Channels
     input_channel: connections.AsyncTextReader
     output_channel: connections.AsyncTextWriter
@@ -161,17 +169,22 @@ class PyreServer:
         if document_path not in self.server_state.opened_documents:
             return
 
-        await self.handler.update_overlay(
-            path=document_path.resolve(),
-            code=str(
-                "".join(
-                    [
-                        content_change.text
-                        for content_change in parameters.content_changes
-                    ]
-                )
-            ),
+        process_unsaved_changes = (
+            self.server_state.server_options.language_server_features.unsaved_changes.is_enabled()
         )
+
+        if process_unsaved_changes:
+            await self.handler.update_overlay(
+                path=document_path.resolve(),
+                code=str(
+                    "".join(
+                        [
+                            content_change.text
+                            for content_change in parameters.content_changes
+                        ]
+                    )
+                ),
+            )
         # Attempt to trigger a background Pyre server start on each file change
         if not self.pyre_manager.is_task_running():
             await self._try_restart_pyre_server()

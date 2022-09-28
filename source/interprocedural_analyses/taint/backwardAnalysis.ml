@@ -5,6 +5,29 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* BackwardAnalysis: implements a backward taint analysis on a function body.
+ * This is used to infer the sink and taint-in-taint-out part of a model, by
+ * propagating sinks up through the statements of the body.
+ *
+ * For instance, on the given function, we would infer the following taint
+ * states, starting from the return statement:
+ * ```
+ * def foo(a, b):
+ *   # {x -> SQL, a -> SQL, y -> LocalReturn, b -> LocalReturn }
+ *   x = str(a)
+ *   # {x -> SQL, y -> LocalReturn, b -> LocalReturn}
+ *   sql(x)
+ *   # {y -> LocalReturn, b -> LocalReturn}
+ *   y = int(b)
+ *   # {y -> LocalReturn}
+ *   return y
+ * ```
+ *
+ * We would infer that `a` leads to the sink `SQL`, and that calling `foo` with
+ * a tainted `b` leads to the return value being tainted (which we call
+ * taint-in-taint-out, tito for short).
+ *)
+
 open Core
 open Analysis
 open Ast
@@ -25,7 +48,7 @@ module type FUNCTION_CONTEXT = sig
 
   val environment : TypeEnvironment.ReadOnly.t
 
-  val taint_configuration : TaintConfiguration.t
+  val taint_configuration : TaintConfiguration.Heap.t
 
   val class_interval_graph : Interprocedural.ClassIntervalSetGraph.SharedMemory.t
 
@@ -189,9 +212,25 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         BackwardState.bottom
 
 
-  let transform_non_leaves path taint =
-    let f prefix = prefix @ path in
-    BackwardTaint.transform Features.ReturnAccessPathSet.Element Map ~f taint
+  let transform_non_leaves new_path taint =
+    let infer_output_path sink paths =
+      match Sinks.discard_transforms sink with
+      | Sinks.LocalReturn ->
+          let open Features.ReturnAccessPathTree in
+          fold
+            Path
+            ~f:(fun (current_path, _collapse_depth) paths ->
+              create_leaf 0 |> prepend new_path |> prepend current_path |> join paths)
+            ~init:bottom
+            paths
+      | _ -> paths
+    in
+    BackwardTaint.transform_call_info
+      local_return_call_info
+      Features.ReturnAccessPathTree.Self
+      (Context (BackwardTaint.kind, Map))
+      ~f:infer_output_path
+      taint
 
 
   let read_tree = BackwardState.Tree.read ~transform_non_leaves
@@ -278,13 +317,14 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
             items
             ~f:(fun state (root, sink) ->
               let new_taint =
-                BackwardTaint.singleton sink Frame.initial |> BackwardState.Tree.create_leaf
+                BackwardTaint.singleton CallInfo.declaration sink Frame.initial
+                |> BackwardState.Tree.create_leaf
               in
               BackwardState.assign ~root ~path:[] new_taint state)
             ~init:BackwardState.bottom
       | None -> BackwardState.bottom
     in
-    let ({ Model.modes; _ } as taint_model) =
+    let taint_model =
       TaintProfiler.track_model_fetch
         ~profiler
         ~analysis:TaintProfiler.Backward
@@ -315,11 +355,8 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       }
     in
     let call_taint =
-      if Model.ModeSet.contains Obscure modes then
-        BackwardState.Tree.add_local_breadcrumbs
-          (Features.type_breadcrumbs (Option.value_exn return_type))
-          call_taint
-      else
+      BackwardState.Tree.add_local_breadcrumbs
+        (Features.type_breadcrumbs (Option.value_exn return_type))
         call_taint
     in
     let get_argument_taint ~resolution ~argument:{ Call.Argument.value = argument; _ } =
@@ -357,12 +394,12 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         match kind with
         | Sinks.Transform { local = transforms; global; _ } when TaintTransforms.is_empty global ->
             (* Apply tito transforms and source- and sink-specific sanitizers. *)
-            taint_to_propagate
-            |> BackwardState.Tree.apply_transforms transforms TaintTransforms.Order.Backward
-            |> BackwardState.Tree.transform
-                 BackwardTaint.kind
-                 Filter
-                 ~f:(TaintConfiguration.sink_can_match_rule FunctionContext.taint_configuration)
+            BackwardState.Tree.apply_transforms
+              ~taint_configuration:FunctionContext.taint_configuration
+              transforms
+              TaintTransformOperation.InsertLocation.Front
+              TaintTransforms.Order.Backward
+              taint_to_propagate
         | Sinks.Transform _ -> failwith "unexpected non-empty `global` transforms in tito"
         | _ -> taint_to_propagate
       in
@@ -425,6 +462,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       let taint_in_taint_out =
         CallModel.taint_in_taint_out_mapping
           ~transform_non_leaves
+          ~taint_configuration:FunctionContext.taint_configuration
           ~ignore_local_return:(BackwardState.Tree.is_bottom call_taint)
           ~model:taint_model
           ~tito_matches
@@ -845,11 +883,11 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
               let sanitizers =
                 { SanitizeTransformSet.sources = sanitizer.sources; sinks = sanitizer.sinks }
               in
-              BackwardState.Tree.apply_sanitize_transforms sanitizers taint
-              |> BackwardState.Tree.transform
-                   BackwardTaint.kind
-                   Filter
-                   ~f:(TaintConfiguration.sink_can_match_rule FunctionContext.taint_configuration)
+              BackwardState.Tree.apply_sanitize_transforms
+                ~taint_configuration:FunctionContext.taint_configuration
+                sanitizers
+                TaintTransformOperation.InsertLocation.Front
+                taint
             in
             taint
           in
@@ -1129,6 +1167,15 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_call ~resolution ~location ~taint ~state ~callee ~arguments =
+    let add_type_breadcrumbs taint =
+      let type_breadcrumbs =
+        let { CallGraph.CallCallees.call_targets; _ } =
+          get_call_callees ~location ~call:{ Call.callee; arguments }
+        in
+        CallModel.type_breadcrumbs_of_calls call_targets
+      in
+      BackwardState.Tree.add_local_breadcrumbs type_breadcrumbs taint
+    in
     match { Call.callee; arguments } with
     | {
      callee =
@@ -1201,6 +1248,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
      arguments =
        [{ Call.Argument.value = { Node.value = argument_expression; _ } as argument_value; _ }];
     } ->
+        let taint = add_type_breadcrumbs taint in
         let index = AccessPath.get_index argument_value in
         let state_before_index_access =
           lazy
@@ -1282,7 +1330,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
             Abstract.TreeDomain.Label.AnyIndex
         in
 
-        let taint = BackwardState.Tree.prepend [label] taint in
+        let taint = BackwardState.Tree.prepend [label] taint |> add_type_breadcrumbs in
         analyze_expression ~resolution ~taint ~state ~expression:base
     (* We special-case object.__setattr__, which is sometimes used in order to work around
        dataclasses being frozen post-initialization. *)
@@ -1469,7 +1517,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           BackwardState.Tree.assign
             ~tree:old_taint
             [Abstract.TreeDomain.Label.Index value]
-            ~subtree:taint
+            ~subtree:(add_type_breadcrumbs taint)
         in
         store_taint ~root:(AccessPath.Root.Variable identifier) ~path:[] new_taint state
     | { callee = { Node.value = Name (Name.Attribute { base; attribute = "items"; _ }); _ }; _ }
@@ -1677,7 +1725,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           literal_string_sinks
           ~f:(fun taint { TaintConfiguration.sink_kind; pattern } ->
             if Re2.matches pattern value then
-              BackwardTaint.singleton ~location sink_kind Frame.initial
+              BackwardTaint.singleton (CallInfo.Origin location) sink_kind Frame.initial
               |> BackwardState.Tree.create_leaf
               |> BackwardState.Tree.join taint
             else
@@ -1816,6 +1864,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         |> List.foldi ~f:(analyze_reverse_list_element ~total ~resolution taint) ~init:state
     | ListComprehension comprehension -> analyze_comprehension ~resolution taint comprehension state
     | Name (Name.Identifier identifier) ->
+        let taint = BackwardState.Tree.add_local_type_breadcrumbs ~resolution ~expression taint in
         store_taint ~weak:true ~root:(AccessPath.Root.Variable identifier) ~path:[] taint state
     | Name (Name.Attribute { base; attribute = "__dict__"; _ }) ->
         analyze_expression ~resolution ~taint ~state ~expression:base
@@ -1932,7 +1981,12 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_assignment ?(weak = false) ~resolution ?(fields = []) ~target ~value state =
-    let taint = compute_assignment_taint ~resolution target state |> fst |> read_tree fields in
+    let taint =
+      compute_assignment_taint ~resolution target state
+      |> fst
+      |> read_tree fields
+      |> BackwardState.Tree.add_local_type_breadcrumbs ~resolution ~expression:target
+    in
     let state =
       let rec clear_taint state target =
         match Node.value target with
@@ -2083,8 +2137,14 @@ let extract_tito_and_sink_models
     ~resolution
     ~taint_configuration:
       {
-        TaintConfiguration.analysis_model_constraints =
-          { maximum_trace_length; maximum_tito_depth; _ };
+        TaintConfiguration.Heap.analysis_model_constraints =
+          {
+            maximum_model_sink_tree_width;
+            maximum_model_tito_tree_width;
+            maximum_trace_length;
+            maximum_tito_depth;
+            _;
+          };
         _;
       }
     ~existing_backward
@@ -2097,9 +2157,7 @@ let extract_tito_and_sink_models
     let type_breadcrumbs =
       annotation
       >>| GlobalResolution.parse_annotation resolution
-      >>| CallGraph.ReturnType.from_annotation ~resolution
-      |> Option.value ~default:CallGraph.ReturnType.none
-      |> Features.type_breadcrumbs
+      |> Features.type_breadcrumbs_from_annotation ~resolution
     in
 
     let essential =
@@ -2115,9 +2173,7 @@ let extract_tito_and_sink_models
     |> BackwardState.Tree.add_local_breadcrumbs type_breadcrumbs
     |> BackwardState.Tree.limit_to
          ~transform:(BackwardTaint.add_local_breadcrumbs (Features.widen_broadening_set ()))
-         ~width:TaintConfiguration.maximum_model_width
-    |> BackwardState.Tree.approximate_return_access_paths
-         ~maximum_return_access_path_length:TaintConfiguration.maximum_return_access_path_length
+         ~width:maximum_model_sink_tree_width
   in
 
   let split_and_simplify model (parameter, name, original) =
@@ -2149,19 +2205,9 @@ let extract_tito_and_sink_models
         |> BackwardState.Tree.add_local_breadcrumbs breadcrumbs_to_attach
         |> BackwardState.Tree.add_via_features via_features_to_attach
       in
-      let number_of_paths =
-        BackwardState.Tree.fold
-          BackwardState.Tree.Path
-          ~init:0
-          ~f:(fun _ count -> count + 1)
-          candidate_tree
-      in
-      if number_of_paths > TaintConfiguration.maximum_tito_leaves then
-        BackwardState.Tree.collapse_to
-          ~transform:(BackwardTaint.add_local_breadcrumbs (Features.widen_broadening_set ()))
-          ~depth:0
-          candidate_tree
-      else
+      BackwardState.Tree.limit_to
+        ~transform:(BackwardTaint.add_local_breadcrumbs (Features.widen_broadening_set ()))
+        ~width:maximum_model_tito_tree_width
         candidate_tree
     in
     let sink_taint =
@@ -2206,6 +2252,7 @@ let extract_tito_and_sink_models
 
 let run
     ?(profiler = TaintProfiler.none)
+    ~taint_configuration
     ~environment
     ~class_interval_graph
     ~qualifier
@@ -2219,6 +2266,16 @@ let run
     ()
   =
   let timer = Timer.start () in
+  let define =
+    (* Apply decorators to make sure we match parameters up correctly. Decorators are not applied in
+       the forward analysis, because in case a decorator changes the parameters of the decorated
+       function, the user-defined models of the function may no longer be applicable to the
+       resultant function of the application (e.g., T132302522). *)
+    let resolution = TypeEnvironment.ReadOnly.global_resolution environment in
+    Analysis.Annotated.Define.create define
+    |> Analysis.Annotated.Define.decorate ~resolution
+    |> Analysis.Annotated.Define.define
+  in
   let module FunctionContext = struct
     let qualifier = qualifier
 
@@ -2230,7 +2287,7 @@ let run
 
     let environment = environment
 
-    let taint_configuration = TaintConfiguration.get ()
+    let taint_configuration = taint_configuration
 
     let class_interval_graph = class_interval_graph
 
@@ -2253,8 +2310,17 @@ let run
     State.log "Backward analysis of callable: `%a`" Interprocedural.Target.pp_pretty callable
   in
   let entry_state =
-    TaintProfiler.track_duration ~profiler ~name:"Backward analysis - fixpoint" ~f:(fun () ->
-        Metrics.with_alarm callable (fun () -> Fixpoint.backward ~cfg ~initial |> Fixpoint.entry) ())
+    match define.value.signature.parameters with
+    | [] ->
+        (* Without parameters, the inferred model will always be empty. *)
+        let () = State.log "Skipping backward analysis since the callable has no parameters" in
+        None
+    | _ ->
+        TaintProfiler.track_duration ~profiler ~name:"Backward analysis - fixpoint" ~f:(fun () ->
+            Metrics.with_alarm
+              callable
+              (fun () -> Fixpoint.backward ~cfg ~initial |> Fixpoint.entry)
+              ())
   in
   let () =
     match entry_state with

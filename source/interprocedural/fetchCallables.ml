@@ -5,6 +5,10 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* FetchCallables: implements the logic that discovers all functions and methods
+ * to analyze, and categorize them.
+ *)
+
 open Core
 open Pyre
 open Ast
@@ -108,6 +112,7 @@ let gather_raw_callables ~resolution ~source:{ Source.module_path = { ModulePath
   |> List.fold ~init:Target.Map.empty ~f:merge_callables
 
 
+(** Traverse the AST to find all callables (functions and methods). *)
 let from_source ~configuration ~resolution ~include_unit_tests ~source =
   let callables =
     if include_unit_tests || not (GlobalResolution.source_is_unit_test resolution ~source) then

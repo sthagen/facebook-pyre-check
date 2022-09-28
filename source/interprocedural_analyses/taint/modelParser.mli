@@ -161,6 +161,7 @@ module Internal : sig
       | FunctionModel
       | MethodModel
       | AttributeModel
+      | GlobalModel
     [@@deriving show, equal]
 
     type produced_taint =
@@ -194,6 +195,7 @@ module Internal : sig
         }
       | ReturnTaint of produced_taint list
       | AttributeTaint of produced_taint list
+      | GlobalTaint of produced_taint list
     [@@deriving show, equal]
 
     type rule = {
@@ -222,8 +224,8 @@ val parse
   :  resolution:Analysis.Resolution.t ->
   ?path:PyrePath.t ->
   source:string ->
-  configuration:TaintConfiguration.t ->
-  source_sink_filter:TaintConfiguration.SourceSinkFilter.t option ->
+  taint_configuration:TaintConfiguration.Heap.t ->
+  source_sink_filter:SourceSinkFilter.t option ->
   callables:Interprocedural.Target.HashSet.t option ->
   stubs:Interprocedural.Target.HashSet.t ->
   unit ->
@@ -235,7 +237,7 @@ val verify_model_syntax : path:PyrePath.t -> source:string -> unit
 val create_callable_model_from_annotations
   :  resolution:Analysis.Resolution.t ->
   callable:Interprocedural.Target.t ->
-  source_sink_filter:TaintConfiguration.SourceSinkFilter.t option ->
+  source_sink_filter:SourceSinkFilter.t option ->
   is_obscure:bool ->
   (Internal.annotation_kind * Internal.taint_annotation) list ->
   (Model.t, ModelVerificationError.t) result
@@ -244,6 +246,6 @@ val create_callable_model_from_annotations
 val create_attribute_model_from_annotations
   :  resolution:Analysis.Resolution.t ->
   name:Ast.Reference.t ->
-  source_sink_filter:TaintConfiguration.SourceSinkFilter.t option ->
+  source_sink_filter:SourceSinkFilter.t option ->
   Internal.taint_annotation list ->
   (Model.t, ModelVerificationError.t) result

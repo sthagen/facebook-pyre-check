@@ -5,6 +5,9 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* Metrics: implements an alarm that triggers every given period of time, to
+ * warn about the slow analysis of a given callable. *)
+
 let register_alarm callback = Sys.signal Sys.sigalrm (Sys.Signal_handle callback)
 
 let start_alarm time = ignore (Unix.alarm time)

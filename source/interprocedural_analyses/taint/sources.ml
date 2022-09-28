@@ -5,6 +5,11 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* Sources: defines a source kind in our taint representation.
+ *
+ * For instance, `TaintSource[Header]` is represented as `Sources.NamedSource "Header"`.
+ *)
+
 open Core
 
 let name = "source"
@@ -39,6 +44,12 @@ module T = struct
 end
 
 include T
+
+let make_transform ~local ~global ~base =
+  match local, global with
+  | [], [] -> base
+  | _ -> Transform { local; global; base }
+
 
 let ignore_kind_at_call = function
   | Attach -> true
@@ -124,12 +135,10 @@ let discard_transforms = function
 
 let discard_sanitize_transforms = function
   | Transform { base; local; global } ->
-      let local = TaintTransforms.discard_sanitize_transforms local in
-      let global = TaintTransforms.discard_sanitize_transforms global in
-      if TaintTransforms.is_empty local && TaintTransforms.is_empty global then
-        base
-      else
-        Transform { base; local; global }
+      make_transform
+        ~local:(TaintTransforms.discard_sanitize_transforms local)
+        ~global:(TaintTransforms.discard_sanitize_transforms global)
+        ~base
   | source -> source
 
 
@@ -150,79 +159,6 @@ let extract_sanitize_transforms = function
   | Transform { local; global; _ } ->
       TaintTransforms.merge ~local ~global |> TaintTransforms.get_sanitize_transforms
   | _ -> SanitizeTransformSet.empty
-
-
-let rec base_as_sanitizer = function
-  | NamedSource name
-  | ParametricSource { source_name = name; _ } ->
-      Some (SanitizeTransform.Source (SanitizeTransform.Source.Named name))
-  | Transform { base; _ } -> base_as_sanitizer base
-  | Attach -> None
-
-
-let apply_sanitize_transforms transforms source =
-  match source with
-  | Attach -> Some Attach
-  | NamedSource _
-  | ParametricSource _ -> (
-      match
-        TaintTransforms.of_sanitize_transforms
-          ~preserve_sanitize_sources:false
-          ~preserve_sanitize_sinks:true
-          ~base:(base_as_sanitizer source)
-          transforms
-      with
-      | None -> None
-      | _ when SanitizeTransformSet.is_all transforms -> None
-      | Some local when TaintTransforms.is_empty local -> Some source
-      | Some local -> Some (Transform { local; global = TaintTransforms.empty; base = source }))
-  | Transform { local; global; base } -> (
-      match
-        TaintTransforms.add_sanitize_transforms
-          ~preserve_sanitize_sources:false
-          ~preserve_sanitize_sinks:true
-          ~base:(base_as_sanitizer base)
-          ~local
-          ~global
-          transforms
-      with
-      | None -> None
-      | Some local -> Some (Transform { local; global; base }))
-
-
-let apply_transforms transforms order source =
-  match source with
-  | Attach -> Some Attach
-  | NamedSource _
-  | ParametricSource _ -> (
-      match
-        TaintTransforms.add_transforms
-          ~preserve_sanitize_sources:false
-          ~preserve_sanitize_sinks:true
-          ~base:(base_as_sanitizer source)
-          ~local:TaintTransforms.empty
-          ~global:TaintTransforms.empty
-          ~order:TaintTransforms.Order.Forward
-          ~to_add:transforms
-          ~to_add_order:order
-      with
-      | None -> None
-      | Some local when TaintTransforms.is_empty local -> Some source
-      | Some local -> Some (Transform { local; global = TaintTransforms.empty; base = source }))
-  | Transform { local; global; base } -> (
-      match
-        TaintTransforms.add_transforms
-          ~preserve_sanitize_sources:false
-          ~preserve_sanitize_sinks:true
-          ~base:(base_as_sanitizer base)
-          ~local
-          ~global
-          ~order:TaintTransforms.Order.Forward
-          ~to_add:transforms
-          ~to_add_order:order
-      with
-      | None -> None
-      | Some local -> Some (Transform { local; global; base }))
 
 
 let get_named_transforms = function

@@ -5,6 +5,11 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* Features: implements features, which are bits of informations carried on a
+ * taint. Those are essential to help users triage issues.
+ * These features are used to build the taint representation in `Domains`.
+ *)
+
 open Core
 open Ast
 open Analysis
@@ -165,7 +170,14 @@ module TitoPosition = struct
 
   type t = Location.t [@@deriving show, compare]
 
-  let max_count () = TaintConfiguration.maximum_tito_positions
+  let max_count =
+    let on_first_call =
+      lazy
+        (TaintConfiguration.SharedMemory.get_global ()
+        |> Option.value ~default:TaintConfiguration.Heap.default
+        |> TaintConfiguration.maximum_tito_positions)
+    in
+    fun () -> Lazy.force on_first_call
 end
 
 module TitoPositionSet = Abstract.ToppedSetDomain.Make (TitoPosition)
@@ -391,43 +403,86 @@ end
 
 module ViaFeatureSet = Abstract.SetDomain.Make (ViaFeature)
 
-module ReturnAccessPath = struct
-  let name = "return access paths"
+module MakeScalarDomain (Name : sig
+  val name : string
+end) =
+Abstract.SimpleDomain.Make (struct
+  type t = int
 
-  type t = Abstract.TreeDomain.Label.path [@@deriving show { with_path = false }, compare]
+  let name = Name.name
 
-  let less_or_equal ~left ~right = Abstract.TreeDomain.Label.is_prefix ~prefix:right left
+  let join = min
 
-  let common_prefix = function
-    | head :: tail -> List.fold ~init:head ~f:Abstract.TreeDomain.Label.common_prefix tail
-    | [] -> []
+  let meet = max
 
+  let less_or_equal ~left ~right = left >= right
 
-  let widen set =
-    if List.length set > TaintConfiguration.maximum_return_access_path_width then
-      [common_prefix set]
-    else
-      let truncate = function
-        | p when List.length p > TaintConfiguration.maximum_return_access_path_depth ->
-            List.take p TaintConfiguration.maximum_return_access_path_depth
-        | x -> x
-      in
-      List.map ~f:truncate set
+  let bottom = max_int
 
+  let show length = if Int.equal length max_int then "<bottom>" else string_of_int length
+end)
 
-  let to_json path = `String (Abstract.TreeDomain.Label.show_path path)
+module CollapseDepth = struct
+  include MakeScalarDomain (struct
+    let name = "collapse depth"
+  end)
+
+  let transform_on_widening_collapse = Fn.id
 end
 
-module ReturnAccessPathSet = struct
-  module T = Abstract.ElementSetDomain.Make (ReturnAccessPath)
-  include T
+module ReturnAccessPath = struct
+  type t = Abstract.TreeDomain.Label.t list
+
+  let show = Abstract.TreeDomain.Label.show_path
+end
+
+module ReturnAccessPathTree = struct
+  module Tree =
+    Abstract.TreeDomain.Make
+      (struct
+        let max_tree_depth_after_widening =
+          let cache_first_call =
+            lazy
+              (TaintConfiguration.SharedMemory.get_global ()
+              |> Option.value ~default:TaintConfiguration.Heap.default
+              |> TaintConfiguration.maximum_return_access_path_depth_after_widening)
+          in
+          fun () -> Lazy.force cache_first_call
+
+
+        let check_invariants = TaintConfiguration.runtime_check_invariants ()
+      end)
+      (CollapseDepth)
+      ()
+
+  include Tree
+
+  let maximum_width =
+    let cache_first_call =
+      lazy
+        (TaintConfiguration.SharedMemory.get_global ()
+        |> Option.value ~default:TaintConfiguration.Heap.default
+        |> TaintConfiguration.maximum_return_access_path_width)
+    in
+    fun () -> Lazy.force cache_first_call
+
 
   let join left right =
-    let set = T.join left right in
-    if T.count set > TaintConfiguration.maximum_return_access_path_width then
-      set |> T.elements |> ReturnAccessPath.common_prefix |> T.singleton
+    if left == right || Tree.is_bottom right then
+      left
     else
-      set
+      Tree.join left right |> Tree.limit_to ~width:(maximum_width ())
+
+
+  let widen ~iteration ~prev ~next =
+    Tree.widen ~iteration ~prev ~next |> Tree.limit_to ~width:(maximum_width ())
+
+
+  let to_json tree =
+    let path_to_json (path, collapse_depth) json_list =
+      (ReturnAccessPath.show path, `Int collapse_depth) :: json_list
+    in
+    Tree.fold Tree.Path ~f:path_to_json tree ~init:[]
 end
 
 (* We need to make all breadcrumb creation lazy because the shared memory might
@@ -505,6 +560,14 @@ let type_breadcrumbs
   |> add_if is_boolean type_bool
   |> add_if is_integer type_integer
   |> add_if is_enumeration type_enumeration
+
+
+let type_breadcrumbs_from_annotation ~resolution type_ =
+  let open Interprocedural.CallGraph in
+  type_
+  >>| ReturnType.from_annotation ~resolution
+  |> Option.value ~default:ReturnType.none
+  |> type_breadcrumbs
 
 
 let expand_via_features ~resolution ~callees ~arguments via_features =

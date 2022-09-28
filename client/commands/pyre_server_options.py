@@ -3,6 +3,11 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+"""
+TODO(T132414938) Add a module-level docstring
+"""
+
+
 from __future__ import annotations
 
 import dataclasses
@@ -54,6 +59,7 @@ class PyreServerOptions:
         definition: Optional[features.DefinitionAvailability],
         document_symbols: Optional[features.DocumentSymbolsAvailability],
         references: Optional[features.ReferencesAvailability],
+        status_updates: features.StatusUpdatesAvailability,
         type_errors: features.TypeErrorsAvailability,
         type_coverage: Optional[features.TypeCoverageAvailability],
         unsaved_changes: Optional[features.UnsavedChangesAvailability],
@@ -84,6 +90,7 @@ class PyreServerOptions:
                 definition=definition,
                 document_symbols=document_symbols,
                 references=references,
+                status_updates=status_updates,
                 type_errors=type_errors,
                 type_coverage=type_coverage,
                 unsaved_changes=unsaved_changes,
@@ -103,6 +110,7 @@ class PyreServerOptions:
         definition: Optional[features.DefinitionAvailability],
         document_symbols: Optional[features.DocumentSymbolsAvailability],
         references: Optional[features.ReferencesAvailability],
+        status_updates: features.StatusUpdatesAvailability,
         type_errors: features.TypeErrorsAvailability,
         type_coverage: Optional[features.TypeCoverageAvailability],
         unsaved_changes: Optional[features.UnsavedChangesAvailability],
@@ -116,6 +124,7 @@ class PyreServerOptions:
                 definition=definition,
                 document_symbols=document_symbols,
                 references=references,
+                status_updates=status_updates,
                 type_errors=type_errors,
                 type_coverage=type_coverage,
                 unsaved_changes=unsaved_changes,

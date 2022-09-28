@@ -5,6 +5,11 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* Cache: implements caching capabilities for the taint analysis. This is what
+ * powers the `--use-cache` command line option. This is basically implemented
+ * by writing the shared memory into a file and restoring it later.
+ *)
+
 open Core
 open Pyre
 module Target = Interprocedural.Target
@@ -177,7 +182,9 @@ let load ~scheduler ~configuration ~taint_configuration ~enabled =
     in
     (* Re-write the original taint configuration in shared memory,
      * in case it was overwritten when loading the cache. *)
-    let () = TaintConfiguration.register taint_configuration in
+    let (_ : TaintConfiguration.SharedMemory.t) =
+      TaintConfiguration.SharedMemory.from_heap taint_configuration
+    in
     { cache; save_cache = true; scheduler; configuration }
 
 

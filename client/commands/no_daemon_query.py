@@ -3,6 +3,10 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+"""
+TODO(T132414938) Add a module-level docstring
+"""
+
 
 from __future__ import annotations
 
@@ -12,7 +16,7 @@ import dataclasses
 import subprocess
 from typing import Any, Dict, Iterator, Optional
 
-from .. import configuration as configuration_module
+from .. import command_arguments, configuration as configuration_module
 from . import backend_arguments, frontend_configuration, query_response
 
 
@@ -39,13 +43,25 @@ class Arguments:
 # TODO:T131533391 - Factor this function out as it is duplicated.
 def _create_no_daemon_query_arguments(
     configuration: frontend_configuration.Base,
-    query: str,
-    no_validation_on_class_lookup_failure: bool,
+    query_arguments: command_arguments.QueryArguments,
 ) -> Arguments:
     """
     Translate client configurations to backend query configurations.
     """
     source_paths = backend_arguments.get_source_path_for_check(configuration)
+
+    log_directory = configuration.get_log_directory()
+    profiling_output = (
+        backend_arguments.get_profiling_log_path(log_directory)
+        if query_arguments.check_arguments.enable_profiling
+        else None
+    )
+    memory_profiling_output = (
+        backend_arguments.get_profiling_log_path(log_directory)
+        if query_arguments.check_arguments.enable_memory_profiling
+        else None
+    )
+
     return Arguments(
         base_arguments=backend_arguments.BaseArguments(
             log_path=str(configuration.get_log_directory()),
@@ -62,21 +78,22 @@ def _create_no_daemon_query_arguments(
             python_version=configuration.get_python_version(),
             shared_memory=configuration.get_shared_memory(),
             search_paths=configuration.get_existent_search_paths(),
+            parallel=not query_arguments.check_arguments.sequential,
+            profiling_output=profiling_output,
+            memory_profiling_output=memory_profiling_output,
+            debug=query_arguments.check_arguments.debug,
         ),
-        query=query,
-        no_validation_on_class_lookup_failure=no_validation_on_class_lookup_failure,
+        query=query_arguments.query,
+        no_validation_on_class_lookup_failure=query_arguments.no_validation_on_class_lookup_failure,
     )
 
 
 @contextlib.contextmanager
 def create_no_daemon_arguments_and_cleanup(
     configuration: frontend_configuration.Base,
-    query_str: str,
-    no_validation_on_class_lookup_failure: bool,
+    query_arguments: command_arguments.QueryArguments,
 ) -> Iterator[Arguments]:
-    arguments = _create_no_daemon_query_arguments(
-        configuration, query_str, no_validation_on_class_lookup_failure
-    )
+    arguments = _create_no_daemon_query_arguments(configuration, query_arguments)
     try:
         yield arguments
     finally:
@@ -87,8 +104,7 @@ def create_no_daemon_arguments_and_cleanup(
 
 def execute_query(
     configuration: frontend_configuration.Base,
-    query_text: str,
-    no_validation_on_class_lookup_failure: bool,
+    query_arguments: command_arguments.QueryArguments,
 ) -> Optional[query_response.Response]:
 
     binary_location = configuration.get_binary_location(download_if_needed=True)
@@ -98,7 +114,7 @@ def execute_query(
         )
 
     with create_no_daemon_arguments_and_cleanup(
-        configuration, query_text, no_validation_on_class_lookup_failure
+        configuration, query_arguments
     ) as arguments, backend_arguments.temporary_argument_file(
         arguments
     ) as argument_file_path, backend_arguments.backend_log_file(

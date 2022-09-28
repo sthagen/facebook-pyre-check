@@ -3,10 +3,20 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+"""
+TODO(T132414938) Add a module-level docstring
+"""
+
+
 import json
 import logging
 
-from .. import configuration as configuration_module, identifiers, log
+from .. import (
+    command_arguments,
+    configuration as configuration_module,
+    identifiers,
+    log,
+)
 
 from . import (
     commands,
@@ -90,15 +100,12 @@ def run_query(
 
 def run(
     configuration: configuration_module.Configuration,
-    query_text: str,
-    no_daemon: bool,
-    no_validation_on_class_lookup_failure: bool,
+    query_arguments: command_arguments.QueryArguments,
 ) -> commands.ExitCode:
-    if no_daemon:
+    if query_arguments.no_daemon:
         response = no_daemon_query.execute_query(
             frontend_configuration.OpenSource(configuration),
-            query_text,
-            no_validation_on_class_lookup_failure,
+            query_arguments,
         )
         if response is not None:
             log.stdout.write(json.dumps(response.payload))
@@ -106,4 +113,6 @@ def run(
         else:
             return commands.ExitCode.FAILURE
     else:
-        return run_query(frontend_configuration.OpenSource(configuration), query_text)
+        return run_query(
+            frontend_configuration.OpenSource(configuration), query_arguments.query
+        )

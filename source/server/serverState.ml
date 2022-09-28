@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* TODO(T132410158) Add a module-level doc comment. *)
+
 open Core
 open Analysis
 
@@ -13,7 +15,9 @@ module Subscriptions = struct
 
   let create () = String.Table.create ()
 
-  let add ~name ~subscription subscriptions = Hashtbl.set subscriptions ~key:name ~data:subscription
+  let add ~subscription subscriptions =
+    Hashtbl.set subscriptions ~key:(Subscription.name_of subscription) ~data:subscription
+
 
   let get ~name subscriptions = Hashtbl.find subscriptions name
 

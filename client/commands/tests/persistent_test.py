@@ -41,10 +41,13 @@ from ..language_server_features import (
     HoverAvailability,
     LanguageServerFeatures,
     ReferencesAvailability,
+    StatusUpdatesAvailability,
     TypeCoverageAvailability,
     TypeErrorsAvailability,
 )
 from ..persistent import (
+    ClientStatusMessageHandler,
+    ClientTypeErrorHandler,
     CONSECUTIVE_START_ATTEMPT_THRESHOLD,
     InitializationExit,
     InitializationFailure,
@@ -55,7 +58,7 @@ from ..persistent import (
     type_error_to_diagnostic,
     type_errors_to_diagnostics,
 )
-from ..pyre_server import PyreServer, read_lsp_request
+from ..pyre_language_server import PyreLanguageServer, read_lsp_request
 from ..pyre_server_options import PyreServerOptions, PyreServerOptionsReader
 from ..request_handler import (
     AbstractRequestHandler,
@@ -226,11 +229,11 @@ async def _create_server_for_request_test(
     opened_documents: Set[Path],
     handler: MockRequestHandler,
     server_options: PyreServerOptions = mock_initial_server_options,
-) -> Tuple[PyreServer, MemoryBytesWriter]:
+) -> Tuple[PyreLanguageServer, MemoryBytesWriter]:
     # set up the system under test
     fake_task_manager = background.TaskManager(WaitForeverBackgroundTask())
     output_writer: MemoryBytesWriter = MemoryBytesWriter()
-    server = PyreServer(
+    server = PyreLanguageServer(
         input_channel=create_memory_text_reader(""),
         output_channel=AsyncTextWriter(output_writer),
         server_state=ServerState(
@@ -526,10 +529,17 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
             # Server start option is not relevant to this test
             raise NotImplementedError()
 
+        client_output_channel = AsyncTextWriter(bytes_writer)
+
         server_handler = PyreDaemonLaunchAndSubscribeHandler(
             server_options_reader=fake_server_options_reader,
-            client_output_channel=AsyncTextWriter(bytes_writer),
             server_state=server_state,
+            client_status_message_handler=ClientStatusMessageHandler(
+                client_output_channel, server_state
+            ),
+            client_type_error_handler=ClientTypeErrorHandler(
+                client_output_channel, server_state
+            ),
         )
         await server_handler.handle_status_update_subscription(
             subscription.StatusUpdate(kind="Rebuilding")
@@ -555,7 +565,7 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
         )
 
         client_messages = [x.decode("utf-8") for x in bytes_writer.items()]
-        self.assertTrue(len(client_messages) >= 4)
+        self.assertTrue(len(client_messages) == 4)
         # Forward the rebuild status message
         self.assertIn("window/showStatus", client_messages[0])
         # Forward the recheck status message
@@ -566,7 +576,7 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
         self.assertIn("window/showStatus", client_messages[3])
 
     @setup.async_test
-    async def test_subscription_type_errors_disabled(self) -> None:
+    async def test_subscription_protocol_no_status_updates(self) -> None:
         server_state = ServerState(
             client_capabilities=lsp.ClientCapabilities(
                 window=lsp.WindowClientCapabilities(
@@ -575,7 +585,7 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
             ),
             server_options=_create_server_options(
                 language_server_features=LanguageServerFeatures(
-                    type_errors=TypeErrorsAvailability.DISABLED,
+                    status_updates=StatusUpdatesAvailability.DISABLED,
                 )
             ),
         )
@@ -585,10 +595,23 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
             # Server start option is not relevant to this test
             raise NotImplementedError()
 
+        client_output_channel = AsyncTextWriter(bytes_writer)
+
         server_handler = PyreDaemonLaunchAndSubscribeHandler(
             server_options_reader=fake_server_options_reader,
-            client_output_channel=AsyncTextWriter(bytes_writer),
             server_state=server_state,
+            client_status_message_handler=ClientStatusMessageHandler(
+                client_output_channel, server_state
+            ),
+            client_type_error_handler=ClientTypeErrorHandler(
+                client_output_channel, server_state
+            ),
+        )
+        await server_handler.handle_status_update_subscription(
+            subscription.StatusUpdate(kind="Rebuilding")
+        )
+        await server_handler.handle_status_update_subscription(
+            subscription.StatusUpdate(kind="Rechecking")
         )
         await server_handler.handle_type_error_subscription(
             subscription.TypeErrors(
@@ -606,9 +629,10 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
                 ]
             )
         )
+
         client_messages = [x.decode("utf-8") for x in bytes_writer.items()]
-        # When the type errors feature is disabled, we should ignore errors
-        self.assertEqual(len(client_messages), 0)
+        self.assertTrue(len(client_messages) == 1)
+        self.assertIn("textDocument/publishDiagnostics", client_messages[0])
 
     @setup.async_test
     async def test_subscription_error(self) -> None:
@@ -616,10 +640,16 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
             # Server start option is not relevant to this test
             raise NotImplementedError()
 
+        client_output_channel = AsyncTextWriter(MemoryBytesWriter())
         server_handler = PyreDaemonLaunchAndSubscribeHandler(
             server_options_reader=fake_server_options_reader,
-            client_output_channel=AsyncTextWriter(MemoryBytesWriter()),
             server_state=mock_server_state,
+            client_status_message_handler=ClientStatusMessageHandler(
+                client_output_channel, mock_server_state
+            ),
+            client_type_error_handler=ClientTypeErrorHandler(
+                client_output_channel, mock_server_state
+            ),
         )
         with self.assertRaises(PyreDaemonShutdown):
             await server_handler.handle_error_subscription(
@@ -638,10 +668,16 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
             # Server start option is not relevant to this test
             raise NotImplementedError()
 
+        client_output_channel = AsyncTextWriter(bytes_writer)
         server_handler = PyreDaemonLaunchAndSubscribeHandler(
             server_options_reader=fake_server_options_reader,
-            client_output_channel=AsyncTextWriter(bytes_writer),
             server_state=server_state,
+            client_status_message_handler=ClientStatusMessageHandler(
+                client_output_channel, server_state
+            ),
+            client_type_error_handler=ClientTypeErrorHandler(
+                client_output_channel, server_state
+            ),
         )
         await server_handler.handle_status_update_subscription(
             subscription.StatusUpdate(kind="Rebuilding")
@@ -651,15 +687,53 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
         )
 
         client_messages = [x.decode("utf-8") for x in bytes_writer.items()]
-        self.assertTrue(len(client_messages) >= 2)
+        self.assertTrue(len(client_messages) == 2)
         # Clear out diagnostics for rebuilding status
         self.assertIn('"diagnostics": []', client_messages[0])
         self.assertIn('"diagnostics": []', client_messages[1])
 
     @setup.async_test
+    async def test_busy_status_no_clear_diagnostics_if_no_type_errors(self) -> None:
+        path = Path("foo.py")
+        server_state = ServerState(
+            server_options=_create_server_options(
+                language_server_features=LanguageServerFeatures(
+                    type_errors=TypeErrorsAvailability.DISABLED,
+                ),
+            ),
+            diagnostics={path: []},
+        )
+        bytes_writer = MemoryBytesWriter()
+        client_output_channel = AsyncTextWriter(bytes_writer)
+
+        def fake_server_options_reader() -> PyreServerOptions:
+            # Server start option is not relevant to this test
+            raise NotImplementedError()
+
+        server_handler = PyreDaemonLaunchAndSubscribeHandler(
+            server_options_reader=fake_server_options_reader,
+            server_state=server_state,
+            client_status_message_handler=ClientStatusMessageHandler(
+                client_output_channel, server_state
+            ),
+            client_type_error_handler=ClientTypeErrorHandler(
+                client_output_channel, server_state
+            ),
+        )
+        await server_handler.handle_status_update_subscription(
+            subscription.StatusUpdate(kind="Rebuilding")
+        )
+        await server_handler.handle_status_update_subscription(
+            subscription.StatusUpdate(kind="Rechecking")
+        )
+
+        client_messages = [x.decode("utf-8") for x in bytes_writer.items()]
+        self.assertTrue(len(client_messages) == 0)
+
+    @setup.async_test
     async def test_open_triggers_pyre_restart(self) -> None:
         fake_task_manager = background.TaskManager(WaitForeverBackgroundTask())
-        server = PyreServer(
+        server = PyreLanguageServer(
             input_channel=create_memory_text_reader(""),
             output_channel=create_memory_text_writer(),
             server_state=mock_server_state,
@@ -685,7 +759,7 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
     @setup.async_test
     async def test_open_triggers_pyre_restart__limit_reached(self) -> None:
         fake_task_manager = background.TaskManager(WaitForeverBackgroundTask())
-        server = PyreServer(
+        server = PyreLanguageServer(
             input_channel=create_memory_text_reader(""),
             output_channel=create_memory_text_writer(),
             server_state=ServerState(
@@ -715,7 +789,7 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
     async def test_save_triggers_pyre_restart(self) -> None:
         test_path = Path("/foo.py")
         fake_task_manager = background.TaskManager(WaitForeverBackgroundTask())
-        server = PyreServer(
+        server = PyreLanguageServer(
             input_channel=create_memory_text_reader(""),
             output_channel=create_memory_text_writer(),
             server_state=ServerState(
@@ -740,7 +814,7 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
     async def test_save_triggers_pyre_restart__limit_reached(self) -> None:
         test_path = Path("/foo.py")
         fake_task_manager = background.TaskManager(WaitForeverBackgroundTask())
-        server = PyreServer(
+        server = PyreLanguageServer(
             input_channel=create_memory_text_reader(""),
             output_channel=create_memory_text_writer(),
             server_state=ServerState(
@@ -767,7 +841,7 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
     async def test_save_adds_path_to_queue(self) -> None:
         test_path = Path("/root/test.py")
         fake_task_manager = background.TaskManager(WaitForeverBackgroundTask())
-        server = PyreServer(
+        server = PyreLanguageServer(
             input_channel=create_memory_text_reader(""),
             output_channel=create_memory_text_writer(),
             server_state=ServerState(
@@ -927,6 +1001,7 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
         )
 
         bytes_writer = MemoryBytesWriter()
+        client_output_channel = AsyncTextWriter(bytes_writer)
         server_handler = PyreDaemonLaunchAndSubscribeHandler(
             server_options_reader=_create_server_options_reader(
                 binary="/bin/pyre",
@@ -940,12 +1015,17 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
                     socket_path=Path("irrelevant_socket_path.sock"),
                 ),
             ),
-            client_output_channel=AsyncTextWriter(bytes_writer),
             server_state=server_state,
+            client_status_message_handler=ClientStatusMessageHandler(
+                client_output_channel, server_state
+            ),
+            client_type_error_handler=ClientTypeErrorHandler(
+                client_output_channel, server_state
+            ),
         )
 
         with self.assertRaises(asyncio.IncompleteReadError):
-            await server_handler.subscribe_to_type_error(
+            await server_handler.subscribe(
                 # Intentionally inject a broken server response
                 create_memory_text_reader("derp"),
                 create_memory_text_writer(),
@@ -975,6 +1055,15 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
     @setup.async_test
     async def test_send_message_to_status_bar(self) -> None:
         bytes_writer = MemoryBytesWriter()
+        client_output_channel = AsyncTextWriter(bytes_writer)
+        server_state = ServerState(
+            client_capabilities=lsp.ClientCapabilities(
+                window=lsp.WindowClientCapabilities(
+                    status=lsp.ShowStatusRequestClientCapabilities(),
+                ),
+            ),
+            server_options=mock_initial_server_options,
+        )
         server_handler = PyreDaemonLaunchAndSubscribeHandler(
             server_options_reader=_create_server_options_reader(
                 binary="/bin/pyre",
@@ -988,17 +1077,15 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
                     socket_path=Path("irrelevant_socket_path.sock"),
                 ),
             ),
-            client_output_channel=AsyncTextWriter(bytes_writer),
-            server_state=ServerState(
-                client_capabilities=lsp.ClientCapabilities(
-                    window=lsp.WindowClientCapabilities(
-                        status=lsp.ShowStatusRequestClientCapabilities(),
-                    ),
-                ),
-                server_options=mock_initial_server_options,
+            server_state=server_state,
+            client_status_message_handler=ClientStatusMessageHandler(
+                client_output_channel, server_state
+            ),
+            client_type_error_handler=ClientTypeErrorHandler(
+                client_output_channel, server_state
             ),
         )
-        await server_handler.show_status_message_to_client(
+        await server_handler.client_status_message_handler.show_status_message_to_client(
             message="derp", level=lsp.MessageType.WARNING
         )
 
@@ -1027,7 +1114,7 @@ class PyreServerTest(testslide.TestCase):
                 json_rpc.Request(method="exit", parameters=None),
             ]
         )
-        server = PyreServer(
+        server = PyreLanguageServer(
             input_channel=input_channel,
             output_channel=create_memory_text_writer(),
             server_state=server_state,
@@ -1049,7 +1136,7 @@ class PyreServerTest(testslide.TestCase):
                 json_rpc.Request(method="exit", parameters=None),
             ]
         )
-        server = PyreServer(
+        server = PyreLanguageServer(
             input_channel=input_channel,
             output_channel=create_memory_text_writer(),
             server_state=server_state,
@@ -1069,7 +1156,7 @@ class PyreServerTest(testslide.TestCase):
                 json_rpc.Request(method="shutdown", parameters=None),
             ]
         )
-        server = PyreServer(
+        server = PyreLanguageServer(
             # Feed only a shutdown request to input channel
             input_channel=input_channel,
             # Always rasing in the output channel
@@ -1088,7 +1175,7 @@ class PyreServerTest(testslide.TestCase):
     async def test_exit_gracefully_on_channel_closure(self) -> None:
         server_state = mock_server_state
         noop_task_manager = background.TaskManager(NoOpBackgroundTask())
-        server = PyreServer(
+        server = PyreLanguageServer(
             # Feed nothing to input channel
             input_channel=create_memory_text_reader(""),
             # Always rasing in the output channel
@@ -1106,7 +1193,7 @@ class PyreServerTest(testslide.TestCase):
     @setup.async_test
     async def test_open_close(self) -> None:
         server_state = mock_server_state
-        server = PyreServer(
+        server = PyreLanguageServer(
             input_channel=create_memory_text_reader(""),
             output_channel=create_memory_text_writer(),
             server_state=server_state,
@@ -1161,7 +1248,7 @@ class PyreServerTest(testslide.TestCase):
                 default_message="pyre is on fire",
             )
         )
-        server = PyreServer(
+        server = PyreLanguageServer(
             input_channel=create_memory_text_reader(""),
             output_channel=AsyncTextWriter(output_writer),
             server_state=mock_server_state,
@@ -1194,7 +1281,7 @@ class PyreServerTest(testslide.TestCase):
         output_writer = MemoryBytesWriter()
         fake_pyre_manager = background.TaskManager(WaitForeverBackgroundTask())
         handler = MockRequestHandler(mock_type_coverage=None)
-        server = PyreServer(
+        server = PyreLanguageServer(
             input_channel=create_memory_text_reader(""),
             output_channel=AsyncTextWriter(output_writer),
             server_state=mock_server_state,

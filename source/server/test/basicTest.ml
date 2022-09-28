@@ -135,7 +135,12 @@ let test_basic context =
 
 let test_subscription context =
   let input_channel, output_channel = Lwt_io.pipe () in
-  let subscription = Subscription.create ~name:"foo" ~output_channel () in
+  let subscription =
+    Subscription.create
+      ~subscription_request:(Subscription.Request.SubscribeToTypeErrors "foo")
+      ~output_channel
+      ()
+  in
   assert_equal
     ~ctxt:context
     ~cmp:String.equal
@@ -159,7 +164,12 @@ exception FakeLwtIOException
 let test_subscription_output_channel_error_dropped _ =
   (* Fake an output channel that always raise exception. *)
   let output_channel = Lwt_io.make ~mode:Lwt_io.Output (fun _ _ _ -> raise FakeLwtIOException) in
-  let subscription = Subscription.create ~name:"foo" ~output_channel () in
+  let subscription =
+    Subscription.create
+      ~subscription_request:(Subscription.Request.SubscribeToTypeErrors "foo")
+      ~output_channel
+      ()
+  in
   (* This invocation should raise no error, even if sending any data to the output channel would
      fail. *)
   Subscription.send ~response:Response.Ok subscription
@@ -350,7 +360,7 @@ let test_on_server_socket_ready context =
          Lwt.return_unit)
 
 
-let test_subscription_responses client =
+let test_subscription_responses_with_type_errors client =
   let {
     ServerProperties.socket_path;
     configuration = { Configuration.Analysis.project_root; _ };
@@ -383,16 +393,16 @@ let test_subscription_responses client =
         ])
     |> Result.ok_or_failwith
   in
+  (* Create two subscriptions: one that listens for type errors, one that does not *)
   Client.subscribe
     client
     ~subscription:(Subscription.Request.SubscribeToTypeErrors "foo")
     ~expected_response:(Response.TypeErrors [error])
   >>= fun () ->
-  (* Verifies that we've managed to record the subscription in the server state. *)
+  (* Verifies that we've managed to record the subscriptions in the server state. *)
   assert_bool
     "Subscription `foo` recorded"
     (ServerState.Subscriptions.get subscriptions ~name:"foo" |> Option.is_some);
-
   (* Open another connection to the started server and send an incremental update message -- we
      can't reuse the connection from `client` for this update message since that connection has
      already been used to receive subscriptions. *)
@@ -404,9 +414,8 @@ let test_subscription_responses client =
     |> Lwt_io.write_line output_channel
   in
   Lwt_io.with_connection socket_address send_incremental_update
+  (* We should get rebuild and recheck notifications *)
   >>= fun () ->
-  (* After the incremental update message gets processed, the client should be able to receive a
-     notification from the subscription. *)
   Client.assert_subscription_response
     client
     ~expected:
@@ -416,21 +425,83 @@ let test_subscription_responses client =
     client
     ~expected:
       { Subscription.Response.name = "foo"; body = Response.(StatusUpdate ServerStatus.Rechecking) }
+  (* Only the type errors subscription should get type errors *)
   >>= fun () ->
   Client.assert_subscription_response
     client
     ~expected:{ Subscription.Response.name = "foo"; body = Response.TypeErrors [error] }
 
 
+let test_subscription_responses_no_type_errors client =
+  let {
+    ServerProperties.socket_path;
+    configuration = { Configuration.Analysis.project_root; _ };
+    _;
+  }
+    =
+    Client.get_server_properties client
+  in
+  let { ServerState.subscriptions; _ } = Client.current_server_state client in
+  let test_path = PyrePath.create_relative ~root:project_root ~relative:"test.py" in
+  (* Create two subscriptions: one that listens for type errors, one that does not *)
+  Client.subscribe
+    client
+    ~subscription:(Subscription.Request.SubscribeToStateChanges "foo")
+    ~expected_response:Response.Ok
+  >>= fun () ->
+  (* Verifies that we've managed to record the subscriptions in the server state. *)
+  assert_bool
+    "Subscription `foo` recorded"
+    (ServerState.Subscriptions.get subscriptions ~name:"foo" |> Option.is_some);
+  (* Open another connection to the started server and send an incremental update message -- we
+     can't reuse the connection from `client` for this update message since that connection has
+     already been used to receive subscriptions. *)
+  let socket_address = Lwt_unix.ADDR_UNIX (PyrePath.absolute socket_path) in
+  let send_incremental_update (_, output_channel) =
+    Request.IncrementalUpdate [PyrePath.absolute test_path]
+    |> Request.to_yojson
+    |> Yojson.Safe.to_string
+    |> Lwt_io.write_line output_channel
+  in
+  Lwt_io.with_connection socket_address send_incremental_update
+  (* We should get rebuild and recheck notifications *)
+  >>= fun () ->
+  Client.assert_subscription_response
+    client
+    ~expected:
+      { Subscription.Response.name = "foo"; body = Response.(StatusUpdate ServerStatus.Rebuilding) }
+  >>= fun () ->
+  Client.assert_subscription_response
+    client
+    ~expected:
+      { Subscription.Response.name = "foo"; body = Response.(StatusUpdate ServerStatus.Rechecking) }
+  (* Send a second update (this is the easiest way to verify that there is no type errors response *)
+  >>= fun () ->
+  Lwt_io.with_connection socket_address send_incremental_update
+  >>= fun () ->
+  Client.assert_subscription_response
+    client
+    ~expected:
+      { Subscription.Response.name = "foo"; body = Response.(StatusUpdate ServerStatus.Rebuilding) }
+  >>= fun () ->
+  Client.assert_subscription_response
+    client
+    ~expected:
+      { Subscription.Response.name = "foo"; body = Response.(StatusUpdate ServerStatus.Rechecking) }
+
+
 let test_subscription_responses context =
-  ScratchProject.setup
-    ~context
-    ~include_helper_builtins:false
+  let sources =
     ["test.py", {|
           def foo(x: int) -> str:
             return x + 1
         |}]
-  |> ScratchProject.test_server_with ~f:test_subscription_responses
+  in
+  ScratchProject.setup ~context ~include_helper_builtins:false sources
+  |> ScratchProject.test_server_with ~f:test_subscription_responses_with_type_errors
+  >>= fun () ->
+  ScratchProject.setup ~context ~include_helper_builtins:false sources
+  |> ScratchProject.test_server_with ~f:test_subscription_responses_no_type_errors
 
 
 let () =

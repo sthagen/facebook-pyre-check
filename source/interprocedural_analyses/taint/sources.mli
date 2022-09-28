@@ -23,6 +23,8 @@ type t =
 
 val name : string
 
+val make_transform : local:TaintTransforms.t -> global:TaintTransforms.t -> base:t -> t
+
 val ignore_kind_at_call : t -> bool
 
 val apply_call : t -> t
@@ -60,10 +62,6 @@ val to_sanitized_source_exn : t -> SanitizeTransform.Source.t
 val from_sanitized_source : SanitizeTransform.Source.t -> t
 
 val extract_sanitize_transforms : t -> SanitizeTransformSet.t
-
-val apply_sanitize_transforms : SanitizeTransformSet.t -> t -> t option
-
-val apply_transforms : TaintTransforms.t -> TaintTransforms.Order.t -> t -> t option
 
 val get_named_transforms : t -> TaintTransform.t list
 

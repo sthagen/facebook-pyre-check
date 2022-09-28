@@ -5,6 +5,15 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* ClassModels: infers a set of models for methods of a given class.
+ *
+ * For instance, this defines the behavior of `NamedTuple` and dataclasses,
+ * rather than trying to infer the behavior from the actual implementation,
+ * which is highly dynamic and not well suited for static analysis (e.g,
+ * `NamedTuple` uses `exec`:
+ * https://hg.python.org/cpython/file/b14308524cff/Lib/collections/__init__.py#l368).
+ *)
+
 open Core
 open Pyre
 open Ast
@@ -18,11 +27,16 @@ let infer ~environment ~user_models =
   let global_resolution = TypeEnvironment.ReadOnly.global_resolution environment in
   let add_parameter_tito position existing_state attribute =
     let leaf =
-      BackwardTaint.singleton Sinks.LocalReturn Frame.initial
+      BackwardTaint.singleton local_return_call_info Sinks.LocalReturn Frame.initial
       |> BackwardState.Tree.create_leaf
-      |> BackwardState.Tree.transform Features.ReturnAccessPathSet.Self Map ~f:(fun _ ->
-             Features.ReturnAccessPathSet.singleton
-               [Abstract.TreeDomain.Label.create_name_index attribute])
+      |> BackwardState.Tree.transform Features.ReturnAccessPathTree.Self Map ~f:(fun _ ->
+             (* TODO(T118287187): Use the maximum collapse depth here. *)
+             Features.ReturnAccessPathTree.create
+               [
+                 Part
+                   ( Features.ReturnAccessPathTree.Path,
+                     ([Abstract.TreeDomain.Label.create_name_index attribute], 0) );
+               ])
     in
     BackwardState.assign
       ~root:

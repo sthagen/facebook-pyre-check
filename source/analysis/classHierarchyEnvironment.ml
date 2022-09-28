@@ -5,6 +5,21 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* ClassHierarchyEnvironment: layer of the environment stack
+ * - upstream: AliasEnvironment
+ * - downstream: ClassMetadataEnvironment
+ * - key: the name type, as an IndexTracker.Value
+ * - value: ClassHierarchy.Target.t
+ *
+ * The ClassHierarchyEnvironment tracks the direct parents
+ * of types.
+ *
+ * It is keyed on IndexTracker.Value, which is an int value
+ * that "interns" class names to make lookups cheaper; we want
+ * fast lookups because we have to do a graph search when computing
+ * all ancestors of classes in ClassMetadataEnvironment.
+ *)
+
 open Core
 open Ast
 open Pyre

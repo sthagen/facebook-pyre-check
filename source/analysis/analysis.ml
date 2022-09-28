@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* TODO(T132410158) Add a module-level doc comment. *)
+
 module AliasEnvironment = AliasEnvironment
 module AnnotatedGlobalEnvironment = AnnotatedGlobalEnvironment
 module AttributeResolution = AttributeResolution
@@ -45,6 +47,8 @@ module NamedTuple = NamedTuple
 module Postprocessing = Postprocessing
 module Preprocessing = Preprocessing
 module Refinement = Refinement
+module ReadOnlyness = ReadOnlyness
+module ReadOnlyCheck = ReadOnlyCheck
 module Resolution = Resolution
 module Scope = Scope
 module SharedMemoryKeys = SharedMemoryKeys

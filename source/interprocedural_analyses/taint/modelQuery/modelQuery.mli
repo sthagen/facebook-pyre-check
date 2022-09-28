@@ -30,6 +30,19 @@ module ModelQueryRegistryMap : sig
     Taint.Registry.t
 end
 
+module GlobalVariableQueries : sig
+  val get_globals_and_annotations
+    :  environment:Analysis.TypeEnvironment.ReadOnly.t ->
+    Ast.Reference.t list
+
+  val apply_global_query_rule
+    :  verbose:bool ->
+    resolution:Analysis.GlobalResolution.t ->
+    rule:Taint.ModelParser.Internal.ModelQuery.rule ->
+    name:Ast.Reference.t ->
+    Taint.ModelParser.Internal.taint_annotation list Core.String.Map.t
+end
+
 module DumpModelQueryResults : sig
   val dump_to_string : models_and_names:ModelQueryRegistryMap.t -> string
 
@@ -62,9 +75,9 @@ val apply_attribute_query_rule
 val apply_all_rules
   :  resolution:Analysis.Resolution.t ->
   scheduler:Scheduler.t ->
-  configuration:Taint.TaintConfiguration.t ->
+  taint_configuration:Taint.TaintConfiguration.SharedMemory.t ->
   class_hierarchy_graph:Interprocedural.ClassHierarchyGraph.SharedMemory.t ->
-  source_sink_filter:Taint.TaintConfiguration.SourceSinkFilter.t option ->
+  source_sink_filter:Taint.SourceSinkFilter.t option ->
   rules:Taint.ModelParser.Internal.ModelQuery.rule list ->
   callables:Interprocedural.Target.t list ->
   stubs:Interprocedural.Target.HashSet.t ->
@@ -72,11 +85,11 @@ val apply_all_rules
   ModelQueryRegistryMap.t * Taint.ModelVerificationError.t list
 
 val generate_models_from_queries
-  :  configuration:Taint.TaintConfiguration.t ->
+  :  taint_configuration:Taint.TaintConfiguration.SharedMemory.t ->
   class_hierarchy_graph:Interprocedural.ClassHierarchyGraph.SharedMemory.t ->
   scheduler:Scheduler.t ->
   environment:Analysis.TypeEnvironment.ReadOnly.t ->
-  source_sink_filter:Taint.TaintConfiguration.SourceSinkFilter.t option ->
+  source_sink_filter:Taint.SourceSinkFilter.t option ->
   callables:Interprocedural.Target.t list ->
   stubs:Interprocedural.Target.t Base.Hash_set.t ->
   Taint.ModelParser.Internal.ModelQuery.rule list ->

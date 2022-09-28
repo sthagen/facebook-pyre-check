@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* Taint: here we expose modules for the `pyrelib.interprocedural` library *)
+
 module FixpointAnalysis = FixpointAnalysis
 module Target = Target
 module CallGraph = CallGraph

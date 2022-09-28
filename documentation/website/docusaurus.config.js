@@ -83,7 +83,7 @@ module.exports = {
         'Support Ukraine 🇺🇦 <a target="_blank" rel="noopener noreferrer" href="https://opensource.fb.com/support-ukraine"> Help Provide Humanitarian Aid to Ukraine</a>.',
       backgroundColor: '#20232a',
       textColor: '#fff',
-      isCloseable: false,
+      isCloseable: true,
     },
     colorMode: {
       defaultMode: 'light',
@@ -113,7 +113,7 @@ module.exports = {
           internal: [
             {
               to: 'docs/fb/development-getting-started',
-              label: 'Internal',
+              label: 'Development',
               position: 'left',
             },
           ],
@@ -128,11 +128,56 @@ module.exports = {
     },
     footer: {
       logo: {
-        alt: 'Facebook Open Source Logo',
-        src: 'https://docusaurus.io/img/oss_logo.png',
-        href: 'https://opensource.facebook.com/',
+        alt: 'Meta Open Source Logo',
+        src: 'img/meta_open_source_logo.svg',
+        href: 'https://opensource.fb.com/',
       },
       links: [
+        {
+          title: 'Learn',
+          items: [
+            {
+              label: 'Getting Started',
+              href: 'docs/getting-started',
+              target: '_blank',
+              rel: 'noreferrer noopener',
+            },
+            {
+              label: 'Types in Python',
+              href: 'docs/types-in-python',
+              target: '_blank',
+              rel: 'noreferrer noopener',
+            },
+          ],
+        },
+        {
+          title: 'Community',
+          items: [
+            {
+              label: 'GitHub',
+              href: 'https://github.com/facebook/pyre-check',
+              target: '_blank',
+              rel: 'noreferrer noopener',
+            },
+            {
+              label: 'Issues',
+              href: 'https://github.com/facebook/pyre-check/issues',
+              target: '_blank',
+              rel: 'noreferrer noopener',
+            },
+          ],
+        },
+        {
+          title: 'More',
+          items: [
+            {
+              label: 'Change Log',
+              href: 'docs/change-log',
+              target: '_blank',
+              rel: 'noreferrer noopener',
+            },
+          ],
+        },
         {
           title: 'Legal',
           // Please do not remove the privacy and terms, it's a legal requirement.

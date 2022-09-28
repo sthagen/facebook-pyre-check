@@ -14,22 +14,22 @@ open Core
 let test_no_errors _ =
   let open Issue in
   let source_tree_a =
-    ForwardTaint.singleton (Sources.NamedSource "Demo") Frame.initial
+    ForwardTaint.singleton CallInfo.declaration (Sources.NamedSource "Demo") Frame.initial
     |> ForwardState.Tree.create_leaf
     |> ForwardState.Tree.prepend [Abstract.TreeDomain.Label.Index "a"]
   in
   let source_tree_b =
-    ForwardTaint.singleton (Sources.NamedSource "Test") Frame.initial
+    ForwardTaint.singleton CallInfo.declaration (Sources.NamedSource "Test") Frame.initial
     |> ForwardState.Tree.create_leaf
     |> ForwardState.Tree.prepend [Abstract.TreeDomain.Label.Index "b"]
   in
   let sink_tree_a =
-    BackwardTaint.singleton (Sinks.NamedSink "Test") Frame.initial
+    BackwardTaint.singleton CallInfo.declaration (Sinks.NamedSink "Test") Frame.initial
     |> BackwardState.Tree.create_leaf
     |> BackwardState.Tree.prepend [Abstract.TreeDomain.Label.Index "a"]
   in
   let sink_tree_b =
-    BackwardTaint.singleton (Sinks.NamedSink "Demo") Frame.initial
+    BackwardTaint.singleton CallInfo.declaration (Sinks.NamedSink "Demo") Frame.initial
     |> BackwardState.Tree.create_leaf
     |> BackwardState.Tree.prepend [Abstract.TreeDomain.Label.Index "b"]
   in
@@ -52,7 +52,11 @@ let test_no_errors _ =
         ~source_tree
         ~sink_tree
     in
-    let errors = Candidates.generate_issues candidates ~define |> List.map ~f:to_error in
+    let taint_configuration = TaintConfiguration.Heap.default in
+    let errors =
+      Candidates.generate_issues candidates ~taint_configuration ~define
+      |> List.map ~f:(to_error ~taint_configuration)
+    in
     assert_equal
       ~msg:"Errors"
       ~printer:(fun errors -> Sexp.to_string [%message (errors : Interprocedural.Error.t list)])
@@ -69,12 +73,12 @@ let test_no_errors _ =
 let test_errors _ =
   let open Issue in
   let source_tree ~field ~source =
-    ForwardTaint.singleton (Sources.NamedSource source) Frame.initial
+    ForwardTaint.singleton CallInfo.declaration (Sources.NamedSource source) Frame.initial
     |> ForwardState.Tree.create_leaf
     |> ForwardState.Tree.prepend [Abstract.TreeDomain.Label.Index field]
   in
   let sink_tree ~field ~sink =
-    BackwardTaint.singleton (Sinks.NamedSink sink) Frame.initial
+    BackwardTaint.singleton CallInfo.declaration (Sinks.NamedSink sink) Frame.initial
     |> BackwardState.Tree.create_leaf
     |> BackwardState.Tree.prepend [Abstract.TreeDomain.Label.Index field]
   in
@@ -105,7 +109,11 @@ let test_errors _ =
         ~source_tree
         ~sink_tree
     in
-    let errors = Candidates.generate_issues candidates ~define |> List.map ~f:to_error in
+    let taint_configuration = TaintConfiguration.Heap.default in
+    let errors =
+      Candidates.generate_issues candidates ~taint_configuration ~define
+      |> List.map ~f:(to_error ~taint_configuration)
+    in
     assert_equal
       ~msg:"Error"
       ~printer:(List.to_string ~f:Int.to_string)

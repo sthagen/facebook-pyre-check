@@ -5,6 +5,9 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* TaintProfiler: a small helper to track the performance of the forward or
+ * backward taint analysis of a callable. *)
+
 open Ast
 open Core
 open Pyre
@@ -41,6 +44,7 @@ type profiler = {
 
 type t = profiler option
 
+(* A profiler that does nothing. *)
 let none = None
 
 let create () =

@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* TODO(T132410158) Add a module-level doc comment. *)
+
 open Core
 module Gc = Caml.Gc
 module Set = Caml.Set
@@ -119,6 +121,8 @@ let report_statistics () =
   Measure.print_stats ();
   Measure.print_distributions ()
 
+
+let is_initialized () = Option.is_some !configuration
 
 exception TarError of string
 

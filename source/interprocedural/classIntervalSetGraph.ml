@@ -5,12 +5,20 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* ClassHierarchyGraph: represents a mapping from a class name to its class
+ * interval set.
+ *
+ * This can be used as a traditional ocaml value using the `Heap` module, and
+ * stored in shared memory using the `SharedMemory` module.
+ *)
+
 open ClassHierarchyGraph
 
 type dfs_state =
   | Grey
   | Black
 
+(** Mapping from a class name to its class interval set, stored in the ocaml heap. *)
 module Heap = struct
   type t = ClassIntervalSet.t ClassHierarchyGraph.ClassNameMap.t
 
@@ -101,6 +109,7 @@ module Heap = struct
     ClassNameMap.fold add_interval_with_cross_edges intervals ClassNameMap.empty
 end
 
+(** Mapping from a class name to its class interval set, stored in shared memory. *)
 module SharedMemory = struct
   include
     Memory.WithCache.Make
@@ -115,6 +124,7 @@ module SharedMemory = struct
 
   type t = Handle
 
+  (** Return the current class interval graph in shared memory. Only exposed for tests. *)
   let get_for_testing_only () = Handle
 
   let add Handle ~class_name ~interval = add class_name interval

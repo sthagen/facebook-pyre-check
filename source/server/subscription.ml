@@ -5,11 +5,16 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* TODO(T132410158) Add a module-level doc comment. *)
+
 open Core
 module ServerResponse = Response
 
 module Request = struct
-  type t = SubscribeToTypeErrors of string [@@deriving sexp, compare, yojson { strict = false }]
+  type t =
+    | SubscribeToTypeErrors of string
+    | SubscribeToStateChanges of string
+  [@@deriving sexp, compare, yojson { strict = false }]
 end
 
 module Response = struct
@@ -36,16 +41,33 @@ module Response = struct
     Lwt.catch (fun () -> send ~output_channel response) on_io_exception
 end
 
+module Kind = struct
+  type t =
+    | TypeErrors
+    | StateChanges
+end
+
 type t = {
   name: string;
+  kind: Kind.t;
   output_channel: Lwt_io.output_channel;
 }
 
-let create ~name ~output_channel () = { name; output_channel }
+let wants_type_errors { kind; _ } =
+  match kind with
+  | TypeErrors -> true
+  | StateChanges -> false
+
+
+let create ~subscription_request ~output_channel () =
+  match subscription_request with
+  | Request.SubscribeToTypeErrors name -> { name; kind = Kind.TypeErrors; output_channel }
+  | Request.SubscribeToStateChanges name -> { name; kind = Kind.StateChanges; output_channel }
+
 
 let name_of { name; _ } = name
 
-let send ~response { name; output_channel } =
+let send ~response { name; output_channel; _ } =
   if not (Lwt_io.is_closed output_channel) then (
     let open Lwt.Infix in
     Response.send_ignoring_errors ~output_channel { Response.name; body = response }
