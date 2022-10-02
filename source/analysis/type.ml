@@ -1902,8 +1902,12 @@ let is_none = function
   | _ -> false
 
 
-let is_noreturn = function
-  | Primitive "typing.NoReturn" -> true
+let is_noreturn_or_never = function
+  | Primitive "typing.NoReturn"
+  | Primitive "NoReturn"
+  | Primitive "Never"
+  | Primitive "typing.Never" ->
+      true
   | _ -> false
 
 

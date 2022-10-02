@@ -89,7 +89,7 @@ class DocumentUriTest(testslide.TestCase):
 
 class LSPInputOutputTest(testslide.TestCase):
     @setup.async_test
-    async def test_read_lsp(self) -> None:
+    async def test_read_json_rpc(self) -> None:
         async def assert_parses(input: str, expected: json_rpc.Request) -> None:
             actual = await read_json_rpc(create_memory_text_reader(input))
             self.assertEqual(actual, expected)
@@ -107,6 +107,11 @@ class LSPInputOutputTest(testslide.TestCase):
         await assert_not_parsed("Content-Length: derp\r\n\r\n{}")
         await assert_not_parsed(
             'Content-Length: 4\r\n\r\n{"jsonrpc": "2.0", "id": 0, "method": "foo"}'
+        )
+        await assert_parses(
+            'Content-Length: 27\r\n\r\n{"jsonrpc": "2.0", "id": 0}'
+            'Content-Length: 44\r\n\r\n{"jsonrpc": "2.0", "id": 0, "method": "foo"}',
+            expected=json_rpc.Request(id=0, method="foo"),
         )
         await assert_parses(
             'Content-Length: 44\r\n\r\n{"jsonrpc": "2.0", "id": 0, "method": "foo"}',

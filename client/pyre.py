@@ -34,6 +34,7 @@ from . import (
     identifiers,
     log,
 )
+from .commands import language_server_features
 from .version import __version__
 
 
@@ -276,41 +277,6 @@ def _check_open_source_version(
     help="Power of the hash table in shared memory.",
     hidden=True,
 )
-@click.option(
-    "--enable-hover/--no-enable-hover",
-    is_flag=True,
-    help="Whether Pyre should show types on hover in the IDE.",
-    default=None,
-    hidden=True,
-)
-@click.option(
-    "--enable-go-to-definition/--no-enable-go-to-definition",
-    is_flag=True,
-    help="Whether Pyre should support go-to-definition in the IDE.",
-    default=None,
-    hidden=True,
-)
-@click.option(
-    "--enable-find-symbols/--no-enable-find-symbols",
-    is_flag=True,
-    help="Whether Pyre should support document-symbols in the IDE.",
-    default=None,
-    hidden=True,
-)
-@click.option(
-    "--enable-find-all-references/--no-enable-all-references",
-    is_flag=True,
-    help="Whether Pyre should support find-all-references in the IDE.",
-    default=None,
-    hidden=True,
-)
-@click.option(
-    "--enable-consume-unsaved-changes/--no-enable-consume-unsaved-changes",
-    is_flag=True,
-    help="Whether Pyre should run on unsaved changes in the IDE.",
-    default=None,
-    hidden=True,
-)
 @click.option("--number-of-workers", type=int, help="Number of parallel workers to use")
 def pyre(
     context: click.Context,
@@ -339,11 +305,6 @@ def pyre(
     shared_memory_dependency_table_power: Optional[int],
     shared_memory_hash_table_power: Optional[int],
     number_of_workers: Optional[int],
-    enable_hover: Optional[bool],
-    enable_go_to_definition: Optional[bool],
-    enable_find_symbols: Optional[bool],
-    enable_find_all_references: Optional[bool],
-    enable_consume_unsaved_changes: Optional[bool],
 ) -> None:
     arguments = command_arguments.CommandArguments(
         local_configuration=None,
@@ -381,12 +342,7 @@ def pyre(
         shared_memory_dependency_table_power=shared_memory_dependency_table_power,
         shared_memory_hash_table_power=shared_memory_hash_table_power,
         number_of_workers=number_of_workers,
-        enable_hover=enable_hover,
         use_buck2=None,
-        enable_go_to_definition=enable_go_to_definition,
-        enable_find_symbols=enable_find_symbols,
-        enable_find_all_references=enable_find_all_references,
-        enable_consume_unsaved_changes=enable_consume_unsaved_changes,
     )
     context.ensure_object(dict)
     context.obj["arguments"] = arguments
@@ -513,6 +469,11 @@ def pyre(
     help="Limits the depth of the return access path tree within loops.",
 )
 @click.option(
+    "--maximum-tito-collapse-depth",
+    type=int,
+    help="Limits the depth of taint trees after applying taint-in-taitn-out.",
+)
+@click.option(
     "--maximum-tito-positions",
     type=int,
     help="Limits the number of tito positions.",
@@ -564,6 +525,7 @@ def analyze(
     maximum_tree_depth_after_widening: Optional[int],
     maximum_return_access_path_width: Optional[int],
     maximum_return_access_path_depth_after_widening: Optional[int],
+    maximum_tito_collapse_depth: Optional[int],
     maximum_tito_positions: Optional[int],
     maximum_overrides_to_analyze: Optional[int],
     maximum_trace_length: Optional[int],
@@ -602,6 +564,7 @@ def analyze(
             maximum_tree_depth_after_widening=maximum_tree_depth_after_widening,
             maximum_return_access_path_width=maximum_return_access_path_width,
             maximum_return_access_path_depth_after_widening=maximum_return_access_path_depth_after_widening,
+            maximum_tito_collapse_depth=maximum_tito_collapse_depth,
             maximum_tito_positions=maximum_tito_positions,
             maximum_overrides_to_analyze=maximum_overrides_to_analyze,
             maximum_tito_depth=maximum_tito_depth,
@@ -875,85 +838,72 @@ def kill(context: click.Context, with_fire: bool) -> int:
 @click.option(
     "--hover",
     type=click.Choice(
-        [kind.value for kind in commands.language_server_features.HoverAvailability]
+        [kind.value for kind in language_server_features.HoverAvailability]
     ),
+    default=language_server_features.LanguageServerFeatures.hover.value,
     help="Availability of the hover langauge server feature",
     hidden=True,
 )
 @click.option(
     "--definition",
     type=click.Choice(
-        [
-            kind.value
-            for kind in commands.language_server_features.DefinitionAvailability
-        ]
+        [kind.value for kind in language_server_features.DefinitionAvailability]
     ),
+    default=language_server_features.LanguageServerFeatures.definition.value,
     help="Availability of the definition langauge server feature",
     hidden=True,
 )
 @click.option(
     "--document-symbols",
     type=click.Choice(
-        [
-            kind.value
-            for kind in commands.language_server_features.DocumentSymbolsAvailability
-        ]
+        [kind.value for kind in language_server_features.DocumentSymbolsAvailability]
     ),
+    default=language_server_features.LanguageServerFeatures.document_symbols.value,
     help="Availability of the document symbols langauge server feature",
     hidden=True,
 )
 @click.option(
     "--references",
     type=click.Choice(
-        [
-            kind.value
-            for kind in commands.language_server_features.DocumentSymbolsAvailability
-        ]
+        [kind.value for kind in language_server_features.DocumentSymbolsAvailability]
     ),
+    default=language_server_features.LanguageServerFeatures.references.value,
     help="Availability of the references langauge server feature",
     hidden=True,
 )
 @click.option(
     "--status-updates",
     type=click.Choice(
-        [
-            kind.value
-            for kind in commands.language_server_features.StatusUpdatesAvailability
-        ]
+        [kind.value for kind in language_server_features.StatusUpdatesAvailability]
     ),
+    default=language_server_features.LanguageServerFeatures.status_updates.value,
     help="Availability of the status updates language server feature",
-    hidden=True,
-)
-@click.option(
-    "--type-errors",
-    type=click.Choice(
-        [
-            kind.value
-            for kind in commands.language_server_features.TypeErrorsAvailability
-        ]
-    ),
-    help="Availability of the type errors langauge server feature",
     hidden=True,
 )
 @click.option(
     "--type-coverage",
     type=click.Choice(
-        [
-            kind.value
-            for kind in commands.language_server_features.TypeCoverageAvailability
-        ]
+        [kind.value for kind in language_server_features.TypeCoverageAvailability]
     ),
+    default=language_server_features.LanguageServerFeatures.type_coverage.value,
     help="Availability of the type coverage langauge server feature",
+    hidden=True,
+)
+@click.option(
+    "--type-errors",
+    type=click.Choice(
+        [kind.value for kind in language_server_features.TypeErrorsAvailability]
+    ),
+    default=language_server_features.LanguageServerFeatures.type_errors.value,
+    help="Availability of the type errors langauge server feature",
     hidden=True,
 )
 @click.option(
     "--unsaved-changes",
     type=click.Choice(
-        [
-            kind.value
-            for kind in commands.language_server_features.DocumentSymbolsAvailability
-        ]
+        [kind.value for kind in language_server_features.DocumentSymbolsAvailability]
     ),
+    default=language_server_features.LanguageServerFeatures.unsaved_changes.value,
     help="Availability support for Pyre analyzing unsaved editor buffers",
     hidden=True,
 )
@@ -963,14 +913,14 @@ def persistent(
     flavor: Optional[str],
     skip_initial_type_check: bool,
     use_lazy_module_tracking: bool,
-    hover: Optional[str],
-    definition: Optional[str],
-    document_symbols: Optional[str],
-    references: Optional[str],
-    status_updates: Optional[str],
-    type_errors: Optional[str],
-    type_coverage: Optional[str],
-    unsaved_changes: Optional[str],
+    hover: str,
+    definition: str,
+    document_symbols: str,
+    references: str,
+    status_updates: str,
+    type_coverage: str,
+    type_errors: str,
+    unsaved_changes: str,
 ) -> int:
     """
     Entry point for IDE integration to Pyre. Communicates with a Pyre server using
@@ -1001,37 +951,25 @@ def persistent(
                 )
             ),
             enabled_telemetry_event=False,
-            hover=None
-            if hover is None
-            else commands.language_server_features.HoverAvailability(hover),
-            definition=None
-            if definition is None
-            else commands.language_server_features.DefinitionAvailability(definition),
-            document_symbols=None
-            if document_symbols is None
-            else commands.language_server_features.DocumentSymbolsAvailability(
-                document_symbols
-            ),
-            references=None
-            if references is None
-            else commands.language_server_features.ReferencesAvailability(references),
-            status_updates=commands.language_server_features.StatusUpdatesAvailability.ENABLED
-            if status_updates is None
-            else commands.language_server_features.StatusUpdatesAvailability(
-                status_updates
-            ),
-            type_errors=commands.language_server_features.TypeErrorsAvailability.ENABLED
-            if type_errors is None
-            else commands.language_server_features.TypeErrorsAvailability(type_errors),
-            type_coverage=None
-            if type_coverage is None
-            else commands.language_server_features.TypeCoverageAvailability(
-                type_coverage
-            ),
-            unsaved_changes=None
-            if unsaved_changes is None
-            else commands.language_server_features.UnsavedChangesAvailability(
-                unsaved_changes
+            language_server_features=language_server_features.LanguageServerFeatures(
+                hover=language_server_features.HoverAvailability(hover),
+                definition=language_server_features.DefinitionAvailability(definition),
+                document_symbols=language_server_features.DocumentSymbolsAvailability(
+                    document_symbols,
+                ),
+                references=language_server_features.ReferencesAvailability(references),
+                status_updates=language_server_features.StatusUpdatesAvailability(
+                    status_updates
+                ),
+                type_coverage=language_server_features.TypeCoverageAvailability(
+                    type_coverage
+                ),
+                type_errors=language_server_features.TypeErrorsAvailability(
+                    type_errors
+                ),
+                unsaved_changes=language_server_features.UnsavedChangesAvailability(
+                    unsaved_changes
+                ),
             ),
         ),
         remote_logging=commands.backend_arguments.RemoteLogging.create(

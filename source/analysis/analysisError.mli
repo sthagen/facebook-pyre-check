@@ -247,6 +247,27 @@ and tuple_concatenation_problem =
   | UnpackingNonIterable of { annotation: Type.t }
 [@@deriving compare, sexp, show, hash]
 
+module ReadOnly : sig
+  type mismatch = {
+    actual: ReadOnlyness.t;
+    expected: ReadOnlyness.t;
+  }
+  [@@deriving compare, sexp, show, hash]
+
+  type incompatible_type = {
+    name: Reference.t;
+    mismatch: mismatch;
+  }
+  [@@deriving compare, sexp, show, hash]
+
+  type readonlyness_mismatch =
+    | IncompatibleVariableType of {
+        incompatible_type: incompatible_type;
+        declare_location: Location.WithPath.t;
+      }
+  [@@deriving compare, sexp, show, hash]
+end
+
 type invalid_decoration =
   | CouldNotResolve of Expression.t
   | CouldNotResolveArgument of {
@@ -369,6 +390,7 @@ and kind =
       annotation_kind: annotation_kind;
       missing_annotation: missing_annotation;
     }
+  | ReadOnlynessMismatch of ReadOnly.readonlyness_mismatch
   | RedefinedClass of {
       current_class: Reference.t;
       shadowed_class: Reference.t;
@@ -491,13 +513,7 @@ val weaken_literals : kind -> kind
 
 val due_to_analysis_limitations : t -> bool
 
-val less_or_equal : resolution:GlobalResolution.t -> t -> t -> bool
-
 val join : resolution:GlobalResolution.t -> t -> t -> t
-
-val meet : resolution:GlobalResolution.t -> t -> t -> t
-
-val widen : resolution:GlobalResolution.t -> previous:t -> next:t -> iteration:int -> t
 
 val join_at_define : resolution:GlobalResolution.t -> t list -> t list
 

@@ -13,11 +13,7 @@ from __future__ import annotations
 import dataclasses
 import enum
 
-from typing import Dict, Optional
-
-from .. import configuration as configuration_module
-
-from . import frontend_configuration
+from typing import Dict
 
 
 class _Availability(enum.Enum):
@@ -83,50 +79,6 @@ class LanguageServerFeatures:
     type_coverage: TypeCoverageAvailability = TypeCoverageAvailability.DISABLED
     type_errors: TypeErrorsAvailability = TypeErrorsAvailability.ENABLED
     unsaved_changes: UnsavedChangesAvailability = UnsavedChangesAvailability.DISABLED
-
-    @staticmethod
-    def create(
-        configuration: frontend_configuration.Base,
-        hover: Optional[HoverAvailability],
-        definition: Optional[DefinitionAvailability],
-        document_symbols: Optional[DocumentSymbolsAvailability],
-        references: Optional[ReferencesAvailability],
-        type_coverage: Optional[TypeCoverageAvailability],
-        unsaved_changes: Optional[UnsavedChangesAvailability],
-        type_errors: TypeErrorsAvailability = TypeErrorsAvailability.ENABLED,
-        status_updates: StatusUpdatesAvailability = StatusUpdatesAvailability.ENABLED,
-    ) -> LanguageServerFeatures:
-        ide_features = configuration.get_ide_features()
-        if ide_features is None:
-            ide_features = configuration_module.IdeFeatures()
-        return LanguageServerFeatures(
-            hover=hover
-            or HoverAvailability.from_enabled(ide_features.is_hover_enabled()),
-            definition=definition
-            or DefinitionAvailability.from_enabled(
-                ide_features.is_go_to_definition_enabled()
-            ),
-            document_symbols=document_symbols
-            or DocumentSymbolsAvailability.from_enabled(
-                ide_features.is_find_symbols_enabled()
-            ),
-            references=references
-            or ReferencesAvailability.from_enabled(
-                ide_features.is_find_all_references_enabled()
-            ),
-            status_updates=status_updates,
-            type_coverage=type_coverage
-            or (
-                TypeCoverageAvailability.EXPRESSION_LEVEL
-                if ide_features.is_expression_level_coverage_enabled()
-                else TypeCoverageAvailability.FUNCTION_LEVEL
-            ),
-            type_errors=type_errors,
-            unsaved_changes=unsaved_changes
-            or UnsavedChangesAvailability.from_enabled(
-                ide_features.is_consume_unsaved_changes_enabled()
-            ),
-        )
 
     def capabilities(self) -> Dict[str, bool]:
         return {

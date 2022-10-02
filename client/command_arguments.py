@@ -4,7 +4,20 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-TODO(T132414938) Add a module-level docstring
+This module provides a series of dataclasses and enums
+that describe command-line arguments for invoking Pyre.
+
+The `CommandArguments` dataclass represents top-level
+arguments, whereas the other classes describe arguments
+specific to subcommands.
+
+For example, in the invocation
+```
+pyre --noninteractive start --terminal
+```
+the `--noninteractive` flag will determine the
+`CommandArguments.noninteractive` field, whereas the `--terminal` flag will
+determine the `StartArguments.terminal` field.
 """
 
 
@@ -83,12 +96,6 @@ class CommandArguments:
     shared_memory_dependency_table_power: Optional[int] = None
     shared_memory_hash_table_power: Optional[int] = None
     number_of_workers: Optional[int] = None
-    enable_hover: Optional[bool] = None
-    enable_go_to_definition: Optional[bool] = None
-    enable_find_symbols: Optional[bool] = None
-    enable_find_all_references: Optional[bool] = None
-    enable_expression_level_coverage: Optional[bool] = None
-    enable_consume_unsaved_changes: Optional[bool] = None
     use_buck2: Optional[bool] = None
 
 
@@ -259,6 +266,7 @@ class AnalyzeArguments:
     maximum_tree_depth_after_widening: Optional[int] = None
     maximum_return_access_path_width: Optional[int] = None
     maximum_return_access_path_depth_after_widening: Optional[int] = None
+    maximum_tito_collapse_depth: Optional[int] = None
     maximum_tito_positions: Optional[int] = None
     maximum_overrides_to_analyze: Optional[int] = None
     maximum_tito_depth: Optional[int] = None

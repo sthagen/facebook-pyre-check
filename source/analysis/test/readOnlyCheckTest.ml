@@ -7,49 +7,32 @@
 
 open Core
 open OUnit2
+open Ast
 open Analysis
 open Test
 open ReadOnlyCheck
 open ReadOnlyness
 
-let test_less_or_equal _ =
-  let assert_less_or_equal ~expected ~left ~right =
-    assert_bool_equals ~expected (less_or_equal ~left ~right)
+let test_forward_expression context =
+  let global_resolution =
+    ScratchProject.setup ~context [] |> ScratchProject.build_global_resolution
   in
-  assert_less_or_equal ~left:Mutable ~right:ReadOnly ~expected:true;
-  assert_less_or_equal ~left:ReadOnly ~right:Mutable ~expected:false;
-  assert_less_or_equal ~left:Mutable ~right:Mutable ~expected:true;
-  assert_less_or_equal ~left:ReadOnly ~right:ReadOnly ~expected:true;
-  ()
+  let module Context = struct
+    let qualifier = !&"test"
+
+    let define =
+      parse_single_define {|
+      def foo() -> None: ...
+    |}
+      |> Node.create_with_default_location
 
 
-let test_join _ =
-  let assert_join ~expected left right =
-    let assert_equal = assert_equal ~cmp:[%compare.equal: t] ~printer:show in
-    assert_equal expected (join left right);
-    assert_equal expected (join right left)
+    let error_map = Some (LocalErrorMap.empty ())
+
+    let global_resolution = global_resolution
+  end
   in
-  assert_join Mutable ReadOnly ~expected:ReadOnly;
-  assert_join ReadOnly Mutable ~expected:ReadOnly;
-  assert_join Mutable Mutable ~expected:Mutable;
-  assert_join ReadOnly ReadOnly ~expected:ReadOnly;
-  ()
-
-
-let test_meet _ =
-  let assert_meet ~expected left right =
-    let assert_equal = assert_equal ~cmp:[%compare.equal: t] ~printer:show in
-    assert_equal expected (meet left right);
-    assert_equal expected (meet right left)
-  in
-  assert_meet Mutable ReadOnly ~expected:Mutable;
-  assert_meet ReadOnly Mutable ~expected:Mutable;
-  assert_meet Mutable Mutable ~expected:Mutable;
-  assert_meet ReadOnly ReadOnly ~expected:ReadOnly;
-  ()
-
-
-let test_forward_expression _ =
+  let module State = State (Context) in
   let assert_resolved ?(resolution = Resolution.of_list []) expression expected_type =
     let { Resolved.resolved; _ } =
       parse_single_expression expression |> State.forward_expression ~resolution
@@ -70,12 +53,48 @@ let test_forward_expression _ =
   ()
 
 
+let assert_readonly_errors ~context =
+  let check ~environment ~source =
+    source
+    |> Preprocessing.defines ~include_toplevels:true
+    |> List.concat_map
+         ~f:
+           (ReadOnlyCheck.readonly_errors_for_define
+              ~type_environment:(TypeEnvironment.read_only environment)
+              ~qualifier:!&"test")
+  in
+  assert_errors ~context ~check
+
+
+let test_assignment context =
+  let assert_readonly_errors = assert_readonly_errors ~context in
+  assert_readonly_errors
+    {|
+      from pyre_extensions import ReadOnly
+
+      def main() -> None:
+        x: ReadOnly[int] = 42
+        y = x
+        z: int = y
+    |}
+    [
+      "ReadOnly violation [3001]: z is declared to have readonlyness `ReadOnlyness.Mutable` but is \
+       used as readonlyness `ReadOnlyness.ReadOnly`.";
+    ];
+  assert_readonly_errors
+    {|
+      from pyre_extensions import ReadOnly
+
+      def main() -> None:
+        x = 42
+        y = x
+        z: ReadOnly[int] = y
+    |}
+    [];
+  ()
+
+
 let () =
   "readOnly"
-  >::: [
-         "less_or_equal" >:: test_less_or_equal;
-         "join" >:: test_join;
-         "meet" >:: test_meet;
-         "forward_expression" >:: test_forward_expression;
-       ]
+  >::: ["forward_expression" >:: test_forward_expression; "assignment" >:: test_assignment]
   |> Test.run
