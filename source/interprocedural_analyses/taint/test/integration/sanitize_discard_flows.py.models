@@ -49,11 +49,11 @@
           {
             "kinds": [
               {
-                "return_paths": { "": 0 },
+                "return_paths": { "": 4 },
                 "kind": "NotSink[TestA]@LocalReturn"
               }
             ],
-            "decl": null
+            "tito": null
           }
         ]
       }
@@ -72,11 +72,11 @@
           {
             "kinds": [
               {
-                "return_paths": { "": 0 },
+                "return_paths": { "": 4 },
                 "kind": "NotSource[TestA]@LocalReturn"
               }
             ],
-            "decl": null
+            "tito": null
           }
         ]
       }
@@ -95,11 +95,11 @@
           {
             "kinds": [
               {
-                "return_paths": { "": 0 },
+                "return_paths": { "": 4 },
                 "kind": "NotSink[TestB]@LocalReturn"
               }
             ],
-            "decl": null
+            "tito": null
           }
         ]
       }

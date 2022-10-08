@@ -1155,16 +1155,24 @@ module SignatureSelection = struct
       to them.
 
       Other parameters such as named parameters (`x: int`), positional-only, or keyword-only
-      parameters will have zero or one argument mapped to them. *)
+      parameters will have zero or one argument mapped to them.
+
+      If a starred argument, such as `*xs`, is being distributed across multiple parameters, each
+      parameter will receive `*xs` with its index into the starred tuple. That way, later stages of
+      the signature selection pipeline can find the precise type of the tuple element that will be
+      assigned to each parameter. *)
   let get_parameter_argument_mapping ~all_parameters ~parameters ~self_argument arguments =
     let open Type.Callable in
     let all_arguments = arguments in
     let rec consume
         ({ ParameterArgumentMapping.parameter_argument_mapping; reasons = { arity; _ } as reasons }
         as parameter_argument_mapping_with_reasons)
+        ?index_into_starred_tuple
         ~arguments
         ~parameters
       =
+      let consume_with_new_index ?index_into_starred_tuple = consume ?index_into_starred_tuple in
+      let consume = consume ?index_into_starred_tuple in
       let update_mapping parameter argument =
         Map.add_multi parameter_argument_mapping ~key:parameter ~data:argument
       in
@@ -1277,14 +1285,23 @@ module SignatureSelection = struct
             ~parameters:remaining_parameters
             { parameter_argument_mapping_with_reasons with parameter_argument_mapping; reasons }
       | ( ({ kind = DoubleStar; _ } as argument) :: arguments_tail,
-          (Parameter.Keywords _ as parameter) :: _ )
-      | ( ({ kind = SingleStar; _ } as argument) :: arguments_tail,
-          (Parameter.Variable _ as parameter) :: _ ) ->
-          (* (Double) starred argument, (double) starred parameter *)
+          (Parameter.Keywords _ as parameter) :: _ ) ->
           let parameter_argument_mapping =
             update_mapping parameter (make_matched_argument argument)
           in
           consume
+            ~arguments:arguments_tail
+            ~parameters
+            { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
+      | ( ({ kind = SingleStar; _ } as argument) :: arguments_tail,
+          (Parameter.Variable _ as parameter) :: _ ) ->
+          let parameter_argument_mapping =
+            update_mapping parameter (make_matched_argument ?index_into_starred_tuple argument)
+          in
+          (* We don't need to slice any further `*xs` arguments since they are consumed fully by the
+             expected `Variable` parameter. *)
+          consume_with_new_index
+            ?index_into_starred_tuple:None
             ~arguments:arguments_tail
             ~parameters
             { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
@@ -1322,10 +1339,12 @@ module SignatureSelection = struct
       | ({ kind = DoubleStar; _ } as argument) :: _, parameter :: parameters_tail
       | ({ kind = SingleStar; _ } as argument) :: _, parameter :: parameters_tail ->
           (* Double starred or starred argument, parameter *)
+          let index_into_starred_tuple = Option.value index_into_starred_tuple ~default:0 in
           let parameter_argument_mapping =
-            update_mapping parameter (make_matched_argument argument)
+            update_mapping parameter (make_matched_argument ~index_into_starred_tuple argument)
           in
-          consume
+          consume_with_new_index
+            ~index_into_starred_tuple:(index_into_starred_tuple + 1)
             ~arguments
             ~parameters:parameters_tail
             { parameter_argument_mapping_with_reasons with parameter_argument_mapping }
@@ -1349,7 +1368,7 @@ module SignatureSelection = struct
       ParameterArgumentMapping.parameter_argument_mapping = Parameter.Map.empty;
       reasons = empty_reasons;
     }
-    |> consume ~arguments ~parameters
+    |> consume ?index_into_starred_tuple:None ~arguments ~parameters
 
 
   (** Check all arguments against the respective parameter types. Return a signature match
@@ -1684,7 +1703,7 @@ module SignatureSelection = struct
                   | Named name -> Some name
                   | _ -> None
                 in
-                let check_argument argument_annotation =
+                let check_argument ~position argument_annotation =
                   check_argument_and_set_constraints_and_reasons
                     ~position
                     ~argument_location
@@ -1702,7 +1721,12 @@ module SignatureSelection = struct
                     reasons = { reasons with annotation = error :: annotation };
                   }
                 in
-                let update_signature_match_for_iterable ~create_error ~resolved iterable_item_type =
+                let update_signature_match_for_iterable
+                    ~position
+                    ~create_error
+                    ~resolved
+                    iterable_item_type
+                  =
                   let argument_location =
                     expression >>| Node.location |> Option.value ~default:Location.any
                   in
@@ -1735,18 +1759,58 @@ module SignatureSelection = struct
                         [Single Type.string; Single (Type.Variable synthetic_variable)]
                     in
                     extract_iterable_item_type ~synthetic_variable ~generic_iterable_type resolved
-                    |> update_signature_match_for_iterable ~create_error ~resolved
+                    |> update_signature_match_for_iterable ~position ~create_error ~resolved
                 | SingleStar -> (
                     let signature_match_for_single_element =
                       match parameter, index_into_starred_tuple, resolved with
                       | ( (PositionalOnly _ | Named _),
                           Some index_into_starred_tuple,
-                          Type.Tuple ordered_type ) ->
-                          Type.OrderedTypes.index
-                            ~python_index:index_into_starred_tuple
-                            ordered_type
-                          >>| check_argument
-                          >>| check ~arguments:tail
+                          Type.Tuple ordered_type ) -> (
+                          match
+                            Type.OrderedTypes.index
+                              ~python_index:index_into_starred_tuple
+                              ordered_type
+                          with
+                          | Some type_ ->
+                              check_argument ~position:(position + index_into_starred_tuple) type_
+                              |> check ~arguments:tail
+                              |> Option.some
+                          | None -> (
+                              (* We could not index into the tuple type to find the element for the
+                                 current parameter. *)
+                              match ordered_type with
+                              | Concrete _ -> (
+                                  (* If it is a concrete tuple, this means we have run out of
+                                     arguments, so emit an error about missing arguments. *)
+                                  match parameter with
+                                  | Named { default = true; _ }
+                                  | PositionalOnly { default = true; _ } ->
+                                      check signature_match ~arguments:tail |> Option.some
+                                  | Named { name; default = false; _ } ->
+                                      {
+                                        signature_match with
+                                        reasons =
+                                          {
+                                            reasons with
+                                            arity = MissingArgument (Named name) :: arity;
+                                          };
+                                      }
+                                      |> Option.some
+                                  | PositionalOnly { index; _ } ->
+                                      {
+                                        signature_match with
+                                        reasons =
+                                          {
+                                            reasons with
+                                            arity = MissingArgument (PositionalOnly index) :: arity;
+                                          };
+                                      }
+                                      |> Option.some
+                                  | _ -> None)
+                              | _ ->
+                                  (* If it is not a concrete tuple, then this will be handled later
+                                     in the function, so return None. *)
+                                  None))
                       | _ -> None
                     in
                     match signature_match_for_single_element with
@@ -1761,7 +1825,10 @@ module SignatureSelection = struct
                           ~synthetic_variable
                           ~generic_iterable_type
                           resolved
-                        |> update_signature_match_for_iterable ~create_error ~resolved)
+                        |> update_signature_match_for_iterable
+                             ~position:(position + Option.value ~default:0 index_into_starred_tuple)
+                             ~create_error
+                             ~resolved)
                 | Named _
                 | Positional -> (
                     let argument_annotation, weakening_error =
@@ -1785,7 +1852,8 @@ module SignatureSelection = struct
                     in
                     match weakening_error with
                     | Some weakening_error -> add_annotation_error signature_match weakening_error
-                    | None -> argument_annotation |> check_argument |> check ~arguments:tail))
+                    | None ->
+                        argument_annotation |> check_argument ~position |> check ~arguments:tail))
           in
           match is_generic_lambda parameter arguments with
           | Some _ -> signature_match (* Handle this later in `special_case_lambda_parameter` *)
@@ -2233,20 +2301,6 @@ module SignatureSelection = struct
       in
       List.mapi ~f:add_index arguments
     in
-    let unpack_starred_arguments arguments =
-      let unpack sofar argument =
-        match argument with
-        | { Argument.resolved = Tuple (Concrete tuple_parameters); kind = SingleStar; expression }
-          ->
-            let unpacked_arguments =
-              List.map tuple_parameters ~f:(fun resolved ->
-                  { Argument.expression; kind = Positional; resolved })
-            in
-            List.concat [List.rev unpacked_arguments; sofar]
-        | _ -> argument :: sofar
-      in
-      List.fold ~f:unpack ~init:[] arguments |> List.rev
-    in
     let separate_labeled_unlabeled_arguments arguments =
       let is_labeled = function
         | { Argument.WithPosition.kind = Named _; _ } -> true
@@ -2261,7 +2315,7 @@ module SignatureSelection = struct
       in
       self_argument @ labeled_arguments @ unlabeled_arguments
     in
-    arguments |> unpack_starred_arguments |> add_positions |> separate_labeled_unlabeled_arguments
+    arguments |> add_positions |> separate_labeled_unlabeled_arguments
 end
 
 class base class_metadata_environment dependency =

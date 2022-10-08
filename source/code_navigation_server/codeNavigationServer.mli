@@ -50,16 +50,12 @@ module Start : sig
       will be invoked and waited. Once the promise returned by [on_started] gets resolved or
       rejected, the server will be automatically shutdown.
 
-      If the server fails to start, or if an exception is raised from [on_started], [on_exception]
-      will be invoked on the raised exception.
-
       Other than [on_started], the started server will also monitor signals received by the process.
       When an [SIGINT] is received, a {!Server.Start.ServerStopped} exception will be raised. Other
       fatal signals like [SIGTERM], [SIGSEGV], etc. will result in a
       {!Server.Start.ServerInterrupted} exception instead.*)
   val start_server
     :  on_started:(Server.ServerProperties.t -> State.t Server.ExclusiveLock.t -> 'a Lwt.t) ->
-    on_exception:(exn -> 'a Lwt.t) ->
     StartOptions.t ->
     'a Lwt.t
 end
@@ -100,7 +96,7 @@ module Testing : sig
       [@@deriving sexp, compare, yojson { strict = false }]
     end
 
-    (** A type representing requests sent from the clients to the server.
+    (** A type representing ordinary requests sent from the clients to the server.
 
         The code navigation server supports a primitive form of isolation between different clients.
         Many kinds of requests that query server state can optionally specify an [overlay_id], and
@@ -215,7 +211,11 @@ module Testing : sig
       [@@deriving sexp, compare, yojson { strict = false }]
     end
 
-    (** A type representing responses sent from the server to its clients *)
+    (** A type representing ordinary responses sent from the server to its clients.
+
+        If a client establishes a connection with the code navigation server and sends a
+        {!Request.t}, the server will process the request, send back a {!Response.t}, and close the
+        connection immediately. *)
     type t =
       | Ok  (** This response will be used for acknowledging successful processing of a request. *)
       | Error of ErrorKind.t
@@ -232,5 +232,98 @@ module Testing : sig
               may map the same file to multiple modules, or because the same name may get redefined
               multiple times.*)
     [@@deriving sexp, compare, yojson { strict = false }]
+  end
+
+  (** Subscription is a mechanism with which the client can estabilsh a persistent connection to the
+      code navigation server. The mechanism is useful when the client wants to continuously keep
+      track of certain internal status change (liveness, availability, etc.). *)
+  module Subscription : sig
+    module Request : sig
+      (** A type representing subscription requests sent from the clients to the server.
+
+          Unlike ordinary {!Request.t}, the code navigation server will not proactively close the
+          underlying socket connection when receiving a {!Subscription.Request.t}. Instead, it will
+          send back a {!Subscription.Response.Ok} to acknowledge the subscription first, then leave
+          the connection open, and unilaterally push interesting internal status changes to the
+          client via that connection. Only when the client terminates the connection on its side
+          will the server stop sending the updates. *)
+      type t = Subscribe [@@deriving sexp, compare, yojson { strict = false }]
+    end
+
+    module Response : sig
+      (** A type representing subscription responses sent from the server to its clients. *)
+      type t =
+        | Ok
+            (** This response will be send after the server receives an initial {!Request.Subscribe}
+                message. It acknowledges the successful creation of a subscription. *)
+        | Idle
+            (** This response is sent when the code navigation server is done processing a
+                outstanding incremental update request in the background. *)
+        | BusyChecking of { overlay_id: string option }
+            (** This response is sent when the code navigation server is about to start performing
+                an incremental update request.
+
+                [overlay_id] will be [None] if the incremental update is on the whole project (i.e.
+                the server is handling a {!Testing.Request.FileUpdateEvent}), and will bet set if
+                the incremental update is on a given overlay (i.e. the server is handling a
+                {!Testing.Request.LocalUpdate}). *)
+        | Stop of { message: string }
+            (** This response is sent when the code navigation server is about to terminate itself.
+                [message] field will contain message that explains why the server wants to go down. *)
+      [@@deriving sexp, compare, yojson { strict = false }]
+    end
+  end
+
+  (** A utility module that helps the code navigation to keep track of established subscriptions in
+      its internal state. *)
+  module Subscriptions : sig
+    module Identifier : sig
+      (** An opaque type used to differentiate one subscription from another.
+
+          Identifiers are expected to be created and maintained exclusively by {!Subscriptions.t}. *)
+      type t [@@deriving sexp, equal]
+    end
+
+    (** A type representing a collection of subscriptions. *)
+    type t
+
+    (** Create an empty collection of subscriptions. *)
+    val create : unit -> t
+
+    (** Return how many subscriptions are currently registered in the collection. *)
+    val count : t -> int
+
+    (** [register ~output_channel subscriptions] add a new subscription [output_channel] to the
+        collection [subscriptions].
+
+        The collection itself does not perform any checks for duplicate subscriptions. Each call to
+        the [register] function is treated as setting up a different subscription, regardless of
+        whether we pass the same [output_channel] to the function or not.
+
+        When a subscription is registered, the [register] function will hand back an {!Identifier.t}
+        to its caller. The returned identifier is guaranteed to be unique from all
+        previously-registered subscriptions in the collection, and can be used to unregister a
+        subscription later. *)
+    val register : output_channel:Lwt_io.output_channel -> t -> Identifier.t
+
+    (** [unregister ~identifier subscriptions] removes a subscription with the given [identifier]
+        from the collection [subscriptions]. *)
+    val unregister : identifier:Identifier.t -> t -> unit
+
+    (** [broadcast_raw ~message subscriptions] sends a [message] string (a terminating '\n'
+        character will be appended as a message separator) to every subscription channel in
+        [subscriptions].
+
+        The message being sent is constructed by forcing [message]. The message is constructed
+        lazily to avoid the cost of the construction when [subscriptions] is empty *)
+    val broadcast_raw : message:string Lazy.t -> t -> unit Lwt.t
+
+    (** [broadcast ~response subscriptions] sends a [response] to every subscription channel in
+        [subscriptions]. It is a convenient wrapper around serlializing [response] and then invoking
+        [broadcast_raw].
+
+        The message being sent is constructed by forcing [message]. The message is constructed
+        lazily to avoid the cost of the construction when [subscriptions] is empty *)
+    val broadcast : response:Subscription.Response.t Lazy.t -> t -> unit Lwt.t
   end
 end

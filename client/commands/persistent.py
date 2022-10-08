@@ -500,6 +500,10 @@ class ClientTypeErrorHandler:
         self.server_state.last_diagnostic_update_timer.reset()
 
 
+READY_MESSAGE: str = "Pyre has completed an incremental check and is currently watching on further source changes."
+READY_SHORT: str = "Pyre Ready"
+
+
 class PyreDaemonLaunchAndSubscribeHandler(background.Task):
     server_options_reader: PyreServerOptionsReader
     remote_logging: Optional[backend_arguments.RemoteLogging]
@@ -531,11 +535,11 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
         self.client_type_error_handler.update_type_errors(
             type_error_subscription.errors
         )
+        self.server_state.server_last_status = state.ServerStatus.READY
         await self.client_type_error_handler.show_type_errors_to_client()
         await self.client_status_message_handler.log_and_show_status_message_to_client(
-            "Pyre has completed an incremental check and is currently "
-            "watching on further source changes.",
-            short_message="Pyre Ready",
+            READY_MESSAGE,
+            short_message=READY_SHORT,
             level=lsp.MessageType.INFO,
         )
 
@@ -545,16 +549,25 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
         if not self.get_type_errors_availability().is_disabled():
             await self.client_type_error_handler.clear_type_errors_for_client()
         if status_update_subscription.kind == "Rebuilding":
+            self.server_state.server_last_status = state.ServerStatus.BUCK_BUILDING
             await self.client_status_message_handler.log_and_show_status_message_to_client(
                 "Pyre is busy rebuilding the project for type checking...",
                 short_message="Pyre (waiting for Buck)",
                 level=lsp.MessageType.WARNING,
             )
         elif status_update_subscription.kind == "Rechecking":
+            self.server_state.server_last_status = state.ServerStatus.INCREMENTAL_CHECK
             await self.client_status_message_handler.log_and_show_status_message_to_client(
                 "Pyre is busy re-type-checking the project...",
                 short_message="Pyre (checking)",
                 level=lsp.MessageType.WARNING,
+            )
+        elif status_update_subscription.kind == "Ready":
+            self.server_state.server_last_status = state.ServerStatus.READY
+            await self.client_status_message_handler.log_and_show_status_message_to_client(
+                READY_MESSAGE,
+                short_message=READY_SHORT,
+                level=lsp.MessageType.INFO,
             )
 
     async def handle_error_subscription(
@@ -729,11 +742,13 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
                     **self._auxiliary_logging_info(server_options),
                 },
             )
+            self.server_state.server_last_status = state.ServerStatus.READY
             await self.subscribe(input_channel, output_channel)
 
     async def launch_and_subscribe(
-        self, server_options: pyre_server_options.PyreServerOptions
-    ) -> None:
+        self,
+        server_options: pyre_server_options.PyreServerOptions,
+    ) -> state.ServerStatus:
         project_identifier = server_options.project_identifier
         start_arguments = server_options.start_arguments
         socket_path = server_options.get_socket_path()
@@ -741,12 +756,14 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
 
         connection_timer = timer.Timer()
         try:
-            return await self._try_connect_and_subscribe(
+            await self._try_connect_and_subscribe(
                 server_options,
                 socket_path,
                 connection_timer,
                 is_preexisting=True,
             )
+            # Unreachable code because _try_connect_and_subscribe may never terminate.
+            return state.ServerStatus.READY
         except connections.ConnectionFailure:
             pass
 
@@ -769,6 +786,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
                 connection_timer,
                 is_preexisting=False,
             )
+            return state.ServerStatus.READY
         elif isinstance(start_status, BuckStartFailure):
             # Buck start failures are intentionally not counted towards
             # `consecutive_start_failure` -- they happen far too often in practice
@@ -800,6 +818,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
                 level=lsp.MessageType.INFO,
                 fallback_to_notification=False,
             )
+            return state.ServerStatus.NOT_CONNECTED
         elif isinstance(start_status, OtherStartFailure):
             self.server_state.consecutive_start_failure += 1
             if (
@@ -822,6 +841,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
                     level=lsp.MessageType.INFO,
                     fallback_to_notification=True,
                 )
+                return state.ServerStatus.NOT_CONNECTED
             else:
                 log_lsp_event._log_lsp_event(
                     remote_logging=self.remote_logging,
@@ -839,6 +859,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
                     level=lsp.MessageType.ERROR,
                     fallback_to_notification=True,
                 )
+                return state.ServerStatus.SUSPENDED
         else:
             raise RuntimeError("Impossible type for `start_status`")
 
@@ -859,11 +880,14 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
             await self.launch_and_subscribe(server_options)
         except asyncio.CancelledError:
             error_message = "Explicit termination request"
+            self.server_state.server_last_status = state.ServerStatus.DISCONNECTED
             raise
         except PyreDaemonShutdown as error:
             error_message = f"Pyre server shutdown: {error}"
+            self.server_state.server_last_status = state.ServerStatus.DISCONNECTED
         except BaseException:
             error_message = traceback.format_exc()
+            self.server_state.server_last_status = state.ServerStatus.DISCONNECTED
             raise
         finally:
             log_lsp_event._log_lsp_event(

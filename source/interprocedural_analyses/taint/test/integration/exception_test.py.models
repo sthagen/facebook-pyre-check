@@ -145,8 +145,8 @@
         "port": "formal(x)",
         "taint": [
           {
-            "kinds": [ { "return_paths": { "": 0 }, "kind": "LocalReturn" } ],
-            "decl": null
+            "kinds": [ { "return_paths": { "": 4 }, "kind": "LocalReturn" } ],
+            "tito": null
           }
         ]
       }
@@ -343,7 +343,7 @@
               { "always-via": "obscure:model" }, { "always-via": "tito" }
             ],
             "tito": [ { "line": 10, "start": 15, "end": 17 } ],
-            "decl": null
+            "tito": null
           }
         ]
       }
@@ -467,14 +467,14 @@
           {
             "kinds": [
               {
-                "return_paths": { "": 0 },
+                "return_paths": { "": 4 },
                 "length": 1,
                 "kind": "LocalReturn"
               }
             ],
             "local_features": [ { "always-via": "tito" } ],
             "tito": [ { "line": 33, "start": 27, "end": 28 } ],
-            "decl": null
+            "tito": null
           }
         ]
       }

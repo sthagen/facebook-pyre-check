@@ -9,12 +9,22 @@ TODO(T132414938) Add a module-level docstring
 
 
 import dataclasses
+import enum
 from pathlib import Path
 from typing import Dict, List, Set
 
 from .. import timer
 
 from . import language_server_protocol as lsp, pyre_server_options
+
+
+class ServerStatus(enum.Enum):
+    READY = "READY"
+    DISCONNECTED = "DISCONNECTED"
+    NOT_CONNECTED = "NOT_CONNECTED"
+    SUSPENDED = "SUSPENDED"
+    BUCK_BUILDING = "BUCK_BUILDING"
+    INCREMENTAL_CHECK = "INCREMENTAL_CHECK"
 
 
 @dataclasses.dataclass
@@ -35,3 +45,4 @@ class ServerState:
     last_diagnostic_update_timer: timer.Timer = dataclasses.field(
         default_factory=timer.Timer
     )
+    server_last_status: ServerStatus = ServerStatus.NOT_CONNECTED

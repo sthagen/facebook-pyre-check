@@ -12,8 +12,15 @@ open OUnit2
 open CodeNavigationServer
 module Request = CodeNavigationServer.Testing.Request
 module Response = CodeNavigationServer.Testing.Response
+module Subscription = CodeNavigationServer.Testing.Subscription
 
-module Client = struct
+module ClientConnection = struct
+  module Style = struct
+    type t =
+      | Sequential
+      | Concurrent
+  end
+
   type t = {
     context: test_ctxt;
     configuration: Configuration.Analysis.t;
@@ -24,15 +31,13 @@ module Client = struct
 
   let get_context { context; _ } = context
 
-  let get_source_root { configuration = { Configuration.Analysis.project_root; _ }; _ } =
-    project_root
-
-
-  let get_server_state { server_state; _ } = server_state
-
   let send_raw_request { input_channel; output_channel; _ } raw_request =
     let%lwt () = Lwt_io.write_line output_channel raw_request in
     Lwt_io.read_line input_channel
+
+
+  let send_subscription_request client request =
+    Subscription.Request.to_yojson request |> Yojson.Safe.to_string |> send_raw_request client
 
 
   let send_request client request =
@@ -42,6 +47,17 @@ module Client = struct
   let assert_response_equal ~expected ~actual { context; _ } =
     let expected = Response.to_yojson expected |> Yojson.Safe.to_string in
     assert_equal ~ctxt:context ~cmp:String.equal ~printer:Fn.id expected actual
+
+
+  let assert_subscription_response_equal ~expected ~actual { context; _ } =
+    let expected = Subscription.Response.to_yojson expected |> Yojson.Safe.to_string in
+    assert_equal ~ctxt:context ~cmp:String.equal ~printer:Fn.id expected actual
+
+
+  let assert_subscription_response ~expected ({ input_channel; _ } as client) =
+    let%lwt actual = Lwt_io.read_line input_channel in
+    assert_subscription_response_equal client ~expected ~actual;
+    Lwt.return_unit
 
 
   let assert_response ~request ~expected client =
@@ -148,16 +164,40 @@ let configuration_of project =
   Analysis.EnvironmentControls.configuration environment_controls
 
 
-let test_server_with ~f { context; start_options } =
+let source_root_of project =
+  let { Configuration.Analysis.project_root; _ } = configuration_of project in
+  project_root
+
+
+let test_server_with ~style ~clients { context; start_options } =
   Memory.reset_shared_memory ();
-  Start.start_server
-    start_options
-    ~on_exception:(function
-      | Server.Start.ServerStopped -> Lwt.return_unit
-      | exn -> raise exn)
-    ~on_started:(fun { Server.ServerProperties.socket_path; configuration; _ } server_state ->
-      let socket_address = Lwt_unix.ADDR_UNIX (PyrePath.absolute socket_path) in
-      let test_client (input_channel, output_channel) =
-        f { Client.context; configuration; server_state; input_channel; output_channel }
-      in
-      Lwt_io.with_connection socket_address test_client)
+  try%lwt
+    Start.start_server
+      start_options
+      ~on_started:(fun { Server.ServerProperties.socket_path; configuration; _ } server_state ->
+        let socket_address = Lwt_unix.ADDR_UNIX (PyrePath.absolute socket_path) in
+        let test_client client =
+          let run_on_connection (input_channel, output_channel) =
+            client
+              {
+                ClientConnection.context;
+                configuration;
+                server_state;
+                input_channel;
+                output_channel;
+              }
+          in
+          Lwt_io.with_connection socket_address run_on_connection
+        in
+        let iterate_list =
+          match style with
+          | ClientConnection.Style.Sequential -> Lwt_list.iter_s
+          | ClientConnection.Style.Concurrent -> Lwt_list.iter_p
+        in
+        iterate_list test_client clients)
+  with
+  | Server.Start.ServerStopped -> Lwt.return_unit
+
+
+let test_server_with_one_connection ~f =
+  test_server_with ~style:ClientConnection.Style.Sequential ~clients:[f]

@@ -9,3 +9,5 @@
 
 module Request = Request
 module Response = Response
+module Subscription = Subscription
+module Subscriptions = Subscriptions

@@ -495,14 +495,6 @@ let test_tuple_literal_access context =
     [];
   assert_type_errors
     {|
-      def func(a: int, b: str, c: bool) -> None:
-        pass
-      c = ("bla", )
-      func(1, *c)
-    |}
-    ["Missing argument [20]: Call `func` expects argument `c`."];
-  assert_type_errors
-    {|
       def func(a: int, b: bool, c: str) -> None:
         pass
       c = ("bla", False)
@@ -516,13 +508,22 @@ let test_tuple_literal_access context =
     ];
   assert_type_errors
     {|
+      def func(a: int, b: str, c: bool) -> None:
+        pass
+      c = ("bla", )
+      func(1, *c)
+    |}
+    ["Missing argument [20]: Call `func` expects argument `c`."];
+  (* TODO(T133552317): Handle function calls with multiple unpacked tuples. *)
+  assert_type_errors
+    {|
       def func(a: int, b: bool, c: str, d:int, e:str) -> None:
         pass
       c = (False, "ble")
       d = (1, "abc")
       func(1, *c, *d)
     |}
-    [];
+    ["Missing argument [20]: Call `func` expects argument `d`."];
   ()
 
 
@@ -826,6 +827,50 @@ let test_star_args context =
     [
       "Invalid argument [32]: Unpacked argument `x` must have an unpackable type but has type `int`.";
     ];
+  assert_type_errors
+    {|
+      from pyre_extensions import Unpack
+      from typing import Tuple
+
+      def foo( *args: Unpack[Tuple[str, Unpack[Tuple[int, ...]]]]) -> None: ...
+
+      def main( *args: Unpack[Tuple[str, Unpack[Tuple[int, ...]]]]) -> None:
+        foo( *args)
+    |}
+    [];
+  assert_type_errors
+    {|
+      from pyre_extensions import Unpack
+      from typing import Tuple
+
+      def foo(x: str, y: int, *args: Unpack[Tuple[int, ...]]) -> None: ...
+
+      def main( *args: Unpack[Tuple[str, int, Unpack[Tuple[int, ...]]]]) -> None:
+        foo( *args)
+        foo("hello", 1, 2, 3)
+
+        wrong: Tuple[int, ...]
+        foo( *wrong)
+    |}
+    [
+      "Incompatible parameter type [6]: In call `foo`, for 1st positional only parameter expected \
+       `str` but got `int`.";
+    ];
+  assert_type_errors
+    {|
+      from typing import Optional
+
+      def foo(
+          x: int,
+          y: Optional[int],
+          z: str,
+          a: Optional[int] = None,
+      ) -> None: ...
+
+      def main(xs: tuple[int, Optional[int], str]) -> None:
+        foo( *xs)
+    |}
+    [];
   ()
 
 

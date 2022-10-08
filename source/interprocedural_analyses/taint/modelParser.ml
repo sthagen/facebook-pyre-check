@@ -1072,41 +1072,50 @@ let introduce_sink_taint
 let introduce_taint_in_taint_out
     ~root
     ~path
-    ({ Model.backward = { taint_in_taint_out; _ }; _ } as taint)
+    ({ Model.backward = { taint_in_taint_out; sink_taint }; _ } as taint)
     taint_sink_kind
     via_features
     breadcrumbs
   =
   let open Core.Result in
+  let assign_backward_taint environment taint =
+    BackwardState.assign ~weak:true ~root ~path taint environment
+  in
+  let breadcrumbs = Features.BreadcrumbSet.of_approximation breadcrumbs in
+  let via_features = Features.ViaFeatureSet.of_list via_features in
+  let tito_result_taint =
+    Domains.local_return_frame ~collapse_depth:0
+    |> Frame.transform Features.BreadcrumbSet.Self Add ~f:breadcrumbs
+    |> Frame.transform Features.ViaFeatureSet.Self Add ~f:via_features
+    |> BackwardTaint.singleton CallInfo.Tito taint_sink_kind
+    |> BackwardState.Tree.create_leaf
+  in
   let backward =
-    let assign_backward_taint environment taint =
-      BackwardState.assign ~weak:true ~root ~path taint environment
-    in
-    let breadcrumbs = Features.BreadcrumbSet.of_approximation breadcrumbs in
-    let via_features = Features.ViaFeatureSet.of_list via_features in
     match taint_sink_kind with
     | Sinks.LocalReturn
-    | Sinks.Transform _ ->
-        let return_taint =
-          Domains.local_return_frame
-          |> Frame.transform Features.BreadcrumbSet.Self Add ~f:breadcrumbs
-          |> Frame.transform Features.ViaFeatureSet.Self Add ~f:via_features
-          |> BackwardTaint.singleton local_return_call_info taint_sink_kind
+    | Sinks.ParameterUpdate _ ->
+        let taint_in_taint_out = assign_backward_taint taint_in_taint_out tito_result_taint in
+        Ok { taint.backward with taint_in_taint_out }
+    | Sinks.Transform { local; global; _ } ->
+        let taint_in_taint_out = assign_backward_taint taint_in_taint_out tito_result_taint in
+        let extra_trace_sink = Sinks.make_transform ~local ~global ~base:Sinks.ExtraTraceSink in
+        let extra_sink_taint =
+          Frame.initial
+          |> BackwardTaint.singleton CallInfo.declaration extra_trace_sink
           |> BackwardState.Tree.create_leaf
         in
-        let taint_in_taint_out = assign_backward_taint taint_in_taint_out return_taint in
-        Ok { taint.backward with taint_in_taint_out }
+        let sink_taint = assign_backward_taint sink_taint extra_sink_taint in
+        Ok { Model.Backward.taint_in_taint_out; sink_taint }
     | Sinks.Attach
       when Features.BreadcrumbSet.is_empty breadcrumbs
            && Features.ViaFeatureSet.is_bottom via_features ->
         Error "`Attach` must be accompanied by a list of features to attach."
-    | Sinks.ParameterUpdate _
     | Sinks.Attach ->
         let update_taint =
           Frame.initial
           |> Frame.transform Features.BreadcrumbSet.Self Add ~f:breadcrumbs
           |> Frame.transform Features.ViaFeatureSet.Self Add ~f:via_features
-          |> BackwardTaint.singleton local_return_call_info taint_sink_kind
+          |> BackwardTaint.singleton CallInfo.declaration taint_sink_kind
           |> BackwardState.Tree.create_leaf
         in
         let taint_in_taint_out = assign_backward_taint taint_in_taint_out update_taint in
@@ -1949,37 +1958,55 @@ let parse_model_clause
           List.map taint_annotations ~f:parse_produced_taint |> all >>| List.concat
       | _ -> parse_produced_taint taint_expression
     in
+    let check_clause_kind_result =
+      let unexpected_model_expression () =
+        Error
+          (model_verification_error ~path ~location (UnexpectedModelExpression model_expression))
+      in
+      match value with
+      | Expression.Call
+          { Call.callee = { Node.value = Name (Name.Identifier identifier); _ } as callee; _ } -> (
+          let check_clause_kind is_valid_clause_kind =
+            if is_valid_clause_kind find_clause then
+              Ok ()
+            else
+              Error (invalid_model_query_model_clause ~path ~location callee)
+          in
+          match identifier with
+          | "Returns" -> check_clause_kind is_callable_clause_kind
+          | "AttributeModel" -> check_clause_kind is_attribute_clause_kind
+          | "GlobalModel" -> check_clause_kind is_global_clause_kind
+          | "NamedParameter" -> check_clause_kind is_callable_clause_kind
+          | "PositionalParameter" -> check_clause_kind is_callable_clause_kind
+          | "AllParameters" -> check_clause_kind is_callable_clause_kind
+          | "Parameters" -> check_clause_kind is_callable_clause_kind
+          | _ -> unexpected_model_expression ())
+      | _ -> unexpected_model_expression ()
+    in
+    check_clause_kind_result
+    >>= fun () ->
     match value with
     | Expression.Call
         {
-          Call.callee = { Node.value = Name (Name.Identifier "Returns"); _ } as callee;
+          Call.callee = { Node.value = Name (Name.Identifier "Returns"); _ };
           arguments = [{ Call.Argument.value = taint; _ }];
         } ->
-        if not (is_callable_clause_kind find_clause) then
-          Error (invalid_model_query_model_clause ~path ~location callee)
-        else
-          parse_taint taint >>| fun taint -> ModelQuery.ReturnTaint taint
+        parse_taint taint >>| fun taint -> ModelQuery.ReturnTaint taint
     | Expression.Call
         {
-          Call.callee = { Node.value = Name (Name.Identifier "AttributeModel"); _ } as callee;
+          Call.callee = { Node.value = Name (Name.Identifier "AttributeModel"); _ };
           arguments = [{ Call.Argument.value = taint; _ }];
         } ->
-        if not (is_attribute_clause_kind find_clause) then
-          Error (invalid_model_query_model_clause ~path ~location callee)
-        else
-          parse_taint taint >>| fun taint -> ModelQuery.AttributeTaint taint
+        parse_taint taint >>| fun taint -> ModelQuery.AttributeTaint taint
     | Expression.Call
         {
-          Call.callee = { Node.value = Name (Name.Identifier "GlobalModel"); _ } as callee;
+          Call.callee = { Node.value = Name (Name.Identifier "GlobalModel"); _ };
           arguments = [{ Call.Argument.value = taint; _ }];
         } ->
-        if not (is_global_clause_kind find_clause) then
-          Error (invalid_model_query_model_clause ~path ~location callee)
-        else
-          parse_taint taint >>| fun taint -> ModelQuery.GlobalTaint taint
+        parse_taint taint >>| fun taint -> ModelQuery.GlobalTaint taint
     | Expression.Call
         {
-          Call.callee = { Node.value = Name (Name.Identifier "NamedParameter"); _ } as callee;
+          Call.callee = { Node.value = Name (Name.Identifier "NamedParameter"); _ };
           arguments =
             [
               {
@@ -1990,13 +2017,10 @@ let parse_model_clause
               { Call.Argument.value = taint; name = Some { Node.value = "taint"; _ } };
             ];
         } ->
-        if not (is_callable_clause_kind find_clause) then
-          Error (invalid_model_query_model_clause ~path ~location callee)
-        else
-          parse_taint taint >>| fun taint -> ModelQuery.NamedParameterTaint { name; taint }
+        parse_taint taint >>| fun taint -> ModelQuery.NamedParameterTaint { name; taint }
     | Expression.Call
         {
-          Call.callee = { Node.value = Name (Name.Identifier "PositionalParameter"); _ } as callee;
+          Call.callee = { Node.value = Name (Name.Identifier "PositionalParameter"); _ };
           arguments =
             [
               {
@@ -2006,61 +2030,50 @@ let parse_model_clause
               { Call.Argument.value = taint; name = Some { Node.value = "taint"; _ } };
             ];
         } ->
-        if not (is_callable_clause_kind find_clause) then
-          Error (invalid_model_query_model_clause ~path ~location callee)
-        else
-          parse_taint taint >>| fun taint -> ModelQuery.PositionalParameterTaint { index; taint }
+        parse_taint taint >>| fun taint -> ModelQuery.PositionalParameterTaint { index; taint }
     | Expression.Call
         {
-          Call.callee = { Node.value = Name (Name.Identifier "AllParameters"); _ } as callee;
+          Call.callee = { Node.value = Name (Name.Identifier "AllParameters"); _ };
           arguments = [{ Call.Argument.value = taint; _ }];
         } ->
-        if not (is_callable_clause_kind find_clause) then
-          Error (invalid_model_query_model_clause ~path ~location callee)
-        else
-          parse_taint taint >>| fun taint -> ModelQuery.AllParametersTaint { excludes = []; taint }
+        parse_taint taint >>| fun taint -> ModelQuery.AllParametersTaint { excludes = []; taint }
     | Expression.Call
         {
-          Call.callee = { Node.value = Name (Name.Identifier "AllParameters"); _ } as callee;
+          Call.callee = { Node.value = Name (Name.Identifier "AllParameters"); _ };
           arguments =
             [
               { Call.Argument.value = taint; _ };
               { Call.Argument.name = Some { Node.value = "exclude"; _ }; value = excludes };
             ];
         } ->
-        if not (is_callable_clause_kind find_clause) then
-          Error (invalid_model_query_model_clause ~path ~location callee)
-        else
-          let excludes =
-            let parse_string_to_exclude ({ Node.value; location } as exclude) =
-              match value with
-              | Expression.Constant (Constant.String { StringLiteral.value; _ }) ->
-                  Core.Result.Ok value
-              | _ ->
-                  Error (model_verification_error ~path ~location (InvalidParameterExclude exclude))
-            in
-            match Node.value excludes with
-            | Expression.List exclude_strings ->
-                List.map exclude_strings ~f:parse_string_to_exclude |> Core.Result.all
-            | _ -> parse_string_to_exclude excludes >>| fun exclude -> [exclude]
+        let excludes =
+          let parse_string_to_exclude ({ Node.value; location } as exclude) =
+            match value with
+            | Expression.Constant (Constant.String { StringLiteral.value; _ }) ->
+                Core.Result.Ok value
+            | _ ->
+                Error (model_verification_error ~path ~location (InvalidParameterExclude exclude))
           in
-          excludes
-          >>= fun excludes ->
-          parse_taint taint >>| fun taint -> ModelQuery.AllParametersTaint { excludes; taint }
+          match Node.value excludes with
+          | Expression.List exclude_strings ->
+              List.map exclude_strings ~f:parse_string_to_exclude |> Core.Result.all
+          | _ -> parse_string_to_exclude excludes >>| fun exclude -> [exclude]
+        in
+        excludes
+        >>= fun excludes ->
+        parse_taint taint >>| fun taint -> ModelQuery.AllParametersTaint { excludes; taint }
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "Parameters"); _ } as callee;
           arguments;
         } -> (
-        match is_callable_clause_kind find_clause, arguments with
-        | false, _ -> Error (invalid_model_query_model_clause ~path ~location callee)
-        | _, [{ Call.Argument.value = taint; _ }] ->
+        match arguments with
+        | [{ Call.Argument.value = taint; _ }] ->
             parse_taint taint >>| fun taint -> ModelQuery.ParameterTaint { where = []; taint }
-        | ( _,
-            [
-              { Call.Argument.value = taint; _ };
-              { Call.Argument.name = Some { Node.value = "where"; _ }; value = where_clause };
-            ] ) ->
+        | [
+         { Call.Argument.value = taint; _ };
+         { Call.Argument.name = Some { Node.value = "where"; _ }; value = where_clause };
+        ] ->
             parse_parameter_where_clause ~path where_clause
             >>= fun where ->
             parse_taint taint >>| fun taint -> ModelQuery.ParameterTaint { where; taint }
