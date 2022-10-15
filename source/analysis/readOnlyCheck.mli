@@ -9,6 +9,7 @@ open Ast
 open Core
 open Statement
 module Error = AnalysisError
+module TypeResolution = Resolution
 
 module Resolution : sig
   type t
@@ -47,10 +48,39 @@ module type Context = sig
   val global_resolution : GlobalResolution.t
 
   val error_map : LocalErrorMap.t option
+
+  val local_annotations : LocalAnnotationMap.ReadOnly.t option
 end
 
+type callable_data_for_function_call = {
+  (* The signature for the function call, after selecting among any overloads. *)
+  selected_signature: Type.t Type.Callable.overload;
+  (* The return type for the function call, after selecting among any overloads and instantiating
+     any type variables. *)
+  instantiated_return_type: Type.t;
+  function_name: Reference.t option;
+  self_readonlyness: ReadOnlyness.t option;
+}
+[@@deriving compare, show, sexp]
+
+val callable_data_list_for_callee
+  :  ?self_readonlyness:ReadOnlyness.t ->
+  Type.t ->
+  callable_data_for_function_call list
+
 module State (Context : Context) : sig
-  val forward_expression : resolution:Resolution.t -> Expression.t -> Resolved.t
+  open AttributeResolution
+
+  val check_arguments_against_parameters
+    :  function_name:Reference.t option ->
+    ReadOnlyness.t matched_argument list Type.Callable.Parameter.Map.t ->
+    Error.t list
+
+  val forward_expression
+    :  type_resolution:TypeResolution.t ->
+    resolution:Resolution.t ->
+    Expression.t ->
+    Resolved.t
 end
 
 val readonly_errors_for_define

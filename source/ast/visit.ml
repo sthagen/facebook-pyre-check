@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-(* TODO(T132410158) Add a module-level doc comment. *)
+(* Contains modules for collecting and visiting. *)
 
 open Core
 open Pyre
@@ -33,6 +33,11 @@ module type NodeVisitor = sig
   val visit_format_string_children : t -> Expression.t -> bool
 end
 
+(** This visitor iterates over every toplevel statement. Assuming `visit_statement_children` is set
+    to true, the visitor will:
+
+    - call visit_statement on any children that are statements
+    - call visit_expression on any children that are expressions *)
 module MakeNodeVisitor (Visitor : NodeVisitor) = struct
   let visit_node ~state ~visitor node = state := visitor !state node
 
@@ -252,6 +257,10 @@ module MakeNodeVisitor (Visitor : NodeVisitor) = struct
     if Visitor.visit_statement_children !state statement then
       visit_children (Node.value statement);
     visit_node ~state ~visitor (Statement statement)
+
+
+  let visit_reference ~state ?visitor_override (reference : Reference.t Node.t) =
+    state := (Option.value visitor_override ~default:Visitor.node) !state (Reference reference)
 
 
   let visit state source =

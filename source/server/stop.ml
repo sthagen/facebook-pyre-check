@@ -9,7 +9,49 @@
 
 open Core
 
-let stop_waiting_server () =
+module Reason = struct
+  type t =
+    | ExplicitRequest
+    | CriticalFileUpdate of PyrePath.t
+    | UncaughtException of exn
+
+  let name_of = function
+    | ExplicitRequest -> "explicit request"
+    | CriticalFileUpdate _ -> "critical file update"
+    | UncaughtException _ -> "uncaught exception"
+
+
+  let origin_of_exception exn =
+    let kind, _ = ServerError.kind_and_message_from_exception exn in
+    match kind with
+    | ServerError.Kind.Watchman -> "watchman"
+    | ServerError.Kind.BuckInternal
+    | ServerError.Kind.BuckUser ->
+        "buck"
+    | ServerError.Kind.Pyre
+    | ServerError.Kind.Unknown ->
+        "server"
+
+
+  let message_of = function
+    | ExplicitRequest -> "Pyre server stopped because one client explicitly sent a `stop` request"
+    | CriticalFileUpdate path ->
+        Format.asprintf
+          "Pyre server needs to restart as it is notified on potential changes in `%a`"
+          PyrePath.pp
+          path
+    | UncaughtException exn ->
+        Format.sprintf
+          "Pyre server stopped due to uncaught exception (origin: %s)"
+          (origin_of_exception exn)
+end
+
+let last_server_stop_reason = ref None
+
+let get_last_server_stop_reason () = !last_server_stop_reason
+
+let stop_waiting_server reason =
+  last_server_stop_reason := Some reason;
   (* Send the process itself a SIGINT. *)
   let () = Signal.send_exn Signal.int (`Pid (Unix.getpid ())) in
   (* Block forever and wait for the signal to be caught. This way, client who requested the stop can
@@ -26,8 +68,3 @@ let log_stopped_server ~reason ~start_time () =
     ~normals:["reason", reason; "server_version", Version.version ()]
     ~integers:["up_time", Timer.stop_in_ms start_time]
     ()
-
-
-let log_and_stop_waiting_server ~reason ~properties:{ ServerProperties.start_time; _ } () =
-  log_stopped_server ~reason ~start_time ();
-  stop_waiting_server ()

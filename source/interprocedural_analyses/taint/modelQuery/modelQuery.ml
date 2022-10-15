@@ -641,7 +641,7 @@ let apply_callable_productions ~resolution ~productions ~callable =
                 source = Sources.ParametricSource { source_name = kind; subkind };
                 breadcrumbs = [];
                 via_features = [];
-                path = [];
+                applies_to = [];
                 leaf_names = [];
                 leaf_name_provided = false;
                 trace_length = None;
@@ -654,7 +654,7 @@ let apply_callable_productions ~resolution ~productions ~callable =
                 sink = Sinks.ParametricSink { sink_name = kind; subkind };
                 breadcrumbs = [];
                 via_features = [];
-                path = [];
+                applies_to = [];
                 leaf_names = [];
                 leaf_name_provided = false;
                 trace_length = None;
@@ -914,39 +914,35 @@ module GlobalVariableQueries = struct
     let unannotated_global_environment =
       GlobalResolution.unannotated_global_environment global_resolution
     in
-    let is_global global_reference =
+    let variable_metadata_for_global global_reference =
       match
         UnannotatedGlobalEnvironment.ReadOnly.get_unannotated_global
           unannotated_global_environment
           global_reference
       with
-      | Some (SimpleAssign _)
-      | Some (TupleAssign _) ->
-          true
-      | _ -> false
-    in
-    let global_annotation_expression global_reference =
-      GlobalResolution.global global_resolution global_reference
-      >>| (fun { AttributeResolution.Global.annotation; _ } -> annotation |> Annotation.annotation)
-      >>| Type.expression
+      | Some (SimpleAssign { explicit_annotation = Some _ as explicit_annotation; _ }) ->
+          Some { name = global_reference; type_annotation = explicit_annotation }
+      | Some (TupleAssign _)
+      | Some (SimpleAssign _) ->
+          Some { name = global_reference; type_annotation = None }
+      | _ -> None
     in
     UnannotatedGlobalEnvironment.ReadOnly.all_unannotated_globals unannotated_global_environment
-    |> List.filter ~f:is_global
-    |> List.map ~f:(fun global_reference ->
-           {
-             name = global_reference;
-             type_annotation = global_annotation_expression global_reference;
-           })
+    |> List.filter_map ~f:variable_metadata_for_global
 
 
   let rec global_matches_constraint
       query_constraint
       ~resolution
-      ~variable_metadata:({ name; _ } as variable_metadata)
+      ~variable_metadata:({ name; type_annotation = annotation } as variable_metadata)
     =
     match query_constraint with
     | ModelQuery.NameConstraint name_constraint ->
         matches_name_constraint ~name_constraint (Reference.show name)
+    | ModelQuery.AnnotationConstraint annotation_constraint ->
+        annotation
+        >>| (fun annotation -> matches_annotation_constraint ~annotation_constraint ~annotation)
+        |> Option.value ~default:false
     | ModelQuery.AnyOf constraints ->
         List.exists constraints ~f:(global_matches_constraint ~resolution ~variable_metadata)
     | ModelQuery.AllOf constraints ->

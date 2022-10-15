@@ -12,7 +12,6 @@ open OUnit2
 open CodeNavigationServer
 module Request = CodeNavigationServer.Testing.Request
 module Response = CodeNavigationServer.Testing.Response
-module Subscription = CodeNavigationServer.Testing.Subscription
 
 module ClientConnection = struct
   module Style = struct
@@ -36,10 +35,6 @@ module ClientConnection = struct
     Lwt_io.read_line input_channel
 
 
-  let send_subscription_request client request =
-    Subscription.Request.to_yojson request |> Yojson.Safe.to_string |> send_raw_request client
-
-
   let send_request client request =
     Request.to_yojson request |> Yojson.Safe.to_string |> send_raw_request client
 
@@ -49,14 +44,9 @@ module ClientConnection = struct
     assert_equal ~ctxt:context ~cmp:String.equal ~printer:Fn.id expected actual
 
 
-  let assert_subscription_response_equal ~expected ~actual { context; _ } =
-    let expected = Subscription.Response.to_yojson expected |> Yojson.Safe.to_string in
-    assert_equal ~ctxt:context ~cmp:String.equal ~printer:Fn.id expected actual
-
-
   let assert_subscription_response ~expected ({ input_channel; _ } as client) =
     let%lwt actual = Lwt_io.read_line input_channel in
-    assert_subscription_response_equal client ~expected ~actual;
+    assert_response_equal client ~expected ~actual;
     Lwt.return_unit
 
 
@@ -87,7 +77,7 @@ type t = {
   start_options: StartOptions.t;
 }
 
-let setup ~context ?(include_typeshed_stubs = true) ?watchman sources =
+let setup ~context ?(include_typeshed_stubs = true) ?(critical_files = []) ?watchman sources =
   (* MacOS tends to use very long directory name as the default `temp_dir`. This unfortunately would
      make the filename of temporary socket files exceed the default Unix limit. Hard-coding temp dir
      to `/tmp` to avoid the issue for now. *)
@@ -151,7 +141,7 @@ let setup ~context ?(include_typeshed_stubs = true) ?watchman sources =
           ~root:(PyrePath.create_absolute (bracket_tmpdir context))
           ~relative:"pyre_server_hash.sock";
       watchman;
-      critical_files = [];
+      critical_files;
     }
   in
   { context; start_options }
@@ -162,6 +152,11 @@ let start_options_of { start_options; _ } = start_options
 let configuration_of project =
   let { StartOptions.environment_controls; _ } = start_options_of project in
   Analysis.EnvironmentControls.configuration environment_controls
+
+
+let socket_address_of project =
+  let { StartOptions.socket_path; _ } = start_options_of project in
+  Lwt_unix.ADDR_UNIX (PyrePath.absolute socket_path)
 
 
 let source_root_of project =
@@ -196,7 +191,7 @@ let test_server_with ~style ~clients { context; start_options } =
         in
         iterate_list test_client clients)
   with
-  | Server.Start.ServerStopped -> Lwt.return_unit
+  | Server.Start.ServerStopped _ -> Lwt.return_unit
 
 
 let test_server_with_one_connection ~f =

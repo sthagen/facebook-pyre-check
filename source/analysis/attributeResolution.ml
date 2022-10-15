@@ -87,26 +87,26 @@ type resolved_define = {
 }
 
 module Argument = struct
-  type t = {
+  type 'argument_type t = {
     expression: Expression.t option;
     kind: Ast.Expression.Call.Argument.kind;
-    resolved: Type.t;
+    resolved: 'argument_type;
   }
 
   module WithPosition = struct
-    type t = {
+    type 'argument_type t = {
       position: int;
       expression: Expression.t option;
       kind: Ast.Expression.Call.Argument.kind;
-      resolved: Type.t;
+      resolved: 'argument_type;
     }
     [@@deriving compare, show]
   end
 end
 
-type matched_argument =
+type 'argument_type matched_argument =
   | MatchedArgument of {
-      argument: Argument.WithPosition.t;
+      argument: 'argument_type Argument.WithPosition.t;
       index_into_starred_tuple: int option;
     }
   | Default
@@ -131,7 +131,7 @@ type reasons = {
 
 type extracted_ordered_type = {
   ordered_type: Type.OrderedTypes.t;
-  argument: Argument.WithPosition.t;
+  argument: Type.t Argument.WithPosition.t;
   item_type_for_error: Type.t;
 }
 
@@ -153,17 +153,30 @@ let location_insensitive_compare_reasons
 let empty_reasons = { arity = []; annotation = [] }
 
 module ParameterArgumentMapping = struct
-  type t = {
-    parameter_argument_mapping: matched_argument list Type.Callable.Parameter.Map.t;
+  type 'argument_type t = {
+    parameter_argument_mapping: 'argument_type matched_argument list Type.Callable.Parameter.Map.t;
     reasons: reasons;
   }
-  [@@deriving compare]
 
-  let pp format { parameter_argument_mapping; reasons } =
+  let empty =
+    { parameter_argument_mapping = Type.Callable.Parameter.Map.empty; reasons = empty_reasons }
+
+
+  let equal_mapping_with_resolved_type
+      ({ parameter_argument_mapping = left_mapping; reasons = left_reasons } : Type.t t)
+      { parameter_argument_mapping = right_mapping; reasons = right_reasons }
+    =
+    [%compare.equal: Type.t matched_argument list Type.Callable.Parameter.Map.t]
+      left_mapping
+      right_mapping
+    && [%compare.equal: reasons] left_reasons right_reasons
+
+
+  let pp_with_resolved_type format { parameter_argument_mapping; reasons } =
     Format.fprintf
       format
       "ParameterArgumentMapping { parameter_argument_mapping: %s; reasons: %a }"
-      ([%show: (Type.Callable.Parameter.parameter * matched_argument list) list]
+      ([%show: (Type.Callable.Parameter.parameter * Type.t matched_argument list) list]
          (Map.to_alist parameter_argument_mapping))
       pp_reasons
       reasons
@@ -171,7 +184,7 @@ end
 
 type signature_match = {
   callable: Type.Callable.t;
-  parameter_argument_mapping: matched_argument list Type.Callable.Parameter.Map.t;
+  parameter_argument_mapping: Type.t matched_argument list Type.Callable.Parameter.Map.t;
   constraints_set: TypeConstraints.t list;
   ranks: ranks;
   reasons: reasons;
@@ -188,7 +201,7 @@ let pp_signature_match
      %a }"
     Type.Callable.pp
     callable
-    ([%show: (Type.Callable.Parameter.parameter * matched_argument list) list]
+    ([%show: (Type.Callable.Parameter.parameter * Type.t matched_argument list) list]
        (Map.to_alist parameter_argument_mapping))
     ([%show: TypeConstraints.t list] constraints_set)
     pp_ranks
@@ -1148,6 +1161,30 @@ let callable_call_special_cases
 
 
 module SignatureSelection = struct
+  let prepare_arguments_for_signature_selection ~self_argument arguments =
+    let add_positions arguments =
+      let add_index index { Argument.expression; kind; resolved } =
+        { Argument.WithPosition.position = index + 1; expression; kind; resolved }
+      in
+      List.mapi ~f:add_index arguments
+    in
+    let separate_labeled_unlabeled_arguments arguments =
+      let is_labeled = function
+        | { Argument.WithPosition.kind = Named _; _ } -> true
+        | _ -> false
+      in
+      let labeled_arguments, unlabeled_arguments = arguments |> List.partition_tf ~f:is_labeled in
+      let self_argument =
+        self_argument
+        >>| (fun resolved ->
+              { Argument.WithPosition.position = 0; expression = None; kind = Positional; resolved })
+        |> Option.to_list
+      in
+      self_argument @ labeled_arguments @ unlabeled_arguments
+    in
+    arguments |> add_positions |> separate_labeled_unlabeled_arguments
+
+
   (** Return a mapping from each parameter to the arguments that may be assigned to it. Also include
       any error reasons when there are too many or too few arguments.
 
@@ -2008,7 +2045,7 @@ module SignatureSelection = struct
       ~resolve_with_locals
       ~callable
       ~self_argument
-      ~(arguments : Argument.WithPosition.t list)
+      ~(arguments : Type.t Argument.WithPosition.t list)
       implementation
     =
     let open SignatureSelectionTypes in
@@ -2227,7 +2264,7 @@ module SignatureSelection = struct
         NotFound { closest_return_annotation = instantiated_return_annotation; reason }
 
 
-  let default_signature
+  let default_instantiated_return_annotation
       { Type.Callable.implementation = { annotation = default_return_annotation; _ }; _ }
     =
     let open SignatureSelectionTypes in
@@ -2294,28 +2331,35 @@ module SignatureSelection = struct
     |> List.hd
 
 
-  let prepare_arguments_for_signature_selection ~self_argument arguments =
-    let add_positions arguments =
-      let add_index index { Argument.expression; kind; resolved } =
-        { Argument.WithPosition.position = index + 1; expression; kind; resolved }
+  (** Select the closest overload for [callable] when it is called with [self_argument] and
+      [arguments]. If there are no overloads, just return results for the base implementation.
+
+      Return a [signature_match] containing the selected signature along with errors and constraints
+      for any type variables. *)
+  let select_closest_signature_for_function_call
+      ~order
+      ~resolve_with_locals
+      ~resolve_mutable_literals
+      ~arguments
+      ~callable:({ Type.Callable.implementation; overloads; _ } as callable)
+      ~self_argument
+    =
+    let get_match signatures =
+      let check_arguments_against_signature =
+        check_arguments_against_signature
+          ~order
+          ~resolve_with_locals
+          ~resolve_mutable_literals
+          ~callable
+          ~self_argument
+          ~arguments:(prepare_arguments_for_signature_selection ~self_argument arguments)
       in
-      List.mapi ~f:add_index arguments
+      signatures |> List.concat_map ~f:check_arguments_against_signature |> find_closest_signature
     in
-    let separate_labeled_unlabeled_arguments arguments =
-      let is_labeled = function
-        | { Argument.WithPosition.kind = Named _; _ } -> true
-        | _ -> false
-      in
-      let labeled_arguments, unlabeled_arguments = arguments |> List.partition_tf ~f:is_labeled in
-      let self_argument =
-        self_argument
-        >>| (fun resolved ->
-              { Argument.WithPosition.position = 0; expression = None; kind = Positional; resolved })
-        |> Option.to_list
-      in
-      self_argument @ labeled_arguments @ unlabeled_arguments
-    in
-    arguments |> add_positions |> separate_labeled_unlabeled_arguments
+    if List.is_empty overloads then
+      get_match [implementation]
+    else
+      get_match overloads
 end
 
 class base class_metadata_environment dependency =
@@ -4558,33 +4602,19 @@ class base class_metadata_environment dependency =
         ~assumptions
         ~resolve_with_locals
         ~arguments
-        ~callable:({ Type.Callable.implementation; overloads; _ } as callable)
+        ~callable
         ~self_argument
         ~skip_marking_escapees =
       let order = self#full_order ~assumptions in
-      let get_match signatures =
-        let check_arguments_against_signature =
-          SignatureSelection.check_arguments_against_signature
-            ~order
-            ~resolve_mutable_literals:(self#resolve_mutable_literals ~assumptions)
-            ~resolve_with_locals
-            ~callable
-            ~self_argument
-            ~arguments:
-              (SignatureSelection.prepare_arguments_for_signature_selection
-                 ~self_argument
-                 arguments)
-        in
-        signatures
-        |> List.concat_map ~f:check_arguments_against_signature
-        |> SignatureSelection.find_closest_signature
-        >>| SignatureSelection.instantiate_return_annotation ~skip_marking_escapees ~order
-        |> Option.value ~default:(SignatureSelection.default_signature callable)
-      in
-      if List.is_empty overloads then
-        get_match [implementation]
-      else
-        get_match overloads
+      SignatureSelection.select_closest_signature_for_function_call
+        ~order
+        ~resolve_with_locals
+        ~resolve_mutable_literals:(self#resolve_mutable_literals ~assumptions)
+        ~arguments
+        ~callable
+        ~self_argument
+      >>| SignatureSelection.instantiate_return_annotation ~skip_marking_escapees ~order
+      |> Option.value ~default:(SignatureSelection.default_instantiated_return_annotation callable)
 
     method resolve_mutable_literals ~assumptions ~resolve =
       WeakenMutableLiterals.weaken_mutable_literals

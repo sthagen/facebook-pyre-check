@@ -18,6 +18,29 @@ module Type = struct
   let compare = Type.namespace_insensitive_compare
 end
 
+let pp_type ~concise = if concise then Type.pp_concise else Type.pp
+
+let pp_reference ~concise format reference =
+  if concise then
+    Reference.last reference |> Reference.create |> Reference.pp_sanitized format
+  else
+    Reference.pp_sanitized format reference
+
+
+let ordinal number =
+  let suffix =
+    if number % 10 = 1 && number % 100 <> 11 then
+      "st"
+    else if number % 10 = 2 && number % 100 <> 12 then
+      "nd"
+    else if number % 10 = 3 && number % 100 <> 13 then
+      "rd"
+    else
+      "th"
+  in
+  string_of_int number ^ suffix
+
+
 (* The `name` field conflicts with that defined in incompatible_type. *)
 type missing_annotation = {
   name: Reference.t;
@@ -276,7 +299,144 @@ module ReadOnly = struct
         incompatible_type: incompatible_type;
         declare_location: Location.WithPath.t;
       }
+    | IncompatibleParameterType of {
+        name: Identifier.t option;
+        position: int;
+        callee: Reference.t option;
+        mismatch: mismatch;
+      }
   [@@deriving compare, sexp, show, hash]
+
+  let error_messages ~concise kind =
+    let pp_reference = pp_reference ~concise in
+    match kind with
+    | IncompatibleVariableType
+        { incompatible_type = { name; mismatch = { actual; expected }; _ }; _ } ->
+        let message =
+          if concise then
+            Format.asprintf
+              "%a has readonlyness `%a`; used as `%a`."
+              pp_reference
+              name
+              ReadOnlyness.pp
+              expected
+              ReadOnlyness.pp
+              actual
+          else
+            Format.asprintf
+              "%a is declared to have readonlyness `%a` but is used as readonlyness `%a`."
+              pp_reference
+              name
+              ReadOnlyness.pp
+              expected
+              ReadOnlyness.pp
+              actual
+        in
+        [message]
+    | IncompatibleParameterType { name; position; callee; mismatch = { actual; expected } } ->
+        let target =
+          let parameter =
+            match name with
+            | Some name -> Format.asprintf "parameter `%a`" Identifier.pp_sanitized name
+            | _ -> "positional only parameter"
+          in
+          let callee =
+            match callee with
+            | Some callee -> Format.asprintf "call `%a`" pp_reference callee
+            | _ -> "anonymous call"
+          in
+          if concise then
+            Format.asprintf "For %s param" (ordinal position)
+          else
+            Format.asprintf "In %s, for %s %s" callee (ordinal position) parameter
+        in
+        [
+          Format.asprintf
+            "%s expected `%a` but got `%a`."
+            target
+            ReadOnlyness.pp
+            expected
+            ReadOnlyness.pp
+            actual;
+        ]
+
+
+  let join left right =
+    let join_mismatch
+        { expected = left_expected; actual = left_actual }
+        { expected = right_expected; actual = right_actual }
+      =
+      {
+        expected = ReadOnlyness.join left_expected right_expected;
+        actual = ReadOnlyness.join left_actual right_actual;
+      }
+    in
+    match left, right with
+    | ( IncompatibleVariableType
+          ({
+             incompatible_type =
+               {
+                 name = left_name;
+                 mismatch = { actual = left_actual; expected = left_expected };
+                 _;
+               } as left_incompatible_type;
+             _;
+           } as left),
+        IncompatibleVariableType
+          {
+            incompatible_type =
+              {
+                name = right_name;
+                mismatch = { actual = right_actual; expected = right_expected };
+                _;
+              };
+            _;
+          } )
+      when Reference.equal left_name right_name ->
+        IncompatibleVariableType
+          {
+            left with
+            incompatible_type =
+              {
+                left_incompatible_type with
+                mismatch =
+                  {
+                    actual = ReadOnlyness.join left_actual right_actual;
+                    expected = ReadOnlyness.join left_expected right_expected;
+                  };
+              };
+          }
+        |> Option.some
+    | ( IncompatibleParameterType
+          ({
+             name = left_name;
+             position = left_position;
+             mismatch = left_mismatch;
+             callee = left_callee;
+           } as left),
+        IncompatibleParameterType
+          {
+            name = right_name;
+            position = right_position;
+            mismatch = right_mismatch;
+            callee = right_callee;
+          } )
+      when Option.equal Identifier.equal_sanitized left_name right_name
+           && left_position = right_position
+           && Option.equal Reference.equal_sanitized left_callee right_callee ->
+        let mismatch = join_mismatch left_mismatch right_mismatch in
+        IncompatibleParameterType { left with mismatch } |> Option.some
+    | _ -> None
+
+
+  let code_of_kind = function
+    | IncompatibleVariableType _ -> 3001
+    | IncompatibleParameterType _ -> 3002
+
+
+  let name_of_kind = function
+    | IncompatibleVariableType _ -> "ReadOnly violation - Incompatible variable type"
+    | IncompatibleParameterType _ -> "ReadOnly violation - Incompatible parameter type"
 end
 
 type invalid_decoration =
@@ -552,8 +712,8 @@ let code_of_kind = function
   | DeadStore _ -> 1003
   (* Errors from type operators *)
   | BroadcastError _ -> 2001
-  (* Privacy-related errors. *)
-  | ReadOnlynessMismatch _ -> 3001
+  (* Privacy-related errors: 3xxx. *)
+  | ReadOnlynessMismatch kind -> ReadOnly.code_of_kind kind
 
 
 let name_of_kind = function
@@ -597,7 +757,7 @@ let name_of_kind = function
   | NotCallable _ -> "Call error"
   | PrivateProtocolProperty _ -> "Private protocol property"
   | ProhibitedAny _ -> "Prohibited any"
-  | ReadOnlynessMismatch _ -> "ReadOnly violation"
+  | ReadOnlynessMismatch kind -> ReadOnly.name_of_kind kind
   | RedefinedClass _ -> "Redefined class"
   | RedundantCast _ -> "Redundant cast"
   | RevealedLocals _ -> "Revealed locals"
@@ -851,30 +1011,12 @@ let rec messages ~concise ~signature location kind =
   let show_sanitized_optional_expression expression =
     expression >>| show_sanitized_expression >>| Format.sprintf " `%s`" |> Option.value ~default:""
   in
-  let ordinal number =
-    let suffix =
-      if number % 10 = 1 && number % 100 <> 11 then
-        "st"
-      else if number % 10 = 2 && number % 100 <> 12 then
-        "nd"
-      else if number % 10 = 3 && number % 100 <> 13 then
-        "rd"
-      else
-        "th"
-    in
-    string_of_int number ^ suffix
-  in
   let invariance_message =
     "See https://pyre-check.org/docs/errors#covariance-and-contravariance"
     ^ " for mutable container errors."
   in
-  let pp_type = if concise then Type.pp_concise else Type.pp in
-  let pp_reference format reference =
-    if concise then
-      Reference.last reference |> Reference.create |> Reference.pp_sanitized format
-    else
-      Reference.pp_sanitized format reference
-  in
+  let pp_type = pp_type ~concise in
+  let pp_reference = pp_reference ~concise in
   let pp_identifier = Identifier.pp_sanitized in
   let kind = weaken_literals kind in
   let kind = simplify_kind kind in
@@ -2097,30 +2239,7 @@ let rec messages ~concise ~signature location kind =
           [Format.asprintf "`%a` cannot alias to `Any`." pp_reference name]
       | TypeAlias, _ ->
           [Format.asprintf "`%a` cannot alias to a type containing `Any`." pp_reference name])
-  | ReadOnlynessMismatch
-      (IncompatibleVariableType
-        { incompatible_type = { name; mismatch = { actual; expected }; _ }; _ }) ->
-      let message =
-        if concise then
-          Format.asprintf
-            "%a has readonlyness `%a`; used as `%a`."
-            pp_reference
-            name
-            ReadOnlyness.pp
-            expected
-            ReadOnlyness.pp
-            actual
-        else
-          Format.asprintf
-            "%a is declared to have readonlyness `%a` but is used as readonlyness `%a`."
-            pp_reference
-            name
-            ReadOnlyness.pp
-            expected
-            ReadOnlyness.pp
-            actual
-      in
-      [message]
+  | ReadOnlynessMismatch kind -> ReadOnly.error_messages ~concise kind
   | RedefinedClass { shadowed_class; _ } when concise ->
       [Format.asprintf "Class `%a` redefined" pp_reference shadowed_class]
   | RedefinedClass { current_class; shadowed_class; is_shadowed_class_imported } ->
@@ -2818,6 +2937,18 @@ let join ~resolution left right =
       thrown_at_source = left.thrown_at_source || right.thrown_at_source;
     }
   in
+  let default_error_output () =
+    let { location; _ } = left in
+    Log.debug
+      "Incompatible type in error join at %a: %a %a"
+      Location.WithModule.pp
+      location
+      pp_kind
+      left.kind
+      pp_kind
+      right.kind;
+    Top
+  in
   let kind =
     match left.kind, right.kind with
     | AnalysisFailure left, AnalysisFailure right when [%compare.equal: analysis_failure] left right
@@ -2910,43 +3041,10 @@ let join ~resolution left right =
             annotation_kind = annotation_kind_left;
             missing_annotation = join_missing_annotation left right;
           }
-    | ( ReadOnlynessMismatch
-          (IncompatibleVariableType
-            ({
-               incompatible_type =
-                 {
-                   name = left_name;
-                   mismatch = { actual = left_actual; expected = left_expected };
-                   _;
-                 } as left_incompatible_type;
-               _;
-             } as left)),
-        ReadOnlynessMismatch
-          (IncompatibleVariableType
-            {
-              incompatible_type =
-                {
-                  name = right_name;
-                  mismatch = { actual = right_actual; expected = right_expected };
-                  _;
-                };
-              _;
-            }) )
-      when Reference.equal left_name right_name ->
-        ReadOnlynessMismatch
-          (IncompatibleVariableType
-             {
-               left with
-               incompatible_type =
-                 {
-                   left_incompatible_type with
-                   mismatch =
-                     {
-                       actual = ReadOnlyness.join left_actual right_actual;
-                       expected = ReadOnlyness.join left_expected right_expected;
-                     };
-                 };
-             })
+    | ReadOnlynessMismatch left, ReadOnlynessMismatch right -> (
+        match ReadOnly.join left right with
+        | Some joined -> ReadOnlynessMismatch joined
+        | None -> default_error_output ())
     | RedundantCast left, RedundantCast right ->
         RedundantCast (GlobalResolution.join resolution left right)
     | RevealedLocals left, RevealedLocals right
@@ -3304,16 +3402,7 @@ let join ~resolution left right =
     | UnsupportedOperand _, _
     | UnusedIgnore _, _
     | UnusedLocalMode _, _ ->
-        let { location; _ } = left in
-        Log.debug
-          "Incompatible type in error join at %a: %a %a"
-          Location.WithModule.pp
-          location
-          pp_kind
-          left.kind
-          pp_kind
-          right.kind;
-        Top
+        default_error_output ()
   in
   let location =
     if Location.WithModule.compare left.location right.location <= 0 then
