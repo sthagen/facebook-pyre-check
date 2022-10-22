@@ -151,11 +151,11 @@ module Label = struct
     | _ -> false
 
 
-  let rec compare_path left right =
+  let rec compare_path ?(cmp = compare) left right =
     match left, right with
     | left :: left_rest, right :: right_rest -> (
-        match compare left right with
-        | 0 -> compare_path left_rest right_rest
+        match cmp left right with
+        | 0 -> compare_path ~cmp left_rest right_rest
         | n -> n)
     | [], [] -> 0
     | [], _ -> -1
@@ -636,10 +636,10 @@ module Make (Config : CONFIG) (Element : ELEMENT) () = struct
 
   and join_each_index ~ancestors rest ~subtree ~key:element ~data:tree =
     match element with
-    | Label.AnyIndex -> assign_or_join_path ~do_join:true ~ancestors ~tree rest ~subtree
-    | Label.Index _
-    | Label.Field _ ->
-        Some tree
+    | Label.AnyIndex
+    | Label.Index _ ->
+        assign_or_join_path ~do_join:true ~ancestors ~tree rest ~subtree
+    | Label.Field _ -> Some tree
 
 
   (** Assign subtree subtree into existing tree at path. *)
@@ -1180,13 +1180,28 @@ module Make (Config : CONFIG) (Element : ELEMENT) () = struct
     let create parts =
       let create_path result part =
         match part with
-        | Part (Path, (path, tip)) -> create_leaf tip |> create_tree path |> join result
-        | Part (Self, info) -> join result (info : t)
+        | Part (Path, (path, tip)) -> assign ~weak:true ~tree:result path ~subtree:(create_leaf tip)
+        | Part (Self, info) -> assign ~weak:true ~tree:result [] ~subtree:info
         | _ ->
             (* Assume [] path *)
-            Element.create [part] |> create_leaf |> join result
+            assign ~weak:true ~tree:result [] ~subtree:(Element.create [part] |> create_leaf)
       in
-      ListLabels.fold_left parts ~init:bottom ~f:create_path
+      let cmp x y =
+        let any_index_first x y =
+          match x, y with
+          | Label.AnyIndex, Label.AnyIndex -> 0
+          | Label.AnyIndex, _ -> -1
+          | _, Label.AnyIndex -> 1
+          | _ -> 0
+        in
+        match x, y with
+        | Part (Path, (p1, _)), Part (Path, (p2, _)) ->
+            Label.compare_path ~cmp:any_index_first p1 p2
+        | Part (Path, _), _ -> -1
+        | _, Part (Path, _) -> 1
+        | _ -> 0
+      in
+      parts |> ListLabels.sort ~cmp |> ListLabels.fold_left ~init:bottom ~f:create_path
 
 
     let fold = Base.fold

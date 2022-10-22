@@ -4,7 +4,11 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-TODO(T132414938) Add a module-level docstring
+The request handler provides an interface and implementation for LSP related
+queries (such as hover & definition). The current implementation of the request
+handler involves a synchronous query to the Pyre server via a daemon connection,
+but since the request handler also provides an interface (AbstractRequestHandler),
+the request handler implementation can be mocked.
 """
 
 
@@ -13,7 +17,7 @@ import dataclasses
 import json
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from libcst.metadata import CodeRange
 
@@ -157,7 +161,7 @@ class AbstractRequestHandler(abc.ABC):
     async def get_type_coverage(
         self,
         path: Path,
-    ) -> Optional[lsp.TypeCoverageResponse]:
+    ) -> Union[daemon_query.DaemonQueryFailure, Optional[lsp.TypeCoverageResponse]]:
         raise NotImplementedError()
 
     @abc.abstractmethod
@@ -165,7 +169,7 @@ class AbstractRequestHandler(abc.ABC):
         self,
         path: Path,
         position: lsp.PyrePosition,
-    ) -> lsp.LspHoverResponse:
+    ) -> Union[daemon_query.DaemonQueryFailure, lsp.LspHoverResponse]:
         raise NotImplementedError()
 
     @abc.abstractmethod
@@ -173,7 +177,7 @@ class AbstractRequestHandler(abc.ABC):
         self,
         path: Path,
         position: lsp.PyrePosition,
-    ) -> List[lsp.LspLocation]:
+    ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.LspLocation]]:
         raise NotImplementedError()
 
     @abc.abstractmethod
@@ -181,15 +185,16 @@ class AbstractRequestHandler(abc.ABC):
         self,
         path: Path,
         position: lsp.PyrePosition,
-    ) -> List[lsp.LspLocation]:
+    ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.LspLocation]]:
         raise NotImplementedError()
 
     @abc.abstractmethod
     async def update_overlay(
         self,
         path: Path,
+        process_id: int,
         code: str,
-    ) -> None:
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
         raise NotImplementedError()
 
 
@@ -207,7 +212,7 @@ class RequestHandler(AbstractRequestHandler):
     async def _query_modules_of_path(
         self,
         path: Path,
-    ) -> Optional[QueryModulesOfPathResponse]:
+    ) -> Union[daemon_query.DaemonQueryFailure, QueryModulesOfPathResponse]:
         overlay_id = (
             str(path)
             if self.get_language_server_features().unsaved_changes.is_enabled()
@@ -227,7 +232,7 @@ class RequestHandler(AbstractRequestHandler):
         response = await self._query_modules_of_path(
             path,
         )
-        if response is None:
+        if isinstance(response, daemon_query.DaemonQueryFailure):
             return None
         else:
             return len(response.response) > 0
@@ -241,7 +246,7 @@ class RequestHandler(AbstractRequestHandler):
     async def get_type_coverage(
         self,
         path: Path,
-    ) -> Optional[lsp.TypeCoverageResponse]:
+    ) -> Union[daemon_query.DaemonQueryFailure, Optional[lsp.TypeCoverageResponse]]:
         is_typechecked = await self._query_is_typechecked(path)
         if is_typechecked is None:
             return None
@@ -254,8 +259,8 @@ class RequestHandler(AbstractRequestHandler):
                 socket_path=self.socket_path,
                 query_text=f"expression_level_coverage('{path}')",
             )
-            if response is None:
-                return None
+            if isinstance(response, daemon_query.DaemonQueryFailure):
+                return response
             else:
                 return path_to_expression_coverage_response(
                     strict_by_default,
@@ -270,7 +275,7 @@ class RequestHandler(AbstractRequestHandler):
         self,
         path: Path,
         position: lsp.PyrePosition,
-    ) -> lsp.LspHoverResponse:
+    ) -> Union[daemon_query.DaemonQueryFailure, lsp.LspHoverResponse]:
         path_string = f"'{path}'"
         query_text = (
             f"hover_info_for_position(path={path_string},"
@@ -282,17 +287,16 @@ class RequestHandler(AbstractRequestHandler):
             query_text=query_text,
             overlay_id=self._get_overlay_id(path),
         )
-        return (
-            daemon_response.response
-            if daemon_response
-            else lsp.LspHoverResponse.empty()
-        )
+        if isinstance(daemon_response, daemon_query.DaemonQueryFailure):
+            return daemon_response
+        else:
+            return daemon_response.response
 
     async def get_definition_locations(
         self,
         path: Path,
         position: lsp.PyrePosition,
-    ) -> List[lsp.LspLocation]:
+    ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.LspLocation]]:
         path_string = f"'{path}'"
         query_text = (
             f"location_of_definition(path={path_string},"
@@ -304,21 +308,19 @@ class RequestHandler(AbstractRequestHandler):
             query_text=query_text,
             overlay_id=self._get_overlay_id(path),
         )
-        definitions = (
-            [
+        if isinstance(daemon_response, daemon_query.DaemonQueryFailure):
+            return daemon_response
+        else:
+            return [
                 response.to_lsp_definition_response()
                 for response in daemon_response.response
             ]
-            if daemon_response is not None
-            else []
-        )
-        return definitions
 
     async def get_reference_locations(
         self,
         path: Path,
         position: lsp.PyrePosition,
-    ) -> List[lsp.LspLocation]:
+    ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.LspLocation]]:
         path_string = f"'{path}'"
         query_text = (
             f"find_references(path={path_string},"
@@ -330,33 +332,33 @@ class RequestHandler(AbstractRequestHandler):
             query_text=query_text,
             overlay_id=self._get_overlay_id(path),
         )
-        return (
-            [
+        if isinstance(daemon_response, daemon_query.DaemonQueryFailure):
+            return daemon_response
+        else:
+            result = [
                 response.to_lsp_definition_response()
                 for response in daemon_response.response
             ]
-            if daemon_response is not None
-            else []
-        )
+            return result
 
     async def update_overlay(
         self,
         path: Path,
+        process_id: int,
         code: str,
-    ) -> None:
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
         source_path = f"{path}"
         overlay_update_json = [
             "OverlayUpdate",
             {
-                # TODO: T126924773 Include a language server identifier (e.g. PID of
-                # the current process) in this overlay id.
-                "overlay_id": source_path,
+                "overlay_id": f"{source_path}, pid_{process_id}",
                 "source_path": source_path,
                 "code_update": ["NewCode", code],
             },
         ]
-        # Drop the response (the daemon code will log it for us)
-        await daemon_connection.attempt_send_async_raw_request(
+        # Response is only used in the event that it is a DaemonConnectionFailure
+        daemon_response = await daemon_connection.attempt_send_async_raw_request(
             socket_path=self.socket_path,
             request=json.dumps(overlay_update_json),
         )
+        return daemon_response

@@ -52,9 +52,15 @@ let test_forward_expression context =
     let global_resolution = global_resolution
 
     let local_annotations =
-      TypeEnvironment.TypeEnvironmentReadOnly.get_or_recompute_local_annotations
+      TypeEnvironment.ReadOnly.get_or_recompute_local_annotations
         type_environment
         (Node.value define |> Define.name)
+
+
+    let type_resolution_for_statement =
+      TypeCheck.resolution_with_key
+        (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
+        (module TypeCheck.DummyContext)
   end
   in
   let module State = State (Context) in
@@ -117,9 +123,15 @@ let test_check_arguments_against_parameters context =
     let global_resolution = global_resolution
 
     let local_annotations =
-      TypeEnvironment.TypeEnvironmentReadOnly.get_or_recompute_local_annotations
+      TypeEnvironment.ReadOnly.get_or_recompute_local_annotations
         type_environment
         (Node.value define |> Define.name)
+
+
+    let type_resolution_for_statement =
+      TypeCheck.resolution_with_key
+        (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
+        (module TypeCheck.DummyContext)
   end
   in
   let module State = State (Context) in
@@ -261,13 +273,22 @@ let test_callable_data_list_for_callee context =
 
 let assert_readonly_errors ~context =
   let check ~environment ~source =
-    source
-    |> Preprocessing.defines ~include_toplevels:true
-    |> List.concat_map
-         ~f:
-           (ReadOnlyCheck.readonly_errors_for_define
-              ~type_environment:(TypeEnvironment.read_only environment)
-              ~qualifier:!&"test")
+    let errors_for_define define =
+      let environment = TypeEnvironment.read_only environment in
+      ReadOnlyCheck.readonly_errors_for_define
+        ~type_resolution_for_statement:
+          (TypeCheck.resolution_with_key
+             (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
+             (module TypeCheck.DummyContext))
+        ~global_resolution:(TypeEnvironment.ReadOnly.global_resolution environment)
+        ~local_annotations:
+          (TypeEnvironment.ReadOnly.get_or_recompute_local_annotations
+             environment
+             (Node.value define |> Define.name))
+        ~qualifier:!&"test"
+        define
+    in
+    source |> Preprocessing.defines ~include_toplevels:true |> List.concat_map ~f:errors_for_define
   in
   assert_errors ~context ~check
 
@@ -497,6 +518,65 @@ let test_function_call context =
        `test.Foo.expect_mutable_self`, for 0th positional only parameter expected \
        `ReadOnlyness.Mutable` but got `ReadOnlyness.ReadOnly`.";
     ];
+  assert_readonly_errors
+    {|
+      from pyre_extensions import ReadOnly
+
+      class Foo:
+        some_attribute: int = 42
+
+      def main() -> None:
+        readonly_foo: ReadOnly[Foo]
+        readonly_foo.some_attribute = 99
+    |}
+    [
+      "ReadOnly violation - Assigning to readonly attribute [3003]: Cannot assign to attribute \
+       `some_attribute` since it is readonly";
+    ];
+  assert_readonly_errors
+    {|
+      from pyre_extensions import ReadOnly
+
+      class Foo:
+        readonly_attribute: ReadOnly[int] = 42
+        mutable_attribute: int = 42
+
+      def main() -> None:
+        mutable_foo: Foo
+        mutable_foo.readonly_attribute = 99
+        mutable_foo.mutable_attribute = 99
+    |}
+    [
+      "ReadOnly violation - Assigning to readonly attribute [3003]: Cannot assign to attribute \
+       `readonly_attribute` since it is readonly";
+    ];
+  (* Technically, reassigning to a variable doesn't mutate it. So, we don't emit an error in this
+     case. *)
+  assert_readonly_errors
+    {|
+      from pyre_extensions import ReadOnly
+
+      def main() -> None:
+        x: ReadOnly[int] = 42
+        x = 99
+    |}
+    [];
+  ()
+
+
+let test_await context =
+  let assert_readonly_errors = assert_readonly_errors ~context in
+  (* TODO(T130377746): This should have a readonly violation error. *)
+  assert_readonly_errors
+    {|
+      from pyre_extensions import ReadOnly
+
+      async def return_readonly() -> ReadOnly[int]: ...
+
+      async def main() -> None:
+        y: int = await return_readonly()
+    |}
+    [];
   ()
 
 
@@ -508,5 +588,6 @@ let () =
          "callable_data_list_for_callee" >:: test_callable_data_list_for_callee;
          "assignment" >:: test_assignment;
          "function_call" >:: test_function_call;
+         "await" >:: test_await;
        ]
   |> Test.run

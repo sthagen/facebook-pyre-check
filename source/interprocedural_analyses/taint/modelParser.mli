@@ -27,68 +27,74 @@ end
 
 (* Exposed for model queries. *)
 module Internal : sig
-  type breadcrumbs = Features.Breadcrumb.t list [@@deriving show, equal]
+  (* Represents a source or sink kind (e.g, UserControlled) *)
+  module Kind : sig
+    type t = {
+      name: string;
+      subkind: string option;
+    }
+    [@@deriving equal]
+  end
 
-  type via_features = Features.ViaFeature.t list [@@deriving show, equal]
+  module TaintFeatures : sig
+    type t = {
+      breadcrumbs: Features.Breadcrumb.t list;
+      via_features: Features.ViaFeature.t list;
+      path: Abstract.TreeDomain.Label.path option;
+      leaf_names: Features.LeafName.t list;
+      leaf_name_provided: bool;
+      trace_length: int option;
+    }
+    [@@deriving equal]
 
-  type leaf_kind =
-    | Leaf of {
-        name: string;
-        subkind: string option;
-      }
-    | Breadcrumbs of breadcrumbs
-    | ViaFeatures of via_features
-  [@@deriving show, equal]
+    val empty : t
+  end
 
-  type sanitize_annotation =
-    | AllSources
-    | SpecificSource of SanitizeTransform.Source.t
-    | AllSinks
-    | SpecificSink of SanitizeTransform.Sink.t
-    | AllTito
-    | SpecificTito of {
-        sources: SanitizeTransform.Source.t list;
-        sinks: SanitizeTransform.Sink.t list;
-      }
-  [@@deriving show, equal]
+  module SanitizeAnnotation : sig
+    type t =
+      | AllSources
+      | SpecificSource of SanitizeTransform.Source.t
+      | AllSinks
+      | SpecificSink of SanitizeTransform.Sink.t
+      | AllTito
+      | SpecificTito of {
+          sources: SanitizeTransform.Source.t list;
+          sinks: SanitizeTransform.Sink.t list;
+        }
+    [@@deriving equal]
+  end
 
-  type taint_annotation =
-    | Sink of {
-        sink: Sinks.t;
-        breadcrumbs: breadcrumbs;
-        via_features: via_features;
-        applies_to: Abstract.TreeDomain.Label.path;
-        leaf_names: Features.LeafName.t list;
-        leaf_name_provided: bool;
-        trace_length: int option;
-      }
-    | Source of {
-        source: Sources.t;
-        breadcrumbs: breadcrumbs;
-        via_features: via_features;
-        applies_to: Abstract.TreeDomain.Label.path;
-        leaf_names: Features.LeafName.t list;
-        leaf_name_provided: bool;
-        trace_length: int option;
-      }
-    | Tito of {
-        tito: Sinks.t;
-        breadcrumbs: breadcrumbs;
-        via_features: via_features;
-        applies_to: Abstract.TreeDomain.Label.path;
-      }
-    | AddFeatureToArgument of {
-        breadcrumbs: breadcrumbs;
-        via_features: via_features;
-        applies_to: Abstract.TreeDomain.Label.path;
-      }
-    | Sanitize of sanitize_annotation list
-  [@@deriving show, equal]
+  module TaintAnnotation : sig
+    type t =
+      | Sink of {
+          sink: Sinks.t;
+          features: TaintFeatures.t;
+        }
+      | Source of {
+          source: Sources.t;
+          features: TaintFeatures.t;
+        }
+      | Tito of {
+          tito: Sinks.t;
+          features: TaintFeatures.t;
+        }
+      | AddFeatureToArgument of { features: TaintFeatures.t }
+      | Sanitize of SanitizeAnnotation.t list
+    [@@deriving show, equal]
 
-  type annotation_kind =
-    | ParameterAnnotation of AccessPath.Root.t
-    | ReturnAnnotation
-  [@@deriving show, equal]
+    val from_source : Sources.t -> t
+
+    val from_sink : Sinks.t -> t
+
+    val from_tito : Sinks.t -> t
+  end
+
+  module AnnotationKind : sig
+    type t =
+      | ParameterAnnotation of AccessPath.Root.t
+      | ReturnAnnotation
+    [@@deriving show, equal]
+  end
 
   module ModelQuery : sig
     type name_constraint =
@@ -165,7 +171,7 @@ module Internal : sig
     [@@deriving show, equal]
 
     type produced_taint =
-      | TaintAnnotation of taint_annotation
+      | TaintAnnotation of TaintAnnotation.t
       | ParametricSourceFromAnnotation of {
           source_pattern: string;
           kind: string;
@@ -233,13 +239,19 @@ val parse
 
 val verify_model_syntax : path:PyrePath.t -> source:string -> unit
 
+val parse_access_path
+  :  path:PyrePath.t option ->
+  location:Ast.Location.t ->
+  Ast.Expression.t ->
+  (Abstract.TreeDomain.Label.path, ModelVerificationError.t) result
+
 (* Exposed for model queries. *)
 val create_callable_model_from_annotations
   :  resolution:Analysis.Resolution.t ->
   callable:Interprocedural.Target.t ->
   source_sink_filter:SourceSinkFilter.t option ->
   is_obscure:bool ->
-  (Internal.annotation_kind * Internal.taint_annotation) list ->
+  (Internal.AnnotationKind.t * Internal.TaintAnnotation.t) list ->
   (Model.t, ModelVerificationError.t) result
 
 (* Exposed for model queries. *)
@@ -247,5 +259,5 @@ val create_attribute_model_from_annotations
   :  resolution:Analysis.Resolution.t ->
   name:Ast.Reference.t ->
   source_sink_filter:SourceSinkFilter.t option ->
-  Internal.taint_annotation list ->
+  Internal.TaintAnnotation.t list ->
   (Model.t, ModelVerificationError.t) result

@@ -13,6 +13,7 @@ because it illustrates that this is the intermediary between the Language server
 
 import dataclasses
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Union
@@ -29,6 +30,10 @@ from . import (
     request_handler,
     server_state as state,
 )
+
+from .daemon_connection import DaemonConnectionFailure
+
+from .daemon_query import DaemonQueryFailure
 
 LOG: logging.Logger = logging.getLogger(__name__)
 CONSECUTIVE_START_ATTEMPT_THRESHOLD: int = 5
@@ -80,6 +85,10 @@ async def _wait_for_exit(
             continue
         # Got an exit request. Stop the wait.
         return
+
+
+def daemon_failure_string(operation: str, type_string: str, error_message: str) -> str:
+    return f"For {operation} request, encountered failure response of type: {type_string}, error_message: {error_message}"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -177,28 +186,16 @@ class PyreLanguageServer:
         if document_path not in self.server_state.opened_documents:
             return
 
-        await self.write_telemetry(
-            {
-                "type": "LSP",
-                "operation": "didChange",
-                "filePath": str(document_path),
-                "server_state_open_documents_count": len(
-                    self.server_state.opened_documents
-                ),
-                "server_state_start_status": str(
-                    self.server_state.server_last_status.value
-                ),
-            },
-            activity_key,
-        )
-
         process_unsaved_changes = (
             self.server_state.server_options.language_server_features.unsaved_changes.is_enabled()
         )
-
+        error_message = None
+        process_id = os.getpid()
+        server_state_before_request = self.server_state.server_last_status.value
         if process_unsaved_changes:
-            await self.handler.update_overlay(
+            result = await self.handler.update_overlay(
                 path=document_path.resolve(),
+                process_id=process_id,
                 code=str(
                     "".join(
                         [
@@ -208,6 +205,31 @@ class PyreLanguageServer:
                     )
                 ),
             )
+            if isinstance(result, DaemonConnectionFailure):
+                LOG.info(
+                    daemon_failure_string(
+                        "didChange", str(type(result)), result.error_message
+                    )
+                )
+                error_message = result.error_message
+        await self.write_telemetry(
+            {
+                "type": "LSP",
+                "operation": "didChange",
+                "filePath": str(document_path),
+                "server_state_open_documents_count": len(
+                    self.server_state.opened_documents
+                ),
+                "server_state_before_request": str(server_state_before_request),
+                "server_state_after_request": self.server_state.server_last_status.value,
+                "server_state_start_status": self.server_state.server_last_status.value,
+                "error_message": str(error_message),
+                "overlays_enabled_for_user": process_unsaved_changes,
+                "process_id": process_id,
+            },
+            activity_key,
+        )
+
         # Attempt to trigger a background Pyre server start on each file change
         if not self.daemon_manager.is_task_running():
             await self._try_restart_pyre_daemon()
@@ -257,6 +279,7 @@ class PyreLanguageServer:
                 f"Document URI is not a file: {parameters.text_document.uri}"
             )
         start_time = time.time()
+        server_state_before_request = self.server_state.server_last_status.value
         response = await self.handler.get_type_coverage(path=document_path)
         if response is not None:
             await lsp.write_json_rpc(
@@ -277,9 +300,9 @@ class PyreLanguageServer:
                 "server_state_open_documents_count": len(
                     self.server_state.opened_documents
                 ),
-                "server_state_start_status": str(
-                    self.server_state.server_last_status.value
-                ),
+                "server_state_before_request": str(server_state_before_request),
+                "server_state_after_request": self.server_state.server_last_status.value,
+                "server_state_start_status": self.server_state.server_last_status.value,
             },
             activity_key,
         )
@@ -312,10 +335,20 @@ class PyreLanguageServer:
             )
         else:
             start_time = time.time()
+            server_state_before_request = self.server_state.server_last_status.value
             result = await self.handler.get_hover(
                 path=document_path,
                 position=parameters.position.to_pyre_position(),
             )
+            error_message = None
+            if isinstance(result, DaemonQueryFailure):
+                LOG.info(
+                    daemon_failure_string(
+                        "hover", str(type(result)), result.error_message
+                    )
+                )
+                error_message = result.error_message
+                result = lsp.LspHoverResponse.empty()
             raw_result = lsp.LspHoverResponse.cached_schema().dump(
                 result,
             )
@@ -339,16 +372,17 @@ class PyreLanguageServer:
                     "server_state_open_documents_count": len(
                         self.server_state.opened_documents
                     ),
-                    "server_state_start_status": str(
-                        self.server_state.server_last_status.value
-                    ),
+                    "server_state_before_request": str(server_state_before_request),
+                    "server_state_after_request": self.server_state.server_last_status.value,
+                    "server_state_start_status": self.server_state.server_last_status.value,
+                    "error_message": str(error_message),
                 },
                 activity_key,
             )
 
     async def _get_definition_result(
         self, document_path: Path, position: lsp.LspPosition
-    ) -> List[Dict[str, object]]:
+    ) -> Union[DaemonQueryFailure, List[Dict[str, object]]]:
         """
         Helper function to call the handler. Exists only to reduce code duplication
         due to shadow mode, please don't make more of these - we already have enough
@@ -358,10 +392,13 @@ class PyreLanguageServer:
             path=document_path,
             position=position.to_pyre_position(),
         )
-        return lsp.LspLocation.cached_schema().dump(
-            definitions,
-            many=True,
-        )
+        if isinstance(definitions, DaemonQueryFailure):
+            return definitions
+        else:
+            return lsp.LspLocation.cached_schema().dump(
+                definitions,
+                many=True,
+            )
 
     async def process_definition_request(
         self,
@@ -389,11 +426,19 @@ class PyreLanguageServer:
         else:
             start_time = time.time()
             shadow_mode = self.get_language_server_features().definition.is_shadow()
+            server_state_before_request = self.server_state.server_last_status.value
             if not shadow_mode:
                 raw_result = await self._get_definition_result(
                     document_path=document_path,
                     position=parameters.position,
                 )
+                error_message = None
+                if isinstance(raw_result, DaemonQueryFailure):
+                    LOG.info(
+                        f"Non-shadow mode: {daemon_failure_string('definition', str(type(raw_result)), raw_result.error_message)}"
+                    )
+                    error_message = raw_result.error_message
+                    raw_result = []
                 await lsp.write_json_rpc(
                     self.output_channel,
                     json_rpc.SuccessResponse(
@@ -417,6 +462,13 @@ class PyreLanguageServer:
                     document_path=document_path,
                     position=parameters.position,
                 )
+                error_message = None
+                if isinstance(raw_result, DaemonQueryFailure):
+                    LOG.info(
+                        f"Shadow mode: {daemon_failure_string('definition', str(type(raw_result)), raw_result.error_message)}"
+                    )
+                    error_message = raw_result.error_message
+                    raw_result = []
             end_time = time.time()
             await self.write_telemetry(
                 {
@@ -429,12 +481,16 @@ class PyreLanguageServer:
                     "server_state_open_documents_count": len(
                         self.server_state.opened_documents
                     ),
-                    "server_state_start_status": str(
-                        self.server_state.server_last_status.value
-                    ),
+                    "server_state_before_request": str(server_state_before_request),
+                    "server_state_after_request": self.server_state.server_last_status.value,
+                    "server_state_start_status": self.server_state.server_last_status.value,
+                    "overlays_enabled_for_user": self.server_state.server_options.language_server_features.unsaved_changes.is_enabled(),
+                    "error_message": str(error_message),
                 },
                 activity_key,
             )
+        if not self.daemon_manager.is_task_running():
+            await self._try_restart_pyre_daemon()
 
     async def process_document_symbols_request(
         self,

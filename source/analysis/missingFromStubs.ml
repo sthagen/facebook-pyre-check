@@ -5,7 +5,13 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-(* TODO(T132410158) Add a module-level doc comment. *)
+(* MissingTypeStubs:
+ *
+ * This module is mostly a data module that fills in the gaps from missing typeshed stubs.
+ * It adds type lattice and attribute information form for values annotated as
+ * `x: _SpecialForm = ...` in typeshed, and is used by the UnannotatedGlobalEnvironment.
+ * Implementers need to write raw qualified ASTs.
+ *)
 
 open Core
 open Ast
@@ -62,6 +68,18 @@ let callable_body =
                (Ast.Expression.create_name ~location:Location.any "typing.Callable.__call__"));
         annotation = Some (Type.expression Type.object_primitive);
         value = Node.create_with_default_location (Expression.Constant Constant.NoneLiteral);
+      };
+    Statement.Assign
+      {
+        target =
+          Node.create_with_default_location
+            (Expression.Name
+               (Ast.Expression.create_name ~location:Location.any "typing.Callable.__qualname__"));
+        annotation = Some (Type.expression Type.string);
+        value =
+          Node.create_with_default_location
+            (Expression.Constant
+               (Constant.String { StringLiteral.kind = StringLiteral.String; value = "" }));
       };
   ]
   |> List.map ~f:Node.create_with_default_location

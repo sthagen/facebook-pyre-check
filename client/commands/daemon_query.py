@@ -4,17 +4,26 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-TODO(T132414938) Add a module-level docstring
+The daemon query module contains APIs for sending requests to the Pyre daemon.
+The responsibility of this layer is to serialize queries and send them over the connection,
+but this module is not responsible for constructing the query/parsing the response
+(which is left to the higher layers). It is also not responsible for the low-level details
+of how the message is sent over the connection.
+
+Note that this module does not handle requests of every format (such as overlay updates
+nor incremental updates), it only handles queries.
 """
 
 
 from __future__ import annotations
 
+import dataclasses
+
 import json
 import logging
 from pathlib import Path
 
-from typing import Optional, Type, TypeVar
+from typing import Optional, Type, TypeVar, Union
 
 import dataclasses_json
 
@@ -31,6 +40,11 @@ QueryResponseType = TypeVar(
 LOG: logging.Logger = logging.getLogger(__name__)
 
 
+@dataclasses.dataclass(frozen=True)
+class DaemonQueryFailure(json_mixins.CamlCaseAndExcludeJsonMixin):
+    error_message: str
+
+
 def execute_query(socket_path: Path, query_text: str) -> Response:
     raw_request = json.dumps(["Query", query_text])
     raw_response = daemon_connection.send_raw_request(socket_path, raw_request)
@@ -41,7 +55,7 @@ async def attempt_async_query(
     socket_path: Path,
     query_text: str,
     overlay_id: Optional[str] = None,
-) -> Optional[Response]:
+) -> Union[Response, DaemonQueryFailure]:
     response_text = await daemon_connection.attempt_send_async_raw_request(
         socket_path=socket_path,
         request=json.dumps(
@@ -52,11 +66,16 @@ async def attempt_async_query(
             ]
         ),
     )
+    if isinstance(response_text, daemon_connection.DaemonConnectionFailure):
+        return DaemonQueryFailure(
+            f"In attempt async query with response_text, got DaemonConnectionFailure exception: ({response_text.error_message})"
+        )
     try:
-        return Response.parse(response_text) if response_text else None
+        return Response.parse(response_text)
     except InvalidQueryResponse as exception:
-        LOG.info(f"Failed to parse json {response_text} due to exception: {exception}")
-        return None
+        return DaemonQueryFailure(
+            f"In attempt async query with response_text, got InvalidQueryResponse exception: ({exception})"
+        )
 
 
 async def attempt_typed_async_query(
@@ -64,15 +83,15 @@ async def attempt_typed_async_query(
     socket_path: Path,
     query_text: str,
     overlay_id: Optional[str] = None,
-) -> Optional[QueryResponseType]:
+) -> Union[QueryResponseType | DaemonQueryFailure]:
     try:
         response = await attempt_async_query(
             socket_path,
             query_text,
             overlay_id,
         )
-        if response is None:
-            return None
+        if isinstance(response, DaemonQueryFailure):
+            return response
         else:
             if not isinstance(response.payload, dict):
                 raise ValueError(
@@ -84,8 +103,6 @@ async def attempt_typed_async_query(
         ValueError,
         dataclasses_json.mm.ValidationError,
     ) as exception:
-        LOG.info(
-            f"When interpretting {response.payload} as {response_type.__name__} "
-            f"got: {type(exception).__name__}({exception})"
+        return DaemonQueryFailure(
+            f"When interpretting response type: {response_type.__name__} got: {type(exception).__name__}({exception})"
         )
-        return None
