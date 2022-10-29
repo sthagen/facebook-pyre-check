@@ -4,18 +4,21 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-TODO(T132414938) Add a module-level docstring
+This module stores all server state related fields as a single class, so all the mutable state
+can be accessed in one place. Note that this state is mutable and a singleton, so users of this module
+should be aware a change to this state could affect other modules that interact with this state.
 """
 
 
 import dataclasses
 import enum
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List
 
 from .. import timer
 
-from . import language_server_protocol as lsp, pyre_server_options
+from ..language_server import protocol as lsp
+from . import pyre_server_options
 
 
 class ServerStatus(enum.Enum):
@@ -25,6 +28,12 @@ class ServerStatus(enum.Enum):
     SUSPENDED = "SUSPENDED"
     BUCK_BUILDING = "BUCK_BUILDING"
     INCREMENTAL_CHECK = "INCREMENTAL_CHECK"
+
+
+@dataclasses.dataclass(frozen=True)
+class OpenedDocumentState:
+    code: str
+    is_dirty: bool = False
 
 
 @dataclasses.dataclass
@@ -38,7 +47,9 @@ class ServerState:
     # Mutable States
     consecutive_start_failure: int = 0
     is_user_notified_on_buck_failure: bool = False
-    opened_documents: Set[Path] = dataclasses.field(default_factory=set)
+    opened_documents: Dict[Path, OpenedDocumentState] = dataclasses.field(
+        default_factory=dict
+    )
     diagnostics: Dict[Path, List[lsp.Diagnostic]] = dataclasses.field(
         default_factory=dict
     )

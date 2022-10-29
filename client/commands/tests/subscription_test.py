@@ -38,7 +38,7 @@ class SubscriptionTest(testslide.TestCase):
 
         assert_parsed(
             json.dumps({"name": "foo", "body": ["TypeErrors", []]}),
-            expected=Response(name="foo", body=TypeErrors()),
+            expected=Response(body=TypeErrors()),
         )
         assert_parsed(
             json.dumps(
@@ -62,7 +62,6 @@ class SubscriptionTest(testslide.TestCase):
                 }
             ),
             expected=Response(
-                name="foo",
                 body=TypeErrors(
                     [
                         error.Error(
@@ -87,7 +86,6 @@ class SubscriptionTest(testslide.TestCase):
                 }
             ),
             expected=Response(
-                name="foo",
                 body=StatusUpdate(kind="derp"),
             ),
         )
@@ -99,7 +97,70 @@ class SubscriptionTest(testslide.TestCase):
                 }
             ),
             expected=Response(
-                name="foo",
                 body=Error(message="rip and tear!"),
+            ),
+        )
+
+    def test_parse_code_navigation_response(self) -> None:
+        def assert_parsed(response: str, expected: Response) -> None:
+            self.assertEqual(
+                Response.parse_code_navigation_response(response),
+                expected,
+            )
+
+        def assert_not_parsed(response: str) -> None:
+            with self.assertRaises(InvalidServerResponse):
+                Response.parse_code_navigation_response(response)
+
+        assert_not_parsed("derp")
+        assert_not_parsed("{}")
+        assert_not_parsed("[]")
+        assert_not_parsed('["Error"]')
+        assert_not_parsed('["ServerStatus", {}, "Extra"]')
+        assert_not_parsed('["ServerStatus", 42]')
+
+        assert_parsed(
+            json.dumps(["ServerStatus", ["BusyChecking"]]),
+            expected=Response(body=StatusUpdate(kind="BusyChecking")),
+        )
+        assert_parsed(
+            json.dumps(
+                [
+                    "TypeErrors",
+                    [
+                        {
+                            "line": 1,
+                            "column": 1,
+                            "stop_line": 2,
+                            "stop_column": 2,
+                            "path": "test.py",
+                            "code": 42,
+                            "name": "Fake name",
+                            "description": "Fake description",
+                        },
+                    ],
+                ]
+            ),
+            expected=Response(
+                body=TypeErrors(
+                    [
+                        error.Error(
+                            line=1,
+                            column=1,
+                            stop_line=2,
+                            stop_column=2,
+                            path=Path("test.py"),
+                            code=42,
+                            name="Fake name",
+                            description="Fake description",
+                        ),
+                    ]
+                ),
+            ),
+        )
+        assert_parsed(
+            json.dumps(["Error", "Needs more cowbell"]),
+            expected=Response(
+                body=Error(message="Needs more cowbell"),
             ),
         )

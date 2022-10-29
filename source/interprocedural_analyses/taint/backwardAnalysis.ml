@@ -198,7 +198,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     in
     let local_return_leaf =
       BackwardState.Tree.create_leaf
-        (Domains.local_return_taint ~collapse_depth:maximum_tito_collapse_depth)
+        (Domains.local_return_taint ~output_path:[] ~collapse_depth:maximum_tito_collapse_depth)
     in
     (* We handle constructors, __setitem__ methods, and property setters specially and track
        effects. *)
@@ -297,7 +297,23 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     { arguments_taint; self_taint; callee_taint; state }
 
 
+  let add_extra_traces ~argument_access_path ~named_transforms ~sink_trees ~tito_roots taint =
+    let extra_traces =
+      CallModel.extra_traces_from_sink_trees
+        ~argument_access_path
+        ~named_transforms
+        ~tito_roots
+        ~sink_trees
+    in
+    BackwardState.Tree.transform
+      BackwardTaint.Self
+      Map
+      ~f:(BackwardTaint.add_extra_traces ~extra_traces)
+      taint
+
+
   let apply_call_target
+      ?(apply_tito = true)
       ~resolution
       ~call_location
       ~self
@@ -386,7 +402,13 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       let access_path = AccessPath.of_expression argument in
       get_taint access_path initial_state |> BackwardState.Tree.join global_sink
     in
-    let convert_tito_path_to_taint ~kind (tito_path, tito_taint) argument_taint =
+    let convert_tito_path_to_taint
+        ~sink_trees
+        ~tito_roots
+        ~kind
+        (tito_path, tito_taint)
+        argument_taint
+      =
       let breadcrumbs = BackwardTaint.joined_breadcrumbs tito_taint in
       let tito_depth =
         BackwardTaint.fold TraceLength.Self tito_taint ~f:TraceLength.join ~init:TraceLength.bottom
@@ -400,18 +422,30 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
             match List.nth arguments n with
             | None -> BackwardState.Tree.empty
             | Some argument -> get_argument_taint ~resolution ~argument)
-        | _ -> failwith "unexpected tito sink"
+        | _ -> Format.asprintf "unexpected kind for tito: %a" Sinks.pp kind |> failwith
       in
       let taint_to_propagate =
         match kind with
         | Sinks.Transform { local = transforms; global; _ } when TaintTransforms.is_empty global ->
             (* Apply tito transforms and source- and sink-specific sanitizers. *)
-            BackwardState.Tree.apply_transforms
-              ~taint_configuration:FunctionContext.taint_configuration
-              transforms
-              TaintTransformOperation.InsertLocation.Front
-              TaintTransforms.Order.Backward
+            let taint_to_propagate =
+              BackwardState.Tree.apply_transforms
+                ~taint_configuration:FunctionContext.taint_configuration
+                transforms
+                TaintTransformOperation.InsertLocation.Front
+                TaintTransforms.Order.Backward
+                taint_to_propagate
+            in
+            let named_transforms = TaintTransforms.discard_sanitize_transforms transforms in
+            if List.is_empty named_transforms then
               taint_to_propagate
+            else
+              add_extra_traces
+                ~argument_access_path:tito_path
+                ~named_transforms
+                ~sink_trees
+                ~tito_roots
+                taint_to_propagate
         | Sinks.Transform _ -> failwith "unexpected non-empty `global` transforms in tito"
         | _ -> taint_to_propagate
       in
@@ -447,15 +481,16 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     in
     let convert_tito_tree_to_taint
         ~argument
+        ~sink_trees
         ~kind
-        ~pair:{ CallModel.TaintInTaintOutMap.TreeRootsPair.tree = tito_tree; _ }
+        ~pair:{ CallModel.TaintInTaintOutMap.TreeRootsPair.tree = tito_tree; roots = tito_roots }
         taint_tree
       =
       BackwardState.Tree.fold
         BackwardState.Tree.Path
         tito_tree
         ~init:BackwardState.Tree.bottom
-        ~f:(convert_tito_path_to_taint ~kind)
+        ~f:(convert_tito_path_to_taint ~sink_trees ~tito_roots ~kind)
       |> BackwardState.Tree.transform Features.TitoPositionSet.Element Add ~f:argument.Node.location
       |> BackwardState.Tree.add_local_breadcrumb (Features.tito ())
       |> BackwardState.Tree.join taint_tree
@@ -471,7 +506,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       let location =
         Location.with_module ~module_reference:FunctionContext.qualifier argument.Node.location
       in
-      let sink_taint =
+      let sink_trees =
         CallModel.sink_trees_of_argument
           ~resolution
           ~transform_non_leaves
@@ -483,20 +518,23 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           ~is_self_call
           ~caller_class_interval:FunctionContext.caller_class_interval
           ~receiver_class_interval
-        |> Issue.SinkTreeWithHandle.join
       in
       let taint_in_taint_out =
-        CallModel.taint_in_taint_out_mapping
-          ~transform_non_leaves
-          ~taint_configuration:FunctionContext.taint_configuration
-          ~ignore_local_return:(BackwardState.Tree.is_bottom call_taint)
-          ~model:taint_model
-          ~tito_matches
-          ~sanitize_matches
-        |> CallModel.TaintInTaintOutMap.fold
-             ~init:BackwardState.Tree.empty
-             ~f:(convert_tito_tree_to_taint ~argument)
+        if apply_tito then
+          CallModel.taint_in_taint_out_mapping
+            ~transform_non_leaves
+            ~taint_configuration:FunctionContext.taint_configuration
+            ~ignore_local_return:(BackwardState.Tree.is_bottom call_taint)
+            ~model:taint_model
+            ~tito_matches
+            ~sanitize_matches
+          |> CallModel.TaintInTaintOutMap.fold
+               ~init:BackwardState.Tree.empty
+               ~f:(convert_tito_tree_to_taint ~argument ~sink_trees)
+        else
+          BackwardState.Tree.empty
       in
+      let sink_taint = Issue.SinkTreeWithHandle.join sink_trees in
       let taint = BackwardState.Tree.join sink_taint taint_in_taint_out in
       let state =
         match AccessPath.of_expression argument with
@@ -538,7 +576,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     { arguments_taint; self_taint; callee_taint; state }
 
 
-  let apply_obscure_call ~callee ~arguments ~state:initial_state ~call_taint =
+  let apply_obscure_call ~apply_tito ~callee ~arguments ~state:initial_state ~call_taint =
     log
       "Backward analysis of obscure call to `%a` with arguments (%a)"
       Expression.pp
@@ -546,9 +584,12 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       Ast.Expression.pp_expression_argument_list
       arguments;
     let obscure_taint =
-      BackwardState.Tree.collapse ~breadcrumbs:(Features.tito_broadening_set ()) call_taint
-      |> BackwardTaint.add_local_breadcrumb (Features.obscure_unknown_callee ())
-      |> BackwardState.Tree.create_leaf
+      if apply_tito then
+        BackwardState.Tree.collapse ~breadcrumbs:(Features.tito_broadening_set ()) call_taint
+        |> BackwardTaint.add_local_breadcrumb (Features.obscure_unknown_callee ())
+        |> BackwardState.Tree.create_leaf
+      else
+        BackwardState.Tree.empty
     in
     let compute_argument_taint { Call.Argument.value = argument; _ } =
       let taint = obscure_taint in
@@ -673,6 +714,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   let apply_callees_and_return_arguments_taint
+      ?(apply_tito = true)
       ~resolution
       ~callee
       ~call_location
@@ -726,6 +768,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           let call_taint =
             BackwardState.Tree.create_leaf
               (Domains.local_return_taint
+                 ~output_path:[]
                  ~collapse_depth:
                    FunctionContext.taint_configuration.analysis_model_constraints
                      .maximum_tito_collapse_depth)
@@ -752,6 +795,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         call_targets
         ~f:
           (apply_call_target
+             ~apply_tito
              ~resolution
              ~call_location
              ~self
@@ -773,7 +817,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     (* Apply an obscure call if the call was not fully resolved. *)
     let call_target_result =
       if unresolved then
-        apply_obscure_call ~callee ~arguments ~state:initial_state ~call_taint
+        apply_obscure_call ~apply_tito ~callee ~arguments ~state:initial_state ~call_taint
         |> join_call_target_results call_target_result
       else
         call_target_result
@@ -1031,6 +1075,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and apply_callees
+      ?(apply_tito = true)
       ~resolution
       ~is_property
       ~callee
@@ -1042,6 +1087,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     =
     let { arguments_taint; self_taint; callee_taint; state } =
       apply_callees_and_return_arguments_taint
+        ~apply_tito
         ~resolution
         ~callee
         ~call_location
@@ -1232,11 +1278,33 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
               true
           | _ -> false
         in
-        if is_dict_setitem || not (CallGraph.CallCallees.is_partially_resolved callees) then
-          (* Use the hardcoded model of `__setitem__` for any subtype of dict or unresolved callees:
-             `base[index] = value`. This is incorrect, but can lead to higher SNR, because we assume
-             in most cases, we run into an expression whose type is exactly `dict`, rather than a
-             (strict) subtype of `dict` that overrides `__setitem__`. *)
+        let use_custom_tito =
+          is_dict_setitem || not (CallGraph.CallCallees.is_partially_resolved callees)
+        in
+        let state =
+          (* Process the custom behvaior of `__setitem__`. We treat `e.__setitem__(k, v)` as `e =
+             e.__setitem__(k, v)` where method `__setitem__` returns the updated self. Due to
+             modeling with the assignment, the user-provided models of `__setitem__` will be
+             ignored, if they are inconsistent with treating `__setitem__` as returning an updated
+             self. In the case that the call target is a dict, only propagate sources and sinks, and
+             ignore tito propagation. *)
+          let taint = compute_assignment_taint ~resolution base state |> fst in
+          apply_callees
+            ~apply_tito:(not use_custom_tito)
+            ~resolution
+            ~is_property:false
+            ~call_location:location
+            ~state
+            ~callee
+            ~arguments
+            ~call_taint:taint
+            callees
+        in
+        if use_custom_tito then
+          (* Use the hardcoded behavior of `__setitem__` for any subtype of dict or unresolved
+             callees: `base[index] = value`. This is incorrect, but can lead to higher SNR, because
+             we assume in most cases, we run into an expression whose type is exactly `dict`, rather
+             than a (strict) subtype of `dict` that overrides `__setitem__`. *)
           let state =
             (* Since we smash the taint of ALL keys, we do a weak update here to avoid removing the
                taint in `**keys`. That is, we join the state before analyzing the assignment to
@@ -1256,21 +1324,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
             ~value
             state
         else
-          (* Use the custom model of `__setitem__`. We treat `e.__setitem__(k, v)` as `e =
-             e.__setitem__(k, v)` where method `__setitem__` returns the updated self. Due to
-             modeling with the assignment, the user-provided models of `__setitem__` will be
-             ignored, if they are inconsistent with treating `__setitem__` as returning an updated
-             self. *)
-          let taint = compute_assignment_taint ~resolution base state |> fst in
-          apply_callees
-            ~resolution
-            ~is_property:false
-            ~call_location:location
-            ~state
-            ~callee
-            ~arguments
-            ~call_taint:taint
-            callees
+          state
     | {
      callee = { Node.value = Name (Name.Attribute { base; attribute = "__getitem__"; _ }); _ };
      arguments =
@@ -2258,7 +2312,14 @@ let extract_tito_and_sink_models
                   BackwardState.Tree.prune_maximum_length maximum_trace_length sink_tree
               | _ -> sink_tree
             in
-            simplify annotation sink_tree |> BackwardState.Tree.join accumulator
+            let sink_tree = simplify annotation sink_tree in
+            let sink_tree =
+              match Sinks.discard_transforms sink with
+              | Sinks.ExtraTraceSink ->
+                  CallModel.prune_extra_trace_sink ~sink_tree ~tito_tree:taint_in_taint_out
+              | _ -> sink_tree
+            in
+            BackwardState.Tree.join accumulator sink_tree
       in
       Map.Poly.fold ~init:BackwardState.Tree.empty ~f:simplify_sink_taint partition
     in

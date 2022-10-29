@@ -33,18 +33,12 @@ from typing import (
 from .. import (
     command_arguments,
     configuration as configuration_module,
+    daemon_socket,
     find_directories,
     identifiers,
     log,
 )
-from . import (
-    backend_arguments,
-    commands,
-    daemon_socket,
-    frontend_configuration,
-    server_event,
-    stop,
-)
+from . import backend_arguments, commands, frontend_configuration, server_event, stop
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -416,7 +410,7 @@ def background_server_log_file(
     log_directory: Path,
     flavor: identifiers.PyreFlavor,
 ) -> Iterator[TextIO]:
-    new_server_log_directory = log_directory / "new_server"
+    new_server_log_directory = log_directory / flavor.server_log_subdirectory()
     new_server_log_directory.mkdir(parents=True, exist_ok=True)
     log_file_path = daemon_log_path(
         log_directory=new_server_log_directory,

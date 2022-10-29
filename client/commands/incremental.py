@@ -18,19 +18,14 @@ from typing import Dict, Iterable, List, Optional, Sequence
 from .. import (
     command_arguments,
     configuration as configuration_module,
+    daemon_socket,
     error,
     identifiers,
     statistics_logger,
 )
-from . import (
-    backend_arguments,
-    commands,
-    connections,
-    daemon_socket,
-    frontend_configuration,
-    server_event,
-    start,
-)
+
+from ..language_server import connections
+from . import backend_arguments, commands, frontend_configuration, server_event, start
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -165,12 +160,17 @@ def run_incremental(
     configuration: frontend_configuration.Base,
     incremental_arguments: command_arguments.IncrementalArguments,
 ) -> ExitStatus:
+    flavor = identifiers.PyreFlavor.CLASSIC
     socket_path = daemon_socket.get_socket_path(
         configuration.get_project_identifier(),
-        flavor=identifiers.PyreFlavor.CLASSIC,
+        flavor=flavor,
     )
     # Need to be consistent with the log symlink location in start command
-    log_path = configuration.get_log_directory() / "new_server" / "server.stderr"
+    log_path = (
+        configuration.get_log_directory()
+        / flavor.server_log_subdirectory()
+        / "server.stderr"
+    )
     output = incremental_arguments.output
     remote_logging = backend_arguments.RemoteLogging.create(
         configuration.get_remote_logger(),

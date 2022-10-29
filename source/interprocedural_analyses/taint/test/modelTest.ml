@@ -179,7 +179,8 @@ let assert_invalid_model ?path ?source ?(sources = []) ~context ~model_source ~e
     TaintConfiguration.Heap.
       {
         empty with
-        sources = List.map ~f:(fun name -> { AnnotationParser.name; kind = Named }) ["A"; "B"];
+        sources =
+          List.map ~f:(fun name -> { AnnotationParser.name; kind = Named }) ["A"; "B"; "Test"];
         sinks = List.map ~f:(fun name -> { AnnotationParser.name; kind = Named }) ["X"; "Y"; "Test"];
         features = ["featureA"; "featureB"];
         rules = [];
@@ -308,6 +309,11 @@ let test_source_models context =
     ~expect:[outcome ~kind:`Function ~returns:[Sources.NamedSource "Test"] "test.f"]
     ();
   assert_model
+    ~source:"def f(x: int): ..."
+    ~model_source:"def test.f(x) -> TaintSource[Test, ReturnPath[_[0]]]: ..."
+    ~expect:[outcome ~kind:`Function ~returns:[Sources.NamedSource "Test"] "test.f"]
+    ();
+  assert_model
     ~source:
       {|
         import abc
@@ -349,7 +355,21 @@ let test_source_models context =
           ~source_parameters:[{ name = "y"; sources = [Sources.NamedSource "Test"] }]
           "test.foo";
       ]
-    ()
+    ();
+  assert_model
+    ~source:{|
+      def foo(x, y): ...
+    |}
+    ~model_source:"def test.foo(y: TaintSource[Test, ParameterPath[_[0]]]): ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~source_parameters:[{ name = "y"; sources = [Sources.NamedSource "Test"] }]
+          "test.foo";
+      ]
+    ();
+  ()
 
 
 let test_global_sanitize context =
@@ -1420,6 +1440,17 @@ let test_sink_models context =
       ]
     ();
   assert_model
+    ~model_source:"def test.multiple(parameter: TaintSink[XSS, Demo, ParameterPath[_[1]]]): ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~sink_parameters:
+            [{ name = "parameter"; sinks = [Sinks.NamedSink "Demo"; Sinks.NamedSink "XSS"] }]
+          "test.multiple";
+      ]
+    ();
+  assert_model
     ~model_source:
       {|
         def test.sink(parameter: TaintSink[TestSinkWithSubkind[Subkind]]):
@@ -1440,7 +1471,14 @@ let test_sink_models context =
           "test.sink";
       ]
     ();
-
+  assert_model
+    ~model_source:"def test.multiple() -> TaintSink[XSS]: ..."
+    ~expect:[outcome ~kind:`Function ~return_sinks:[Sinks.NamedSink "XSS"] "test.multiple"]
+    ();
+  assert_model
+    ~model_source:"def test.multiple() -> TaintSink[XSS, ReturnPath[_[0]]]: ..."
+    ~expect:[outcome ~kind:`Function ~return_sinks:[Sinks.NamedSink "XSS"] "test.multiple"]
+    ();
   ()
 
 
@@ -1754,7 +1792,81 @@ let test_taint_in_taint_out_models context =
           ~tito_parameters:[{ name = "parameter"; sinks = [Sinks.LocalReturn] }]
           "test.tito";
       ]
-    ()
+    ();
+  assert_model
+    ~context
+    ~model_source:"def test.tito(parameter: TaintInTaintOut[ParameterPath[_[0]]]): ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~tito_parameters:[{ name = "parameter"; sinks = [Sinks.LocalReturn] }]
+          "test.tito";
+      ]
+    ();
+  assert_model
+    ~context
+    ~model_source:"def test.tito(parameter: TaintInTaintOut[ReturnPath[_[1]]]): ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~tito_parameters:[{ name = "parameter"; sinks = [Sinks.LocalReturn] }]
+          "test.tito";
+      ]
+    ();
+  assert_model
+    ~context
+    ~model_source:
+      "def test.tito(parameter: TaintInTaintOut[ParameterPath[_[0]], ReturnPath[_[1]]]): ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~tito_parameters:[{ name = "parameter"; sinks = [Sinks.LocalReturn] }]
+          "test.tito";
+      ]
+    ();
+  assert_model
+    ~context
+    ~model_source:
+      "def test.tito(parameter: TaintInTaintOut[ParameterPath[_[0]], ReturnPath[_[1]], \
+       NoCollapse]): ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~tito_parameters:[{ name = "parameter"; sinks = [Sinks.LocalReturn] }]
+          "test.tito";
+      ]
+    ();
+  assert_model
+    ~context
+    ~model_source:
+      "def test.tito(parameter: TaintInTaintOut[ParameterPath[_[0]], ReturnPath[_[1]], Collapse]): \
+       ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~tito_parameters:[{ name = "parameter"; sinks = [Sinks.LocalReturn] }]
+          "test.tito";
+      ]
+    ();
+  assert_model
+    ~context
+    ~model_source:
+      "def test.tito(parameter: TaintInTaintOut[ParameterPath[_[0]], ReturnPath[_[1]], \
+       CollapseDepth[2]]): ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~tito_parameters:[{ name = "parameter"; sinks = [Sinks.LocalReturn] }]
+          "test.tito";
+      ]
+    ();
+  ()
 
 
 let test_taint_in_taint_out_models_alternate context =
@@ -1878,7 +1990,20 @@ let test_taint_in_taint_out_update_models context =
           ~tito_parameters:[{ name = "self"; sinks = [Sinks.LocalReturn; Sinks.ParameterUpdate 1] }]
           "test.update";
       ]
-    ()
+    ();
+  assert_model
+    ~model_source:
+      "def test.update(self, arg1: TaintInTaintOut[Updates[self], UpdatePath[_[0]], \
+       ParameterPath[_[1]]]): ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~tito_parameters:[{ name = "arg1"; sinks = [Sinks.ParameterUpdate 0] }]
+          "test.update";
+      ]
+    ();
+  ()
 
 
 let test_union_models context =
@@ -2780,6 +2905,24 @@ let test_invalid_models context =
       "`AttachToSource[feature]` is an invalid taint annotation: All parameters to \
        `AttachToSource` must be of the form `Via[feature]`."
     ();
+  assert_invalid_model
+    ~model_source:"def test.source() -> AttachToSource[Via[featureA], ReturnPath[_]]: ..."
+    ~expect:
+      "`AttachToSource[(Via[featureA], ReturnPath[_])]` is an invalid taint annotation: All \
+       parameters to `AttachToSource` must be of the form `Via[feature]`."
+    ();
+  assert_invalid_model
+    ~model_source:"def test.sink(parameter: AttachToSink[Via[featureA], ParameterPath[_]]): ..."
+    ~expect:
+      "`AttachToSink[(Via[featureA], ParameterPath[_])]` is an invalid taint annotation: All \
+       parameters to `AttachToSink` must be of the form `Via[feature]`."
+    ();
+  assert_invalid_model
+    ~model_source:"def test.sink(parameter: AttachToTito[Via[featureA], ParameterPath[_]]): ..."
+    ~expect:
+      "`AttachToTito[(Via[featureA], ParameterPath[_])]` is an invalid taint annotation: All \
+       parameters to `AttachToTito` must be of the form `Via[feature]`."
+    ();
 
   (* Multiple features. *)
   assert_valid_model
@@ -2798,6 +2941,108 @@ let test_invalid_models context =
     ~expect:
       "Default values of `test.sink`'s parameters must be `...`. Did you mean to write `parameter: \
        1`?"
+    ();
+
+  (* Input and output path specification. *)
+  assert_invalid_model
+    ~model_source:"def test.sink(parameter: TaintSink[Test, ParameterPath[test]]): ..."
+    ~expect:"`test` is an invalid access path: access path must start with `_`"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.sink(parameter: TaintSink[Test, ParameterPath[_.unknown()]]): ..."
+    ~expect:
+      "`_.unknown()` is an invalid access path: unexpected method call `unknown` (allowed: `keys`, \
+       `all`)"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.sink(parameter: TaintSink[Test, ReturnPath[_[0]]]): ..."
+    ~expect:"Invalid model for `test.sink`: Invalid ReturnPath annotation for sink"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.sink(parameter: TaintSink[Test, UpdatePath[_[0]]]): ..."
+    ~expect:"Invalid model for `test.sink`: Invalid UpdatePath annotation for sink"
+    ();
+  assert_invalid_model
+    ~model_source:
+      "def test.sink(parameter: AppliesTo[0, TaintSink[Test, ParameterPath[_[1]]]]): ..."
+    ~expect:
+      "Invalid model for `test.sink`: Invalid mix of AppliesTo and ParameterPath annotation for \
+       sink"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.sink(parameter: AppliesTo[1, TaintSink[Test, UpdatePath[_[0]]]]): ..."
+    ~expect:"Invalid model for `test.sink`: Invalid UpdatePath annotation for sink"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.taint(y: TaintSource[Test, ReturnPath[_[0]]]): ..."
+    ~expect:"Invalid model for `test.taint`: Invalid ReturnPath annotation for parameter source"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.taint(y: TaintSource[Test, UpdatePath[_[0]]]): ..."
+    ~expect:"Invalid model for `test.taint`: Invalid UpdatePath annotation for parameter source"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.taint(y: AppliesTo[0, TaintSource[Test, ParameterPath[_[1]]]]): ..."
+    ~expect:
+      "Invalid model for `test.taint`: Invalid mix of AppliesTo and ParameterPath annotation for \
+       parameter source"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.taint(y: AppliesTo[1, TaintSource[Test, UpdatePath[_[0]]]]): ..."
+    ~expect:"Invalid model for `test.taint`: Invalid UpdatePath annotation for parameter source"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.sink() -> TaintSink[Test, ParameterPath[_[0]]]: ..."
+    ~expect:"Invalid model for `test.sink`: Invalid ParameterPath annotation for return sink"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.sink() -> TaintSink[Test, UpdatePath[_[0]]]: ..."
+    ~expect:"Invalid model for `test.sink`: Invalid UpdatePath annotation for return sink"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.sink() -> AppliesTo[1, TaintSink[Test, ReturnPath[_[0]]]]: ..."
+    ~expect:"Invalid model for `test.sink`: Invalid mix of AppliesTo and ReturnPath for return sink"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.taint() -> TaintSource[Test, ParameterPath[_[0]]]: ..."
+    ~expect:"Invalid model for `test.taint`: Invalid ParameterPath annotation for source"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.taint() -> TaintSource[Test, UpdatePath[_[0]]]: ..."
+    ~expect:"Invalid model for `test.taint`: Invalid UpdatePath annotation for source"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.taint() -> AppliesTo[1, TaintSource[Test, ReturnPath[_[0]]]]: ..."
+    ~expect:"Invalid model for `test.taint`: Invalid mix of AppliesTo and ReturnPath for source"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.taint(x: TaintInTaintOut[UpdatePath[_[0]]]): ..."
+    ~expect:
+      "Invalid model for `test.taint`: Invalid UpdatePath annotation for TaintInTaintOut annotation"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.taint(x: AppliesTo[0, TaintInTaintOut[ParameterPath[_[0]]]]): ..."
+    ~expect:
+      "Invalid model for `test.taint`: Invalid mix of AppliesTo and ParameterPath for LocalReturn \
+       annotation"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.taint(x, y: TaintInTaintOut[Updates[x], ReturnPath[_[0]]]): ..."
+    ~expect:"Invalid model for `test.taint`: Invalid ReturnPath annotation for Updates annotation"
+    ();
+
+  (* Collapse depth specification. *)
+  assert_invalid_model
+    ~model_source:"def test.taint(x: TaintInTaintOut[CollapseDepth[a]]): ..."
+    ~expect:
+      "`TaintInTaintOut[CollapseDepth[a]]` is an invalid taint annotation: expected non-negative \
+       int literal argument for CollapseDepth, got `a`"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.taint(x: TaintInTaintOut[CollapseDepth[-1]]): ..."
+    ~expect:
+      "`TaintInTaintOut[CollapseDepth[-1]]` is an invalid taint annotation: expected non-negative \
+       int literal argument for CollapseDepth, got `-1`"
     ();
 
   (* ViaValueOf models must specify existing parameters. *)
@@ -2914,10 +3159,7 @@ let test_invalid_models context =
     |}
     ~expect:
       "`TaintSink[(Test, Via[a.__sub__(feature)])]` is an invalid taint annotation: Invalid \
-       expression for breadcrumb: (Expression.Expression.Call\n\
-      \   { Expression.Call.callee = a.__sub__;\n\
-      \     arguments = [{ Expression.Call.Argument.name = None; value = feature }]\n\
-      \     })"
+       expression for breadcrumb: a.__sub__(feature)"
     ();
   assert_invalid_model
     ~source:"def partial_sink(x, y) -> None: ..."
@@ -5471,23 +5713,23 @@ let test_access_path _ =
     | Ok _ -> assert_bool (Format.sprintf "Unexpected valid access path for: %s" source) false
   in
   assert_valid_path ~source:"_" ~expected:[];
-  assert_valid_path ~source:"_.foo" ~expected:[Label.Field "foo"];
-  assert_valid_path ~source:"_.foo.bar" ~expected:[Label.Field "foo"; Label.Field "bar"];
+  assert_valid_path ~source:"_.foo" ~expected:[Label.Index "foo"];
+  assert_valid_path ~source:"_.foo.bar" ~expected:[Label.Index "foo"; Label.Index "bar"];
   assert_valid_path ~source:"_['foo']" ~expected:[Label.Index "foo"];
   assert_valid_path ~source:"_[\"foo\"]" ~expected:[Label.Index "foo"];
   assert_valid_path ~source:"_[0]" ~expected:[Label.Index "0"];
   assert_valid_path ~source:"_['foo']['bar']" ~expected:[Label.Index "foo"; Label.Index "bar"];
-  assert_valid_path ~source:"_['foo'].bar" ~expected:[Label.Index "foo"; Label.Field "bar"];
-  assert_valid_path ~source:"_.foo['bar']" ~expected:[Label.Field "foo"; Label.Index "bar"];
-  assert_valid_path ~source:"_.foo[0]" ~expected:[Label.Field "foo"; Label.Index "0"];
+  assert_valid_path ~source:"_['foo'].bar" ~expected:[Label.Index "foo"; Label.Index "bar"];
+  assert_valid_path ~source:"_.foo['bar']" ~expected:[Label.Index "foo"; Label.Index "bar"];
+  assert_valid_path ~source:"_.foo[0]" ~expected:[Label.Index "foo"; Label.Index "0"];
   assert_valid_path ~source:"_.keys()" ~expected:[AccessPath.dictionary_keys];
   assert_valid_path ~source:"_.all()" ~expected:[Label.AnyIndex];
   assert_valid_path
     ~source:"_[0].keys().foo.all()"
-    ~expected:[Label.Index "0"; AccessPath.dictionary_keys; Label.Field "foo"; Label.AnyIndex];
+    ~expected:[Label.Index "0"; AccessPath.dictionary_keys; Label.Index "foo"; Label.AnyIndex];
   assert_valid_path
     ~source:"_.all()['a'].bar"
-    ~expected:[Label.AnyIndex; Label.Index "a"; Label.Field "bar"];
+    ~expected:[Label.AnyIndex; Label.Index "a"; Label.Index "bar"];
   assert_invalid_path
     ~source:"foo"
     ~expected:"`foo` is an invalid access path: access path must start with `_`";
@@ -5498,22 +5740,22 @@ let test_access_path _ =
     ~source:"_.a-b"
     ~expected:
       "`_.a.__sub__(b)` is an invalid access path: unexpected method call `__sub__` (allowed: \
-       `__getitem__`, `keys`, `all`)";
+       `keys`, `all`)";
   assert_invalid_path
     ~source:"_[a]"
     ~expected:
-      "`_[a]` is an invalid access path: expected int or string literal argument for __getitem__, \
+      "`_[a]` is an invalid access path: expected int or string literal argument for index access, \
        got `a`";
   assert_invalid_path
     ~source:"_[_.foo]"
     ~expected:
-      "`_[_.foo]` is an invalid access path: expected int or string literal argument for \
-       __getitem__, got `_.foo`";
+      "`_[_.foo]` is an invalid access path: expected int or string literal argument for index \
+       access, got `_.foo`";
   assert_invalid_path
     ~source:"_.keys().something()"
     ~expected:
       "`_.keys().something()` is an invalid access path: unexpected method call `something` \
-       (allowed: `__getitem__`, `keys`, `all`)";
+       (allowed: `keys`, `all`)";
   ()
 
 

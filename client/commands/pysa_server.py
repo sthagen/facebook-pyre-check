@@ -15,20 +15,15 @@ import logging
 from typing import Union
 
 from .. import command_arguments, configuration as configuration_module, json_rpc, log
-from . import (
-    commands,
-    connections,
-    frontend_configuration,
-    language_server_protocol as lsp,
-    start,
-)
-from .log_lsp_event import _log_lsp_event, LSPEvent
-from .persistent import (
+from ..language_server import connections, protocol as lsp
+from . import commands, frontend_configuration, start
+from .initialization import (
     InitializationExit,
     InitializationFailure,
     InitializationSuccess,
-    process_initialize_request,
 )
+from .log_lsp_event import _log_lsp_event, LSPEvent
+from .persistent import process_initialize_request
 
 from .pyre_language_server import _wait_for_exit, read_lsp_request
 

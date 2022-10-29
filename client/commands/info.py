@@ -17,10 +17,11 @@ import dataclasses_json
 from .. import (
     command_arguments,
     configuration as configuration_module,
+    daemon_socket,
     identifiers,
     version,
 )
-from . import commands, daemon_socket, frontend_configuration
+from . import commands, frontend_configuration
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
@@ -51,12 +52,13 @@ class Info(dataclasses_json.DataClassJsonMixin):
         configuration: frontend_configuration.Base,
         arguments: command_arguments.CommandArguments,
     ) -> "Info":
+        flavor = identifiers.PyreFlavor.CLASSIC
         binary_location = configuration.get_binary_location(download_if_needed=False)
         if binary_location is None:
             LOG.warn("Could not locate a Pyre binary to run.")
         log_directory = configuration.get_log_directory()
         client_logs = log_directory / "pyre.stderr"
-        server_log_directory = log_directory / "new_server"
+        server_log_directory = log_directory / flavor.server_log_subdirectory()
         current_server_logs = server_log_directory / "server.stderr"
         client_version = version.__version__
         try:
@@ -65,7 +67,7 @@ class Info(dataclasses_json.DataClassJsonMixin):
             binary_version = None
         socket_path = daemon_socket.get_socket_path(
             configuration.get_project_identifier(),
-            flavor=identifiers.PyreFlavor.CLASSIC,
+            flavor=flavor,
         )
         return cls(
             socket_path=str(socket_path),

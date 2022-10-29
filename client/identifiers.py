@@ -7,7 +7,6 @@
 TODO(T132414938) Add a module-level docstring
 """
 
-
 import enum
 from pathlib import Path
 from typing import List, Optional
@@ -43,6 +42,7 @@ class PyreFlavor(enum.Enum):
 
     CLASSIC = "classic"
     SHADOW = "shadow"
+    CODE_NAVIGATION = "code_navigation"
 
     def path_suffix(self) -> str:
         return "" if self == PyreFlavor.CLASSIC else f"__{self.value}"
@@ -53,3 +53,8 @@ class PyreFlavor(enum.Enum):
         Valid flavors to use for the `pyre persistent` command.
         """
         return [PyreFlavor.CLASSIC.value, PyreFlavor.SHADOW.value]
+
+    def server_log_subdirectory(self) -> str:
+        if self == PyreFlavor.CODE_NAVIGATION:
+            return self.value
+        return "new_server"
