@@ -5,7 +5,42 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-(* TODO(T132410158) Add a module-level doc comment. *)
+(* Core abstraction for a single-table layer in the environment stack.
+ *
+ * An environment layer combines two underlying components:
+ * - A shared memory hashmap, whose keys are string representations of
+ *   some Key.t type values are serialied Value.t values. This shared
+ *   memory hashmap may also have a regular ocaml hash table in front
+ *   of it acting as a per-process cache to reduce deserialization costs.
+ * - A `produce_value` function, which knows how to compute a `Value.t`
+ *   given a `Key.t`. This function should also pass along a dependency
+ *   key to all reads of lower layers of the environment, which is used
+ *   when pushing incremental updates. This logic, along with some metadata
+ *   that controls exactly how it is handled, is specified in the `In.t` module
+ *    signature
+ *
+ * The EnvironmentTable.t functor takes an In.t, constructs a shared memory
+ * hashmap, and defines logic from these two components to make a lazy table
+ * that:
+ * - populates each key only when needed, and is multiprocessing-safe in the
+ *   way that it does so.
+ * - knows how to update itself (and, recursively, all lower layers) in response
+ *   to a list of possibly-changed files.
+ *
+ * These layers are stacked with each layer wrapping the previous lower-level
+ * layer, which can be accessed as `upstream_environment`.
+ *
+ * It moreover knows how to construct additional "overlay" tables from
+ * a base table; this is intended mainly to power unsaved-changes support
+ * in IDEs.
+ *
+ * Overlay tables create views where specific files contain possibly-different
+ * content from what is on disk. Only the keys that are "owned" by those files
+ * will be re-computed in an overlay, which minimizes fanout. They have to be
+ * updated not only when the overlaid file contents change, but also when the base
+ * environment changes (since changes to non-overlaid files may affect the results
+ * in an overlay, e.g. if a rebase introduces type errors to an open file).
+ *)
 
 open Core
 open Pyre
@@ -94,12 +129,42 @@ module type S = sig
 end
 
 module EnvironmentTable = struct
+  (* The `In` module signature describes everything that we must specify
+   * in order to create a new environment layer. The semantics of the environment
+   * stack as a whole are determined by how this signature is implemented at each
+   * layer.
+   *)
   module type In = sig
     module PreviousEnvironment : PreviousEnvironment.S
 
+    (* The Key and Value modules describe the data for this table.
+     *
+     * In most cases Value.t will be an optional type, both because laziness
+     * means we need to be able to represent that we've cached the computation
+     * proving that a key does not actually exist, and because incremental
+     * updates can cause us to need to "delete" keys but that is not really
+     * possible in the underlying SharedMemory tables today.
+     *)
+
     module Key : Memory.KeyType
 
+    val show_key : Key.t -> string
+
     module Value : Memory.ValueTypeWithEquivalence
+
+    val equal_value : Value.t -> Value.t -> bool
+
+    (* The trigger type is the type used to represent a key for actual
+     * computation. In some cases it can be different from Key.t, for example
+     * if Key.t is an int because we are interning triggers to optimize
+     * storage.
+     *
+     * You can think of `trigger` as the "logical" key type and `Key.t`
+     * as the "physical" key type.
+     *
+     * Often they are the same, in which case `key_to_trigger` and
+     * `convert_trigger` can both be `Fn.id`.
+     *)
 
     type trigger [@@deriving sexp, compare]
 
@@ -109,23 +174,57 @@ module EnvironmentTable = struct
 
     module TriggerSet : Set.S with type Elt.t = trigger
 
-    val lazy_incremental : bool
-
-    val filter_upstream_dependency : SharedMemoryKeys.dependency -> trigger option
+    (* The SharedMemoryKeys.dependency type is a variant, and each environment
+     * has its own case in that variant.
+     * - trigger_to_dependency knows how to represent a key of this table
+     *   as a dependency that can be registered on lower-layer tables.
+     * - filter_upstream_dependency knows how to convert back, assuming
+     *   the dependency is of the correct variant.
+     *)
 
     val trigger_to_dependency : trigger -> SharedMemoryKeys.dependency
 
+    val filter_upstream_dependency : SharedMemoryKeys.dependency -> trigger option
+
+    (* The `produce_value` function is at the heart of our lazy table
+     * implementation. It determines what computation we run both
+     *   - when we look * up a key that is not yet cached in the table, and
+     *   - when a key has been invalidated and we need to recompute
+     * It can only depend on lower-layer environments.
+     *)
     val produce_value
       :  PreviousEnvironment.ReadOnly.t ->
       trigger ->
       dependency:SharedMemoryKeys.DependencyKey.registered option ->
       Value.t
 
-    val show_key : Key.t -> string
-
+    (* An Overlay environment involves a separate table for each layer,
+     * where we always check the overlay table first and then fall back
+     * to reading the parent environment. This is used for per-buffer
+     * unsaved changes support in editors.
+     *
+     * To keep overlays small and fast to update, we only include keys
+     * "owned" by a given overlay, where ownership means the key is
+     * associated with a module containing overlaid raw code.
+     *
+     * Almost all key types represent some python identifier (e.g. a
+     * class or function name) whose module ancestry is clear; this
+     * function is responsible for determining whether a module in the
+     * overlay owns a given key. We prevent incremental updates for
+     * keys that are not owned.
+     *)
     val overlay_owns_key : ModuleTracker.Overlay.t -> Key.t -> bool
 
-    val equal_value : Value.t -> Value.t -> bool
+    (* In a nonlazy environment table, incremental updates lead to us:
+     * - recomputing values for all invalidated keys
+     * - comparing those values to old values
+     * - invalidating downstream data only if the value changed
+     *
+     * In a lazy incremental table, incremental updates lead to us:
+     * - deleting all values for invalidated keys
+     * - invalidating all downstream data
+     *)
+    val lazy_incremental : bool
   end
 
   module type Table = sig
@@ -264,6 +363,15 @@ module EnvironmentTable = struct
       let upstream { upstream; _ } = upstream
     end
 
+    (* The core logic for overlay and base environment data handling is mostly
+     * shared - the differences are that the concrete types are not the same
+     * and that overlays have to deal with ownership checks and parent
+     * environment result propagation (that is, changes to the base environment
+     * triggering invalidations in an overlay).
+     *
+     * This module, which is not part of the public interface, defines all of
+     * the core, shared logic.
+     *)
     module FromReadOnlyUpstream = struct
       type t = {
         table: Table.t;
@@ -272,6 +380,8 @@ module EnvironmentTable = struct
 
       let create upstream_environment = { table = Table.create (); upstream_environment }
 
+      (* Defines how to perform a lazy read: first see if there is a cache hit, otherwise convert
+         key -> trigger -> dependency and call produce_value to populate the cache. *)
       let get { table; upstream_environment } ?dependency key =
         match Table.get table ?dependency key with
         | Some hit -> hit
@@ -292,6 +402,8 @@ module EnvironmentTable = struct
         type t = In.trigger [@@deriving sexp, compare]
       end)
 
+      (* Given an update result for the layer below this, find all of the keys that require
+         invalidation in this layer. *)
       let compute_trigger_map upstream_triggered_dependencies =
         List.fold
           upstream_triggered_dependencies
@@ -311,6 +423,8 @@ module EnvironmentTable = struct
               triggers)
 
 
+      (* Given an update result for the layer below this, update this layer and return the update
+         result. *)
       let update_only_this_environment ~scheduler { table; upstream_environment } trigger_map =
         Log.log ~section:`Environment "Updating %s Environment" In.Value.description;
         let update ~names_to_update () =
@@ -372,6 +486,8 @@ module EnvironmentTable = struct
         triggered_dependencies
     end
 
+    (* The Base module implements the non-overlay functionality for an environment layer; most of
+       the actual work is done by FromReadOnlyUpstream. *)
     module Base = struct
       type t = {
         upstream_environment: In.PreviousEnvironment.t;
@@ -396,6 +512,8 @@ module EnvironmentTable = struct
         FromReadOnlyUpstream.read_only from_read_only_upstream
 
 
+      (* Update an environment layer (which wraps all lower layers) by passing filesystem events
+         down to ModuleTracker and recursively pushing updates, invalidating data as needed *)
       let update_this_and_all_preceding_environments
           { upstream_environment; from_read_only_upstream }
           ~scheduler
@@ -424,6 +542,8 @@ module EnvironmentTable = struct
       let load controls = In.PreviousEnvironment.load controls |> from_upstream_environment
     end
 
+    (* The Overlay module implements the overlay functionality for an environment layer; most of the
+       actual work is done by FromReadOnlyUpstream. *)
     module Overlay = struct
       type t = {
         parent: ReadOnly.t;
@@ -452,6 +572,9 @@ module EnvironmentTable = struct
         In.convert_trigger trigger |> overlay_owns_key environment
 
 
+      (* Filter the triggered dependencies from an update result to only the ones that are owned by
+         an overlay. This is what prevents fanouts of updates, keeping overlays O(module size) both
+         in memory use and incrmental update compute costs *)
       let compute_owned_trigger_map environment upstream_triggered_dependencies =
         List.fold
           upstream_triggered_dependencies
@@ -474,6 +597,7 @@ module EnvironmentTable = struct
               triggers)
 
 
+      (* Core logic for updating an overlay based on upstream changes. *)
       let consume_upstream_update ({ from_read_only_upstream; _ } as environment) update_result =
         let triggered_dependencies =
           In.PreviousEnvironment.UpdateResult.all_triggered_dependencies update_result
@@ -485,11 +609,17 @@ module EnvironmentTable = struct
         { UpdateResult.triggered_dependencies; upstream = update_result }
 
 
+      (* Update an overlay, given new source code for the overlaid modules (usually that new source
+         code consists of unsaved editor text). This is the equivalent of
+         Base.update_this_and_all_preceding_environments. *)
       let update_overlaid_code ({ upstream_environment; _ } as environment) ~code_updates =
         In.PreviousEnvironment.Overlay.update_overlaid_code upstream_environment ~code_updates
         |> consume_upstream_update environment
 
 
+      (* Propagate updates from the parent of an overlay environment. This is important so that, for
+         example, if we change `foo.py` in a way that breaks `bar.py` while we have `bar.py` open
+         with unsaved changes, the editor will be able to show type errors correctly. *)
       let propagate_parent_update ({ upstream_environment; _ } as environment) parent_update_result =
         let upstream =
           UpdateResult.upstream parent_update_result

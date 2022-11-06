@@ -29,7 +29,7 @@ import dataclasses_json
 
 from .. import dataclasses_json_extensions as json_mixins
 
-from . import daemon_connection
+from ..language_server import daemon_connection
 from .query_response import InvalidQueryResponse, Response
 
 
@@ -96,6 +96,10 @@ async def attempt_typed_async_query(
             if not isinstance(response.payload, dict):
                 raise ValueError(
                     f"Expected a doct, got {response.payload!r} as response"
+                )
+            if "error" in response.payload:
+                return DaemonQueryFailure(
+                    f"Daemon query returned error: {response.payload} for query: {query_text}"
                 )
             return response_type.from_dict(response.payload)
     except (

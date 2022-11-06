@@ -71,6 +71,10 @@ def source_through_tito():
     return y
 
 
+def test_apply_source():
+    return apply(_test_source, 0)
+
+
 class Callable:
     def __init__(self, value):
         self.value = value
@@ -92,3 +96,32 @@ def sink_args(*args):
 
 def test_location(x: int, y: Callable, z: int):
     sink_args(x, y, z)
+
+
+def conditional_apply(f, g, cond: bool, x: int):
+    if cond:
+        return f(x)
+    else:
+        return g(x)
+
+
+def safe():
+    return 0
+
+
+def test_conditional_apply_forward():
+    _test_sink(conditional_apply(_test_source, safe, True, 0))
+    # TODO(T136838558): Handle conditional higher order functions.
+    _test_sink(conditional_apply(_test_source, safe, False, 0))
+    # TODO(T136838558): Handle conditional higher order functions.
+    _test_sink(conditional_apply(safe, _test_source, True, 0))
+    _test_sink(conditional_apply(safe, _test_source, False, 0))
+
+
+def test_conditional_apply_backward(x):
+    conditional_apply(_test_sink, safe, True, x)
+    # TODO(T136838558): Handle conditional higher order functions.
+    conditional_apply(_test_sink, safe, False, x)
+    # TODO(T136838558): Handle conditional higher order functions.
+    conditional_apply(safe, _test_sink, True, x)
+    conditional_apply(safe, _test_sink, False, x)

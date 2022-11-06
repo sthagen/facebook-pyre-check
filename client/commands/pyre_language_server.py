@@ -21,10 +21,8 @@ from typing import ClassVar, Dict, List, Optional, Union
 
 from .. import json_rpc, log
 
-from ..language_server import connections, features, protocol as lsp
+from ..language_server import connections, daemon_connection, features, protocol as lsp
 from . import background, commands, find_symbols, request_handler, server_state as state
-
-from .daemon_connection import DaemonConnectionFailure
 
 from .daemon_query import DaemonQueryFailure
 
@@ -212,7 +210,6 @@ class PyreLanguageServer:
             self.server_state.server_options.language_server_features.unsaved_changes.is_enabled()
         )
         error_message = None
-        process_id = os.getpid()
         server_status_before = self.server_state.server_last_status.value
         start_time = time.time()
         code_changes = str(
@@ -222,9 +219,9 @@ class PyreLanguageServer:
         )
         if process_unsaved_changes:
             result = await self.handler.update_overlay(
-                path=document_path.resolve(), process_id=process_id, code=code_changes
+                path=document_path.resolve(), code=code_changes
             )
-            if isinstance(result, DaemonConnectionFailure):
+            if isinstance(result, daemon_connection.DaemonConnectionFailure):
                 LOG.info(
                     daemon_failure_string(
                         "didChange", str(type(result)), result.error_message
@@ -235,6 +232,10 @@ class PyreLanguageServer:
                 self.server_state.opened_documents[document_path] = OpenedDocumentState(
                     code=code_changes, is_dirty=True
                 )
+        else:
+            self.server_state.opened_documents[document_path] = OpenedDocumentState(
+                code=code_changes, is_dirty=True
+            )
 
         end_time = time.time()
 
@@ -252,7 +253,6 @@ class PyreLanguageServer:
                 "server_state_start_status": self.server_state.server_last_status.value,
                 "error_message": str(error_message),
                 "overlays_enabled": process_unsaved_changes,
-                "process_id": process_id,
             },
             activity_key,
         )

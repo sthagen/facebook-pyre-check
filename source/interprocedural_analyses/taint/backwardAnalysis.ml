@@ -35,7 +35,6 @@ open Expression
 open Pyre
 open Domains
 module CallGraph = Interprocedural.CallGraph
-module CallResolution = Interprocedural.CallResolution
 
 module type FUNCTION_CONTEXT = sig
   val qualifier : Reference.t
@@ -587,6 +586,11 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       if apply_tito then
         BackwardState.Tree.collapse ~breadcrumbs:(Features.tito_broadening_set ()) call_taint
         |> BackwardTaint.add_local_breadcrumb (Features.obscure_unknown_callee ())
+        |> BackwardTaint.transform_call_info
+             CallInfo.Tito
+             Features.CollapseDepth.Self
+             Map
+             ~f:Features.CollapseDepth.approximate
         |> BackwardState.Tree.create_leaf
       else
         BackwardState.Tree.empty
@@ -623,29 +627,68 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       ~state:initial_state
       ~call_taint
     =
+    let is_object_new = CallGraph.CallCallees.is_object_new new_targets in
+    let is_object_init = CallGraph.CallCallees.is_object_init init_targets in
+
+    (* If both `is_object_new` and `is_object_init` are true, this is probably a stub
+     * class (e.g, `class X: ...`), in which case, we treat it as an obscure call. *)
+
     (* Call `__init__`. Add the `self` implicit argument. *)
     let { arguments_taint = init_arguments_taint; self_taint; callee_taint = _; state } =
-      match init_targets with
-      | [] ->
-          {
-            arguments_taint = List.map arguments ~f:(fun _ -> BackwardState.Tree.bottom);
-            self_taint = Some call_taint;
-            callee_taint = None;
-            state = initial_state;
-          }
-      | init_targets ->
-          let call_expression =
-            Expression.Call { Call.callee; arguments } |> Node.create ~location:call_location
-          in
-          List.map init_targets ~f:(fun target ->
+      if is_object_init && not is_object_new then
+        {
+          arguments_taint = List.map arguments ~f:(fun _ -> BackwardState.Tree.bottom);
+          self_taint = Some call_taint;
+          callee_taint = None;
+          state = initial_state;
+        }
+      else
+        let call_expression =
+          Expression.Call { Call.callee; arguments } |> Node.create ~location:call_location
+        in
+        List.map init_targets ~f:(fun target ->
+            apply_call_target
+              ~resolution
+              ~call_location
+              ~self:(Some call_expression)
+              ~callee
+              ~arguments
+              ~state:initial_state
+              ~call_taint
+              target)
+        |> List.fold
+             ~f:join_call_target_results
+             ~init:
+               {
+                 arguments_taint = List.map arguments ~f:(fun _ -> BackwardState.Tree.bottom);
+                 self_taint = None;
+                 callee_taint = None;
+                 state = bottom;
+               }
+    in
+    let self_taint = Option.value self_taint ~default:BackwardState.Tree.bottom in
+
+    (* Call `__new__`. *)
+    let call_target_result =
+      if is_object_new then
+        { arguments_taint = init_arguments_taint; self_taint = None; callee_taint = None; state }
+      else (* Add the `cls` implicit argument. *)
+        let {
+          arguments_taint = new_arguments_taint;
+          self_taint = callee_taint;
+          callee_taint = _;
+          state;
+        }
+          =
+          List.map new_targets ~f:(fun target ->
               apply_call_target
                 ~resolution
                 ~call_location
-                ~self:(Some call_expression)
+                ~self:(Some callee)
                 ~callee
                 ~arguments
-                ~state:initial_state
-                ~call_taint
+                ~state
+                ~call_taint:self_taint
                 target)
           |> List.fold
                ~f:join_call_target_results
@@ -656,58 +699,14 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                    callee_taint = None;
                    state = bottom;
                  }
-    in
-    let self_taint = Option.value self_taint ~default:BackwardState.Tree.bottom in
-
-    (* Call `__new__`. *)
-    let call_target_result =
-      match new_targets with
-      | []
-      | [
-          {
-            CallGraph.CallTarget.target =
-              Interprocedural.Target.Method
-                { class_name = "object"; method_name = "__new__"; kind = Normal };
-            _;
-          };
-        ] ->
-          { arguments_taint = init_arguments_taint; self_taint = None; callee_taint = None; state }
-      | new_targets ->
-          (* Add the `cls` implicit argument. *)
-          let {
-            arguments_taint = new_arguments_taint;
-            self_taint = callee_taint;
-            callee_taint = _;
-            state;
-          }
-            =
-            List.map new_targets ~f:(fun target ->
-                apply_call_target
-                  ~resolution
-                  ~call_location
-                  ~self:(Some callee)
-                  ~callee
-                  ~arguments
-                  ~state
-                  ~call_taint:self_taint
-                  target)
-            |> List.fold
-                 ~f:join_call_target_results
-                 ~init:
-                   {
-                     arguments_taint = List.map arguments ~f:(fun _ -> BackwardState.Tree.bottom);
-                     self_taint = None;
-                     callee_taint = None;
-                     state = bottom;
-                   }
-          in
-          {
-            arguments_taint =
-              List.map2_exn init_arguments_taint new_arguments_taint ~f:BackwardState.Tree.join;
-            self_taint = None;
-            callee_taint;
-            state;
-          }
+        in
+        {
+          arguments_taint =
+            List.map2_exn init_arguments_taint new_arguments_taint ~f:BackwardState.Tree.join;
+          self_taint = None;
+          callee_taint;
+          state;
+        }
     in
 
     call_target_result
@@ -725,7 +724,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         CallGraph.CallCallees.call_targets;
         new_targets;
         init_targets;
-        higher_order_parameter = _;
+        higher_order_parameters = _;
         unresolved;
       }
     =
@@ -983,83 +982,119 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     analyze_expression ~resolution ~taint:base_taint ~state ~expression:base
 
 
-  and analyze_arguments_for_lambda_call
+  and analyze_arguments_with_higher_order_parameters
       ~resolution
       ~arguments
       ~arguments_taint
       ~state
-      ~lambda_argument:
-        { Call.Argument.value = { location = lambda_location; _ } as lambda_callee; _ }
-      { CallGraph.HigherOrderParameter.index = lambda_index; call_targets }
+      ~higher_order_parameters
     =
-    (* If we have a lambda `fn` getting passed into `hof`, we use the following strategy:
-     * hof(q, fn, x, y) gets translated into (analyzed backwards)
+    (* If we have functions `fn1`, `fn2`, `fn3` getting passed into `hof`, we use the following strategy:
+     * hof(q, fn1, x, fn2, y, fn3) gets translated into (analyzed backwards)
      * if rand():
      *   $all = {q, x, y}
-     *   $result = fn( *all, **all)
+     *   $result_fn1 = fn1( *all, **all)
+     *   $result_fn2 = fn2( *all, **all)
+     *   $result_fn3 = fn3( *all, **all)
      * else:
-     *   $result = fn
-     * hof(q, $result, x, y)
+     *   $result_fn1 = fn1
+     *   $result_fn2 = fn2
+     *   $result_fn3 = fn3
+     * hof(q, $result_fn1, x, $result_fn2, y, $result_fn3)
      *)
-    let result_taint = List.nth_exn arguments_taint lambda_index in
-    let non_lambda_arguments_taint =
-      let arguments_taint = List.zip_exn arguments arguments_taint in
-      List.take arguments_taint lambda_index @ List.drop arguments_taint (lambda_index + 1)
+    let arguments_and_taints = List.zip_exn arguments arguments_taint in
+
+    let higher_order_parameters =
+      higher_order_parameters
+      |> CallGraph.HigherOrderParameterMap.to_list
+      |> List.filter_map
+           ~f:(fun ({ CallGraph.HigherOrderParameter.index; _ } as higher_order_parameter) ->
+             match List.nth arguments_and_taints index with
+             | Some ({ Call.Argument.value = argument; _ }, taint) ->
+                 Some (higher_order_parameter, argument, taint)
+             | None -> None)
+    in
+
+    let non_function_arguments_taint =
+      let function_argument_indices =
+        List.fold
+          ~init:Int.Set.empty
+          ~f:(fun indices ({ CallGraph.HigherOrderParameter.index; _ }, _, _) ->
+            Int.Set.add indices index)
+          higher_order_parameters
+      in
+      List.filteri arguments_and_taints ~f:(fun index _ ->
+          not (Int.Set.mem function_argument_indices index))
     in
 
     (* Simulate if branch. *)
-    let if_branch_state, all_taint =
-      (* Simulate $result = fn( *all, **all) *)
-      let all_argument =
-        Expression.Name (Name.Identifier "$all") |> Node.create ~location:lambda_location
+    let all_taint, if_branch_state =
+      let analyze_function_call
+          (all_taint, state)
+          ( { CallGraph.HigherOrderParameter.call_targets; _ },
+            ({ Node.location = argument_location; _ } as argument),
+            argument_taint )
+        =
+        (* Simulate $result = fn( *all, **all) *)
+        let all_argument =
+          Expression.Name (Name.Identifier "$all") |> Node.create ~location:argument_location
+        in
+        let arguments =
+          [
+            {
+              Call.Argument.value =
+                Expression.Starred (Starred.Once all_argument)
+                |> Node.create ~location:argument_location;
+              name = None;
+            };
+            {
+              Call.Argument.value =
+                Expression.Starred (Starred.Twice all_argument)
+                |> Node.create ~location:argument_location;
+              name = None;
+            };
+          ]
+        in
+        let { arguments_taint; self_taint; callee_taint; state } =
+          apply_callees_and_return_arguments_taint
+            ~resolution
+            ~callee:argument
+            ~call_location:argument_location
+            ~arguments
+            ~call_taint:argument_taint
+            ~state
+            (CallGraph.CallCallees.create ~call_targets ())
+        in
+        let state =
+          analyze_callee
+            ~resolution
+            ~is_property_call:false
+            ~callee:argument
+            ~self_taint
+            ~callee_taint
+            ~state
+        in
+        let all_taint =
+          arguments_taint
+          |> List.fold ~f:BackwardState.Tree.join ~init:BackwardState.Tree.bottom
+          |> read_tree [Abstract.TreeDomain.Label.AnyIndex]
+          |> BackwardState.Tree.add_local_breadcrumb (Features.lambda ())
+          |> BackwardState.Tree.join all_taint
+        in
+        all_taint, state
       in
-      let arguments =
-        [
-          {
-            Call.Argument.value =
-              Expression.Starred (Starred.Once all_argument)
-              |> Node.create ~location:lambda_location;
-            name = None;
-          };
-          {
-            Call.Argument.value =
-              Expression.Starred (Starred.Twice all_argument)
-              |> Node.create ~location:lambda_location;
-            name = None;
-          };
-        ]
-      in
-      let { arguments_taint; self_taint; callee_taint; state } =
-        apply_callees_and_return_arguments_taint
-          ~resolution
-          ~callee:lambda_callee
-          ~call_location:lambda_location
-          ~arguments
-          ~call_taint:result_taint
-          ~state
-          (CallGraph.CallCallees.create ~call_targets ())
-      in
-      let state =
-        analyze_callee
-          ~resolution
-          ~is_property_call:false
-          ~callee:lambda_callee
-          ~self_taint
-          ~callee_taint
-          ~state
-      in
-      let all_taint =
-        arguments_taint
-        |> List.fold ~f:BackwardState.Tree.join ~init:BackwardState.Tree.bottom
-        |> read_tree [Abstract.TreeDomain.Label.AnyIndex]
-        |> BackwardState.Tree.add_local_breadcrumb (Features.lambda ())
-      in
-      state, all_taint
+      List.fold
+        ~init:(BackwardState.Tree.bottom, state)
+        ~f:analyze_function_call
+        higher_order_parameters
     in
 
     (* Simulate else branch. *)
     let else_branch_state =
-      analyze_expression ~resolution ~taint:result_taint ~state ~expression:lambda_callee
+      let analyze_function_expression state (_, argument, argument_taint) =
+        analyze_expression ~resolution ~taint:argument_taint ~state ~expression:argument
+      in
+      List.fold ~init:state ~f:analyze_function_expression higher_order_parameters
     in
 
     (* Join both branches. *)
@@ -1067,7 +1102,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
     (* Analyze arguments. *)
     List.fold
-      non_lambda_arguments_taint
+      non_function_arguments_taint
       ~init:state
       ~f:(fun state ({ Call.Argument.value = argument; _ }, argument_taint) ->
         let argument_taint = BackwardState.Tree.join argument_taint all_taint in
@@ -1098,24 +1133,17 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     in
 
     let state =
-      match callees with
-      | {
-       higher_order_parameter =
-         Some ({ CallGraph.HigherOrderParameter.index; _ } as higher_order_parameter);
-       _;
-      } -> (
-          match List.nth arguments index with
-          | Some lambda_argument ->
-              analyze_arguments_for_lambda_call
-                ~resolution
-                ~arguments
-                ~arguments_taint
-                ~state
-                ~lambda_argument
-                higher_order_parameter
-          | _ -> analyze_arguments ~resolution ~arguments ~arguments_taint ~state)
-      | _ -> analyze_arguments ~resolution ~arguments ~arguments_taint ~state
+      if CallGraph.HigherOrderParameterMap.is_empty callees.higher_order_parameters then
+        analyze_arguments ~resolution ~arguments ~arguments_taint ~state
+      else
+        analyze_arguments_with_higher_order_parameters
+          ~resolution
+          ~arguments
+          ~arguments_taint
+          ~state
+          ~higher_order_parameters:callees.higher_order_parameters
     in
+
     let state =
       analyze_callee
         ~resolution
@@ -1241,53 +1269,38 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   and analyze_call ~resolution ~location ~taint ~state ~callee ~arguments =
+    let { Call.callee; arguments } =
+      CallGraph.redirect_special_calls ~resolution { Call.callee; arguments }
+    in
+    let callees = get_call_callees ~location ~call:{ Call.callee; arguments } in
+
     let add_type_breadcrumbs taint =
-      let type_breadcrumbs =
-        let { CallGraph.CallCallees.call_targets; _ } =
-          get_call_callees ~location ~call:{ Call.callee; arguments }
-        in
-        CallModel.type_breadcrumbs_of_calls call_targets
-      in
+      let type_breadcrumbs = CallModel.type_breadcrumbs_of_calls callees.call_targets in
       BackwardState.Tree.add_local_breadcrumbs type_breadcrumbs taint
     in
+
     match { Call.callee; arguments } with
     | {
      callee =
        { Node.value = Name (Name.Attribute { base; attribute = "__setitem__"; _ }); _ } as callee;
-     arguments = [{ Call.Argument.value = index; _ }; { Call.Argument.value; _ }] as arguments;
+     arguments =
+       [{ Call.Argument.value = index; name = None }; { Call.Argument.value; name = None }] as
+       arguments;
     } ->
-        let ({ CallGraph.CallCallees.call_targets; _ } as callees) =
-          get_call_callees ~location ~call:{ Call.callee; arguments }
-        in
-        let is_dict_setitem =
-          match call_targets with
-          | [
-              {
-                CallGraph.CallTarget.target =
-                  Method { class_name = "dict"; method_name = "__setitem__"; kind = Normal };
-                _;
-              };
-            ]
-          | [
-              {
-                CallGraph.CallTarget.target =
-                  Override { class_name = "dict"; method_name = "__setitem__"; kind = Normal };
-                _;
-              };
-            ] ->
-              true
-          | _ -> false
-        in
+        let is_dict_setitem = CallGraph.CallCallees.is_mapping_method callees in
+        let is_sequence_setitem = CallGraph.CallCallees.is_sequence_method callees in
         let use_custom_tito =
-          is_dict_setitem || not (CallGraph.CallCallees.is_partially_resolved callees)
+          is_dict_setitem
+          || is_sequence_setitem
+          || not (CallGraph.CallCallees.is_partially_resolved callees)
         in
         let state =
-          (* Process the custom behvaior of `__setitem__`. We treat `e.__setitem__(k, v)` as `e =
+          (* Process the custom model of `__setitem__`. We treat `e.__setitem__(k, v)` as `e =
              e.__setitem__(k, v)` where method `__setitem__` returns the updated self. Due to
              modeling with the assignment, the user-provided models of `__setitem__` will be
              ignored, if they are inconsistent with treating `__setitem__` as returning an updated
-             self. In the case that the call target is a dict, only propagate sources and sinks, and
-             ignore tito propagation. *)
+             self. In the case that the call target is a dict or list, only propagate sources and
+             sinks, and ignore tito propagation. *)
           let taint = compute_assignment_taint ~resolution base state |> fst in
           apply_callees
             ~apply_tito:(not use_custom_tito)
@@ -1301,21 +1314,28 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
             callees
         in
         if use_custom_tito then
-          (* Use the hardcoded behavior of `__setitem__` for any subtype of dict or unresolved
-             callees: `base[index] = value`. This is incorrect, but can lead to higher SNR, because
-             we assume in most cases, we run into an expression whose type is exactly `dict`, rather
-             than a (strict) subtype of `dict` that overrides `__setitem__`. *)
+          (* Use the hardcoded behavior of `__setitem__` for any subtype of dict or list, and for
+             unresolved calls. This is incorrect, but can lead to higher SNR, because we assume in
+             most cases, we run into an expression whose type is exactly `dict`, rather than a
+             (strict) subtype of `dict` that overrides `__setitem__`. *)
           let state =
-            (* Since we smash the taint of ALL keys, we do a weak update here to avoid removing the
-               taint in `**keys`. That is, we join the state before analyzing the assignment to
-               `**keys` and the state afterwards. *)
-            analyze_assignment
-              ~weak:true
-              ~resolution
-              ~fields:[AccessPath.dictionary_keys]
-              ~target:base
-              ~value:index
-              state
+            if not is_sequence_setitem then
+              (* Since we smash the taint of ALL keys, we do a weak update here to avoid removing
+                 the taint in `**keys`. That is, we join the state before analyzing the assignment
+                 to `**keys` and the state afterwards. *)
+              analyze_assignment
+                ~weak:true
+                ~resolution
+                ~fields:[AccessPath.dictionary_keys]
+                ~target:base
+                ~value:index
+                state
+            else
+              analyze_expression
+                ~resolution
+                ~taint:BackwardState.Tree.bottom
+                ~state
+                ~expression:index
           in
           analyze_assignment
             ~resolution
@@ -1328,7 +1348,12 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     | {
      callee = { Node.value = Name (Name.Attribute { base; attribute = "__getitem__"; _ }); _ };
      arguments =
-       [{ Call.Argument.value = { Node.value = argument_expression; _ } as argument_value; _ }];
+       [
+         {
+           Call.Argument.value = { Node.value = argument_expression; _ } as argument_value;
+           name = None;
+         };
+       ];
     } ->
         let taint = add_type_breadcrumbs taint in
         let index = AccessPath.get_index argument_value in
@@ -1340,11 +1365,8 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
              in
              analyze_expression ~resolution ~taint ~state ~expression:base)
         in
-        let { CallGraph.CallCallees.call_targets; _ } =
-          get_call_callees ~location ~call:{ Call.callee; arguments }
-        in
         let state =
-          if List.is_empty call_targets then
+          if List.is_empty callees.call_targets then
             (* This call may be unresolved, because for example the receiver type is unknown *)
             Lazy.force state_before_index_access
           else
@@ -1353,7 +1375,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
               | Expression.Constant (Constant.Integer i) -> Some i
               | _ -> None
             in
-            List.fold call_targets ~init:bottom ~f:(fun state_so_far call_target ->
+            List.fold callees.call_targets ~init:bottom ~f:(fun state_so_far call_target ->
                 analyze_getitem_call_target
                   ~index_number
                   ~resolution
@@ -1370,49 +1392,27 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           ~taint:BackwardState.Tree.bottom
           ~state
           ~expression:argument_value
-    (* Special case x.__iter__().__next__() as being a random index access (this pattern is the
-       desugaring of `for element in x`). Special case dictionary keys appropriately. *)
+    (* Special case `__iter__` and `__next__` as being a random index access (this pattern is the
+       desugaring of `for element in x`). *)
+    | {
+     callee = { Node.value = Name (Name.Attribute { base; attribute = "__next__"; _ }); _ };
+     arguments = [];
+    } ->
+        let taint = add_type_breadcrumbs taint in
+        analyze_expression ~resolution ~taint ~state ~expression:base
     | {
      callee =
-       {
-         Node.value =
-           Name
-             (Name.Attribute
-               {
-                 base =
-                   {
-                     Node.value =
-                       Call
-                         {
-                           callee =
-                             {
-                               Node.value =
-                                 Name (Name.Attribute { base; attribute = "__iter__"; _ });
-                               _;
-                             };
-                           arguments = [];
-                         };
-                     _;
-                   };
-                 attribute = "__next__";
-                 _;
-               });
-         _;
-       };
+       { Node.value = Name (Name.Attribute { base; attribute = "__iter__"; special = true }); _ };
      arguments = [];
     } ->
         let label =
           (* For dictionaries, the default iterator is keys. *)
-          if
-            CallResolution.resolve_ignoring_untracked ~resolution base
-            |> Type.is_dictionary_or_mapping
-          then
+          if CallGraph.CallCallees.is_mapping_method callees then
             AccessPath.dictionary_keys
           else
             Abstract.TreeDomain.Label.AnyIndex
         in
-
-        let taint = BackwardState.Tree.prepend [label] taint |> add_type_breadcrumbs in
+        let taint = BackwardState.Tree.prepend [label] taint in
         analyze_expression ~resolution ~taint ~state ~expression:base
     (* We special-case object.__setattr__, which is sometimes used in order to work around
        dataclasses being frozen post-initialization. *)
@@ -1456,7 +1456,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
      callee = { Node.value = Name (Name.Identifier "getattr"); _ };
      arguments =
        [
-         { Call.Argument.value = base; _ };
+         { Call.Argument.value = base; name = None };
          {
            Call.Argument.value =
              {
@@ -1464,9 +1464,9 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                  Expression.Constant (Constant.String { StringLiteral.value = attribute; _ });
                _;
              };
-           _;
+           name = None;
          };
-         { Call.Argument.value = default; _ };
+         { Call.Argument.value = default; name = _ };
        ];
     } ->
         let attribute_expression =
@@ -1490,19 +1490,27 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         List.foldi lists ~init:state ~f:analyze_zipped_list
     (* dictionary .keys(), .values() and .items() functions are special, as they require handling of
        DictionaryKeys taint. *)
-    | { callee = { Node.value = Name (Name.Attribute { base; attribute = "values"; _ }); _ }; _ }
-      when CallResolution.resolve_ignoring_untracked ~resolution base
-           |> Type.is_dictionary_or_mapping ->
+    | {
+     callee = { Node.value = Name (Name.Attribute { base; attribute = "values"; _ }); _ };
+     arguments = [];
+    }
+      when CallGraph.CallCallees.is_mapping_method callees ->
         let taint =
           taint
           |> BackwardState.Tree.read [Abstract.TreeDomain.Label.AnyIndex]
           |> BackwardState.Tree.prepend [Abstract.TreeDomain.Label.AnyIndex]
         in
         analyze_expression ~resolution ~taint ~state ~expression:base
-    | { callee = { Node.value = Name (Name.Attribute { base; attribute = "keys"; _ }); _ }; _ }
-      when CallResolution.resolve_ignoring_untracked ~resolution base
-           |> Type.is_dictionary_or_mapping ->
-        let taint = taint |> BackwardState.Tree.prepend [AccessPath.dictionary_keys] in
+    | {
+     callee = { Node.value = Name (Name.Attribute { base; attribute = "keys"; _ }); _ };
+     arguments = [];
+    }
+      when CallGraph.CallCallees.is_mapping_method callees ->
+        let taint =
+          taint
+          |> BackwardState.Tree.read [Abstract.TreeDomain.Label.AnyIndex]
+          |> BackwardState.Tree.prepend [AccessPath.dictionary_keys]
+        in
         analyze_expression ~resolution ~taint ~state ~expression:base
     | {
      callee =
@@ -1522,12 +1530,11 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
          {
            Call.Argument.value =
              { Node.value = Expression.Dictionary { Dictionary.entries; keywords = [] }; _ };
-           _;
+           name = None;
          };
        ];
     }
-      when CallResolution.resolve_ignoring_untracked ~resolution base
-           |> Type.is_dictionary_or_mapping
+      when CallGraph.CallCallees.is_mapping_method callees
            && Option.is_some (Dictionary.string_literal_keys entries) ->
         let entries = Option.value_exn (Dictionary.string_literal_keys entries) in
         let access_path =
@@ -1574,7 +1581,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
            Name
              (Name.Attribute
                {
-                 base = { Node.value = Name (Name.Identifier identifier); _ } as base;
+                 base = { Node.value = Name (Name.Identifier identifier); _ };
                  attribute = "pop";
                  _;
                });
@@ -1585,12 +1592,11 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
          {
            Call.Argument.value =
              { Node.value = Expression.Constant (Constant.String { StringLiteral.value; _ }); _ };
-           _;
+           name = None;
          };
        ];
     }
-      when CallResolution.resolve_ignoring_untracked ~resolution base
-           |> Type.is_dictionary_or_mapping ->
+      when CallGraph.CallCallees.is_mapping_method callees ->
         let access_path =
           Some { AccessPath.root = AccessPath.Root.Variable identifier; path = [] }
         in
@@ -1602,9 +1608,11 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
             ~subtree:(add_type_breadcrumbs taint)
         in
         store_taint ~root:(AccessPath.Root.Variable identifier) ~path:[] new_taint state
-    | { callee = { Node.value = Name (Name.Attribute { base; attribute = "items"; _ }); _ }; _ }
-      when CallResolution.resolve_ignoring_untracked ~resolution base
-           |> Type.is_dictionary_or_mapping ->
+    | {
+     callee = { Node.value = Name (Name.Attribute { base; attribute = "items"; _ }); _ };
+     arguments = [];
+    }
+      when CallGraph.CallCallees.is_mapping_method callees ->
         (* When we're faced with an assign of the form `k, v = d.items().__iter__().__next__()`, the
            taint we analyze d.items() under will be {* -> {0 -> k, 1 -> v} }. We want to analyze d
            itself under the taint of `{* -> v, $keys -> k}`. *)
@@ -1704,7 +1712,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
          {
            Call.Argument.value =
              { Node.value = Expression.Constant (Constant.String { StringLiteral.value; _ }); _ };
-           _;
+           name = None;
          };
        ];
     } ->
@@ -1730,7 +1738,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                });
          _;
        };
-     arguments = [{ Call.Argument.value = expression; _ }];
+     arguments = [{ Call.Argument.value = expression; name = None }];
     } ->
         let formatted_string = Substring.Literal (Node.create ~location value) in
         let substrings = [formatted_string; Substring.Format expression] in
@@ -1774,10 +1782,6 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
             | Some root -> store_taint ~weak:true ~root ~path:[] taint state
             | None -> state))
     | _ ->
-        let { Call.callee; arguments } =
-          CallGraph.redirect_special_calls ~resolution { Call.callee; arguments }
-        in
-        let callees = get_call_callees ~location ~call:{ Call.callee; arguments } in
         apply_callees
           ~resolution
           ~is_property:false

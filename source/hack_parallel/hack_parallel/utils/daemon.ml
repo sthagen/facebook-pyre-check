@@ -62,20 +62,26 @@ module Entry : sig
      interface. *)
 
   type ('param, 'input, 'output) t
+
   val register:
     string -> ('param -> ('input, 'output) channel_pair -> unit) ->
     ('param, 'input, 'output) t
+
   val find:
     ('param, 'input, 'output) t ->
     'param ->
     ('input, 'output) channel_pair -> unit
+
   val set_context:
-    ('param, 'input, 'output) t -> 'param ->
+    ('param, 'input, 'output) t ->
+    'param ->
     Unix.file_descr * Unix.file_descr ->
     unit
+
   val get_context:
     unit ->
     (('param, 'input, 'output) t * 'param * ('input, 'output) channel_pair)
+
   val clear_context:
     unit -> unit
 
@@ -196,7 +202,8 @@ let close_pipe channel_mode (ch_in, ch_out) =
 let fork
     ?(channel_mode = `pipe)
     (type param)
-    (log_stdout, log_stderr) (f : param -> ('a, 'b) channel_pair -> unit)
+    (log_stdout, log_stderr)
+    (f : param -> ('a, 'b) channel_pair -> unit)
     (param : param) : ('b, 'a) handle =
   let (parent_in, child_out), (child_in, parent_out)
     = setup_channels channel_mode in
@@ -233,7 +240,8 @@ let spawn
     ?(channel_mode = `pipe)
     (stdin, stdout, stderr)
     (entry: (param, input, output) entry)
-    (param: param) : (output, input) handle =
+    (param: param)
+    : (output, input) handle =
   let (parent_in, child_out), (child_in, parent_out) =
     setup_channels channel_mode in
   Entry.set_context entry param (child_in, child_out);
@@ -291,7 +299,7 @@ let kill h =
 let kill_and_wait h =
   kill h;
   let rec ensure_waitpid pid =
-    (* `waitpid` may be interrupted by other signals. 
+    (* `waitpid` may be interrupted by other signals.
      * When this happens, we will get an EINTR error in which case the wait
      * operation needs to be retried.
      * For some reason, the EINTR issue happens more frequently on MacOS than
@@ -304,9 +312,13 @@ let kill_and_wait h =
   ensure_waitpid h.pid
 
 let close_out = close_out
+
 let output_string = output_string
+
 let flush = flush
 
 let close_in = Timeout.close_in
+
 let input_char ic = Timeout.input_char ic
+
 let input_value ic = Timeout.input_value ic

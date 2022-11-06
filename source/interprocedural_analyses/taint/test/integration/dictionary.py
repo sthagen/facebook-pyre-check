@@ -4,7 +4,18 @@
 # LICENSE file in the root directory of this source tree.
 
 from builtins import _test_sink, _test_source
-from typing import Any, cast, Dict, Generic, Iterable, Mapping, Optional, TypeVar, Union
+from typing import (
+    Any,
+    cast,
+    Dict,
+    Generic,
+    Iterable,
+    Mapping,
+    Optional,
+    TypeVar,
+    Union,
+    TypedDict,
+)
 
 
 def dictionary_source():
@@ -257,6 +268,13 @@ def test_keys_and_values():
     # Shouldn't be an issue.
     _test_sink(tainted_keys.values())
 
+    tainted_tuple_keys = {(_test_source(), 0): ""}
+    for key in tainted_tuple_keys.keys():
+        # Should be an issue.
+        _test_sink(key[0])
+        # Shouldn't be an issue.
+        _test_sink(key[1])
+
 
 def backwards_field_assignment(external):
     d = {}
@@ -449,3 +467,49 @@ def issue_in_keys():
 
 def dictionary_tito_any_index(arg):
     return {i: arg for i in range(10)}
+
+
+def dictionary_int_key():
+    d = {0: _test_source()}
+    _test_sink(d[0])
+    _test_sink(d[1])
+
+
+def dictionary_bool_key():
+    d = {True: _test_source()}
+    _test_sink(d[0])
+    _test_sink(d[1])
+
+
+class MyTypedDict(TypedDict):
+    foo: int
+    bar: str
+
+
+def test_typed_dict_setitem():
+    d: MyTypedDict = {"foo": 0, "bar": ""}
+    d["bar"] = _test_source()
+    _test_sink(d["bar"])
+    _test_sink(d["foo"])
+
+
+def dictionary_update_keyword():
+    d = {}
+    d.update(a={"b": _test_source()})
+    _test_sink(d["a"]["b"])
+    # TODO(T136908911): Special case update with keyword arguments.
+    _test_sink(d["b"])
+
+
+def dictionary_update_iterable():
+    d = {"a": 0}
+    # TODO(T136908911): Special case update with iterable.
+    d.update([("b", _test_source())])
+    _test_sink(d["a"])
+    _test_sink(d["b"])
+
+    d = {"a": 0}
+    d.update([("b", 0), ("c", _test_source())])
+    _test_sink(d["a"])
+    _test_sink(d["b"])
+    _test_sink(d["c"])

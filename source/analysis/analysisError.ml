@@ -300,7 +300,7 @@ module ReadOnly = struct
         declare_location: Location.WithPath.t;
       }
     | IncompatibleParameterType of {
-        name: Identifier.t option;
+        keyword_argument_name: Identifier.t option;
         position: int;
         callee: Reference.t option;
         mismatch: mismatch;
@@ -338,12 +338,13 @@ module ReadOnly = struct
               actual
         in
         [message]
-    | IncompatibleParameterType { name; position; callee; mismatch = { actual; expected } } ->
+    | IncompatibleParameterType
+        { keyword_argument_name; position; callee; mismatch = { actual; expected } } ->
         let target =
           let parameter =
-            match name with
-            | Some name -> Format.asprintf "parameter `%a`" Identifier.pp_sanitized name
-            | _ -> "positional only parameter"
+            match keyword_argument_name with
+            | Some name -> Format.asprintf "argument `%a`" Identifier.pp_sanitized name
+            | _ -> Format.asprintf "%s positional argument" (ordinal position)
           in
           let callee =
             match callee with
@@ -351,9 +352,9 @@ module ReadOnly = struct
             | _ -> "anonymous call"
           in
           if concise then
-            Format.asprintf "For %s param" (ordinal position)
+            Format.asprintf "For %s argument" (ordinal position)
           else
-            Format.asprintf "In %s, for %s %s" callee (ordinal position) parameter
+            Format.asprintf "In %s, for %s," callee parameter
         in
         [
           Format.asprintf
@@ -424,14 +425,14 @@ module ReadOnly = struct
         |> Option.some
     | ( IncompatibleParameterType
           ({
-             name = left_name;
+             keyword_argument_name = left_name;
              position = left_position;
              mismatch = left_mismatch;
              callee = left_callee;
            } as left),
         IncompatibleParameterType
           {
-            name = right_name;
+            keyword_argument_name = right_name;
             position = right_position;
             mismatch = right_mismatch;
             callee = right_callee;

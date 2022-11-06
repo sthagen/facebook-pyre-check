@@ -195,7 +195,7 @@ module State (Context : Context) = struct
               (Error.ReadOnlynessMismatch
                  (IncompatibleParameterType
                     {
-                      name = name >>| Node.value;
+                      keyword_argument_name = name >>| Node.value;
                       position;
                       callee = function_name;
                       mismatch = { actual = actual_readonlyness; expected = expected_readonlyness };
@@ -206,6 +206,9 @@ module State (Context : Context) = struct
     in
     let check_arguments_and_update_signature_match ~parameter ~arguments errors_so_far =
       match parameter, arguments with
+      | Parameter.KeywordOnly { annotation = parameter_annotation; _ }, arguments
+      | Parameter.PositionalOnly { annotation = parameter_annotation; _ }, arguments
+      | Parameter.Keywords parameter_annotation, arguments
       | Parameter.Named { annotation = parameter_annotation; _ }, arguments ->
           List.filter_map arguments ~f:(check_non_variadic_parameter ~parameter_annotation)
           @ errors_so_far
