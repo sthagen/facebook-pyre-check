@@ -14,7 +14,6 @@ from typing import (
     Optional,
     TypeVar,
     Union,
-    TypedDict,
 )
 
 
@@ -481,18 +480,6 @@ def dictionary_bool_key():
     _test_sink(d[1])
 
 
-class MyTypedDict(TypedDict):
-    foo: int
-    bar: str
-
-
-def test_typed_dict_setitem():
-    d: MyTypedDict = {"foo": 0, "bar": ""}
-    d["bar"] = _test_source()
-    _test_sink(d["bar"])
-    _test_sink(d["foo"])
-
-
 def dictionary_update_keyword():
     d = {}
     d.update(a={"b": _test_source()})
@@ -513,3 +500,13 @@ def dictionary_update_iterable():
     _test_sink(d["a"])
     _test_sink(d["b"])
     _test_sink(d["c"])
+
+
+def dict_update_keys(arg: Dict[str, str]) -> Dict[str, str]:
+    return {"key": value for key, value in arg.items()}
+
+
+def dictionary_keys_and_any_index_bug(arg: Dict[str, str]) -> Dict[str, str]:
+    d = dict_update_keys(arg)
+    _test_sink(d.keys())
+    return d

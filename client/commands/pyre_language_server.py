@@ -13,13 +13,11 @@ because it illustrates that this is the intermediary between the Language server
 
 import dataclasses
 import logging
-import os
 import random
-import time
 from pathlib import Path
-from typing import ClassVar, Dict, List, Optional, Union
+from typing import ClassVar, Dict, Generic, List, Optional, TypeVar, Union
 
-from .. import json_rpc, log
+from .. import json_rpc, log, timer
 
 from ..language_server import connections, daemon_connection, features, protocol as lsp
 from . import background, commands, find_symbols, request_handler, server_state as state
@@ -50,13 +48,6 @@ async def read_lsp_request(
                     message=str(json_rpc_error),
                 ),
             )
-
-
-def duration_ms(
-    start_time: float,
-    end_time: float,
-) -> int:
-    return int(1000 * (end_time - start_time))
 
 
 async def _wait_for_exit(
@@ -90,7 +81,7 @@ class SourceCodeContext:
     MAX_LINES_BEFORE_OR_AFTER: ClassVar[int] = 2500
 
     @staticmethod
-    async def from_source_and_position(
+    def from_source_and_position(
         source: str,
         position: lsp.LspPosition,
         max_lines_before_or_after: int = MAX_LINES_BEFORE_OR_AFTER,
@@ -108,6 +99,17 @@ class SourceCodeContext:
             len(full_document_contents),
         )
         return "\n".join(full_document_contents[lower_line_number:higher_line_number])
+
+
+QueryResultType = TypeVar("QueryResultType")
+
+
+@dataclasses.dataclass(frozen=True)
+class QueryResultWithDurations(Generic[QueryResultType]):
+    result: Union[QueryResultType, DaemonQueryFailure]
+    overlay_update_duration: float
+    query_duration: float
+    overall_duration: float
 
 
 @dataclasses.dataclass(frozen=True)
@@ -160,6 +162,77 @@ class PyreLanguageServer:
                 " has been reached."
             )
 
+    async def update_overlay_if_needed(self, document_path: Path) -> float:
+        """
+        Send an overlay update to the daemon if three conditions are met:
+        - unsaved changes support is enabled
+        - a document is listed in `server_state.opened_documents`
+        - the OpenedDocumentState says the overlay overlay may be stale
+
+        Returns the time taken to run the update.
+        """
+        update_timer = timer.Timer()
+        if (
+            self.get_language_server_features().unsaved_changes.is_enabled()
+            and document_path in self.server_state.opened_documents
+        ):
+            opened_document_state = self.server_state.opened_documents[document_path]
+            code_changes = opened_document_state.code
+            current_is_dirty_state = opened_document_state.is_dirty
+            if not opened_document_state.pyre_code_updated:
+                result = await self.handler.update_overlay(
+                    path=document_path, code=code_changes
+                )
+                if isinstance(result, daemon_connection.DaemonConnectionFailure):
+                    LOG.info(
+                        daemon_failure_string(
+                            "didChange", str(type(result)), result.error_message
+                        )
+                    )
+                    LOG.info(result.error_message)
+                else:
+                    self.server_state.opened_documents[
+                        document_path
+                    ] = OpenedDocumentState(
+                        code=code_changes,
+                        is_dirty=current_is_dirty_state,
+                        pyre_code_updated=True,
+                    )
+        else:
+            LOG.info(
+                f"Error: Document path: {str(document_path)} not in server state opened documents"
+            )
+        return update_timer.stop_in_millisecond()
+
+    def sample_source_code(
+        self,
+        document_path: Path,
+        position: lsp.LspPosition,
+    ) -> Optional[str]:
+        downsample_rate = 100
+        if random.randrange(0, downsample_rate) != 0:
+            LOG.debug("Skipping file content sampling.")
+            return None
+        if document_path not in self.server_state.opened_documents:
+            source_code_context = f"Error: Document path: {document_path} could not be found in opened documents structure"
+        else:
+            source_code_context = SourceCodeContext.from_source_and_position(
+                self.server_state.opened_documents[document_path].code,
+                position,
+            )
+        if source_code_context is None:
+            source_code_context = f"""
+            ERROR: Position specified by parameters: {position} is an illegal position.
+            Check if the position contains negative numbers or if it is
+            larger than the bounds of the file path: {document_path}
+            """
+            LOG.warning(source_code_context)
+        LOG.debug(
+            f"Logging file contents to scuba near requested line: {source_code_context}"
+            f" for definition request position: {position}"
+        )
+        return source_code_context
+
     async def process_open_request(
         self,
         parameters: lsp.DidOpenTextDocumentParameters,
@@ -170,8 +243,11 @@ class PyreLanguageServer:
             raise json_rpc.InvalidRequestError(
                 f"Document URI is not a file: {parameters.text_document.uri}"
             )
+        document_path = document_path.resolve()
         self.server_state.opened_documents[document_path] = OpenedDocumentState(
-            code=parameters.text_document.text, is_dirty=False
+            code=parameters.text_document.text,
+            is_dirty=False,
+            pyre_code_updated=True,
         )
         LOG.info(f"File opened: {document_path}")
         # Attempt to trigger a background Pyre server start on each file open
@@ -186,6 +262,7 @@ class PyreLanguageServer:
             raise json_rpc.InvalidRequestError(
                 f"Document URI is not a file: {parameters.text_document.uri}"
             )
+        document_path = document_path.resolve()
         try:
             del self.server_state.opened_documents[document_path]
             LOG.info(f"File closed: {document_path}")
@@ -202,7 +279,7 @@ class PyreLanguageServer:
             raise json_rpc.InvalidRequestError(
                 f"Document URI is not a file: {parameters.text_document.uri}"
             )
-
+        document_path = document_path.resolve()
         if document_path not in self.server_state.opened_documents:
             return
 
@@ -211,34 +288,17 @@ class PyreLanguageServer:
         )
         error_message = None
         server_status_before = self.server_state.server_last_status.value
-        start_time = time.time()
+        did_change_timer = timer.Timer()
         code_changes = str(
             "".join(
                 [content_change.text for content_change in parameters.content_changes]
             )
         )
-        if process_unsaved_changes:
-            result = await self.handler.update_overlay(
-                path=document_path.resolve(), code=code_changes
-            )
-            if isinstance(result, daemon_connection.DaemonConnectionFailure):
-                LOG.info(
-                    daemon_failure_string(
-                        "didChange", str(type(result)), result.error_message
-                    )
-                )
-                error_message = result.error_message
-            else:
-                self.server_state.opened_documents[document_path] = OpenedDocumentState(
-                    code=code_changes, is_dirty=True
-                )
-        else:
-            self.server_state.opened_documents[document_path] = OpenedDocumentState(
-                code=code_changes, is_dirty=True
-            )
-
-        end_time = time.time()
-
+        self.server_state.opened_documents[document_path] = OpenedDocumentState(
+            code=code_changes,
+            is_dirty=True,
+            pyre_code_updated=False,
+        )
         await self.write_telemetry(
             {
                 "type": "LSP",
@@ -247,7 +307,7 @@ class PyreLanguageServer:
                 "server_state_open_documents_count": len(
                     self.server_state.opened_documents
                 ),
-                "duration_ms": duration_ms(start_time, end_time),
+                "duration_ms": did_change_timer.stop_in_millisecond(),
                 "server_status_before": str(server_status_before),
                 "server_status_after": self.server_state.server_last_status.value,
                 "server_state_start_status": self.server_state.server_last_status.value,
@@ -271,6 +331,7 @@ class PyreLanguageServer:
             raise json_rpc.InvalidRequestError(
                 f"Document URI is not a file: {parameters.text_document.uri}"
             )
+        document_path = document_path.resolve()
 
         if document_path not in self.server_state.opened_documents:
             return
@@ -278,7 +339,12 @@ class PyreLanguageServer:
         code_changes = self.server_state.opened_documents[document_path].code
 
         self.server_state.opened_documents[document_path] = OpenedDocumentState(
-            code=code_changes, is_dirty=False
+            code=code_changes,
+            is_dirty=False,
+            # False here because even though a didSave event means the base environment
+            # will be up-to-date (after an incremental push), it is not necessarily
+            # the case that the overlay environment is up to date.
+            pyre_code_updated=False,
         )
 
         await self.write_telemetry(
@@ -311,7 +377,8 @@ class PyreLanguageServer:
             raise json_rpc.InvalidRequestError(
                 f"Document URI is not a file: {parameters.text_document.uri}"
             )
-        start_time = time.time()
+        document_path = document_path.resolve()
+        type_coverage_timer = timer.Timer()
         server_status_before = self.server_state.server_last_status.value
         response = await self.handler.get_type_coverage(path=document_path)
         if response is not None:
@@ -323,13 +390,12 @@ class PyreLanguageServer:
                     result=response.to_dict(),
                 ),
             )
-        end_time = time.time()
         await self.write_telemetry(
             {
                 "type": "LSP",
                 "operation": "typeCoverage",
                 "filePath": str(document_path),
-                "duration_ms": duration_ms(start_time, end_time),
+                "duration_ms": type_coverage_timer.stop_in_millisecond(),
                 "server_state_open_documents_count": len(
                     self.server_state.opened_documents
                 ),
@@ -356,6 +422,7 @@ class PyreLanguageServer:
             raise json_rpc.InvalidRequestError(
                 f"Document URI is not a file: {parameters.text_document.uri}"
             )
+        document_path = document_path.resolve()
 
         if document_path not in self.server_state.opened_documents:
             await lsp.write_json_rpc(
@@ -367,8 +434,9 @@ class PyreLanguageServer:
                 ),
             )
         else:
-            start_time = time.time()
+            hover_timer = timer.Timer()
             server_status_before = self.server_state.server_last_status.value
+            await self.update_overlay_if_needed(document_path)
             result = await self.handler.get_hover(
                 path=document_path,
                 position=parameters.position.to_pyre_position(),
@@ -393,7 +461,6 @@ class PyreLanguageServer:
                     result=raw_result,
                 ),
             )
-            end_time = time.time()
             await self.write_telemetry(
                 {
                     "type": "LSP",
@@ -401,7 +468,7 @@ class PyreLanguageServer:
                     "filePath": str(document_path),
                     "nonEmpty": len(result.contents) > 0,
                     "response": raw_result,
-                    "duration_ms": duration_ms(start_time, end_time),
+                    "duration_ms": hover_timer.stop_in_millisecond(),
                     "server_state_open_documents_count": len(
                         self.server_state.opened_documents
                     ),
@@ -415,23 +482,39 @@ class PyreLanguageServer:
 
     async def _get_definition_result(
         self, document_path: Path, position: lsp.LspPosition
-    ) -> Union[DaemonQueryFailure, List[Dict[str, object]]]:
+    ) -> QueryResultWithDurations[List[Dict[str, object]]]:
         """
         Helper function to call the handler. Exists only to reduce code duplication
         due to shadow mode, please don't make more of these - we already have enough
         layers of handling.
         """
-        definitions = await self.handler.get_definition_locations(
+        overall_timer = timer.Timer()
+        overlay_update_duration = await self.update_overlay_if_needed(document_path)
+        query_timer = timer.Timer()
+        raw_result = await self.handler.get_definition_locations(
             path=document_path,
             position=position.to_pyre_position(),
         )
-        if isinstance(definitions, DaemonQueryFailure):
-            return definitions
+        query_duration = query_timer.stop_in_millisecond()
+        if isinstance(raw_result, DaemonQueryFailure):
+            LOG.info(
+                "%s",
+                daemon_failure_string(
+                    "definition", str(type(raw_result)), raw_result.error_message
+                ),
+            )
+            result = raw_result
         else:
-            return lsp.LspLocation.cached_schema().dump(
-                definitions,
+            result = lsp.LspLocation.cached_schema().dump(
+                raw_result,
                 many=True,
             )
+        return QueryResultWithDurations(
+            result=result,
+            overlay_update_duration=overlay_update_duration,
+            query_duration=query_duration,
+            overall_duration=overall_timer.stop_in_millisecond(),
+        )
 
     async def process_definition_request(
         self,
@@ -446,8 +529,20 @@ class PyreLanguageServer:
             raise json_rpc.InvalidRequestError(
                 f"Document URI is not a file: {parameters.text_document.uri}"
             )
-
+        document_path = document_path.resolve()
         if document_path not in self.server_state.opened_documents:
+            return await lsp.write_json_rpc(
+                self.output_channel,
+                json_rpc.SuccessResponse(
+                    id=request_id,
+                    activity_key=activity_key,
+                    result=lsp.LspLocation.cached_schema().dump([], many=True),
+                ),
+            )
+        server_status_before = self.server_state.server_last_status.value
+        shadow_mode = self.get_language_server_features().definition.is_shadow()
+        # In shadow mode, we need to return an empty response immediately
+        if shadow_mode:
             await lsp.write_json_rpc(
                 self.output_channel,
                 json_rpc.SuccessResponse(
@@ -456,98 +551,55 @@ class PyreLanguageServer:
                     result=lsp.LspLocation.cached_schema().dump([], many=True),
                 ),
             )
+        # Regardless of the mode, we want to get the actual result
+        result_with_durations = await self._get_definition_result(
+            document_path=document_path,
+            position=parameters.position,
+        )
+        result = result_with_durations.result
+        if isinstance(result, DaemonQueryFailure):
+            error_message = result.error_message
+            output_result = []
         else:
-            start_time = time.time()
-            shadow_mode = self.get_language_server_features().definition.is_shadow()
-            server_status_before = self.server_state.server_last_status.value
-            if not shadow_mode:
-                raw_result = await self._get_definition_result(
-                    document_path=document_path,
-                    position=parameters.position,
-                )
-                error_message = None
-                if isinstance(raw_result, DaemonQueryFailure):
-                    LOG.info(
-                        f"Non-shadow mode: {daemon_failure_string('definition', str(type(raw_result)), raw_result.error_message)}"
-                    )
-                    error_message = raw_result.error_message
-                    raw_result = []
-                await lsp.write_json_rpc(
-                    self.output_channel,
-                    json_rpc.SuccessResponse(
-                        id=request_id,
-                        activity_key=activity_key,
-                        result=raw_result,
-                    ),
-                )
-            else:
-                # send an empty result to the client first, then get the real
-                # result so we can log it (and realistic perf) in telemetry.
-                await lsp.write_json_rpc(
-                    self.output_channel,
-                    json_rpc.SuccessResponse(
-                        id=request_id,
-                        activity_key=activity_key,
-                        result=lsp.LspLocation.cached_schema().dump([], many=True),
-                    ),
-                )
-                raw_result = await self._get_definition_result(
-                    document_path=document_path,
-                    position=parameters.position,
-                )
-                error_message = None
-                if isinstance(raw_result, DaemonQueryFailure):
-                    LOG.info(
-                        f"Shadow mode: {daemon_failure_string('definition', str(type(raw_result)), raw_result.error_message)}"
-                    )
-                    error_message = raw_result.error_message
-                    raw_result = []
-            end_time = time.time()
-
-            downsample_rate = 100
-            if random.randrange(0, downsample_rate) == 0:
-                source_code_context = await SourceCodeContext.from_source_and_position(
-                    self.server_state.opened_documents[document_path].code,
-                    parameters.position,
-                )
-
-                if source_code_context is None:
-                    source_code_context = f"""
-                    ERROR: Position specified by parameters: {parameters.position} is an illegal position.
-                    Check if the position contains negative numbers or if it is
-                    larger than the bounds of the file path: {document_path}
-                    """
-                    LOG.warning(source_code_context)
-
-                LOG.debug(
-                    f"Logging file contents to scuba near requested line: {source_code_context} for definition request position: {parameters.position}"
-                )
-            else:
-                source_code_context = "Skipping logging context to scuba"
-                LOG.debug(f"{source_code_context} for request id: {request_id}")
-            await self.write_telemetry(
-                {
-                    "type": "LSP",
-                    "operation": "definition",
-                    "filePath": str(document_path),
-                    "count": len(raw_result),
-                    "response": raw_result,
-                    "duration_ms": duration_ms(start_time, end_time),
-                    "server_state_open_documents_count": len(
-                        self.server_state.opened_documents
-                    ),
-                    "server_status_before": str(server_status_before),
-                    "server_status_after": self.server_state.server_last_status.value,
-                    "server_state_start_status": self.server_state.server_last_status.value,
-                    "overlays_enabled": self.server_state.server_options.language_server_features.unsaved_changes.is_enabled(),
-                    "error_message": str(error_message),
-                    "is_dirty": self.server_state.opened_documents[
-                        document_path
-                    ].is_dirty,
-                    "truncated_file_contents": str(source_code_context),
-                },
-                activity_key,
+            error_message = "None"
+            output_result = result
+        # Unless we are in shadow mode, we send the response as output
+        if not shadow_mode:
+            await lsp.write_json_rpc(
+                self.output_channel,
+                json_rpc.SuccessResponse(
+                    id=request_id,
+                    activity_key=activity_key,
+                    result=output_result,
+                ),
             )
+        source_code_if_sampled = self.sample_source_code(
+            document_path,
+            parameters.position,
+        )
+        await self.write_telemetry(
+            {
+                "type": "LSP",
+                "operation": "definition",
+                "filePath": str(document_path),
+                "count": len(output_result),
+                "response": output_result,
+                "duration_ms": result_with_durations.overall_duration,
+                "overlay_update_duration": result_with_durations.overlay_update_duration,
+                "query_duration": result_with_durations.query_duration,
+                "server_state_open_documents_count": len(
+                    self.server_state.opened_documents
+                ),
+                "server_status_before": str(server_status_before),
+                "server_status_after": self.server_state.server_last_status.value,
+                "server_state_start_status": self.server_state.server_last_status.value,
+                "overlays_enabled": self.server_state.server_options.language_server_features.unsaved_changes.is_enabled(),
+                "error_message": str(error_message),
+                "is_dirty": self.server_state.opened_documents[document_path].is_dirty,
+                "truncated_file_contents": source_code_if_sampled,
+            },
+            activity_key,
+        )
         if not self.daemon_manager.is_task_running():
             await self._try_restart_pyre_daemon()
 

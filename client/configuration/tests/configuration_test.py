@@ -15,7 +15,7 @@ from pathlib import Path
 import testslide
 
 from ... import command_arguments, find_directories
-from ...find_directories import BINARY_NAME
+from ...find_directories import BINARY_NAME, CODENAV_CONFIGURATION_FILE
 from ...tests.setup import (
     ensure_directories_exists,
     ensure_files_exist,
@@ -27,6 +27,7 @@ from ..configuration import (
     check_nested_local_configuration,
     Configuration,
     create_configuration,
+    create_overridden_configuration,
     get_default_site_roots,
     PartialConfiguration,
 )
@@ -1011,6 +1012,106 @@ class ConfigurationTest(testslide.TestCase):
                         dot_pyre_directory=Path(".pyre"),
                     ),
                     base_directory=Path(root),
+                )
+                self.assertEqual(configuration.project_root, str(root_path))
+                self.assertEqual(configuration.relative_local_root, None)
+                self.assertEqual(configuration.dot_pyre_directory, Path(".pyre"))
+                self.assertEqual(configuration.strict, True)
+                self.assertListEqual(
+                    list(configuration.source_directories or []),
+                    [SimpleRawElement(str(root_path))],
+                )
+
+    def test_create_from_configuration_with_override(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()
+            write_configuration_file(root_path, {"strict": False}, codenav=True)
+
+            with switch_working_directory(root_path):
+                configuration = create_configuration(
+                    command_arguments.CommandArguments(
+                        strict=True,  # override configuration file
+                        source_directories=["."],
+                        dot_pyre_directory=Path(".pyre"),
+                        configuration_path=str(Path(root) / CODENAV_CONFIGURATION_FILE),
+                    ),
+                    base_directory=Path(root),
+                )
+                self.assertEqual(configuration.project_root, str(root_path))
+                self.assertEqual(configuration.relative_local_root, None)
+                self.assertEqual(configuration.dot_pyre_directory, Path(".pyre"))
+                self.assertEqual(configuration.strict, True)
+                self.assertListEqual(
+                    list(configuration.source_directories or []),
+                    [SimpleRawElement(str(root_path))],
+                )
+
+    def test_create_from_codenav_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()
+            write_configuration_file(root_path, {"strict": False}, codenav=True)
+
+            with switch_working_directory(root_path):
+                configuration = create_overridden_configuration(
+                    command_arguments.CommandArguments(
+                        strict=True,  # override configuration file
+                        source_directories=["."],
+                        dot_pyre_directory=Path(".pyre"),
+                    ),
+                    base_directory=Path(root),
+                    configuration=CODENAV_CONFIGURATION_FILE,
+                )
+                self.assertEqual(configuration.project_root, str(root_path))
+                self.assertEqual(configuration.relative_local_root, None)
+                self.assertEqual(configuration.dot_pyre_directory, Path(".pyre"))
+                self.assertEqual(configuration.strict, True)
+                self.assertListEqual(
+                    list(configuration.source_directories or []),
+                    [SimpleRawElement(str(root_path))],
+                )
+
+    def test_create_from_codenav_configuration_inner(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()
+            write_configuration_file(root_path, {"strict": False}, codenav=True)
+            inner_path = root_path / "test"
+            inner_path.mkdir(parents=True, exist_ok=True)
+
+            with switch_working_directory(inner_path):
+                with self.assertRaises(InvalidConfiguration):
+                    create_overridden_configuration(
+                        command_arguments.CommandArguments(
+                            strict=True,  # override configuration file
+                            source_directories=["."],
+                            dot_pyre_directory=Path(".pyre"),
+                        ),
+                        base_directory=inner_path,
+                        configuration=CODENAV_CONFIGURATION_FILE,
+                    )
+
+    def test_create_from_codenav_configuration_with_classic_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()
+            write_configuration_file(root_path, {"strict": False}, codenav=True)
+            ensure_directories_exists(root_path, ["foo", "bar", "baz"])
+            write_configuration_file(
+                root_path, {"strict": False, "search_path": ["foo"]}
+            )
+            write_configuration_file(
+                root_path,
+                {"strict": True, "search_path": ["//bar", "baz"]},
+                relative="local",
+            )
+
+            with switch_working_directory(root_path):
+                configuration = create_overridden_configuration(
+                    command_arguments.CommandArguments(
+                        strict=True,  # override configuration file
+                        source_directories=["."],
+                        dot_pyre_directory=Path(".pyre"),
+                    ),
+                    base_directory=Path(root),
+                    configuration=CODENAV_CONFIGURATION_FILE,
                 )
                 self.assertEqual(configuration.project_root, str(root_path))
                 self.assertEqual(configuration.relative_local_root, None)

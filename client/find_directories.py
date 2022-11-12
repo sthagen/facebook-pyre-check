@@ -4,7 +4,12 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-TODO(T132414938) Add a module-level docstring
+Tools that we use primiarly for finding .pyre_configuration files;
+for the most part these helpers assist us in searching upward
+from the current directory to find the nearest containing configuration.
+
+This module also has become something of a dumping ground for filename
+constants that are not directly related to directory searching.
 """
 
 
@@ -20,6 +25,7 @@ from typing import Callable, List, NamedTuple, Optional
 
 CONFIGURATION_FILE: str = ".pyre_configuration"
 LOCAL_CONFIGURATION_FILE: str = ".pyre_configuration.local"
+CODENAV_CONFIGURATION_FILE: str = ".pyre_configuration.codenav"
 BINARY_NAME: str = "pyre.bin"
 CLIENT_NAME: str = "pyre-client"
 LOG_DIRECTORY: str = ".pyre"

@@ -17,7 +17,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
 import tabulate
 from typing_extensions import TypedDict
 
-from .. import command_arguments, daemon_socket, log
+from .. import command_arguments, daemon_socket, identifiers, log
 from ..language_server import connections
 from . import commands, stop
 
@@ -44,10 +44,13 @@ class RunningServerStatus:
     pid: int
     version: str
     global_root: str
+    flavor: str
     relative_local_root: Optional[str] = None
 
     @staticmethod
-    def from_json(input_json: Dict[str, object]) -> "RunningServerStatus":
+    def from_json(
+        input_json: Dict[str, object], flavor: identifiers.PyreFlavor
+    ) -> "RunningServerStatus":
         pid = input_json.get("pid", None)
         if not isinstance(pid, int):
             raise InvalidServerResponse(f"Expect `pid` to be an int but got {pid}")
@@ -72,10 +75,13 @@ class RunningServerStatus:
             version=version,
             global_root=global_root,
             relative_local_root=relative_local_root,
+            flavor=flavor.value,
         )
 
     @staticmethod
-    def from_server_response(response: str) -> "RunningServerStatus":
+    def from_server_response(
+        response: str, flavor: identifiers.PyreFlavor
+    ) -> "RunningServerStatus":
         try:
             response_json = json.loads(response)
             if (
@@ -86,7 +92,7 @@ class RunningServerStatus:
             ):
                 message = f"Unexpected JSON response: {response_json}"
                 raise InvalidServerResponse(message)
-            return RunningServerStatus.from_json(response_json[1])
+            return RunningServerStatus.from_json(response_json[1], flavor)
         except json.JSONDecodeError as error:
             message = f"Cannot parse response as JSON: {error}"
             raise InvalidServerResponse(message) from error
@@ -98,6 +104,7 @@ class RunningServerStatus:
             "version": self.version,
             "global_root": self.global_root,
             "relative_local_root": self.relative_local_root,
+            "flavor": self.flavor,
         }
 
 
@@ -122,14 +129,24 @@ class AllServerStatus:
 
 def _get_server_status(
     socket_path: Path,
+    flavor: identifiers.PyreFlavor,
 ) -> Union[RunningServerStatus, DefunctServerStatus]:
     try:
         with connections.connect(socket_path) as (
             input_channel,
             output_channel,
         ):
-            output_channel.write('["GetInfo"]\n')
-            return RunningServerStatus.from_server_response(input_channel.readline())
+            if flavor != identifiers.PyreFlavor.CODE_NAVIGATION:
+                output_channel.write('["GetInfo"]\n')
+                return RunningServerStatus.from_server_response(
+                    input_channel.readline(), flavor
+                )
+            # For now, we assume that a code-navigation server we can connect to is fine.
+            output_channel.write('["Query", ["GetInfo"]]\n')
+            return RunningServerStatus.from_server_response(
+                input_channel.readline(), flavor
+            )
+
     except connections.ConnectionFailure:
         return DefunctServerStatus(str(socket_path))
 
@@ -147,6 +164,7 @@ def _print_running_server_status(running_status: Sequence[RunningServerStatus]) 
                         status.global_root,
                         status.relative_local_root or "",
                         status.version,
+                        status.flavor,
                     ]
                     for status in running_status
                 ],
@@ -155,6 +173,7 @@ def _print_running_server_status(running_status: Sequence[RunningServerStatus]) 
                     "Global Root",
                     "Relative Local Root",
                     "Version",
+                    "Flavor",
                 ],
             ),
         )
@@ -185,10 +204,10 @@ def _print_server_status(server_status: AllServerStatus, output_format: str) -> 
         _print_server_status_json(server_status)
 
 
-def _stop_server(socket_path: Path) -> None:
+def _stop_server(socket_path: Path, flavor: identifiers.PyreFlavor) -> None:
     try:
         LOG.info(f"Stopping server at `{socket_path}...`")
-        stop.stop_server(socket_path)
+        stop.stop_server(socket_path, flavor)
         LOG.info(f"Successfully stopped `{socket_path}.`")
     except connections.ConnectionFailure:
         LOG.info(f"Failed to connect to `{socket_path}`. Removing it...")
@@ -199,12 +218,23 @@ def _stop_server(socket_path: Path) -> None:
         )
 
 
+def _find_server_flavor(socket_path: Path) -> identifiers.PyreFlavor:
+    # Socket paths are of the form `/tmp/pyre_{md5}[__{flavor}].sock`.
+    serialized_path = str(socket_path)
+    for flavor in identifiers.PyreFlavor:
+        if flavor.value in serialized_path:
+            return flavor
+    # No suffix indicates a classic server.
+    return identifiers.PyreFlavor.CLASSIC
+
+
 def find_all_servers(socket_paths: Iterable[Path]) -> AllServerStatus:
     running_servers = []
     defunct_servers = []
 
     for socket_path in socket_paths:
-        status = _get_server_status(socket_path)
+        flavor = _find_server_flavor(socket_path)
+        status = _get_server_status(socket_path, flavor)
         if isinstance(status, RunningServerStatus):
             running_servers.append(status)
         else:
@@ -227,6 +257,7 @@ def run_stop() -> commands.ExitCode:
     for socket_path in daemon_socket.find_socket_files(
         daemon_socket.get_default_socket_root()
     ):
-        _stop_server(socket_path)
+        flavor = _find_server_flavor(socket_path)
+        _stop_server(socket_path, flavor)
     LOG.info("Done\n")
     return commands.ExitCode.SUCCESS

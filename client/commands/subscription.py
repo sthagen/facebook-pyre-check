@@ -4,13 +4,20 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-TODO(T132414938) Add a module-level docstring
+Shared logic for client-side handling of subscriptions to the
+Pyre daemon. Context on this:
+- A Pyre daemon opens a socket accepting client connections.
+- The socket accepts one-off requests using a request/response model
+- But the socket also allows long-running connections where we send a
+  subscription request, and the connection stays open. The server will
+  then push notifications (type errors and/or state change alerts) to
+  the client.
 """
 
 
 import dataclasses
 import json
-from typing import List, Union
+from typing import List, Optional, Union
 
 from .. import error
 
@@ -31,6 +38,7 @@ def _parse_type_error_subscription(response: object) -> TypeErrors:
 @dataclasses.dataclass(frozen=True)
 class StatusUpdate:
     kind: str
+    message: Optional[str] = None
 
 
 def _parse_status_update_subscription(response: object) -> StatusUpdate:
@@ -43,7 +51,10 @@ def _parse_status_update_subscription(response: object) -> StatusUpdate:
         raise incremental.InvalidServerResponse(
             f"Response kind of a status update must be a string. Got {response}"
         )
-    return StatusUpdate(kind=kind)
+    message = None
+    if len(response) > 1 and isinstance(response[1], dict) and "message" in response[1]:
+        message = response[1]["message"]
+    return StatusUpdate(kind=kind, message=message)
 
 
 @dataclasses.dataclass(frozen=True)

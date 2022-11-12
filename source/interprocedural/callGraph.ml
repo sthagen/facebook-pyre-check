@@ -189,28 +189,36 @@ module HigherOrderParameter = struct
   type t = {
     index: int;
     call_targets: CallTarget.t list;
+    (* True if at least one callee could not be resolved.
+     * Usually indicates missing type information at the call site. *)
+    unresolved: bool;
   }
   [@@deriving eq, show { with_path = false }]
 
   let all_targets { call_targets; _ } = List.map ~f:CallTarget.target call_targets
 
   let equal_ignoring_types
-      { index = index_left; call_targets = call_targets_left }
-      { index = index_right; call_targets = call_targets_right }
+      { index = index_left; call_targets = call_targets_left; unresolved = unresolved_left }
+      { index = index_right; call_targets = call_targets_right; unresolved = unresolved_right }
     =
     index_left == index_right
     && List.equal CallTarget.equal_ignoring_types call_targets_left call_targets_right
+    && unresolved_left == unresolved_right
 
 
   let join
-      { index; call_targets = call_targets_left }
-      { index = _; call_targets = call_targets_right }
+      { index; call_targets = call_targets_left; unresolved = unresolved_left }
+      { index = _; call_targets = call_targets_right; unresolved = unresolved_right }
     =
-    { index; call_targets = List.rev_append call_targets_left call_targets_right }
+    {
+      index;
+      call_targets = List.rev_append call_targets_left call_targets_right;
+      unresolved = unresolved_left || unresolved_right;
+    }
 
 
-  let deduplicate { index; call_targets } =
-    { index; call_targets = CallTarget.dedup_and_sort call_targets }
+  let deduplicate { index; call_targets; unresolved } =
+    { index; call_targets = CallTarget.dedup_and_sort call_targets; unresolved }
 end
 
 (** Mapping from a parameter index to its HigherOrderParameter, if any. *)
@@ -408,7 +416,9 @@ module CallCallees = struct
       | "typing.Mapping"
       | "typing.MutableMapping"
       | "TypedDictionary"
-      | "NonTotalTypedDictionary" ->
+      | "NonTotalTypedDictionary"
+      | "collections.OrderedDict"
+      | "collections.defaultdict" ->
           true
       | _ -> false
     in
@@ -1256,32 +1266,42 @@ let resolve_callee_from_defining_expression
       | _ -> None)
 
 
+(* Rewrite certain calls for the interprocedural analysis (e.g, pysa).
+ * This may or may not be sound depending on the analysis performed. *)
 let transform_special_calls ~resolution { Call.callee; arguments } =
-  match callee, arguments with
-  | ( {
-        Node.value =
-          Expression.Name
-            (Name.Attribute
-              {
-                base = { Node.value = Expression.Name (Name.Identifier "functools"); _ };
-                attribute = "partial";
-                _;
-              });
-        _;
-      },
+  let attribute_access base method_name =
+    {
+      Node.value =
+        Expression.Name (Name.Attribute { base; attribute = method_name; special = true });
+      location = Node.location callee;
+    }
+  in
+  match Node.value callee, arguments with
+  | Name (Name.Identifier "iter"), [{ Call.Argument.value; _ }] ->
+      (* Only handle `iter` with a single argument here. *)
+      Some { Call.callee = attribute_access value "__iter__"; arguments = [] }
+  | Name (Name.Identifier "next"), [{ Call.Argument.value; _ }] ->
+      (* Only handle `next` with a single argument here. *)
+      Some { Call.callee = attribute_access value "__next__"; arguments = [] }
+  | Name (Name.Identifier "anext"), [{ Call.Argument.value; _ }] ->
+      (* Only handle `anext` with a single argument here. *)
+      Some { Call.callee = attribute_access value "__anext__"; arguments = [] }
+  | ( Expression.Name
+        (Name.Attribute
+          {
+            base = { Node.value = Expression.Name (Name.Identifier "functools"); _ };
+            attribute = "partial";
+            _;
+          }),
       { Call.Argument.value = actual_callable; _ } :: actual_arguments ) ->
       Some { Call.callee = actual_callable; arguments = actual_arguments }
-  | ( {
-        Node.value =
-          Name
-            (Name.Attribute
-              {
-                base = { Node.value = Expression.Name (Name.Identifier "multiprocessing"); _ };
-                attribute = "Process";
-                _;
-              });
-        _;
-      },
+  | ( Expression.Name
+        (Name.Attribute
+          {
+            base = { Node.value = Expression.Name (Name.Identifier "multiprocessing"); _ };
+            attribute = "Process";
+            _;
+          }),
       [
         { Call.Argument.value = process_callee; name = Some { Node.value = "$parameter$target"; _ } };
         {
@@ -1301,7 +1321,10 @@ let transform_special_calls ~resolution { Call.callee; arguments } =
 let redirect_special_calls ~resolution call =
   match transform_special_calls ~resolution call with
   | Some call -> call
-  | None -> Annotated.Call.redirect_special_calls ~resolution call
+  | None ->
+      (* Rewrite certain calls using the same logic used in the type checker.
+       * This should be sound for most analyses. *)
+      Annotated.Call.redirect_special_calls ~resolution call
 
 
 let resolve_recognized_callees
@@ -1499,15 +1522,18 @@ let resolve_callees
           |> CallResolution.resolve_ignoring_untracked ~resolution)
       in
       match
-        resolve_regular_callees
-          ~resolution
-          ~override_graph
-          ~call_indexer
-          ~return_type
-          ~callee:argument
+        ( resolve_regular_callees
+            ~resolution
+            ~override_graph
+            ~call_indexer
+            ~return_type
+            ~callee:argument,
+          argument )
       with
-      | { CallCallees.call_targets = _ :: _ as regular_targets; _ } ->
-          Some { HigherOrderParameter.index; call_targets = regular_targets }
+      | { CallCallees.call_targets = _ :: _ as regular_targets; unresolved; _ }, _ ->
+          Some { HigherOrderParameter.index; call_targets = regular_targets; unresolved }
+      | _, { Node.value = Expression.Lambda _; _ } ->
+          Some { HigherOrderParameter.index; call_targets = []; unresolved = true }
       | _ -> None
     in
     List.filter_mapi arguments ~f:get_higher_order_function_targets

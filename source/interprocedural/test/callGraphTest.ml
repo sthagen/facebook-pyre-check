@@ -639,6 +639,46 @@ let test_call_graph_of_define context =
   assert_call_graph_of_define
     ~source:
       {|
+        from typing import TypedDict
+
+        class A(TypedDict):
+          x: str
+          y: int
+
+        def foo():
+          return A(x="foo", x=0)
+      |}
+    ~define_name:"test.foo"
+    ~expected:
+      [
+        ( "9:9-9:24",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~init_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~return_type:(Some ReturnType.any)
+                        ~receiver_type:(Type.meta (Type.Primitive "test.A"))
+                        (Target.Method
+                           { class_name = "test.A"; method_name = "__init__"; kind = Normal });
+                    ]
+                  ~new_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~return_type:(Some ReturnType.any)
+                        ~receiver_type:(Type.meta (Type.Primitive "test.A"))
+                        (Target.Method
+                           { class_name = "object"; method_name = "__new__"; kind = Normal });
+                    ]
+                  ())) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:
+      {|
         class C:
           @property
           def p(self) -> int: ...
@@ -1043,6 +1083,7 @@ let test_call_graph_of_define context =
                                  ~return_type:(Some ReturnType.integer)
                                  (Target.Function { name = "test.bar"; kind = Normal });
                              ];
+                           unresolved = false;
                          };
                        ])
                   ())) );
@@ -1088,6 +1129,7 @@ let test_call_graph_of_define context =
                                  ~return_type:(Some ReturnType.integer)
                                  (Target.Function { name = "test.foo"; kind = Normal });
                              ];
+                           unresolved = false;
                          };
                          {
                            index = 1;
@@ -1097,6 +1139,7 @@ let test_call_graph_of_define context =
                                  ~return_type:(Some ReturnType.integer)
                                  (Target.Function { name = "test.bar"; kind = Normal });
                              ];
+                           unresolved = false;
                          };
                        ])
                   ())) );
@@ -1147,8 +1190,43 @@ let test_call_graph_of_define context =
                                       kind = Normal;
                                     });
                              ];
+                           unresolved = false;
                          };
                        ])
+                  ())) );
+      ]
+    ();
+  assert_call_graph_of_define
+    ~source:{|
+      def test():
+        return map(lambda x: x, [0])
+      |}
+    ~define_name:"test.test"
+    ~expected:
+      [
+        ( "3:9-3:30",
+          LocationCallees.Singleton
+            (ExpressionCallees.from_call
+               (CallCallees.create
+                  ~new_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~receiver_type:(Type.meta (Type.Primitive "map"))
+                        (Target.Method
+                           { class_name = "object"; method_name = "__new__"; kind = Normal });
+                    ]
+                  ~init_targets:
+                    [
+                      CallTarget.create
+                        ~implicit_self:true
+                        ~receiver_type:(Type.meta (Type.Primitive "map"))
+                        (Target.Method
+                           { class_name = "map"; method_name = "__init__"; kind = Normal });
+                    ]
+                  ~higher_order_parameters:
+                    (HigherOrderParameterMap.from_list
+                       [{ index = 0; call_targets = []; unresolved = true }])
                   ())) );
       ]
     ();
@@ -2575,6 +2653,7 @@ let test_call_graph_of_define context =
                                       kind = Normal;
                                     });
                              ];
+                           unresolved = false;
                          };
                        ])
                   ())) );
