@@ -48,8 +48,6 @@ val resolve_assertion : t -> asserted_expression:Expression.t -> t option
 
 val resolve_attribute_access : t -> base_type:Type.t -> attribute:string -> Type.t
 
-val partition_name : t -> name:Expression.Name.t -> Reference.t * Reference.t * Annotation.t option
-
 val has_nontemporary_annotation : reference:Reference.t -> t -> bool
 
 val new_local : ?temporary:bool -> t -> reference:Reference.t -> annotation:Annotation.t -> t
@@ -59,14 +57,18 @@ val refine_local : ?temporary:bool -> t -> reference:Reference.t -> annotation:A
 val new_local_with_attributes
   :  ?temporary:bool ->
   t ->
-  name:Expression.Name.t ->
+  name:Reference.t ->
+  attribute_path:Reference.t ->
+  base_annotation:Annotation.t option ->
   annotation:Annotation.t ->
   t
 
 val refine_local_with_attributes
   :  ?temporary:bool ->
   t ->
-  name:Expression.Name.t ->
+  name:Reference.t ->
+  attribute_path:Reference.t ->
+  base_annotation:Annotation.t option ->
   annotation:Annotation.t ->
   t
 
@@ -74,7 +76,8 @@ val get_local : ?global_fallback:bool -> reference:Reference.t -> t -> Annotatio
 
 val get_local_with_attributes
   :  ?global_fallback:bool ->
-  name:Expression.Name.t ->
+  name:Reference.t ->
+  attribute_path:Reference.t ->
   t ->
   Annotation.t option
 

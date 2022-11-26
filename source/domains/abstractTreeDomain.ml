@@ -5,6 +5,14 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* This file is shared between pyre and zoncolan, and they use different
+ * version of Core/Core_kernel. Because Core_kernel is being deprecated,
+ * building this file may or may not trigger a deprecation warning (-3).
+ * Let's suppress it until pyre catches up with zoncolan.
+ * See T138025201
+ *)
+[@@@warning "-3"]
+
 (* TODO(T132410158) Add a module-level doc comment. *)
 
 [@@@ocamlformat "wrap-comments=false"]
@@ -26,6 +34,10 @@ module type ELEMENT = sig
   include AbstractDomainCore.S
 
   val transform_on_widening_collapse : t -> t
+
+  val transform_on_sink : t -> t
+
+  val transform_on_hoist : t -> t
 end
 
 module type CHECK = sig
@@ -115,8 +127,27 @@ module Label = struct
 
   let compare : t -> t -> int = compare
 
+  let escape string =
+    let of_string string = List.init (String.length string) (String.get string) in
+    let mem char string = String.index_opt string char |> Option.is_some in
+    let chars = of_string "\\'[].*" in
+    let need_escape = List.exists (fun char -> mem char string) chars in
+    if need_escape then
+      let tail = of_string string in
+      let rec escape acc tail =
+        match tail with
+        | hd :: tl when hd == '\\' || hd == '\'' -> (escape [@tailcall]) (hd :: '\\' :: acc) tl
+        | hd :: tl -> (escape [@tailcall]) (hd :: acc) tl
+        | [] -> List.rev acc
+      in
+      let string = escape [] tail |> Base.String.of_char_list in
+      Format.sprintf "'%s'" string
+    else
+      string
+
+
   let pp formatter = function
-    | Index name -> Format.fprintf formatter "[%s]" name
+    | Index name -> Format.fprintf formatter "[%s]" (escape name)
     | Field name -> Format.fprintf formatter ".%s" name
     | AnyIndex -> Format.fprintf formatter "[*]"
 
@@ -340,7 +371,7 @@ module Make (Config : CONFIG) (Element : ELEMENT) () = struct
     then
       Checks.false_witness ~message:(fun () -> "tree.element redundant.")
     else
-      let ancestors = Element.join ancestors element in
+      let ancestors = Element.join ancestors element |> Element.transform_on_sink in
       let all_minimal ~key ~data:subtree =
         is_minimal ancestors subtree |> Checks.option_construct ~message:(fun () -> Label.show key)
       in
@@ -376,7 +407,12 @@ module Make (Config : CONFIG) (Element : ELEMENT) () = struct
   let collapse ?(transform = Fn.id) ~widen_depth { element; children } =
     let transform e = if Element.is_bottom e then e else transform e in
     let rec collapse_tree { element; children } element_accumulator =
-      let element_accumulator = element_join ~widen_depth element_accumulator (transform element) in
+      let element_accumulator =
+        element_join
+          ~widen_depth
+          element_accumulator
+          (element |> Element.transform_on_hoist |> transform)
+      in
       let collapse_child ~key:_ ~data:subtree = collapse_tree subtree in
       LabelMap.fold ~f:collapse_child children ~init:element_accumulator
     in
@@ -416,7 +452,10 @@ module Make (Config : CONFIG) (Element : ELEMENT) () = struct
     if Element.less_or_equal ~left:difference ~right:ancestors then
       { new_element = Element.bottom; ancestors }
     else
-      { new_element = difference; ancestors = Element.join ancestors element }
+      {
+        new_element = difference;
+        ancestors = Element.join ancestors element |> Element.transform_on_sink;
+      }
 
 
   let rec prune_tree ancestors { element; children } =
@@ -613,7 +652,7 @@ module Make (Config : CONFIG) (Element : ELEMENT) () = struct
           else (* Note: we are overwriting t.element, so no need to add it to the path. *)
             prune_tree ancestors subtree (* Assignment/join point. *)
       | label_element :: rest -> (
-          let ancestors = Element.join ancestors element in
+          let ancestors = Element.join ancestors element |> Element.transform_on_sink in
           let existing = lookup_tree_with_default tree label_element in
           match label_element with
           | Label.AnyIndex ->
@@ -661,7 +700,10 @@ module Make (Config : CONFIG) (Element : ELEMENT) () = struct
     | label_element :: rest -> (
         let ancestors =
           if not (Element.is_bottom element) then
-            transform_non_leaves path element |> Element.join ancestors
+            element
+            |> transform_non_leaves path
+            |> Element.join ancestors
+            |> Element.transform_on_sink
           else
             ancestors
         in

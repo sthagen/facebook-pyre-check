@@ -103,6 +103,10 @@ module BuildMap : sig
         format. Raise an exception if the input JSON is malformed. *)
     val of_json_exn_ignoring_duplicates : Yojson.Safe.t -> t
 
+    (** Create a partial build map from a JSON. The JSON must conform to Buck's Python
+        source-db-no-deps format. Raise an exception if the input JSON is malformed. *)
+    val of_json_exn_ignoring_duplicates_no_dependency : Yojson.Safe.t -> t
+
     (** [filter ~f m] returns a new partial build map [m'] that contains all mappings in [m] except
         the ones on which [f ~key ~data] returns [false]. *)
     val filter : t -> f:(key:string -> data:string -> bool) -> t
@@ -317,27 +321,28 @@ module Raw : sig
       default, the size is set to 0, which means no additional log will be kept. *)
   val create_v2 : ?additional_log_size:int -> unit -> t
 
-  (** Create an instance of [Raw.t] from custom [query] and [build] behavior. Useful for unit
-      testing. *)
-  val create_for_testing
-    :  query:(?mode:string -> ?isolation_prefix:string -> string list -> string Lwt.t) ->
-    build:(?mode:string -> ?isolation_prefix:string -> string list -> string Lwt.t) ->
-    unit ->
-    t
+  (** Utility type to represent the argument and return type for common command-line Buck
+      interaction.
+
+      Note that mode and isolation prefix are intentionally required to be specified separately,
+      since Buck interpret them a bit differently from the rest of the arguments. *)
+  type buck_command = ?mode:string -> ?isolation_prefix:string -> string list -> string Lwt.t
+
+  (** Create an instance of [Raw.t] from custom [query], [build], and [bxl] behavior. Useful for
+      unit testing. *)
+  val create_for_testing : query:buck_command -> build:buck_command -> bxl:buck_command -> unit -> t
 
   (** Shell out to `buck query` with the given cli arguments. Returns the content of stdout. If the
-      return code is not 0, raise [BuckError].
-
-      Note that mode and isolation prefix are intentionally required to be specified separately,
-      since Buck interpret them a bit differently from the rest of the arguments. *)
-  val query : t -> ?mode:string -> ?isolation_prefix:string -> string list -> string Lwt.t
+      return code is not 0, raise [BuckError]. *)
+  val query : t -> buck_command
 
   (** Shell out to `buck build` with the given cli arguments. Returns the content of stdout. If the
-      return code is not 0, raise [BuckError].
+      return code is not 0, raise [BuckError]. *)
+  val build : t -> buck_command
 
-      Note that mode and isolation prefix are intentionally required to be specified separately,
-      since Buck interpret them a bit differently from the rest of the arguments. *)
-  val build : t -> ?mode:string -> ?isolation_prefix:string -> string list -> string Lwt.t
+  (** Shell out to `buck bxl` with the given cli arguments. Returns the content of stdout. If the
+      return code is not 0, raise [BuckError]. *)
+  val bxl : t -> buck_command
 end
 
 (** This module contains high-level interfaces for invoking [buck] as an external tool. It relies on
@@ -364,7 +369,7 @@ module Interface : sig
 
   (** Create an instance of [Interface.t] from an instance of {!Raw.t} and some buck options.
       Interfaces created this way is only compatible with Buck2.*)
-  val create_v2 : ?mode:string -> ?isolation_prefix:string -> Raw.t -> t
+  val create_v2 : ?mode:string -> ?isolation_prefix:string -> ?bxl_builder:string -> Raw.t -> t
 
   (** Create an instance of [Interface.t] from custom [normalize_targets] and [construct_build_map]
       behavior. Useful for unit testing. *)

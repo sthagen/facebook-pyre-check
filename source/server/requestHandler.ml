@@ -41,9 +41,14 @@ let instantiate_errors_with_build_system ~build_system ~configuration ~module_tr
 let process_display_type_error_request
     ~configuration
     ~state:{ ServerState.overlaid_environment; build_system; _ }
+    ?overlay_id
     paths
   =
-  let errors_environment = OverlaidEnvironment.root overlaid_environment in
+  let errors_environment =
+    overlay_id
+    >>= OverlaidEnvironment.overlay overlaid_environment
+    |> Option.value ~default:(OverlaidEnvironment.root overlaid_environment)
+  in
   let module_tracker = ErrorsEnvironment.ReadOnly.module_tracker errors_environment in
   let modules =
     match paths with
@@ -205,6 +210,9 @@ let process_request
   | Request.DisplayTypeError paths ->
       let response = process_display_type_error_request ~configuration ~state paths in
       Lwt.return (state, response)
+  | Request.GetOverlayTypeErrors { overlay_id; path } ->
+      let response = process_display_type_error_request ~configuration ~state ~overlay_id [path] in
+      Lwt.return (state, response)
   | Request.IncrementalUpdate paths ->
       let open Lwt.Infix in
       process_incremental_update_request ~properties ~state paths
@@ -212,11 +220,7 @@ let process_request
   | Request.Query query_text ->
       let response =
         Response.Query
-          (Query.parse_and_process_request
-             ~build_system
-             ~environment:overlaid_environment
-             query_text
-             None)
+          (Query.parse_and_process_request ~build_system ~overlaid_environment query_text None)
       in
       Lwt.return (state, response)
   | Request.QueryWithOverlay { query_text; overlay_id } ->
@@ -224,7 +228,7 @@ let process_request
         Response.Query
           (Query.parse_and_process_request
              ~build_system
-             ~environment:overlaid_environment
+             ~overlaid_environment
              query_text
              overlay_id)
       in

@@ -104,6 +104,7 @@ let parse_and_save_decorators_to_skip
 (** Perform a full type check and build a type environment. *)
 let type_check ~scheduler ~configuration ~cache =
   Cache.type_environment cache (fun () ->
+      Log.info "Starting type checking...";
       let configuration =
         (* In order to get an accurate call graph and type information, we need to ensure that we
            schedule a type check for external files. *)
@@ -200,7 +201,7 @@ let parse_models_and_queries_from_configuration
       (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
       (module Analysis.TypeCheck.DummyContext)
   in
-  let { ModelParser.models = user_models; errors; skip_overrides; queries } =
+  let ({ ModelParser.errors; _ } as parse_result) =
     ModelParser.get_model_sources ~paths:taint_model_paths
     |> parse_models_and_queries_from_sources
          ~taint_configuration
@@ -210,14 +211,8 @@ let parse_models_and_queries_from_configuration
          ~callables
          ~stubs
   in
-  ModelVerificationError.verify_models_and_dsl errors verify_models;
-  let class_models = ClassModels.infer ~environment ~user_models in
-  {
-    ModelParser.models = Registry.merge ~join:Model.join_user_models user_models class_models;
-    queries;
-    skip_overrides;
-    errors;
-  }
+  let () = ModelVerificationError.verify_models_and_dsl errors verify_models in
+  parse_result
 
 
 let initialize_models
@@ -286,6 +281,11 @@ let initialize_models
   in
 
   let models =
+    ClassModels.infer ~environment ~user_models:models
+    |> Registry.merge ~join:Model.join_user_models models
+  in
+
+  let models =
     MissingFlow.add_obscure_models
       ~static_analysis_configuration
       ~environment
@@ -341,6 +341,7 @@ let run_taint_analysis
     let class_hierarchy_graph =
       Cache.class_hierarchy_graph cache (fun () ->
           let timer = Timer.start () in
+          let () = Log.info "Computing class hierarchy graph..." in
           let class_hierarchy_graph =
             Interprocedural.ClassHierarchyGraph.Heap.from_qualifiers
               ~scheduler
@@ -357,6 +358,7 @@ let run_taint_analysis
 
     let class_interval_graph =
       let timer = Timer.start () in
+      let () = Log.info "Computing class intervals..." in
       let class_interval_graph =
         Interprocedural.ClassIntervalSetGraph.Heap.from_class_hierarchy class_hierarchy_graph
         |> Interprocedural.ClassIntervalSetGraph.SharedMemory.from_heap
@@ -372,6 +374,7 @@ let run_taint_analysis
     let initial_callables =
       Cache.initial_callables cache (fun () ->
           let timer = Timer.start () in
+          let () = Log.info "Fetching initial callables to analyze..." in
           let initial_callables =
             Interprocedural.FetchCallables.from_qualifiers
               ~scheduler
@@ -387,6 +390,9 @@ let run_taint_analysis
             ();
           initial_callables)
     in
+
+    (* Save the cache here, in case there is a model verification error. *)
+    let () = Cache.save cache in
 
     let { ModelParser.models = initial_models; skip_overrides; _ } =
       initialize_models
@@ -407,7 +413,6 @@ let run_taint_analysis
       |> Analysis.TypeEnvironment.ReadOnly.module_tracker
     in
 
-    Log.info "Computing overrides...";
     let timer = Timer.start () in
     let {
       Interprocedural.OverrideGraph.override_graph_heap;
@@ -416,15 +421,24 @@ let run_taint_analysis
     }
       =
       Cache.override_graph cache (fun () ->
-          Interprocedural.OverrideGraph.build_whole_program_overrides
-            ~scheduler
-            ~environment:(Analysis.TypeEnvironment.read_only environment)
-            ~include_unit_tests:false
-            ~skip_overrides
-            ~maximum_overrides:(TaintConfiguration.maximum_overrides_to_analyze taint_configuration)
-            ~qualifiers)
+          Log.info "Computing overrides...";
+          let overrides =
+            Interprocedural.OverrideGraph.build_whole_program_overrides
+              ~scheduler
+              ~environment:(Analysis.TypeEnvironment.read_only environment)
+              ~include_unit_tests:false
+              ~skip_overrides
+              ~maximum_overrides:
+                (TaintConfiguration.maximum_overrides_to_analyze taint_configuration)
+              ~qualifiers
+          in
+          Statistics.performance
+            ~name:"Overrides computed"
+            ~phase_name:"Computing overrides"
+            ~timer
+            ();
+          overrides)
     in
-    Statistics.performance ~name:"Overrides computed" ~phase_name:"Computing overrides" ~timer ();
 
     Log.info "Building call graph...";
     let timer = Timer.start () in
@@ -440,6 +454,14 @@ let run_taint_analysis
     in
     Statistics.performance ~name:"Call graph built" ~phase_name:"Building call graph" ~timer ();
 
+    let entrypoint_references = Registry.get_entrypoints initial_models in
+
+    let prune_method =
+      match entrypoint_references with
+      | [] -> Interprocedural.DependencyGraph.PruneMethod.Internals
+      | _ :: _ -> Interprocedural.DependencyGraph.PruneMethod.Entrypoints entrypoint_references
+    in
+
     Log.info "Computing dependencies...";
     let timer = Timer.start () in
     let {
@@ -450,7 +472,7 @@ let run_taint_analysis
     }
       =
       Interprocedural.DependencyGraph.build_whole_program_dependency_graph
-        ~prune:true
+        ~prune:prune_method
         ~initial_callables
         ~call_graph:whole_program_call_graph
         ~overrides:override_graph_heap
@@ -476,6 +498,8 @@ let run_taint_analysis
       ~phase_name:"Purging shared memory"
       ~timer
       ();
+
+    let () = Cache.save cache in
 
     Log.info
       "Analysis fixpoint started for %d overrides and %d functions..."

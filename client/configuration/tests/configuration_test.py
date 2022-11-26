@@ -120,6 +120,13 @@ class PartialConfigurationTest(unittest.TestCase):
                 ).buck_mode
             )
 
+        self.assertEqual(
+            PartialConfiguration.from_string(
+                json.dumps({"bxl_builder": "foo"})
+            ).bxl_builder,
+            "foo",
+        )
+
         self.assertListEqual(
             list(
                 PartialConfiguration.from_string(
@@ -439,6 +446,7 @@ class PartialConfigurationTest(unittest.TestCase):
                 }
             )
         )
+        assert_raises(json.dumps({"bxl_builder": []}))
         assert_raises(json.dumps({"only_check_paths": "abc"}))
         assert_raises(json.dumps({"dot_pyre_directory": {}}))
         assert_raises(json.dumps({"enable_readonly_analysis": 42}))
@@ -575,6 +583,7 @@ class ConfigurationTest(testslide.TestCase):
             partial_configuration=PartialConfiguration(
                 binary="binary",
                 buck_mode=PlatformAware.from_json("opt", "buck_mode"),
+                bxl_builder="//some/bxl:build",
                 only_check_paths=["//foo"],
                 dot_pyre_directory=None,
                 enable_readonly_analysis=True,
@@ -605,6 +614,7 @@ class ConfigurationTest(testslide.TestCase):
         self.assertEqual(configuration.binary, "binary")
         self.assertIsNotNone(configuration.buck_mode)
         self.assertEqual(configuration.buck_mode.get(), "opt")
+        self.assertEqual(configuration.bxl_builder, "//some/bxl:build")
         self.assertListEqual(list(configuration.only_check_paths), ["root/foo"])
         self.assertEqual(configuration.dot_pyre_directory, Path("root/.pyre"))
         self.assertEqual(configuration.enable_readonly_analysis, True)
@@ -1046,9 +1056,27 @@ class ConfigurationTest(testslide.TestCase):
                     [SimpleRawElement(str(root_path))],
                 )
 
-    def test_create_from_codenav_configuration(self) -> None:
+    def test_configurations_resolve_path(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root).resolve()
+            write_configuration_file(root_path, {"strict": False}, codenav=True)
+
+            with switch_working_directory(root_path):
+                configuration = create_overridden_configuration(
+                    command_arguments.CommandArguments(
+                        strict=True,
+                        dot_pyre_directory=Path(".pyre"),
+                    ),
+                    base_directory=Path("."),
+                    configuration=CODENAV_CONFIGURATION_FILE,
+                )
+                self.assertEqual(configuration.project_root, str(root_path))
+
+    def test_create_from_codenav_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            print(root)
+            root_path = Path(root).resolve()
+            print(root_path)
             write_configuration_file(root_path, {"strict": False}, codenav=True)
 
             with switch_working_directory(root_path):

@@ -5,6 +5,14 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
+(* This file is shared between pyre and zoncolan, and they use different
+ * version of Core/Core_kernel. Because Core_kernel is being deprecated,
+ * building this file may or may not trigger a deprecation warning (-3).
+ * Let's suppress it until pyre catches up with zoncolan.
+ * See T138025201
+ *)
+[@@@warning "-3"]
+
 open Core_kernel
 open OUnit2
 open AbstractDomain
@@ -2059,6 +2067,10 @@ module TreeOfStringSets = struct
         include StringSet
 
         let transform_on_widening_collapse = Fn.id
+
+        let transform_on_sink = Fn.id
+
+        let transform_on_hoist = Fn.id
       end)
       ()
 

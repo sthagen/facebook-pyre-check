@@ -237,6 +237,7 @@ module Breadcrumb = struct
     | TitoBroadening (* Taint tree was collapsed when applying tito *)
     | IssueBroadening (* Taint tree was collapsed when matching sources and sinks *)
     | Crtex (* Taint comes from the Cross Repository Taint EXchange *)
+    | TransformTitoDepth of int
   [@@deriving equal]
 
   let pp formatter breadcrumb =
@@ -260,6 +261,7 @@ module Breadcrumb = struct
     | TitoBroadening -> Format.fprintf formatter "TitoBroadening"
     | IssueBroadening -> Format.fprintf formatter "IssueBroadening"
     | Crtex -> Format.fprintf formatter "Crtex"
+    | TransformTitoDepth depth -> Format.fprintf formatter "TransformTitoDepth(%d)" depth
 
 
   let show = Format.asprintf "%a" pp
@@ -286,6 +288,8 @@ module Breadcrumb = struct
     | TitoBroadening -> `Assoc [prefix ^ "via", `String "tito-broadening"]
     | IssueBroadening -> `Assoc [prefix ^ "via", `String "issue-broadening"]
     | Crtex -> `Assoc [prefix ^ "via", `String "crtex"]
+    | TransformTitoDepth depth ->
+        `Assoc [prefix ^ "via", `String (Format.sprintf "transform-tito-depth:%d" depth)]
 
 
   let simple_via ~allowed name =
@@ -435,6 +439,17 @@ module CollapseDepth = struct
   let approximate _ = 0
 
   let transform_on_widening_collapse _ = 0
+
+  let transform_on_sink = function
+    | 0 -> 0
+    | _ -> bottom
+
+
+  let transform_on_hoist collapse_depth =
+    if is_bottom collapse_depth then
+      bottom
+    else
+      0
 end
 
 module ReturnAccessPath = struct

@@ -110,6 +110,7 @@ class PartialConfiguration:
         default=None,
         metadata={"merge_policy": platform_aware.PlatformAware.merge_optional},
     )
+    bxl_builder: Optional[str] = None
     only_check_paths: Sequence[str] = field(
         default_factory=list,
         metadata={"merge_policy": dataclasses_merge.Policy.PREPEND},
@@ -398,6 +399,7 @@ class PartialConfiguration:
                     ),
                     "buck_mode",
                 ),
+                bxl_builder=ensure_option_type(configuration_json, "bxl_builder", str),
                 only_check_paths=ensure_string_list(
                     configuration_json, "only_check_paths"
                 ),
@@ -458,7 +460,7 @@ class PartialConfiguration:
 
             return partial_configuration
         except json.JSONDecodeError as error:
-            raise exceptions.InvalidConfiguration(f"Invalid JSON file: {error}")
+            raise exceptions.InvalidConfiguration("Invalid JSON file") from error
 
     @staticmethod
     def from_file(path: Path) -> "PartialConfiguration":
@@ -466,7 +468,9 @@ class PartialConfiguration:
             contents = path.read_text(encoding="utf-8")
             return PartialConfiguration.from_string(contents)
         except OSError as error:
-            raise exceptions.InvalidConfiguration(f"Error when reading {path}: {error}")
+            raise exceptions.InvalidConfiguration(
+                f"Error when reading {path}"
+            ) from error
 
     def expand_relative_paths(self, root: str) -> "PartialConfiguration":
         unwatched_dependency = self.unwatched_dependency
@@ -520,7 +524,7 @@ def merge_partial_configurations(
         # pyre-ignore[16]: Pyre does not understand `dataclass_merge`
         return PartialConfiguration.merge(base, override)
     except dataclasses_merge.DataclassMergeError as error:
-        raise exceptions.InvalidConfiguration(str(error))
+        raise exceptions.InvalidConfiguration(str(error)) from None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -530,6 +534,7 @@ class Configuration:
 
     binary: Optional[str] = None
     buck_mode: Optional[platform_aware.PlatformAware[str]] = None
+    bxl_builder: Optional[str] = None
     only_check_paths: Sequence[str] = field(default_factory=list)
     enable_readonly_analysis: Optional[bool] = None
     excludes: Sequence[str] = field(default_factory=list)
@@ -577,6 +582,7 @@ class Configuration:
             ),
             binary=partial_configuration.binary,
             buck_mode=partial_configuration.buck_mode,
+            bxl_builder=partial_configuration.bxl_builder,
             only_check_paths=[
                 expand_global_root(path, global_root=str(project_root))
                 for path in only_check_paths
@@ -646,6 +652,7 @@ class Configuration:
         """
         binary = self.binary
         buck_mode = self.buck_mode
+        bxl_builder = self.bxl_builder
         isolation_prefix = self.isolation_prefix
         logger = self.logger
         number_of_workers = self.number_of_workers
@@ -665,6 +672,7 @@ class Configuration:
             "dot_pyre_directory": str(self.dot_pyre_directory),
             **({"binary": binary} if binary is not None else {}),
             **({"buck_mode": buck_mode.to_json()} if buck_mode is not None else {}),
+            **({"bxl_builder": bxl_builder} if bxl_builder is not None else {}),
             "only_check_paths": list(self.only_check_paths),
             **(
                 {"enable_readonly_analysis": self.enable_readonly_analysis}
@@ -840,6 +848,7 @@ class Configuration:
         binary = self.get_binary_respecting_override()
         if binary is None:
             return None
+        # lint-ignore: NoUnsafeExecRule
         status = subprocess.run(
             [binary, "-version"], stdout=subprocess.PIPE, universal_newlines=True
         )
@@ -963,6 +972,7 @@ def create_overridden_configuration(
     base_directory: Path,
     configuration: str,
 ) -> Configuration:
+    base_directory = base_directory.resolve()
     if arguments.local_configuration:
         LOG.warning(
             f"Local configuration provided but skipped due to overridden global configuration {base_directory / configuration}"

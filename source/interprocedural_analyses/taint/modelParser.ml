@@ -2928,6 +2928,7 @@ let adjust_sanitize_and_modes_and_skipped_override
         Ok (sanitizers, Model.ModeSet.add SkipDecoratorWhenInlining modes, skipped_override)
     | "SkipOverrides" -> Ok (sanitizers, Model.ModeSet.add SkipOverrides modes, Some define_name)
     | "SkipObscure" -> Ok (sanitizers, Model.ModeSet.remove Obscure modes, skipped_override)
+    | "Entrypoint" -> Ok (sanitizers, Model.ModeSet.add Entrypoint modes, skipped_override)
     | _ -> Ok (sanitizers, modes, skipped_override)
   in
   List.fold_result
@@ -2967,6 +2968,7 @@ let create_model_from_signature
           | ["SkipAnalysis"]
           | ["SkipDecoratorWhenInlining"]
           | ["SkipOverrides"]
+          | ["Entrypoint"]
           | ["SkipObscure"] ->
               Either.first decorator
           | _ -> Either.Second decorator_expression)
@@ -3341,6 +3343,8 @@ let rec parse_statement
             Some (Either.Second (decorator_with_name "SkipAnalysis"))
           else if String.equal name "SkipOverrides" then
             Some (Either.Second (decorator_with_name "SkipOverrides"))
+          else if String.equal name "Entrypoint" then
+            Some (Either.Second (decorator_with_name "Entrypoint"))
           else
             None
         in
@@ -3573,13 +3577,14 @@ let rec parse_statement
             match value with
             | Expression.List items -> List.map items ~f:parse_constraint |> all
             | _ -> parse_constraint expression >>| List.return)
-            >>| fun model_sources -> model_sources, location
-        | None -> Ok ([], location)
+            >>| fun model_sources -> Some (model_sources, location)
+        | None -> Ok None
       in
       let parse_output_models_clause ~name ~path expression =
         match parse_model_sources ~name ~path expression with
         | Error error -> Error [error]
-        | Ok (model_strings, location) -> (
+        | Ok None -> Ok []
+        | Ok (Some (model_strings, location)) -> (
             model_strings
             |> Parser.parse
             >>| Source.create
