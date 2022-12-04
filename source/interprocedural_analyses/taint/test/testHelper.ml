@@ -420,7 +420,7 @@ let get_initial_models ~context =
   let global_resolution =
     Test.ScratchProject.setup ~context [] |> Test.ScratchProject.build_global_resolution
   in
-  let { ModelParser.models; errors; _ } =
+  let { ModelParseResult.models; errors; _ } =
     ModelParser.parse
       ~resolution:
         (TypeCheck.resolution
@@ -551,7 +551,7 @@ let initialize
     match models_source with
     | None -> Registry.empty, Ast.Reference.Set.empty
     | Some source ->
-        let { ModelParser.models; errors; skip_overrides; queries = rules } =
+        let { ModelParseResult.models; errors; skip_overrides; queries } =
           ModelParser.parse
             ~resolution
             ~source:(Test.trim_extra_indentation source)
@@ -569,7 +569,7 @@ let initialize
           (List.is_empty errors);
 
         let models_result =
-          TaintModelQuery.ModelQuery.apply_all_rules
+          ModelQueryExecution.apply_all_queries
             ~resolution
             ~taint_configuration:taint_configuration_shared_memory
             ~class_hierarchy_graph:
@@ -579,26 +579,26 @@ let initialize
             ~source_sink_filter:(Some taint_configuration.source_sink_filter)
             ~callables:(List.rev_append stubs callables)
             ~stubs:(Target.HashSet.of_list stubs)
-            ~rules
+            ~queries
         in
         let models_and_names, errors = fst models_result, snd models_result in
         (match taint_configuration.dump_model_query_results_path, expected_dump_string with
         | Some path, Some expected_string ->
-            TaintModelQuery.ModelQuery.DumpModelQueryResults.dump_to_file_and_string
+            ModelQueryExecution.DumpModelQueryResults.dump_to_file_and_string
               ~models_and_names
               ~path
             |> assert_equal ~cmp:String.equal ~printer:Fn.id expected_string
         | Some path, None ->
-            TaintModelQuery.ModelQuery.DumpModelQueryResults.dump_to_file ~models_and_names ~path
+            ModelQueryExecution.DumpModelQueryResults.dump_to_file ~models_and_names ~path
         | None, Some expected_string ->
-            TaintModelQuery.ModelQuery.DumpModelQueryResults.dump_to_string ~models_and_names
+            ModelQueryExecution.DumpModelQueryResults.dump_to_string ~models_and_names
             |> assert_equal ~cmp:String.equal ~printer:Fn.id expected_string
         | None, None -> ());
         let verify = static_analysis_configuration.verify_models && verify_model_queries in
         ModelVerificationError.verify_models_and_dsl errors verify;
         let models =
           models_and_names
-          |> TaintModelQuery.ModelQuery.ModelQueryRegistryMap.get_registry
+          |> ModelQueryExecution.ModelQueryRegistryMap.get_registry
                ~model_join:Model.join_user_models
           |> Registry.merge ~join:Model.join_user_models models
         in

@@ -54,7 +54,7 @@ type kind =
       name: Reference.t;
       actual_name: Reference.t;
     }
-  | InvalidModelQueryClauses of Expression.Call.Argument.t list
+  | InvalidModelQueryClauses of Statement.t
   | InvalidModelQueryWhereClause of {
       expression: Expression.t;
       find_clause_kind: string;
@@ -65,6 +65,7 @@ type kind =
     }
   | InvalidParameterExclude of Expression.t
   | InvalidIsTransitive of Expression.t
+  | InvalidIncludesSelf of Expression.t
   | InvalidModelQueryClauseArguments of {
       callee: Expression.t;
       arguments: Expression.Call.Argument.t list;
@@ -144,6 +145,7 @@ type kind =
       models_clause: Expression.t;
     }
   | InvalidAnyChildClause of Expression.t
+  | InvalidModelQueryMode of string
 [@@deriving sexp, compare, show]
 
 type t = {
@@ -223,11 +225,12 @@ let description error =
         name
         Reference.pp
         actual_name
-  | InvalidModelQueryClauses clause_list ->
+  | InvalidModelQueryClauses statement ->
       Format.asprintf
-        "The model query arguments at `%s` are invalid: expected a name, find, where and model \
+        "The model query arguments for `%a` are invalid: expected a name, find, where and model \
          clause, with optional `expected_models` and `unexpected_models` clauses."
-        (List.map clause_list ~f:Expression.Call.Argument.show |> String.concat ~sep:", ")
+        Statement.pp
+        statement
   | InvalidModelQueryWhereClause { expression; find_clause_kind } ->
       Format.asprintf
         "`%s` is not a valid constraint for model queries with find clause of kind `%s`."
@@ -255,11 +258,19 @@ let description error =
         "The Extends and AnyChild `is_transitive` attribute must be either True or False, got: \
          `%s`."
         (Expression.show expression)
+  | InvalidIncludesSelf expression ->
+      Format.asprintf
+        "The Extends and AnyChild `includes_self` attribute must be either True or False, got: \
+         `%s`."
+        (Expression.show expression)
   | InvalidModelQueryClauseArguments { callee; arguments } ->
       Format.asprintf
-        "Unsupported arguments for callee `%s`: `%s`."
-        (Expression.show callee)
-        (List.map arguments ~f:Expression.Call.Argument.show |> String.concat ~sep:", ")
+        "Unsupported arguments for `%a`: `%a`."
+        Expression.pp
+        callee
+        Expression.pp
+        (Node.create_with_default_location
+           (Expression.Expression.Call { Expression.Call.callee; arguments }))
   | InvalidTaintAnnotation { taint_annotation; reason } ->
       Format.asprintf
         "`%s` is an invalid taint annotation: %s"
@@ -384,6 +395,7 @@ let description error =
         "`%s` is not a valid any_child clause. Constraints within any_child should be either class \
          constraints or any of `AnyOf`, `AllOf`, and `Not`."
         (Expression.show expression)
+  | InvalidModelQueryMode mode -> Format.asprintf "`%s` is not a valid mode for a model." mode
 
 
 let code { kind; _ } =
@@ -435,6 +447,8 @@ let code { kind; _ } =
   | InvalidExpectedModelsClause _ -> 45
   | InvalidAnyChildClause _ -> 46
   | InvalidAccessPath _ -> 47
+  | InvalidIncludesSelf _ -> 13
+  | InvalidModelQueryMode _ -> 48
 
 
 let display { kind = error; path; location } =

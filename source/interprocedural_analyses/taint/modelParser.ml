@@ -21,473 +21,9 @@ open PyreParser
 open Interprocedural
 open Statement
 open Domains
-
-module ExpectedModel = struct
-  type t = {
-    model: Model.t;
-    target: Target.t;
-    model_source: string;
-  }
-
-  let pp formatter model_with_target_and_string =
-    Format.fprintf
-      formatter
-      "Model:\n[\n%s\n]\nTarget: \"%s\"\nModel source: \"%s\""
-      (Model.show model_with_target_and_string.model)
-      (Target.show_pretty model_with_target_and_string.target)
-      model_with_target_and_string.model_source
-
-
-  let show = Format.asprintf "%a" pp
-
-  let less_or_equal left right =
-    Model.less_or_equal ~left:left.model ~right:right.model
-    && Target.equal left.target right.target
-    && String.equal left.model_source right.model_source
-
-
-  let equal left right = less_or_equal left right && less_or_equal right left
-end
-
-module Internal = struct
-  (* Represents a source or sink kind (e.g, UserControlled) *)
-  module Kind = struct
-    type t = {
-      name: string;
-      subkind: string option;
-    }
-    [@@deriving equal]
-
-    let from_name name = { name; subkind = None }
-  end
-
-  module CollapseDepth = struct
-    type t =
-      | Value of int
-      | Collapse
-      | NoCollapse
-    [@@deriving equal]
-
-    let pp formatter = function
-      | Value depth -> Format.fprintf formatter "CollapseDepth[%d]" depth
-      | Collapse -> Format.fprintf formatter "Collapse"
-      | NoCollapse -> Format.fprintf formatter "NoCollapse"
-
-
-    let show = Format.asprintf "%a" pp
-  end
-
-  module TaintFeatures = struct
-    type t = {
-      breadcrumbs: Features.Breadcrumb.t list;
-      via_features: Features.ViaFeature.t list;
-      applies_to: Abstract.TreeDomain.Label.path option;
-      parameter_path: Abstract.TreeDomain.Label.path option;
-      return_path: Abstract.TreeDomain.Label.path option;
-      update_path: Abstract.TreeDomain.Label.path option;
-      leaf_names: Features.LeafName.t list;
-      leaf_name_provided: bool;
-      trace_length: int option;
-      collapse_depth: CollapseDepth.t option;
-    }
-    [@@deriving equal]
-
-    let empty =
-      {
-        breadcrumbs = [];
-        via_features = [];
-        applies_to = None;
-        parameter_path = None;
-        return_path = None;
-        update_path = None;
-        leaf_names = [];
-        leaf_name_provided = false;
-        trace_length = None;
-        collapse_depth = None;
-      }
-
-
-    let is_empty = equal empty
-
-    let join left right =
-      let open Core.Result in
-      let join_option ~name left right =
-        match left, right with
-        | Some _, Some _ -> Error (Format.sprintf "%s cannot be specified more than once" name)
-        | Some left, None -> Ok (Some left)
-        | None, Some right -> Ok (Some right)
-        | None, None -> Ok None
-      in
-      join_option ~name:"AppliesTo" left.applies_to right.applies_to
-      >>= fun applies_to ->
-      join_option ~name:"ParameterPath" left.parameter_path right.parameter_path
-      >>= fun parameter_path ->
-      join_option ~name:"ReturnPath" left.return_path right.return_path
-      >>= fun return_path ->
-      join_option ~name:"UpdatePath" left.update_path right.update_path
-      >>= fun update_path ->
-      join_option ~name:"trace length" left.trace_length right.trace_length
-      >>= fun trace_length ->
-      join_option ~name:"collapse depth" left.collapse_depth right.collapse_depth
-      >>| fun collapse_depth ->
-      {
-        breadcrumbs = left.breadcrumbs @ right.breadcrumbs;
-        via_features = left.via_features @ right.via_features;
-        applies_to;
-        parameter_path;
-        return_path;
-        update_path;
-        leaf_names = left.leaf_names @ right.leaf_names;
-        leaf_name_provided = left.leaf_name_provided || right.leaf_name_provided;
-        trace_length;
-        collapse_depth;
-      }
-
-
-    let extend_applies_to features element =
-      match features.applies_to with
-      | None -> { features with applies_to = Some [element] }
-      | Some applies_to -> { features with applies_to = Some (element :: applies_to) }
-
-
-    let show_as_list
-        {
-          breadcrumbs;
-          via_features;
-          applies_to;
-          parameter_path;
-          return_path;
-          update_path;
-          leaf_names;
-          leaf_name_provided = _;
-          trace_length;
-          collapse_depth;
-        }
-      =
-      let show_breadcrumb = function
-        | Features.Breadcrumb.SimpleVia name -> Format.sprintf "Via[%s]" name
-        | breadcrumb -> Format.asprintf "Via[%a]" Features.Breadcrumb.pp breadcrumb
-      in
-      let features =
-        List.map ~f:show_breadcrumb breadcrumbs
-        @ List.map ~f:Features.ViaFeature.show via_features
-        @ List.map ~f:Features.LeafName.show leaf_names
-      in
-      let add_option ~name ~pp option features =
-        match option with
-        | Some value -> features @ [Format.asprintf "%s[%a]" name pp value]
-        | None -> features
-      in
-      let add_path_option ~name path features =
-        add_option ~name ~pp:Abstract.TreeDomain.Label.pp_path path features
-      in
-      let add_collapse_depth features =
-        match collapse_depth with
-        | Some collapse_depth -> features @ [CollapseDepth.show collapse_depth]
-        | None -> features
-      in
-      features
-      |> add_path_option ~name:"AppliesTo" applies_to
-      |> add_path_option ~name:"ParameterPath" parameter_path
-      |> add_path_option ~name:"ReturnPath" return_path
-      |> add_path_option ~name:"UpdatePath" update_path
-      |> add_option ~name:"TraceLength" ~pp:Int.pp trace_length
-      |> add_collapse_depth
-  end
-
-  module TaintKindsWithFeatures = struct
-    type t = {
-      kinds: Kind.t list;
-      features: TaintFeatures.t;
-    }
-
-    let empty = { kinds = []; features = TaintFeatures.empty }
-
-    let from_kinds kinds = { kinds; features = TaintFeatures.empty }
-
-    let from_kind kind = from_kinds [kind]
-
-    let from_breadcrumbs breadcrumbs =
-      { kinds = []; features = { TaintFeatures.empty with breadcrumbs } }
-
-
-    let from_via_features via_features =
-      { kinds = []; features = { TaintFeatures.empty with via_features } }
-
-
-    let from_via_feature via_feature = from_via_features [via_feature]
-
-    let from_parameter_path path =
-      { kinds = []; features = { TaintFeatures.empty with parameter_path = Some path } }
-
-
-    let from_return_path path =
-      { kinds = []; features = { TaintFeatures.empty with return_path = Some path } }
-
-
-    let from_update_path path =
-      { kinds = []; features = { TaintFeatures.empty with update_path = Some path } }
-
-
-    let from_collapse_depth collapse_depth =
-      { kinds = []; features = { TaintFeatures.empty with collapse_depth = Some collapse_depth } }
-
-
-    let join left right =
-      let open Core.Result in
-      TaintFeatures.join left.features right.features
-      >>| fun features -> { kinds = left.kinds @ right.kinds; features }
-
-
-    let concat list =
-      let ( >>= ) = Core.Result.( >>= ) in
-      List.fold
-        ~f:(fun sofar kinds_with_features -> sofar >>= fun sofar -> join sofar kinds_with_features)
-        ~init:(Ok empty)
-        list
-  end
-
-  module SanitizeAnnotation = struct
-    type t =
-      | AllSources
-      | SpecificSource of SanitizeTransform.Source.t
-      | AllSinks
-      | SpecificSink of SanitizeTransform.Sink.t
-      | AllTito
-      | SpecificTito of {
-          sources: SanitizeTransform.Source.t list;
-          sinks: SanitizeTransform.Sink.t list;
-        }
-    [@@deriving equal]
-
-    let show_as_list = function
-      | AllSources -> ["TaintSource"]
-      | SpecificSource (SanitizeTransform.Source.Named name) ->
-          [Format.sprintf "TaintSource[%s]" name]
-      | AllSinks -> ["TaintSink"]
-      | SpecificSink (SanitizeTransform.Sink.Named name) -> [Format.sprintf "TaintSink[%s]" name]
-      | AllTito -> ["TaintInTaintOut"]
-      | SpecificTito { sources; sinks } ->
-          List.map
-            ~f:(fun (SanitizeTransform.Source.Named name) -> Format.sprintf "TaintSource[%s]" name)
-            sources
-          @ List.map
-              ~f:(fun (SanitizeTransform.Sink.Named name) -> Format.sprintf "TaintSink[%s]" name)
-              sinks
-  end
-
-  module TaintAnnotation = struct
-    type t =
-      | Sink of {
-          sink: Sinks.t;
-          features: TaintFeatures.t;
-        }
-      | Source of {
-          source: Sources.t;
-          features: TaintFeatures.t;
-        }
-      | Tito of {
-          tito: Sinks.t;
-          features: TaintFeatures.t;
-        }
-      | AddFeatureToArgument of { features: TaintFeatures.t }
-      | Sanitize of SanitizeAnnotation.t list
-    [@@deriving equal]
-
-    let from_source source = Source { source; features = TaintFeatures.empty }
-
-    let from_sink sink = Sink { sink; features = TaintFeatures.empty }
-
-    let from_tito tito = Tito { tito; features = TaintFeatures.empty }
-
-    let pp formatter = function
-      | Sink { sink; features } ->
-          Format.fprintf
-            formatter
-            "TaintSink[%s]"
-            (String.concat ~sep:", " (Sinks.show sink :: TaintFeatures.show_as_list features))
-      | Source { source; features } ->
-          Format.fprintf
-            formatter
-            "TaintSource[%s]"
-            (String.concat ~sep:", " (Sources.show source :: TaintFeatures.show_as_list features))
-      | Tito { tito; features } ->
-          Format.fprintf
-            formatter
-            "TaintInTaintOut[%s]"
-            (String.concat ~sep:", " (Sinks.show tito :: TaintFeatures.show_as_list features))
-      | AddFeatureToArgument { features } ->
-          Format.fprintf
-            formatter
-            "AddFeatureToArgument[%s]"
-            (String.concat ~sep:", " (TaintFeatures.show_as_list features))
-      | Sanitize sanitize_annotations ->
-          Format.fprintf
-            formatter
-            "Sanitize[%s]"
-            (String.concat
-               ~sep:", "
-               (sanitize_annotations |> List.map ~f:SanitizeAnnotation.show_as_list |> List.concat))
-
-
-    let show = Format.asprintf "%a" pp
-  end
-
-  module AnnotationKind = struct
-    type t =
-      | ParameterAnnotation of AccessPath.Root.t
-      | ReturnAnnotation
-    [@@deriving show, equal]
-  end
-
-  module ModelQuery = struct
-    type name_constraint =
-      | Equals of string
-      | Matches of Re2.t
-
-    let equal_name_constraint left right =
-      match left, right with
-      | Equals left, Equals right -> String.equal left right
-      | Matches left, Matches right -> Re2.compare left right = 0
-      | _, _ -> false
-
-
-    let pp_name_constraint formatter name_constraint =
-      match name_constraint with
-      | Equals equals -> Format.fprintf formatter "Equals(%s)" equals
-      | Matches regular_expression ->
-          Format.fprintf formatter "Matches(%s)" (Re2.to_string regular_expression)
-
-
-    let show_name_constraint = Format.asprintf "%a" pp_name_constraint
-
-    type annotation_constraint =
-      | IsAnnotatedTypeConstraint
-      | AnnotationNameConstraint of name_constraint
-    [@@deriving equal, show]
-
-    module ArgumentsConstraint = struct
-      type t =
-        | Equals of Ast.Expression.Call.Argument.t list
-        | Contains of Ast.Expression.Call.Argument.t list
-      [@@deriving equal, show]
-    end
-
-    module ParameterConstraint = struct
-      type t =
-        | AnnotationConstraint of annotation_constraint
-        | NameConstraint of name_constraint
-        | IndexConstraint of int
-        | AnyOf of t list
-        | AllOf of t list
-        | Not of t
-      [@@deriving equal, show]
-    end
-
-    module DecoratorConstraint = struct
-      type t = {
-        name_constraint: name_constraint;
-        arguments_constraint: ArgumentsConstraint.t option;
-      }
-      [@@deriving equal, show]
-    end
-
-    module ClassConstraint = struct
-      type t =
-        | NameSatisfies of name_constraint
-        | Extends of {
-            class_name: string;
-            is_transitive: bool;
-          }
-        | DecoratorSatisfies of DecoratorConstraint.t
-        | AnyOf of t list
-        | AllOf of t list
-        | Not of t
-        | AnyChildSatisfies of {
-            class_constraint: t;
-            is_transitive: bool;
-          }
-      [@@deriving equal, show]
-    end
-
-    type model_constraint =
-      | NameConstraint of name_constraint
-      | AnnotationConstraint of annotation_constraint
-      | ReturnConstraint of annotation_constraint
-      | AnyParameterConstraint of ParameterConstraint.t
-      | AnyOf of model_constraint list
-      | AllOf of model_constraint list
-      | ClassConstraint of ClassConstraint.t
-      | AnyDecoratorConstraint of DecoratorConstraint.t
-      | Not of model_constraint
-    [@@deriving equal, show]
-
-    type kind =
-      | FunctionModel
-      | MethodModel
-      | AttributeModel
-      | GlobalModel
-    [@@deriving show, equal]
-
-    type produced_taint =
-      | TaintAnnotation of TaintAnnotation.t
-      | ParametricSourceFromAnnotation of {
-          source_pattern: string;
-          kind: string;
-        }
-      | ParametricSinkFromAnnotation of {
-          sink_pattern: string;
-          kind: string;
-        }
-    [@@deriving show, equal]
-
-    type production =
-      | AllParametersTaint of {
-          excludes: string list;
-          taint: produced_taint list;
-        }
-      | NamedParameterTaint of {
-          name: string;
-          taint: produced_taint list;
-        }
-      | PositionalParameterTaint of {
-          index: int;
-          taint: produced_taint list;
-        }
-      | ParameterTaint of {
-          where: ParameterConstraint.t list;
-          taint: produced_taint list;
-        }
-      | ReturnTaint of produced_taint list
-      | AttributeTaint of produced_taint list
-      | GlobalTaint of produced_taint list
-    [@@deriving show, equal]
-
-    type rule = {
-      location: Location.t;
-      query: model_constraint list;
-      productions: production list;
-      rule_kind: kind;
-      name: string;
-      expected_models: ExpectedModel.t list;
-      unexpected_models: ExpectedModel.t list;
-    }
-    [@@deriving show, equal]
-  end
-
-  type parse_result = {
-    models: Registry.t;
-    queries: ModelQuery.rule list;
-    skip_overrides: Reference.Set.t;
-    errors: ModelVerificationError.t list;
-  }
-end
-
-include Internal
+open ModelParseResult
 
 let model_verification_error ~path ~location kind = { ModelVerificationError.kind; path; location }
-
-module ClassDefinitionsCache = ModelVerifier.ClassDefinitionsCache
 
 (* We don't have real models for attributes, so we make a fake callable model with a 'parameter'
    $global which acts as the taint sink whenever attributes are marked as sinks. *)
@@ -1624,45 +1160,10 @@ let introduce_sanitize ~source_sink_filter ~root model annotations =
 let parse_find_clause ~path ({ Node.value; location } as expression) =
   match value with
   | Expression.Constant (Constant.String { StringLiteral.value; _ }) -> (
-      match value with
-      | "functions" -> Ok ModelQuery.FunctionModel
-      | "methods" -> Ok ModelQuery.MethodModel
-      | "attributes" -> Ok ModelQuery.AttributeModel
-      | "globals" -> Ok ModelQuery.GlobalModel
-      | unsupported ->
-          Error (model_verification_error ~path ~location (UnsupportedFindClause unsupported)))
+      match ModelQuery.Find.from_string value with
+      | Some find -> Ok find
+      | None -> Error (model_verification_error ~path ~location (UnsupportedFindClause value)))
   | _ -> Error (model_verification_error ~path ~location (InvalidFindClauseType expression))
-
-
-let get_find_clause_as_string find_clause =
-  match find_clause with
-  | Ok ModelQuery.AttributeModel -> "attributes"
-  | Ok ModelQuery.MethodModel -> "methods"
-  | Ok ModelQuery.FunctionModel -> "functions"
-  | Ok ModelQuery.GlobalModel -> "globals"
-  | _ -> "unsupported"
-
-
-let is_clause_kind ~expected_kinds kind =
-  match kind with
-  | Ok clause -> List.mem expected_kinds clause ~equal:ModelQuery.equal_kind
-  | _ -> false
-
-
-let is_callable_clause_kind find_clause =
-  is_clause_kind find_clause ~expected_kinds:[ModelQuery.MethodModel; ModelQuery.FunctionModel]
-
-
-let is_global_clause_kind find_clause =
-  is_clause_kind find_clause ~expected_kinds:[ModelQuery.GlobalModel]
-
-
-let is_attribute_clause_kind find_clause =
-  is_clause_kind find_clause ~expected_kinds:[ModelQuery.AttributeModel]
-
-
-let is_class_member_clause_kind find_clause =
-  is_clause_kind find_clause ~expected_kinds:[ModelQuery.MethodModel; ModelQuery.AttributeModel]
 
 
 let parse_name_constraint ~path ~location ({ Node.value; _ } as constraint_expression) =
@@ -1696,8 +1197,8 @@ let parse_name_constraint ~path ~location ({ Node.value; _ } as constraint_expre
        };
       ] -> (
           match attribute with
-          | "matches" -> Ok (ModelQuery.Matches (Re2.create_exn name_constraint))
-          | "equals" -> Ok (ModelQuery.Equals name_constraint)
+          | "matches" -> Ok (ModelQuery.NameConstraint.Matches (Re2.create_exn name_constraint))
+          | "equals" -> Ok (ModelQuery.NameConstraint.Equals name_constraint)
           | _ -> failwith "impossible case")
       | _ ->
           Error
@@ -1735,7 +1236,9 @@ let parse_annotation_constraint ~path ~location ({ Node.value; _ } as constraint
               _;
             };
           ] ) ->
-          Ok (ModelQuery.AnnotationNameConstraint (ModelQuery.Equals type_name))
+          Ok
+            (ModelQuery.AnnotationConstraint.NameConstraint
+               (ModelQuery.NameConstraint.Equals type_name))
       | ( "matches",
           [
             {
@@ -1750,9 +1253,9 @@ let parse_annotation_constraint ~path ~location ({ Node.value; _ } as constraint
             };
           ] ) ->
           Ok
-            (ModelQuery.AnnotationNameConstraint
-               (ModelQuery.Matches (Re2.create_exn type_name_pattern)))
-      | "is_annotated_type", [] -> Ok ModelQuery.IsAnnotatedTypeConstraint
+            (ModelQuery.AnnotationConstraint.NameConstraint
+               (ModelQuery.NameConstraint.Matches (Re2.create_exn type_name_pattern)))
+      | "is_annotated_type", [] -> Ok ModelQuery.AnnotationConstraint.IsAnnotatedTypeConstraint
       | _ ->
           Error
             (model_verification_error
@@ -1808,11 +1311,11 @@ let parse_class_equals_matches_clause ~path ~location ~callee ~attribute ~argume
   ] ->
       let name_constraint =
         match attribute with
-        | "equals" -> ModelQuery.Equals class_name
-        | "matches" -> ModelQuery.Matches (Re2.create_exn class_name)
+        | "equals" -> ModelQuery.NameConstraint.Equals class_name
+        | "matches" -> ModelQuery.NameConstraint.Matches (Re2.create_exn class_name)
         | _ -> failwith "impossible case"
       in
-      Ok (ModelQuery.ClassConstraint.NameSatisfies name_constraint)
+      Ok (ModelQuery.ClassConstraint.NameConstraint name_constraint)
   | _ ->
       Error
         (model_verification_error
@@ -1821,46 +1324,65 @@ let parse_class_equals_matches_clause ~path ~location ~callee ~attribute ~argume
            (InvalidModelQueryClauseArguments { callee; arguments }))
 
 
-let is_transitive
-    ~path
-    ~location
-    ({ Node.value = is_transitive_value; _ } as is_transitive_expression)
-  =
-  match is_transitive_value with
-  | Expression.Constant Constant.True -> Ok true
-  | Expression.Constant Constant.False -> Ok false
-  | _ ->
+let parse_bool expression =
+  match Node.value expression with
+  | Expression.Constant Constant.True -> Some true
+  | Expression.Constant Constant.False -> Some false
+  | _ -> None
+
+
+let parse_is_transitive ~path ~location is_transitive_expression =
+  match parse_bool is_transitive_expression with
+  | Some value -> Ok value
+  | None ->
       Error
         (model_verification_error ~path ~location (InvalidIsTransitive is_transitive_expression))
 
 
-let parse_class_extends_clause ~path ~location ~callee ~arguments =
+let parse_includes_self ~path ~location includes_self_expression =
+  match parse_bool includes_self_expression with
+  | Some value -> Ok value
+  | None ->
+      Error
+        (model_verification_error ~path ~location (InvalidIncludesSelf includes_self_expression))
+
+
+let parse_class_extends_or_any_child_clause ~path ~location ~callee ~arguments =
+  let open Core.Result in
   match arguments with
-  | [
-   {
-     Call.Argument.value =
-       {
-         Node.value = Expression.Constant (Constant.String { StringLiteral.value = class_name; _ });
-         _;
-       };
-     _;
-   };
-  ] ->
-      Ok (ModelQuery.ClassConstraint.Extends { class_name; is_transitive = false })
-  | [
-   {
-     Call.Argument.value =
-       {
-         Node.value = Expression.Constant (Constant.String { StringLiteral.value = class_name; _ });
-         _;
-       };
-     _;
-   };
-   { Call.Argument.name = Some { Node.value = "is_transitive"; _ }; value };
-  ] ->
-      let open Core.Result in
-      is_transitive ~path ~location value
-      >>= fun is_transitive -> Ok (ModelQuery.ClassConstraint.Extends { class_name; is_transitive })
+  | { Call.Argument.value = first_parameter; _ } :: remaining_arguments ->
+      let parse_optional_arguments sofar argument =
+        sofar
+        >>= fun (is_transitive, includes_self) ->
+        match argument with
+        | { Call.Argument.name = Some { Node.value = "is_transitive"; _ }; value } ->
+            parse_is_transitive ~path ~location value >>| fun value -> value, includes_self
+        | { Call.Argument.name = Some { Node.value = "includes_self"; _ }; value } ->
+            parse_includes_self ~path ~location value >>| fun value -> is_transitive, value
+        | _ ->
+            Error
+              (model_verification_error
+                 ~path
+                 ~location
+                 (InvalidModelQueryClauseArguments { callee; arguments }))
+      in
+      List.fold ~f:parse_optional_arguments remaining_arguments ~init:(Ok (false, true))
+      >>| fun (is_transitive, includes_self) -> first_parameter, is_transitive, includes_self
+  | _ ->
+      Error
+        (model_verification_error
+           ~path
+           ~location
+           (InvalidModelQueryClauseArguments { callee; arguments }))
+
+
+let parse_class_extends_clause ~path ~location ~callee ~arguments =
+  let open Core.Result in
+  parse_class_extends_or_any_child_clause ~path ~location ~callee ~arguments
+  >>= fun (first_parameter, is_transitive, includes_self) ->
+  match Node.value first_parameter with
+  | Expression.Constant (Constant.String { StringLiteral.value = class_name; _ }) ->
+      Ok (ModelQuery.ClassConstraint.Extends { class_name; is_transitive; includes_self })
   | _ ->
       Error
         (model_verification_error
@@ -1938,7 +1460,7 @@ let rec parse_class_constraint ~path ~location ({ Node.value; _ } as constraint_
       | "decorator" ->
           parse_decorator_constraint ~path ~location constraint_expression
           >>= fun decorator_constraint ->
-          Ok (ModelQuery.ClassConstraint.DecoratorSatisfies decorator_constraint)
+          Ok (ModelQuery.ClassConstraint.DecoratorConstraint decorator_constraint)
       | _ ->
           Error
             (model_verification_error ~path ~location (InvalidAnyChildClause constraint_expression))
@@ -1974,23 +1496,11 @@ let rec parse_class_constraint ~path ~location ({ Node.value; _ } as constraint_
 
 let parse_any_child_constraint ~path ~location ~callee ~arguments =
   let open Core.Result in
-  (match arguments with
-  | [{ Call.Argument.value = constraint_expression; _ }] -> Ok (constraint_expression, false)
-  | [
-   { Call.Argument.value = constraint_expression; _ };
-   { Call.Argument.name = Some { Node.value = "is_transitive"; _ }; value };
-  ] ->
-      is_transitive ~path ~location value
-      >>= fun is_transitive -> Ok (constraint_expression, is_transitive)
-  | _ ->
-      Error
-        (model_verification_error
-           ~path
-           ~location
-           (InvalidModelQueryClauseArguments { callee; arguments })))
-  >>= fun (constraint_expression, is_transitive) ->
+  parse_class_extends_or_any_child_clause ~path ~location ~callee ~arguments
+  >>= fun (constraint_expression, is_transitive, includes_self) ->
   parse_class_constraint ~path ~location constraint_expression
-  >>| fun class_constraint -> class_constraint, is_transitive
+  >>| fun class_constraint ->
+  ModelQuery.ClassConstraint.AnyChildConstraint { class_constraint; is_transitive; includes_self }
 
 
 let parse_where_clause ~path ~find_clause ({ Node.value; location } as expression) =
@@ -2000,7 +1510,19 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
       ~path
       ~location
       (InvalidModelQueryWhereClause
-         { expression = callee; find_clause_kind = get_find_clause_as_string find_clause })
+         { expression = callee; find_clause_kind = ModelQuery.Find.show find_clause })
+  in
+  let check_find ~callee expected_function =
+    if expected_function find_clause then
+      Ok ()
+    else
+      Error (invalid_model_query_where_clause ~path ~location callee)
+  in
+  let check_find_in ~callee expected =
+    if List.mem expected find_clause ~equal:ModelQuery.Find.equal then
+      Ok ()
+    else
+      Error (invalid_model_query_where_clause ~path ~location callee)
   in
   let rec parse_constraint ({ Node.value; _ } as constraint_expression) =
     match value with
@@ -2016,7 +1538,7 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
           _;
         } ->
         parse_name_constraint ~path ~location constraint_expression
-        >>= fun name_constraint -> Ok (ModelQuery.NameConstraint name_constraint)
+        >>= fun name_constraint -> Ok (ModelQuery.Constraint.NameConstraint name_constraint)
     | Expression.Call
         {
           Call.callee =
@@ -2029,23 +1551,21 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
             } as callee;
           _;
         } ->
-        if not (is_attribute_clause_kind find_clause || is_global_clause_kind find_clause) then
-          Error (invalid_model_query_where_clause ~path ~location callee)
-        else
-          parse_annotation_constraint ~path ~location constraint_expression
-          >>= fun annotation_constraint ->
-          Ok (ModelQuery.AnnotationConstraint annotation_constraint)
+        check_find_in ~callee [ModelQuery.Find.Attribute; ModelQuery.Find.Global]
+        >>= fun () ->
+        parse_annotation_constraint ~path ~location constraint_expression
+        >>= fun annotation_constraint ->
+        Ok (ModelQuery.Constraint.AnnotationConstraint annotation_constraint)
     | Expression.Call
         {
           Call.callee = { Node.value = Expression.Name (Name.Identifier "Decorator"); _ } as callee;
           _;
         } ->
-        if not (is_callable_clause_kind find_clause) then
-          Error (invalid_model_query_where_clause ~path ~location callee)
-        else
-          parse_decorator_constraint ~path ~location constraint_expression
-          >>= fun decorator_constraint ->
-          Ok (ModelQuery.AnyDecoratorConstraint decorator_constraint)
+        check_find ~callee ModelQuery.Find.is_callable
+        >>= fun () ->
+        parse_decorator_constraint ~path ~location constraint_expression
+        >>= fun decorator_constraint ->
+        Ok (ModelQuery.Constraint.AnyDecoratorConstraint decorator_constraint)
     | Expression.Call
         {
           Call.callee =
@@ -2058,11 +1578,11 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
             } as callee;
           _;
         } ->
-        if not (is_callable_clause_kind find_clause) then
-          Error (invalid_model_query_where_clause ~path ~location callee)
-        else
-          parse_annotation_constraint ~path ~location constraint_expression
-          >>= fun annotation_constraint -> Ok (ModelQuery.ReturnConstraint annotation_constraint)
+        check_find ~callee ModelQuery.Find.is_callable
+        >>= fun () ->
+        parse_annotation_constraint ~path ~location constraint_expression
+        >>= fun annotation_constraint ->
+        Ok (ModelQuery.Constraint.ReturnConstraint annotation_constraint)
     | Expression.Call
         {
           Call.callee =
@@ -2078,7 +1598,7 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
                               (Name.Attribute
                                 {
                                   base = { Node.value = Name (Name.Identifier "any_parameter"); _ };
-                                  attribute = parameter_constraint_kind;
+                                  attribute = "annotation";
                                   _;
                                 });
                           _;
@@ -2088,15 +1608,14 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
               _;
             } as callee;
           _;
-        } -> (
-        match is_callable_clause_kind find_clause, parameter_constraint_kind with
-        | true, "annotation" ->
-            parse_annotation_constraint ~path ~location constraint_expression
-            >>= fun parameter_constraint ->
-            Ok
-              (ModelQuery.AnyParameterConstraint
-                 (ModelQuery.ParameterConstraint.AnnotationConstraint parameter_constraint))
-        | _ -> Error (invalid_model_query_where_clause ~path ~location callee))
+        } ->
+        check_find ~callee ModelQuery.Find.is_callable
+        >>= fun () ->
+        parse_annotation_constraint ~path ~location constraint_expression
+        >>= fun parameter_constraint ->
+        Ok
+          (ModelQuery.Constraint.AnyParameterConstraint
+             (ModelQuery.ParameterConstraint.AnnotationConstraint parameter_constraint))
     | Expression.Call
         {
           Call.callee = { Node.value = Expression.Name (Name.Identifier "AnyOf"); _ };
@@ -2104,7 +1623,7 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
         } ->
         List.map constraints ~f:(fun { Call.Argument.value; _ } -> parse_constraint value)
         |> all
-        >>| fun constraints -> ModelQuery.AnyOf constraints
+        >>| fun constraints -> ModelQuery.Constraint.AnyOf constraints
     | Expression.Call
         {
           Call.callee = { Node.value = Expression.Name (Name.Identifier "AllOf"); _ };
@@ -2112,13 +1631,14 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
         } ->
         List.map constraints ~f:(fun { Call.Argument.value; _ } -> parse_constraint value)
         |> all
-        >>| fun constraints -> ModelQuery.AllOf constraints
+        >>| fun constraints -> ModelQuery.Constraint.AllOf constraints
     | Expression.Call
         {
           Call.callee = { Node.value = Expression.Name (Name.Identifier "Not"); _ };
           arguments = [{ Call.Argument.value; _ }];
         } ->
-        parse_constraint value >>= fun model_constraint -> Ok (ModelQuery.Not model_constraint)
+        parse_constraint value
+        >>= fun model_constraint -> Ok (ModelQuery.Constraint.Not model_constraint)
     (* TODO(T128522530): Rename `parent` to `cls` - need both being accepted to migrate *)
     | Expression.Call
         {
@@ -2131,29 +1651,24 @@ let parse_where_clause ~path ~find_clause ({ Node.value; location } as expressio
               _;
             } as callee;
           arguments;
-        } -> (
-        if not (is_class_member_clause_kind find_clause) then
-          Error (invalid_model_query_where_clause ~path ~location callee)
-        else
+        } ->
+        check_find ~callee ModelQuery.Find.is_class_member
+        >>= fun () ->
+        let class_constraint =
           match attribute with
           | "equals"
           | "matches" ->
               parse_class_equals_matches_clause ~path ~location ~callee ~attribute ~arguments
-              >>| fun class_constraint -> ModelQuery.ClassConstraint class_constraint
-          | "extends" ->
-              parse_class_extends_clause ~path ~location ~callee ~arguments
-              >>| fun class_constraint -> ModelQuery.ClassConstraint class_constraint
+          | "extends" -> parse_class_extends_clause ~path ~location ~callee ~arguments
           | "decorator" ->
               parse_decorator_constraint ~path ~location constraint_expression
-              >>= fun decorator_constraint ->
-              Ok (ModelQuery.ClassConstraint (DecoratorSatisfies decorator_constraint))
-          | "any_child" ->
-              parse_any_child_constraint ~path ~location ~callee ~arguments
-              >>= fun (class_constraint, is_transitive) ->
-              Ok
-                (ModelQuery.ClassConstraint
-                   (ModelQuery.ClassConstraint.AnyChildSatisfies { class_constraint; is_transitive }))
-          | _ -> Error (model_verification_error ~path ~location (UnsupportedCallee callee)))
+              >>| fun decorator_constraint ->
+              ModelQuery.ClassConstraint.DecoratorConstraint decorator_constraint
+          | "any_child" -> parse_any_child_constraint ~path ~location ~callee ~arguments
+          | _ -> Error (model_verification_error ~path ~location (UnsupportedCallee callee))
+        in
+        class_constraint
+        >>| fun class_constraint -> ModelQuery.Constraint.ClassConstraint class_constraint
     | Expression.Call { Call.callee; arguments = _ } ->
         Error (model_verification_error ~path ~location (UnsupportedCallee callee))
     | _ ->
@@ -2281,7 +1796,7 @@ let parse_model_clause
       ~path
       ~location
       (InvalidModelQueryModelClause
-         { expression = callee; find_clause_kind = get_find_clause_as_string find_clause })
+         { expression = callee; find_clause_kind = ModelQuery.Find.show find_clause })
   in
   let parse_model ({ Node.value; _ } as model_expression) =
     let parse_taint taint_expression =
@@ -2312,9 +1827,17 @@ let parse_model_clause
             } -> (
             match parametric_annotation with
             | "ParametricSourceFromAnnotation" ->
-                Ok [ModelQuery.ParametricSourceFromAnnotation { source_pattern = pattern; kind }]
+                Ok
+                  [
+                    ModelQuery.QueryTaintAnnotation.ParametricSourceFromAnnotation
+                      { source_pattern = pattern; kind };
+                  ]
             | "ParametricSinkFromAnnotation" ->
-                Ok [ModelQuery.ParametricSinkFromAnnotation { sink_pattern = pattern; kind }]
+                Ok
+                  [
+                    ModelQuery.QueryTaintAnnotation.ParametricSinkFromAnnotation
+                      { sink_pattern = pattern; kind };
+                  ]
             | _ ->
                 Error
                   (model_verification_error
@@ -2332,7 +1855,7 @@ let parse_model_clause
               ~is_object_target
               ~is_model_query:true
               expression
-            >>| List.map ~f:(fun taint -> ModelQuery.TaintAnnotation taint)
+            >>| List.map ~f:(fun taint -> ModelQuery.QueryTaintAnnotation.TaintAnnotation taint)
       in
 
       match Node.value taint_expression with
@@ -2340,55 +1863,71 @@ let parse_model_clause
           List.map taint_annotations ~f:parse_produced_taint |> all >>| List.concat
       | _ -> parse_produced_taint taint_expression
     in
-    let check_clause_kind_result =
-      let unexpected_model_expression () =
-        Error
-          (model_verification_error ~path ~location (UnexpectedModelExpression model_expression))
-      in
-      match value with
-      | Expression.Call
-          { Call.callee = { Node.value = Name (Name.Identifier identifier); _ } as callee; _ } -> (
-          let check_clause_kind is_valid_clause_kind =
-            if is_valid_clause_kind find_clause then
-              Ok ()
-            else
-              Error (invalid_model_query_model_clause ~path ~location callee)
-          in
-          match identifier with
-          | "Returns" -> check_clause_kind is_callable_clause_kind
-          | "AttributeModel" -> check_clause_kind is_attribute_clause_kind
-          | "GlobalModel" -> check_clause_kind is_global_clause_kind
-          | "NamedParameter" -> check_clause_kind is_callable_clause_kind
-          | "PositionalParameter" -> check_clause_kind is_callable_clause_kind
-          | "AllParameters" -> check_clause_kind is_callable_clause_kind
-          | "Parameters" -> check_clause_kind is_callable_clause_kind
-          | _ -> unexpected_model_expression ())
-      | _ -> unexpected_model_expression ()
+    let check_find ~callee expected_function =
+      if expected_function find_clause then
+        Ok ()
+      else
+        Error (invalid_model_query_model_clause ~path ~location callee)
     in
-    check_clause_kind_result
-    >>= fun () ->
     match value with
     | Expression.Call
         {
-          Call.callee = { Node.value = Name (Name.Identifier "Returns"); _ };
+          Call.callee = { Node.value = Name (Name.Identifier "Returns"); _ } as callee;
           arguments = [{ Call.Argument.value = taint; _ }];
         } ->
-        parse_taint taint >>| fun taint -> ModelQuery.ReturnTaint taint
+        check_find ~callee ModelQuery.Find.is_callable
+        >>= fun () -> parse_taint taint >>| fun taint -> ModelQuery.Model.Return taint
     | Expression.Call
         {
-          Call.callee = { Node.value = Name (Name.Identifier "AttributeModel"); _ };
+          Call.callee = { Node.value = Name (Name.Identifier "AttributeModel"); _ } as callee;
           arguments = [{ Call.Argument.value = taint; _ }];
         } ->
-        parse_taint taint >>| fun taint -> ModelQuery.AttributeTaint taint
+        check_find ~callee ModelQuery.Find.is_attribute
+        >>= fun () -> parse_taint taint >>| fun taint -> ModelQuery.Model.Attribute taint
     | Expression.Call
         {
-          Call.callee = { Node.value = Name (Name.Identifier "GlobalModel"); _ };
+          Call.callee = { Node.value = Name (Name.Identifier "GlobalModel"); _ } as callee;
           arguments = [{ Call.Argument.value = taint; _ }];
         } ->
-        parse_taint taint >>| fun taint -> ModelQuery.GlobalTaint taint
+        check_find ~callee ModelQuery.Find.is_global
+        >>= fun () -> parse_taint taint >>| fun taint -> ModelQuery.Model.Global taint
     | Expression.Call
         {
-          Call.callee = { Node.value = Name (Name.Identifier "NamedParameter"); _ };
+          Call.callee = { Node.value = Name (Name.Identifier "Modes"); _ } as callee;
+          arguments =
+            [
+              {
+                Call.Argument.value =
+                  { Node.value = Expression.List (_ :: _ as mode_list); location };
+                _;
+              };
+            ];
+        } ->
+        let parse_mode mode =
+          match mode with
+          | { Node.value = Expression.Name (Name.Identifier mode_name); location } -> (
+              match Model.Mode.from_string mode_name with
+              | Some mode -> Ok mode
+              | None ->
+                  Error (model_verification_error ~path ~location (InvalidModelQueryMode mode_name))
+              )
+          | _ -> Error (model_verification_error ~path ~location (UnexpectedModelExpression mode))
+        in
+        check_find ~callee ModelQuery.Find.is_callable
+        >>= fun () ->
+        List.map ~f:parse_mode mode_list
+        |> Result.all
+        >>| fun modes ->
+        let mode_set =
+          List.fold_left
+            ~init:Model.ModeSet.empty
+            ~f:(fun mode_set mode -> Model.ModeSet.add mode mode_set)
+            modes
+        in
+        ModelQuery.Model.Modes mode_set
+    | Expression.Call
+        {
+          Call.callee = { Node.value = Name (Name.Identifier "NamedParameter"); _ } as callee;
           arguments =
             [
               {
@@ -2399,10 +1938,12 @@ let parse_model_clause
               { Call.Argument.value = taint; name = Some { Node.value = "taint"; _ } };
             ];
         } ->
-        parse_taint taint >>| fun taint -> ModelQuery.NamedParameterTaint { name; taint }
+        check_find ~callee ModelQuery.Find.is_callable
+        >>= fun () ->
+        parse_taint taint >>| fun taint -> ModelQuery.Model.NamedParameter { name; taint }
     | Expression.Call
         {
-          Call.callee = { Node.value = Name (Name.Identifier "PositionalParameter"); _ };
+          Call.callee = { Node.value = Name (Name.Identifier "PositionalParameter"); _ } as callee;
           arguments =
             [
               {
@@ -2412,22 +1953,28 @@ let parse_model_clause
               { Call.Argument.value = taint; name = Some { Node.value = "taint"; _ } };
             ];
         } ->
-        parse_taint taint >>| fun taint -> ModelQuery.PositionalParameterTaint { index; taint }
+        check_find ~callee ModelQuery.Find.is_callable
+        >>= fun () ->
+        parse_taint taint >>| fun taint -> ModelQuery.Model.PositionalParameter { index; taint }
     | Expression.Call
         {
-          Call.callee = { Node.value = Name (Name.Identifier "AllParameters"); _ };
+          Call.callee = { Node.value = Name (Name.Identifier "AllParameters"); _ } as callee;
           arguments = [{ Call.Argument.value = taint; _ }];
         } ->
-        parse_taint taint >>| fun taint -> ModelQuery.AllParametersTaint { excludes = []; taint }
+        check_find ~callee ModelQuery.Find.is_callable
+        >>= fun () ->
+        parse_taint taint >>| fun taint -> ModelQuery.Model.AllParameters { excludes = []; taint }
     | Expression.Call
         {
-          Call.callee = { Node.value = Name (Name.Identifier "AllParameters"); _ };
+          Call.callee = { Node.value = Name (Name.Identifier "AllParameters"); _ } as callee;
           arguments =
             [
               { Call.Argument.value = taint; _ };
               { Call.Argument.name = Some { Node.value = "exclude"; _ }; value = excludes };
             ];
         } ->
+        check_find ~callee ModelQuery.Find.is_callable
+        >>= fun () ->
         let excludes =
           let parse_string_to_exclude ({ Node.value; location } as exclude) =
             match value with
@@ -2443,22 +1990,24 @@ let parse_model_clause
         in
         excludes
         >>= fun excludes ->
-        parse_taint taint >>| fun taint -> ModelQuery.AllParametersTaint { excludes; taint }
+        parse_taint taint >>| fun taint -> ModelQuery.Model.AllParameters { excludes; taint }
     | Expression.Call
         {
           Call.callee = { Node.value = Name (Name.Identifier "Parameters"); _ } as callee;
           arguments;
         } -> (
+        check_find ~callee ModelQuery.Find.is_callable
+        >>= fun () ->
         match arguments with
         | [{ Call.Argument.value = taint; _ }] ->
-            parse_taint taint >>| fun taint -> ModelQuery.ParameterTaint { where = []; taint }
+            parse_taint taint >>| fun taint -> ModelQuery.Model.Parameter { where = []; taint }
         | [
          { Call.Argument.value = taint; _ };
          { Call.Argument.name = Some { Node.value = "where"; _ }; value = where_clause };
         ] ->
             parse_parameter_where_clause ~path where_clause
             >>= fun where ->
-            parse_taint taint >>| fun taint -> ModelQuery.ParameterTaint { where; taint }
+            parse_taint taint >>| fun taint -> ModelQuery.Model.Parameter { where; taint }
         | _ ->
             Error
               (model_verification_error
@@ -2549,7 +2098,7 @@ let parse_parameter_taint
         ~is_object_target
   |> Option.value ~default:(Ok [])
   |> Core.Result.map
-       ~f:(List.map ~f:(fun annotation -> annotation, AnnotationKind.ParameterAnnotation root))
+       ~f:(List.map ~f:(fun annotation -> ModelAnnotation.ParameterAnnotation (root, annotation)))
 
 
 let add_taint_annotation_to_model
@@ -2557,7 +2106,6 @@ let add_taint_annotation_to_model
     ~path
     ~location
     ~model_name
-    ~annotation_kind
     ~callable_annotation
     ~source_sink_filter
     model
@@ -2570,8 +2118,8 @@ let add_taint_annotation_to_model
       ~location
       (InvalidModelForTaint { model_name; error = error_message })
   in
-  match annotation_kind with
-  | AnnotationKind.ReturnAnnotation -> (
+  match annotation with
+  | ModelAnnotation.ReturnAnnotation annotation -> (
       let root = AccessPath.Root.LocalResult in
       match annotation with
       | TaintAnnotation.Sink { sink; features } ->
@@ -2606,7 +2154,7 @@ let add_taint_annotation_to_model
                (InvalidReturnAnnotation { model_name; annotation = "AddFeatureToArgument" }))
       | TaintAnnotation.Sanitize annotations ->
           Ok (introduce_sanitize ~source_sink_filter ~root model annotations))
-  | AnnotationKind.ParameterAnnotation root -> (
+  | ModelAnnotation.ParameterAnnotation (root, annotation) -> (
       match annotation with
       | TaintAnnotation.Sink { sink; features } ->
           let signature_breadcrumbs =
@@ -2655,6 +2203,8 @@ let add_taint_annotation_to_model
           |> map_error ~f:invalid_model_for_taint
       | TaintAnnotation.Sanitize annotations ->
           Ok (introduce_sanitize ~source_sink_filter ~root model annotations))
+  | ModelAnnotation.ModeAnnotation model_query_modes ->
+      Ok { model with modes = Model.ModeSet.join model_query_modes model.modes }
 
 
 let parse_return_taint
@@ -2677,7 +2227,7 @@ let parse_return_taint
     ~callable_parameter_names_to_positions
     ~is_object_target
     expression
-  |> map ~f:(List.map ~f:(fun annotation -> annotation, AnnotationKind.ReturnAnnotation))
+  |> map ~f:(List.map ~f:(fun annotation -> ModelAnnotation.ReturnAnnotation annotation))
 
 
 type parsed_signature = {
@@ -2698,11 +2248,11 @@ type parsed_attribute = {
 type parsed_statement =
   | ParsedSignature of parsed_signature
   | ParsedAttribute of parsed_attribute
-  | ParsedQuery of ModelQuery.rule
+  | ParsedQuery of ModelQuery.t
 
 type model_or_query =
   | Model of (Model.WithTarget.t * Reference.t option)
-  | Query of ModelQuery.rule
+  | Query of ModelQuery.t
 
 let resolve_global_callable
     ~path
@@ -3131,16 +2681,12 @@ let create_model_from_signature
     annotations ()
     >>= fun annotations ->
     let default_model = if is_obscure then Model.obscure_model else Model.empty_model in
-    List.fold_result
-      annotations
-      ~init:default_model
-      ~f:(fun accumulator (annotation, annotation_kind) ->
+    List.fold_result annotations ~init:default_model ~f:(fun accumulator annotation ->
         add_taint_annotation_to_model
           ~path
           ~location
           ~model_name:(Reference.show callable_name)
           ~resolution:(Resolution.global_resolution resolution)
-          ~annotation_kind
           ~callable_annotation
           ~source_sink_filter
           accumulator
@@ -3206,16 +2752,12 @@ let create_model_from_attribute
   >>= fun sink_taint ->
   Ok (List.rev_append source_taint sink_taint)
   >>= fun annotations ->
-  List.fold_result
-    annotations
-    ~init:Model.empty_model
-    ~f:(fun accumulator (annotation, annotation_kind) ->
+  List.fold_result annotations ~init:Model.empty_model ~f:(fun accumulator annotation ->
       add_taint_annotation_to_model
         ~path
         ~location
         ~model_name:(Reference.show name)
         ~resolution:(Resolution.global_resolution resolution)
-        ~annotation_kind
         ~callable_annotation:None
         ~source_sink_filter
         accumulator
@@ -3255,7 +2797,7 @@ let parse_models ~resolution ~taint_configuration ~source_sink_filter ~callables
       | Model (model_with_target, _) ->
           Some
             {
-              ExpectedModel.model = model_with_target.model;
+              ModelQuery.ExpectedModel.model = model_with_target.model;
               target = model_with_target.target;
               model_source;
             }
@@ -3656,41 +3198,9 @@ let rec parse_statement
                       ~stubs
                       parsed_signatures))
       in
-      let parse_model_query
-          ~name
-          ~find_clause
-          ~where_clause
-          ~model_clause
-          expected_models_clause
-          unexpected_models_clause
-        =
-        let convert_error_into_errors result =
-          match result with
-          | Ok result -> Ok result
-          | Error error -> Error [error]
-        in
-        let parsed_find_clause = convert_error_into_errors (parse_find_clause ~path find_clause) in
-        let is_object_target = not (is_callable_clause_kind parsed_find_clause) in
-        let parsed_expected_models_clause =
-          parse_output_models_clause ~name ~path expected_models_clause
-        in
-        let parsed_unexpected_models_clause =
-          parse_output_models_clause ~name ~path unexpected_models_clause
-        in
-        Ok
-          ( name,
-            parsed_find_clause,
-            convert_error_into_errors
-              (parse_where_clause ~path ~find_clause:parsed_find_clause where_clause),
-            convert_error_into_errors
-              (parse_model_clause
-                 ~path
-                 ~taint_configuration
-                 ~find_clause:parsed_find_clause
-                 ~is_object_target
-                 model_clause),
-            parsed_expected_models_clause,
-            parsed_unexpected_models_clause )
+      let as_result_error_list = function
+        | Ok result -> Ok result
+        | Error error -> Error [error]
       in
       let clauses =
         match arguments with
@@ -3706,83 +3216,66 @@ let rec parse_statement
              :: { Call.Argument.name = Some { Node.value = "where"; _ }; value = where_clause }
                 :: { Call.Argument.name = Some { Node.value = "model"; _ }; value = model_clause }
                    :: remaining_arguments ->
-            Ok (name, find_clause, where_clause, model_clause, remaining_arguments)
-        | _ -> Error [model_verification_error ~path ~location (InvalidModelQueryClauses arguments)]
+            Ok ((name, find_clause, where_clause, model_clause), remaining_arguments)
+        | _ -> Error [model_verification_error ~path ~location (InvalidModelQueryClauses statement)]
       in
       let clauses =
         clauses
-        >>= fun (name, find_clause, where_clause, model_clause, remaining_arguments) ->
-        let expected_and_unexpected_models_clauses =
-          match remaining_arguments with
-          | [
-           {
-             Call.Argument.name = Some { Node.value = "expected_models"; _ };
-             value = expected_models_clause;
-           };
-          ] ->
-              Ok (Some expected_models_clause, None)
-          | [
-           {
-             Call.Argument.name = Some { Node.value = "unexpected_models"; _ };
-             value = unexpected_models_clause;
-           };
-          ] ->
-              Ok (None, Some unexpected_models_clause)
-          | [
-           {
-             Call.Argument.name = Some { Node.value = "expected_models"; _ };
-             value = expected_models_clause;
-           };
-           {
-             Call.Argument.name = Some { Node.value = "unexpected_models"; _ };
-             value = unexpected_models_clause;
-           };
-          ] ->
-              Ok (Some expected_models_clause, Some unexpected_models_clause)
-          | [] -> Ok (None, None)
-          | _ ->
-              Error (model_verification_error ~path ~location (InvalidModelQueryClauses arguments))
-        in
-        match expected_and_unexpected_models_clauses with
-        | Ok (expected_models_clause, unexpected_models_clause) ->
-            parse_model_query
-              ~name
-              ~find_clause
-              ~where_clause
-              ~model_clause
-              expected_models_clause
-              unexpected_models_clause
-        | Error error -> Error [error]
+        >>= fun (required_arguments, remaining_arguments) ->
+        match remaining_arguments with
+        | [
+         {
+           Call.Argument.name = Some { Node.value = "expected_models"; _ };
+           value = expected_models_clause;
+         };
+        ] ->
+            Ok (required_arguments, Some expected_models_clause, None)
+        | [
+         {
+           Call.Argument.name = Some { Node.value = "unexpected_models"; _ };
+           value = unexpected_models_clause;
+         };
+        ] ->
+            Ok (required_arguments, None, Some unexpected_models_clause)
+        | [
+         {
+           Call.Argument.name = Some { Node.value = "expected_models"; _ };
+           value = expected_models_clause;
+         };
+         {
+           Call.Argument.name = Some { Node.value = "unexpected_models"; _ };
+           value = unexpected_models_clause;
+         };
+        ] ->
+            Ok (required_arguments, Some expected_models_clause, Some unexpected_models_clause)
+        | [] -> Ok (required_arguments, None, None)
+        | _ -> Error [model_verification_error ~path ~location (InvalidModelQueryClauses statement)]
       in
-
       clauses
-      >>= fun ( name,
-                find_clause,
-                where_clause,
-                model_clause,
+      >>= fun ( (name, find_clause, where_clause, model_clause),
                 expected_models_clause,
                 unexpected_models_clause ) ->
-      find_clause
-      >>= fun rule_kind ->
-      where_clause
-      >>= fun query ->
-      model_clause
-      >>= fun productions ->
-      expected_models_clause
+      parse_find_clause ~path find_clause
+      |> as_result_error_list
+      >>= fun find ->
+      parse_where_clause ~path ~find_clause:find where_clause
+      |> as_result_error_list
+      >>= fun where ->
+      parse_model_clause
+        ~path
+        ~taint_configuration
+        ~find_clause:find
+        ~is_object_target:(not (ModelQuery.Find.is_callable find))
+        model_clause
+      |> as_result_error_list
+      >>= fun models ->
+      parse_output_models_clause ~name ~path expected_models_clause
       >>= fun expected_models ->
-      unexpected_models_clause
+      parse_output_models_clause ~name ~path unexpected_models_clause
       >>| fun unexpected_models ->
       [
         ParsedQuery
-          {
-            ModelQuery.rule_kind;
-            query;
-            productions;
-            name;
-            location;
-            expected_models;
-            unexpected_models;
-          };
+          { ModelQuery.find; where; models; name; location; expected_models; unexpected_models };
       ]
   | { Node.location; _ } ->
       Error [model_verification_error ~path ~location (UnexpectedStatement statement)]
@@ -3930,10 +3423,7 @@ let create_callable_model_from_annotations
             | _ -> None)
       >>= fun callable_annotation ->
       let default_model = if is_obscure then Model.obscure_model else Model.empty_model in
-      List.fold
-        annotations
-        ~init:(Ok default_model)
-        ~f:(fun accumulator (annotation_kind, annotation) ->
+      List.fold annotations ~init:(Ok default_model) ~f:(fun accumulator model_annotation ->
           accumulator
           >>= fun accumulator ->
           add_taint_annotation_to_model
@@ -3941,11 +3431,10 @@ let create_callable_model_from_annotations
             ~location:Location.any
             ~model_name:"Model query"
             ~resolution:global_resolution
-            ~annotation_kind
             ~callable_annotation
             ~source_sink_filter
             accumulator
-            annotation)
+            model_annotation)
 
 
 let create_attribute_model_from_annotations ~resolution ~name ~source_sink_filter annotations =
@@ -3954,33 +3443,33 @@ let create_attribute_model_from_annotations ~resolution ~name ~source_sink_filte
   List.fold annotations ~init:(Ok Model.empty_model) ~f:(fun accumulator annotation ->
       accumulator
       >>= fun accumulator ->
-      let annotation_kind =
+      let model_annotation =
         match annotation with
-        | TaintAnnotation.Source _ -> Ok AnnotationKind.ReturnAnnotation
+        | TaintAnnotation.Source _ -> Ok (ModelAnnotation.ReturnAnnotation annotation)
         | TaintAnnotation.Sink _
         | TaintAnnotation.Tito _ ->
             Ok
-              (AnnotationKind.ParameterAnnotation
-                 (AccessPath.Root.PositionalParameter
-                    { position = 0; name = attribute_symbolic_parameter; positional_only = false }))
+              (ModelAnnotation.ParameterAnnotation
+                 ( AccessPath.Root.PositionalParameter
+                     { position = 0; name = attribute_symbolic_parameter; positional_only = false },
+                   annotation ))
         | _ ->
             Error
               (invalid_model_query_error
                  (InvalidAnnotationForAttributeModel
                     { name; annotation = TaintAnnotation.show annotation }))
       in
-      annotation_kind
-      >>= fun annotation_kind ->
+      model_annotation
+      >>= fun model_annotation ->
       add_taint_annotation_to_model
         ~path:None
         ~location:Location.any
         ~model_name:"Model query"
         ~resolution:global_resolution
-        ~annotation_kind
         ~callable_annotation:None
         ~source_sink_filter
         accumulator
-        annotation)
+        model_annotation)
 
 
 let verify_model_syntax ~path ~source =

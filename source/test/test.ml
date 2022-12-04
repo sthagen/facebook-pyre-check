@@ -1039,6 +1039,7 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         Annotated = TypeAlias(object)
         List = TypeAlias(object)
         Dict = TypeAlias(object)
+        Set = TypeAlias(object)
         Optional: _SpecialForm = ...
         Union: _SpecialForm = ...
         Any = object()
@@ -2813,7 +2814,7 @@ let create_type_alias_table type_aliases =
 
 
 let mock_scheduler () =
-  Taint.ModelParser.ClassDefinitionsCache.invalidate ();
+  Taint.ModelVerifier.ClassDefinitionsCache.invalidate ();
   Scheduler.create_sequential ()
 
 

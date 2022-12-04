@@ -50,7 +50,7 @@ type kind =
       name: Reference.t;
       actual_name: Reference.t;
     }
-  | InvalidModelQueryClauses of Expression.Call.Argument.t list
+  | InvalidModelQueryClauses of Statement.t
   | InvalidModelQueryWhereClause of {
       expression: Expression.t;
       find_clause_kind: string;
@@ -61,6 +61,7 @@ type kind =
     }
   | InvalidParameterExclude of Expression.t
   | InvalidIsTransitive of Expression.t
+  | InvalidIncludesSelf of Expression.t
   | InvalidModelQueryClauseArguments of {
       callee: Expression.t;
       arguments: Expression.Call.Argument.t list;
@@ -140,6 +141,7 @@ type kind =
       models_clause: Expression.t;
     }
   | InvalidAnyChildClause of Expression.t
+  | InvalidModelQueryMode of string
 [@@deriving sexp, compare]
 
 type t = {

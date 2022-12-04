@@ -49,13 +49,14 @@ let test_find_globals context =
     let { ScratchProject.BuiltTypeEnvironment.type_environment; _ } =
       ScratchProject.build_type_environment project
     in
-    let is_uninteresting_global { TaintModelQuery.ModelQuery.name = global_name; _ } =
+    let is_uninteresting_global { Taint.ModelQueryExecution.VariableMetadata.name = global_name; _ }
+      =
       not
         (List.exists uninteresting_globals_prefix ~f:(fun exclude_prefix ->
              Reference.is_prefix ~prefix:exclude_prefix global_name))
     in
     let actual =
-      TaintModelQuery.ModelQuery.GlobalVariableQueries.get_globals_and_annotations
+      Taint.ModelQueryExecution.GlobalVariableQueries.get_globals_and_annotations
         ~environment:type_environment
       |> List.filter ~f:is_uninteresting_global
     in
@@ -63,22 +64,24 @@ let test_find_globals context =
       List.map
         ~f:(fun (reference, annotation) ->
           {
-            TaintModelQuery.ModelQuery.name = reference;
+            Taint.ModelQueryExecution.VariableMetadata.name = reference;
             type_annotation = annotation >>| Type.expression;
           })
         expected
     in
     let variable_metadata_location_insensitive_equal left right =
-      Reference.equal left.TaintModelQuery.ModelQuery.name right.TaintModelQuery.ModelQuery.name
+      Reference.equal
+        left.Taint.ModelQueryExecution.VariableMetadata.name
+        right.Taint.ModelQueryExecution.VariableMetadata.name
       && Option.compare
            Expression.Expression.location_insensitive_compare
-           left.TaintModelQuery.ModelQuery.type_annotation
-           right.TaintModelQuery.ModelQuery.type_annotation
+           left.Taint.ModelQueryExecution.VariableMetadata.type_annotation
+           right.Taint.ModelQueryExecution.VariableMetadata.type_annotation
          = 0
     in
     assert_equal
       ~cmp:(List.equal variable_metadata_location_insensitive_equal)
-      ~printer:[%show: TaintModelQuery.ModelQuery.variable_metadata list]
+      ~printer:[%show: Taint.ModelQueryExecution.VariableMetadata.t list]
       expected
       actual
   in
