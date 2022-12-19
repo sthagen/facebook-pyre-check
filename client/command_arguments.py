@@ -98,6 +98,7 @@ class CommandArguments:
     number_of_workers: Optional[int] = None
     use_buck2: Optional[bool] = None
     configuration_path: Optional[str] = None
+    enable_unawaited_awaitable_analysis: Optional[bool] = None
 
 
 @dataclass(frozen=True)
@@ -286,6 +287,7 @@ class AnalyzeArguments:
     taint_models_path: List[str] = field(default_factory=list)
     use_cache: bool = False
     check_invariants: bool = False
+    limit_entrypoints: bool = False
 
 
 @dataclass(frozen=True)

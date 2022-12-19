@@ -37,6 +37,30 @@ end
 
 (** {1 Server State}*)
 
+(** This module contains the state tracking open files in the code navigation server. *)
+module OpenFiles : sig
+  type t
+
+  (** Mark a file as opened in the open file state. *)
+  val open_file : t -> source_path:SourcePath.t -> overlay_id:string -> unit
+
+  (** Mark a file as closed in the open file state. *)
+  val close_file
+    :  t ->
+    source_path:SourcePath.t ->
+    overlay_id:string ->
+    (unit, Response.ErrorKind.t) Result.t
+
+  (** Evaluates to the list of current open files. *)
+  val open_files : t -> SourcePath.t list
+
+  (** Returns true iff the open files currently tracks `overlay_id`. *)
+  val contains : t -> source_path:SourcePath.t -> overlay_id:string -> bool
+
+  (** Creates a new open files state object with no files marked as open. *)
+  val create : unit -> t
+end
+
 (** This module contains APIs that are relevant to the internal state of the code navigation server. *)
 module State : sig
   (** A type that represent the internal state of the server. *)
@@ -77,6 +101,14 @@ module Testing : sig
       [@@deriving sexp, compare, yojson { strict = false }]
     end
 
+    module ClassExpression : sig
+      type t = {
+        module_: Module.t; [@key "module"]
+        qualified_name: string;
+      }
+      [@@deriving sexp, compare, yojson { strict = false }]
+    end
+
     module FileUpdateEvent : sig
       module Kind : sig
         (** A helper type that help specifying the change associated with the event. *)
@@ -106,6 +138,35 @@ module Testing : sig
         | Stop
             (** A command that asks the server to stop. The server will shut itself down immediately
                 when this request gets processed. No response will be sent back to the client. *)
+        | FileOpened of {
+            path: string;
+            content: string option;
+            overlay_id: string;
+          }
+            (** A command that asks the server to create an overlay for a given module and mark a
+                file as tracked. [content] specifies the content of the source file corresponds to
+                the module.[content] being [None] indicates that contents of the source file should
+                match what was stored on the filesystem.
+
+                The server will send back a {!Response.Ok} response when the update succeeds, and a
+                new overlay with that ID will be created.
+
+                If the provided module is not covered by the code navigation server, the server will
+                respond with a {!Response.ErrorKind.ModuleNotTracked} error. We don't allow
+                specifying closed opened/closed files by name. *)
+        | FileClosed of {
+            path: string;
+            overlay_id: string;
+          }
+            (** A command that notifies the server that a previouly open file was closed. The server
+                will send back a {!Response.Ok} response when the update succeeds.
+
+                If the provided module is not covered by the code navigation server, the server will
+                respond with a {!Response.ErrorKind.ModuleNotTracked} error.
+
+                If closing a file that was not previously opened by a `{Command.FileOpened}`
+                command, the server will respond with a {!Response.ErrorKind.UntrackedFileClosed}
+                error. *)
         | LocalUpdate of {
             module_: Module.t;
             content: string option;
@@ -188,6 +249,14 @@ module Testing : sig
         | GetInfo
             (** A query that asks for server metadata, intended to be consumed by the `pyre servers`
                 command. *)
+        | Superclasses of {
+            class_: ClassExpression.t;
+            overlay_id: string option;
+          }
+            (** A query that asks the server to return the superclasses of a given class. The server
+                will send back a {!Response.Superclasses} response as result if a class matching the
+                fully qualified name is found. Only class names that are found in the type
+                environment will be included in the returned mapping. *)
       [@@deriving sexp, compare, yojson { strict = false }]
     end
 
@@ -226,6 +295,9 @@ module Testing : sig
         | OverlayNotFound of { overlay_id: string }
             (** This error occurs when the client has requested info from an overlay whose id does
                 not exist within the server. *)
+        | UntrackedFileClosed of { path: string }
+            (** This error occurs when the client has send a command to close a file not tracked by
+                the server. *)
       [@@deriving sexp, compare, yojson { strict = false }]
     end
 
@@ -238,8 +310,8 @@ module Testing : sig
       (** A type representing hovering text element. Roughly corresponds to LSP's [MarkupContent]
           structure. *)
       type t = {
-        kind: Kind.t;
-        value: string;
+        value: string option;
+        docstring: string option;
       }
       [@@deriving sexp, compare, yojson { strict = false }]
     end
@@ -308,6 +380,10 @@ module Testing : sig
         }
           (** The information provides in response to GetInfo queries. All fields must be present
               for the `pyre servers` command. *)
+      | Superclasses of { superclasses: Request.ClassExpression.t list }
+          (** Response for {!Request.Superclasses}. Does not return full types, instead opting to
+              return only the names of a given class' bases. Creates a mapping from each requested
+              class to its superclasses. *)
     [@@deriving sexp, compare, yojson { strict = false }]
   end
 
@@ -362,5 +438,108 @@ module Testing : sig
         The message being sent is constructed by forcing [message]. The message is constructed
         lazily to avoid the cost of the construction when [subscriptions] is empty *)
     val broadcast : response:Response.t Lazy.t -> t -> unit Lwt.t
+  end
+
+  (** This module defines the interfaces for a build system.
+
+      From Pyre's perspective, a build system is defined as a component that remaps file paths: it
+      allows the type checker to view a source file with certain path (i.e. the "source path") as a
+      file with some other path (i.e. the "artifact path"). File paths matter for the type checker
+      since it affects how Python modules are qualified.
+
+      According to the definition above, a build system must provide interfaces that allow its
+      client to query the associations between source paths and artifact paths. Since these
+      associations may change throughout the lifetime of a Pyre server, additional hooks are also
+      provided to allow clients to refresh them, if necessary. *)
+  module BuildSystem : sig
+    (** The abstract type of a build system. *)
+    type t
+
+    (** {1 External Interfaces} *)
+
+    (** [update_working_set build_system source_paths] notifies [build_system] that the current
+        working set may be changed. The [source_paths] argument specifies the set of files whose
+        source mapping needs to be included in the build (usually this would correspond to the set
+        of currently opened files, and an update is needed whenever a file gets opened or closed).
+
+        This function and {!update_sources} are expected to handle different kinds of events. This
+        function should be invoked when files are added to or removed from the current working set
+        (e.g. a file is opened or closed by the editor). {!update_sources} should be invoked when
+        files are detected to be changed on the filesystem (e.g. a file is saved by the editor).
+        Since a file save could possibly affect what gets included in a build, {!update_sources} may
+        or may not invoke this function under the hood. But this function will never invoke
+        {!update_sources} as working set change would never alter the contents of files in the set.
+
+        Return a list of artifact events where contents of the artifacts may be changed by this
+        update. *)
+    val update_working_set : t -> SourcePath.t list -> ArtifactPath.Event.t list Lwt.t
+
+    (** [update_sources build_system source_path_events] notifies [build_system] that some sources
+        files may be changed on the filesystem, and the [source_path_events] argument specifies what
+        files get changed and how.
+
+        This function and {!update_working_set} are expected to handle different kinds of events.
+        {!update_working_set} should be invoked when files are added to or removed from the current
+        working set (e.g. a file is opened or closed by the editor). This function should be invoked
+        when files are detected to be changed on the filesystem (e.g. a file is saved by the
+        editor). Since a file save could possibly affect what gets included in a build, this
+        function may or may not invoke {!update_working_set} under the hood. But
+        {!update_working_set} will never invoke this function as working set change would never
+        alter the contents of files in the set.
+
+        Return a list of artifact events where contents of the artifacts may be changed by this
+        update. *)
+    val update_sources
+      :  t ->
+      working_set:SourcePath.t list ->
+      SourcePath.Event.t list ->
+      ArtifactPath.Event.t list Lwt.t
+
+    (** Given an artifact path, return the corresponding source path, which is guaranteed to be
+        unique if exists. Return [None] if no such source path exists. *)
+    val lookup_source : t -> ArtifactPath.t -> SourcePath.t option
+
+    (** Given an source path, return the corresponding artifact paths. Return the empty list if no
+        such artifact path exists. *)
+    val lookup_artifact : t -> SourcePath.t -> ArtifactPath.t list
+
+    (** This module provides APIs that facilitate build system creation. *)
+    module Initializer : sig
+      (** A type alias to {!type:BuildSystem.t}. This alias is needed to avoid naming conflict with
+          {!type:t}. *)
+      type build_system = t
+
+      (** The abstract type of a build system initializer. *)
+      type t
+
+      (** Construct a {!type:BuildSystem.t}. Additional work can be performed (e.g. copying or
+          indexing files) to establish the source-to-artifact mapping, before the build system gets
+          created.
+
+          This API may or may not raise exceptions, depending on the behavior of each individual
+          initializer. *)
+      val initialize : t -> build_system Lwt.t
+
+      (** This API allows the build system to perform additional work (e.g. removing temporary
+          files) when the Pyre server is about to shut down.
+
+          This API is defined on {!type: t} instead of {!type: build_system} because we want to
+          ensure that the cleanup operation can be performed even if build system initialization
+          process is interrupted before server initialization finishes. *)
+      val cleanup : t -> unit Lwt.t
+
+      (** [null] initializes a no-op build system. It does nothing on [update], and [cleanup], and
+          it always assumes an identity source-to-artifact mapping. This can be used when the
+          project being checked does not use a build system. This initializer never raises. *)
+      val null : t
+
+      (* This function allows the client to fully tweak the behavior of an initializer. Expose for
+         testing purpose only. *)
+      val create_for_testing
+        :  initialize:(unit -> build_system Lwt.t) ->
+        cleanup:(unit -> unit Lwt.t) ->
+        unit ->
+        t
+    end
   end
 end

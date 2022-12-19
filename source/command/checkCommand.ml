@@ -73,6 +73,7 @@ module CheckConfiguration = struct
             parallel;
             number_of_workers;
             enable_readonly_analysis;
+            enable_unawaited_awaitable_analysis;
             shared_memory =
               { Configuration.SharedMemory.heap_size; dependency_table_power; hash_table_power };
             remote_logging = _;
@@ -109,6 +110,7 @@ module CheckConfiguration = struct
       ~enable_type_comments
       ~source_paths:(Configuration.SourcePaths.to_search_paths source_paths)
       ~enable_readonly_analysis
+      ~enable_unawaited_awaitable_analysis
       ()
 end
 
@@ -220,9 +222,9 @@ let on_exception = function
   | Base.Exn.Finally (Worker.Worker_exited_abnormally (pid, status), _) ->
       let message =
         match status with
-        | Caml.Unix.WEXITED return_code -> Format.sprintf "exited with return code %d" return_code
-        | Caml.Unix.WSIGNALED signal -> Format.sprintf "was killed with signal %d" signal
-        | Caml.Unix.WSTOPPED signal -> Format.sprintf "was stopped with signal %d" signal
+        | Caml_unix.WEXITED return_code -> Format.sprintf "exited with return code %d" return_code
+        | Caml_unix.WSIGNALED signal -> Format.sprintf "was killed with signal %d" signal
+        | Caml_unix.WSTOPPED signal -> Format.sprintf "was stopped with signal %d" signal
       in
       Log.error
         "Pyre encountered an internal exception: Worker_exited_abnormally: process %d %s"
@@ -277,7 +279,7 @@ let run_check configuration_file =
 
 let command =
   Printexc.record_backtrace true;
-  let filename_argument = Command.Param.(anon ("filename" %: Filename.arg_type)) in
+  let filename_argument = Command.Param.(anon ("filename" %: Filename_unix.arg_type)) in
   Command.basic
     ~summary:"Runs a full check without a server"
     (Command.Param.map filename_argument ~f:(fun filename () -> run_check filename))

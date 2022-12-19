@@ -309,18 +309,6 @@ module Raw : sig
     }
   [@@deriving sexp_of]
 
-  type t
-
-  (** Create an instance of [Raw.t] based on system-installed Buck. The [additional_log_size]
-      parameter controls how many lines of Buck log to preserve when an {!BuckError} is raised. By
-      default, the size is set to 0, which means no additional log will be kept. *)
-  val create : ?additional_log_size:int -> unit -> t
-
-  (** Create an instance of [Raw.t] based on system-installed Buck2. The [additional_log_size]
-      parameter controls how many lines of Buck2 log to preserve when an {!BuckError} is raised. By
-      default, the size is set to 0, which means no additional log will be kept. *)
-  val create_v2 : ?additional_log_size:int -> unit -> t
-
   (** Utility type to represent the argument and return type for common command-line Buck
       interaction.
 
@@ -328,29 +316,49 @@ module Raw : sig
       since Buck interpret them a bit differently from the rest of the arguments. *)
   type buck_command = ?mode:string -> ?isolation_prefix:string -> string list -> string Lwt.t
 
-  (** Create an instance of [Raw.t] from custom [query], [build], and [bxl] behavior. Useful for
-      unit testing. *)
-  val create_for_testing : query:buck_command -> build:buck_command -> bxl:buck_command -> unit -> t
+  (** This module contains APIs specific to Buck1 *)
+  module V1 : sig
+    type t
 
-  (** Shell out to `buck query` with the given cli arguments. Returns the content of stdout. If the
-      return code is not 0, raise [BuckError]. *)
-  val query : t -> buck_command
+    (** Create an instance of [t] based on system-installed Buck1. The [additional_log_size]
+        parameter controls how many lines of Buck log to preserve when an {!BuckError} is raised. By
+        default, the size is set to 0, which means no additional log will be kept. *)
+    val create : ?additional_log_size:int -> unit -> t
 
-  (** Shell out to `buck build` with the given cli arguments. Returns the content of stdout. If the
-      return code is not 0, raise [BuckError]. *)
-  val build : t -> buck_command
+    (** Create an instance of [t] from custom [query] and [build] behavior. Useful for unit testing. *)
+    val create_for_testing : query:buck_command -> build:buck_command -> unit -> t
 
-  (** Shell out to `buck bxl` with the given cli arguments. Returns the content of stdout. If the
-      return code is not 0, raise [BuckError]. *)
-  val bxl : t -> buck_command
+    (** Shell out to `buck1 query` with the given cli arguments. Returns the content of stdout. If
+        the return code is not 0, raise [BuckError]. *)
+    val query : t -> buck_command
+
+    (** Shell out to `buck1 build` with the given cli arguments. Returns the content of stdout. If
+        the return code is not 0, raise [BuckError]. *)
+    val build : t -> buck_command
+  end
+
+  (** This module contains APIs specific to Buck2 *)
+  module V2 : sig
+    type t
+
+    (** Create an instance of [t] based on system-installed Buck2. The [additional_log_size]
+        parameter controls how many lines of Buck2 log to preserve when an {!BuckError} is raised.
+        By default, the size is set to 0, which means no additional log will be kept. *)
+    val create : ?additional_log_size:int -> unit -> t
+
+    (** Create an instance of [t] from custom [bxl] behavior. Useful for unit testing. *)
+    val create_for_testing : bxl:buck_command -> unit -> t
+
+    (** Shell out to `buck2 bxl` with the given cli arguments. Returns the content of stdout. If the
+        return code is not 0, raise [BuckError]. *)
+    val bxl : t -> buck_command
+  end
 end
 
 (** This module contains high-level interfaces for invoking [buck] as an external tool. It relies on
     the {!module:Raw} module to provide the lower-level knowledge on how the [buck] executable
     should be invoked. *)
 module Interface : sig
-  type t
-
   (** Raised when [buck] returns malformed JSONs *)
   exception JsonError of string
 
@@ -363,43 +371,127 @@ module Interface : sig
     }
   end
 
-  (** Create an instance of [Interface.t] from an instance of {!Raw.t} and some buck options.
-      Interfaces created this way is only compatible with Buck1. *)
-  val create : ?mode:string -> ?isolation_prefix:string -> Raw.t -> t
+  (** This module contains APIs specific to Buck1 *)
+  module V1 : sig
+    type t
 
-  (** Create an instance of [Interface.t] from an instance of {!Raw.t} and some buck options.
-      Interfaces created this way is only compatible with Buck2.*)
-  val create_v2 : ?mode:string -> ?isolation_prefix:string -> ?bxl_builder:string -> Raw.t -> t
+    (** Create an instance of [t] from an instance of {!Raw.V1.t} and some buck options. Interfaces
+        created this way is only compatible with Buck1. *)
+    val create : ?mode:string -> ?isolation_prefix:string -> Raw.V1.t -> t
 
-  (** Create an instance of [Interface.t] from custom [normalize_targets] and [construct_build_map]
-      behavior. Useful for unit testing. *)
-  val create_for_testing
-    :  normalize_targets:(string list -> Target.t list Lwt.t) ->
-    construct_build_map:(source_root:PyrePath.t -> Target.t list -> BuildResult.t Lwt.t) ->
-    unit ->
-    t
+    module BuckChangedTargetsQueryOutput : sig
+      type t = {
+        source_base_path: string;
+        artifact_base_path: string;
+        artifacts_to_sources: (string * string) list;
+      }
 
-  (** Given a list of buck target specifications (which may contain `...` or filter expression),
-      query [buck] and return the set of individual targets which will be built.
+      val to_partial_build_map : t -> (BuildMap.Partial.t, string) Result.t
 
-      May raise {!Raw.BuckError} when `buck` invocation fails, or {!JsonError} when `buck` itself
-      succeeds but its output cannot be parsed. *)
-  val normalize_targets : t -> string list -> Target.t list Lwt.t
+      val to_build_map_batch : t list -> (BuildMap.t, string) Result.t
+    end
 
-  (** Given a list of normalized Buck targets, invoke [buck] to construct the link tree as well as
-      source databases. It then loads all generated source databases, and merge all of them into a
-      single [BuildMap.t].
+    (** Create an instance of [t] from custom [normalize_targets], [construct_build_map], and
+        [query_owner_targets] behavior. Useful for unit testing. *)
+    val create_for_testing
+      :  normalize_targets:(string list -> Target.t list Lwt.t) ->
+      construct_build_map:(Target.t list -> BuildResult.t Lwt.t) ->
+      query_owner_targets:
+        (targets:Target.t list -> PyrePath.t list -> BuckChangedTargetsQueryOutput.t list Lwt.t) ->
+      unit ->
+      t
 
-      Source-db merging may not always succeed when merge conflict cannot be resolved (see
-      {!val:BuildMap.Partial.merge}). If it is deteced that the source-db for one target cannot be
-      merged into the build map due to unresolvable conflict, a warning will be printed and the
-      target will be dropped. If a target is dropped, it will not show up in the final target list
-      returned from this API (alongside with the build map). The [source_root] argument may be
-      needed for conflict detection purpose.
+    (** Given a list of buck target specifications (which may contain `...` or filter expression),
+        query [buck] and return the set of individual targets which will be built.
 
-      May raise {!Raw.BuckError} when `buck` invocation fails, or {!JsonError} when `buck` itself
-      succeeds but its output cannot be parsed. *)
-  val construct_build_map : t -> source_root:PyrePath.t -> Target.t list -> BuildResult.t Lwt.t
+        May raise {!Raw.BuckError} when `buck` invocation fails, or {!JsonError} when `buck` itself
+        succeeds but its output cannot be parsed. *)
+    val normalize_targets : t -> string list -> Target.t list Lwt.t
+
+    (** Given a list of normalized Buck targets, invoke [buck] to construct the link tree as well as
+        source databases. It then loads all generated source databases, and merge all of them into a
+        single [BuildMap.t].
+
+        Source-db merging may not always succeed when merge conflict cannot be resolved (see
+        {!val:BuildMap.Partial.merge}). If it is deteced that the source-db for one target cannot be
+        merged into the build map due to unresolvable conflict, a warning will be printed and the
+        target will be dropped. If a target is dropped, it will not show up in the final target list
+        returned from this API (alongside with the build map).
+
+        May raise {!Raw.BuckError} when `buck` invocation fails, or {!JsonError} when `buck` itself
+        succeeds but its output cannot be parsed. *)
+    val construct_build_map : t -> Target.t list -> BuildResult.t Lwt.t
+
+    (** Given a list of normalized Buck targets and a list of changed files, invoke [buck] to find
+        out what owner targets of those changed files are beneath the given normalized target list,
+        and finally return "local build map" for those owner targets in the form of
+        [BuckChangedTargetsQueryOutput.t].
+
+        May raise {!Raw.BuckError} when `buck` invocation fails, or {!JsonError} when `buck` itself
+        succeeds but its output cannot be parsed. *)
+    val query_owner_targets
+      :  t ->
+      targets:Target.t list ->
+      PyrePath.t list ->
+      BuckChangedTargetsQueryOutput.t list Lwt.t
+  end
+
+  (** This module contains APIs specific to Buck2 *)
+  module V2 : sig
+    type t
+
+    (** Create an instance of [t] from an instance of {!Raw.V2.t} and some buck options. Interfaces
+        created this way is only compatible with Buck2.*)
+    val create : ?mode:string -> ?isolation_prefix:string -> ?bxl_builder:string -> Raw.V2.t -> t
+
+    (** Create an instance of [t] from custom [construct_build_map] behavior. Useful for unit
+        testing. *)
+    val create_for_testing : construct_build_map:(string list -> BuildMap.t Lwt.t) -> unit -> t
+
+    (** Given a list of Buck targets or target expressions, invoke [buck] to construct the link tree
+        as well as source databases. It then loads all generated source databases, and merge all of
+        them into a single [BuildMap.t].
+
+        Source-db merging may not always succeed when merge conflict cannot be resolved (see
+        {!val:BuildMap.Partial.merge}). If it is deteced that the source-db for one target cannot be
+        merged into the build map due to unresolvable conflict, a warning will be printed and the
+        target will be dropped.
+
+        May raise {!Raw.BuckError} when `buck` invocation fails, or {!JsonError} when `buck` itself
+        succeeds but its output cannot be parsed. *)
+    val construct_build_map : t -> string list -> BuildMap.t Lwt.t
+  end
+
+  (** This module contains APIs specific to lazy Buck building.
+
+      Lazy building is only supported for Buck2. The APIs are very simliar to those of
+      {!Interface.V2}, except that targets to build are not specified upfront for the lazy case.
+      Instead, the lazy builder is only given a set of source paths to construct the build map on,
+      and the builder itself needs to figure out what are the corresponding targets for these source
+      paths. *)
+  module Lazy : sig
+    type t
+
+    (** Create an instance of [t] from an instance of {!Raw.V2.t} and some buck options. *)
+    val create : ?mode:string -> ?isolation_prefix:string -> bxl_builder:string -> Raw.V2.t -> t
+
+    (** Create an instance of [t] from custom [construct_build_map] behavior. Useful for unit
+        testing. *)
+    val create_for_testing : construct_build_map:(string list -> BuildMap.t Lwt.t) -> unit -> t
+
+    (** Given a list of relative source paths, invoke [buck] to construct the source databases as
+        well as relevant files referenced in the link tree. It then loads all generated source
+        databases, and merge all of them into a single {!BuildMap.t}.
+
+        Source-db merging may not always succeed when merge conflict cannot be resolved . If it is
+        deteced that the source-db for one target cannot be merged into the build map due to
+        unresolvable conflict, a warning will be printed and one of the conflicted target will be
+        dropped.
+
+        May raise {!Raw.BuckError} when `buck` invocation fails, or {!JsonError} when `buck` itself
+        succeeds but its output cannot be parsed. *)
+    val construct_build_map : t -> string list -> BuildMap.t Lwt.t
+  end
 end
 
 (** This module contains highest-level interfaces for [buck]-related logic. It relies on
@@ -407,169 +499,275 @@ end
     filesystem-related logic from {!module:Artifacts} to create&maintain information about the
     artifact files. *)
 module Builder : sig
-  type t
-
   (** Raised when artifact building fails. See {!val:Artifacts.populate}. *)
   exception LinkTreeConstructionError of string
 
-  (** {1 Creation} *)
+  (** This module contains APIs specific to classical, non-lazy Buck building, where the targets
+      that need to be built are specified upfront. *)
+  module Classic : sig
+    type t
 
-  (** Create an instance of [Builder.t] from an instance of {!Interface.t} and some buck options.
-      Builders created this way are only compatible with Buck1. *)
-  val create : source_root:PyrePath.t -> artifact_root:PyrePath.t -> Interface.t -> t
+    (** {1 Creation} *)
 
-  (** Create an instance of [Builder.t] from an instance of {!Interface.t} and some buck options.
-      Builders created with way are only compatible with Buck2. *)
-  val create_v2 : source_root:PyrePath.t -> artifact_root:PyrePath.t -> Interface.t -> t
+    (** Create an instance of {!Builder.Classic.t} from an instance of {!Interface.V1.t} and some
+        buck options. Builders created this way are only compatible with Buck1. *)
+    val create : source_root:PyrePath.t -> artifact_root:PyrePath.t -> Interface.V1.t -> t
 
-  (** {1 Build} *)
+    (** Create an instance of {!Builder.Classic.t} from an instance of {!Interface.V2.t} and some
+        buck options. Builders created with way are only compatible with Buck2. *)
+    val create_v2 : source_root:PyrePath.t -> artifact_root:PyrePath.t -> Interface.V2.t -> t
 
-  (** The return type for incremental builds. It contains a build map, a list of buck targets that
-      are successfully included in the build, and a list of artifact files whose contents may be
-      altered by the build . *)
-  module IncrementalBuildResult : sig
-    type t = {
-      build_map: BuildMap.t;
-      targets: Target.t list;
-      changed_artifacts: ArtifactPath.Event.t list;
-    }
+    (** {1 Build} *)
+
+    (** The return type for incremental builds. It contains a build map, a list of buck targets that
+        are successfully included in the build, and a list of artifact files whose contents may be
+        altered by the build . *)
+    module IncrementalBuildResult : sig
+      type t = {
+        build_map: BuildMap.t;
+        targets: Target.t list;
+        changed_artifacts: ArtifactPath.Event.t list;
+      }
+    end
+
+    (** Given a list of buck target specificaitons to build, construct a build map for the targets
+        and create a Python link tree at the given artifact root according to the build map. Return
+        the constructed build map along with a list of targets that are covered by the build map.
+
+        Concretely, the entire build process can be broken down into 4 steps:
+
+        - Query `buck` to desugar any `...` wildcard and filter expressions.
+        - Run `buck build` to force-generating all Python files and source databases.
+        - Load all source databases generated from the previous step, and merge all of them into a
+          single {!BuildMap.t}.
+        - Construct the link tree under [artifact_root] based on the content of the {!BuiltMap.t}.
+
+        The following exceptions may be raised by this API:
+
+        - {!exception: Interface.JsonError} if `buck` returns malformed or inconsistent JSON blobs.
+        - {!exception: Raw.BuckError} if `buck` quits in any unexpected ways when shelling out to
+          it.
+        - {!exception: LinkTreeConstructionError} if any error is encountered when constructing the
+          link tree from the build map.
+
+        Note this API does not ensure the artifact root to be empty before the build starts. If
+        cleaness of the artifact directory is desirable, it is expected that the caller would take
+        care of that before its invocation. *)
+    val build : targets:string list -> t -> Interface.BuildResult.t Lwt.t
+
+    (** Given a build map, create the corresponding Python link tree at the given artifact root
+        accordingly.
+
+        In most cases, downstream clients are discouraged from invoking this API.
+        {!val:Builder.Classic.build} should be used instead, since it does not force the clients to
+        construct a build map by themselves and risk having the build map and the link tree
+        inconsistent with what the target specification says. The only scenario where it makes sense
+        to prefer {!val:restore} over {!val:build} is saved state loading: in that case, we already
+        load the old build map from saved state so it is not needed (and not possible as well) to
+        re-construct that build map from scratch all over again.
+
+        The following exceptions may be raised by this API:
+
+        - {!exception: LinkTreeConstructionError} if any error is encountered when constructing the
+          link tree from the build map.
+
+        Note this API does not ensure the artifact root to be empty before the build starts. If
+        cleaness of the artifact directory is desirable, it is expected that the caller would take
+        care of that before its invocation. *)
+    val restore : build_map:BuildMap.t -> t -> unit Lwt.t
+
+    (** Given a list of buck target specificaitons to build, fully construct a new build map for the
+        targets and incrementally update the Python link tree at the given artifact root according
+        to how the new build map changed compared to the old build map. Return the new build map
+        along with a list of targets that are covered by the build map. This API may raise the same
+        set of exceptions as {!build}.
+
+        This API is guaranteed to rebuild the entire build map from scratch. It is guaranteed to
+        produce the most correct and most up-to-date build map, but at the same time it is a costly
+        operation at times. For faster incremental build, itt is recommended to use other variant of
+        incremental build APIs if their pre-conditions are known to be satisfied. *)
+    val full_incremental_build
+      :  old_build_map:BuildMap.t ->
+      targets:string list ->
+      t ->
+      IncrementalBuildResult.t Lwt.t
+
+    (** Given a list of normalized targets to build, fully construct a new build map for the targets
+        and incrementally update the Python link tree at the given artifact root according to how
+        the new build map changed compared to the old build map. Return the new build map along with
+        a list of targets that are covered by the build map. This API may raise the same set of
+        exceptions as {!full_incremental_build}.
+
+        The difference between this API and {!full_incremental_build} is that this API makes an
+        additional assumption that the given incremental update does not change the set of targets
+        to build. As a result, it can skip the target normalizing step entirely as performance
+        optimization. Such an assumption usually holds when the incremental update does not touch
+        any `BUCK` or `TARGETS` file -- callers are encouraged to verify this before deciding which
+        incremental build API to invoke. *)
+    val incremental_build_with_normalized_targets
+      :  old_build_map:BuildMap.t ->
+      targets:Target.t list ->
+      t ->
+      IncrementalBuildResult.t Lwt.t
+
+    (** Given a list of normalized targets and changed/removed files, incrementally construct a new
+        build map for the targets and incrementally update the Python link tree at the given
+        artifact root accordingly. Return the new build map along with a list of targets that are
+        covered by the build map. This API may raise the same set of exceptions as
+        {!incremental_build_with_normalized_targets}.
+
+        The difference between this API and {!incremental_build_with_normalized_targets} is that
+        this API makes an additional assumption that the given incremental update does not change
+        the contents of any generated file. As a result, it can skip both the target normalizing
+        step and the `buck build` step, which is usually a huge performance bottleneck for
+        incremental checks. *)
+    val fast_incremental_build_with_normalized_targets
+      :  old_build_map:BuildMap.t ->
+      old_build_map_index:BuildMap.Indexed.t ->
+      targets:Target.t list ->
+      changed_paths:PyrePath.t list ->
+      removed_paths:PyrePath.t list ->
+      t ->
+      IncrementalBuildResult.t Lwt.t
+
+    (** Compute the incremental check result, assuming that the corresponding update does not change
+        the build map in any way. The return value is intended to be compatible with that of
+        {!full_incremental_build} and {!incremental_build_with_normalized_targets}.
+
+        Obviously, this API makes even stronger assumption than
+        {!incremental_build_with_normalized_targets} -- the assumption virtually allows it to
+        completely skip the rebuild. Callers are therefore strongly encouraged to verify the
+        assumption, by checking that all changed sources exists and are already included in the old
+        build map. *)
+    val incremental_build_with_unchanged_build_map
+      :  build_map:BuildMap.t ->
+      build_map_index:BuildMap.Indexed.t ->
+      targets:Target.t list ->
+      changed_sources:PyrePath.t list ->
+      t ->
+      IncrementalBuildResult.t Lwt.t
+
+    (** {1 Lookup} *)
+
+    (** Lookup the source path that corresponds to the given artifact path. If there is no such
+        artifact, return [None]. Time complexity of this operation is O(1). The difference between
+        this API and {!BuildMap.Indexed.lookup_source} is that the build map API only understands
+        relative paths, while this API operates on full paths and takes care of
+        relativizing/expanding the input/output paths against source/artifact root. *)
+    val lookup_source : index:BuildMap.Indexed.t -> builder:t -> PyrePath.t -> PyrePath.t option
+
+    (** Lookup all artifact paths that corresponds to the given source path. If there is no such
+        artifact, return an empty list. Time complexity of this operation is O(1).
+
+        The difference between this API and {!BuildMap.Indexed.lookup_artifact} is that the build
+        map API only understands relative paths, while this API operates on full paths and takes
+        care of relativizing/expanding the input/output paths against artifact/source root.*)
+    val lookup_artifact : index:BuildMap.Indexed.t -> builder:t -> PyrePath.t -> PyrePath.t list
+
+    (** {1 Misc} *)
+
+    (** Return an identifier of the builder (for logging purpose). *)
+    val identifier_of : t -> string
   end
 
-  (** Given a list of buck target specificaitons to build, construct a build map for the targets and
-      create a Python link tree at the given artifact root according to the build map. Return the
-      constructed build map along with a list of targets that are covered by the build map.
+  (** This module contains APIs specific to lazy Buck building.
 
-      Concretely, the entire build process can be broken down into 4 steps:
+      Lazy building is only supported for Buck2. The APIs are very simliar to those of {!Builder},
+      except that targets to build are not specified upfront for the lazy case. Instead, the lazy
+      builder is only given a set of source paths to construct the build map on, and the builder
+      itself needs to figure out what are the corresponding targets for these source paths. *)
+  module Lazy : sig
+    type t
 
-      - Query `buck` to desugar any `...` wildcard and filter expressions.
-      - Run `buck build` to force-generating all Python files and source databases.
-      - Load all source databases generated from the previous step, and merge all of them into a
-        single [BuildMap.t].
-      - Construct the link tree under [artifact_root] based on the content of the [BuiltMap.t].
+    (** {1 Creation} *)
 
-      The following exceptions may be raised by this API:
+    (** Create an instance of [Builder.t] from an instance of {!Interface.Lazy.t} and some buck
+        options. Builders created this way are only compatible with Buck2. *)
+    val create : source_root:PyrePath.t -> artifact_root:PyrePath.t -> Interface.Lazy.t -> t
 
-      - {!exception: Interface.JsonError} if `buck` returns malformed or inconsistent JSON blobs.
-      - {!exception: Raw.BuckError} if `buck` quits in any unexpected ways when shelling out to it.
-      - {!exception: LinkTreeConstructionError} if any error is encountered when constructing the
-        link tree from the build map.
+    (** {1 Build} *)
 
-      Note this API does not ensure the artifact root to be empty before the build starts. If
-      cleaness of the artifact directory is desirable, it is expected that the caller would take
-      care of that before its invocation. *)
-  val build : targets:string list -> t -> Interface.BuildResult.t Lwt.t
+    (** The return type for incremental builds. It contains a build map and a list of artifact files
+        whose contents may be altered by the build . *)
+    module IncrementalBuildResult : sig
+      type t = {
+        build_map: BuildMap.t;
+        changed_artifacts: ArtifactPath.Event.t list;
+      }
+    end
 
-  (** Given a build map, create the corresponding Python link tree at the given artifact root
-      accordingly.
+    (** Given a list of source path, re-construct a new build map for the owning targets and
+        incrementally update the Python link tree at the given artifact root according to how the
+        new build map changed compared to the old build map. Return the new build map along with a
+        list of artifacts that are changed by the build.
 
-      In most cases, downstream clients are discouraged from invoking this API. {!val:Builder.build}
-      should be used instead, since it does not force the clients to construct a build map by
-      themselves and risk having the build map and the link tree inconsistent with what the target
-      specification says. The only scenario where it makes sense to prefer {!val:restore} over
-      {!val:build} is saved state loading: in that case, we already load the old build map from
-      saved state so it is not needed (and not possible as well) to re-construct that build map from
-      scratch all over again.
+        Concretely, the entire build process can be broken down into 4 steps:
 
-      The following exceptions may be raised by this API:
+        - Run `buck bxl` to build and load source databases into {!BuildMap.t} (see
+          {!Interface.Lazy.construct_build_map}).
+        - Construct the link tree under [artifact_root] based on the content of the newly built
+          {!BuiltMap.t}. Note that this step is carried out incrementally: we compare the new build
+          map with [old_build_map], and only perform the minimum amount of filesystem operations to
+          update files under [artifact_root].
 
-      - {!exception: LinkTreeConstructionError} if any error is encountered when constructing the
-        link tree from the build map.
+        The following exceptions may be raised by this API:
 
-      Note this API does not ensure the artifact root to be empty before the build starts. If
-      cleaness of the artifact directory is desirable, it is expected that the caller would take
-      care of that before its invocation. *)
-  val restore : build_map:BuildMap.t -> t -> unit Lwt.t
+        - {!exception: Raw.BuckError} if `buck` quits in any unexpected ways when shelling out to
+          it.
+        - {!exception: Interface.JsonError} if `buck` returns malformed or inconsistent JSON blobs.
+        - {!exception: LinkTreeConstructionError} if any error is encountered when constructing the
+          link tree from the build map.
 
-  (** Given a list of buck target specificaitons to build, fully construct a new build map for the
-      targets and incrementally update the Python link tree at the given artifact root according to
-      how the new build map changed compared to the old build map. Return the new build map along
-      with a list of targets that are covered by the build map. This API may raise the same set of
-      exceptions as {!full_build}.
+        Note this API does not ensure the artifact root to be empty before the build starts. If
+        cleaness of the artifact directory is desirable, it is expected that the caller would take
+        care of that before its invocation. *)
+    val incremental_build
+      :  old_build_map:BuildMap.t ->
+      source_paths:SourcePath.t list ->
+      t ->
+      IncrementalBuildResult.t Lwt.t
 
-      This API is guaranteed to rebuild the entire build map from scratch. It is guaranteed to
-      produce the most correct and most up-to-date build map, but at the same time it is a costly
-      operation at times. For faster incremental build, itt is recommended to use other variant of
-      incremental build APIs if their pre-conditions are known to be satisfied. *)
-  val full_incremental_build
-    :  old_build_map:BuildMap.t ->
-    targets:string list ->
-    t ->
-    IncrementalBuildResult.t Lwt.t
+    (** Compute the incremental check result, assuming that the corresponding update does not change
+        the build map in any way. The return value is intended to be compatible with that of
+        {!incremental_build}.
 
-  (** Given a list of normalized targets to build, fully construct a new build map for the targets
-      and incrementally update the Python link tree at the given artifact root according to how the
-      new build map changed compared to the old build map. Return the new build map along with a
-      list of targets that are covered by the build map. This API may raise the same set of
-      exceptions as {!full_incremental_build}.
+        Obviously, this API makes strong assumption than {!incremental_build} -- the assumption
+        virtually allows it to completely skip the rebuild. Callers are therefore strongly
+        encouraged to verify the assumption, by checking that all changed sources exists and are
+        already included in the old build map.
 
-      The difference between this API and {!full_incremental_build} is that this API makes an
-      additional assumption that the given incremental update does not change the set of targets to
-      build. As a result, it can skip the target normalizing step entirely as performance
-      optimization. Such an assumption usually holds when the incremental update does not touch any
-      `BUCK` or `TARGETS` file -- callers are encouraged to verify this before deciding which
-      incremental build API to invoke. *)
-  val incremental_build_with_normalized_targets
-    :  old_build_map:BuildMap.t ->
-    targets:Target.t list ->
-    t ->
-    IncrementalBuildResult.t Lwt.t
+        NOTE(grievejia): This function can be safely replaced with [incremental_build] once the
+        underlying Buck component supports incremental source-db. *)
+    val incremental_build_with_unchanged_build_map
+      :  build_map:BuildMap.t ->
+      build_map_index:BuildMap.Indexed.t ->
+      changed_sources:SourcePath.t list ->
+      t ->
+      IncrementalBuildResult.t Lwt.t
 
-  (** Given a list of normalized targets and changed/removed files, incrementally construct a new
-      build map for the targets and incrementally update the Python link tree at the given artifact
-      root accordingly. Return the new build map along with a list of targets that are covered by
-      the build map. This API may raise the same set of exceptions as
-      {!incremental_build_with_normalized_targets}.
+    (** {1 Lookup} *)
 
-      The difference between this API and {!incremental_build_with_normalized_targets} is that this
-      API makes an additional assumption that the given incremental update does not change the
-      contents of any generated file. As a result, it can skip both the target normalizing step and
-      the `buck build` step, which is usually a huge performance bottleneck for incremental checks. *)
-  val fast_incremental_build_with_normalized_targets
-    :  old_build_map:BuildMap.t ->
-    old_build_map_index:BuildMap.Indexed.t ->
-    targets:Target.t list ->
-    changed_paths:PyrePath.t list ->
-    removed_paths:PyrePath.t list ->
-    t ->
-    IncrementalBuildResult.t Lwt.t
+    (** Lookup the source path that corresponds to the given artifact path. If there is no such
+        artifact, return [None]. Time complexity of this operation is O(1). The difference between
+        this API and {!BuildMap.Indexed.lookup_source} is that the build map API only understands
+        relative paths, while this API operates on full paths and takes care of
+        relativizing/expanding the input/output paths against source/artifact root. *)
+    val lookup_source
+      :  index:BuildMap.Indexed.t ->
+      builder:t ->
+      ArtifactPath.t ->
+      SourcePath.t option
 
-  (** Compute the incremental check result, assuming that the corresponding update does not change
-      the build map in any way. The return value is intended to be compatible with that of
-      {!full_incremental_build} and {!incremental_build_with_normalized_targets}.
+    (** Lookup all artifact paths that corresponds to the given source path. If there is no such
+        artifact, return an empty list. Time complexity of this operation is O(1).
 
-      Obviously, this API makes even stronger assumption than
-      {!incremental_build_with_normalized_targets} -- the assumption virtually allows it to
-      completely skip the rebuild. Callers are therefore strongly encouraged to verify the
-      assumption, by checking that all changed sources exists and are already included in the old
-      build map. *)
-  val incremental_build_with_unchanged_build_map
-    :  build_map:BuildMap.t ->
-    build_map_index:BuildMap.Indexed.t ->
-    targets:Target.t list ->
-    changed_sources:PyrePath.t list ->
-    t ->
-    IncrementalBuildResult.t Lwt.t
-
-  (** {1 Lookup} *)
-
-  (** Lookup the source path that corresponds to the given artifact path. If there is no such
-      artifact, return [None]. Time complexity of this operation is O(1).
-
-      The difference between this API and {!BuildMap.Indexed.lookup_source} is that the build map
-      API only understands relative paths, while this API operates on full paths and takes care of
-      relativizing/expanding the input/output paths against source/artifact root. *)
-  val lookup_source : index:BuildMap.Indexed.t -> builder:t -> PyrePath.t -> PyrePath.t option
-
-  (** Lookup all artifact paths that corresponds to the given source path. If there is no such
-      artifact, return an empty list. Time complexity of this operation is O(1).
-
-      The difference between this API and {!BuildMap.Indexed.lookup_artifact} is that the build map
-      API only understands relative paths, while this API operates on full paths and takes care of
-      relativizing/expanding the input/output paths against artifact/source root.*)
-  val lookup_artifact : index:BuildMap.Indexed.t -> builder:t -> PyrePath.t -> PyrePath.t list
-
-  (** {1 Misc} *)
-
-  (** Return an identifier of the builder (for logging purpose). *)
-  val identifier_of : t -> string
+        The difference between this API and {!BuildMap.Indexed.lookup_artifact} is that the build
+        map API only understands relative paths, while this API operates on full paths and takes
+        care of relativizing/expanding the input/output paths against artifact/source root.*)
+    val lookup_artifact
+      :  index:BuildMap.Indexed.t ->
+      builder:t ->
+      SourcePath.t ->
+      ArtifactPath.t list
+  end
 end

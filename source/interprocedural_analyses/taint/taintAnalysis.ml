@@ -162,17 +162,11 @@ let parse_models_and_queries_from_configuration
     ~static_analysis_configuration:
       { Configuration.StaticAnalysis.verify_models; configuration = { taint_model_paths; _ }; _ }
     ~taint_configuration
-    ~environment
+    ~resolution
     ~source_sink_filter
     ~callables
     ~stubs
   =
-  let resolution =
-    Analysis.TypeCheck.resolution
-      (Analysis.TypeEnvironment.ReadOnly.global_resolution environment)
-      (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
-      (module Analysis.TypeCheck.DummyContext)
-  in
   let ({ ModelParseResult.errors; _ } as parse_result) =
     ModelParser.get_model_sources ~paths:taint_model_paths
     |> parse_models_and_queries_from_sources
@@ -194,23 +188,30 @@ let initialize_models
     ~taint_configuration_shared_memory
     ~class_hierarchy_graph
     ~environment
-    ~callables
-    ~stubs
+    ~initial_callables
   =
   let open TaintConfiguration.Heap in
-  let stubs = Target.HashSet.of_list stubs in
+  let resolution = Analysis.TypeEnvironment.ReadOnly.global_resolution environment in
 
   Log.info "Parsing taint models...";
   let timer = Timer.start () in
+  let callables_hashset =
+    initial_callables
+    |> Interprocedural.FetchCallables.get_non_stub_callables
+    |> Target.HashSet.of_list
+  in
+  let stubs_hashset =
+    initial_callables |> Interprocedural.FetchCallables.get_stubs |> Target.HashSet.of_list
+  in
   let { ModelParseResult.models; queries; skip_overrides; errors } =
     parse_models_and_queries_from_configuration
       ~scheduler
       ~static_analysis_configuration
       ~taint_configuration:taint_configuration_shared_memory
-      ~environment
+      ~resolution
       ~source_sink_filter:taint_configuration.source_sink_filter
-      ~callables:(Some (Target.HashSet.of_list callables))
-      ~stubs
+      ~callables:(Some callables_hashset)
+      ~stubs:stubs_hashset
   in
   Statistics.performance ~name:"Parsed taint models" ~phase_name:"Parsing taint models" ~timer ();
 
@@ -220,26 +221,28 @@ let initialize_models
     | _ ->
         Log.info "Generating models from model queries...";
         let timer = Timer.start () in
-        let models_and_names, errors =
+        let verbose = Option.is_some taint_configuration.dump_model_query_results_path in
+        let model_query_results, errors =
           ModelQueryExecution.generate_models_from_queries
-            ~taint_configuration:taint_configuration_shared_memory
-            ~class_hierarchy_graph
+            ~resolution
             ~scheduler
-            ~environment
+            ~class_hierarchy_graph
+            ~verbose
             ~source_sink_filter:(Some taint_configuration.source_sink_filter)
-            ~callables
-            ~stubs
+            ~callables_and_stubs:
+              (Interprocedural.FetchCallables.get_callables_and_stubs initial_callables)
+            ~stubs:stubs_hashset
             queries
         in
         let () =
           match taint_configuration.dump_model_query_results_path with
           | Some path ->
-              ModelQueryExecution.DumpModelQueryResults.dump_to_file ~models_and_names ~path
+              ModelQueryExecution.DumpModelQueryResults.dump_to_file ~model_query_results ~path
           | None -> ()
         in
         ModelVerificationError.verify_models_and_dsl errors static_analysis_configuration.verify_dsl;
         let models =
-          models_and_names
+          model_query_results
           |> ModelQueryExecution.ModelQueryRegistryMap.get_registry
                ~model_join:Model.join_user_models
           |> Registry.merge ~join:Model.join_user_models models
@@ -261,7 +264,7 @@ let initialize_models
     MissingFlow.add_obscure_models
       ~static_analysis_configuration
       ~environment
-      ~stubs
+      ~stubs:stubs_hashset
       ~initial_models:models
   in
 
@@ -283,6 +286,7 @@ let run_taint_analysis
          repository_root;
          inline_decorators;
          use_cache;
+         limit_entrypoints;
          _;
        } as static_analysis_configuration)
     ~build_system
@@ -375,8 +379,7 @@ let run_taint_analysis
         ~class_hierarchy_graph:
           (Interprocedural.ClassHierarchyGraph.SharedMemory.from_heap class_hierarchy_graph)
         ~environment:(Analysis.TypeEnvironment.read_only environment)
-        ~callables:(Interprocedural.FetchCallables.get_callables initial_callables)
-        ~stubs:(Interprocedural.FetchCallables.get_stubs initial_callables)
+        ~initial_callables
     in
 
     let module_tracker =
@@ -422,16 +425,16 @@ let run_taint_analysis
         ~override_graph:override_graph_shared_memory
         ~store_shared_memory:true
         ~attribute_targets:(Registry.object_targets initial_models)
-        ~callables:(Interprocedural.FetchCallables.get_callables initial_callables)
+        ~callables:(Interprocedural.FetchCallables.get_non_stub_callables initial_callables)
     in
     Statistics.performance ~name:"Call graph built" ~phase_name:"Building call graph" ~timer ();
 
-    let entrypoint_references = Registry.get_entrypoints initial_models in
-
     let prune_method =
-      match entrypoint_references with
-      | [] -> Interprocedural.DependencyGraph.PruneMethod.Internals
-      | _ :: _ -> Interprocedural.DependencyGraph.PruneMethod.Entrypoints entrypoint_references
+      if limit_entrypoints then
+        let entrypoint_references = Registry.get_entrypoints initial_models in
+        Interprocedural.DependencyGraph.PruneMethod.Entrypoints entrypoint_references
+      else
+        Interprocedural.DependencyGraph.PruneMethod.Internals
     in
 
     Log.info "Computing dependencies...";
@@ -491,7 +494,7 @@ let run_taint_analysis
             class_interval_graph;
             define_call_graphs;
           }
-        ~initial_callables:(Interprocedural.FetchCallables.get_callables initial_callables)
+        ~initial_callables:(Interprocedural.FetchCallables.get_non_stub_callables initial_callables)
         ~stubs:(Interprocedural.FetchCallables.get_stubs initial_callables)
         ~override_targets
         ~callables_to_analyze

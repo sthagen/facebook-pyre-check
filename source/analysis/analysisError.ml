@@ -232,6 +232,8 @@ and unawaited_awaitable = {
   expression: Expression.t;
 }
 
+and leak_to_global = { global_name: Reference.t }
+
 and undefined_import =
   | UndefinedModule of Reference.t
   | UndefinedName of {
@@ -281,19 +283,15 @@ and tuple_concatenation_problem =
   | UnpackingNonIterable of { annotation: Type.t }
 [@@deriving compare, sexp, show, hash]
 
+let join_mismatch ~resolution left right =
+  {
+    expected = GlobalResolution.join resolution left.expected right.expected;
+    actual = GlobalResolution.join resolution left.actual right.actual;
+    due_to_invariance = left.due_to_invariance || right.due_to_invariance;
+  }
+
+
 module ReadOnly = struct
-  type mismatch = {
-    actual: ReadOnlyness.t;
-    expected: ReadOnlyness.t;
-  }
-  [@@deriving compare, sexp, show, hash]
-
-  type incompatible_type = {
-    name: Reference.t;
-    mismatch: mismatch;
-  }
-  [@@deriving compare, sexp, show, hash]
-
   type readonlyness_mismatch =
     | IncompatibleVariableType of {
         incompatible_type: incompatible_type;
@@ -306,40 +304,50 @@ module ReadOnly = struct
         mismatch: mismatch;
       }
     | AssigningToReadOnlyAttribute of { attribute_name: Identifier.t }
-    | RevealedType of {
-        expression: Expression.t;
-        readonlyness: ReadOnlyness.t;
+    | IncompatibleReturnType of {
+        mismatch: mismatch;
+        define_location: Location.t;
+      }
+    | CallingMutatingMethodOnReadOnly of {
+        self_argument: Expression.t;
+        self_argument_type: Type.t;
+        method_name: Reference.t;
       }
   [@@deriving compare, sexp, show, hash]
 
-  let error_messages ~concise kind =
+  let error_messages
+      ~location:{ Location.WithPath.stop = { Location.line = stop_line; _ }; _ }
+      ~concise
+      kind
+    =
     let pp_reference = pp_reference ~concise in
     match kind with
     | IncompatibleVariableType
-        { incompatible_type = { name; mismatch = { actual; expected }; _ }; _ } ->
+        { incompatible_type = { name; mismatch = { actual; expected; _ }; _ }; _ } ->
         let message =
+          let pp_type = pp_type ~concise in
           if concise then
             Format.asprintf
-              "%a has readonlyness `%a`; used as `%a`."
+              "%a has type `%a`; used as `%a`."
               pp_reference
               name
-              ReadOnlyness.pp
+              pp_type
               expected
-              ReadOnlyness.pp
+              pp_type
               actual
           else
             Format.asprintf
-              "%a is declared to have readonlyness `%a` but is used as readonlyness `%a`."
+              "%a is declared to have type `%a` but is used as type `%a`."
               pp_reference
               name
-              ReadOnlyness.pp
+              pp_type
               expected
-              ReadOnlyness.pp
+              pp_type
               actual
         in
         [message]
     | IncompatibleParameterType
-        { keyword_argument_name; position; callee; mismatch = { actual; expected } } ->
+        { keyword_argument_name; position; callee; mismatch = { actual; expected; _ } } ->
         let target =
           let parameter =
             match keyword_argument_name with
@@ -356,58 +364,63 @@ module ReadOnly = struct
           else
             Format.asprintf "In %s, for %s," callee parameter
         in
-        [
-          Format.asprintf
-            "%s expected `%a` but got `%a`."
-            target
-            ReadOnlyness.pp
-            expected
-            ReadOnlyness.pp
-            actual;
-        ]
+        let pp_type = pp_type ~concise in
+        [Format.asprintf "%s expected `%a` but got `%a`." target pp_type expected pp_type actual]
     | AssigningToReadOnlyAttribute { attribute_name } ->
         [Format.asprintf "Cannot assign to attribute `%s` since it is readonly" attribute_name]
-    | RevealedType { expression; readonlyness } ->
-        [
+    | IncompatibleReturnType
+        {
+          mismatch = { actual; expected; _ };
+          define_location = { Location.start = { line = return_line; _ }; _ };
+        } ->
+        let pp_type = pp_type ~concise in
+        let trace =
           Format.asprintf
-            "Revealed type for `%s` is %a."
-            (Ast.Transform.sanitize_expression expression |> Expression.show)
-            ReadOnlyness.pp
-            readonlyness;
-        ]
+            "Type `%a` expected on line %d, specified on line %d."
+            pp_type
+            expected
+            stop_line
+            return_line
+        in
+        let message =
+          Format.asprintf "Expected `%a` but got `%a`." pp_type expected pp_type actual
+        in
+        [message; trace]
+    | CallingMutatingMethodOnReadOnly { self_argument; self_argument_type; method_name } ->
+        let self_argument_string =
+          Ast.Transform.sanitize_expression self_argument |> Expression.show
+        in
+        if concise then
+          [
+            Format.asprintf
+              "Method `%a` may modify `%s`."
+              pp_reference
+              method_name
+              self_argument_string;
+          ]
+        else
+          [
+            Format.asprintf
+              "Method `%a` may modify its object. Cannot call it on readonly expression `%s` of \
+               type `%a`."
+              pp_reference
+              method_name
+              self_argument_string
+              (pp_type ~concise)
+              self_argument_type;
+          ]
 
 
-  let join left right =
-    let join_mismatch
-        { expected = left_expected; actual = left_actual }
-        { expected = right_expected; actual = right_actual }
-      =
-      {
-        expected = ReadOnlyness.join left_expected right_expected;
-        actual = ReadOnlyness.join left_actual right_actual;
-      }
-    in
+  let join ~resolution left right =
     match left, right with
     | ( IncompatibleVariableType
           ({
              incompatible_type =
-               {
-                 name = left_name;
-                 mismatch = { actual = left_actual; expected = left_expected };
-                 _;
-               } as left_incompatible_type;
+               { name = left_name; mismatch = left_mismatch; _ } as left_incompatible_type;
              _;
            } as left),
         IncompatibleVariableType
-          {
-            incompatible_type =
-              {
-                name = right_name;
-                mismatch = { actual = right_actual; expected = right_expected };
-                _;
-              };
-            _;
-          } )
+          { incompatible_type = { name = right_name; mismatch = right_mismatch; _ }; _ } )
       when Reference.equal left_name right_name ->
         IncompatibleVariableType
           {
@@ -415,11 +428,7 @@ module ReadOnly = struct
             incompatible_type =
               {
                 left_incompatible_type with
-                mismatch =
-                  {
-                    actual = ReadOnlyness.join left_actual right_actual;
-                    expected = ReadOnlyness.join left_expected right_expected;
-                  };
+                mismatch = join_mismatch ~resolution left_mismatch right_mismatch;
               };
           }
         |> Option.some
@@ -440,20 +449,16 @@ module ReadOnly = struct
       when Option.equal Identifier.equal_sanitized left_name right_name
            && left_position = right_position
            && Option.equal Reference.equal_sanitized left_callee right_callee ->
-        let mismatch = join_mismatch left_mismatch right_mismatch in
+        let mismatch = join_mismatch ~resolution left_mismatch right_mismatch in
         IncompatibleParameterType { left with mismatch } |> Option.some
     | ( AssigningToReadOnlyAttribute { attribute_name = left_attribute_name },
         AssigningToReadOnlyAttribute { attribute_name = right_attribute_name } )
       when Identifier.equal left_attribute_name right_attribute_name ->
         Some left
-    | ( RevealedType { expression = left_expression; readonlyness = left_readonlyness },
-        RevealedType { expression = right_expression; readonlyness = right_readonlyness } )
-      when [%compare.equal: Expression.t] left_expression right_expression ->
-        RevealedType
-          {
-            expression = left_expression;
-            readonlyness = ReadOnlyness.join left_readonlyness right_readonlyness;
-          }
+    | ( IncompatibleReturnType ({ mismatch = left_mismatch; _ } as left_record),
+        IncompatibleReturnType { mismatch = right_mismatch; _ } ) ->
+        IncompatibleReturnType
+          { left_record with mismatch = join_mismatch ~resolution left_mismatch right_mismatch }
         |> Option.some
     | _ -> None
 
@@ -462,14 +467,28 @@ module ReadOnly = struct
     | IncompatibleVariableType _ -> 3001
     | IncompatibleParameterType _ -> 3002
     | AssigningToReadOnlyAttribute _ -> 3003
-    | RevealedType _ -> 3004
+    | IncompatibleReturnType _ -> 3004
+    | CallingMutatingMethodOnReadOnly _ -> 3005
 
 
   let name_of_kind = function
     | IncompatibleVariableType _ -> "ReadOnly violation - Incompatible variable type"
     | IncompatibleParameterType _ -> "ReadOnly violation - Incompatible parameter type"
     | AssigningToReadOnlyAttribute _ -> "ReadOnly violation - Assigning to readonly attribute"
-    | RevealedType _ -> "ReadOnly - Revealed type"
+    | IncompatibleReturnType _ -> "ReadOnly violation - Incompatible return type"
+    | CallingMutatingMethodOnReadOnly _ ->
+        "ReadOnly violation - Calling mutating method on readonly type"
+
+
+  let dequalify ~dequalify_type ~dequalify_reference = function
+    | CallingMutatingMethodOnReadOnly ({ self_argument_type; method_name; _ } as kind) ->
+        CallingMutatingMethodOnReadOnly
+          {
+            kind with
+            self_argument_type = dequalify_type self_argument_type;
+            method_name = dequalify_reference method_name;
+          }
+    | other -> other
 end
 
 type invalid_decoration =
@@ -517,7 +536,7 @@ and kind =
   | IncompatibleAwaitableType of Type.t
   | IncompatibleConstructorAnnotation of Type.t
   | IncompatibleParameterType of {
-      name: Identifier.t option;
+      keyword_argument_name: Identifier.t option;
       position: int;
       callee: Reference.t option;
       mismatch: mismatch;
@@ -672,6 +691,7 @@ and kind =
   | DeadStore of Identifier.t
   | Deobfuscation of Source.t
   | UnawaitedAwaitable of unawaited_awaitable
+  | GlobalLeak of leak_to_global
   (* Errors from type operators *)
   | BroadcastError of {
       expression: Expression.t;
@@ -753,6 +773,7 @@ let code_of_kind = function
   | BroadcastError _ -> 2001
   (* Privacy-related errors: 3xxx. *)
   | ReadOnlynessMismatch kind -> ReadOnly.code_of_kind kind
+  | GlobalLeak _ -> 3100
 
 
 let name_of_kind = function
@@ -762,6 +783,7 @@ let name_of_kind = function
   | ParserFailure _ -> "Parsing failure"
   | DeadStore _ -> "Dead store"
   | Deobfuscation _ -> "Deobfuscation"
+  | GlobalLeak _ -> "Global leak"
   | IllegalAnnotationTarget _ -> "Illegal annotation target"
   | IncompatibleAsyncGeneratorReturnType _ -> "Incompatible async generator return type"
   | IncompatibleAttributeType _ -> "Incompatible attribute type"
@@ -1058,11 +1080,12 @@ let rec messages ~concise ~signature location kind =
   let pp_type = pp_type ~concise in
   let pp_reference = pp_reference ~concise in
   let pp_identifier = Identifier.pp_sanitized in
-  let incompatible_parameter_target ~name ~position ~callee =
+  let incompatible_parameter_target ~keyword_argument_name ~position ~callee =
     let parameter =
-      match name with
-      | Some name -> Format.asprintf "parameter `%a`" pp_identifier name
-      | _ -> "positional only parameter"
+      match keyword_argument_name with
+      | Some keyword_argument_name ->
+          Format.asprintf "argument `%a`" pp_identifier keyword_argument_name
+      | _ -> Format.asprintf "%s positional argument" (ordinal position)
     in
     let callee =
       match callee with
@@ -1070,9 +1093,9 @@ let rec messages ~concise ~signature location kind =
       | _ -> "anonymous call"
     in
     if concise then
-      Format.asprintf "For %s param" (ordinal position)
+      Format.asprintf "For %s argument" (ordinal position)
     else
-      Format.asprintf "In %s, for %s %s" callee (ordinal position) parameter
+      Format.asprintf "In %s, for %s," callee parameter
   in
   let kind = weaken_literals kind in
   let kind = simplify_kind kind in
@@ -1109,6 +1132,8 @@ let rec messages ~concise ~signature location kind =
   | ParserFailure message -> [message]
   | DeadStore name -> [Format.asprintf "Value assigned to `%a` is never used." pp_identifier name]
   | Deobfuscation source -> [Format.asprintf "\n%a" Source.pp source]
+  | GlobalLeak { global_name } ->
+      [Format.asprintf "Data is leaked to global `%a`." pp_reference global_name]
   | IllegalAnnotationTarget _ when concise -> ["Target cannot be annotated."]
   | IllegalAnnotationTarget { target; kind } ->
       let reason =
@@ -1203,14 +1228,19 @@ let rec messages ~concise ~signature location kind =
       | MisplacedOverloadDecorator ->
           ["The @overload decorator must be the topmost decorator if present."])
   | IncompatibleParameterType
-      { name; position; callee; mismatch = { actual; expected; due_to_invariance; _ } } -> (
+      {
+        keyword_argument_name;
+        position;
+        callee;
+        mismatch = { actual; expected; due_to_invariance; _ };
+      } -> (
       let trace =
         if due_to_invariance then
           [Format.asprintf "This call might modify the type of the parameter."; invariance_message]
         else
           []
       in
-      let target = incompatible_parameter_target ~name ~position ~callee in
+      let target = incompatible_parameter_target ~keyword_argument_name ~position ~callee in
       match Option.map ~f:Reference.as_list callee with
       | Some ["int"; "__add__"]
       | Some ["int"; "__sub__"]
@@ -2215,15 +2245,13 @@ let rec messages ~concise ~signature location kind =
       in
       [Format.asprintf "Solving type variables for %s led to infinite recursion." callee]
   | NonLiteralString { name; position; callee } ->
-      let target = incompatible_parameter_target ~name ~position ~callee in
+      let target = incompatible_parameter_target ~keyword_argument_name:name ~position ~callee in
       [
         Format.asprintf
           "%s expected `LiteralString` but got `str`. Ensure only a string literal or a \
            `LiteralString` is used."
           target;
-        (* TODO(T139139062): Add documentation for new error 62 on using a string instead of literal
-           string *)
-        "See https://pyre-check.org/docs/errors/#62-Non-literal-string for more details.";
+        "See https://pyre-check.org/docs/errors/#62-non-literal-string for more details.";
       ]
   | NotCallable
       (Type.Callable { implementation = { parameters = ParameterVariadicTypeVariable _; _ }; _ } as
@@ -2291,7 +2319,7 @@ let rec messages ~concise ~signature location kind =
           [Format.asprintf "`%a` cannot alias to `Any`." pp_reference name]
       | TypeAlias, _ ->
           [Format.asprintf "`%a` cannot alias to a type containing `Any`." pp_reference name])
-  | ReadOnlynessMismatch kind -> ReadOnly.error_messages ~concise kind
+  | ReadOnlynessMismatch kind -> ReadOnly.error_messages ~location ~concise kind
   | RedefinedClass { shadowed_class; _ } when concise ->
       [Format.asprintf "Class `%a` redefined" pp_reference shadowed_class]
   | RedefinedClass { current_class; shadowed_class; is_shadowed_class_imported } ->
@@ -2409,13 +2437,7 @@ let rec messages ~concise ~signature location kind =
       if String.equal typed_dictionary_name "$anonymous" then
         [Format.asprintf "TypedDict has no key `%s`." missing_key]
       else
-        [
-          Format.asprintf
-            "TypedDict `%a` has no key `%s`."
-            String.pp
-            typed_dictionary_name
-            missing_key;
-        ]
+        [Format.asprintf "TypedDict `%s` has no key `%s`." typed_dictionary_name missing_key]
   | TypedDictionaryInvalidOperation { typed_dictionary_name; field_name; method_name; mismatch } ->
       if List.mem ["pop"; "__delitem__"] method_name ~equal:String.equal then
         [
@@ -2914,6 +2936,7 @@ let due_to_analysis_limitations { kind; _ } =
   | DeadStore _
   | Deobfuscation _
   | DuplicateTypeVariables _
+  | GlobalLeak _
   | IllegalAnnotationTarget _
   | IncompatibleAsyncGeneratorReturnType _
   | IncompatibleConstructorAnnotation _
@@ -2966,13 +2989,7 @@ let due_to_analysis_limitations { kind; _ } =
 
 
 let join ~resolution left right =
-  let join_mismatch left right =
-    {
-      expected = GlobalResolution.join resolution left.expected right.expected;
-      actual = GlobalResolution.join resolution left.actual right.actual;
-      due_to_invariance = left.due_to_invariance || right.due_to_invariance;
-    }
-  in
+  let join_mismatch = join_mismatch ~resolution in
   let join_missing_annotation
       (left : missing_annotation) (* Ohcaml... *)
       (right : missing_annotation)
@@ -3022,6 +3039,8 @@ let join ~resolution left right =
     | DeadStore left, DeadStore right when Identifier.equal left right -> DeadStore left
     | Deobfuscation left, Deobfuscation right when [%compare.equal: Source.t] left right ->
         Deobfuscation left
+    | GlobalLeak left, GlobalLeak right when [%compare.equal: leak_to_global] left right ->
+        GlobalLeak left
     | ( IllegalAnnotationTarget { target = left; kind = InvalidExpression },
         IllegalAnnotationTarget { target = right; kind = InvalidExpression } )
       when [%compare.equal: Expression.t] left right ->
@@ -3100,7 +3119,7 @@ let join ~resolution left right =
             missing_annotation = join_missing_annotation left right;
           }
     | ReadOnlynessMismatch left, ReadOnlynessMismatch right -> (
-        match ReadOnly.join left right with
+        match ReadOnly.join ~resolution left right with
         | Some joined -> ReadOnlynessMismatch joined
         | None -> default_error_output ())
     | RedundantCast left, RedundantCast right ->
@@ -3141,11 +3160,27 @@ let join ~resolution left right =
                 right_annotation;
             qualify = left_qualify || right_qualify (* lol *);
           }
-    | IncompatibleParameterType left, IncompatibleParameterType right
-      when Option.equal Identifier.equal_sanitized left.name right.name
-           && left.position = right.position
-           && Option.equal Reference.equal_sanitized left.callee right.callee ->
-        let mismatch = join_mismatch left.mismatch right.mismatch in
+    | ( IncompatibleParameterType
+          ({
+             keyword_argument_name = left_keyword_argument_name;
+             position = left_position;
+             callee = left_callee;
+             mismatch = left_mismatch;
+           } as left),
+        IncompatibleParameterType
+          {
+            keyword_argument_name = right_keyword_argument_name;
+            position = right_position;
+            callee = right_callee;
+            mismatch = right_mismatch;
+          } )
+      when Option.equal
+             Identifier.equal_sanitized
+             left_keyword_argument_name
+             right_keyword_argument_name
+           && left_position = right_position
+           && Option.equal Reference.equal_sanitized left_callee right_callee ->
+        let mismatch = join_mismatch left_mismatch right_mismatch in
         IncompatibleParameterType { left with mismatch }
     | IncompatibleConstructorAnnotation left, IncompatibleConstructorAnnotation right ->
         IncompatibleConstructorAnnotation (GlobalResolution.join resolution left right)
@@ -3401,6 +3436,7 @@ let join ~resolution left right =
     | ParserFailure _, _
     | DeadStore _, _
     | Deobfuscation _, _
+    | GlobalLeak _, _
     | IllegalAnnotationTarget _, _
     | IncompatibleAsyncGeneratorReturnType _, _
     | IncompatibleAttributeType _, _
@@ -3847,6 +3883,7 @@ let dequalify
         BroadcastError { expression; left = dequalify left; right = dequalify right }
     | DeadStore name -> DeadStore name
     | Deobfuscation left -> Deobfuscation left
+    | GlobalLeak leak -> GlobalLeak leak
     | IllegalAnnotationTarget { target = left; kind } ->
         IllegalAnnotationTarget { target = left; kind }
     | IncompatibleAsyncGeneratorReturnType actual ->
@@ -4007,7 +4044,9 @@ let dequalify
           }
     | InvalidDecoration expression -> InvalidDecoration expression
     | TupleConcatenationError expressions -> TupleConcatenationError expressions
-    | ReadOnlynessMismatch _ -> kind
+    | ReadOnlynessMismatch mismatch ->
+        ReadOnlynessMismatch
+          (ReadOnly.dequalify ~dequalify_type:dequalify ~dequalify_reference mismatch)
     | TypedDictionaryAccessWithNonLiteral expression ->
         TypedDictionaryAccessWithNonLiteral expression
     | TypedDictionaryKeyNotFound { typed_dictionary_name; missing_key } ->

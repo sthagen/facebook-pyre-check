@@ -175,7 +175,7 @@ let test_dump_model_query_results context =
         ModelQuery(
           name = "get_Base_child_sources",
           find = "methods",
-          where = [cls.matches("Base")],
+          where = [cls.name.matches("Base")],
           model = [
             Parameters(TaintSource[Test], where=index.equals(0)),
           ]
@@ -194,13 +194,6 @@ let test_dump_model_query_results context =
         {|[
   {
     "get_Base_child_sources": [
-      {
-        "callable": "test.Base.$class_toplevel",
-        "model": {
-          "kind": "model",
-          "data": { "callable": "test.Base.$class_toplevel" }
-        }
-      },
       {
         "callable": "test.Base.baz",
         "model": {
@@ -324,7 +317,7 @@ let test_dump_model_query_results context =
           find = "methods",
           where = [
             cls.any_child(
-              cls.matches("Baz"),
+              cls.name.matches("Baz"),
               is_transitive=False
             ),
             name.matches("init")
@@ -408,8 +401,8 @@ let test_dump_model_query_results context =
                   name.matches("anything")
                 ),
                 AllOf(
-                  Not(cls.matches("Foo")),
-                  Not(cls.matches("Bar")),
+                  Not(cls.name.matches("Foo")),
+                  Not(cls.name.matches("Bar")),
                 )
               ),
               is_transitive=True

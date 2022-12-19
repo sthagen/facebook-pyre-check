@@ -99,6 +99,7 @@ let error_and_location_from_typed_dictionary_mismatch
 
 
 let errors_from_not_found
+    ?(callee_base_expression = None)
     ~callable
     ~self_argument
     ~reason
@@ -126,84 +127,104 @@ let errors_from_not_found
   | InvalidVariableArgument { Node.location; value = { expression; annotation } } ->
       [Some location, Error.InvalidArgument (Error.ConcreteVariable { expression; annotation })]
   | Mismatches mismatches ->
-      let convert_to_error mismatch_reason =
-        match mismatch_reason with
-        | SignatureSelectionTypes.Mismatch mismatch ->
-            let { SignatureSelectionTypes.actual; expected; name; position } =
-              Node.value mismatch
-            in
-            let mismatch, name, position, location =
-              ( Error.create_mismatch ~resolution:global_resolution ~actual ~expected ~covariant:true,
-                name,
-                position,
-                Node.location mismatch )
-            in
-            let kind =
-              let normal =
-                if Type.is_primitive_string actual && Type.is_literal_string expected then
-                  Error.NonLiteralString { name; position; callee }
-                else
-                  Error.IncompatibleParameterType { name; position; callee; mismatch }
-              in
-              let typed_dictionary_error
+      let convert_to_error = function
+        | SignatureSelectionTypes.Mismatch
+            { Node.value = { SignatureSelectionTypes.actual; expected; name; position }; location }
+          ->
+            let typed_dictionary_error
+                ~mismatch
+                ~method_name
+                ~position
+                { Type.Record.TypedDictionary.fields; name = typed_dictionary_name }
+              =
+              if
+                Type.TypedDictionary.is_special_mismatch
+                  ~class_name:typed_dictionary_name
                   ~method_name
                   ~position
-                  { Type.Record.TypedDictionary.fields; name = typed_dictionary_name }
-                =
-                if
-                  Type.TypedDictionary.is_special_mismatch
-                    ~class_name:typed_dictionary_name
-                    ~method_name
-                    ~position
-                    ~total:(Type.TypedDictionary.are_fields_total fields)
-                then
-                  match actual with
-                  | Type.Literal (Type.String (Type.LiteralValue field_name)) ->
-                      let required_field_exists =
-                        List.exists
-                          ~f:(fun { Type.Record.TypedDictionary.name; required; _ } ->
-                            String.equal name field_name && required)
-                          fields
-                      in
-                      if required_field_exists then
-                        Error.TypedDictionaryInvalidOperation
-                          { typed_dictionary_name; field_name; method_name; mismatch }
-                      else
-                        Error.TypedDictionaryKeyNotFound
-                          { typed_dictionary_name; missing_key = field_name }
-                  | Type.Primitive "str" ->
-                      Error.TypedDictionaryAccessWithNonLiteral
-                        (List.map fields ~f:(fun { name; _ } -> name))
-                  | _ -> normal
-                else
-                  match method_name, arguments with
-                  | ( "__setitem__",
-                      Some
-                        ({
-                           AttributeResolution.Argument.expression =
-                             Some
-                               {
-                                 Node.value = Constant (Constant.String { value = field_name; _ });
-                                 _;
-                               };
-                           _;
-                         }
-                        :: _) ) ->
+                  ~total:(Type.TypedDictionary.are_fields_total fields)
+              then
+                match actual with
+                | Type.Literal (Type.String (Type.LiteralValue field_name)) ->
+                    let required_field_exists =
+                      List.exists
+                        ~f:(fun { Type.Record.TypedDictionary.name; required; _ } ->
+                          String.equal name field_name && required)
+                        fields
+                    in
+                    if required_field_exists then
                       Error.TypedDictionaryInvalidOperation
                         { typed_dictionary_name; field_name; method_name; mismatch }
-                  | _ -> normal
-              in
-              match self_argument, callee >>| Reference.as_list with
-              | Some self_annotation, Some callee_reference_list
-                when is_operator (List.last_exn callee_reference_list) -> (
+                      |> Option.some
+                    else
+                      Error.TypedDictionaryKeyNotFound
+                        { typed_dictionary_name; missing_key = field_name }
+                      |> Option.some
+                | Type.Primitive "str" ->
+                    Error.TypedDictionaryAccessWithNonLiteral
+                      (List.map fields ~f:(fun { name; _ } -> name))
+                    |> Option.some
+                | _ -> None
+              else
+                match method_name, arguments with
+                | ( "__setitem__",
+                    Some
+                      ({
+                         AttributeResolution.Argument.expression =
+                           Some
+                             {
+                               Node.value = Constant (Constant.String { value = field_name; _ });
+                               _;
+                             };
+                         _;
+                       }
+                      :: _) ) ->
+                    Error.TypedDictionaryInvalidOperation
+                      { typed_dictionary_name; field_name; method_name; mismatch }
+                    |> Option.some
+                | _ -> None
+            in
+            let mismatch =
+              Error.create_mismatch ~resolution:global_resolution ~actual ~expected ~covariant:true
+            in
+            let is_mutating_method_on_readonly self_argument_type =
+              Int.equal
+                position
+                AttributeResolution.SignatureSelection.reserved_position_for_self_argument
+              && Type.ReadOnly.is_readonly self_argument_type
+            in
+            let default_location_and_error =
+              match callee, self_argument, callee_base_expression with
+              | Some method_name, Some self_argument_type, Some self_argument
+                when is_mutating_method_on_readonly self_argument_type ->
+                  ( Node.location self_argument,
+                    Error.ReadOnlynessMismatch
+                      (CallingMutatingMethodOnReadOnly
+                         { self_argument; self_argument_type; method_name }) )
+              | _ ->
+                  if Type.is_primitive_string actual && Type.is_literal_string expected then
+                    location, Error.NonLiteralString { name; position; callee }
+                  else if
+                    Type.ReadOnly.is_readonly actual && not (Type.ReadOnly.is_readonly expected)
+                  then
+                    ( location,
+                      Error.ReadOnlynessMismatch
+                        (IncompatibleParameterType
+                           { keyword_argument_name = name; position; callee; mismatch }) )
+                  else
+                    ( location,
+                      Error.IncompatibleParameterType
+                        { keyword_argument_name = name; position; callee; mismatch } )
+            in
+            let location, kind =
+              match self_argument, callee >>| Reference.last with
+              | Some self_annotation, Some callee_name when is_operator callee_name -> (
                   let is_uninverted = Option.equal Type.equal self_argument original_target in
                   let operator_symbol =
                     if is_uninverted then
-                      List.last_exn callee_reference_list |> operator_name_to_symbol
+                      operator_name_to_symbol callee_name
                     else
-                      List.last_exn callee_reference_list
-                      |> inverse_operator
-                      >>= operator_name_to_symbol
+                      callee_name |> inverse_operator >>= operator_name_to_symbol
                   in
                   match operator_symbol, callee_expression >>| Node.value with
                   | Some operator_name, Some (Expression.Name (Attribute { special = true; _ })) ->
@@ -213,14 +234,16 @@ let errors_from_not_found
                         else
                           actual, self_annotation
                       in
-                      Error.UnsupportedOperand
-                        (Binary { operator_name; left_operand; right_operand })
-                  | _ -> normal)
-              | Some (Type.Primitive _ as annotation), Some [_; method_name] ->
+                      ( location,
+                        Error.UnsupportedOperand
+                          (Binary { operator_name; left_operand; right_operand }) )
+                  | _ -> default_location_and_error)
+              | Some (Type.Primitive _ as annotation), Some method_name ->
                   GlobalResolution.get_typed_dictionary ~resolution:global_resolution annotation
-                  >>| typed_dictionary_error ~method_name ~position
-                  |> Option.value ~default:normal
-              | _ -> normal
+                  >>= typed_dictionary_error ~mismatch ~method_name ~position
+                  >>| (fun kind -> location, kind)
+                  |> Option.value ~default:default_location_and_error
+              | _ -> default_location_and_error
             in
             [Some location, kind]
         | MismatchWithUnpackableType { variable; mismatch } ->
@@ -241,6 +264,16 @@ let errors_from_not_found
           error_and_location_from_typed_dictionary_mismatch mismatch)
       |> List.map ~f:(fun (location, error) -> Some location, error)
   | UnexpectedKeyword name -> [None, Error.UnexpectedKeyword { callee; name }]
+
+
+let incompatible_variable_type_error_kind
+    ~declare_location
+    ({ Error.mismatch = { expected; actual; _ }; _ } as incompatible_type)
+  =
+  if Type.ReadOnly.is_readonly actual && not (Type.ReadOnly.is_readonly expected) then
+    Error.ReadOnlynessMismatch (IncompatibleVariableType { incompatible_type; declare_location })
+  else
+    Error.IncompatibleVariableType { incompatible_type; declare_location }
 
 
 let rec unpack_callable_and_self_argument ~signature_select ~global_resolution input =
@@ -626,6 +659,11 @@ module State (Context : Context) = struct
       | Attribute { expression; _ }
       | NonAttribute { expression; _ } ->
           expression
+
+
+    let base_expression = function
+      | Attribute { base = { expression; _ }; _ } -> Some expression
+      | NonAttribute _ -> None
   end
 
   module CallableApplicationData = struct
@@ -886,22 +924,27 @@ module State (Context : Context) = struct
               check_unimplemented tail
           | _ -> false
         in
-        emit_error
-          ~errors
-          ~location
-          ~kind:
-            (Error.IncompatibleReturnType
-               {
-                 mismatch =
-                   Error.create_mismatch
-                     ~resolution:global_resolution
-                     ~actual
-                     ~expected:return_annotation
-                     ~covariant:true;
-                 is_implicit;
-                 is_unimplemented = check_unimplemented define.body;
-                 define_location;
-               })
+        let kind =
+          let mismatch =
+            Error.create_mismatch
+              ~resolution:global_resolution
+              ~actual
+              ~expected:return_annotation
+              ~covariant:true
+          in
+          if Type.ReadOnly.is_readonly actual && not (Type.ReadOnly.is_readonly return_annotation)
+          then
+            Error.ReadOnlynessMismatch (IncompatibleReturnType { mismatch; define_location })
+          else
+            Error.IncompatibleReturnType
+              {
+                mismatch;
+                is_implicit;
+                is_unimplemented = check_unimplemented define.body;
+                define_location;
+              }
+        in
+        emit_error ~errors ~location ~kind
       else
         errors
     in
@@ -1081,7 +1124,9 @@ module State (Context : Context) = struct
       let name = Name.Attribute { base; special; attribute } in
       let reference = name_to_reference name in
       let access_as_attribute () =
-        let find_attribute ({ Type.instantiated; accessed_through_class; class_name } as class_data)
+        let find_attribute
+            ({ Type.instantiated; accessed_through_class; class_name; accessed_through_readonly } as
+            class_data)
           =
           let name = attribute in
           match
@@ -1089,6 +1134,7 @@ module State (Context : Context) = struct
               class_name
               ~transitive:true
               ~accessed_through_class
+              ~accessed_through_readonly
               ~special_method:special
               ~resolution:global_resolution
               ~name
@@ -1124,7 +1170,11 @@ module State (Context : Context) = struct
           >>= fun { ClassSummary.qualifier; _ } ->
           ModuleTracker.ReadOnly.lookup_module_path module_tracker qualifier
         in
-        match Type.resolve_class resolved_base >>| List.map ~f:find_attribute >>= Option.all with
+        match
+          Type.class_data_for_attribute_lookup resolved_base
+          >>| List.map ~f:find_attribute
+          >>= Option.all
+        with
         | None ->
             let errors =
               if has_default then
@@ -1611,6 +1661,7 @@ module State (Context : Context) = struct
                   ~global_resolution
                   ?original_target:target
                   ~callee_expression:(Callee.expression callee)
+                  ~callee_base_expression:(Callee.base_expression callee)
                   ~arguments:(Some arguments)
                   ()
               in
@@ -1979,9 +2030,11 @@ module State (Context : Context) = struct
           in
           { Error.name; annotation }
         in
-        let annotations = Map.to_alist (Resolution.annotation_store resolution).annotations in
+        let annotations =
+          Reference.Map.Tree.to_alist (Resolution.annotation_store resolution).annotations
+        in
         let temporary_annotations =
-          Map.to_alist (Resolution.annotation_store resolution).temporary_annotations
+          Reference.Map.Tree.to_alist (Resolution.annotation_store resolution).temporary_annotations
         in
         let revealed_locals = List.map ~f:from_annotation (temporary_annotations @ annotations) in
         let errors = emit_error ~errors:[] ~location ~kind:(Error.RevealedLocals revealed_locals) in
@@ -2132,7 +2185,7 @@ module State (Context : Context) = struct
               ~kind:
                 (Error.IncompatibleParameterType
                    {
-                     name = None;
+                     keyword_argument_name = None;
                      position = 2;
                      callee = Some (Reference.create "isinstance");
                      mismatch =
@@ -2385,7 +2438,7 @@ module State (Context : Context) = struct
         { ComparisonOperator.left; right; operator = ComparisonOperator.NotIn as operator } ->
         let resolve_in_call
             (resolution, errors, joined_annotation)
-            { Type.instantiated; class_name; accessed_through_class }
+            { Type.instantiated; class_name; accessed_through_class; _ }
           =
           let resolve_method
               ?(accessed_through_class = false)
@@ -2617,8 +2670,8 @@ module State (Context : Context) = struct
         in
         let { Resolved.resolution; resolved; errors; _ } = forward_expression ~resolution right in
         let resolution, errors, resolved =
-          (* We should really error here if resolve_class fails *)
-          Type.resolve_class resolved
+          (* We should really error here if class_data_for_attribute_lookup fails *)
+          Type.class_data_for_attribute_lookup resolved
           >>| List.fold ~f:resolve_in_call ~init:(resolution, errors, Type.Bottom)
           |> Option.value ~default:(resolution, errors, Type.Bottom)
         in
@@ -3217,6 +3270,9 @@ module State (Context : Context) = struct
         in
         extract_union_members unfolded_annotation
         |> List.partition_tf ~f:(fun left ->
+               Type.ReadOnly.unpack_readonly left
+               |> Option.value ~default:left
+               |> fun left ->
                Resolution.is_consistent_with resolution left boundary ~expression:None)
       in
       let not_consistent_with_boundary =
@@ -3388,12 +3444,29 @@ module State (Context : Context) = struct
               if not (Type.is_unbound consistent_with_boundary) then
                 Value (Annotation.create_mutable consistent_with_boundary |> refine_local ~name)
               else if
-                GlobalResolution.types_are_orderable
+                GlobalResolution.less_or_equal_either_way
                   global_resolution
                   existing_type
                   parsed_annotation
               then
-                Value (Annotation.create_mutable parsed_annotation |> refine_local ~name)
+                (* If we have `isinstance(x, Child)` where `x` is of type `Base`, then it is sound
+                   to refine `x` to `Child` because the runtime will not enter the branch unless `x`
+                   is an instance of `Child`. *)
+                let refined_type =
+                  if
+                    (not (Type.is_top existing_type))
+                    && GlobalResolution.less_or_equal
+                         global_resolution
+                         ~left:(Type.ReadOnly.create parsed_annotation)
+                         ~right:existing_type
+                  then
+                    (* In the case where `x` is `ReadOnly[Base]`, we need to refine it to
+                       `ReadOnly[Child]`. Otherwise, the code could modify the object. *)
+                    Type.ReadOnly.create parsed_annotation
+                  else
+                    parsed_annotation
+                in
+                Value (Annotation.create_mutable refined_type |> refine_local ~name)
               else
                 Unreachable
         in
@@ -3447,38 +3520,34 @@ module State (Context : Context) = struct
               _;
             };
         } -> (
-        let mismatched_type = parse_refinement_annotation annotation_expression in
-        let contradiction =
-          if Type.contains_unknown mismatched_type || Type.is_any mismatched_type then
-            false
-          else
-            let { Resolved.resolved; _ } = forward_expression ~resolution value in
-            (not (Type.is_unbound resolved))
-            && (not (Type.contains_unknown resolved))
-            && (not (Type.is_any resolved))
-            && GlobalResolution.less_or_equal
-                 global_resolution
-                 ~left:resolved
-                 ~right:mismatched_type
-        in
-        let resolve ~name =
+        let resolve_non_instance ~boundary name =
           let { name = partitioned_name; attribute_path; _ } = partition_name ~resolution name in
           match
             Resolution.get_local_with_attributes resolution ~name:partitioned_name ~attribute_path
           with
           | Some { annotation = previous_annotation; _ } ->
-              let { not_consistent_with_boundary; _ } =
-                partition previous_annotation ~boundary:mismatched_type
-              in
+              let { not_consistent_with_boundary; _ } = partition previous_annotation ~boundary in
               not_consistent_with_boundary
               >>| Annotation.create_mutable
               >>| refine_local ~name
               |> Option.value ~default:resolution
           | _ -> resolution
         in
-        match contradiction, value with
+        let boundary = parse_refinement_annotation annotation_expression in
+        let is_consistent_with_boundary =
+          if Type.contains_unknown boundary || Type.is_any boundary then
+            false
+          else
+            let { Resolved.resolved; _ } = forward_expression ~resolution value in
+            (not (Type.is_unbound resolved))
+            && (not (Type.contains_unknown resolved))
+            && (not (Type.is_any resolved))
+            && GlobalResolution.less_or_equal global_resolution ~left:resolved ~right:boundary
+        in
+        match is_consistent_with_boundary, value with
         | true, _ -> Unreachable
-        | _, { Node.value = Name name; _ } when is_simple_name name -> Value (resolve ~name)
+        | _, { Node.value = Name name; _ } when is_simple_name name ->
+            Value (resolve_non_instance ~boundary name)
         | _ -> Value resolution)
     (* Is callable *)
     | Call
@@ -4042,11 +4111,11 @@ module State (Context : Context) = struct
                         |> resolve_expression ~resolution )
                   | `Attribute ({ Name.Attribute.base; attribute; _ }, resolved) ->
                       let name = attribute in
-                      let parent, accessed_through_class =
-                        if Type.is_meta resolved then
-                          Type.single_parameter resolved, true
-                        else
-                          resolved, false
+                      let parent, accessed_through_class, accessed_through_readonly =
+                        match Type.ReadOnly.unpack_readonly resolved, Type.is_meta resolved with
+                        | Some resolved, _ -> resolved, false, true
+                        | None, true -> Type.single_parameter resolved, true, false
+                        | _ -> resolved, false, false
                       in
                       let parent_class_name = Type.split parent |> fst |> Type.primitive_name in
                       let reference =
@@ -4066,6 +4135,7 @@ module State (Context : Context) = struct
                               ~instantiated:parent
                               ~transitive:true
                               ~accessed_through_class
+                              ~accessed_through_readonly
                         >>| fun annotated -> annotated, attribute
                       in
                       let target_annotation =
@@ -4103,7 +4173,7 @@ module State (Context : Context) = struct
                 in
                 let find_getattr parent =
                   let attribute =
-                    match Type.resolve_class parent with
+                    match Type.class_data_for_attribute_lookup parent with
                     | Some [{ instantiated; class_name; _ }] ->
                         GlobalResolution.attribute_from_class_name
                           class_name
@@ -4124,49 +4194,9 @@ module State (Context : Context) = struct
                       | _ -> None)
                   | _ -> None
                 in
-                let name_reference =
-                  match name with
-                  | Identifier identifier -> Reference.create identifier |> Option.some
-                  | Attribute _ as name when is_simple_name name ->
-                      name_to_reference_exn name |> Option.some
-                  | _ -> None
-                in
-                let is_global =
-                  name_reference
-                  >>| (fun reference -> Resolution.is_global resolution ~reference)
-                  |> Option.value ~default:false
-                in
-                let is_locally_initialized =
-                  match name_reference with
-                  | Some reference -> Resolution.has_nontemporary_annotation ~reference resolution
-                  | None -> false
-                in
-                let check_errors errors resolved =
+                let check_errors ~name_reference errors resolved =
                   match reference with
                   | Some reference ->
-                      let modifying_read_only_error =
-                        match attribute, original_annotation with
-                        | None, _ when is_locally_initialized || not explicit ->
-                            Option.some_if
-                              (Annotation.is_final target_annotation)
-                              (AnalysisError.FinalAttribute reference)
-                        | None, _ -> None
-                        | Some _, Some _ ->
-                            (* We presume assignments to annotated targets are valid re: Finality *)
-                            None
-                        | Some (attribute, _), None -> (
-                            let open AnnotatedAttribute in
-                            match
-                              visibility attribute, property attribute, initialized attribute
-                            with
-                            | ReadOnly _, false, OnlyOnInstance when Define.is_constructor define ->
-                                None
-                            | ReadOnly _, false, OnClass when Define.is_class_toplevel define ->
-                                None
-                            | ReadOnly _, false, _ -> Some (AnalysisError.FinalAttribute reference)
-                            | ReadOnly _, true, _ -> Some (ReadOnly reference)
-                            | _ -> None)
-                      in
                       let check_assignment_compatibility errors =
                         let is_valid_enumeration_assignment =
                           let parent_annotation =
@@ -4223,19 +4253,16 @@ module State (Context : Context) = struct
                               }
                             |> fun kind -> emit_error ~errors ~location ~kind
                         | None when is_incompatible ->
-                            Error.IncompatibleVariableType
+                            incompatible_variable_type_error_kind
+                              ~declare_location:(instantiate_path ~global_resolution location)
                               {
-                                incompatible_type =
-                                  {
-                                    Error.name = reference;
-                                    mismatch =
-                                      Error.create_mismatch
-                                        ~resolution:global_resolution
-                                        ~actual:resolved
-                                        ~expected
-                                        ~covariant:true;
-                                  };
-                                declare_location = instantiate_path ~global_resolution location;
+                                Error.name = reference;
+                                mismatch =
+                                  Error.create_mismatch
+                                    ~resolution:global_resolution
+                                    ~actual:resolved
+                                    ~expected
+                                    ~covariant:true;
                               }
                             |> fun kind -> emit_error ~errors ~location ~kind
                         | _ -> errors
@@ -4375,13 +4402,59 @@ module State (Context : Context) = struct
                               errors
                         | _ -> errors
                       in
+                      let check_assignment_to_readonly_type errors =
+                        let is_readonly_attribute =
+                          target_annotation |> Annotation.annotation |> Type.ReadOnly.is_readonly
+                        in
+                        match attribute with
+                        | Some (_, attribute_name)
+                          when is_readonly_attribute && not (Define.is_class_toplevel define) ->
+                            emit_error
+                              ~errors
+                              ~location
+                              ~kind:
+                                (Error.ReadOnlynessMismatch
+                                   (AssigningToReadOnlyAttribute { attribute_name }))
+                        | _ -> errors
+                      in
                       let errors =
+                        let modifying_read_only_error =
+                          let is_locally_initialized =
+                            name_reference
+                            >>| (fun reference ->
+                                  Resolution.has_nontemporary_annotation ~reference resolution)
+                            |> Option.value ~default:false
+                          in
+                          match attribute, original_annotation with
+                          | None, _ when is_locally_initialized || not explicit ->
+                              Option.some_if
+                                (Annotation.is_final target_annotation)
+                                (AnalysisError.FinalAttribute reference)
+                          | None, _ -> None
+                          | Some _, Some _ ->
+                              (* We presume assignments to annotated targets are valid re: Finality *)
+                              None
+                          | Some (attribute, _), None -> (
+                              let open AnnotatedAttribute in
+                              match
+                                visibility attribute, property attribute, initialized attribute
+                              with
+                              | ReadOnly _, false, OnlyOnInstance when Define.is_constructor define
+                                ->
+                                  None
+                              | ReadOnly _, false, OnClass when Define.is_class_toplevel define ->
+                                  None
+                              | ReadOnly _, false, _ ->
+                                  Some (AnalysisError.FinalAttribute reference)
+                              | ReadOnly _, true, _ -> Some (ReadOnly reference)
+                              | _ -> None)
+                        in
                         match modifying_read_only_error with
                         | Some error ->
                             emit_error ~errors ~location ~kind:(Error.InvalidAssignment error)
                         | None ->
-                            (* We don't check compatibility when we're already erroring about Final
-                               reassingment *)
+                            (* Check compatibility only when we're not already erroring about Final
+                               reassignment. *)
                             check_assignment_compatibility errors
                       in
                       check_assign_class_variable_on_instance errors
@@ -4390,6 +4463,7 @@ module State (Context : Context) = struct
                       |> check_nested_explicit_type_alias
                       |> check_enumeration_literal
                       |> check_previously_annotated
+                      |> check_assignment_to_readonly_type
                   | _ -> errors
                 in
                 let check_for_missing_annotations errors resolved =
@@ -4455,7 +4529,7 @@ module State (Context : Context) = struct
                   in
                   let parent_class =
                     match resolved_base with
-                    | `Attribute (_, base_type) -> Type.resolve_class base_type
+                    | `Attribute (_, base_type) -> Type.class_data_for_attribute_lookup base_type
                     | _ -> None
                   in
                   match name, parent_class with
@@ -4528,7 +4602,8 @@ module State (Context : Context) = struct
                       else
                         errors, true
                   | ( Name.Attribute { attribute; _ },
-                      Some ({ Type.instantiated; accessed_through_class; class_name } :: _) ) -> (
+                      Some ({ Type.instantiated; accessed_through_class; class_name; _ } :: _) )
+                    -> (
                       (* Instance *)
                       let reference = Reference.create attribute in
                       let attribute =
@@ -4630,7 +4705,17 @@ module State (Context : Context) = struct
                       else
                         errors, true
                 in
-                let propagate_annotations ~errors ~is_valid_annotation ~resolved_value_weakened =
+                let propagate_annotations
+                    ~errors
+                    ~is_valid_annotation
+                    ~resolved_value_weakened
+                    name_reference
+                  =
+                  let is_global =
+                    name_reference
+                    >>| (fun reference -> Resolution.is_global resolution ~reference)
+                    |> Option.value ~default:false
+                  in
                   let is_not_local = is_global && not (Define.is_toplevel Context.define.value) in
                   let refine_annotation annotation refined =
                     GlobalResolution.refine ~global_resolution annotation refined
@@ -4723,18 +4808,30 @@ module State (Context : Context) = struct
                     ~resolved:resolved_value
                     ~expected
                 in
+                let name_reference =
+                  match name with
+                  | Identifier identifier -> Reference.create identifier |> Option.some
+                  | Attribute _ as name when is_simple_name name ->
+                      name_to_reference_exn name |> Option.some
+                  | _ -> None
+                in
                 match resolved_value_weakened with
                 | { resolved = resolved_value_weakened; typed_dictionary_errors = [] } ->
-                    let errors = check_errors errors resolved_value_weakened in
+                    let errors = check_errors ~name_reference errors resolved_value_weakened in
                     let errors, is_valid_annotation =
                       check_for_missing_annotations errors resolved_value_weakened
                     in
-                    propagate_annotations ~errors ~is_valid_annotation ~resolved_value_weakened
+                    propagate_annotations
+                      ~errors
+                      ~is_valid_annotation
+                      ~resolved_value_weakened
+                      name_reference
                 | { typed_dictionary_errors; _ } ->
                     propagate_annotations
                       ~errors:(emit_typed_dictionary_errors ~errors typed_dictionary_errors)
                       ~is_valid_annotation:false
                       ~resolved_value_weakened:Type.Top
+                      name_reference
               in
               let resolved_base =
                 match name with
@@ -4745,7 +4842,14 @@ module State (Context : Context) = struct
               in
               match resolved_base with
               | `Attribute (attribute, Type.Union types) ->
-                  (* Union[A,B].attr is valid iff A.attr and B.attr is valid *)
+                  (* Union[A,B].attr is valid iff A.attr and B.attr is valid
+
+                     TODO(T130377746): Use `Type.class_data_for_attribute_lookup` here to avoid
+                     duplicating the logic of how to figure out the attribute type for various
+                     types. Right now, we're duplicating some of the logic (for unions) but missing
+                     others. We're also hackily extracting `accessed_through_class` later on by
+                     checking if the top-level type is `Type[...]` instead of doing it for all
+                     possible elements of a union, etc. *)
                   let propagate (resolution, errors) t =
                     inner_assignment resolution errors (`Attribute (attribute, t))
                   in
@@ -5381,7 +5485,7 @@ module State (Context : Context) = struct
           resolution
       in
       let process_capture (resolution, errors) { Define.Capture.name; kind } =
-        let resolution, errors, annotation =
+        let resolution, errors, type_ =
           match kind with
           | Define.Capture.Kind.Annotation None ->
               ( resolution,
@@ -5402,10 +5506,23 @@ module State (Context : Context) = struct
           | Define.Capture.Kind.ClassSelf parent ->
               resolution, errors, type_of_parent ~global_resolution parent |> Type.meta
         in
-        let annotation = Annotation.create_immutable annotation in
+        let type_ =
+          let is_readonly_entrypoint_function =
+            decorators
+            |> List.map ~f:Expression.show
+            |> String.Set.of_list
+            |> Set.inter Recognized.readonly_entrypoint_decorators
+            |> Set.is_empty
+            |> not
+          in
+          if is_readonly_entrypoint_function then
+            type_ |> Type.ReadOnly.create |> Annotation.create_immutable
+          else
+            Annotation.create_immutable type_
+        in
         let resolution =
           let reference = Reference.create name in
-          Resolution.new_local resolution ~reference ~annotation
+          Resolution.new_local resolution ~reference ~annotation:type_
         in
         resolution, errors
       in
@@ -5436,24 +5553,18 @@ module State (Context : Context) = struct
           then
             errors
           else
-            emit_error
-              ~errors
-              ~location
-              ~kind:
-                (Error.IncompatibleVariableType
-                   {
-                     incompatible_type =
-                       {
-                         name = Reference.create name;
-                         mismatch =
-                           Error.create_mismatch
-                             ~resolution:global_resolution
-                             ~expected:annotation
-                             ~actual:default
-                             ~covariant:true;
-                       };
-                     declare_location = instantiate_path ~global_resolution location;
-                   })
+            incompatible_variable_type_error_kind
+              ~declare_location:(instantiate_path ~global_resolution location)
+              {
+                Error.name = Reference.create name;
+                mismatch =
+                  Error.create_mismatch
+                    ~resolution:global_resolution
+                    ~expected:annotation
+                    ~actual:default
+                    ~covariant:true;
+              }
+            |> fun kind -> emit_error ~errors ~location ~kind
         in
         let add_missing_parameter_annotation_error ~errors ~given_annotation annotation =
           let name = name |> Identifier.sanitized in
@@ -6433,15 +6544,8 @@ let resolution
 
 
 let resolution_with_key ~global_resolution ~local_annotations ~parent ~statement_key context =
-  let annotation_store =
-    Option.value_map
-      local_annotations
-      ~f:(fun map ->
-        LocalAnnotationMap.ReadOnly.get_precondition map ~statement_key
-        |> Option.value ~default:Refinement.Store.empty)
-      ~default:Refinement.Store.empty
-  in
-  resolution global_resolution ~annotation_store context |> Resolution.with_parent ~parent
+  resolution global_resolution context
+  |> Resolution.resolution_for_statement ~local_annotations ~parent ~statement_key
 
 
 let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () =
@@ -6507,6 +6611,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
                   GlobalResolution.instantiate_attribute
                     ~resolution:global_resolution
                     ~accessed_through_class:false
+                    ~accessed_through_readonly:false
                     ?instantiated:None
                     attribute
                   |> Annotated.Attribute.annotation
@@ -6744,6 +6849,7 @@ let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () 
                     let annotation =
                       GlobalResolution.instantiate_attribute
                         ~accessed_through_class:false
+                        ~accessed_through_readonly:false
                         ~resolution:global_resolution
                         ?instantiated:None
                         attribute
@@ -7212,14 +7318,41 @@ let compute_local_annotations ~global_environment name =
   >>| LocalAnnotationMap.read_only
 
 
+let errors_from_other_analyses
+    ~include_unawaited_awaitable_errors
+    ~resolution
+    ~local_annotations
+    ~qualifier
+    ({ Node.value = define; _ } as define_node)
+  =
+  let uninitialized_local_errors =
+    if Define.is_toplevel define then
+      []
+    else
+      UninitializedLocalCheck.check_define ~qualifier define_node
+  in
+  let unawaited_awaitable_errors =
+    if include_unawaited_awaitable_errors && not (Define.is_toplevel define) then
+      UnawaitedAwaitableCheck.check_define
+        ~resolution
+        ~local_annotations:(local_annotations >>| LocalAnnotationMap.read_only)
+        ~qualifier
+        define_node
+    else
+      []
+  in
+  uninitialized_local_errors @ unawaited_awaitable_errors
+
+
 let check_define
     ~type_check_controls:
       {
         EnvironmentControls.TypeCheckControls.constraint_solving_style;
         include_type_errors;
         include_local_annotations;
-        include_readonly_errors;
         debug;
+        include_unawaited_awaitable_errors;
+        _;
       }
     ~call_graph_builder:(module Builder : Callgraph.Builder)
     ~resolution
@@ -7244,32 +7377,19 @@ let check_define
         module Builder = Builder
       end
       in
-      let { resolution; errors = type_errors; local_annotations; callees } =
+      let { errors = type_errors; local_annotations; callees; _ } =
         exit_state ~resolution (module Context)
       in
       let errors =
         if include_type_errors then
-          let uninitialized_local_errors =
-            if Define.is_toplevel define then
-              []
-            else
-              UninitializedLocalCheck.check_define ~qualifier define_node
-          in
-          let readonly_errors =
-            if include_readonly_errors then
-              ReadOnlyCheck.readonly_errors_for_define
-                ~type_resolution_for_statement:
-                  (resolution_with_key
-                     (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
-                     (module DummyContext))
-                ~global_resolution:(Resolution.global_resolution resolution)
-                ~local_annotations:(local_annotations >>| LocalAnnotationMap.read_only)
-                ~qualifier
-                define_node
-            else
-              []
-          in
-          Some (uninitialized_local_errors @ readonly_errors @ type_errors)
+          Some
+            (errors_from_other_analyses
+               ~include_unawaited_awaitable_errors
+               ~resolution
+               ~local_annotations
+               ~qualifier
+               define_node
+            @ type_errors)
         else
           None
       in

@@ -123,6 +123,7 @@ module ServerConfiguration = struct
             parallel;
             number_of_workers;
             enable_readonly_analysis;
+            enable_unawaited_awaitable_analysis;
             shared_memory =
               { Configuration.SharedMemory.heap_size; dependency_table_power; hash_table_power };
             remote_logging = _;
@@ -169,6 +170,7 @@ module ServerConfiguration = struct
       ~enable_type_comments
       ~source_paths:(Configuration.SourcePaths.to_search_paths source_paths)
       ~enable_readonly_analysis
+      ~enable_unawaited_awaitable_analysis
       ()
 
 
@@ -225,7 +227,7 @@ let start_server_and_wait ~event_channel server_configuration =
       (fun () -> ServerEvent.write ~output_channel:event_channel event)
       (function
         | Lwt_io.Channel_closed _
-        | Caml.Unix.Unix_error (Caml.Unix.EPIPE, _, _) ->
+        | Caml_unix.Unix_error (Caml_unix.EPIPE, _, _) ->
             Lwt.return_unit
         | exn -> Lwt.fail exn)
   in
@@ -312,7 +314,7 @@ let run_server configuration_file =
 
 let command =
   Printexc.record_backtrace true;
-  let filename_argument = Command.Param.(anon ("filename" %: Filename.arg_type)) in
+  let filename_argument = Command.Param.(anon ("filename" %: Filename_unix.arg_type)) in
   Command.basic
     ~summary:"Starts a new Pyre server."
     (Command.Param.map filename_argument ~f:(fun filename () -> run_server filename))

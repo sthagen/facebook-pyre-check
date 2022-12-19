@@ -335,7 +335,21 @@ module ModelQuery = struct
     type t =
       | Equals of Ast.Expression.Call.Argument.t list
       | Contains of Ast.Expression.Call.Argument.t list
-    [@@deriving equal, show]
+    [@@deriving show]
+
+    let argument_list_equal left right =
+      List.equal
+        (fun left right ->
+          Int.equal 0 (Ast.Expression.Call.Argument.location_insensitive_compare left right))
+        left
+        right
+
+
+    let equal left right =
+      match left, right with
+      | Equals left, Equals right -> argument_list_equal left right
+      | Contains left, Contains right -> argument_list_equal left right
+      | _ -> false
   end
 
   module ParameterConstraint = struct
@@ -350,16 +364,24 @@ module ModelQuery = struct
   end
 
   module DecoratorConstraint = struct
-    type t = {
-      name_constraint: NameConstraint.t;
-      arguments_constraint: ArgumentsConstraint.t option;
-    }
+    type t =
+      | NameConstraint of NameConstraint.t
+      | FullyQualifiedNameConstraint of NameConstraint.t
+      | ArgumentsConstraint of ArgumentsConstraint.t
+      | AnyOf of t list
+      | AllOf of t list
+      | Not of t
     [@@deriving equal, show]
+
+    let all_of = function
+      | [decorator_constraint] -> decorator_constraint
+      | decorator_constraints -> AllOf decorator_constraints
   end
 
   module ClassConstraint = struct
     type t =
       | NameConstraint of NameConstraint.t
+      | FullyQualifiedNameConstraint of NameConstraint.t
       | Extends of {
           class_name: string;
           is_transitive: bool;
@@ -377,19 +399,66 @@ module ModelQuery = struct
     [@@deriving equal, show]
   end
 
+  module ReadFromCache = struct
+    type t = {
+      kind: string;
+      name: string;
+    }
+    [@@deriving equal, show]
+  end
+
+  module WriteToCache = struct
+    module Substring = struct
+      type t =
+        | Literal of string
+        | FunctionName
+        | MethodName
+        | ClassName
+      [@@deriving equal, show]
+    end
+
+    type t = {
+      kind: string;
+      name: Substring.t list;
+    }
+    [@@deriving equal, show]
+  end
+
   (* An arbitrary constraint for functions, methods, attributes or globals. *)
   module Constraint = struct
     type t =
       | NameConstraint of NameConstraint.t
+      | FullyQualifiedNameConstraint of NameConstraint.t
       | AnnotationConstraint of AnnotationConstraint.t
       | ReturnConstraint of AnnotationConstraint.t
       | AnyParameterConstraint of ParameterConstraint.t
+      | ReadFromCache of ReadFromCache.t
       | AnyOf of t list
       | AllOf of t list
       | ClassConstraint of ClassConstraint.t
       | AnyDecoratorConstraint of DecoratorConstraint.t
       | Not of t
     [@@deriving equal, show]
+
+    let rec contains_read_from_cache = function
+      | NameConstraint _
+      | FullyQualifiedNameConstraint _
+      | AnnotationConstraint _
+      | ReturnConstraint _
+      | AnyParameterConstraint _
+      | ClassConstraint _
+      | AnyDecoratorConstraint _ ->
+          false
+      | ReadFromCache _ -> true
+      | AnyOf constraints
+      | AllOf constraints ->
+          List.exists ~f:contains_read_from_cache constraints
+      | Not constraint_ -> contains_read_from_cache constraint_
+
+
+    let is_read_from_cache = function
+      | ReadFromCache _ -> true
+      | _ -> false
   end
 
   module Find = struct
@@ -496,7 +565,12 @@ module ModelQuery = struct
       | Attribute of QueryTaintAnnotation.t list
       | Global of QueryTaintAnnotation.t list
       | Modes of Model.ModeSet.t
+      | WriteToCache of WriteToCache.t
     [@@deriving show, equal]
+
+    let is_write_to_cache = function
+      | WriteToCache _ -> true
+      | _ -> false
   end
 
   (* `ModelQuery.t` represents a ModelQuery() statement. *)

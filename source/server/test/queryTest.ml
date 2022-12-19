@@ -600,7 +600,7 @@ let test_handle_query_basic context =
     ~query:(Format.sprintf "save_server_state('%s/state')" temporary_directory)
     (Single (Base.Success "Saved state."))
   >>= fun () ->
-  assert_equal `Yes (Sys.is_file (temporary_directory ^/ "state"));
+  assert_equal `Yes (Sys_unix.is_file (temporary_directory ^/ "state"));
   Lwt.return_unit
 
 
@@ -2046,7 +2046,6 @@ let test_handle_query_pysa context =
                 "dict.add_key": [],
                 "str.substr": [],
                 "str.lower": [],
-                "str.format": [],
                 "test.foo": []
             }
         }
@@ -3119,13 +3118,13 @@ let test_hover context =
       ( "hover_info_for_position(path='foo.py', line=2, column=0)",
         {|
       {
-      "response": { "contents": "" }
+      "response": { "value": null, "docstring": null}
       }
     |} );
       ( "hover_info_for_position(path='foo.py', line=3, column=9)",
         {|
       {
-      "response": { "contents": "`int`" }
+      "response": { "value": "int", "docstring": null}
       }
     |} );
     ]

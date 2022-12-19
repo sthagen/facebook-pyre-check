@@ -50,6 +50,15 @@ end
 
 include T
 
+module Map = struct
+  include Map.Make (T)
+
+  module Tree = Map.Make_tree (struct
+    include T
+    include Comparator.Make (T)
+  end)
+end
+
 (* Lower priority appears earlier in comparison. *)
 let priority = function
   | Function _ -> 0
@@ -207,7 +216,6 @@ let define_name = function
   | Object _ -> failwith "unexpected"
 
 
-module Map = Core.Map.Make (T)
 module Set = Caml.Set.Make (T)
 module Hashable = Core.Hashable.Make (T)
 module HashMap = Hashable.Table

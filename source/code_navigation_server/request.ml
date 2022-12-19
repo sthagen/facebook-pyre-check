@@ -16,7 +16,7 @@ module Module = struct
         (** Specify a module at the given file path. The path is expected to be absolute. Symlinks
             will not be followed.*)
     | OfName of string  (** Specify a module with a given dot-qualified name directly. *)
-  [@@deriving sexp, compare, yojson { strict = false }]
+  [@@deriving sexp, compare, yojson { strict = false }, hash]
 end
 
 module FileUpdateEvent = struct
@@ -34,9 +34,26 @@ module FileUpdateEvent = struct
   [@@deriving sexp, compare, yojson { strict = false }]
 end
 
+module ClassExpression = struct
+  type t = {
+    module_: Module.t; [@key "module"]
+    qualified_name: string;
+  }
+  [@@deriving sexp, compare, yojson { strict = false }]
+end
+
 module Command = struct
   type t =
     | Stop
+    | FileOpened of {
+        path: string;
+        content: string option;
+        overlay_id: string;
+      }
+    | FileClosed of {
+        path: string;
+        overlay_id: string;
+      }
     | LocalUpdate of {
         module_: Module.t; [@key "module"]
         content: string option;
@@ -63,6 +80,10 @@ module Query = struct
         overlay_id: string option;
       }
     | GetInfo (* Poll the server's state. *)
+    | Superclasses of {
+        class_: ClassExpression.t; [@key "class"]
+        overlay_id: string option;
+      }
   [@@deriving sexp, compare, yojson { strict = false }]
 end
 

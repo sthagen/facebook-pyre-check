@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-open Core
+open Data_structures
 open Analysis
 open Ast
 open Expression
@@ -180,7 +180,7 @@ end
 module LocationCallees : sig
   type t =
     | Singleton of ExpressionCallees.t
-    | Compound of ExpressionCallees.t String.Map.Tree.t
+    | Compound of ExpressionCallees.t SerializableStringMap.t
   [@@deriving eq, show]
 end
 

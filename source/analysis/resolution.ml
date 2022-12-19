@@ -5,7 +5,14 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-(* TODO(T132410158) Add a module-level doc comment. *)
+(* A Resolution.t value represents all of the type information in a local scope. In Pyre, every
+   expression can potentially have a distinct Resolution.t because side effects of evaluating parts
+   of an expression can lead to type refinement (for example ternary expressions) or the
+   introduction of new names (for example the walrus operator or the placeholder variables in a
+   comprehension).
+
+   If you only neeed *global* scope information, then use GlobalResolution.t rather than
+   Resolution.t *)
 
 open Core
 open Ast
@@ -181,8 +188,8 @@ let unset_local
     resolution with
     annotation_store =
       {
-        annotations = Map.remove annotations reference;
-        temporary_annotations = Map.remove temporary_annotations reference;
+        annotations = Reference.Map.Tree.remove annotations reference;
+        temporary_annotations = Reference.Map.Tree.remove temporary_annotations reference;
       };
   }
 
@@ -190,7 +197,7 @@ let unset_local
 let clear_temporary_annotations ({ annotation_store; _ } as resolution) =
   {
     resolution with
-    annotation_store = { annotation_store with temporary_annotations = Reference.Map.empty };
+    annotation_store = { annotation_store with temporary_annotations = Reference.Map.Tree.empty };
   }
 
 
@@ -304,6 +311,15 @@ let with_annotation_store resolution ~annotation_store = { resolution with annot
 let parent { parent; _ } = parent
 
 let with_parent resolution ~parent = { resolution with parent }
+
+let resolution_for_statement ~local_annotations ~parent ~statement_key resolution =
+  let annotation_store =
+    local_annotations
+    >>= LocalAnnotationMap.ReadOnly.get_precondition ~statement_key
+    |> Option.value ~default:Refinement.Store.empty
+  in
+  with_annotation_store ~annotation_store resolution |> with_parent ~parent
+
 
 let is_consistent_with ({ global_resolution; _ } as resolution) =
   GlobalResolution.is_consistent_with

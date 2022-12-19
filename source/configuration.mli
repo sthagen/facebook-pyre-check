@@ -123,6 +123,8 @@ module Analysis : sig
 
   val default_enable_readonly_analysis : bool
 
+  val default_enable_unawaited_awaitable_analysis : bool
+
   type t = {
     parallel: bool;
     analyze_external_sources: bool;
@@ -150,6 +152,7 @@ module Analysis : sig
     enable_type_comments: bool;
     constraint_solving_style: constraint_solving_style;
     enable_readonly_analysis: bool;
+    enable_unawaited_awaitable_analysis: bool;
   }
   [@@deriving show]
 
@@ -181,6 +184,7 @@ module Analysis : sig
     ?enable_type_comments:bool ->
     ?constraint_solving_style:constraint_solving_style ->
     ?enable_readonly_analysis:bool ->
+    ?enable_unawaited_awaitable_analysis:bool ->
     source_paths:SearchPath.t list ->
     unit ->
     t
@@ -247,6 +251,7 @@ module StaticAnalysis : sig
     maximum_trace_length: int option;
     maximum_tito_depth: int option;
     check_invariants: bool;
+    limit_entrypoints: bool;
   }
 
   val create
@@ -277,6 +282,7 @@ module StaticAnalysis : sig
     ?maximum_trace_length:int ->
     ?maximum_tito_depth:int ->
     ?check_invariants:bool ->
+    ?limit_entrypoints:bool ->
     unit ->
     t
 end

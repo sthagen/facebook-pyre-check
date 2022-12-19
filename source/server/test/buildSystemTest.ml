@@ -352,17 +352,24 @@ let test_buck_renormalize context =
         incr normalize_counter;
         Lwt.return (List.map targets ~f:Buck.Target.of_string)
       in
-      let construct_build_map ~source_root:_ targets =
+      let construct_build_map targets =
         Lwt.return
           {
             Buck.Interface.BuildResult.targets;
             build_map = Buck.(BuildMap.(create (Partial.of_alist_exn ["foo.py", "foo.py"])));
           }
       in
-      Buck.Interface.create_for_testing ~normalize_targets ~construct_build_map ()
+      let query_owner_targets ~targets:_ _ =
+        failwith "`query_owner_targets` invoked but not implemented"
+      in
+      Buck.Interface.V1.create_for_testing
+        ~normalize_targets
+        ~construct_build_map
+        ~query_owner_targets
+        ()
     in
     let artifact_root = bracket_tmpdir context |> PyrePath.create_absolute in
-    let builder = Buck.Builder.create ~source_root ~artifact_root interface in
+    let builder = Buck.Builder.Classic.create ~source_root ~artifact_root interface in
     BuildSystem.Initializer.buck ~builder ~artifact_root ~targets:["//foo:target"] ()
     |> BuildSystem.Initializer.run
   in
@@ -439,7 +446,7 @@ let test_buck_update context =
          TARGET file to include another source in the target. *)
       let is_rebuild = ref false in
       let normalize_targets targets = Lwt.return (List.map targets ~f:Buck.Target.of_string) in
-      let construct_build_map ~source_root:_ targets =
+      let construct_build_map targets =
         let build_mappings =
           if !is_rebuild then
             ["bar.py", "foo/bar.py"; "baz.py", "foo/baz.py"]
@@ -453,9 +460,16 @@ let test_buck_update context =
             build_map = Buck.(BuildMap.(create (Partial.of_alist_exn build_mappings)));
           }
       in
-      Buck.Interface.create_for_testing ~normalize_targets ~construct_build_map ()
+      let query_owner_targets ~targets:_ _ =
+        failwith "`query_owner_targets` invoked but not implemented"
+      in
+      Buck.Interface.V1.create_for_testing
+        ~normalize_targets
+        ~construct_build_map
+        ~query_owner_targets
+        ()
     in
-    let builder = Buck.Builder.create ~source_root ~artifact_root interface in
+    let builder = Buck.Builder.Classic.create ~source_root ~artifact_root interface in
     BuildSystem.Initializer.buck ~builder ~artifact_root ~targets:["//foo:target"] ()
     |> BuildSystem.Initializer.run
   in
@@ -528,7 +542,7 @@ let test_buck_update_without_rebuild context =
     let interface =
       let is_rebuild = ref false in
       let normalize_targets targets = Lwt.return (List.map targets ~f:Buck.Target.of_string) in
-      let construct_build_map ~source_root:_ targets =
+      let construct_build_map targets =
         let build_mappings =
           if not !is_rebuild then (
             is_rebuild := true;
@@ -543,9 +557,16 @@ let test_buck_update_without_rebuild context =
             build_map = Buck.(BuildMap.(create (Partial.of_alist_exn build_mappings)));
           }
       in
-      Buck.Interface.create_for_testing ~normalize_targets ~construct_build_map ()
+      let query_owner_targets ~targets:_ _ =
+        failwith "`query_owner_targets` invoked but not implemented"
+      in
+      Buck.Interface.V1.create_for_testing
+        ~normalize_targets
+        ~construct_build_map
+        ~query_owner_targets
+        ()
     in
-    let builder = Buck.Builder.create ~source_root ~artifact_root interface in
+    let builder = Buck.Builder.Classic.create ~source_root ~artifact_root interface in
     BuildSystem.Initializer.buck ~builder ~artifact_root ~targets:["//foo:target"] ()
     |> BuildSystem.Initializer.run
   in

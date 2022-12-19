@@ -36,6 +36,7 @@ from .initialization import (
     StartSuccess,
 )
 from .pyre_server_options import PyreServerOptionsReader
+from .request_handler import AbstractRequestHandler
 from .server_state import ServerState
 
 if TYPE_CHECKING:
@@ -62,6 +63,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
     server_state: ServerState
     client_status_message_handler: ClientStatusMessageHandler
     client_type_error_handler: ClientTypeErrorHandler
+    request_handler: AbstractRequestHandler
     subscription_response_parser: PyreSubscriptionResponseParser
 
     def __init__(
@@ -71,6 +73,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
         client_status_message_handler: ClientStatusMessageHandler,
         client_type_error_handler: ClientTypeErrorHandler,
         subscription_response_parser: PyreSubscriptionResponseParser,
+        request_handler: AbstractRequestHandler,
         remote_logging: Optional[backend_arguments.RemoteLogging] = None,
     ) -> None:
         self.server_options_reader = server_options_reader
@@ -78,6 +81,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
         self.server_state = server_state
         self.client_status_message_handler = client_status_message_handler
         self.client_type_error_handler = client_type_error_handler
+        self.request_handler = request_handler
         self.subscription_response_parser = subscription_response_parser
 
     @abc.abstractmethod
@@ -107,8 +111,30 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
     ) -> None:
         pass
 
+    @abc.abstractmethod
+    async def send_open_state(self) -> None:
+        pass
+
     def get_type_errors_availability(self) -> features.TypeErrorsAvailability:
         return self.server_state.server_options.language_server_features.type_errors
+
+    @staticmethod
+    def _auxiliary_logging_info(
+        server_options: pyre_server_options.PyreServerOptions,
+    ) -> Dict[str, Optional[str]]:
+        relative_local_root = (
+            server_options.start_arguments.base_arguments.relative_local_root
+        )
+        return {
+            "binary": server_options.binary,
+            "log_path": server_options.start_arguments.base_arguments.log_path,
+            "global_root": (server_options.start_arguments.base_arguments.global_root),
+            **(
+                {}
+                if relative_local_root is None
+                else {"local_root": relative_local_root}
+            ),
+        }
 
     @staticmethod
     def read_server_options(
@@ -183,25 +209,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
             await self.client_type_error_handler.clear_type_errors_for_client()
             self.server_state.diagnostics = {}
 
-    @staticmethod
-    def _auxiliary_logging_info(
-        server_options: pyre_server_options.PyreServerOptions,
-    ) -> Dict[str, Optional[str]]:
-        relative_local_root = (
-            server_options.start_arguments.base_arguments.relative_local_root
-        )
-        return {
-            "binary": server_options.binary,
-            "log_path": server_options.start_arguments.base_arguments.log_path,
-            "global_root": (server_options.start_arguments.base_arguments.global_root),
-            **(
-                {}
-                if relative_local_root is None
-                else {"local_root": relative_local_root}
-            ),
-        }
-
-    async def _try_connect_and_subscribe(
+    async def connect_and_subscribe(
         self,
         server_options: pyre_server_options.PyreServerOptions,
         socket_path: Path,
@@ -222,11 +230,14 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
                     fallback_to_notification=True,
                 )
             else:
-                await self.client_status_message_handler.log_and_show_status_message_to_client(
-                    f"Pyre server at `{project_identifier}` has been initialized.",
-                    short_message="Pyre Ready",
-                    level=lsp.MessageType.INFO,
-                    fallback_to_notification=True,
+                asyncio.gather(
+                    self.send_open_state(),
+                    self.client_status_message_handler.log_and_show_status_message_to_client(
+                        f"Pyre server at `{project_identifier}` has been initialized.",
+                        short_message="Pyre Ready",
+                        level=lsp.MessageType.INFO,
+                        fallback_to_notification=True,
+                    ),
                 )
             self.server_state.consecutive_start_failure = 0
             self.server_state.is_user_notified_on_buck_failure = False
@@ -257,7 +268,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
 
         connection_timer = timer.Timer()
         try:
-            await self._try_connect_and_subscribe(
+            await self.connect_and_subscribe(
                 server_options,
                 socket_path,
                 connection_timer,
@@ -273,13 +284,14 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
             level=lsp.MessageType.WARNING,
             fallback_to_notification=True,
         )
+        self.server_state.server_last_status = state.ServerStatus.STARTING
         start_status = await async_start_pyre_server(
             server_options.binary,
             start_arguments,
             flavor,
         )
         if isinstance(start_status, StartSuccess):
-            await self._try_connect_and_subscribe(
+            await self.connect_and_subscribe(
                 server_options,
                 socket_path,
                 connection_timer,

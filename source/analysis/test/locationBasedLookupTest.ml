@@ -1179,7 +1179,7 @@ let test_resolve_definition_for_symbol context =
           # No definition found.
     |}
     (* This points to builtins.pyi. *)
-    (Some ":258:0-281:31");
+    (Some ":265:0-288:31");
   assert_resolved_definition
     {|
       class Foo:
@@ -1240,7 +1240,7 @@ let test_resolve_definition_for_symbol context =
                      # ^- cursor
     |}
     (* This points to builtins.pyi. *)
-    (Some ":203:2-203:34");
+    (Some ":206:2-206:34");
   assert_resolved_definition
     {|
         class Foo:
@@ -1379,7 +1379,7 @@ let test_resolve_definition_for_symbol context =
                         # ^- cursor
     |}
     (* This points to builtins.pyi. *)
-    (Some ":269:2-269:46");
+    (Some ":276:2-276:46");
   (* TODO(T112570623): The target variable points to the `Exception`. This is unavoidable right now,
      because we don't store its location in `Try.t`. *)
   assert_resolved_definition
@@ -3484,6 +3484,133 @@ let test_resolve_type_for_symbol context =
   ()
 
 
+let test_hover_info_for_position context =
+  let default_external_sources =
+    [
+      ( "library.py",
+        {|
+          """module docstring"""
+          class Base:
+            @staticmethod
+            def return_str() -> str:
+                """Test"""
+                return "hello"
+    |}
+      );
+    ]
+  in
+  let assert_hover_info_for_position ?(external_sources = default_external_sources) source expected =
+    let type_environment =
+      let { ScratchProject.BuiltTypeEnvironment.type_environment; _ } =
+        ScratchProject.setup ~context ["test.py", source] ~external_sources
+        |> ScratchProject.build_type_environment
+      in
+      type_environment
+    in
+    let value =
+      LocationBasedLookup.hover_info_for_position
+        ~type_environment
+        ~module_reference:!&"test"
+        (find_indicator_position ~source "cursor")
+    in
+    assert_equal ~ctxt:context ~printer:[%show: LocationBasedLookup.hover_info] expected value
+  in
+  assert_hover_info_for_position
+    {|
+      test = 5
+      # ^- cursor
+  |}
+    { value = Some "typing_extensions.Literal[5]"; docstring = None };
+  assert_hover_info_for_position
+    {|
+      def test() -> None:
+          """docstring"""
+          x = 5
+      test
+      # ^- cursor
+  |}
+    { value = Some "() -> None"; docstring = Some "docstring" };
+  assert_hover_info_for_position
+    {|
+      class Foo:
+          def test() -> None:
+              """docstring"""
+              x = 5
+      Foo.test
+      #     ^- cursor
+  |}
+    { value = Some "() -> None"; docstring = Some "docstring" };
+  assert_hover_info_for_position
+    {|
+      class Foo:
+          def test() -> None:
+              """docstring"""
+              x = 5
+      Foo.test()
+      #     ^- cursor
+  |}
+    { value = Some "() -> None"; docstring = Some "docstring" };
+  assert_hover_info_for_position
+    {|
+      class Foo:
+          def test() -> None:
+      #       ^- cursor
+              """docstring"""
+              x = 5
+  |}
+    { value = Some "() -> None"; docstring = Some "docstring" };
+  assert_hover_info_for_position
+    {|
+      def test() -> None:
+      #    ^- cursor
+          """docstring"""
+          x = 5
+  |}
+    { value = Some "() -> None"; docstring = Some "docstring" };
+  assert_hover_info_for_position
+    {|
+      def test() -> None:
+      #    ^- cursor
+          x = 5
+  |}
+    { value = Some "() -> None"; docstring = None };
+  (* TODO(T139775850) support complex hover *)
+  assert_hover_info_for_position
+    {|
+      import library
+      library.Base.return_str()
+      #             ^- cursor
+  |}
+    { value = Some "() -> str"; docstring = None };
+  (* TODO(T139776124) support module docstrings *)
+  assert_hover_info_for_position
+    {|
+      import library
+      #       ^- cursor
+  |}
+    { value = None; docstring = None };
+  (* TODO(T139776113) docstrings for classes *)
+  assert_hover_info_for_position
+    {|
+   class Test:
+      """docstring"""
+      x = 5
+   Test
+   # ^- cursor
+  |}
+    { value = Some "Type[test.Test]"; docstring = None };
+  (* TODO(T139776639) move docstring into ast *)
+  assert_hover_info_for_position
+    {|
+   class Test:
+      """docstring"""
+   #      ^- cursor
+      x = 5
+  |}
+    { value = Some "typing_extensions.Literal['docstring']"; docstring = None };
+  ()
+
+
 let () =
   "lookup"
   >::: [
@@ -3511,5 +3638,6 @@ let () =
          "lookup_expression" >:: test_lookup_expression;
          "coverage_gaps_in_module" >:: test_coverage_gaps_in_module;
          "resolve_type_for_symbol" >:: test_resolve_type_for_symbol;
+         "hover_info_for_position" >:: test_hover_info_for_position;
        ]
   |> Test.run

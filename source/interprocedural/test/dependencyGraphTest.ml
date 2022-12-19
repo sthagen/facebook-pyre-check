@@ -55,7 +55,7 @@ let create_call_graph ?(update_environment_with = []) ~context source_text =
       ~resolution:(TypeEnvironment.ReadOnly.global_resolution environment)
       ~include_unit_tests:true
       ~source
-    |> FetchCallables.get_callables
+    |> FetchCallables.get_non_stub_callables
   in
   let fold call_graph callable =
     let callees =
@@ -548,7 +548,7 @@ let test_prune_callables _ =
       (List.map expected_dependencies ~f:(fun (key, values) ->
            ( create (Reference.create key),
              List.map values ~f:(fun value -> create (Reference.create value)) )))
-      (Target.Map.to_alist actual_dependencies)
+      (Target.Map.Tree.to_alist actual_dependencies)
   in
   (* Basic case. *)
   assert_pruned

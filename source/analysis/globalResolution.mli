@@ -118,7 +118,7 @@ val meet : t -> Type.t -> Type.t -> Type.t
 
 val widen : t -> widening_threshold:int -> previous:Type.t -> next:Type.t -> iteration:int -> Type.t
 
-val types_are_orderable : t -> Type.t -> Type.t -> bool
+val less_or_equal_either_way : t -> Type.t -> Type.t -> bool
 
 (* Only for use in monkey check. *)
 val is_compatible_with : t -> left:Type.t -> right:Type.t -> bool
@@ -195,6 +195,7 @@ val instantiate_attribute
   :  resolution:t ->
   ?instantiated:Type.t ->
   accessed_through_class:bool ->
+  accessed_through_readonly:bool ->
   AttributeResolution.uninstantiated_attribute ->
   AnnotatedAttribute.instantiated
 
@@ -204,6 +205,7 @@ val attribute_from_class_name
   :  resolution:t ->
   ?transitive:bool ->
   ?accessed_through_class:bool ->
+  ?accessed_through_readonly:bool ->
   ?special_method:bool ->
   Type.Primitive.t ->
   name:Identifier.t ->

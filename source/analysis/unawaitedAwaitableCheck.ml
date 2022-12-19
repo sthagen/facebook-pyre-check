@@ -7,6 +7,8 @@
 
 (* TODO(T132410158) Add a module-level doc comment. *)
 
+[@@@warning "-27"]
+
 open Core
 open Ast
 open Statement
@@ -56,11 +58,24 @@ module Error = AnalysisError
     some other variable, we copy over all the awaitables that are pointed to by the other variable. *)
 
 let is_awaitable ~global_resolution annotation =
-  (not (Type.equal annotation Type.Any))
-  && GlobalResolution.less_or_equal
-       global_resolution
-       ~left:annotation
-       ~right:(Type.awaitable Type.Top)
+  let has_getattr_method () =
+    GlobalResolution.attribute_from_annotation
+      ~special_method:true
+      ~name:"__getattr__"
+      ~parent:annotation
+      global_resolution
+    |> Option.is_some
+  in
+  if Type.equal annotation Type.Any then
+    false
+  else
+    GlobalResolution.less_or_equal
+      global_resolution
+      ~left:annotation
+      ~right:(Type.awaitable Type.Top)
+    && (* If a class has a `__getattr__` method, then it will satisfy the `Awaitable` protocol
+          (since it implicitly has the `__await__` method). Treat such types as non-awaitables. *)
+    not (has_getattr_method ())
 
 
 module Awaitable : sig
@@ -97,9 +112,9 @@ module type Context = sig
 
   val define : Define.t Node.t
 
-  val global_resolution : GlobalResolution.t
-
   val local_annotations : LocalAnnotationMap.ReadOnly.t option
+
+  val resolution : Resolution.t
 end
 
 module State (Context : Context) = struct
@@ -128,7 +143,7 @@ module State (Context : Context) = struct
   type t = {
     (* For every location where we encounter an awaitable, we maintain whether that awaitable's
        state, i.e., has it been awaited or not? *)
-    unawaited: awaitable_state Awaitable.Map.t;
+    awaitable_to_awaited_state: awaitable_state Awaitable.Map.t;
     (* For an alias, what awaitable locations could it point to? *)
     awaitables_for_alias: Awaitable.Set.t AliasMap.t;
     (* HACK: This flag represents whether an expression should be expected to await.
@@ -156,11 +171,11 @@ module State (Context : Context) = struct
 
   let result_state { state; nested_awaitable_expressions = _ } = state
 
-  let show { unawaited; awaitables_for_alias; expect_expressions_to_be_awaited } =
-    let unawaited =
-      Map.to_alist unawaited
-      |> List.map ~f:(fun (location, awaitable_state) ->
-             Format.asprintf "%a -> %a" Awaitable.pp location pp_awaitable_state awaitable_state)
+  let show { awaitable_to_awaited_state; awaitables_for_alias; expect_expressions_to_be_awaited } =
+    let awaitable_to_awaited_state =
+      Map.to_alist awaitable_to_awaited_state
+      |> List.map ~f:(fun (awaitable, awaitable_state) ->
+             Format.asprintf "%a -> %a" Awaitable.pp awaitable pp_awaitable_state awaitable_state)
       |> String.concat ~sep:", "
     in
     let awaitables_for_alias =
@@ -178,7 +193,7 @@ module State (Context : Context) = struct
     in
     Format.sprintf
       "Unawaited expressions: %s\nAwaitables for aliases: %s\nNeed to await: %b"
-      unawaited
+      awaitable_to_awaited_state
       awaitables_for_alias
       expect_expressions_to_be_awaited
 
@@ -187,66 +202,27 @@ module State (Context : Context) = struct
 
   let bottom =
     {
-      unawaited = Awaitable.Map.empty;
+      awaitable_to_awaited_state = Awaitable.Map.empty;
       awaitables_for_alias = AliasMap.empty;
       expect_expressions_to_be_awaited = false;
     }
 
 
-  let initial ~global_resolution { Define.signature = { Define.Signature.parameters; _ }; _ } =
-    let state =
-      {
-        unawaited = Awaitable.Map.empty;
-        awaitables_for_alias = AliasMap.empty;
-        expect_expressions_to_be_awaited = true;
-      }
-    in
-    let forward_parameter
-        ({ unawaited; awaitables_for_alias; expect_expressions_to_be_awaited } as state)
-        { Node.value = { Parameter.name; annotation; _ }; location }
-      =
-      let is_awaitable =
-        match annotation with
-        | Some annotation ->
-            let annotation = GlobalResolution.parse_annotation global_resolution annotation in
-            is_awaitable ~global_resolution annotation
-        | None -> false
-      in
-      if is_awaitable then
-        let name =
-          if String.is_prefix ~prefix:"**" name then
-            String.drop_prefix name 2
-          else if String.is_prefix ~prefix:"*" name then
-            String.drop_prefix name 1
-          else
-            name
-        in
-        {
-          unawaited =
-            Map.set
-              unawaited
-              ~key:(Awaitable.create location)
-              ~data:(Unawaited { Node.value = Name (Name.Identifier name); location });
-          awaitables_for_alias =
-            Map.set
-              awaitables_for_alias
-              ~key:(NamedAlias (Reference.create name))
-              ~data:(Awaitable.create location |> Awaitable.Set.singleton);
-          expect_expressions_to_be_awaited;
-        }
-      else
-        state
-    in
-    List.fold ~init:state ~f:forward_parameter parameters
+  let initial =
+    {
+      awaitable_to_awaited_state = Awaitable.Map.empty;
+      awaitables_for_alias = AliasMap.empty;
+      expect_expressions_to_be_awaited = true;
+    }
 
 
-  let errors { unawaited; awaitables_for_alias; _ } =
+  let errors { awaitable_to_awaited_state; awaitables_for_alias; _ } =
     let errors =
       let keep_unawaited = function
         | Unawaited expression -> Some { Error.references = []; expression }
         | Awaited -> None
       in
-      Map.filter_map unawaited ~f:keep_unawaited
+      Map.filter_map awaitable_to_awaited_state ~f:keep_unawaited
     in
     let add_reference ~key ~data errors =
       let awaitables = data in
@@ -275,7 +251,7 @@ module State (Context : Context) = struct
 
   let less_or_equal ~left ~right =
     let less_or_equal_unawaited (reference, awaitable_state) =
-      match awaitable_state, Map.find right.unawaited reference with
+      match awaitable_state, Map.find right.awaitable_to_awaited_state reference with
       | Unawaited _, Some _ -> true
       | Awaited, Some Awaited -> true
       | _ -> false
@@ -285,7 +261,7 @@ module State (Context : Context) = struct
       | Some other_locations -> Set.is_subset locations ~of_:other_locations
       | None -> false
     in
-    Map.to_alist left.unawaited |> List.for_all ~f:less_or_equal_unawaited
+    Map.to_alist left.awaitable_to_awaited_state |> List.for_all ~f:less_or_equal_unawaited
     && Map.to_alist left.awaitables_for_alias |> List.for_all ~f:less_or_equal_awaitables_for_alias
 
 
@@ -301,7 +277,11 @@ module State (Context : Context) = struct
     in
     let merge_awaitables ~key:_ left right = Set.union left right in
     {
-      unawaited = Map.merge_skewed left.unawaited right.unawaited ~combine:merge_unawaited;
+      awaitable_to_awaited_state =
+        Map.merge_skewed
+          left.awaitable_to_awaited_state
+          right.awaitable_to_awaited_state
+          ~combine:merge_unawaited;
       awaitables_for_alias =
         Map.merge_skewed
           left.awaitables_for_alias
@@ -315,28 +295,31 @@ module State (Context : Context) = struct
   let widen ~previous ~next ~iteration:_ = join previous next
 
   let mark_name_as_awaited
-      { unawaited; awaitables_for_alias; expect_expressions_to_be_awaited }
+      { awaitable_to_awaited_state; awaitables_for_alias; expect_expressions_to_be_awaited }
       ~name
     =
     if is_simple_name name then
-      let unawaited =
-        let await_location unawaited location = Map.set unawaited ~key:location ~data:Awaited in
+      let awaitable_to_awaited_state =
+        let await_location awaitable_to_awaited_state awaitable =
+          Map.set awaitable_to_awaited_state ~key:awaitable ~data:Awaited
+        in
         Map.find awaitables_for_alias (NamedAlias (name_to_reference_exn name))
-        >>| (fun locations -> Set.fold locations ~init:unawaited ~f:await_location)
-        |> Option.value ~default:unawaited
+        >>| (fun locations -> Set.fold locations ~init:awaitable_to_awaited_state ~f:await_location)
+        |> Option.value ~default:awaitable_to_awaited_state
       in
-      { unawaited; awaitables_for_alias; expect_expressions_to_be_awaited }
+      { awaitable_to_awaited_state; awaitables_for_alias; expect_expressions_to_be_awaited }
     else (* Non-simple names cannot store awaitables. *)
-      { unawaited; awaitables_for_alias; expect_expressions_to_be_awaited }
+      { awaitable_to_awaited_state; awaitables_for_alias; expect_expressions_to_be_awaited }
 
 
   let mark_location_as_awaited
-      { unawaited; awaitables_for_alias; expect_expressions_to_be_awaited }
+      { awaitable_to_awaited_state; awaitables_for_alias; expect_expressions_to_be_awaited }
       ~location
     =
-    if Map.mem unawaited (Awaitable.create location) then
+    if Map.mem awaitable_to_awaited_state (Awaitable.create location) then
       {
-        unawaited = Map.set unawaited ~key:(Awaitable.create location) ~data:Awaited;
+        awaitable_to_awaited_state =
+          Map.set awaitable_to_awaited_state ~key:(Awaitable.create location) ~data:Awaited;
         awaitables_for_alias;
         expect_expressions_to_be_awaited;
       }
@@ -347,12 +330,16 @@ module State (Context : Context) = struct
           (ExpressionWithNestedAliases { expression_location = location })
       with
       | Some awaitables ->
-          let unawaited =
-            Set.fold awaitables ~init:unawaited ~f:(fun unawaited awaitable ->
-                Map.set unawaited ~key:awaitable ~data:Awaited)
+          let awaitable_to_awaited_state =
+            Set.fold
+              awaitables
+              ~init:awaitable_to_awaited_state
+              ~f:(fun awaitable_to_awaited_state awaitable ->
+                Map.set awaitable_to_awaited_state ~key:awaitable ~data:Awaited)
           in
-          { unawaited; awaitables_for_alias; expect_expressions_to_be_awaited }
-      | None -> { unawaited; awaitables_for_alias; expect_expressions_to_be_awaited }
+          { awaitable_to_awaited_state; awaitables_for_alias; expect_expressions_to_be_awaited }
+      | None ->
+          { awaitable_to_awaited_state; awaitables_for_alias; expect_expressions_to_be_awaited }
 
 
   let ( |>> ) { state; nested_awaitable_expressions } existing_awaitables =
@@ -458,10 +445,12 @@ module State (Context : Context) = struct
           { state; nested_awaitable_expressions }
     in
     let annotation = Resolution.resolve_expression_to_type resolution expression in
-    let { unawaited; awaitables_for_alias; expect_expressions_to_be_awaited } = state in
+    let { awaitable_to_awaited_state; awaitables_for_alias; expect_expressions_to_be_awaited } =
+      state
+    in
     let find_aliases { Node.value; location } =
       let awaitable = Awaitable.create location in
-      if Map.mem unawaited awaitable then
+      if Map.mem awaitable_to_awaited_state awaitable then
         Some (Awaitable.Set.singleton awaitable)
       else
         match value with
@@ -487,7 +476,7 @@ module State (Context : Context) = struct
               {
                 state =
                   {
-                    unawaited;
+                    awaitable_to_awaited_state;
                     awaitables_for_alias =
                       Map.set
                         awaitables_for_alias
@@ -501,7 +490,8 @@ module State (Context : Context) = struct
               {
                 state =
                   {
-                    unawaited = Map.set unawaited ~key:awaitable ~data:(Unawaited expression);
+                    awaitable_to_awaited_state =
+                      Map.set awaitable_to_awaited_state ~key:awaitable ~data:(Unawaited expression);
                     awaitables_for_alias;
                     expect_expressions_to_be_awaited;
                   };
@@ -511,7 +501,8 @@ module State (Context : Context) = struct
           {
             state =
               {
-                unawaited = Map.set unawaited ~key:awaitable ~data:(Unawaited expression);
+                awaitable_to_awaited_state =
+                  Map.set awaitable_to_awaited_state ~key:awaitable ~data:(Unawaited expression);
                 awaitables_for_alias;
                 expect_expressions_to_be_awaited;
               };
@@ -531,7 +522,7 @@ module State (Context : Context) = struct
               {
                 state =
                   {
-                    unawaited;
+                    awaitable_to_awaited_state;
                     awaitables_for_alias =
                       Map.set
                         awaitables_for_alias
@@ -657,7 +648,7 @@ module State (Context : Context) = struct
           match Map.find state.awaitables_for_alias (NamedAlias (name_to_reference_exn name)) with
           | Some aliases ->
               let add_unawaited unawaited location =
-                match Map.find state.unawaited location with
+                match Map.find state.awaitable_to_awaited_state location with
                 | Some (Unawaited expression) -> expression :: unawaited
                 | _ -> unawaited
               in
@@ -681,10 +672,10 @@ module State (Context : Context) = struct
 
   and forward_assign
       ~resolution
-      ~state:({ unawaited; awaitables_for_alias; expect_expressions_to_be_awaited } as state)
+      ~state:({ awaitable_to_awaited_state; awaitables_for_alias; _ } as state)
       ~annotation
       ~expression
-      ~awaitable_expressions_so_far
+      ~awaitable_expressions_in_value
       ~target
     =
     let open Expression in
@@ -699,39 +690,55 @@ module State (Context : Context) = struct
       | _ -> []
     in
     match Node.value target with
-    | Expression.Name target when is_simple_name target -> (
+    | Expression.Name (Identifier target_name) -> (
         match expression with
         | { Node.value = Expression.Name value; _ } when is_simple_name value ->
-            (* Aliasing. *)
+            (* Aliasing: If `target` is awaited, then the awaitables pointed to by `value` will have
+               been awaited. So, make `target` also point to them. *)
             let awaitables_for_alias =
               Map.find awaitables_for_alias (NamedAlias (name_to_reference_exn value))
               >>| (fun locations ->
                     Map.set
                       awaitables_for_alias
-                      ~key:(NamedAlias (name_to_reference_exn target))
+                      ~key:(NamedAlias (Reference.create target_name))
                       ~data:locations)
               |> Option.value ~default:awaitables_for_alias
             in
-            { unawaited; awaitables_for_alias; expect_expressions_to_be_awaited }
+            { state with awaitables_for_alias }
         | _ ->
-            (* The expression must be analyzed before we call `forward_assign` on it, as that's
-               where unawaitables are introduced. *)
+            let value_awaitable = Node.location expression |> Awaitable.create in
+            let key = NamedAlias (Reference.create target_name) in
             let awaitables_for_alias =
-              let awaitable = Node.location expression |> Awaitable.create in
-              let key = NamedAlias (name_to_reference_exn target) in
-              if not (List.is_empty awaitable_expressions_so_far) then
-                let nested_awaitable_expressions =
-                  List.map awaitable_expressions_so_far ~f:Node.location
+              if not (List.is_empty awaitable_expressions_in_value) then
+                (* If there are awaitables inside the value, then make `target` point to them.
+
+                   For example, it is a list expression, `target = [awaitable(), awaitable2()]`,
+                   `target` should point to the awaitables. *)
+                let awaitables_in_value =
+                  List.map awaitable_expressions_in_value ~f:Node.location
                   |> List.map ~f:Awaitable.create
                   |> Awaitable.Set.of_list
                 in
-                Map.set awaitables_for_alias ~key ~data:nested_awaitable_expressions
-              else if Map.mem unawaited awaitable then
-                Map.set awaitables_for_alias ~key ~data:(Awaitable.Set.singleton awaitable)
+                Map.set awaitables_for_alias ~key ~data:awaitables_in_value
+              else if Map.mem awaitable_to_awaited_state value_awaitable then
+                (* If the entire value being assigned is known to be an awaitable, make `target`
+                   point to it. *)
+                Map.set awaitables_for_alias ~key ~data:(Awaitable.Set.singleton value_awaitable)
               else
                 awaitables_for_alias
             in
-            { unawaited; awaitables_for_alias; expect_expressions_to_be_awaited })
+            { state with awaitables_for_alias })
+    | Name (Attribute _) ->
+        (* Unsoundly assume that any awaitable assigned to an attribute is being awaited somewhere.
+           Otherwise, we risk getting many false positives for attribute assignments. *)
+        let awaitable_to_awaited_state =
+          Node.location expression
+          |> Awaitable.create
+          |> Map.change awaitable_to_awaited_state ~f:(function
+                 | Some _ -> Some Awaited
+                 | None -> None)
+        in
+        { state with awaitable_to_awaited_state }
     | List elements
     | Tuple elements
       when is_nonuniform_sequence ~minimum_length:(List.length elements) annotation -> (
@@ -784,7 +791,7 @@ module State (Context : Context) = struct
                      ~state
                      ~target
                      ~annotation
-                     ~awaitable_expressions_so_far:[]
+                     ~awaitable_expressions_in_value:[]
                      ~expression)
         | _ ->
             (* Right now, if we don't have a concrete tuple to break down, we won't introduce new
@@ -793,20 +800,28 @@ module State (Context : Context) = struct
     | _ -> state
 
 
+  let resolution_for_statement ~local_annotations ~parent ~statement_key resolution =
+    let annotation_store =
+      local_annotations
+      >>= LocalAnnotationMap.ReadOnly.get_precondition ~statement_key
+      |> Option.value ~default:Refinement.Store.empty
+    in
+    resolution
+    |> Resolution.with_annotation_store ~annotation_store
+    |> Resolution.with_parent ~parent
+
+
   let forward ~statement_key state ~statement:{ Node.value; _ } =
     let { Node.value = { Define.signature = { Define.Signature.parent; _ }; _ }; _ } =
       Context.define
     in
     let resolution =
-      TypeCheck.resolution_with_key
-        ~global_resolution:Context.global_resolution
+      resolution_for_statement
         ~local_annotations:Context.local_annotations
         ~parent
         ~statement_key
-        (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
-        (module TypeCheck.DummyContext)
+        Context.resolution
     in
-    let global_resolution = Resolution.global_resolution resolution in
     match value with
     | Statement.Assert { Assert.test; _ } ->
         forward_expression ~resolution ~state ~expression:test |> result_state
@@ -817,10 +832,10 @@ module State (Context : Context) = struct
         let annotation = Resolution.resolve_expression_to_type resolution value in
         forward_assign
           ~state
-          ~resolution:global_resolution
+          ~resolution:(Resolution.global_resolution resolution)
           ~annotation
           ~expression:value
-          ~awaitable_expressions_so_far:nested_awaitable_expressions
+          ~awaitable_expressions_in_value:nested_awaitable_expressions
           ~target
     | Delete expressions ->
         let f state expression =
@@ -865,27 +880,21 @@ module State (Context : Context) = struct
   let backward ~statement_key:_ _ ~statement:_ = failwith "Not implemented"
 end
 
-let unawaited_awaitable_errors ~type_environment ~qualifier define =
+let unawaited_awaitable_errors ~resolution ~local_annotations ~qualifier define =
   let module Context = struct
     let qualifier = qualifier
 
     let define = define
 
-    let global_resolution = TypeEnvironment.ReadOnly.global_resolution type_environment
+    let local_annotations = local_annotations
 
-    let local_annotations =
-      TypeEnvironment.TypeEnvironmentReadOnly.get_or_recompute_local_annotations
-        type_environment
-        (Node.value define |> Define.name)
+    let resolution = resolution
   end
   in
   let module State = State (Context) in
   let module Fixpoint = Fixpoint.Make (State) in
   let cfg = Cfg.create (Node.value define) in
-  let global_resolution =
-    TypeEnvironment.ReadOnly.global_environment type_environment |> GlobalResolution.create
-  in
-  Fixpoint.forward ~cfg ~initial:(State.initial ~global_resolution (Node.value define))
+  Fixpoint.forward ~cfg ~initial:State.initial
   |> Fixpoint.exit
   >>| State.errors
   |> Option.value ~default:[]
@@ -894,12 +903,9 @@ let unawaited_awaitable_errors ~type_environment ~qualifier define =
 (** Avoid emitting "unawaited awaitable" errors for classes that inherit from `Awaitable`. They may,
     for example, store attributes that are unawaited. *)
 let should_run_analysis
-    ~type_environment
+    ~global_resolution
     { Node.value = { Define.signature = { parent; _ }; _ }; _ }
   =
-  let global_resolution =
-    TypeEnvironment.ReadOnly.global_environment type_environment |> GlobalResolution.create
-  in
   parent
   >>| (fun parent -> Type.Primitive (Reference.show parent))
   >>| is_awaitable ~global_resolution
@@ -907,18 +913,24 @@ let should_run_analysis
   |> Option.value ~default:true
 
 
-let check_define ~type_environment ~qualifier define =
-  if should_run_analysis ~type_environment define then
-    unawaited_awaitable_errors ~type_environment ~qualifier define
+let check_define ~resolution ~local_annotations ~qualifier define =
+  if should_run_analysis ~global_resolution:(Resolution.global_resolution resolution) define then
+    unawaited_awaitable_errors ~resolution ~local_annotations ~qualifier define
   else
     []
 
 
 let check_module_TESTING_ONLY
-    ~type_environment
+    ~resolution
+    ~local_annotations_for_define
     ({ Source.module_path = { ModulePath.qualifier; _ }; _ } as source)
   =
   source
   |> Preprocessing.defines ~include_toplevels:true
-  |> List.map ~f:(check_define ~type_environment ~qualifier)
+  |> List.map ~f:(fun define ->
+         check_define
+           ~resolution
+           ~local_annotations:(local_annotations_for_define (Node.value define |> Define.name))
+           ~qualifier
+           define)
   |> List.concat

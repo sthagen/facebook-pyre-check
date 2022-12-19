@@ -422,11 +422,7 @@ let get_initial_models ~context =
   in
   let { ModelParseResult.models; errors; _ } =
     ModelParser.parse
-      ~resolution:
-        (TypeCheck.resolution
-           global_resolution
-           (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
-           (module TypeCheck.DummyContext))
+      ~resolution:global_resolution
       ~source:initial_models_source
       ~taint_configuration:TaintConfiguration.Heap.default
       ~source_sink_filter:None
@@ -522,12 +518,6 @@ let initialize
      failwithf "Pyre errors were found in `%s`:\n%s" handle errors ());
 
   let global_resolution = TypeEnvironment.ReadOnly.global_resolution type_environment in
-  let resolution =
-    TypeCheck.resolution
-      global_resolution
-      (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
-      (module TypeCheck.DummyContext)
-  in
   let initial_callables =
     FetchCallables.from_source
       ~configuration
@@ -536,7 +526,7 @@ let initialize
       ~source
   in
   let stubs = FetchCallables.get_stubs initial_callables in
-  let callables = FetchCallables.get_callables initial_callables in
+  let callables = FetchCallables.get_non_stub_callables initial_callables in
   let class_hierarchy_graph =
     ClassHierarchyGraph.Heap.from_source ~environment:type_environment ~source
   in
@@ -553,7 +543,7 @@ let initialize
     | Some source ->
         let { ModelParseResult.models; errors; skip_overrides; queries } =
           ModelParser.parse
-            ~resolution
+            ~resolution:global_resolution
             ~source:(Test.trim_extra_indentation source)
             ~taint_configuration
             ~source_sink_filter:(Some taint_configuration.source_sink_filter)
@@ -568,36 +558,34 @@ let initialize
              source)
           (List.is_empty errors);
 
-        let models_result =
-          ModelQueryExecution.apply_all_queries
-            ~resolution
-            ~taint_configuration:taint_configuration_shared_memory
+        let model_query_results, errors =
+          ModelQueryExecution.generate_models_from_queries
+            ~resolution:global_resolution
+            ~scheduler:(Test.mock_scheduler ())
             ~class_hierarchy_graph:
               (ClassHierarchyGraph.SharedMemory.from_heap class_hierarchy_graph)
-            ~scheduler:(Test.mock_scheduler ())
-            ~environment:type_environment
             ~source_sink_filter:(Some taint_configuration.source_sink_filter)
-            ~callables:(List.rev_append stubs callables)
+            ~verbose:false
+            ~callables_and_stubs:(List.rev_append stubs callables)
             ~stubs:(Target.HashSet.of_list stubs)
-            ~queries
+            queries
         in
-        let models_and_names, errors = fst models_result, snd models_result in
         (match taint_configuration.dump_model_query_results_path, expected_dump_string with
         | Some path, Some expected_string ->
             ModelQueryExecution.DumpModelQueryResults.dump_to_file_and_string
-              ~models_and_names
+              ~model_query_results
               ~path
             |> assert_equal ~cmp:String.equal ~printer:Fn.id expected_string
         | Some path, None ->
-            ModelQueryExecution.DumpModelQueryResults.dump_to_file ~models_and_names ~path
+            ModelQueryExecution.DumpModelQueryResults.dump_to_file ~model_query_results ~path
         | None, Some expected_string ->
-            ModelQueryExecution.DumpModelQueryResults.dump_to_string ~models_and_names
+            ModelQueryExecution.DumpModelQueryResults.dump_to_string ~model_query_results
             |> assert_equal ~cmp:String.equal ~printer:Fn.id expected_string
         | None, None -> ());
         let verify = static_analysis_configuration.verify_models && verify_model_queries in
         ModelVerificationError.verify_models_and_dsl errors verify;
         let models =
-          models_and_names
+          model_query_results
           |> ModelQueryExecution.ModelQueryRegistryMap.get_registry
                ~model_join:Model.join_user_models
           |> Registry.merge ~join:Model.join_user_models models
@@ -676,18 +664,18 @@ let end_to_end_integration_test path context =
     in
     let write_output ~suffix ?(initial = false) content =
       try output_filename ~suffix ~initial |> File.create ~content |> File.write with
-      | Unix.Unix_error _ ->
+      | Core_unix.Unix_error _ ->
           failwith (Format.asprintf "Could not write `%s` file for %a" suffix PyrePath.pp path)
     in
     let remove_old_output ~suffix =
-      try output_filename ~suffix ~initial:false |> PyrePath.show |> Sys.remove with
+      try output_filename ~suffix ~initial:false |> PyrePath.show |> Sys_unix.remove with
       | Sys_error _ ->
           (* be silent *)
           ()
     in
     let get_expected ~suffix =
       try PyrePath.with_suffix path ~suffix |> File.create |> File.content with
-      | Unix.Unix_error _ -> None
+      | Core_unix.Unix_error _ -> None
     in
     match get_expected ~suffix with
     | None ->
@@ -719,7 +707,7 @@ let end_to_end_integration_test path context =
         let model_path = PyrePath.with_suffix path ~suffix:".pysa" in
         File.create model_path |> File.content
       with
-      | Unix.Unix_error _ -> None
+      | Core_unix.Unix_error _ -> None
     in
     let taint_configuration =
       try
@@ -730,7 +718,7 @@ let end_to_end_integration_test path context =
                Taint.TaintConfiguration.from_json_list [path, Yojson.Safe.from_string content]
                |> Taint.TaintConfiguration.exception_on_error)
       with
-      | Unix.Unix_error _ -> None
+      | Core_unix.Unix_error _ -> None
     in
     let add_initial_models = Option.is_none models_source && Option.is_none taint_configuration in
     let taint_configuration =
@@ -808,7 +796,7 @@ let end_to_end_integration_test path context =
             class_interval_graph;
             define_call_graphs;
           }
-        ~initial_callables:(FetchCallables.get_callables initial_callables)
+        ~initial_callables:(FetchCallables.get_non_stub_callables initial_callables)
         ~stubs
         ~override_targets
         ~callables_to_analyze

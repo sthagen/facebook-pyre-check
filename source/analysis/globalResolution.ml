@@ -5,7 +5,15 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-(* TODO(T132410158) Add a module-level doc comment. *)
+(* A GlobalResolution.t is a wrapper around all the environment layers prior
+ * to TypeEnvironment. It serves two purposes:
+ * (a) It abstracts the details of accessing lower environment layers into a single
+ *     interface representing all global-scope information for Pyre analysis
+ * (b) It allows callers to specify a `dependency` that will be used in all
+ *     environment accesses. This makes it easy to avoid forgetting to pass a
+ *     dependency in very complex logic like typeCheck.ml because the dependency
+ *     only needs to be specified once when we create the GlobalResolution.t.
+ *)
 
 open Core
 open Pyre
@@ -156,7 +164,7 @@ let meet resolution = full_order resolution |> TypeOrder.meet
 
 let widen resolution = full_order resolution |> TypeOrder.widen
 
-let types_are_orderable resolution type0 type1 =
+let less_or_equal_either_way resolution type0 type1 =
   less_or_equal resolution ~left:type0 ~right:type1
   || less_or_equal resolution ~left:type1 ~right:type0
 
@@ -239,6 +247,7 @@ let attribute_from_class_name
     ~resolution:({ dependency; _ } as resolution)
     ?(transitive = false)
     ?(accessed_through_class = false)
+    ?(accessed_through_readonly = false)
     ?(special_method = false)
     class_name
     ~name
@@ -277,6 +286,7 @@ let attribute_from_class_name
       ~instantiated
       ~transitive
       ~accessed_through_class
+      ~accessed_through_readonly
       ~special_method
       ~include_generated_attributes:true
       ?dependency
@@ -295,15 +305,16 @@ let attribute_from_class_name
 
 
 let attribute_from_annotation ?special_method resolution ~parent:annotation ~name =
-  match Type.resolve_class annotation with
+  match Type.class_data_for_attribute_lookup annotation with
   | None -> None
   | Some [] -> None
-  | Some [{ instantiated; accessed_through_class; class_name }] ->
+  | Some [{ instantiated; accessed_through_class; class_name; accessed_through_readonly }] ->
       attribute_from_class_name
         ~resolution
         ~transitive:true
         ~instantiated
         ~accessed_through_class
+        ~accessed_through_readonly
         ~name
         ?special_method
         class_name

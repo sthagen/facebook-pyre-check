@@ -107,7 +107,6 @@ type kind =
   | InvalidIdentifier of Expression.t
   | ClassBodyNotEllipsis of string
   | DefineBodyNotEllipsis of string
-  | UnsupportedCallee of Expression.t
   | UnexpectedTaintAnnotation of string
   | UnexpectedModelExpression of Expression.t
   | UnsupportedFindClause of string
@@ -117,6 +116,11 @@ type kind =
       annotation: string;
     }
   | UnsupportedConstraint of Expression.t
+  | UnsupportedConstraintCallee of Expression.t
+  | UnsupportedClassConstraint of Expression.t
+  | UnsupportedClassConstraintCallee of Expression.t
+  | UnsupportedDecoratorConstraint of Expression.t
+  | UnsupportedDecoratorConstraintCallee of Expression.t
   | InvalidModelForTaint of {
       model_name: string;
       error: string;
@@ -144,8 +148,20 @@ type kind =
       model_query_name: string;
       models_clause: Expression.t;
     }
-  | InvalidAnyChildClause of Expression.t
-  | InvalidModelQueryMode of string
+  | InvalidModelQueryMode of {
+      mode_name: string;
+      error: string;
+    }
+  | InvalidReadFromCacheArguments of Expression.t
+  | InvalidReadFromCacheConstraint of Expression.t
+  | InvalidWriteToCacheArguments of Expression.t
+  | InvalidWriteToCacheNameExpression of Expression.t
+  | InvalidWriteToCacheNameIdentifier of string
+  | InvalidWriteToCacheIdentifierForFind of {
+      identifier: string;
+      find: string;
+    }
+  | MutuallyExclusiveReadWriteToCache
 [@@deriving sexp, compare, show]
 
 type t = {
@@ -341,8 +357,21 @@ let description error =
   | UnexpectedTaintAnnotation taint_annotation ->
       Format.sprintf "Unexpected taint annotation `%s`" taint_annotation
   | UnsupportedConstraint constraint_name ->
-      Format.sprintf "Unsupported constraint: %s" (Expression.show constraint_name)
-  | UnsupportedCallee callee -> Format.sprintf "Unsupported callee: %s" (Expression.show callee)
+      Format.sprintf "Unsupported constraint expression: `%s`" (Expression.show constraint_name)
+  | UnsupportedConstraintCallee callee ->
+      Format.sprintf "Unsupported callee for constraint: `%s`" (Expression.show callee)
+  | UnsupportedClassConstraint constraint_name ->
+      Format.sprintf
+        "Unsupported class constraint expression: `%s`"
+        (Expression.show constraint_name)
+  | UnsupportedClassConstraintCallee callee ->
+      Format.sprintf "Unsupported callee for class constraint: `%s`" (Expression.show callee)
+  | UnsupportedDecoratorConstraint constraint_name ->
+      Format.sprintf
+        "Unsupported decorator constraint expression: `%s`"
+        (Expression.show constraint_name)
+  | UnsupportedDecoratorConstraintCallee callee ->
+      Format.sprintf "Unsupported callee for decorator constraint: `%s`" (Expression.show callee)
   | UnsupportedFindClause clause -> Format.sprintf "Unsupported find clause `%s`" clause
   | UnexpectedModelExpression expression ->
       Format.sprintf "Unexpected model expression: `%s`" (Expression.show expression)
@@ -390,12 +419,42 @@ let description error =
         \   The clause should be a list of syntactically correct model strings."
         model_query_name
         (Expression.show models_clause)
-  | InvalidAnyChildClause expression ->
+  | InvalidModelQueryMode { mode_name; error } -> Format.asprintf "`%s`: %s" mode_name error
+  | InvalidReadFromCacheArguments constraint_expression ->
       Format.asprintf
-        "`%s` is not a valid any_child clause. Constraints within any_child should be either class \
-         constraints or any of `AnyOf`, `AllOf`, and `Not`."
-        (Expression.show expression)
-  | InvalidModelQueryMode mode -> Format.asprintf "`%s` is not a valid mode for a model." mode
+        "Invalid arguments for `read_from_cache` clause: expected named parameters `kind` and \
+         `name` with string literal arguments, got `%a`"
+        Expression.pp
+        constraint_expression
+  | InvalidReadFromCacheConstraint constraint_expression ->
+      Format.asprintf
+        "Invalid constraint: `read_from_cache` clause cannot be nested under `AnyOf` or `Not` \
+         clauses in `%a`"
+        Expression.pp
+        constraint_expression
+  | InvalidWriteToCacheArguments model_expression ->
+      Format.asprintf
+        "Invalid arguments for `WriteToCache` clause: expected a named parameter `kind` with a \
+         literal string argument, and a named parameter `name` with a format string argument, got \
+         `%a`"
+        Expression.pp
+        model_expression
+  | InvalidWriteToCacheNameExpression expression ->
+      Format.asprintf
+        "Invalid argument for the parameter `name` of `WriteToCache`: expected identifier, got `%a`"
+        Expression.pp
+        expression
+  | InvalidWriteToCacheNameIdentifier identifier ->
+      Format.asprintf
+        "Invalid argument for the parameter `name` of `WriteToCache`: unknown identifier `%s`"
+        identifier
+  | InvalidWriteToCacheIdentifierForFind { identifier; find } ->
+      Format.asprintf
+        "Invalid identifier `%s` for parameter `name` of `WriteToCache` for find=\"%s\""
+        identifier
+        find
+  | MutuallyExclusiveReadWriteToCache ->
+      "WriteToCache and read_from_cache cannot be used in the same model query"
 
 
 let code { kind; _ } =
@@ -428,7 +487,7 @@ let code { kind; _ } =
   | InvalidArgumentsClause _ -> 26
   | InvalidTypeAnnotationClause _ -> 27
   | MissingSymbol _ -> 28
-  | UnsupportedCallee _ -> 29
+  | UnsupportedConstraintCallee _ -> 29
   | UnexpectedTaintAnnotation _ -> 30
   | UnexpectedModelExpression _ -> 31
   | UnsupportedFindClause _ -> 32
@@ -445,10 +504,20 @@ let code { kind; _ } =
   | UnexpectedModelsArePresent _ -> 43
   | ModelQueryInExpectedModelsClause _ -> 44
   | InvalidExpectedModelsClause _ -> 45
-  | InvalidAnyChildClause _ -> 46
+  | UnsupportedClassConstraint _ -> 46
   | InvalidAccessPath _ -> 47
-  | InvalidIncludesSelf _ -> 13
   | InvalidModelQueryMode _ -> 48
+  | InvalidIncludesSelf _ -> 49
+  | UnsupportedClassConstraintCallee _ -> 50
+  | UnsupportedDecoratorConstraint _ -> 51
+  | UnsupportedDecoratorConstraintCallee _ -> 52
+  | InvalidReadFromCacheArguments _ -> 53
+  | InvalidWriteToCacheArguments _ -> 54
+  | InvalidWriteToCacheNameExpression _ -> 55
+  | InvalidWriteToCacheNameIdentifier _ -> 56
+  | InvalidWriteToCacheIdentifierForFind _ -> 57
+  | InvalidReadFromCacheConstraint _ -> 58
+  | MutuallyExclusiveReadWriteToCache -> 59
 
 
 let display { kind = error; path; location } =

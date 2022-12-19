@@ -272,7 +272,7 @@ let test_due_to_analysis_limitations _ =
   assert_due_to_analysis_limitations
     (Error.IncompatibleParameterType
        {
-         name = Some "";
+         keyword_argument_name = Some "";
          position = 1;
          callee = Some !&"callee";
          mismatch = { Error.actual = Type.Top; expected = Type.Top; due_to_invariance = false };
@@ -280,7 +280,7 @@ let test_due_to_analysis_limitations _ =
   assert_due_to_analysis_limitations
     (Error.IncompatibleParameterType
        {
-         name = Some "";
+         keyword_argument_name = Some "";
          position = 1;
          callee = Some !&"callee";
          mismatch = { Error.actual = Type.Top; expected = Type.string; due_to_invariance = false };
@@ -288,7 +288,7 @@ let test_due_to_analysis_limitations _ =
   assert_not_due_to_analysis_limitations
     (Error.IncompatibleParameterType
        {
-         name = Some "";
+         keyword_argument_name = Some "";
          position = 1;
          callee = Some !&"callee";
          mismatch = { Error.actual = Type.string; expected = Type.Top; due_to_invariance = false };
@@ -296,7 +296,7 @@ let test_due_to_analysis_limitations _ =
   assert_due_to_analysis_limitations
     (Error.IncompatibleParameterType
        {
-         name = Some "";
+         keyword_argument_name = Some "";
          position = 1;
          callee = Some !&"callee";
          mismatch =
@@ -380,7 +380,7 @@ let test_join context =
     (error
        (Error.IncompatibleParameterType
           {
-            name = Some "";
+            keyword_argument_name = Some "";
             position = 1;
             callee = Some !&"callee";
             mismatch =
@@ -389,7 +389,7 @@ let test_join context =
     (error
        (Error.IncompatibleParameterType
           {
-            name = Some "";
+            keyword_argument_name = Some "";
             position = 1;
             callee = Some !&"callee";
             mismatch =
@@ -398,7 +398,7 @@ let test_join context =
     (error
        (Error.IncompatibleParameterType
           {
-            name = Some "";
+            keyword_argument_name = Some "";
             position = 1;
             callee = Some !&"callee";
             mismatch =
@@ -855,19 +855,24 @@ let test_namespace_insensitive_set _ =
 
 
 let test_description _ =
-  let assert_messages error expected =
+  let assert_messages ?(concise = false) error expected =
     let actual =
-      Error.instantiate
-        ~show_error_traces:false
-        ~lookup:(fun _ -> None)
-        {
-          kind = error;
-          location = Location.WithModule.any;
-          signature =
-            Node.create_with_default_location
-              (Ast.Statement.Define.Signature.create_toplevel ~qualifier:None);
-        }
-      |> Error.Instantiated.description
+      let error =
+        Error.instantiate
+          ~show_error_traces:false
+          ~lookup:(fun _ -> None)
+          {
+            kind = error;
+            location = Location.WithModule.any;
+            signature =
+              Node.create_with_default_location
+                (Ast.Statement.Define.Signature.create_toplevel ~qualifier:None);
+          }
+      in
+      if concise then
+        Error.Instantiated.concise_description error
+      else
+        Error.Instantiated.description error
     in
     assert_equal ~printer:Fn.id expected actual
   in
@@ -958,10 +963,14 @@ let test_description _ =
             position = 1;
             callee = Some !&"my_callee";
             mismatch =
-              { Error.ReadOnly.actual = ReadOnlyness.ReadOnly; expected = ReadOnlyness.Mutable };
+              {
+                Error.actual = Type.ReadOnly.create Type.integer;
+                expected = Type.integer;
+                due_to_invariance = false;
+              };
           }))
     "ReadOnly violation - Incompatible parameter type [3002]: In call `my_callee`, for argument \
-     `my_name`, expected `Mutable` but got `ReadOnly`.";
+     `my_name`, expected `int` but got `pyre_extensions.ReadOnly[int]`.";
   assert_messages
     (ReadOnlynessMismatch
        (IncompatibleParameterType
@@ -970,14 +979,54 @@ let test_description _ =
             position = 1;
             callee = None;
             mismatch =
-              { Error.ReadOnly.actual = ReadOnlyness.ReadOnly; expected = ReadOnlyness.Mutable };
+              {
+                Error.actual = Type.ReadOnly.create Type.integer;
+                expected = Type.integer;
+                due_to_invariance = false;
+              };
           }))
     "ReadOnly violation - Incompatible parameter type [3002]: In anonymous call, for 1st \
-     positional argument, expected `Mutable` but got `ReadOnly`.";
+     positional argument, expected `int` but got `pyre_extensions.ReadOnly[int]`.";
+  let error =
+    Error.ReadOnlynessMismatch
+      (CallingMutatingMethodOnReadOnly
+         {
+           self_argument =
+             "$local_test$my_object"
+             |> Reference.create
+             |> Expression.from_reference ~location:Location.any;
+           self_argument_type = Type.ReadOnly.create (Type.Primitive "test.Foo");
+           method_name = !&"test.Foo.my_method";
+         })
+  in
+  assert_messages
+    error
+    "ReadOnly violation - Calling mutating method on readonly type [3005]: Method \
+     `test.Foo.my_method` may modify its object. Cannot call it on readonly expression `my_object` \
+     of type `pyre_extensions.ReadOnly[test.Foo]`.";
+  assert_messages
+    ~concise:true
+    error
+    "ReadOnly violation - Calling mutating method on readonly type [3005]: Method `my_method` may \
+     modify `my_object`.";
+  assert_messages
+    (ReadOnlynessMismatch
+       (IncompatibleReturnType
+          {
+            mismatch =
+              {
+                Error.actual = Type.ReadOnly.create Type.integer;
+                expected = Type.integer;
+                due_to_invariance = false;
+              };
+            define_location = Node.location mock_define;
+          }))
+    "ReadOnly violation - Incompatible return type [3004]: Expected `int` but got \
+     `pyre_extensions.ReadOnly[int]`.";
   let incompatible_parameter_type_error =
     Error.IncompatibleParameterType
       {
-        name = Some "name";
+        keyword_argument_name = Some "name";
         position = 1;
         callee = Some !&"callee";
         mismatch =
@@ -993,12 +1042,12 @@ let test_description _ =
   in
   assert_messages
     incompatible_parameter_type_error
-    "Incompatible parameter type [6]: In call `callee`, for 1st parameter `name` expected \
+    "Incompatible parameter type [6]: In call `callee`, for argument `name`, expected \
      `typing_extensions.LiteralString` but got `str`.";
   assert_messages
     non_string_literal_error
-    "Non-literal string [62]: In call `callee`, for 1st parameter `name` expected `LiteralString` \
-     but got `str`. Ensure only a string literal or a `LiteralString` is used.";
+    "Non-literal string [62]: In call `callee`, for argument `name`, expected `LiteralString` but \
+     got `str`. Ensure only a string literal or a `LiteralString` is used.";
   ()
 
 

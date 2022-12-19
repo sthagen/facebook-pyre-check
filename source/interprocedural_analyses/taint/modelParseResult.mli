@@ -162,16 +162,22 @@ module ModelQuery : sig
   end
 
   module DecoratorConstraint : sig
-    type t = {
-      name_constraint: NameConstraint.t;
-      arguments_constraint: ArgumentsConstraint.t option;
-    }
+    type t =
+      | NameConstraint of NameConstraint.t
+      | FullyQualifiedNameConstraint of NameConstraint.t
+      | ArgumentsConstraint of ArgumentsConstraint.t
+      | AnyOf of t list
+      | AllOf of t list
+      | Not of t
     [@@deriving equal, show]
+
+    val all_of : t list -> t
   end
 
   module ClassConstraint : sig
     type t =
       | NameConstraint of NameConstraint.t
+      | FullyQualifiedNameConstraint of NameConstraint.t
       | Extends of {
           class_name: string;
           is_transitive: bool;
@@ -189,19 +195,50 @@ module ModelQuery : sig
     [@@deriving equal, show]
   end
 
+  module ReadFromCache : sig
+    type t = {
+      kind: string;
+      name: string;
+    }
+    [@@deriving equal, show]
+  end
+
+  module WriteToCache : sig
+    module Substring : sig
+      type t =
+        | Literal of string
+        | FunctionName
+        | MethodName
+        | ClassName
+      [@@deriving equal, show]
+    end
+
+    type t = {
+      kind: string;
+      name: Substring.t list;
+    }
+    [@@deriving equal, show]
+  end
+
   (* An arbitrary constraint for functions, methods, attributes or globals. *)
   module Constraint : sig
     type t =
       | NameConstraint of NameConstraint.t
+      | FullyQualifiedNameConstraint of NameConstraint.t
       | AnnotationConstraint of AnnotationConstraint.t
       | ReturnConstraint of AnnotationConstraint.t
       | AnyParameterConstraint of ParameterConstraint.t
+      | ReadFromCache of ReadFromCache.t
       | AnyOf of t list
       | AllOf of t list
       | ClassConstraint of ClassConstraint.t
       | AnyDecoratorConstraint of DecoratorConstraint.t
       | Not of t
     [@@deriving equal, show]
+
+    val contains_read_from_cache : t -> bool
+
+    val is_read_from_cache : t -> bool
   end
 
   module Find : sig
@@ -275,7 +312,10 @@ module ModelQuery : sig
       | Attribute of QueryTaintAnnotation.t list
       | Global of QueryTaintAnnotation.t list
       | Modes of Model.ModeSet.t
+      | WriteToCache of WriteToCache.t
     [@@deriving show, equal]
+
+    val is_write_to_cache : t -> bool
   end
 
   (* `ModelQuery.t` represents a ModelQuery() statement. *)

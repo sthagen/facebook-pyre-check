@@ -5,7 +5,33 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-(* TODO(T132410158) Add a module-level doc comment. *)
+(* Module for adding and solving constraints of the form type A <: type B. For example, a function
+   call results in a set of constraints of the form `argument_type_i <: parameter_type_i` (hence the
+   awkward name for the module: `constraintsSet`). We solve for any free type variables in either A
+   or B.
+
+   The constraint-solving is mostly a "straightforward" implementation of type argument synthesis
+   from section 3 of:
+
+   Pierce, B. C., & Turner, D. N. (2000). Local type inference. ACM Transactions on Programming
+   Languages and Systems (TOPLAS), 22(1), 1-44.
+   https://www.cis.upenn.edu/~bcpierce/papers/lti-toplas.pdf
+
+   It is called "type argument synthesis" because, for generic functions f and g in `f(x) <: g(y)`,
+   the problem is that of synthesizing the type arguments for the generic type variables of f and g:
+   `f[type1](x) <: g[type2](x)`. Colloquially, we call this "type inference".
+
+   We need this because Python doesn't require (or allow) you to instantiate generic functions. So,
+   Pyre has to infer those types.
+
+   * For example, in `identity("hello")`, Pyre will infer that the generic function `identity` is
+   being used with `T = str`, i.e., `identity[str]("hello")`.
+
+   * For `identity(some_int)`, Pyre will infer that it is `identity[int](some_int)`.
+
+   Warning: This module has easily caused perf regressions and even infinite loops, since we solve
+   constraints recursively. Even small changes in the order of variants in the match statement can
+   lead to big perf changes. *)
 
 open Core
 open Ast
@@ -416,6 +442,10 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
     in
     match left, right with
     | _, _ when Type.equal left right -> [constraints]
+    | Type.ReadOnly _, Type.Primitive "object" -> impossible
+    | Type.Union items, Type.Primitive "object" when List.exists items ~f:Type.ReadOnly.is_readonly
+      ->
+        impossible
     | _, Type.Primitive "object" -> [constraints]
     | other, Type.Any -> [add_fallbacks other]
     | _, Type.Top -> [constraints]
@@ -431,8 +461,6 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         in
         solve_less_or_equal order ~constraints ~left ~right
     | _, Type.ParameterVariadicComponent _ -> impossible
-    | Type.ReadOnly left, _ -> solve_less_or_equal order ~constraints ~left ~right
-    | _, Type.ReadOnly right -> solve_less_or_equal order ~constraints ~left ~right
     | Type.Any, other -> [add_fallbacks other]
     | Type.Variable left_variable, Type.Variable right_variable
       when Type.Variable.Unary.is_free left_variable && Type.Variable.Unary.is_free right_variable
@@ -459,6 +487,8 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
     | bound, Type.Variable variable when Type.Variable.Unary.is_free variable ->
         let pair = Type.Variable.UnaryPair (variable, bound) in
         OrderedConstraints.add_lower_bound constraints ~order ~pair |> Option.to_list
+    | Type.ReadOnly left, Type.ReadOnly right -> solve_less_or_equal order ~constraints ~left ~right
+    | _, Type.ReadOnly right -> solve_less_or_equal order ~constraints ~left ~right
     | _, Type.Bottom
     | Type.Top, _ ->
         impossible
@@ -508,8 +538,21 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
     | Type.NoneType, Type.Union rights ->
         List.concat_map rights ~f:(fun right -> solve_less_or_equal order ~constraints ~left ~right)
     | Type.NoneType, _ -> impossible
-    (* We have to consider both the variables' constraint and its full value against the union. *)
     | Type.Variable bound_variable, Type.Union union ->
+        (* We have to consider two cases: (a) the `bound_variable <: each element of union` or (b)
+           `upper-bound of bound_variable <: union`.
+
+           We need to try (b) because type variables on the left-hand side may have upper bound as a
+           `Union`. e.g., `T (upper-bound int | str) <: int | str`. If we tried only (a), then we
+           would check `T (upper-bound int | str) <: int` and `T (upper-bound int | str) <: str`,
+           both of which would fail. So, we also need to check that the upper bound (int | str) <:
+           union.
+
+           Note: We must do (a) before (b). If we do (b) before (a), then, for type variables that
+           have no explicit upper bound, we would solve upper bound for unconstrained type variables
+           <: union. This is `object` <: union, which will bind any free type variable T in the
+           union as `object`. And, since we pick the first valid solution, we would ignore any
+           solution from the other approach (a) and return the confusing solution that `T = object`. *)
         List.concat_map ~f:(fun right -> solve_less_or_equal order ~constraints ~left ~right) union
         @ solve_less_or_equal
             order
@@ -556,6 +599,7 @@ module Make (OrderedConstraints : OrderedConstraintsType) = struct
         else
           List.concat_map rights ~f:(fun right ->
               solve_less_or_equal order ~constraints ~left ~right)
+    | Type.ReadOnly _, _ -> impossible
     | ( Type.Parametric { name = "type"; parameters = [Single left] },
         Type.Parametric { name = "type"; parameters = [Single right] } ) ->
         solve_less_or_equal order ~constraints ~left ~right

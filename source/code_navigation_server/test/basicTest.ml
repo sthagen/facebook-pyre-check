@@ -138,6 +138,56 @@ let test_get_type_errors_request context =
       ]
 
 
+let test_file_opened_and_closed_request context =
+  let project =
+    ScratchProject.setup ~context ~include_typeshed_stubs:false ["test.py", "reveal_type(42)"]
+  in
+  let test_path =
+    let source_root = ScratchProject.source_root_of project in
+    PyrePath.append source_root ~element:"test.py" |> PyrePath.absolute
+  in
+  ScratchProject.test_server_with
+    project
+    ~style:ScratchProject.ClientConnection.Style.Sequential
+    ~clients:
+      [
+        assert_type_error_count ~module_name:"test" ~expected:1;
+        ScratchProject.ClientConnection.assert_response
+          ~request:
+            Request.(
+              Command
+                (Command.FileOpened
+                   {
+                     path = test_path;
+                     content = Some "reveal_type(43)\nreveal_type(44)";
+                     overlay_id = "foo";
+                   }))
+          ~expected:Response.Ok;
+        assert_type_error_count ~module_name:"test" ~overlay_id:"foo" ~expected:2;
+        ScratchProject.ClientConnection.assert_response
+          ~request:
+            Request.(
+              Command (Command.FileClosed { path = "/untracked/file.py"; overlay_id = "foo" }))
+          ~expected:
+            (Response.Error (Response.ErrorKind.UntrackedFileClosed { path = "/untracked/file.py" }));
+        assert_type_error_count ~module_name:"test" ~overlay_id:"foo" ~expected:2;
+        ScratchProject.ClientConnection.assert_response
+          ~request:
+            Request.(
+              Command (Command.FileClosed { path = test_path; overlay_id = "untracked overlay id" }))
+          ~expected:(Response.Error (Response.ErrorKind.UntrackedFileClosed { path = test_path }));
+        assert_type_error_count ~module_name:"test" ~overlay_id:"foo" ~expected:2;
+        ScratchProject.ClientConnection.assert_response
+          ~request:Request.(Command (Command.FileClosed { path = test_path; overlay_id = "foo" }))
+          ~expected:Response.Ok;
+        assert_type_error_count ~module_name:"test" ~overlay_id:"foo" ~expected:1;
+        (* Now that foo is no longer tracked as an open file, this should error. *)
+        ScratchProject.ClientConnection.assert_response
+          ~request:Request.(Command (Command.FileClosed { path = test_path; overlay_id = "foo" }))
+          ~expected:(Response.Error (Response.ErrorKind.UntrackedFileClosed { path = test_path }));
+      ]
+
+
 let test_local_update_request context =
   ScratchProject.setup ~context ~include_typeshed_stubs:false ["test.py", "reveal_type(42)"]
   |> ScratchProject.test_server_with
@@ -302,7 +352,8 @@ let test_hover_request context =
               Query
                 (Query.Hover
                    { overlay_id = None; module_ = Module.OfName "test"; position = position 1 2 }))
-          ~expected:Response.(Hover { contents = [] });
+          ~expected:
+            Response.(Hover { contents = HoverContent.[{ value = None; docstring = None }] });
         ScratchProject.ClientConnection.assert_response
           ~request:
             Request.(
@@ -311,7 +362,7 @@ let test_hover_request context =
                    { overlay_id = None; module_ = Module.OfName "test"; position = position 1 0 }))
           ~expected:
             Response.(
-              Hover { contents = HoverContent.[{ kind = Kind.PlainText; value = "`float`" }] });
+              Hover { contents = HoverContent.[{ value = Some "float"; docstring = None }] });
         ScratchProject.ClientConnection.assert_response
           ~request:
             Request.(
@@ -324,7 +375,7 @@ let test_hover_request context =
                    }))
           ~expected:
             Response.(
-              Hover { contents = HoverContent.[{ kind = Kind.PlainText; value = "`float`" }] });
+              Hover { contents = HoverContent.[{ value = Some "float"; docstring = None }] });
         ScratchProject.ClientConnection.assert_error_response
           ~request:
             Request.(
@@ -477,11 +528,186 @@ let test_get_info_request context =
               Info
                 {
                   socket = PyrePath.show project.start_options.socket_path;
-                  pid = Unix.getpid () |> Pid.to_int;
+                  pid = Core_unix.getpid () |> Pid.to_int;
                   version = Version.version ();
                   global_root = PyrePath.show root;
                   relative_local_root = None;
                 });
+      ]
+
+
+let test_superclasses context =
+  let project =
+    ScratchProject.setup
+      ~context
+      ~include_typeshed_stubs:false
+      ["test.py", "class C: pass\nclass D(C): pass\nclass E(D): pass"]
+  in
+  let test_path =
+    let source_root = ScratchProject.source_root_of project in
+    PyrePath.append source_root ~element:"test.py" |> PyrePath.absolute
+  in
+  ScratchProject.test_server_with
+    project
+    ~style:ScratchProject.ClientConnection.Style.Sequential
+    ~clients:
+      [
+        ScratchProject.ClientConnection.assert_response
+          ~request:
+            Request.(
+              Query
+                (Query.Superclasses
+                   {
+                     class_ =
+                       { ClassExpression.module_ = Module.OfName "test"; qualified_name = "C" };
+                     overlay_id = None;
+                   }))
+          ~expected:
+            Response.(
+              Superclasses
+                {
+                  superclasses =
+                    [
+                      Request.
+                        { ClassExpression.module_ = Module.OfName ""; qualified_name = "object" };
+                    ];
+                });
+        ScratchProject.ClientConnection.assert_response
+          ~request:
+            Request.(
+              Query
+                (Query.Superclasses
+                   {
+                     class_ =
+                       { ClassExpression.module_ = Module.OfName "test"; qualified_name = "D" };
+                     overlay_id = None;
+                   }))
+          ~expected:
+            Response.(
+              Superclasses
+                {
+                  superclasses =
+                    [
+                      Request.
+                        { ClassExpression.module_ = Module.OfName "test"; qualified_name = "C" };
+                      Request.
+                        { ClassExpression.module_ = Module.OfName ""; qualified_name = "object" };
+                    ];
+                });
+        ScratchProject.ClientConnection.assert_response
+          ~request:
+            Request.(
+              Query
+                (Query.Superclasses
+                   {
+                     class_ =
+                       { ClassExpression.module_ = Module.OfName "test"; qualified_name = "E" };
+                     overlay_id = None;
+                   }))
+          ~expected:
+            Response.(
+              Superclasses
+                {
+                  superclasses =
+                    [
+                      Request.
+                        { ClassExpression.module_ = Module.OfName "test"; qualified_name = "D" };
+                      Request.
+                        { ClassExpression.module_ = Module.OfName "test"; qualified_name = "C" };
+                      Request.
+                        { ClassExpression.module_ = Module.OfName ""; qualified_name = "object" };
+                    ];
+                });
+        (* Non-existent module. *)
+        ScratchProject.ClientConnection.assert_response
+          ~request:
+            Request.(
+              Query
+                (Query.Superclasses
+                   {
+                     class_ =
+                       {
+                         ClassExpression.module_ = Module.OfName "missing_module";
+                         qualified_name = "C";
+                       };
+                     overlay_id = None;
+                   }))
+          ~expected:
+            Response.(
+              Error
+                (ErrorKind.ModuleNotTracked { module_ = Request.Module.OfName "missing_module" }));
+        (* Non-existent class. *)
+        ScratchProject.ClientConnection.assert_response
+          ~request:
+            Request.(
+              Query
+                (Query.Superclasses
+                   {
+                     class_ =
+                       {
+                         ClassExpression.module_ = Module.OfName "test";
+                         qualified_name = "CDoesNotExist";
+                       };
+                     overlay_id = None;
+                   }))
+          ~expected:
+            Response.(
+              Error
+                (ErrorKind.InvalidRequest
+                   "Class `test.CDoesNotExist` not found in the type environment."));
+        (* Overlay. *)
+        ScratchProject.ClientConnection.assert_response
+          ~request:
+            Request.(
+              Command
+                (Command.FileOpened
+                   {
+                     path = test_path;
+                     content = Some "class OnlyInOverlay: ...";
+                     overlay_id = "foo";
+                   }))
+          ~expected:Response.Ok;
+        ScratchProject.ClientConnection.assert_response
+          ~request:
+            Request.(
+              Query
+                (Query.Superclasses
+                   {
+                     class_ =
+                       {
+                         ClassExpression.module_ = Module.OfName "test";
+                         qualified_name = "OnlyInOverlay";
+                       };
+                     overlay_id = Some "foo";
+                   }))
+          ~expected:
+            Response.(
+              Superclasses
+                {
+                  superclasses =
+                    [
+                      Request.
+                        { ClassExpression.module_ = Module.OfName ""; qualified_name = "object" };
+                    ];
+                });
+        ScratchProject.ClientConnection.assert_response
+          ~request:
+            Request.(
+              Query
+                (Query.Superclasses
+                   {
+                     class_ =
+                       {
+                         ClassExpression.module_ = Module.OfName "test";
+                         qualified_name = "OnlyInOverlay";
+                       };
+                     overlay_id = None;
+                   }))
+          ~expected:
+            Response.(
+              Error
+                (ErrorKind.InvalidRequest
+                   "Class `test.OnlyInOverlay` not found in the type environment."));
       ]
 
 
@@ -582,21 +808,23 @@ let test_watchman_failure context =
   | Server.Watchman.SubscriptionError _ -> Lwt.return_unit
 
 
+let ( >:: ) name test = name >:: OUnitLwt.lwt_wrapper test
+
 let () =
   "basic_test"
   >::: [
-         "no_op_server" >:: OUnitLwt.lwt_wrapper test_no_op_server;
-         "invalid_request" >:: OUnitLwt.lwt_wrapper test_invalid_request;
-         "stop_request" >:: OUnitLwt.lwt_wrapper test_stop_request;
-         "get_type_errors_request" >:: OUnitLwt.lwt_wrapper test_get_type_errors_request;
-         "get_info_request" >:: OUnitLwt.lwt_wrapper test_get_info_request;
-         "local_update_request" >:: OUnitLwt.lwt_wrapper test_local_update_request;
-         "file_update_request" >:: OUnitLwt.lwt_wrapper test_file_update_request;
-         "file_and_local_update" >:: OUnitLwt.lwt_wrapper test_file_and_local_update;
-         "hover_request" >:: OUnitLwt.lwt_wrapper test_hover_request;
-         "location_of_definition_request"
-         >:: OUnitLwt.lwt_wrapper test_location_of_definition_request;
-         "watchman_integration" >:: OUnitLwt.lwt_wrapper test_watchman_integration;
-         "watchman_failure" >:: OUnitLwt.lwt_wrapper test_watchman_failure;
+         "no_op_server" >:: test_no_op_server;
+         "invalid_request" >:: test_invalid_request;
+         "stop_request" >:: test_stop_request;
+         "get_type_errors_request" >:: test_get_type_errors_request;
+         "get_info_request" >:: test_get_info_request;
+         "local_update_request" >:: test_local_update_request;
+         "file_update_request" >:: test_file_update_request;
+         "file_and_local_update" >:: test_file_and_local_update;
+         "hover_request" >:: test_hover_request;
+         "location_of_definition_request" >:: test_location_of_definition_request;
+         "superclasses" >:: test_superclasses;
+         "watchman_integration" >:: test_watchman_integration;
+         "watchman_failure" >:: test_watchman_failure;
        ]
   |> Test.run

@@ -332,6 +332,8 @@ module Analysis = struct
 
   let default_enable_readonly_analysis = false
 
+  let default_enable_unawaited_awaitable_analysis = false
+
   type t = {
     parallel: bool;
     analyze_external_sources: bool;
@@ -359,6 +361,7 @@ module Analysis = struct
     enable_type_comments: bool;
     constraint_solving_style: constraint_solving_style;
     enable_readonly_analysis: bool;
+    enable_unawaited_awaitable_analysis: bool;
   }
   [@@deriving show]
 
@@ -390,6 +393,7 @@ module Analysis = struct
       ?(enable_type_comments = true)
       ?(constraint_solving_style = default_constraint_solving_style)
       ?(enable_readonly_analysis = default_enable_readonly_analysis)
+      ?(enable_unawaited_awaitable_analysis = default_enable_unawaited_awaitable_analysis)
       ~source_paths
       ()
     =
@@ -434,6 +438,7 @@ module Analysis = struct
       enable_type_comments;
       constraint_solving_style;
       enable_readonly_analysis;
+      enable_unawaited_awaitable_analysis;
     }
 
 
@@ -532,6 +537,7 @@ module StaticAnalysis = struct
     maximum_trace_length: int option;
     maximum_tito_depth: int option;
     check_invariants: bool;
+    limit_entrypoints: bool;
   }
 
   let create
@@ -562,6 +568,7 @@ module StaticAnalysis = struct
       ?maximum_trace_length
       ?maximum_tito_depth
       ?(check_invariants = false)
+      ?(limit_entrypoints = false)
       ()
     =
     {
@@ -592,5 +599,6 @@ module StaticAnalysis = struct
       maximum_trace_length;
       maximum_tito_depth;
       check_invariants;
+      limit_entrypoints;
     }
 end

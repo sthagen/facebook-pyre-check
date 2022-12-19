@@ -54,6 +54,7 @@ module AnalyzeConfiguration = struct
     taint_model_paths: PyrePath.t list;
     use_cache: bool;
     check_invariants: bool;
+    limit_entrypoints: bool;
   }
   [@@deriving sexp, compare, hash]
 
@@ -117,6 +118,7 @@ module AnalyzeConfiguration = struct
           let taint_model_paths = json |> path_list_member "taint_model_paths" ~default:[] in
           let use_cache = bool_member "use_cache" ~default:false json in
           let check_invariants = bool_member "check_invariants" ~default:false json in
+          let limit_entrypoints = bool_member "limit_entrypoints" ~default:false json in
 
           Result.Ok
             {
@@ -149,6 +151,7 @@ module AnalyzeConfiguration = struct
               taint_model_paths;
               use_cache;
               check_invariants;
+              limit_entrypoints;
             }
     with
     | Type_error (message, _)
@@ -175,6 +178,7 @@ module AnalyzeConfiguration = struct
             parallel;
             number_of_workers;
             enable_readonly_analysis;
+            enable_unawaited_awaitable_analysis;
             shared_memory =
               { Configuration.SharedMemory.heap_size; dependency_table_power; hash_table_power };
             enable_type_comments;
@@ -210,6 +214,7 @@ module AnalyzeConfiguration = struct
         inline_decorators;
         repository_root;
         check_invariants;
+        limit_entrypoints;
       }
     =
     let configuration =
@@ -240,6 +245,7 @@ module AnalyzeConfiguration = struct
         ~enable_type_comments
         ~source_paths:(Configuration.SourcePaths.to_search_paths source_paths)
         ~enable_readonly_analysis
+        ~enable_unawaited_awaitable_analysis
         ()
     in
     {
@@ -270,6 +276,7 @@ module AnalyzeConfiguration = struct
       maximum_trace_length;
       maximum_tito_depth;
       check_invariants;
+      limit_entrypoints;
     }
 end
 
@@ -366,7 +373,7 @@ let run_analyze configuration_file =
 
 let command =
   Printexc.record_backtrace true;
-  let filename_argument = Command.Param.(anon ("filename" %: Filename.arg_type)) in
+  let filename_argument = Command.Param.(anon ("filename" %: Filename_unix.arg_type)) in
   Command.basic
     ~summary:"Runs taint analysis"
     (Command.Param.map filename_argument ~f:(fun filename () -> run_analyze filename))

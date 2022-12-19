@@ -89,6 +89,12 @@ module Response = struct
     }
     [@@deriving sexp, compare, to_yojson]
 
+    type hover_info = {
+      value: string option;
+      docstring: string option;
+    }
+    [@@deriving sexp, compare, to_yojson]
+
     type coverage_at_path = {
       path: string;
       total_expressions: int;
@@ -184,7 +190,7 @@ module Response = struct
       | FoundReferences of code_location list
       | FunctionDefinition of Statement.Define.t
       | Help of string
-      | HoverInfoForPosition of string
+      | HoverInfoForPosition of hover_info
       | ModelVerificationErrors of Taint.ModelVerificationError.t list
       | ReferenceTypesInPath of types_at_path
       | Success of string
@@ -287,7 +293,7 @@ module Response = struct
                   (Statement.show
                      (Statement.Statement.Define define |> Node.create_with_default_location)) );
             ]
-      | HoverInfoForPosition contents -> `Assoc ["contents", `String contents]
+      | HoverInfoForPosition hover_info -> hover_info_to_yojson hover_info
       | ReferenceTypesInPath referenceTypesInPath -> types_at_path_to_yojson referenceTypesInPath
       | Success message -> `Assoc ["message", `String message]
       | Superclasses class_to_superclasses_mapping ->
@@ -718,6 +724,7 @@ let rec process_request ~type_environment ~build_system request =
             GlobalResolution.instantiate_attribute
               ~resolution:global_resolution
               ~accessed_through_class:false
+              ~accessed_through_readonly:false
               attribute
           in
           let annotation =
@@ -914,9 +921,7 @@ let rec process_request ~type_environment ~build_system request =
                 ~type_environment
                 ~module_reference
                 position)
-        >>| (fun hover_info ->
-              let hover_text = Option.value hover_info ~default:"" in
-              Single (Base.HoverInfoForPosition hover_text))
+        >>| (fun { value; docstring } -> Single (Base.HoverInfoForPosition { value; docstring }))
         |> Option.value
              ~default:(Error (Format.sprintf "No module found for path `%s`" (PyrePath.show path)))
     | InlineDecorators { function_reference; decorators_to_skip } ->
@@ -945,16 +950,9 @@ let rec process_request ~type_environment ~build_system request =
           | Error (error :: _) -> Error (Taint.TaintConfiguration.Error.show error)
           | Error _ -> failwith "Taint.TaintConfiguration.create returned empty errors list"
           | Ok taint_configuration -> (
-              let taint_configuration_shared_memory =
-                Taint.TaintConfiguration.SharedMemory.from_heap taint_configuration
-              in
               let get_model_queries (path, source) =
                 Taint.ModelParser.parse
-                  ~resolution:
-                    (TypeCheck.resolution
-                       global_resolution
-                       (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
-                       (module TypeCheck.DummyContext))
+                  ~resolution:global_resolution
                   ~path
                   ~source
                   ~taint_configuration
@@ -1034,14 +1032,15 @@ let rec process_request ~type_environment ~build_system request =
                           ~qualifiers
                       in
                       Taint.ModelQueryExecution.generate_models_from_queries
-                        ~taint_configuration:taint_configuration_shared_memory
+                        ~resolution:global_resolution
+                        ~scheduler
                         ~class_hierarchy_graph:
                           (Interprocedural.ClassHierarchyGraph.SharedMemory.from_heap
                              class_hierarchy_graph)
-                        ~scheduler
-                        ~environment:type_environment
                         ~source_sink_filter:None
-                        ~callables:(Interprocedural.FetchCallables.get_callables initial_callables)
+                        ~verbose:false
+                        ~callables_and_stubs:
+                          (Interprocedural.FetchCallables.get_callables_and_stubs initial_callables)
                         ~stubs:
                           (Interprocedural.Target.HashSet.of_list
                              (Interprocedural.FetchCallables.get_stubs initial_callables))
@@ -1327,11 +1326,7 @@ let rec process_request ~type_environment ~build_system request =
           let get_model_errors sources =
             let model_errors (path, source) =
               Taint.ModelParser.parse
-                ~resolution:
-                  (TypeCheck.resolution
-                     global_resolution
-                     (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
-                     (module TypeCheck.DummyContext))
+                ~resolution:global_resolution
                 ~path
                 ~source
                 ~taint_configuration

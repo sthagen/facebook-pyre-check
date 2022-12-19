@@ -7,6 +7,7 @@
 
 open Pyre
 open Core
+open Data_structures
 open OUnit2
 open Test
 open TestHelper
@@ -74,7 +75,7 @@ let set_up_environment
         sinks;
         transforms;
         features = ["special"];
-        partial_sink_labels = String.Map.Tree.of_alist_exn ["Test", ["a"; "b"]];
+        partial_sink_labels = SerializableStringMap.of_alist_exn ["Test", ["a"; "b"]];
         rules;
         filtered_rule_codes = None;
         filtered_sources;
@@ -89,14 +90,11 @@ let set_up_environment
       }
   in
   let source = Test.trim_extra_indentation model_source in
-  let resolution =
-    let global_resolution = ScratchProject.build_global_resolution project in
-    TypeCheck.resolution global_resolution (module TypeCheck.DummyContext)
-  in
+  let global_resolution = ScratchProject.build_global_resolution project in
 
   let ({ ModelParseResult.errors; skip_overrides; _ } as parse_result) =
     ModelParser.parse
-      ~resolution
+      ~resolution:global_resolution
       ~source
       ~taint_configuration
       ~source_sink_filter:(Some taint_configuration.source_sink_filter)
@@ -174,7 +172,9 @@ let assert_invalid_model ?path ?source ?(sources = []) ~context ~model_source ~e
             |}
   in
   let sources = ("test.py", source) :: sources in
-  let resolution = ScratchProject.setup ~context sources |> ScratchProject.build_resolution in
+  let global_resolution =
+    ScratchProject.setup ~context sources |> ScratchProject.build_global_resolution
+  in
   let taint_configuration =
     TaintConfiguration.Heap.
       {
@@ -184,13 +184,13 @@ let assert_invalid_model ?path ?source ?(sources = []) ~context ~model_source ~e
         sinks = List.map ~f:(fun name -> { AnnotationParser.name; kind = Named }) ["X"; "Y"; "Test"];
         features = ["featureA"; "featureB"];
         rules = [];
-        partial_sink_labels = String.Map.Tree.of_alist_exn ["Test", ["a"; "b"]];
+        partial_sink_labels = SerializableStringMap.of_alist_exn ["Test", ["a"; "b"]];
       }
   in
   let error_message =
     let path = path >>| PyrePath.create_absolute in
     ModelParser.parse
-      ~resolution
+      ~resolution:global_resolution
       ~taint_configuration
       ~source_sink_filter:None
       ?path
@@ -2404,7 +2404,7 @@ let test_invalid_models context =
         name = "invalid_model",
         find = "attributes",
         where = AnyOf(
-          cls.matches("foo"),
+          cls.name.matches("foo"),
           any_parameter.annotation.is_annotated_type()
         ),
         model = AttributeModel(TaintSource[Test])
@@ -2421,7 +2421,7 @@ let test_invalid_models context =
         name = "invalid_model",
         find = "attributes",
         where = AnyOf(
-          cls.matches("foo"),
+          cls.name.matches("foo"),
           any_parameter.annotation.equals("int")
         ),
         model = AttributeModel(TaintSource[Test])
@@ -2438,7 +2438,7 @@ let test_invalid_models context =
         name = "invalid_model",
         find = "attributes",
         where = AnyOf(
-          cls.matches("foo"),
+          cls.name.matches("foo"),
           any_parameter.annotation.matches("int")
         ),
         model = AttributeModel(TaintSource[Test])
@@ -2455,7 +2455,7 @@ let test_invalid_models context =
         name = "invalid_model",
         find = "attributes",
         where = AnyOf(
-          cls.matches("foo"),
+          cls.name.matches("foo"),
           return_annotation.equals("int")
         ),
         model = AttributeModel(TaintSource[Test])
@@ -2472,7 +2472,7 @@ let test_invalid_models context =
         name = "invalid_model",
         find = "attributes",
         where = AnyOf(
-          cls.matches("foo"),
+          cls.name.matches("foo"),
           return_annotation.matches("str")
         ),
         model = AttributeModel(TaintSource[Test])
@@ -2488,7 +2488,7 @@ let test_invalid_models context =
       ModelQuery(
         name = "invalid_model",
         find = "attributes",
-        where = Decorator(name.matches("app.route")),
+        where = Decorator(fully_qualified_name.matches("app.route")),
         model = AttributeModel(TaintSource[Test])
       )
     |}
@@ -2502,12 +2502,12 @@ let test_invalid_models context =
       ModelQuery(
         name = "invalid_model",
         find = "functions",
-        where = cls.matches("foo"),
+        where = cls.name.matches("foo"),
         model = Returns(TaintSource[Test])
       )
     |}
     ~expect:
-      "`cls.matches` is not a valid constraint for model queries with find clause of kind \
+      "`cls.name.matches` is not a valid constraint for model queries with find clause of kind \
        `functions`."
     ();
   assert_invalid_model
@@ -2611,6 +2611,18 @@ let test_invalid_models context =
       {|
       ModelQuery(
         name = "valid_model",
+        find = "methods",
+        where = name.equals("hello"),
+        model = Modes([Entrypoint, Obscure])
+      )
+    |}
+    ~expect:"no failure"
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "valid_model",
         find = "functions",
         where = name.equals("hello"),
         model = Modes([Entrypoint])
@@ -2652,7 +2664,7 @@ let test_invalid_models context =
         model = Modes([Entrypoint])
       )
     |}
-    ~expect:"Unsupported callee: annotation.equals"
+    ~expect:"Unsupported callee for constraint: `annotation.equals`"
     ();
   assert_invalid_model
     ~model_source:
@@ -2664,9 +2676,253 @@ let test_invalid_models context =
         model = Modes([ThisModeDoesntExist])
       )
     |}
-    ~expect:"`ThisModeDoesntExist` is not a valid mode for a model."
+    ~expect:"`ThisModeDoesntExist`: unknown mode"
     ();
-
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "functions",
+        where = name.equals("hello"),
+        model = Modes([SkipDecoratorWhenInlining])
+      )
+    |}
+    ~expect:"`SkipDecoratorWhenInlining`: mode cannot be used in a model query"
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "methods",
+        where = read_from_cache(),
+        model = Returns(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      "Invalid arguments for `read_from_cache` clause: expected named parameters `kind` and `name` \
+       with string literal arguments, got `read_from_cache()`"
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "methods",
+        where = read_from_cache(kind=1),
+        model = Returns(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      "Invalid arguments for `read_from_cache` clause: expected named parameters `kind` and `name` \
+       with string literal arguments, got `read_from_cache(kind = 1)`"
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "methods",
+        where = read_from_cache("foo", "bar"),
+        model = Returns(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      {|Invalid arguments for `read_from_cache` clause: expected named parameters `kind` and `name` with string literal arguments, got `read_from_cache("foo", "bar")`|}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "methods",
+        where = read_from_cache(kind="thrift", name=f"{class_name}"),
+        model = Returns(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      {|Invalid arguments for `read_from_cache` clause: expected named parameters `kind` and `name` with string literal arguments, got `read_from_cache(kind = "thrift", name = f"{class_name}")`|}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "methods",
+        where = Not(read_from_cache(kind="thrift", name="foo:bar")),
+        model = Returns(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      {|Invalid constraint: `read_from_cache` clause cannot be nested under `AnyOf` or `Not` clauses in `Not(read_from_cache(kind = "thrift", name = "foo:bar"))`|}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "methods",
+        where = AnyOf(
+          read_from_cache(kind="thrift", name="foo:bar"),
+          name.matches("foo")
+        ),
+        model = Returns(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      {|Invalid constraint: `read_from_cache` clause cannot be nested under `AnyOf` or `Not` clauses in `AnyOf(read_from_cache(kind = "thrift", name = "foo:bar"), name.matches("foo"))`|}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "methods",
+        where = AnyOf(
+          AllOf(read_from_cache(kind="thrift", name="foo:bar")),
+          name.matches("foo")
+        ),
+        model = Returns(TaintSource[Test])
+      )
+    |}
+    ~expect:
+      {|Invalid constraint: `read_from_cache` clause cannot be nested under `AnyOf` or `Not` clauses in `AnyOf(AllOf(read_from_cache(kind = "thrift", name = "foo:bar")), name.matches("foo"))`|}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "methods",
+        where = name.matches("foo"),
+        model = WriteToCache()
+      )
+    |}
+    ~expect:
+      {|Invalid arguments for `WriteToCache` clause: expected a named parameter `kind` with a literal string argument, and a named parameter `name` with a format string argument, got `WriteToCache()`|}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "methods",
+        where = name.matches("foo"),
+        model = WriteToCache(1, 2)
+      )
+    |}
+    ~expect:
+      {|Invalid arguments for `WriteToCache` clause: expected a named parameter `kind` with a literal string argument, and a named parameter `name` with a format string argument, got `WriteToCache(1, 2)`|}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "methods",
+        where = name.matches("foo"),
+        model = WriteToCache(kind="thrift", name="foo")
+      )
+    |}
+    ~expect:
+      {|Invalid arguments for `WriteToCache` clause: expected a named parameter `kind` with a literal string argument, and a named parameter `name` with a format string argument, got `WriteToCache(kind = "thrift", name = "foo")`|}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "methods",
+        where = name.matches("foo"),
+        model = WriteToCache(kind="thrift", name=f"{1+2}")
+      )
+    |}
+    ~expect:
+      {|Invalid argument for the parameter `name` of `WriteToCache`: expected identifier, got `1.__add__(2)`|}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "methods",
+        where = name.matches("foo"),
+        model = WriteToCache(kind="thrift", name=f"{unknown}")
+      )
+    |}
+    ~expect:
+      {|Invalid argument for the parameter `name` of `WriteToCache`: unknown identifier `unknown`|}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "methods",
+        where = name.matches("foo"),
+        model = WriteToCache(kind="thrift", name=f"{function_name}")
+      )
+    |}
+    ~expect:
+      {|Invalid identifier `function_name` for parameter `name` of `WriteToCache` for find="methods"|}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "functions",
+        where = name.matches("foo"),
+        model = WriteToCache(kind="thrift", name=f"{method_name}")
+      )
+    |}
+    ~expect:
+      {|Invalid identifier `method_name` for parameter `name` of `WriteToCache` for find="functions"|}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "functions",
+        where = name.matches("foo"),
+        model = WriteToCache(kind="thrift", name=f"{class_name}")
+      )
+    |}
+    ~expect:
+      {|Invalid identifier `class_name` for parameter `name` of `WriteToCache` for find="functions"|}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "functions",
+        where = read_from_cache(kind="first", name="foo"),
+        model = WriteToCache(kind="second", name=f"{function_name}")
+      )
+    |}
+    ~expect:{|WriteToCache and read_from_cache cannot be used in the same model query|}
+    ();
+  assert_invalid_model
+    ~model_source:
+      {|
+      ModelQuery(
+        name = "invalid_model",
+        find = "functions",
+        where = [
+          name.matches("foo"),
+          read_from_cache(kind="first", name="foo"),
+        ],
+        model = [
+          WriteToCache(kind="second", name=f"{function_name}"),
+          Returns(TaintSource[Test]),
+        ]
+      )
+    |}
+    ~expect:{|WriteToCache and read_from_cache cannot be used in the same model query|}
+    ();
   assert_invalid_model
     ~model_source:
       {|
@@ -2713,12 +2969,11 @@ let test_invalid_models context =
       ModelQuery(
         name = "invalid_model",
         find = "methods",
-        where = cls.matches("foo", is_transitive=foobar),
+        where = cls.name.matches("foo", is_transitive=foobar),
         model = ReturnModel(TaintSource[Test])
       )
     |}
-    ~expect:
-      "Unsupported arguments for `cls.matches`: `cls.matches(\"foo\", is_transitive = foobar)`."
+    ~expect:{|`cls.name.matches("foo", is_transitive = foobar)` is not a valid name clause.|}
     ();
   assert_invalid_model
     ~model_source:
@@ -2730,7 +2985,7 @@ let test_invalid_models context =
         model = ReturnModel(TaintSource[Test])
       )
     |}
-    ~expect:"`name.foo(\"foo\")` is not a valid name clause."
+    ~expect:{|`name.foo("foo")` is not a valid name clause.|}
     ();
   assert_invalid_model
     ~model_source:
@@ -2742,7 +2997,7 @@ let test_invalid_models context =
         model = ReturnModel(TaintSource[Test])
       )
     |}
-    ~expect:"Unsupported arguments for `name.matches`: `name.matches(foobar, 1, 2)`."
+    ~expect:"`name.matches(foobar, 1, 2)` is not a valid name clause."
     ();
   assert_invalid_model
     ~model_source:
@@ -2754,7 +3009,7 @@ let test_invalid_models context =
         model = ReturnModel(TaintSource[Test])
       )
     |}
-    ~expect:"Unsupported arguments for `name.equals`: `name.equals(foobar, 1, 2)`."
+    ~expect:"`name.equals(foobar, 1, 2)` is not a valid name clause."
     ();
 
   assert_valid_model
@@ -3628,7 +3883,7 @@ Unexpected statement: `food(y)`
       )
     |}
     ~expect:
-      {|`Decorator(arguments.contains("1"), name.matches("d"))` is not a valid any_child clause. Constraints within any_child should be either class constraints or any of `AnyOf`, `AllOf`, and `Not`.|}
+      {|Unsupported callee for class constraint: `Decorator(arguments.contains("1"), name.matches("d"))`|}
     ();
   assert_valid_model
     ~source:{|
@@ -3646,7 +3901,7 @@ Unexpected statement: `food(y)`
             cls.any_child(
               AnyOf(
                 cls.decorator(arguments.contains("1"), name.matches("d")),
-                cls.matches("A")
+                cls.name.matches("A")
               )
             )
         ],
@@ -3682,43 +3937,7 @@ Unexpected statement: `food(y)`
         model = Returns(TaintSource[Test])
       )
     |}
-    ~expect:"`foo` is not a valid name clause."
-    ();
-  assert_invalid_model
-    ~model_source:
-      {|
-      ModelQuery(
-        name = "invalid_model",
-        find = "functions",
-        where = Decorator(name.matches("a"), name.matches("b")),
-        model = Returns(TaintSource[Test])
-      )
-    |}
-    ~expect:"`name.matches(\"a\")` is not a valid arguments clause."
-    ();
-  assert_invalid_model
-    ~model_source:
-      {|
-      ModelQuery(
-        name = "invalid_model",
-        find = "functions",
-        where = Decorator(arguments.contains("a")),
-        model = Returns(TaintSource[Test])
-      )
-    |}
-    ~expect:"`arguments.contains(\"a\")` is not a valid name clause."
-    ();
-  assert_invalid_model
-    ~model_source:
-      {|
-      ModelQuery(
-        name = "invalid_model",
-        find = "functions",
-        where = Decorator(arguments.contains("a"), arguments.contains("b")),
-        model = Returns(TaintSource[Test])
-      )
-    |}
-    ~expect:"`arguments.contains(\"b\")` is not a valid name clause."
+    ~expect:"Unsupported decorator constraint expression: `foo`"
     ();
   assert_invalid_model
     ~model_source:
@@ -3730,7 +3949,7 @@ Unexpected statement: `food(y)`
         model = Returns(TaintSource[Test])
       )
     |}
-    ~expect:{|Unsupported arguments for `name.matches`: `name.matches(a, b)`.|}
+    ~expect:{|`name.matches(a, b)` is not a valid name clause.|}
     ();
   assert_invalid_model
     ~model_source:
@@ -3742,7 +3961,7 @@ Unexpected statement: `food(y)`
         model = Returns(TaintSource[Test])
       )
     |}
-    ~expect:{|`arguments.equals(1, 2)` is not a valid name clause.|}
+    ~expect:{|`name.equals(a, b)` is not a valid name clause.|}
     ();
 
   (* We error starting on the first decorator. *)
@@ -4565,7 +4784,38 @@ let test_query_parsing context =
     ModelQuery(
      name = "get_foo",
      find = "functions",
-     where = name.matches("foo"),
+     where = fully_qualified_name.matches("foo"),
+     model = Returns(TaintSource[Test])
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
+          where = [FullyQualifiedNameConstraint (Matches (Re2.create_exn "foo"))];
+          find = Function;
+          models =
+            [
+              Return
+                [
+                  TaintAnnotation
+                    (ModelParseResult.TaintAnnotation.from_source (Sources.NamedSource "Test"));
+                ];
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "get_foo",
+     find = "functions",
+     where = name.equals("foo"),
      model = [Returns(TaintSource[Test])]
     )
   |}
@@ -4574,7 +4824,38 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
-          where = [NameConstraint (Matches (Re2.create_exn "foo"))];
+          where = [NameConstraint (Equals "foo")];
+          find = Function;
+          models =
+            [
+              Return
+                [
+                  TaintAnnotation
+                    (ModelParseResult.TaintAnnotation.from_source (Sources.NamedSource "Test"));
+                ];
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "get_foo",
+     find = "functions",
+     where = fully_qualified_name.equals("test.foo"),
+     model = Returns(TaintSource[Test])
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
+          where = [FullyQualifiedNameConstraint (Equals "test.foo")];
           find = Function;
           models =
             [
@@ -4664,7 +4945,7 @@ let test_query_parsing context =
     ModelQuery(
      name = "get_foo",
      find = "functions",
-     where = name.equals("test.foo"),
+     where = fully_qualified_name.equals("test.foo"),
      model = [Returns([TaintSource[Test], TaintSink[Test]])]
     )
   |}
@@ -4673,7 +4954,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
-          where = [NameConstraint (Equals "test.foo")];
+          where = [FullyQualifiedNameConstraint (Equals "test.foo")];
           find = Function;
           models =
             [
@@ -5057,7 +5338,7 @@ let test_query_parsing context =
     ModelQuery(
      name = "get_foo",
      find = "methods",
-     where = cls.equals("Foo"),
+     where = cls.name.equals("Foo"),
      model = [Returns([TaintSource[Test], TaintSink[Test]])]
     )
   |}
@@ -5067,6 +5348,39 @@ let test_query_parsing context =
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
           where = [ClassConstraint (NameConstraint (Equals "Foo"))];
+          find = Method;
+          models =
+            [
+              Return
+                [
+                  TaintAnnotation
+                    (ModelParseResult.TaintAnnotation.from_source (Sources.NamedSource "Test"));
+                  TaintAnnotation
+                    (ModelParseResult.TaintAnnotation.from_sink (Sinks.NamedSink "Test"));
+                ];
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "get_foo",
+     find = "methods",
+     where = cls.fully_qualified_name.equals("test.Foo"),
+     model = [Returns([TaintSource[Test], TaintSink[Test]])]
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
+          where = [ClassConstraint (FullyQualifiedNameConstraint (Equals "test.Foo"))];
           find = Method;
           models =
             [
@@ -5267,7 +5581,7 @@ let test_query_parsing context =
     ModelQuery(
      name = "get_foo",
      find = "methods",
-     where = cls.matches("Foo.*"),
+     where = cls.name.matches("Foo.*"),
      model = [Returns([TaintSource[Test], TaintSink[Test]])]
     )
   |}
@@ -5312,11 +5626,7 @@ let test_query_parsing context =
           where =
             [
               ClassConstraint
-                (DecoratorConstraint
-                   {
-                     name_constraint = Matches (Re2.create_exn "foo.*");
-                     arguments_constraint = None;
-                   });
+                (DecoratorConstraint (NameConstraint (Matches (Re2.create_exn "foo.*"))));
             ];
           find = Method;
           models =
@@ -5325,6 +5635,42 @@ let test_query_parsing context =
                 [
                   TaintAnnotation
                     (ModelParseResult.TaintAnnotation.from_source (Sources.NamedSource "Test"));
+                  TaintAnnotation
+                    (ModelParseResult.TaintAnnotation.from_sink (Sinks.NamedSink "Test"));
+                ];
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "get_foo",
+     find = "methods",
+     where = cls.decorator(fully_qualified_name.matches("foo.*")),
+     model = [Returns([TaintSink[Test]])]
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
+          where =
+            [
+              ClassConstraint
+                (DecoratorConstraint
+                   (FullyQualifiedNameConstraint (Matches (Re2.create_exn "foo.*"))));
+            ];
+          find = Method;
+          models =
+            [
+              Return
+                [
                   TaintAnnotation
                     (ModelParseResult.TaintAnnotation.from_sink (Sinks.NamedSink "Test"));
                 ];
@@ -5351,10 +5697,171 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          where = [AnyDecoratorConstraint (NameConstraint (Matches (Re2.create_exn "foo")))];
+          find = Method;
+          models =
+            [
+              Return
+                [
+                  TaintAnnotation
+                    (ModelParseResult.TaintAnnotation.from_source (Sources.NamedSource "Test"));
+                ];
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "get_foo",
+     find = "methods",
+     where = Decorator(fully_qualified_name.matches("foo")),
+     model = [Returns([TaintSource[Test]])],
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
+          where =
+            [AnyDecoratorConstraint (FullyQualifiedNameConstraint (Matches (Re2.create_exn "foo")))];
+          find = Method;
+          models =
+            [
+              Return
+                [
+                  TaintAnnotation
+                    (ModelParseResult.TaintAnnotation.from_source (Sources.NamedSource "Test"));
+                ];
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "get_foo",
+     find = "methods",
+     where = Decorator(name.matches("foo"), name.matches("bar")),
+     model = [Returns([TaintSource[Test]])],
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
           where =
             [
               AnyDecoratorConstraint
-                { name_constraint = Matches (Re2.create_exn "foo"); arguments_constraint = None };
+                (AllOf
+                   [
+                     NameConstraint (Matches (Re2.create_exn "foo"));
+                     NameConstraint (Matches (Re2.create_exn "bar"));
+                   ]);
+            ];
+          find = Method;
+          models =
+            [
+              Return
+                [
+                  TaintAnnotation
+                    (ModelParseResult.TaintAnnotation.from_source (Sources.NamedSource "Test"));
+                ];
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "get_foo",
+     find = "methods",
+     where = Decorator(arguments.contains(1)),
+     model = [Returns([TaintSource[Test]])],
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
+          where =
+            [
+              AnyDecoratorConstraint
+                (ArgumentsConstraint
+                   (Contains
+                      [
+                        {
+                          Ast.Expression.Call.Argument.name = None;
+                          value =
+                            Ast.Node.create_with_default_location
+                              (Ast.Expression.Expression.Constant
+                                 (Ast.Expression.Constant.Integer 1));
+                        };
+                      ]));
+            ];
+          find = Method;
+          models =
+            [
+              Return
+                [
+                  TaintAnnotation
+                    (ModelParseResult.TaintAnnotation.from_source (Sources.NamedSource "Test"));
+                ];
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "get_foo",
+     find = "methods",
+     where = Decorator(arguments.contains(1), name.equals("foo")),
+     model = [Returns([TaintSource[Test]])],
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "get_foo";
+          where =
+            [
+              AnyDecoratorConstraint
+                (AllOf
+                   [
+                     ArgumentsConstraint
+                       (Contains
+                          [
+                            {
+                              Ast.Expression.Call.Argument.name = None;
+                              value =
+                                Ast.Node.create_with_default_location
+                                  (Ast.Expression.Expression.Constant
+                                     (Ast.Expression.Constant.Integer 1));
+                            };
+                          ]);
+                     NameConstraint (Equals "foo");
+                   ]);
             ];
           find = Method;
           models =
@@ -5400,14 +5907,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 19; column = 1 } };
           name = "get_POST_annotated_sources";
-          where =
-            [
-              AnyDecoratorConstraint
-                {
-                  name_constraint = Matches (Re2.create_exn "api_view");
-                  arguments_constraint = None;
-                };
-            ];
+          where = [AnyDecoratorConstraint (NameConstraint (Matches (Re2.create_exn "api_view")))];
           find = Function;
           models =
             [
@@ -5619,8 +6119,8 @@ let test_query_parsing context =
               name.matches("d1")
             ),
             AnyOf(
-              Not(cls.matches("Foo")),
-              cls.matches("Baz")
+              Not(cls.name.matches("Foo")),
+              cls.name.matches("Baz")
             )
           ),
           is_transitive=False
@@ -5649,10 +6149,7 @@ let test_query_parsing context =
                        ClassConstraint.AllOf
                          [
                            ClassConstraint.DecoratorConstraint
-                             {
-                               name_constraint = Matches (Re2.create_exn "d1");
-                               arguments_constraint = None;
-                             };
+                             (NameConstraint (Matches (Re2.create_exn "d1")));
                            ClassConstraint.AnyOf
                              [
                                ClassConstraint.Not
@@ -5714,8 +6211,8 @@ let test_query_parsing context =
               name.matches("d1")
             ),
             AnyOf(
-              Not(cls.matches("Foo")),
-              cls.matches("Baz")
+              Not(cls.name.matches("Foo")),
+              cls.name.matches("Baz")
             )
           ),
           is_transitive=True,
@@ -5745,10 +6242,7 @@ let test_query_parsing context =
                        ClassConstraint.AllOf
                          [
                            ClassConstraint.DecoratorConstraint
-                             {
-                               name_constraint = Matches (Re2.create_exn "d1");
-                               arguments_constraint = None;
-                             };
+                             (NameConstraint (Matches (Re2.create_exn "d1")));
                            ClassConstraint.AnyOf
                              [
                                ClassConstraint.Not
@@ -5839,6 +6333,185 @@ let test_query_parsing context =
                   TaintAnnotation
                     (ModelParseResult.TaintAnnotation.from_source (Sources.NamedSource "Test"));
                 ];
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+
+  (* WriteToCache/read_from_cache *)
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "foo",
+     find = "methods",
+     where = read_from_cache(kind="thrift", name="cache:name"),
+     model = Returns([TaintSource[Test]])
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "foo";
+          where = [ReadFromCache { kind = "thrift"; name = "cache:name" }];
+          find = Method;
+          models =
+            [
+              Return
+                [
+                  TaintAnnotation
+                    (ModelParseResult.TaintAnnotation.from_source (Sources.NamedSource "Test"));
+                ];
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "foo",
+     find = "methods",
+     where = AnyOf(
+       read_from_cache(kind="thrift", name="one:name"),
+       read_from_cache(kind="thrift", name="two:name"),
+     ),
+     model = Returns([TaintSource[Test]])
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 10; column = 1 } };
+          name = "foo";
+          where =
+            [
+              AnyOf
+                [
+                  ReadFromCache { kind = "thrift"; name = "one:name" };
+                  ReadFromCache { kind = "thrift"; name = "two:name" };
+                ];
+            ];
+          find = Method;
+          models =
+            [
+              Return
+                [
+                  TaintAnnotation
+                    (ModelParseResult.TaintAnnotation.from_source (Sources.NamedSource "Test"));
+                ];
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "foo",
+     find = "methods",
+     where = AllOf(
+       read_from_cache(kind="thrift", name="one:name"),
+       read_from_cache(kind="thrift", name="two:name"),
+     ),
+     model = Returns([TaintSource[Test]])
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 10; column = 1 } };
+          name = "foo";
+          where =
+            [
+              AllOf
+                [
+                  ReadFromCache { kind = "thrift"; name = "one:name" };
+                  ReadFromCache { kind = "thrift"; name = "two:name" };
+                ];
+            ];
+          find = Method;
+          models =
+            [
+              Return
+                [
+                  TaintAnnotation
+                    (ModelParseResult.TaintAnnotation.from_source (Sources.NamedSource "Test"));
+                ];
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "foo",
+     find = "methods",
+     where = name.matches("foo"),
+     model = WriteToCache(kind="thrift", name=f"{class_name}:{method_name}")
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "foo";
+          where = [NameConstraint (Matches (Re2.create_exn "foo"))];
+          find = Method;
+          models =
+            [
+              WriteToCache
+                {
+                  WriteToCache.kind = "thrift";
+                  name =
+                    [
+                      WriteToCache.Substring.ClassName;
+                      WriteToCache.Substring.Literal ":";
+                      WriteToCache.Substring.MethodName;
+                    ];
+                };
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "foo",
+     find = "functions",
+     where = name.matches("foo"),
+     model = WriteToCache(kind="thrift", name=f"{function_name}")
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
+          name = "foo";
+          where = [NameConstraint (Matches (Re2.create_exn "foo"))];
+          find = Function;
+          models =
+            [
+              WriteToCache
+                { WriteToCache.kind = "thrift"; name = [WriteToCache.Substring.FunctionName] };
             ];
           expected_models = [];
           unexpected_models = [];

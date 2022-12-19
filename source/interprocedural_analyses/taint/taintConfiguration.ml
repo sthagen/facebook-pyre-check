@@ -15,8 +15,12 @@
  *)
 
 open Core
-open Pyre
+open Data_structures
 module Json = Yojson.Safe
+
+let ( >>= ) = Result.( >>= )
+
+let ( >>| ) = Result.( >>| )
 
 type literal_string_sink = {
   pattern: Re2.t;
@@ -267,7 +271,45 @@ module ModelConstraints = struct
     }
 end
 
-type partial_sink_converter = (Sources.t list * Sinks.t) list String.Map.Tree.t
+module PartialSinkConverter = struct
+  type t = (Sources.t list * Sinks.t) list SerializableStringMap.t
+
+  let add map ~first_sources ~first_sinks ~second_sources ~second_sinks =
+    let add map (first_sink, second_sink) =
+      (* Trigger second sink when the first sink matches a source, and vice versa. *)
+      SerializableStringMap.add_multi
+        map
+        ~key:(Sinks.show_partial_sink first_sink)
+        ~data:(first_sources, Sinks.TriggeredPartialSink second_sink)
+      |> SerializableStringMap.add_multi
+           ~key:(Sinks.show_partial_sink second_sink)
+           ~data:(second_sources, Sinks.TriggeredPartialSink first_sink)
+    in
+    List.cartesian_product first_sinks second_sinks |> List.fold ~f:add ~init:map
+
+
+  let merge left right =
+    SerializableStringMap.merge
+      (fun _ left right ->
+        match left, right with
+        | Some value, None
+        | None, Some value ->
+            Some value
+        | Some left, Some right -> Some (left @ right)
+        | None, None -> None)
+      left
+      right
+
+
+  let get_triggered_sink sink_to_sources ~partial_sink ~source =
+    let source = Sources.discard_sanitize_transforms source in
+    match SerializableStringMap.find_opt (Sinks.show_partial_sink partial_sink) sink_to_sources with
+    | Some source_and_sink_list ->
+        List.find source_and_sink_list ~f:(fun (supported_sources, _) ->
+            List.exists supported_sources ~f:(Sources.equal source))
+        |> Option.map ~f:snd
+    | _ -> None
+end
 
 let filter_implicit_sources ~source_sink_filter { literal_strings } =
   {
@@ -301,8 +343,8 @@ module Heap = struct
     filtered_rule_codes: Rule.CodeSet.t option;
     implicit_sinks: implicit_sinks;
     implicit_sources: implicit_sources;
-    partial_sink_converter: partial_sink_converter;
-    partial_sink_labels: string list String.Map.Tree.t;
+    partial_sink_converter: PartialSinkConverter.t;
+    partial_sink_labels: string list SerializableStringMap.t;
     find_missing_flows: Configuration.MissingFlowKind.t option;
     dump_model_query_results_path: PyrePath.t option;
     analysis_model_constraints: ModelConstraints.t;
@@ -321,10 +363,10 @@ module Heap = struct
       features = [];
       rules = [];
       filtered_rule_codes = None;
-      partial_sink_converter = String.Map.Tree.empty;
+      partial_sink_converter = SerializableStringMap.empty;
       implicit_sinks = empty_implicit_sinks;
       implicit_sources = empty_implicit_sources;
-      partial_sink_labels = String.Map.Tree.empty;
+      partial_sink_labels = SerializableStringMap.empty;
       find_missing_flows = None;
       dump_model_query_results_path = None;
       analysis_model_constraints = ModelConstraints.default;
@@ -475,8 +517,8 @@ module Heap = struct
         ];
       rules;
       filtered_rule_codes = None;
-      partial_sink_converter = String.Map.Tree.empty;
-      partial_sink_labels = String.Map.Tree.empty;
+      partial_sink_converter = SerializableStringMap.empty;
+      partial_sink_labels = SerializableStringMap.empty;
       implicit_sinks = empty_implicit_sinks;
       implicit_sources = empty_implicit_sources;
       find_missing_flows = None;
@@ -675,52 +717,14 @@ module Error = struct
     `Assoc ["description", `String (show_kind kind); "path", path; "code", `Int (code kind)]
 end
 
-module PartialSinkConverter = struct
-  let mangle { Sinks.kind; label } = Format.sprintf "%s$%s" kind label
-
-  let add map ~first_sources ~first_sinks ~second_sources ~second_sinks =
-    let add map (first_sink, second_sink) =
-      (* Trigger second sink when the first sink matches a source, and vice versa. *)
-      String.Map.Tree.add_multi
-        map
-        ~key:(mangle first_sink)
-        ~data:(first_sources, Sinks.TriggeredPartialSink second_sink)
-      |> String.Map.Tree.add_multi
-           ~key:(mangle second_sink)
-           ~data:(second_sources, Sinks.TriggeredPartialSink first_sink)
-    in
-    List.cartesian_product first_sinks second_sinks |> List.fold ~f:add ~init:map
-
-
-  let merge left right =
-    String.Map.Tree.merge
-      ~f:
-        (fun ~key:_ -> function
-          | `Left value
-          | `Right value ->
-              Some value
-          | `Both (left, right) -> Some (left @ right))
-      left
-      right
-
-
-  let get_triggered_sink sink_to_sources ~partial_sink ~source =
-    match mangle partial_sink |> String.Map.Tree.find sink_to_sources with
-    | Some source_and_sink_list ->
-        List.find source_and_sink_list ~f:(fun (supported_sources, _) ->
-            List.exists supported_sources ~f:(Sources.equal source))
-        >>| snd
-    | _ -> None
-end
-
 (** Parse json files to create a taint configuration. *)
 let from_json_list source_json_list =
-  let open Result in
   let json_exception_to_error ~path ?section f =
     try f () with
     | Json.Util.Type_error (message, json)
     | Json.Util.Undefined (message, json) ->
-        Error [Error.create ~path ~kind:(Error.UnexpectedJsonType { json; message; section })]
+        Result.Error
+          [Error.create ~path ~kind:(Error.UnexpectedJsonType { json; message; section })]
   in
   let json_bool_member ~path key value ~default =
     json_exception_to_error ~path ~section:key (fun () ->
@@ -743,7 +747,7 @@ let from_json_list source_json_list =
   in
   let array_member ~path ?section name json =
     match member name json with
-    | `Null -> Ok []
+    | `Null -> Result.Ok []
     | json ->
         json_exception_to_error ~path ?section (fun () -> Json.Util.to_list json |> Result.return)
   in
@@ -753,8 +757,8 @@ let from_json_list source_json_list =
   in
   let parse_kind ~path ?section json =
     match member "kind" json with
-    | `Null -> Ok AnnotationParser.Named
-    | `String "parametric" -> Ok AnnotationParser.Parametric
+    | `Null -> Result.Ok AnnotationParser.Named
+    | `String "parametric" -> Result.Ok AnnotationParser.Parametric
     | json ->
         Error
           [
@@ -768,15 +772,15 @@ let from_json_list source_json_list =
     let current_keys_hash_set = String.Hash_set.of_list current_keys in
     let check_required_key_present key =
       if not (Hash_set.mem current_keys_hash_set key) then
-        Error (Error.create ~path ~kind:(Error.MissingKey { key; section }))
+        Result.Error (Error.create ~path ~kind:(Error.MissingKey { key; section }))
       else
-        Ok ()
+        Result.Ok ()
     in
     let check_key_is_valid key =
       if not (Hash_set.mem valid_keys_hash_set key) then
-        Error (Error.create ~path ~kind:(Error.UnknownKey { key; section }))
+        Result.Error (Error.create ~path ~kind:(Error.UnknownKey { key; section }))
       else
-        Ok ()
+        Result.Ok ()
     in
     List.map current_keys ~f:check_key_is_valid
     |> List.rev_append (List.map required_keys ~f:check_required_key_present)
@@ -815,7 +819,7 @@ let from_json_list source_json_list =
       ~current_keys:(Json.Util.keys json)
       ~valid_keys:["name"; "comment"]
     >>= fun () ->
-    json_string_member ~path "name" json >>= fun name -> Ok (TaintTransform.Named name)
+    json_string_member ~path "name" json >>= fun name -> Result.Ok (TaintTransform.Named name)
   in
   let parse_transforms (path, json) =
     array_member ~path "transforms" json
@@ -834,10 +838,10 @@ let from_json_list source_json_list =
   let seen_rules = Int.Hash_set.create () in
   let validate_code_uniqueness ~path code =
     if Hash_set.mem seen_rules code then
-      Error [Error.create ~path ~kind:(Error.RuleCodeDuplicate code)]
+      Result.Error [Error.create ~path ~kind:(Error.RuleCodeDuplicate code)]
     else (
       Hash_set.add seen_rules code;
-      Ok ())
+      Result.Ok ())
   in
   let parse_source_reference ~path ~allowed_sources source =
     AnnotationParser.parse_source ~allowed:allowed_sources source
@@ -876,7 +880,7 @@ let from_json_list source_json_list =
       |> Result.combine_errors
       >>= fun sinks ->
       (match member "transforms" json with
-      | `Null -> Ok []
+      | `Null -> Result.Ok []
       | transforms -> json_string_list ~path ~section:"rules" transforms)
       >>= fun transforms ->
       List.map ~f:(parse_transform_reference ~path ~allowed_transforms) transforms
@@ -913,9 +917,9 @@ let from_json_list source_json_list =
       | [first; second] ->
           let parse_sources sources =
             (match sources with
-            | `String source -> Ok [source]
+            | `String source -> Result.Ok [source]
             | `List _ -> json_string_list ~path sources
-            | _ -> Error [Error.create ~path ~kind:(Error.UnexpectedCombinedSourceRule json)])
+            | _ -> Result.Error [Error.create ~path ~kind:(Error.UnexpectedCombinedSourceRule json)])
             >>= fun sources ->
             List.map ~f:(parse_source_reference ~path ~allowed_sources) sources
             |> Result.combine_errors
@@ -928,19 +932,19 @@ let from_json_list source_json_list =
           >>= fun second_sources ->
           json_string_member ~path "partial_sink" json
           >>= fun partial_sink ->
-          if String.Map.Tree.mem partial_sink_labels partial_sink then
-            Error [Error.create ~path ~kind:(Error.PartialSinkDuplicate partial_sink)]
+          if SerializableStringMap.mem partial_sink partial_sink_labels then
+            Result.Error [Error.create ~path ~kind:(Error.PartialSinkDuplicate partial_sink)]
           else
             let partial_sink_labels =
-              String.Map.Tree.set partial_sink_labels ~key:partial_sink ~data:[first; second]
+              SerializableStringMap.set partial_sink_labels ~key:partial_sink ~data:[first; second]
             in
             let create_partial_sink label sink =
-              match String.Map.Tree.find partial_sink_labels sink with
+              match SerializableStringMap.find_opt sink partial_sink_labels with
               | Some labels when not (List.mem ~equal:String.equal labels label) ->
                   Error
                     [Error.create ~path ~kind:(Error.InvalidLabelMultiSink { label; sink; labels })]
-              | None -> Error [Error.create ~path ~kind:(Error.InvalidMultiSink sink)]
-              | _ -> Ok { Sinks.kind = sink; label }
+              | None -> Result.Error [Error.create ~path ~kind:(Error.InvalidMultiSink sink)]
+              | _ -> Result.Ok { Sinks.kind = sink; label }
             in
             create_partial_sink first partial_sink
             >>= fun first_sink ->
@@ -971,16 +975,16 @@ let from_json_list source_json_list =
                 ~second_sources
                 ~second_sinks:[second_sink],
               partial_sink_labels )
-      | _ -> Error [Error.create ~path ~kind:(Error.UnexpectedCombinedSourceRule json)]
+      | _ -> Result.Error [Error.create ~path ~kind:(Error.UnexpectedCombinedSourceRule json)]
     in
     array_member ~path "combined_source_rules" json
     >>= List.fold
-          ~init:(Ok ([], String.Map.Tree.empty, String.Map.Tree.empty))
+          ~init:(Ok ([], SerializableStringMap.empty, SerializableStringMap.empty))
           ~f:parse_combined_source_rule
   in
   let parse_implicit_sinks ~allowed_sinks (path, json) =
     match member "implicit_sinks" json with
-    | `Null -> Ok empty_implicit_sinks
+    | `Null -> Result.Ok empty_implicit_sinks
     | implicit_sinks ->
         check_keys
           ~path
@@ -990,7 +994,7 @@ let from_json_list source_json_list =
           ~current_keys:(Json.Util.keys implicit_sinks)
         >>= fun () ->
         (match member "conditional_test" implicit_sinks with
-        | `Null -> Ok []
+        | `Null -> Result.Ok []
         | conditional_test ->
             json_string_list ~path conditional_test
             >>= fun sinks ->
@@ -1014,7 +1018,7 @@ let from_json_list source_json_list =
   in
   let parse_implicit_sources ~allowed_sources (path, json) =
     match member "implicit_sources" json with
-    | `Null -> Ok { literal_strings = [] }
+    | `Null -> Result.Ok { literal_strings = [] }
     | implicit_sources ->
         check_keys
           ~path
@@ -1073,10 +1077,13 @@ let from_json_list source_json_list =
   >>= fun (generated_combined_rules, partial_sink_converters, partial_sink_labels) ->
   let generated_combined_rules = List.concat generated_combined_rules in
   let partial_sink_converter =
-    List.fold partial_sink_converters ~init:String.Map.Tree.empty ~f:PartialSinkConverter.merge
+    List.fold
+      partial_sink_converters
+      ~init:SerializableStringMap.empty
+      ~f:PartialSinkConverter.merge
   in
   let partial_sink_labels =
-    List.fold partial_sink_labels ~init:String.Map.Tree.empty ~f:PartialSinkConverter.merge
+    List.fold partial_sink_labels ~init:SerializableStringMap.empty ~f:PartialSinkConverter.merge
   in
 
   let merge_implicit_sinks left right =
@@ -1093,11 +1100,11 @@ let from_json_list source_json_list =
   let parse_integer_option name =
     let parse_single_json (path, json) =
       match member "options" json with
-      | `Null -> Ok None
+      | `Null -> Result.Ok None
       | options -> (
           match member name options with
-          | `Null -> Ok None
-          | `Int value -> Ok (Some value)
+          | `Null -> Result.Ok None
+          | `Int value -> Result.Ok (Some value)
           | json ->
               Error
                 (Error.create
@@ -1110,9 +1117,9 @@ let from_json_list source_json_list =
     |> Result.combine_errors
     >>| List.filter_map ~f:Fn.id
     >>= function
-    | [] -> Ok None
-    | [value] -> Ok (Some value)
-    | _ -> Error [{ Error.path = None; kind = Error.OptionDuplicate name }]
+    | [] -> Result.Ok None
+    | [value] -> Result.Ok (Some value)
+    | _ -> Result.Error [{ Error.path = None; kind = Error.OptionDuplicate name }]
   in
   parse_integer_option "maximum_model_source_tree_width"
   >>= fun maximum_model_source_tree_width ->
@@ -1201,10 +1208,10 @@ let validate ({ Heap.sources; sinks; transforms; features; _ } as configuration)
     let ensure_unique element =
       let element = get_name element in
       if Hash_set.mem seen element then
-        Error [{ Error.path = None; kind = get_error element }]
+        Result.Error [{ Error.path = None; kind = get_error element }]
       else (
         Hash_set.add seen element;
-        Ok ())
+        Result.Ok ())
     in
     List.map elements ~f:ensure_unique
     |> Result.combine_errors_unit
@@ -1236,8 +1243,8 @@ let validate ({ Heap.sources; sinks; transforms; features; _ } as configuration)
 exception TaintConfigurationError of Error.t list
 
 let exception_on_error = function
-  | Ok configuration -> configuration
-  | Error errors -> raise (TaintConfigurationError errors)
+  | Result.Ok configuration -> configuration
+  | Result.Error errors -> raise (TaintConfigurationError errors)
 
 
 let obscure_flows_configuration configuration =
@@ -1307,13 +1314,12 @@ let apply_missing_flows configuration = function
 
 (** Create a taint configuration by finding `.config` files in the given directories. *)
 let from_taint_model_paths taint_model_paths =
-  let open Result in
   let file_paths =
     PyrePath.get_matching_files_recursively ~suffix:".config" ~paths:taint_model_paths
   in
   let parse_json path =
     if not (PyrePath.file_exists path) then
-      Error (Error.create ~path ~kind:Error.FileNotFound)
+      Result.Error (Error.create ~path ~kind:Error.FileNotFound)
     else
       let content =
         path
@@ -1323,13 +1329,13 @@ let from_taint_model_paths taint_model_paths =
       in
       try content >>| Json.from_string >>| fun json -> path, json with
       | Yojson.Json_error parse_error ->
-          Error (Error.create ~path ~kind:(Error.InvalidJson parse_error))
+          Result.Error (Error.create ~path ~kind:(Error.InvalidJson parse_error))
   in
   let configurations = file_paths |> List.map ~f:parse_json |> Result.combine_errors in
   match configurations with
-  | Error errors -> Error errors
-  | Ok [] -> Error [{ Error.path = None; kind = NoConfigurationFound }]
-  | Ok configurations -> from_json_list configurations >>= validate
+  | Result.Error errors -> Result.Error errors
+  | Result.Ok [] -> Result.Error [{ Error.path = None; kind = NoConfigurationFound }]
+  | Result.Ok configurations -> from_json_list configurations >>= validate
 
 
 (** Update a taint configuration with the given command line options. *)
@@ -1353,9 +1359,8 @@ let with_command_line_options
     ~maximum_trace_length
     ~maximum_tito_depth
   =
-  let open Result in
   (match source_filter with
-  | None -> Ok configuration
+  | None -> Result.Ok configuration
   | Some source_filter ->
       let parse_source_reference source =
         AnnotationParser.parse_source ~allowed:configuration.Heap.sources source
@@ -1371,7 +1376,7 @@ let with_command_line_options
       >>| fun filtered_sources -> { configuration with filtered_sources })
   >>= fun configuration ->
   (match sink_filter with
-  | None -> Ok configuration
+  | None -> Result.Ok configuration
   | Some sink_filter ->
       let parse_sink_reference sink =
         AnnotationParser.parse_sink ~allowed:configuration.sinks sink
@@ -1386,7 +1391,7 @@ let with_command_line_options
       >>| fun filtered_sinks -> { configuration with filtered_sinks })
   >>= fun configuration ->
   (match transform_filter with
-  | None -> Ok configuration
+  | None -> Result.Ok configuration
   | Some transform_filter ->
       let parse_transform_reference transform =
         AnnotationParser.parse_transform ~allowed:configuration.transforms transform

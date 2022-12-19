@@ -67,6 +67,7 @@ module CodeNavigationConfiguration = struct
             parallel;
             number_of_workers;
             enable_readonly_analysis;
+            enable_unawaited_awaitable_analysis;
             shared_memory =
               { Configuration.SharedMemory.heap_size; dependency_table_power; hash_table_power };
             remote_logging = _;
@@ -103,6 +104,7 @@ module CodeNavigationConfiguration = struct
       ~enable_type_comments
       ~source_paths:(Configuration.SourcePaths.to_search_paths source_paths)
       ~enable_readonly_analysis
+      ~enable_unawaited_awaitable_analysis
       ()
 
 
@@ -201,7 +203,7 @@ let run_server configuration_file =
 
 
 let command =
-  let filename_argument = Command.Param.(anon ("filename" %: Filename.arg_type)) in
+  let filename_argument = Command.Param.(anon ("filename" %: Filename_unix.arg_type)) in
   Command.basic
     ~summary:"Start a new Pyre server for code navigation purpose"
     (Command.Param.map filename_argument ~f:(fun filename () -> run_server filename))

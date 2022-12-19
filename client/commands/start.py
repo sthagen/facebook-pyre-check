@@ -330,6 +330,9 @@ def create_server_arguments(
             checked_directory_blocklist=(configuration.get_ignore_all_errors()),
             debug=start_arguments.debug,
             enable_readonly_analysis=configuration.get_enable_readonly_analysis(),
+            enable_unawaited_awaitable_analysis=(
+                configuration.get_enable_unawaited_awaitable_analysis()
+            ),
             excludes=configuration.get_excludes(),
             extensions=configuration.get_valid_extension_suffixes(),
             relative_local_root=relative_local_root,
@@ -515,7 +518,16 @@ def run_start(
     with backend_arguments.temporary_argument_file(
         server_arguments
     ) as argument_file_path:
-        server_command = [str(binary_location), "newserver", str(argument_file_path)]
+        server_subcommand = (
+            "newserver"
+            if start_arguments.flavor != identifiers.PyreFlavor.CODE_NAVIGATION
+            else "code-navigation"
+        )
+        server_command = [
+            str(binary_location),
+            server_subcommand,
+            str(argument_file_path),
+        ]
         server_environment = {
             **os.environ,
             # This is to make sure that backend server shares the socket root

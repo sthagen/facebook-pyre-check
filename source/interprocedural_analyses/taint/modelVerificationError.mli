@@ -103,7 +103,6 @@ type kind =
   | InvalidIdentifier of Expression.t
   | ClassBodyNotEllipsis of string
   | DefineBodyNotEllipsis of string
-  | UnsupportedCallee of Expression.t
   | UnexpectedTaintAnnotation of string
   | UnexpectedModelExpression of Expression.t
   | UnsupportedFindClause of string
@@ -113,6 +112,11 @@ type kind =
       annotation: string;
     }
   | UnsupportedConstraint of Expression.t
+  | UnsupportedConstraintCallee of Expression.t
+  | UnsupportedClassConstraint of Expression.t
+  | UnsupportedClassConstraintCallee of Expression.t
+  | UnsupportedDecoratorConstraint of Expression.t
+  | UnsupportedDecoratorConstraintCallee of Expression.t
   | InvalidModelForTaint of {
       model_name: string;
       error: string;
@@ -140,8 +144,20 @@ type kind =
       model_query_name: string;
       models_clause: Expression.t;
     }
-  | InvalidAnyChildClause of Expression.t
-  | InvalidModelQueryMode of string
+  | InvalidModelQueryMode of {
+      mode_name: string;
+      error: string;
+    }
+  | InvalidReadFromCacheArguments of Expression.t
+  | InvalidReadFromCacheConstraint of Expression.t
+  | InvalidWriteToCacheArguments of Expression.t
+  | InvalidWriteToCacheNameExpression of Expression.t
+  | InvalidWriteToCacheNameIdentifier of Identifier.t
+  | InvalidWriteToCacheIdentifierForFind of {
+      identifier: string;
+      find: string;
+    }
+  | MutuallyExclusiveReadWriteToCache
 [@@deriving sexp, compare]
 
 type t = {

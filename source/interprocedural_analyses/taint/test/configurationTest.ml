@@ -6,10 +6,10 @@
  *)
 
 open Core
+open Data_structures
 open OUnit2
 open Taint
 open Pyre
-module Error = TaintConfiguration.Error
 module Result = Core.Result
 
 let parse ?rule_filter ?source_filter ?sink_filter ?transform_filter configuration =
@@ -38,7 +38,7 @@ let parse ?rule_filter ?source_filter ?sink_filter ?transform_filter configurati
     >>= TaintConfiguration.validate
   in
   (* Test that the configuration can be written in shared memory. *)
-  let (_ : (TaintConfiguration.SharedMemory.t, Error.t list) Result.t) =
+  let (_ : (TaintConfiguration.SharedMemory.t, TaintConfiguration.Error.t list) Result.t) =
     configuration >>| TaintConfiguration.SharedMemory.from_heap
   in
   configuration
@@ -47,18 +47,20 @@ let parse ?rule_filter ?source_filter ?sink_filter ?transform_filter configurati
 let assert_parse ?rule_filter ?source_filter ?sink_filter ?transform_filter configuration =
   match parse ?rule_filter ?source_filter ?sink_filter ?transform_filter configuration with
   | Error errors ->
-      let errors = List.map ~f:Error.show errors |> String.concat ~sep:"\n" in
+      let errors = List.map ~f:TaintConfiguration.Error.show errors |> String.concat ~sep:"\n" in
       Format.sprintf "Unexpected error when parsing configuration: %s" errors |> assert_failure
   | Ok configuration -> configuration
 
 
 let assert_parse_error ~errors configuration =
   let configuration =
-    parse configuration |> Core.Result.map_error ~f:(List.map ~f:(fun { Error.kind; _ } -> kind))
+    parse configuration
+    |> Core.Result.map_error ~f:(List.map ~f:(fun { TaintConfiguration.Error.kind; _ } -> kind))
   in
   let printer = function
     | Ok _ -> "Ok _"
-    | Error errors -> List.map ~f:Error.show_kind errors |> String.concat ~sep:"\n"
+    | Error errors ->
+        List.map ~f:TaintConfiguration.Error.show_kind errors |> String.concat ~sep:"\n"
   in
   assert_equal ~printer (Error errors) configuration
 
@@ -172,7 +174,7 @@ let test_transform_splits _ =
 
 let test_invalid_source _ =
   assert_parse_error
-    ~errors:[Error.UnsupportedSource "C"]
+    ~errors:[TaintConfiguration.Error.UnsupportedSource "C"]
     {|
     { sources: [
         { name: "A" },
@@ -197,7 +199,7 @@ let test_invalid_source _ =
 
 let test_invalid_sink _ =
   assert_parse_error
-    ~errors:[Error.UnsupportedSink "B"]
+    ~errors:[TaintConfiguration.Error.UnsupportedSink "B"]
     {|
     { sources: [
       ],
@@ -221,7 +223,7 @@ let test_invalid_sink _ =
 
 let test_invalid_transform _ =
   assert_parse_error
-    ~errors:[Error.UnsupportedTransform "B"]
+    ~errors:[TaintConfiguration.Error.UnsupportedTransform "B"]
     {|
     { sources: [
       ],
@@ -251,7 +253,7 @@ let test_combined_source_rules _ =
   assert_parse_error
     ~errors:
       [
-        Error.UnexpectedJsonType
+        TaintConfiguration.Error.UnexpectedJsonType
           { json = `Null; message = "Expected string, got null"; section = Some "partial_sink" };
       ]
     {|
@@ -314,7 +316,7 @@ let test_combined_source_rules _ =
       };
     ];
   assert_equal (List.hd_exn configuration.rules).code 2001;
-  assert_equal (String.Map.Tree.to_alist configuration.partial_sink_labels) ["C", ["a"; "b"]];
+  assert_equal (SerializableStringMap.to_alist configuration.partial_sink_labels) ["C", ["a"; "b"]];
   let configuration =
     assert_parse
       {|
@@ -339,7 +341,7 @@ let test_combined_source_rules _ =
   assert_equal configuration.sources [named "A"; named "B"; named "C"];
   assert_equal configuration.sinks [];
   assert_equal
-    (String.Map.Tree.to_alist configuration.partial_sink_labels)
+    (SerializableStringMap.to_alist configuration.partial_sink_labels)
     ["CombinedSink", ["a"; "b"]];
   assert_equal
     ~printer:(List.to_string ~f:Rule.show)
@@ -365,7 +367,7 @@ let test_combined_source_rules _ =
     ];
   assert_equal (List.hd_exn configuration.rules).code 2001;
   assert_parse_error
-    ~errors:[Error.PartialSinkDuplicate "C"]
+    ~errors:[TaintConfiguration.Error.PartialSinkDuplicate "C"]
     {|
       { sources: [
           { name: "A" },
@@ -424,7 +426,7 @@ let test_partial_sink_converter _ =
          ~printer:(fun value -> value >>| Sinks.show |> Option.value ~default:"None")
          expected_sink
   in
-  assert_triggered_sinks
+  let configuration =
     {|
     {
       sources: [{ name: "A" }, { name: "B" }],
@@ -440,63 +442,24 @@ let test_partial_sink_converter _ =
       ]
     }
   |}
+  in
+  assert_triggered_sinks
+    configuration
     ~partial_sink:{ Sinks.kind = "C"; label = "ca" }
     ~source:(Sources.NamedSource "A")
     ~expected_sink:(Some (Sinks.TriggeredPartialSink { Sinks.kind = "C"; label = "cb" }));
   assert_triggered_sinks
-    {|
-    {
-      sources: [{ name: "A" }, { name: "B" }],
-      sinks: [],
-      combined_source_rules: [
-        {
-           name: "c rule",
-           sources: {"ca": "A", "cb": "B"},
-           partial_sink: "C",
-           code: 2001,
-           message_format: "some form"
-        }
-      ]
-    }
-  |}
+    configuration
     ~partial_sink:{ Sinks.kind = "C"; label = "cb" }
     ~source:(Sources.NamedSource "B")
     ~expected_sink:(Some (Sinks.TriggeredPartialSink { Sinks.kind = "C"; label = "ca" }));
   assert_triggered_sinks
-    {|
-    {
-      sources: [{ name: "A" }, { name: "B" }],
-      sinks: [],
-      combined_source_rules: [
-        {
-           name: "c rule",
-           sources: {"ca": "A", "cb": "B"},
-           partial_sink: "C",
-           code: 2001,
-           message_format: "some form"
-        }
-      ]
-    }
-  |}
+    configuration
     ~partial_sink:{ Sinks.kind = "C"; label = "ca" }
     ~source:(Sources.NamedSource "B")
     ~expected_sink:None;
   assert_triggered_sinks
-    {|
-    {
-      sources: [{ name: "A" }, { name: "B" }],
-      sinks: [],
-      combined_source_rules: [
-        {
-           name: "c rule",
-           sources: {"ca": "A", "cb": "B"},
-           partial_sink: "C",
-           code: 2001,
-           message_format: "some form"
-        }
-      ]
-    }
-  |}
+    configuration
     ~partial_sink:{ Sinks.kind = "C"; label = "cb" }
     ~source:(Sources.NamedSource "A")
     ~expected_sink:None
@@ -573,17 +536,20 @@ let test_validate _ =
              PyrePath.create_absolute path, Yojson.Safe.from_string content)
       |> Taint.TaintConfiguration.from_json_list
       |> Core.Result.map_error
-           ~f:(List.map ~f:(fun { Error.path; kind } -> path >>| PyrePath.absolute, kind))
+           ~f:
+             (List.map ~f:(fun { TaintConfiguration.Error.path; kind } ->
+                  path >>| PyrePath.absolute, kind))
     in
     let printer = function
       | Ok _ -> "Ok _"
       | Error errors ->
-          List.map ~f:[%show: string option * Error.kind] errors |> String.concat ~sep:"\n"
+          List.map ~f:[%show: string option * TaintConfiguration.Error.kind] errors
+          |> String.concat ~sep:"\n"
     in
     assert_equal ~printer (Error [error]) result
   in
   assert_parse_error
-    ~errors:[Error.SourceDuplicate "UserControlled"]
+    ~errors:[TaintConfiguration.Error.SourceDuplicate "UserControlled"]
     {|
     {
       sources: [
@@ -593,7 +559,7 @@ let test_validate _ =
     }
     |};
   assert_parse_error
-    ~errors:[Error.SinkDuplicate "Test"]
+    ~errors:[TaintConfiguration.Error.SinkDuplicate "Test"]
     {|
     {
       sources: [
@@ -605,7 +571,7 @@ let test_validate _ =
     }
     |};
   assert_parse_error
-    ~errors:[Error.TransformDuplicate "Test"]
+    ~errors:[TaintConfiguration.Error.TransformDuplicate "Test"]
     {|
     {
       sources: [
@@ -619,7 +585,7 @@ let test_validate _ =
     }
     |};
   assert_parse_error
-    ~errors:[Error.FeatureDuplicate "concat"]
+    ~errors:[TaintConfiguration.Error.FeatureDuplicate "concat"]
     {|
     {
       sources: [
@@ -637,9 +603,9 @@ let test_validate _ =
   assert_parse_error
     ~errors:
       [
-        Error.SourceDuplicate "UserControlled";
-        Error.SinkDuplicate "Test";
-        Error.FeatureDuplicate "concat";
+        TaintConfiguration.Error.SourceDuplicate "UserControlled";
+        TaintConfiguration.Error.SinkDuplicate "Test";
+        TaintConfiguration.Error.FeatureDuplicate "concat";
       ]
     {|
     {
@@ -658,7 +624,7 @@ let test_validate _ =
     }
     |};
   assert_parse_error
-    ~errors:[Error.SourceDuplicate "UserControlled"]
+    ~errors:[TaintConfiguration.Error.SourceDuplicate "UserControlled"]
     {|
     {
       sources: [
@@ -674,7 +640,7 @@ let test_validate _ =
     }
     |};
   assert_parse_error
-    ~errors:[Error.SinkDuplicate "Test"]
+    ~errors:[TaintConfiguration.Error.SinkDuplicate "Test"]
     {|
     {
       sinks: [
@@ -689,7 +655,7 @@ let test_validate _ =
     }
     |};
   assert_parse_error
-    ~errors:[Error.RuleCodeDuplicate 2001]
+    ~errors:[TaintConfiguration.Error.RuleCodeDuplicate 2001]
     {|
     {
       sources: [
@@ -718,7 +684,7 @@ let test_validate _ =
     }
     |};
   assert_parse_error
-    ~errors:[Error.RuleCodeDuplicate 2002]
+    ~errors:[TaintConfiguration.Error.RuleCodeDuplicate 2002]
     {|
     {
       sources: [
@@ -750,7 +716,7 @@ let test_validate _ =
     }
     |};
   assert_parse_multiple_error
-    ~error:(None, Error.OptionDuplicate "maximum_overrides_to_analyze")
+    ~error:(None, TaintConfiguration.Error.OptionDuplicate "maximum_overrides_to_analyze")
     [
       ( "/a.config",
         {|
@@ -780,7 +746,7 @@ let test_validate _ =
       );
     ];
   assert_parse_multiple_error
-    ~error:(None, Error.OptionDuplicate "maximum_trace_length")
+    ~error:(None, TaintConfiguration.Error.OptionDuplicate "maximum_trace_length")
     [
       ( "/a.config",
         {|
@@ -810,7 +776,7 @@ let test_validate _ =
       );
     ];
   assert_parse_multiple_error
-    ~error:(None, Error.OptionDuplicate "maximum_tito_depth")
+    ~error:(None, TaintConfiguration.Error.OptionDuplicate "maximum_tito_depth")
     [
       ( "/a.config",
         {|
@@ -840,7 +806,7 @@ let test_validate _ =
       );
     ];
   assert_parse_error
-    ~errors:[Error.UnsupportedSource "MisspelledStringDigit"]
+    ~errors:[TaintConfiguration.Error.UnsupportedSource "MisspelledStringDigit"]
     {|
         {
           sources: [{ name: "StringDigit" }],
@@ -858,7 +824,7 @@ let test_validate _ =
         }
     |};
   assert_parse_error
-    ~errors:[Error.UnsupportedSink "Misspelled"]
+    ~errors:[TaintConfiguration.Error.UnsupportedSink "Misspelled"]
     {|
           {
             sources: [],

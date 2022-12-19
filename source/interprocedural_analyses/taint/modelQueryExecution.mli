@@ -14,7 +14,7 @@ module VariableMetadata : sig
 end
 
 module ModelQueryRegistryMap : sig
-  type t = Registry.t Core.String.Map.t
+  type t
 
   val empty : t
 
@@ -35,66 +35,99 @@ module ModelQueryRegistryMap : sig
   val get_registry : model_join:(Model.t -> Model.t -> Model.t) -> t -> Registry.t
 end
 
-module GlobalVariableQueries : sig
-  val get_globals_and_annotations
-    :  environment:Analysis.TypeEnvironment.ReadOnly.t ->
-    VariableMetadata.t list
-
-  val apply_global_query
-    :  verbose:bool ->
-    resolution:Analysis.GlobalResolution.t ->
-    class_hierarchy_graph:Interprocedural.ClassHierarchyGraph.SharedMemory.t ->
-    variable_metadata:VariableMetadata.t ->
-    ModelParseResult.ModelQuery.t ->
-    ModelParseResult.TaintAnnotation.t list Core.String.Map.t
-end
-
 module DumpModelQueryResults : sig
-  val dump_to_string : models_and_names:ModelQueryRegistryMap.t -> string
+  val dump_to_string : model_query_results:ModelQueryRegistryMap.t -> string
 
-  val dump_to_file : models_and_names:ModelQueryRegistryMap.t -> path:PyrePath.t -> unit
+  val dump_to_file : model_query_results:ModelQueryRegistryMap.t -> path:PyrePath.t -> unit
 
   val dump_to_file_and_string
-    :  models_and_names:ModelQueryRegistryMap.t ->
+    :  model_query_results:ModelQueryRegistryMap.t ->
     path:PyrePath.t ->
     string
 end
 
-val apply_callable_query
-  :  verbose:bool ->
-  resolution:Analysis.GlobalResolution.t ->
-  class_hierarchy_graph:Interprocedural.ClassHierarchyGraph.SharedMemory.t ->
-  callable:Interprocedural.Target.t ->
-  ModelParseResult.ModelQuery.t ->
-  ModelParseResult.ModelAnnotation.t list Core.String.Map.t
+module PartitionCacheQueries : sig
+  type t = {
+    write_to_cache: ModelParseResult.ModelQuery.t list;
+    read_from_cache: ModelParseResult.ModelQuery.t list;
+    others: ModelParseResult.ModelQuery.t list;
+  }
+  [@@deriving show, equal]
 
-val apply_attribute_query
-  :  verbose:bool ->
-  resolution:Analysis.GlobalResolution.t ->
-  class_hierarchy_graph:Interprocedural.ClassHierarchyGraph.SharedMemory.t ->
-  variable_metadata:VariableMetadata.t ->
-  ModelParseResult.ModelQuery.t ->
-  ModelParseResult.TaintAnnotation.t list Core.String.Map.t
+  val partition : ModelParseResult.ModelQuery.t list -> t
+end
 
-val apply_all_queries
-  :  resolution:Analysis.Resolution.t ->
-  scheduler:Scheduler.t ->
-  taint_configuration:TaintConfiguration.SharedMemory.t ->
-  class_hierarchy_graph:Interprocedural.ClassHierarchyGraph.SharedMemory.t ->
-  source_sink_filter:SourceSinkFilter.t option ->
-  queries:ModelParseResult.ModelQuery.t list ->
-  callables:Interprocedural.Target.t list ->
-  stubs:Interprocedural.Target.HashSet.t ->
-  environment:Analysis.TypeEnvironment.ReadOnly.t ->
-  ModelQueryRegistryMap.t * ModelVerificationError.t list
+module ReadWriteCache : sig
+  type t [@@deriving show, equal]
+
+  val empty : t
+
+  val write : t -> kind:string -> name:string -> target:Interprocedural.Target.t -> t
+end
+
+module CallableQueryExecutor : sig
+  val generate_annotations_from_query_on_target
+    :  verbose:bool ->
+    resolution:Analysis.GlobalResolution.t ->
+    class_hierarchy_graph:Interprocedural.ClassHierarchyGraph.SharedMemory.t ->
+    target:Interprocedural.Target.t ->
+    ModelParseResult.ModelQuery.t ->
+    ModelParseResult.ModelAnnotation.t list
+
+  val generate_cache_from_queries_on_targets
+    :  verbose:bool ->
+    resolution:Analysis.GlobalResolution.t ->
+    class_hierarchy_graph:Interprocedural.ClassHierarchyGraph.SharedMemory.t ->
+    targets:Interprocedural.Target.t list ->
+    ModelParseResult.ModelQuery.t list ->
+    ReadWriteCache.t
+end
+
+module AttributeQueryExecutor : sig
+  val generate_annotations_from_query_on_target
+    :  verbose:bool ->
+    resolution:Analysis.GlobalResolution.t ->
+    class_hierarchy_graph:Interprocedural.ClassHierarchyGraph.SharedMemory.t ->
+    target:VariableMetadata.t ->
+    ModelParseResult.ModelQuery.t ->
+    ModelParseResult.TaintAnnotation.t list
+
+  val generate_cache_from_queries_on_targets
+    :  verbose:bool ->
+    resolution:Analysis.GlobalResolution.t ->
+    class_hierarchy_graph:Interprocedural.ClassHierarchyGraph.SharedMemory.t ->
+    targets:VariableMetadata.t list ->
+    ModelParseResult.ModelQuery.t list ->
+    ReadWriteCache.t
+end
+
+val get_globals_and_annotations : resolution:Analysis.GlobalResolution.t -> VariableMetadata.t list
+
+module GlobalVariableQueryExecutor : sig
+  val generate_annotations_from_query_on_target
+    :  verbose:bool ->
+    resolution:Analysis.GlobalResolution.t ->
+    class_hierarchy_graph:Interprocedural.ClassHierarchyGraph.SharedMemory.t ->
+    target:VariableMetadata.t ->
+    ModelParseResult.ModelQuery.t ->
+    ModelParseResult.TaintAnnotation.t list
+
+  val generate_cache_from_queries_on_targets
+    :  verbose:bool ->
+    resolution:Analysis.GlobalResolution.t ->
+    class_hierarchy_graph:Interprocedural.ClassHierarchyGraph.SharedMemory.t ->
+    targets:VariableMetadata.t list ->
+    ModelParseResult.ModelQuery.t list ->
+    ReadWriteCache.t
+end
 
 val generate_models_from_queries
-  :  taint_configuration:TaintConfiguration.SharedMemory.t ->
-  class_hierarchy_graph:Interprocedural.ClassHierarchyGraph.SharedMemory.t ->
+  :  resolution:Analysis.GlobalResolution.t ->
   scheduler:Scheduler.t ->
-  environment:Analysis.TypeEnvironment.ReadOnly.t ->
+  class_hierarchy_graph:Interprocedural.ClassHierarchyGraph.SharedMemory.t ->
   source_sink_filter:SourceSinkFilter.t option ->
-  callables:Interprocedural.Target.t list ->
+  verbose:bool ->
+  callables_and_stubs:Interprocedural.Target.t list ->
   stubs:Interprocedural.Target.t Base.Hash_set.t ->
   ModelParseResult.ModelQuery.t list ->
   ModelQueryRegistryMap.t * ModelVerificationError.t list

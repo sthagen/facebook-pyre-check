@@ -116,6 +116,8 @@ type signature_match = {
 [@@deriving compare, show]
 
 module SignatureSelection : sig
+  val reserved_position_for_self_argument : int
+
   val prepare_arguments_for_signature_selection
     :  self_argument:'argument_type option ->
     'argument_type Argument.t list ->
@@ -147,6 +149,11 @@ module SignatureSelection : sig
     :  Type.Callable.t ->
     SignatureSelectionTypes.instantiated_return_annotation
 
+  val most_important_error_reason
+    :  arity_mismatch_reasons:SignatureSelectionTypes.reason list ->
+    SignatureSelectionTypes.reason list ->
+    SignatureSelectionTypes.reason option
+
   val instantiate_return_annotation
     :  ?skip_marking_escapees:bool ->
     order:ConstraintsSet.order ->
@@ -169,9 +176,9 @@ module SignatureSelection : sig
     signature_match option
 end
 
-type uninstantiated
+type uninstantiated [@@deriving show]
 
-type uninstantiated_attribute = uninstantiated AnnotatedAttribute.t
+type uninstantiated_attribute = uninstantiated AnnotatedAttribute.t [@@deriving show]
 
 module AttributeReadOnly : sig
   include Environment.ReadOnly
@@ -204,6 +211,7 @@ module AttributeReadOnly : sig
     ?dependency:DependencyKey.registered ->
     transitive:bool ->
     accessed_through_class:bool ->
+    accessed_through_readonly:bool ->
     include_generated_attributes:bool ->
     ?special_method:bool ->
     ?instantiated:Type.t ->
@@ -286,6 +294,7 @@ module AttributeReadOnly : sig
     :  t ->
     ?dependency:DependencyKey.registered ->
     accessed_through_class:bool ->
+    accessed_through_readonly:bool ->
     ?instantiated:Type.t ->
     uninstantiated_attribute ->
     AnnotatedAttribute.instantiated

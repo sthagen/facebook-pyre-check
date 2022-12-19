@@ -84,8 +84,9 @@ let make_assert_functions context =
       T_Bound_D = typing.TypeVar('T_Bound_D', bound=D)
       T_Bound_Union = typing.TypeVar('T_Bound_Union', bound=typing.Union[int, str])
       T_Bound_Union_C_Q = typing.TypeVar('T_Bound_Union_C_Q', bound=typing.Union[C, Q])
-      T_Bound_Union = typing.TypeVar('T_Bound_Union', bound=typing.Union[int, str])
       T_C_Q = typing.TypeVar('T_C_Q', C, Q)
+      T_Bound_ReadOnly = typing.TypeVar('T_Bound_ReadOnly', bound=pyre_extensions.ReadOnly[object])
+      T_Bound_object = typing.TypeVar("T", object)
       T_D_Q = typing.TypeVar('T_D_Q', D, Q)
       T_C_Q_int = typing.TypeVar('T_C_Q_int', C, Q, int)
       V = pyre_extensions.ParameterSpecification("V")
@@ -134,9 +135,10 @@ let make_assert_functions context =
           "T_Unconstrained";
           "T_Bound_C";
           "T_Bound_D";
-          "T_Bound_Union";
           "T_Bound_Union_C_Q";
           "T_Bound_Union";
+          "T_Bound_ReadOnly";
+          "T_Bound_object";
           "T_C_Q";
           "T_D_Q";
           "T_C_Q_int";
@@ -208,8 +210,9 @@ let make_assert_functions context =
         match attributes annotation ~assumptions with
         | Some attributes -> Some attributes
         | None -> (
-            match Type.resolve_class annotation with
-            | Some [{ instantiated; accessed_through_class; class_name }] ->
+            match Type.class_data_for_attribute_lookup annotation with
+            | Some [{ instantiated; accessed_through_class; class_name; accessed_through_readonly }]
+              ->
                 GlobalResolution.attributes
                   ~transitive:true
                   ~resolution
@@ -220,7 +223,8 @@ let make_assert_functions context =
                         (GlobalResolution.instantiate_attribute
                            ~resolution
                            ~instantiated
-                           ~accessed_through_class)
+                           ~accessed_through_class
+                           ~accessed_through_readonly)
             | _ -> None)
       in
       { order with all_attributes = attributes; attribute = attribute_from_attributes attributes }
@@ -490,6 +494,7 @@ let test_add_constraint context =
     ~left:"T_Unconstrained"
     ~right:"typing.Optional[T_Unconstrained]"
     [["T_Unconstrained", "T_Unconstrained"]; ["T_Unconstrained", "object"]];
+  assert_add ~left:"T_Bound_Union" ~right:"typing.Union[int, str]" [[]];
 
   (* Bound => Bound *)
   assert_add ~left:"T_Bound_D" ~right:"T_Bound_C" [["T_Bound_C", "T_Bound_D"]];
@@ -829,6 +834,17 @@ let test_add_constraint_recursive_type context =
          ~value:(Type.dictionary ~key:Type.string ~value:Type.integer))
     ~right:json_annotation
     [[]];
+  let readonly_tree_annotation =
+    Type.RecursiveType.create
+      ~name:"test.Tree"
+      ~body:
+        (Type.union
+           [
+             Type.ReadOnly.create Type.string;
+             Type.tuple [Type.Primitive "test.Tree"; Type.Primitive "test.Tree"];
+           ])
+  in
+  assert_add_direct ~left:(Type.ReadOnly.create Type.string) ~right:readonly_tree_annotation [[]];
   ()
 
 
@@ -992,11 +1008,37 @@ let test_add_constraint_type_variable_tuple context =
 
 
 let test_add_constraint_readonly context =
-  let assert_add, _, _, _ = make_assert_functions context in
-  assert_add ~left:"pyre_extensions.ReadOnly[C]" ~right:"C" [[]];
-  assert_add ~left:"C" ~right:"pyre_extensions.ReadOnly[C]" [[]];
-  assert_add ~left:"pyre_extensions.ReadOnly[C]" ~right:"T_Unconstrained" [["T_Unconstrained", "C"]];
+  let assert_add, assert_add_direct, _, _ = make_assert_functions context in
+  assert_add ~left:"pyre_extensions.ReadOnly[C]" ~right:"C" [];
+  assert_add ~left:"D" ~right:"pyre_extensions.ReadOnly[C]" [[]];
+  assert_add ~left:"pyre_extensions.ReadOnly[D]" ~right:"pyre_extensions.ReadOnly[C]" [[]];
+  assert_add
+    ~left:"pyre_extensions.ReadOnly[D]"
+    ~right:"typing.Union[int, pyre_extensions.ReadOnly[C]]"
+    [[]];
+  assert_add
+    ~left:"pyre_extensions.ReadOnly[C]"
+    ~right:"T_Unconstrained"
+    [["T_Unconstrained", "pyre_extensions.ReadOnly[C]"]];
   assert_add ~left:"C" ~right:"pyre_extensions.ReadOnly[T_Unconstrained]" [["T_Unconstrained", "C"]];
+  assert_add
+    ~left:"pyre_extensions.ReadOnly[C]"
+    ~right:"T_Bound_ReadOnly"
+    [["T_Bound_ReadOnly", "pyre_extensions.ReadOnly[C]"]];
+  assert_add
+    ~left:"T_Unconstrained"
+    ~right:"pyre_extensions.ReadOnly[C]"
+    ~leave_unbound_in_left:["T_Unconstrained"]
+    [["T_Unconstrained", "pyre_extensions.ReadOnly[C]"]];
+  assert_add ~left:"pyre_extensions.ReadOnly[C]" ~right:"T_Bound_object" [];
+  assert_add ~left:"pyre_extensions.ReadOnly[C]" ~right:"typing.Any" [[]];
+  assert_add ~left:"typing.Any" ~right:"pyre_extensions.ReadOnly[T]" [["T", "typing.Any"]];
+  assert_add ~left:"pyre_extensions.ReadOnly[C]" ~right:"object" [];
+  assert_add ~left:"typing.Union[pyre_extensions.ReadOnly[int], str]" ~right:"object" [];
+  assert_add ~left:"object" ~right:"pyre_extensions.ReadOnly[object]" [[]];
+  assert_add_direct ~left:Type.Bottom ~right:(Type.ReadOnly.create (Type.Primitive "C")) [[]];
+  assert_add_direct ~left:(Type.ReadOnly.create (Type.Primitive "C")) ~right:Type.Bottom [];
+  assert_add_direct ~left:Type.Top ~right:(Type.ReadOnly.create Type.object_primitive) [[]];
   ()
 
 

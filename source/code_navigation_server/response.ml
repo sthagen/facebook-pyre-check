@@ -14,6 +14,7 @@ module ErrorKind = struct
     | InvalidRequest of string
     | ModuleNotTracked of { module_: Request.Module.t [@key "module"] }
     | OverlayNotFound of { overlay_id: string }
+    | UntrackedFileClosed of { path: string }
   [@@deriving sexp, compare, yojson { strict = false }]
 end
 
@@ -23,8 +24,8 @@ module HoverContent = struct
   end
 
   type t = {
-    kind: Kind.t;
-    value: string;
+    value: string option;
+    docstring: string option;
   }
   [@@deriving sexp, compare, yojson { strict = false }]
 end
@@ -60,6 +61,7 @@ type t =
       global_root: string;
       relative_local_root: string option;
     }
+  | Superclasses of { superclasses: Request.ClassExpression.t list }
 [@@deriving sexp, compare, yojson { strict = false }]
 
 let to_string response = to_yojson response |> Yojson.Safe.to_string

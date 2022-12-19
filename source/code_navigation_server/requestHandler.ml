@@ -86,21 +86,27 @@ let handle_get_type_errors ~module_ ~overlay_id { State.environment; _ } =
 let get_hover_content_for_module ~overlay ~position module_reference =
   let type_environment = ErrorsEnvironment.ReadOnly.type_environment overlay in
   LocationBasedLookup.hover_info_for_position ~type_environment ~module_reference position
-  |> Option.map ~f:(fun value -> Response.HoverContent.{ kind = Kind.PlainText; value })
 
 
 let get_hover_in_overlay ~overlay ~position module_ =
   let open Result in
   let module_tracker = ErrorsEnvironment.ReadOnly.module_tracker overlay in
   get_modules ~module_tracker module_
-  >>| List.filter_map ~f:(get_hover_content_for_module ~overlay ~position)
+  >>| List.map ~f:(get_hover_content_for_module ~overlay ~position)
 
 
 let handle_hover ~module_ ~position ~overlay_id { State.environment; _ } =
   let open Result in
   get_overlay ~environment overlay_id
   >>= fun overlay ->
-  get_hover_in_overlay ~overlay ~position module_ >>| fun contents -> Response.(Hover { contents })
+  get_hover_in_overlay ~overlay ~position module_
+  >>| fun contents ->
+  Response.(
+    Hover
+      {
+        contents =
+          List.map contents ~f:(fun { value; docstring } -> HoverContent.{ value; docstring });
+      })
 
 
 let get_location_of_definition_for_module ~overlay ~position module_reference =
@@ -131,6 +137,55 @@ let handle_location_of_definition ~module_ ~position ~overlay_id { State.environ
   >>| fun definitions -> Response.(LocationOfDefinition { definitions })
 
 
+let handle_superclasses
+    ~class_:{ Request.ClassExpression.module_; qualified_name }
+    ~overlay_id
+    { State.environment; _ }
+  =
+  let open Result in
+  get_overlay ~environment overlay_id
+  >>= fun overlay ->
+  let global_resolution =
+    overlay
+    |> ErrorsEnvironment.ReadOnly.type_environment
+    |> TypeEnvironment.ReadOnly.global_resolution
+  in
+  let module_tracker = ErrorsEnvironment.ReadOnly.module_tracker overlay in
+  let to_class_expression superclass =
+    (* TODO(T139769506): Instead of this hack where we assume `a.b.c` is a module when looking at
+       `a.b.c.D`, we need to either fix qualification or use the DefineNames shared memory table to
+       support nested classes etc. *)
+    let superclass_reference = Ast.Reference.create superclass in
+    match Ast.Reference.prefix superclass_reference with
+    | Some module_ ->
+        Some
+          {
+            Request.ClassExpression.module_ = Request.Module.OfName (Ast.Reference.show module_);
+            qualified_name = Ast.Reference.last superclass_reference;
+          }
+    | None -> None
+  in
+
+  get_modules ~module_tracker module_
+  >>= fun modules ->
+  (* `get_modules` is guaranteed to evaluate to a non-empty module. *)
+  let module_ = List.hd_exn modules in
+  let class_name =
+    Ast.Reference.combine module_ (Ast.Reference.create qualified_name) |> Ast.Reference.show
+  in
+  if not (GlobalResolution.class_exists global_resolution class_name) then
+    Response.ErrorKind.InvalidRequest
+      (Printf.sprintf "Class `%s` not found in the type environment." class_name)
+    |> Result.fail
+  else
+    let superclasses =
+      class_name
+      |> GlobalResolution.successors ~resolution:global_resolution
+      |> List.filter_map ~f:to_class_expression
+    in
+    Response.Superclasses { superclasses } |> Result.return
+
+
 let with_broadcast_busy_checking ~subscriptions ~overlay_id f =
   let%lwt () =
     Subscriptions.broadcast
@@ -144,7 +199,7 @@ let with_broadcast_busy_checking ~subscriptions ~overlay_id f =
   Lwt.return result
 
 
-let handle_local_update ~module_ ~content ~overlay_id ~subscriptions { State.environment }
+let handle_local_update ~module_ ~content ~overlay_id ~subscriptions { State.environment; _ }
     : Response.t Lwt.t
   =
   let module_tracker =
@@ -165,6 +220,7 @@ let handle_local_update ~module_ ~content ~overlay_id ~subscriptions { State.env
         in
         List.filter_map modules ~f:to_update
       in
+
       let%lwt () =
         match code_updates with
         | [] -> Lwt.return_unit
@@ -183,6 +239,46 @@ let handle_local_update ~module_ ~content ~overlay_id ~subscriptions { State.env
       Lwt.return Response.Ok
 
 
+let handle_file_opened ~path ~content ~overlay_id ~subscriptions state : Response.t Lwt.t =
+  let%lwt response =
+    handle_local_update
+      ~module_:(Request.Module.OfPath path)
+      ~content
+      ~overlay_id
+      ~subscriptions
+      state
+  in
+  let () =
+    match response with
+    | Response.Error _ -> ()
+    | _ ->
+        let { State.open_files; _ } = state in
+        let source_path = PyrePath.create_absolute path |> SourcePath.create in
+        OpenFiles.open_file open_files ~source_path ~overlay_id
+  in
+  Lwt.return response
+
+
+let handle_file_closed ~path ~overlay_id ~subscriptions ({ State.open_files; _ } as state)
+    : Response.t Lwt.t
+  =
+  let source_path = PyrePath.create_absolute path |> SourcePath.create in
+  if OpenFiles.contains open_files ~source_path ~overlay_id then
+    let%lwt response =
+      handle_local_update
+        ~module_:(Request.Module.OfPath path)
+        ~content:None
+        ~overlay_id
+        ~subscriptions
+        state
+    in
+    match OpenFiles.close_file open_files ~source_path ~overlay_id with
+    | Result.Ok () -> Lwt.return response
+    | Result.Error error_kind -> Lwt.return (Response.Error error_kind)
+  else
+    Lwt.return (Response.Error (Response.ErrorKind.UntrackedFileClosed { path }))
+
+
 let get_raw_path { Request.FileUpdateEvent.path; _ } = PyrePath.create_absolute path
 
 let get_artifact_path_event_kind = function
@@ -199,7 +295,7 @@ let handle_file_update
     ~events
     ~subscriptions
     ~properties:{ Server.ServerProperties.critical_files; _ }
-    { State.environment }
+    { State.environment; _ }
   =
   match Server.CriticalFile.find critical_files ~within:(List.map events ~f:get_raw_path) with
   | Some path -> Lwt.return_error (Server.Stop.Reason.CriticalFileUpdate path)
@@ -268,16 +364,34 @@ let handle_query
       Response.Info
         {
           version = Version.version ();
-          pid = Core.Unix.getpid () |> Core.Pid.to_int;
+          pid = Core_unix.getpid () |> Core.Pid.to_int;
           socket = PyrePath.absolute socket_path;
           global_root = PyrePath.absolute project_root;
           relative_local_root = PyrePath.get_relative_to_root ~root:project_root ~path:local_root;
         }
       |> Lwt.return
+  | Request.Query.Superclasses { class_; overlay_id } ->
+      let f state =
+        let response = handle_superclasses ~class_ ~overlay_id state |> response_from_result in
+        Lwt.return response
+      in
+      Server.ExclusiveLock.read state ~f
 
 
 let handle_command ~server:{ ServerInternal.state; subscriptions; properties } = function
   | Request.Command.Stop -> Lwt.return_error Server.Stop.Reason.ExplicitRequest
+  | Request.Command.FileOpened { path; content; overlay_id } ->
+      let f state =
+        let%lwt response = handle_file_opened ~path ~content ~overlay_id ~subscriptions state in
+        Lwt.return_ok response
+      in
+      Server.ExclusiveLock.read state ~f
+  | Request.Command.FileClosed { path; overlay_id } ->
+      let f state =
+        let%lwt response = handle_file_closed ~path ~overlay_id ~subscriptions state in
+        Lwt.return_ok response
+      in
+      Server.ExclusiveLock.read state ~f
   | Request.Command.LocalUpdate { module_; content; overlay_id } ->
       let f state =
         let%lwt response = handle_local_update ~module_ ~content ~overlay_id ~subscriptions state in

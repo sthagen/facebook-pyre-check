@@ -16,6 +16,7 @@
  *)
 
 open Core
+open Data_structures
 open Analysis
 open Ast
 open Statement
@@ -223,7 +224,7 @@ end
 
 (** Mapping from a parameter index to its HigherOrderParameter, if any. *)
 module HigherOrderParameterMap = struct
-  module Map = Data_structures.SerializableMap.Make (Int)
+  module Map = SerializableMap.Make (Int)
 
   type t = HigherOrderParameter.t Map.t
 
@@ -264,7 +265,7 @@ module HigherOrderParameterMap = struct
 
   let from_list list = List.fold list ~init:Map.empty ~f:add
 
-  let to_list map = map |> Map.bindings |> List.map ~f:snd
+  let to_list map = Map.data map
 
   let first_index map =
     Map.min_binding_opt map >>| fun (_, higher_order_parameter) -> higher_order_parameter
@@ -681,13 +682,13 @@ end
 module LocationCallees = struct
   type t =
     | Singleton of ExpressionCallees.t
-    | Compound of ExpressionCallees.t String.Map.Tree.t
+    | Compound of ExpressionCallees.t SerializableStringMap.t
   [@@deriving eq]
 
   let pp formatter = function
     | Singleton callees -> Format.fprintf formatter "%a" ExpressionCallees.pp callees
     | Compound map ->
-        String.Map.Tree.to_alist map
+        SerializableStringMap.to_alist map
         |> List.map ~f:(fun (key, value) -> Format.asprintf "%s: %a" key ExpressionCallees.pp value)
         |> String.concat ~sep:", "
         |> Format.fprintf formatter "%s"
@@ -697,7 +698,8 @@ module LocationCallees = struct
 
   let all_targets = function
     | Singleton raw_callees -> ExpressionCallees.all_targets raw_callees
-    | Compound map -> String.Map.Tree.data map |> List.concat_map ~f:ExpressionCallees.all_targets
+    | Compound map ->
+        SerializableStringMap.data map |> List.concat_map ~f:ExpressionCallees.all_targets
 
 
   let equal_ignoring_types location_callees_left location_callees_right =
@@ -705,21 +707,24 @@ module LocationCallees = struct
     | Singleton callees_left, Singleton callees_right ->
         ExpressionCallees.equal_ignoring_types callees_left callees_right
     | Compound map_left, Compound map_right ->
-        String.Map.Tree.equal ExpressionCallees.equal_ignoring_types map_left map_right
+        SerializableStringMap.equal ExpressionCallees.equal_ignoring_types map_left map_right
     | _ -> false
 end
 
 module UnprocessedLocationCallees = struct
-  type t = ExpressionCallees.t String.Map.Tree.t
+  type t = ExpressionCallees.t SerializableStringMap.t
 
   let singleton ~expression_identifier ~callees =
-    String.Map.Tree.singleton expression_identifier callees
+    SerializableStringMap.singleton expression_identifier callees
 
 
   let add map ~expression_identifier ~callees =
-    String.Map.Tree.update map expression_identifier ~f:(function
-        | Some existing_callees -> ExpressionCallees.join existing_callees callees
-        | None -> callees)
+    SerializableStringMap.update
+      expression_identifier
+      (function
+        | Some existing_callees -> Some (ExpressionCallees.join existing_callees callees)
+        | None -> Some callees)
+      map
 end
 
 let call_identifier { Call.callee; _ } =
@@ -739,27 +744,29 @@ let expression_identifier = function
 
 (** The call graph of a function or method definition. *)
 module DefineCallGraph = struct
-  type t = LocationCallees.t Location.Map.t [@@deriving eq]
+  type t = LocationCallees.t Location.Map.Tree.t [@@deriving eq]
 
   let pp formatter call_graph =
     let pp_pair formatter (key, value) =
       Format.fprintf formatter "@,%a -> %a" Location.pp key LocationCallees.pp value
     in
     let pp_pairs formatter = List.iter ~f:(pp_pair formatter) in
-    call_graph |> Location.Map.to_alist |> Format.fprintf formatter "{@[<v 2>%a@]@,}" pp_pairs
+    call_graph |> Location.Map.Tree.to_alist |> Format.fprintf formatter "{@[<v 2>%a@]@,}" pp_pairs
 
 
   let show = Format.asprintf "%a" pp
 
-  let empty = Location.Map.empty
+  let empty = Location.Map.Tree.empty
 
-  let add call_graph ~location ~callees = Location.Map.set call_graph ~key:location ~data:callees
+  let add call_graph ~location ~callees =
+    Location.Map.Tree.set call_graph ~key:location ~data:callees
+
 
   let resolve_expression call_graph ~location ~expression_identifier =
-    match Location.Map.find call_graph location with
+    match Location.Map.Tree.find call_graph location with
     | Some (LocationCallees.Singleton callees) -> Some callees
     | Some (LocationCallees.Compound name_to_callees) ->
-        String.Map.Tree.find name_to_callees expression_identifier
+        SerializableStringMap.find_opt expression_identifier name_to_callees
     | None -> None
 
 
@@ -790,12 +797,12 @@ module DefineCallGraph = struct
 
 
   let equal_ignoring_types call_graph_left call_graph_right =
-    Location.Map.equal LocationCallees.equal_ignoring_types call_graph_left call_graph_right
+    Location.Map.Tree.equal LocationCallees.equal_ignoring_types call_graph_left call_graph_right
 
 
   (** Return all callees of the call graph, as a sorted list. *)
   let all_targets call_graph =
-    Location.Map.data call_graph
+    Location.Map.Tree.data call_graph
     |> List.concat_map ~f:LocationCallees.all_targets
     |> List.dedup_and_sort ~compare:Target.compare
 end
@@ -2195,22 +2202,24 @@ let call_graph_of_define
   let call_graph =
     Location.Table.to_alist callees_at_location
     |> List.map ~f:(fun (location, unprocessed_callees) ->
-           match String.Map.Tree.to_alist unprocessed_callees with
+           match SerializableStringMap.to_alist unprocessed_callees with
            | [] -> failwith "unreachable"
            | [(_, callees)] ->
                location, LocationCallees.Singleton (ExpressionCallees.deduplicate callees)
            | _ ->
                ( location,
                  LocationCallees.Compound
-                   (Core.String.Map.Tree.map ~f:ExpressionCallees.deduplicate unprocessed_callees) ))
+                   (SerializableStringMap.map ExpressionCallees.deduplicate unprocessed_callees) ))
     |> List.filter ~f:(fun (_, callees) ->
            match callees with
            | LocationCallees.Singleton singleton ->
                not (ExpressionCallees.is_empty_attribute_access_callees singleton)
            | LocationCallees.Compound compound ->
-               Core.String.Map.Tree.exists compound ~f:(fun callees ->
-                   not (ExpressionCallees.is_empty_attribute_access_callees callees)))
-    |> Location.Map.of_alist_exn
+               SerializableStringMap.exists
+                 (fun _ callees ->
+                   not (ExpressionCallees.is_empty_attribute_access_callees callees))
+                 compound)
+    |> Location.Map.Tree.of_alist_exn
   in
   Statistics.performance
     ~randomly_log_every:1000
@@ -2259,24 +2268,24 @@ module DefineCallGraphSharedMemory = struct
 
   type t = Handle
 
-  let set Handle ~callable ~call_graph = add callable (Location.Map.to_tree call_graph)
+  let set Handle ~callable ~call_graph = add callable call_graph
 
-  let get Handle ~callable = get callable >>| Location.Map.of_tree
+  let get Handle ~callable = get callable
 end
 
 (** Whole-program call graph, stored in the ocaml heap. This is a mapping from a callable to all its
     callees. *)
 module WholeProgramCallGraph = struct
-  type t = Target.t list Target.Map.t
+  type t = Target.t list Target.Map.Tree.t
 
-  let empty = Target.Map.empty
+  let empty = Target.Map.Tree.empty
 
-  let is_empty = Target.Map.is_empty
+  let is_empty = Target.Map.Tree.is_empty
 
-  let of_alist_exn = Target.Map.of_alist_exn
+  let of_alist_exn = Target.Map.Tree.of_alist_exn
 
   let add_or_exn ~callable ~callees call_graph =
-    Target.Map.update call_graph callable ~f:(function
+    Target.Map.Tree.update call_graph callable ~f:(function
         | None -> callees
         | Some _ ->
             Format.asprintf "Program call graph already has callees for `%a`" Target.pp callable
@@ -2284,11 +2293,14 @@ module WholeProgramCallGraph = struct
 
 
   let fold graph ~init ~f =
-    Target.Map.fold graph ~init ~f:(fun ~key:target ~data:callees -> f ~target ~callees)
+    Target.Map.Tree.fold graph ~init ~f:(fun ~key:target ~data:callees -> f ~target ~callees)
 
 
   let merge_disjoint left right =
-    Map.merge_skewed ~combine:(fun ~key:_ _ _ -> failwith "call graphs are not disjoint") left right
+    Target.Map.Tree.merge_skewed
+      ~combine:(fun ~key:_ _ _ -> failwith "call graphs are not disjoint")
+      left
+      right
 
 
   let to_target_graph graph = graph

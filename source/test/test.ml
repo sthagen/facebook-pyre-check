@@ -82,8 +82,8 @@ let run tests =
     let bracket_test test context =
       initialize ();
       test context;
-      Unix.unsetenv "HH_SERVER_DAEMON_PARAM";
-      Unix.unsetenv "HH_SERVER_DAEMON"
+      Core_unix.unsetenv "HH_SERVER_DAEMON_PARAM";
+      Core_unix.unsetenv "HH_SERVER_DAEMON"
     in
     match test with
     | OUnitTest.TestLabel (name, test) -> OUnitTest.TestLabel (name, bracket test)
@@ -210,7 +210,7 @@ let diff ~print format (left, right) =
       "bash -c \"diff -u <(echo '%s') <(echo '%s')\""
       (escape (Format.asprintf "%a" print left))
       (escape (Format.asprintf "%a" print right))
-    |> Unix.open_process_in
+    |> Core_unix.open_process_in
   in
   Format.fprintf format "\n%s" (In_channel.input_all input);
   In_channel.close input
@@ -415,10 +415,11 @@ let assert_is_none test = assert_true (Option.is_none test)
 let assert_unreached () = assert_true false
 
 (* Override `OUnit`s functions the return absolute paths. *)
-let bracket_tmpdir ?suffix context = bracket_tmpdir ?suffix context |> Filename.realpath
+let bracket_tmpdir ?suffix context = bracket_tmpdir ?suffix context |> Filename_unix.realpath
 
 let bracket_tmpfile ?suffix context =
-  bracket_tmpfile ?suffix context |> fun (filename, channel) -> Filename.realpath filename, channel
+  bracket_tmpfile ?suffix context
+  |> fun (filename, channel) -> Filename_unix.realpath filename, channel
 
 
 let typeshed_stubs ?(include_helper_builtins = true) () =
@@ -501,7 +502,7 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
           SupportsIter, SupportsNext,
         )
         from pyre_extensions import Add, Multiply, Divide
-        from typing_extensions import Literal
+        from typing_extensions import Literal, LiteralString
 
         _T = TypeVar('_T')
         _T_co = TypeVar('_T_co', covariant=True)
@@ -682,7 +683,10 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
           def __init__(self, o: object = ...) -> None: ...
           @overload
           def __init__(self, o: bytes, encoding: str = ..., errors: str = ...) -> None: ...
-          def format(self, *args) -> str: pass
+          @overload
+          def format(self: LiteralString, *args: LiteralString, **kwargs: LiteralString) -> LiteralString: ...
+          @overload
+          def format(self, *args: object, **kwargs: object) -> str: ...  # type: ignore[misc]
           def lower(self) -> str: pass
           def upper(self) -> str: ...
           def substr(self, index: int) -> str: pass
@@ -701,6 +705,10 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
           def __add__(self: Literal[str], other: Literal[str]) -> Literal[str]: ...
           @overload
           def __add__(self, other: str) -> str: ...
+          @overload
+          def __mod__(self: LiteralString, __x: LiteralString | tuple[LiteralString, ...]) -> LiteralString: ...
+          @overload
+          def __mod__(self, __x: Any) -> str: ...  # type: ignore[misc]
 
           def __pos__(self) -> float: ...
           def __repr__(self) -> float: ...
@@ -1012,6 +1020,19 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
       "torch/nn/__init__.pyi", {|
           class Module: ...
         |};
+    ]
+  in
+  let readonly_stubs =
+    [
+      ( "readonly_stubs_for_testing.pyi",
+        {|
+          from typing import Callable, TypeVar
+
+          F = TypeVar("F", bound=Callable[..., object])
+
+          def readonly_entrypoint(f: F) -> F: ...
+|}
+      );
     ]
   in
   [
@@ -1453,7 +1474,7 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         |};
     ( "typing_extensions.pyi",
       {|
-        from typing import Final as Final, ParamSpec as ParamSpec, _SpecialForm
+        from typing import Final as Final, ParamSpec as ParamSpec, _SpecialForm, overload as overload
         Literal: _SpecialForm = ...
         LiteralString: _SpecialForm = ...
 
@@ -2787,6 +2808,7 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
   ]
   @ sqlalchemy_stubs
   @ torch_stubs
+  @ readonly_stubs
 
 
 let mock_signature =
@@ -2854,6 +2876,7 @@ module ScratchProject = struct
       ?debug
       ?strict
       ?enable_readonly_analysis
+      ?enable_unawaited_awaitable_analysis
       sources
     =
     let local_root, external_root, log_directory =
@@ -2893,6 +2916,7 @@ module ScratchProject = struct
           ?strict
           ?debug
           ?enable_readonly_analysis
+          ?enable_unawaited_awaitable_analysis
           ()
       in
       if in_memory then
@@ -3068,7 +3092,7 @@ module ScratchProject = struct
 
   let delete_file project ~relative =
     let { Configuration.Analysis.local_root; _ } = configuration_of project in
-    PyrePath.create_relative ~root:local_root ~relative |> PyrePath.absolute |> Core.Unix.remove
+    PyrePath.create_relative ~root:local_root ~relative |> PyrePath.absolute |> Core_unix.remove
 
 
   let update_environment { errors_environment; _ } ?(scheduler = mock_scheduler ()) artifact_paths =
@@ -3094,6 +3118,7 @@ let assert_errors
     ?(include_line_numbers = false)
     ?(constraint_solving_style = Configuration.Analysis.default_constraint_solving_style)
     ?enable_readonly_analysis
+    ?enable_unawaited_awaitable_analysis
     ~context
     ~check
     source
@@ -3123,6 +3148,7 @@ let assert_errors
             ~strict
             ~debug
             ?enable_readonly_analysis
+            ?enable_unawaited_awaitable_analysis
             [handle, source]
         in
         let { ScratchProject.BuiltGlobalEnvironment.sources; _ } =
@@ -3233,7 +3259,8 @@ let assert_equivalent_attributes
          ~f:
            (GlobalResolution.instantiate_attribute
               ~resolution:global_resolution
-              ~accessed_through_class:false)
+              ~accessed_through_class:false
+              ~accessed_through_readonly:false)
   in
   assert_attribute_equal (attributes expected_equivalent_class_source) (attributes source)
 

@@ -24,14 +24,14 @@ from libcst.metadata import CodeRange
 
 from .. import dataclasses_json_extensions as json_mixins
 
-from ..coverage_collector import coverage_collector_for_module, CoveredAndUncoveredLines
-
 from ..language_server import (
     code_navigation_request,
     daemon_connection,
     features,
     protocol as lsp,
 )
+
+from ..libcst_collectors import coverage_collector_for_module, CoveredAndUncoveredLines
 from . import daemon_query, expression_level_coverage, server_state as state, statistics
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ LOG: logging.Logger = logging.getLogger(__name__)
 
 @dataclasses.dataclass(frozen=True)
 class HoverResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
-    response: lsp.LspHoverResponse
+    response: lsp.PyreHoverResponse
 
 
 @dataclasses.dataclass(frozen=True)
@@ -195,6 +195,21 @@ class AbstractRequestHandler(abc.ABC):
         raise NotImplementedError()
 
     @abc.abstractmethod
+    async def handle_file_opened(
+        self,
+        path: Path,
+        code: str,
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    async def handle_file_closed(
+        self,
+        path: Path,
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
+        raise NotImplementedError()
+
+    @abc.abstractmethod
     async def update_overlay(
         self,
         path: Path,
@@ -288,7 +303,7 @@ class PersistentRequestHandler(AbstractRequestHandler):
         if isinstance(daemon_response, daemon_query.DaemonQueryFailure):
             return daemon_response
         else:
-            return daemon_response.response
+            return daemon_response.response.to_lsp_hover_response()
 
     async def get_definition_locations(
         self,
@@ -339,6 +354,19 @@ class PersistentRequestHandler(AbstractRequestHandler):
             ]
             return result
 
+    async def handle_file_opened(
+        self,
+        path: Path,
+        code: str,
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
+        return "Ok"
+
+    async def handle_file_closed(
+        self,
+        path: Path,
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
+        return "Ok"
+
     async def update_overlay(
         self,
         path: Path,
@@ -382,8 +410,15 @@ class CodeNavigationRequestHandler(AbstractRequestHandler):
             self.socket_path,
             hover_request,
         )
-        if isinstance(response, lsp.LspHoverResponse):
-            return response
+        if isinstance(response, code_navigation_request.HoverResponse):
+            return lsp.LspHoverResponse(
+                "\n".join(
+                    [
+                        hover.to_lsp_hover_response().contents
+                        for hover in response.contents
+                    ]
+                )
+            )
         return daemon_query.DaemonQueryFailure(response.message)
 
     async def get_definition_locations(
@@ -429,4 +464,33 @@ class CodeNavigationRequestHandler(AbstractRequestHandler):
         )
         return await code_navigation_request.async_handle_local_update(
             self.socket_path, local_update
+        )
+
+    async def handle_file_opened(
+        self,
+        path: Path,
+        code: str,
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
+        overlay_id = self._get_overlay_id(path)
+        if overlay_id is None:
+            return "Ok"
+        file_opened = code_navigation_request.FileOpened(
+            overlay_id=overlay_id, path=path, content=code
+        )
+        return await code_navigation_request.async_handle_file_opened(
+            self.socket_path, file_opened
+        )
+
+    async def handle_file_closed(
+        self,
+        path: Path,
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
+        overlay_id = self._get_overlay_id(path)
+        if overlay_id is None:
+            return "Ok"
+        file_closed = code_navigation_request.FileClosed(
+            overlay_id=overlay_id, path=path
+        )
+        return await code_navigation_request.async_handle_file_closed(
+            self.socket_path, file_closed
         )

@@ -117,7 +117,10 @@ module Unit = struct
       let should_recurse, base =
         match left.base, right.base with
         | Some left, Some right ->
-            ( GlobalResolution.types_are_orderable global_resolution left.annotation right.annotation,
+            ( GlobalResolution.less_or_equal_either_way
+                global_resolution
+                left.annotation
+                right.annotation,
               Some (Annotation.join ~type_join:(GlobalResolution.join global_resolution) left right)
             )
         | None, None ->
@@ -138,7 +141,10 @@ module Unit = struct
     let should_recurse, base =
       match left.base, right.base with
       | Some left, Some right ->
-          ( GlobalResolution.types_are_orderable global_resolution left.annotation right.annotation,
+          ( GlobalResolution.less_or_equal_either_way
+              global_resolution
+              left.annotation
+              right.annotation,
             Some (Annotation.meet ~type_meet:(GlobalResolution.meet global_resolution) left right) )
       | None, None ->
           (* you only want to continue the nested meet should at least one attribute tree exists *)
@@ -172,8 +178,8 @@ end
 
 module Store = struct
   type t = {
-    annotations: Unit.t Reference.Map.t;
-    temporary_annotations: Unit.t Reference.Map.t;
+    annotations: Unit.t Reference.Map.Tree.t;
+    temporary_annotations: Unit.t Reference.Map.Tree.t;
   }
   [@@deriving eq]
 
@@ -183,11 +189,11 @@ module Store = struct
     let show_annotation (reference, unit) =
       Format.asprintf "%a -> %a" Reference.pp reference Unit.pp unit
     in
-    Map.to_alist annotations
+    Reference.Map.Tree.to_alist annotations
     |> List.map ~f:show_annotation
     |> String.concat ~sep:", "
     |> Format.fprintf format "Annotations: [%s]\n";
-    Map.to_alist temporary_annotations
+    Reference.Map.Tree.to_alist temporary_annotations
     |> List.map ~f:show_annotation
     |> String.concat ~sep:", "
     |> Format.fprintf format "Temporary Annotations: [%s]"

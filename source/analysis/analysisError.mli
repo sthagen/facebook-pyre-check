@@ -198,6 +198,8 @@ and unawaited_awaitable = {
   expression: Expression.t;
 }
 
+and leak_to_global = { global_name: Reference.t }
+
 and undefined_import =
   | UndefinedModule of Reference.t
   | UndefinedName of {
@@ -248,18 +250,6 @@ and tuple_concatenation_problem =
 [@@deriving compare, sexp, show, hash]
 
 module ReadOnly : sig
-  type mismatch = {
-    actual: ReadOnlyness.t;
-    expected: ReadOnlyness.t;
-  }
-  [@@deriving compare, sexp, show, hash]
-
-  type incompatible_type = {
-    name: Reference.t;
-    mismatch: mismatch;
-  }
-  [@@deriving compare, sexp, show, hash]
-
   type readonlyness_mismatch =
     | IncompatibleVariableType of {
         incompatible_type: incompatible_type;
@@ -272,9 +262,14 @@ module ReadOnly : sig
         mismatch: mismatch;
       }
     | AssigningToReadOnlyAttribute of { attribute_name: Identifier.t }
-    | RevealedType of {
-        expression: Expression.t;
-        readonlyness: ReadOnlyness.t;
+    | IncompatibleReturnType of {
+        mismatch: mismatch;
+        define_location: Location.t;
+      }
+    | CallingMutatingMethodOnReadOnly of {
+        self_argument: Expression.t;
+        self_argument_type: Type.t;
+        method_name: Reference.t;
       }
   [@@deriving compare, sexp, show, hash]
 end
@@ -324,7 +319,7 @@ and kind =
   | IncompatibleAwaitableType of Type.t
   | IncompatibleConstructorAnnotation of Type.t
   | IncompatibleParameterType of {
-      name: Identifier.t option;
+      keyword_argument_name: Identifier.t option;
       position: int;
       callee: Reference.t option;
       mismatch: mismatch;
@@ -478,6 +473,7 @@ and kind =
   | DeadStore of Identifier.t
   | Deobfuscation of Source.t
   | UnawaitedAwaitable of unawaited_awaitable
+  | GlobalLeak of leak_to_global
   (* Errors from run-time edge cases *)
   | BroadcastError of {
       expression: Expression.t;

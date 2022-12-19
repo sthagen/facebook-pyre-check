@@ -5,7 +5,9 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-(* TODO(T132410158) Add a module-level doc comment. *)
+(* This module implements the in-memory data structure describing a buck source path -> artifact
+   path mapping. This data is used both to create the buck link tree and to handle converting
+   between source and artifact paths as needed (for example when interpreting IDE requests) *)
 
 open Base
 
@@ -18,7 +20,7 @@ module Partial = struct
       Hashtbl.create (module String) ~size
     in
     let add_mapping (key, value) =
-      if String.is_suffix key ~suffix:".py" or String.is_suffix key ~suffix:".pyi" then
+      if String.is_suffix key ~suffix:".py" || String.is_suffix key ~suffix:".pyi" then
         add result ~key ~data:value
     in
     List.iter items ~f:add_mapping;

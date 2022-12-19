@@ -1704,13 +1704,6 @@ end
 
 let _ = show (* shadowed below *)
 
-type class_data = {
-  instantiated: t;
-  accessed_through_class: bool;
-  class_name: Primitive.t;
-}
-[@@deriving sexp]
-
 let polynomial_to_type polynomial =
   match polynomial with
   | [] -> Literal (Integer 0)
@@ -2101,7 +2094,7 @@ let rec pp format annotation =
       Format.fprintf format "%s[%a]" name (pp_parameters ~pp_type:pp) parameters
   | ParameterVariadicComponent component ->
       Record.Variable.RecordVariadic.RecordParameters.RecordComponents.pp_concise format component
-  | Primitive name -> Format.fprintf format "%a" String.pp name
+  | Primitive name -> Format.fprintf format "%s" name
   | ReadOnly type_ -> Format.fprintf format "pyre_extensions.ReadOnly[%a]" pp type_
   | RecursiveType { name; body } -> Format.fprintf format "%s (resolves to %a)" name pp body
   | Top -> Format.fprintf format "unknown"
@@ -3709,9 +3702,19 @@ module TypeOperation = struct
 end
 
 module ReadOnly = struct
-  let create = function
+  let rec create = function
     | ReadOnly _ as type_ -> type_
+    | NoneType -> NoneType
+    | Union elements -> Union (List.map ~f:create elements)
     | type_ -> ReadOnly type_
+
+
+  let unpack_readonly = function
+    | ReadOnly type_ -> Some type_
+    | _ -> None
+
+
+  let is_readonly type_ = unpack_readonly type_ |> Option.is_some
 end
 
 let parameters_from_unpacked_annotation annotation ~variable_aliases =
@@ -6585,20 +6588,36 @@ let contains_prohibited_any annotation =
 
 let to_yojson annotation = `String (show annotation)
 
-(* `resolve_class` is used to extract a class name (like "list") from a type (or classes from a
-   union) so that we can get its attributes, global location, etc. It also returns the instantiated
-   type `List[int]` since that is also needed for attribute lookup. *)
-let resolve_class annotation =
-  let rec extract ~meta original_annotation =
-    let annotation =
-      match original_annotation with
+type class_data_for_attribute_lookup = {
+  class_name: Primitive.t;
+  instantiated: t;
+  accessed_through_class: bool;
+  accessed_through_readonly: bool;
+}
+[@@deriving sexp]
+
+(* Extract the class data needed to look up an attribute, potentially returning data for multiple
+   classes, e.g., for unions.
+
+   For example, on `Foo | list[Bar]`, this function will return class data for `Foo` and
+   `list[Bar]`. For complex types, such as `list[Bar]`, we need to return both the class name
+   (`list`) and its fully instantiated type (`list[Bar]`), since the latter is needed to instantiate
+   any generic attributes or methods, e.g., `my_list[0]` needs to be of type `Bar`.
+
+   A complication is that we need to track whether the class was wrapped by `Type[...]` or
+   `ReadOnly[...]`, since they affect the type of the attribute looked up, by making it `Type[X]` or
+   `ReadOnly[X]`, respectively. *)
+let class_data_for_attribute_lookup type_ =
+  let rec extract_class_data ~meta ~accessed_through_readonly original_type =
+    let type_ =
+      match original_type with
       (* Variables return their upper bound because we need to take the least informative type in
          their interval. Otherwise, we might access an attribute that doesn't exist on the actual
          type. *)
       | Variable variable -> Variable.Unary.upper_bound variable
-      | _ -> original_annotation
+      | _ -> original_type
     in
-    match annotation with
+    match type_ with
     | Top
     | Bottom
     | Any ->
@@ -6610,12 +6629,13 @@ let resolve_class annotation =
         Some
           [
             {
-              instantiated = original_annotation;
+              instantiated = original_type;
               accessed_through_class = meta;
+              accessed_through_readonly;
               class_name = "typing.Optional";
             };
           ]
-    | Union annotations ->
+    | Union types ->
         (* Unions return the list of member classes because an attribute lookup has to be supported
            by all members of the union. *)
         let flatten_optional sofar optional =
@@ -6623,12 +6643,12 @@ let resolve_class annotation =
           | Some sofar, Some optional -> Some (optional :: sofar)
           | _ -> None
         in
-        List.map ~f:(extract ~meta) annotations
+        List.map ~f:(extract_class_data ~meta ~accessed_through_readonly) types
         |> List.fold ~init:(Some []) ~f:flatten_optional
         >>| List.concat
         >>| List.rev
     | RecursiveType ({ name; body } as recursive_type) ->
-        extract ~meta body
+        extract_class_data ~meta ~accessed_through_readonly body
         (* Filter out the recursive type name itself since it's not a valid class name.
 
            Removing the inner occurrences of the recursive type is fine because of induction. If the
@@ -6643,18 +6663,26 @@ let resolve_class annotation =
                       ~recursive_type
                       instantiated;
                 })
-    | ReadOnly annotation -> extract ~meta annotation
-    | annotation when is_meta annotation ->
+    | ReadOnly type_ -> extract_class_data ~meta ~accessed_through_readonly:true type_
+    | type_ when is_meta type_ ->
         (* Metaclasses return accessed_through_class=true since they allow looking up only class
            attribute, etc. *)
-        single_parameter annotation |> extract ~meta:true
+        single_parameter type_ |> extract_class_data ~meta:true ~accessed_through_readonly
     | _ -> (
-        match split annotation |> fst |> primitive_name with
+        match split type_ |> fst |> primitive_name with
         | Some class_name ->
-            Some [{ instantiated = original_annotation; accessed_through_class = meta; class_name }]
+            Some
+              [
+                {
+                  instantiated = original_type;
+                  accessed_through_class = meta;
+                  accessed_through_readonly;
+                  class_name;
+                };
+              ]
         | None -> None)
   in
-  extract ~meta:false annotation
+  extract_class_data ~meta:false ~accessed_through_readonly:false type_
 
 
 let callable_name = function

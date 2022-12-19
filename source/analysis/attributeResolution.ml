@@ -60,7 +60,7 @@ module UninstantiatedAnnotation = struct
     self: Type.t option;
     value: Type.t option;
   }
-  [@@deriving compare]
+  [@@deriving compare, show]
 
   type kind =
     | Attribute of Type.t
@@ -68,18 +68,18 @@ module UninstantiatedAnnotation = struct
         getter: property_annotation;
         setter: property_annotation option;
       }
-  [@@deriving compare]
+  [@@deriving compare, show]
 
   type t = {
     accessed_via_metaclass: bool;
     kind: kind;
   }
-  [@@deriving compare]
+  [@@deriving compare, show]
 end
 
-type uninstantiated = UninstantiatedAnnotation.t
+type uninstantiated = UninstantiatedAnnotation.t [@@deriving show]
 
-type uninstantiated_attribute = uninstantiated AnnotatedAttribute.t
+type uninstantiated_attribute = uninstantiated AnnotatedAttribute.t [@@deriving show]
 
 type resolved_define = {
   undecorated_signature: Type.Callable.t;
@@ -1161,6 +1161,8 @@ let callable_call_special_cases
 
 
 module SignatureSelection = struct
+  let reserved_position_for_self_argument = 0
+
   let prepare_arguments_for_signature_selection ~self_argument arguments =
     let add_positions arguments =
       let add_index index { Argument.expression; kind; resolved } =
@@ -1177,7 +1179,12 @@ module SignatureSelection = struct
       let self_argument =
         self_argument
         >>| (fun resolved ->
-              { Argument.WithPosition.position = 0; expression = None; kind = Positional; resolved })
+              {
+                Argument.WithPosition.position = reserved_position_for_self_argument;
+                expression = None;
+                kind = Positional;
+                resolved;
+              })
         |> Option.to_list
       in
       self_argument @ labeled_arguments @ unlabeled_arguments
@@ -2165,62 +2172,40 @@ module SignatureSelection = struct
             ])
 
 
-  (** Given a signature match for a callable, solve for any type variables and instantiate the
-      return annotation. *)
-  let instantiate_return_annotation
-      ?(skip_marking_escapees = false)
-      ~order
-      {
-        callable =
-          { implementation = { annotation = uninstantiated_return_annotation; _ }; _ } as callable;
-        constraints_set;
-        reasons = { arity; annotation; _ };
-        _;
-      }
-    =
+  let most_important_error_reason ~arity_mismatch_reasons annotation_mismatch_reasons =
     let open SignatureSelectionTypes in
-    let instantiated_return_annotation =
-      let local_free_variables = Type.Variable.all_free_variables (Type.Callable callable) in
-      let solution =
-        TypeOrder.OrderedConstraintsSet.solve
-          constraints_set
-          ~only_solve_for:local_free_variables
-          ~order
-        |> Option.value ~default:ConstraintsSet.Solution.empty
-      in
-      let instantiated =
-        ConstraintsSet.Solution.instantiate solution uninstantiated_return_annotation
-      in
-      if skip_marking_escapees then
-        instantiated
-      else
-        Type.Variable.mark_all_free_variables_as_escaped ~specific:local_free_variables instantiated
-        (* We need to do transformations of the form Union[T_escaped, int] => int in order to
-           properly handle some typeshed stubs which only sometimes bind type variables and expect
-           them to fall out in this way (see Mapping.get) *)
-        |> Type.Variable.collapse_all_escaped_variable_unions
-    in
-    let rev_filter_out_self_argument_errors reasons =
-      let filter_too_many_arguments = function
-        (* These would come from methods lacking a self argument called on an instance *)
-        | TooManyArguments { expected; _ } -> not (Int.equal expected (-1))
-        | _ -> true
-      in
-      let filter_mismatches reason =
-        match reason with
+    let remove_self_argument_errors reasons =
+      let remove_self_related_errors = function
+        | TooManyArguments { expected; _ } when Int.equal expected (-1) ->
+            (* This arises when calling a method that lacks a `self` parameter. We already error
+               about that on the method definition, so don't repeat it for every call of that
+               method. *)
+            None
         | Mismatches mismatches ->
-            Mismatches
-              (List.filter mismatches ~f:(function
-                  | Mismatch { Node.value = { position; _ }; _ } -> not (Int.equal position 0)
-                  | _ -> true))
-        | _ -> reason
+            let mismatches =
+              List.filter mismatches ~f:(function
+                  | Mismatch { Node.value = { position = 0; actual; _ }; _ } ->
+                      (* A mismatch on the 0th parameter, i.e., the `self` parameter, is a sign that
+                         the explicit `self` annotation was wrong, since you wouldn't be able to
+                         look up that method otherwise. We already error about invalid `self`
+                         annotations, so don't emit an error for every call of that method.
+
+                         However, we preserve mismatches when the `self` argument is `ReadOnly`.
+                         This indicates that a mutating method was called on a readonly object,
+                         which should be surfaced at the method call site. *)
+                      Type.ReadOnly.is_readonly actual
+                  | _ -> true)
+            in
+            Mismatches mismatches |> Option.some
+        | reason -> Some reason
       in
-      List.map (List.rev_filter ~f:filter_too_many_arguments reasons) ~f:filter_mismatches
+      List.rev_filter_map ~f:remove_self_related_errors reasons
     in
     match
-      rev_filter_out_self_argument_errors arity, rev_filter_out_self_argument_errors annotation
+      ( remove_self_argument_errors arity_mismatch_reasons,
+        remove_self_argument_errors annotation_mismatch_reasons )
     with
-    | [], [] -> Found { selected_return_annotation = instantiated_return_annotation }
+    | [], [] -> None
     | reason :: reasons, _
     | [], reason :: reasons ->
         let importance = function
@@ -2258,10 +2243,50 @@ module SignatureSelection = struct
               Mismatches (List.sort mismatches ~compare:compare_mismatches)
           | _ -> reason
         in
-        let reason =
-          Some (List.fold ~init:reason ~f:get_most_important reasons |> sort_mismatches)
-        in
-        NotFound { closest_return_annotation = instantiated_return_annotation; reason }
+        Some (List.fold ~init:reason ~f:get_most_important reasons |> sort_mismatches)
+
+
+  (** Given a signature match for a callable, solve for any type variables and instantiate the
+      return annotation. *)
+  let instantiate_return_annotation
+      ?(skip_marking_escapees = false)
+      ~order
+      {
+        callable =
+          { implementation = { annotation = uninstantiated_return_annotation; _ }; _ } as callable;
+        constraints_set;
+        reasons = { arity = arity_mismatch_reasons; annotation = annotation_mismatch_reasons; _ };
+        _;
+      }
+    =
+    let local_free_variables = Type.Variable.all_free_variables (Type.Callable callable) in
+    let solution =
+      TypeOrder.OrderedConstraintsSet.solve
+        constraints_set
+        ~only_solve_for:local_free_variables
+        ~order
+      |> Option.value ~default:ConstraintsSet.Solution.empty
+    in
+    let instantiated =
+      ConstraintsSet.Solution.instantiate solution uninstantiated_return_annotation
+    in
+    let instantiated_return_annotation =
+      if skip_marking_escapees then
+        instantiated
+      else
+        Type.Variable.mark_all_free_variables_as_escaped ~specific:local_free_variables instantiated
+        (* We need to do transformations of the form Union[T_escaped, int] => int in order to
+           properly handle some typeshed stubs which only sometimes bind type variables and expect
+           them to fall out in this way (see Mapping.get) *)
+        |> Type.Variable.collapse_all_escaped_variable_unions
+    in
+    match most_important_error_reason ~arity_mismatch_reasons annotation_mismatch_reasons with
+    | None ->
+        SignatureSelectionTypes.Found
+          { selected_return_annotation = instantiated_return_annotation }
+    | Some reason ->
+        NotFound
+          { closest_return_annotation = instantiated_return_annotation; reason = Some reason }
 
 
   let default_instantiated_return_annotation
@@ -2376,6 +2401,7 @@ class base class_metadata_environment dependency =
               ~assumptions
               ~transitive:false
               ~accessed_through_class:true
+              ~accessed_through_readonly:false
               ~include_generated_attributes:true
               ~instantiated:(Type.meta annotation)
               ~special_method:false
@@ -2392,7 +2418,7 @@ class base class_metadata_environment dependency =
 
     method full_order ~assumptions =
       let resolve class_type =
-        match Type.resolve_class class_type with
+        match Type.class_data_for_attribute_lookup class_type with
         | None -> None
         | Some [] -> None
         | Some [resolved] -> Some resolved
@@ -2405,11 +2431,12 @@ class base class_metadata_environment dependency =
       in
       let attribute class_type ~assumptions ~name =
         resolve class_type
-        >>= fun { instantiated; accessed_through_class; class_name } ->
+        >>= fun { instantiated; accessed_through_class; class_name; accessed_through_readonly } ->
         self#attribute
           ~assumptions
           ~transitive:true
           ~accessed_through_class
+          ~accessed_through_readonly
           ~include_generated_attributes:true
           ?special_method:None
           ~attribute_name:name
@@ -2418,7 +2445,7 @@ class base class_metadata_environment dependency =
       in
       let all_attributes class_type ~assumptions =
         resolve class_type
-        >>= fun { instantiated; accessed_through_class; class_name } ->
+        >>= fun { instantiated; accessed_through_class; class_name; accessed_through_readonly } ->
         self#all_attributes
           ~assumptions
           ~transitive:true
@@ -2432,6 +2459,7 @@ class base class_metadata_environment dependency =
                    ~assumptions
                    ~instantiated
                    ~accessed_through_class
+                   ~accessed_through_readonly
                    ?apply_descriptors:None)
       in
 
@@ -2764,6 +2792,7 @@ class base class_metadata_environment dependency =
                 self#instantiate_attribute
                   ~assumptions
                   ~accessed_through_class:false
+                  ~accessed_through_readonly:false
                   ?instantiated:None
                   ?apply_descriptors:None
                   attribute
@@ -3069,7 +3098,8 @@ class base class_metadata_environment dependency =
                 (self#instantiate_attribute
                    ~assumptions
                    ?instantiated:None
-                   ~accessed_through_class:
+                   ~accessed_through_class:false
+                   ~accessed_through_readonly:
                      false
                      (* TODO(T65806273): Right now we're just ignoring `__set__`s on dataclass
                         attributes. This avoids needing to explicitly break the loop that would
@@ -3190,6 +3220,7 @@ class base class_metadata_environment dependency =
         ~assumptions
         ~transitive
         ~accessed_through_class
+        ~accessed_through_readonly
         ~include_generated_attributes
         ?(special_method = false)
         ?instantiated
@@ -3235,6 +3266,7 @@ class base class_metadata_environment dependency =
           >>| self#instantiate_attribute
                 ~assumptions
                 ~accessed_through_class
+                ~accessed_through_readonly
                 ?instantiated
                 ?apply_descriptors
 
@@ -3296,6 +3328,7 @@ class base class_metadata_environment dependency =
     method instantiate_attribute
         ~assumptions
         ~accessed_through_class
+        ~accessed_through_readonly
         ?instantiated
         ?(apply_descriptors = true)
         attribute =
@@ -3313,7 +3346,12 @@ class base class_metadata_environment dependency =
         | Attribute annotation -> Some annotation
         | Property _ -> None
       in
-
+      let annotation =
+        match annotation, accessed_through_readonly with
+        | Attribute annotation, true ->
+            UninstantiatedAnnotation.Attribute (Type.ReadOnly.create annotation)
+        | _ -> annotation
+      in
       let annotation =
         match instantiated with
         | None -> annotation
@@ -3464,13 +3502,13 @@ class base class_metadata_environment dependency =
               Type.Callable { callable with implementation; overloads }
           | Parametric { name = "type"; parameters = [Single meta_parameter] }, "__call__", "type"
             when accessed_via_metaclass ->
-              let get_constructor { Type.instantiated; accessed_through_class; class_name } =
+              let get_constructor { Type.instantiated; accessed_through_class; class_name; _ } =
                 if accessed_through_class then (* Type[Type[X]] is invalid *)
                   None
                 else
                   Some (self#constructor ~assumptions class_name ~instantiated)
               in
-              Type.resolve_class meta_parameter
+              Type.class_data_for_attribute_lookup meta_parameter
               >>| List.map ~f:get_constructor
               >>= Option.all
               >>| Type.union
@@ -3583,13 +3621,23 @@ class base class_metadata_environment dependency =
                 in
                 let function_dunder_get callable =
                   if accessed_through_class then
-                    Type.Callable callable
+                    if accessed_through_readonly then
+                      Type.ReadOnly.create (Type.Callable callable)
+                    else
+                      Type.Callable callable
                   else
-                    Type.parametric "BoundMethod" [Single (Callable callable); Single instantiated]
+                    let bound_self_type =
+                      if accessed_through_readonly then
+                        Type.ReadOnly.create instantiated
+                      else
+                        instantiated
+                    in
+                    Type.parametric
+                      "BoundMethod"
+                      [Single (Callable callable); Single bound_self_type]
                 in
-
                 let get_descriptor_method
-                    { Type.instantiated; accessed_through_class; class_name }
+                    { Type.instantiated; accessed_through_class; class_name; _ }
                     ~kind
                   =
                   if accessed_through_class then
@@ -3618,6 +3666,7 @@ class base class_metadata_environment dependency =
                             ~assumptions
                             ~transitive:true
                             ~accessed_through_class:true
+                            ~accessed_through_readonly:false
                             ~include_generated_attributes:true
                             ?special_method:None
                             ?instantiated:(Some instantiated)
@@ -3645,11 +3694,11 @@ class base class_metadata_environment dependency =
                             `DescriptorNotACallable)
                 in
 
-                match Type.resolve_class annotation with
+                match Type.class_data_for_attribute_lookup annotation with
                 | None ->
                     (* This means we have a type that can't be `Type.split`, (most of) which aren't
                        descriptors, so we should be usually safe to just ignore. In general we
-                       should fix resolve_class to always return something. *)
+                       should fix class_data_for_attribute_lookup to always return something. *)
                     annotation, annotation
                 | Some elements ->
                     let collect x =
@@ -4343,11 +4392,19 @@ class base class_metadata_environment dependency =
                     }
                   in
                   let resolve_attribute_access ?special_method base ~attribute_name =
-                    let access { Type.instantiated; accessed_through_class; class_name } =
+                    let access
+                        {
+                          Type.instantiated;
+                          accessed_through_class;
+                          class_name;
+                          accessed_through_readonly;
+                        }
+                      =
                       self#attribute
                         ~assumptions
                         ~transitive:true
                         ~accessed_through_class
+                        ~accessed_through_readonly
                         ~include_generated_attributes:true
                         ?special_method
                         ~attribute_name
@@ -4360,7 +4417,7 @@ class base class_metadata_environment dependency =
                           List.fold tail ~init:head ~f:(TypeOrder.join order) |> Option.some
                       | [] -> None
                     in
-                    Type.resolve_class base
+                    Type.class_data_for_attribute_lookup base
                     >>| List.map ~f:access
                     >>= Option.all
                     >>| List.map ~f:AnnotatedAttribute.annotation
@@ -4693,6 +4750,7 @@ class base class_metadata_environment dependency =
               ~assumptions
               ~transitive:true
               ~accessed_through_class:false
+              ~accessed_through_readonly:false
               ~include_generated_attributes:true
               ?special_method:None
               ?instantiated:(Some return_annotation)
