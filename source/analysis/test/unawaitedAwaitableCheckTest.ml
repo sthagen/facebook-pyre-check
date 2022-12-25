@@ -319,32 +319,6 @@ let test_forward context =
     |}
     [];
 
-  (* Ternaries. *)
-  assert_awaitable_errors
-    {|
-      async def awaitable() -> int: ...
-
-      awaited = awaitable()
-      1 if (await awaited) else 2
-    |}
-    [];
-  assert_awaitable_errors
-    {|
-      async def awaitable() -> int: ...
-
-      awaited = awaitable()
-      (await awaited) if 1 else 2
-    |}
-    [];
-  assert_awaitable_errors
-    {|
-      async def awaitable() -> int: ...
-
-      awaited = awaitable()
-      1 if 2 else (await awaited)
-    |}
-    [];
-
   (* Unary operators. *)
   assert_awaitable_errors
     {|
@@ -913,7 +887,7 @@ let test_attribute_access context =
         unawaited = awaitable()
         unawaited.method()
     |}
-    ["Unawaited awaitable [1001]: Awaitable assigned to `unawaited` is never awaited."];
+    ["Unawaited awaitable [1001]: `unawaited.method()` is never awaited."];
   assert_awaitable_errors
     ~context
     {|
@@ -1219,6 +1193,17 @@ let test_getattr context =
           x = Foo()
     |}
     [];
+  assert_awaitable_errors
+    {|
+      from typing import Any
+
+      class Foo:
+        def __getattr__(self, name: str) -> Any: ...
+
+        def some_method(self) -> None:
+          x = type(self)
+    |}
+    [];
   ()
 
 
@@ -1251,6 +1236,154 @@ let test_attribute_assignment context =
   ()
 
 
+let test_ternary_expression context =
+  let assert_awaitable_errors = assert_awaitable_errors ~context in
+  assert_awaitable_errors
+    {|
+      async def awaitable() -> bool: ...
+
+      def main() -> None:
+        unawaited = awaitable()
+        awaited = awaitable()
+
+        1 if unawaited else 2
+        1 if await awaited else 2
+    |}
+    ["Unawaited awaitable [1001]: Awaitable assigned to `unawaited` is never awaited."];
+  assert_awaitable_errors
+    {|
+      async def awaitable() -> int: ...
+
+      def main(some_bool: bool) -> None:
+        unawaited = awaitable()
+        awaited = awaitable()
+
+        unawaited if some_bool else 2
+        await awaited if some_bool else 2
+    |}
+    ["Unawaited awaitable [1001]: Awaitable assigned to `unawaited` is never awaited."];
+  assert_awaitable_errors
+    {|
+      async def awaitable() -> int: ...
+
+      def main(some_bool: bool) -> None:
+        unawaited = awaitable()
+        awaited = awaitable()
+
+        1 if some_bool else unawaited
+        1 if some_bool else (await awaited)
+    |}
+    ["Unawaited awaitable [1001]: Awaitable assigned to `unawaited` is never awaited."];
+  assert_awaitable_errors
+    {|
+      async def awaitable() -> int: ...
+
+      def main(some_bool: bool) -> None:
+        unawaited1 = awaitable()
+        unawaited2 = awaitable()
+        awaited1 = awaitable()
+        awaited2 = awaitable()
+
+        unawaited1 if some_bool else unawaited2
+        await (awaited1 if some_bool else awaited2)
+    |}
+    [
+      "Unawaited awaitable [1001]: Awaitable assigned to `unawaited1` is never awaited.";
+      "Unawaited awaitable [1001]: Awaitable assigned to `unawaited2` is never awaited.";
+    ];
+  assert_awaitable_errors
+    {|
+      async def awaitable() -> bool: ...
+
+      def main(some_bool: bool) -> None:
+        unawaited1 = awaitable()
+        awaited1 = awaitable()
+        awaited2 = awaitable()
+
+        await (awaited1 if unawaited1 else awaited2)
+    |}
+    (* TODO(T79853064): Ideally, this should warn about `unawaited1` not being awaited. But because
+       we mark all nested awaitables as being awaited, we miss the conditional not being awaited. *)
+    [];
+  ()
+
+
+let test_bottom_type context =
+  let assert_awaitable_errors = assert_awaitable_errors ~context in
+  assert_awaitable_errors
+    {|
+      from typing import Callable, TypeVar
+
+      T = TypeVar("T")
+
+      def meet_of_parameter_types(x: Callable[[T], None], y: Callable[[T], None]) -> T: ...
+
+      def f1(x: int) -> None: ...
+      def f2(x: str) -> None: ...
+
+      def main() -> None:
+          bottom_type = meet_of_parameter_types(f1, f2)
+    |}
+    [];
+  (* TODO(T140446657): Addition of union of literals should not return bottom. *)
+  assert_awaitable_errors
+    {|
+      from typing import Union
+      from typing_extensions import Literal
+
+      def main(some_bool: bool, y: Union[Literal[42], Literal[99]]) -> None:
+        z = y + y
+    |}
+    [];
+  (* TODO(T140446657): Addition of union of literals should not return bottom. *)
+  assert_awaitable_errors
+    {|
+      def main(some_bool: bool) -> None:
+        y = 42 if some_bool else 0
+        y + y
+    |}
+    [];
+  ()
+
+
+let test_class_satisfying_awaitable context =
+  let assert_awaitable_errors = assert_awaitable_errors ~context in
+  assert_awaitable_errors
+    {|
+      from typing import Awaitable
+
+      class C(Awaitable[int]): ...
+
+      async def main() -> None:
+        unawaited = C()
+    |}
+    [];
+  assert_awaitable_errors
+    {|
+      from typing import Any, Generator
+
+      class C:
+        def __await__(self) -> Generator[Any, None, str]: ...
+
+      async def main() -> None:
+        unawaited = C()
+    |}
+    [];
+  assert_awaitable_errors
+    {|
+      from typing import Awaitable
+
+      class C(Awaitable[int]): ...
+
+      def return_C() -> C: ...
+
+      async def main() -> None:
+        unawaited = return_C()
+    |}
+    [];
+  ()
+
+
 let () =
   "unawaited"
   >::: [
@@ -1267,5 +1400,8 @@ let () =
          "placeholder_stubs" >:: test_placeholder_stubs;
          "getattr" >:: test_getattr;
          "attribute_assignment" >:: test_attribute_assignment;
+         "ternary" >:: test_ternary_expression;
+         "bottom_type" >:: test_bottom_type;
+         "class_satisfying_awaitable" >:: test_class_satisfying_awaitable;
        ]
   |> Test.run

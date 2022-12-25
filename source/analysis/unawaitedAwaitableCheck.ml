@@ -57,25 +57,24 @@ module Error = AnalysisError
     mark the original awaitable as awaited. So, whenever we detect that a variable is being assigned
     some other variable, we copy over all the awaitables that are pointed to by the other variable. *)
 
-let is_awaitable ~global_resolution annotation =
-  let has_getattr_method () =
-    GlobalResolution.attribute_from_annotation
-      ~special_method:true
-      ~name:"__getattr__"
-      ~parent:annotation
-      global_resolution
-    |> Option.is_some
-  in
-  if Type.equal annotation Type.Any then
-    false
-  else
-    GlobalResolution.less_or_equal
-      global_resolution
-      ~left:annotation
-      ~right:(Type.awaitable Type.Top)
-    && (* If a class has a `__getattr__` method, then it will satisfy the `Awaitable` protocol
-          (since it implicitly has the `__await__` method). Treat such types as non-awaitables. *)
-    not (has_getattr_method ())
+(* Return true if the expression is of an awaitable type that will lead to a `RuntimeWarning` that
+   `coroutine ... was never awaited`.
+
+   Note that this is more restrictive than the general question of "does this type satisfy the
+   Awaitable protocol?", which just needs to check for the `__await__` method. However, this matches
+   our goal of catching potential RuntimeWarnings about unawaited coroutines. Otherwise, we would
+   emit an error for entire class hierarchies where the base class happens to have a `__await__`
+   method, since that means every class in the hierarchy will satisfy the `Awaitable` protocol. That
+   has caused a lot of noise in the past for basic functions such as:
+
+   def set_foo(builder: BuilderClass, foo: Foo) -> BuilderClass: ...
+
+   which is seen as a function returning an awaitable, since `BuilderClass` satisfies `Awaitable`.
+   Given that there is no RuntimeWarning for classes with hand-rolled `__await__`, we can leave them
+   out of our analysis. *)
+let can_lead_to_runtime_warning_if_unawaited ~global_resolution = function
+  | Type.Parametric { name = "typing.Coroutine" | "typing.Awaitable"; _ } -> true
+  | _ -> false
 
 
 module Awaitable : sig
@@ -312,14 +311,13 @@ module State (Context : Context) = struct
       { awaitable_to_awaited_state; awaitables_for_alias; expect_expressions_to_be_awaited }
 
 
-  let mark_location_as_awaited
+  let mark_awaitable_as_awaited
       { awaitable_to_awaited_state; awaitables_for_alias; expect_expressions_to_be_awaited }
-      ~location
+      ~awaitable
     =
-    if Map.mem awaitable_to_awaited_state (Awaitable.create location) then
+    if Map.mem awaitable_to_awaited_state awaitable then
       {
-        awaitable_to_awaited_state =
-          Map.set awaitable_to_awaited_state ~key:(Awaitable.create location) ~data:Awaited;
+        awaitable_to_awaited_state = Map.set awaitable_to_awaited_state ~key:awaitable ~data:Awaited;
         awaitables_for_alias;
         expect_expressions_to_be_awaited;
       }
@@ -327,7 +325,7 @@ module State (Context : Context) = struct
       match
         Map.find
           awaitables_for_alias
-          (ExpressionWithNestedAliases { expression_location = location })
+          (ExpressionWithNestedAliases { expression_location = Awaitable.to_location awaitable })
       with
       | Some awaitables ->
           let awaitable_to_awaited_state =
@@ -375,25 +373,21 @@ module State (Context : Context) = struct
 
 
   and forward_call ~resolution ~state ~location ({ Call.callee; arguments } as call) =
-    let expression = { Node.value = Expression.Call call; location } in
-    let { state; nested_awaitable_expressions } =
-      forward_expression ~resolution ~state ~expression:callee
-    in
-    let is_special_function =
+    let is_special_function callee =
       match Node.value callee with
-      | Name (Name.Attribute { special = true; _ }) -> true
+      | Expression.Name (Name.Attribute { special = true; _ }) -> true
       | _ -> false
     in
-    let forward_argument { state; nested_awaitable_expressions } { Call.Argument.value; _ } =
-      (* For special methods such as `+`, ensure that we still require you to await the expressions. *)
-      if is_special_function then
-        forward_expression ~resolution ~state ~expression:value |>> nested_awaitable_expressions
-      else
-        let state = await_all_subexpressions ~state ~expression:value in
-        { state; nested_awaitable_expressions }
-    in
-
-    let { state; nested_awaitable_expressions } =
+    let forward_arguments { state; nested_awaitable_expressions } =
+      let forward_argument { state; nested_awaitable_expressions } { Call.Argument.value; _ } =
+        (* For special methods such as `+`, ensure that we still require you to await the
+           expressions. *)
+        if is_special_function callee then
+          forward_expression ~resolution ~state ~expression:value |>> nested_awaitable_expressions
+        else
+          let state = await_all_subexpressions ~state ~expression:value in
+          { state; nested_awaitable_expressions }
+      in
       match Node.value callee, arguments with
       (* a["b"] = c gets converted to a.__setitem__("b", c). *)
       | ( Name (Name.Attribute { attribute = "__setitem__"; base; _ }),
@@ -420,7 +414,6 @@ module State (Context : Context) = struct
                       ~data:(Set.union nested_awaitable_expressions new_awaitables)
                 | None -> Map.set awaitables_for_alias ~key:(NamedAlias name) ~data:new_awaitables
               in
-
               {
                 state = { state with awaitables_for_alias };
                 nested_awaitable_expressions =
@@ -436,7 +429,8 @@ module State (Context : Context) = struct
               arguments
               ~init:
                 {
-                  state = { state with expect_expressions_to_be_awaited = is_special_function };
+                  state =
+                    { state with expect_expressions_to_be_awaited = is_special_function callee };
                   nested_awaitable_expressions;
                 }
               ~f:forward_argument
@@ -444,11 +438,10 @@ module State (Context : Context) = struct
           let state = { state with expect_expressions_to_be_awaited } in
           { state; nested_awaitable_expressions }
     in
-    let annotation = Resolution.resolve_expression_to_type resolution expression in
-    let { awaitable_to_awaited_state; awaitables_for_alias; expect_expressions_to_be_awaited } =
-      state
-    in
-    let find_aliases { Node.value; location } =
+    let find_aliases
+        ~state:{ awaitable_to_awaited_state; awaitables_for_alias; _ }
+        { Node.value; location }
+      =
       let awaitable = Awaitable.create location in
       if Map.mem awaitable_to_awaited_state awaitable then
         Some (Awaitable.Set.singleton awaitable)
@@ -461,9 +454,22 @@ module State (Context : Context) = struct
               awaitables_for_alias
               (ExpressionWithNestedAliases { expression_location = location })
     in
+    let expression = { Node.value = Expression.Call call; location } in
+    let {
+      state =
+        { awaitable_to_awaited_state; awaitables_for_alias; expect_expressions_to_be_awaited } as
+        state;
+      nested_awaitable_expressions;
+    }
+      =
+      forward_expression ~resolution ~state ~expression:callee |> forward_arguments
+    in
+    let annotation = Resolution.resolve_expression_to_type resolution expression in
     if
       expect_expressions_to_be_awaited
-      && is_awaitable ~global_resolution:(Resolution.global_resolution resolution) annotation
+      && can_lead_to_runtime_warning_if_unawaited
+           ~global_resolution:(Resolution.global_resolution resolution)
+           annotation
     then
       (* If the callee is a method on an awaitable, make the assumption that the returned value is
          the same awaitable. *)
@@ -471,18 +477,17 @@ module State (Context : Context) = struct
       let awaitable = Awaitable.create location in
       match Node.value callee with
       | Name (Name.Attribute { base; _ }) -> (
-          match find_aliases base with
+          match find_aliases ~state base with
           | Some locations ->
               {
                 state =
                   {
-                    awaitable_to_awaited_state;
+                    state with
                     awaitables_for_alias =
                       Map.set
                         awaitables_for_alias
                         ~key:(ExpressionWithNestedAliases { expression_location = location })
                         ~data:locations;
-                    expect_expressions_to_be_awaited;
                   };
                 nested_awaitable_expressions;
               }
@@ -490,10 +495,9 @@ module State (Context : Context) = struct
               {
                 state =
                   {
+                    state with
                     awaitable_to_awaited_state =
                       Map.set awaitable_to_awaited_state ~key:awaitable ~data:(Unawaited expression);
-                    awaitables_for_alias;
-                    expect_expressions_to_be_awaited;
                   };
                 nested_awaitable_expressions;
               })
@@ -501,10 +505,9 @@ module State (Context : Context) = struct
           {
             state =
               {
+                state with
                 awaitable_to_awaited_state =
                   Map.set awaitable_to_awaited_state ~key:awaitable ~data:(Unawaited expression);
-                awaitables_for_alias;
-                expect_expressions_to_be_awaited;
               };
             nested_awaitable_expressions;
           }
@@ -517,18 +520,17 @@ module State (Context : Context) = struct
 
              Do this by pretending that the entire expression actually refers to the same
              awaitable(s) pointed to by `base`. *)
-          match find_aliases base with
+          match find_aliases ~state base with
           | Some locations ->
               {
                 state =
                   {
-                    awaitable_to_awaited_state;
+                    state with
                     awaitables_for_alias =
                       Map.set
                         awaitables_for_alias
                         ~key:(ExpressionWithNestedAliases { expression_location = location })
                         ~data:locations;
-                    expect_expressions_to_be_awaited;
                   };
                 nested_awaitable_expressions;
               }
@@ -551,7 +553,14 @@ module State (Context : Context) = struct
         let { state; nested_awaitable_expressions } =
           forward_expression ~resolution ~state ~expression
         in
-        { state = mark_location_as_awaited state ~location; nested_awaitable_expressions }
+        let state =
+          List.fold nested_awaitable_expressions ~init:state ~f:(fun state { Node.location; _ } ->
+              mark_awaitable_as_awaited ~awaitable:(Awaitable.create location) state)
+        in
+        {
+          state = mark_awaitable_as_awaited state ~awaitable:(Awaitable.create location);
+          nested_awaitable_expressions;
+        }
     | BooleanOperator { BooleanOperator.left; right; _ } ->
         let { state; nested_awaitable_expressions = left_awaitable_expressions } =
           forward_expression ~resolution ~state ~expression:left
@@ -900,24 +909,26 @@ let unawaited_awaitable_errors ~resolution ~local_annotations ~qualifier define 
   |> Option.value ~default:[]
 
 
-(** Avoid emitting "unawaited awaitable" errors for classes that inherit from `Awaitable`. They may,
-    for example, store attributes that are unawaited. *)
-let should_run_analysis
-    ~global_resolution
-    { Node.value = { Define.signature = { parent; _ }; _ }; _ }
-  =
-  parent
-  >>| (fun parent -> Type.Primitive (Reference.show parent))
-  >>| is_awaitable ~global_resolution
-  >>| not
-  |> Option.value ~default:true
-
-
 let check_define ~resolution ~local_annotations ~qualifier define =
-  if should_run_analysis ~global_resolution:(Resolution.global_resolution resolution) define then
-    unawaited_awaitable_errors ~resolution ~local_annotations ~qualifier define
-  else
-    []
+  let timer = Timer.start () in
+  let errors = unawaited_awaitable_errors ~resolution ~local_annotations ~qualifier define in
+  let () =
+    Statistics.performance
+      ~flush:false
+      ~randomly_log_every:1000
+      ~always_log_time_threshold:0.5 (* Seconds *)
+      ~name:"UnawaitedAwaitableCheck"
+      ~timer
+      ~normals:
+        [
+          (* We want the time taken for each function, so send the function name as the name of the
+             event. *)
+          "name", define |> Node.value |> Define.name |> Reference.show;
+          "request kind", "UnawaitedAwaitableCheck";
+        ]
+      ()
+  in
+  errors
 
 
 let check_module_TESTING_ONLY
