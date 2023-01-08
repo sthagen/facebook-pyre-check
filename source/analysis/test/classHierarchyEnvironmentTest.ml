@@ -118,9 +118,7 @@ let test_simple_registration context =
 
 let test_inferred_generic_base context =
   let assert_registers source name expected =
-    let project =
-      ScratchProject.setup ["test.py", source] ~context ~incremental_style:FineGrained
-    in
+    let project = ScratchProject.setup ["test.py", source] ~context ~track_dependencies:true in
     let read_only =
       ScratchProject.errors_environment project
       |> ErrorsEnvironment.Testing.ReadOnly.class_hierarchy_environment
@@ -219,7 +217,7 @@ let test_updates context =
     let project =
       ScratchProject.setup
         ~include_typeshed_stubs:false
-        ~incremental_style:FineGrained
+        ~track_dependencies:true
         ~in_memory:false
         sources
         ~context
@@ -258,7 +256,9 @@ let test_updates context =
     Option.iter new_source ~f:(ScratchProject.add_file project ~relative:"test.py");
     let update_result =
       let { Configuration.Analysis.local_root; _ } = configuration in
-      List.map ["test.py", ()] ~f:(fun (relative, _) ->
+      List.map
+        ["test.py", ()]
+        ~f:(fun (relative, _) ->
           Test.relative_artifact_path ~root:local_root ~relative
           |> ArtifactPath.Event.(create ~kind:Kind.Unknown))
       |> ScratchProject.update_environment project

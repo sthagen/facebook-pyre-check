@@ -130,7 +130,7 @@ module ScratchProject = struct
           ~excludes:[]
           ~extensions:[]
           ~store_type_check_resolution:false
-          ~incremental_style:Configuration.Analysis.FineGrained
+          ~track_dependencies:true
           ~log_directory:log_root
           ~source_paths:[SearchPath.Root source_root]
           ()
@@ -185,7 +185,8 @@ module ScratchProject = struct
       ?on_server_socket_ready
       ~on_exception:(function
         | OUnitTest.OUnit_failure _ as exn ->
-            (* We need to re-raise OUnit test failures since OUnit relies on it for error reporting. *)
+            (* We need to re-raise OUnit test failures since OUnit relies on it for error
+               reporting. *)
             raise exn
         | Start.ServerStopped _ ->
             if expect_server_error then

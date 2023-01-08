@@ -309,7 +309,8 @@ module CallInfoIntervals = struct
       {
         caller_interval = ClassIntervalSet.meet caller_interval_left caller_interval_right;
         receiver_interval = ClassIntervalSet.meet receiver_interval_left receiver_interval_right;
-        (* The result of meeting two calls is a call on `self` iff. one of the calls is on `self`. *)
+        (* The result of meeting two calls is a call on `self` iff. one of the calls is on
+           `self`. *)
         is_self_call = is_self_call_left || is_self_call_right;
       }
   end)
@@ -1096,9 +1097,19 @@ end = struct
         |> LocalTaintDomain.update LocalTaintDomain.Slots.Breadcrumb via_features_breadcrumbs
         |> LocalTaintDomain.update LocalTaintDomain.Slots.FirstIndex Features.FirstIndexSet.bottom
         |> LocalTaintDomain.update LocalTaintDomain.Slots.FirstField Features.FirstFieldSet.bottom
-        |> LocalTaintDomain.update
-             LocalTaintDomain.Slots.ExtraTraceFirstHopSet
-             ExtraTraceFirstHop.Set.bottom
+      in
+      let local_taint =
+        match call_info with
+        | CallInfo.Declaration _ ->
+            (* Even if we allow extra traces on user models in the future, we would still want to
+               propagate them to the first frame. This is because the Declaration frame is never
+               shown in the Zoncolan UI. The first frame is the Origin one. *)
+            local_taint
+        | _ ->
+            LocalTaintDomain.update
+              LocalTaintDomain.Slots.ExtraTraceFirstHopSet
+              ExtraTraceFirstHop.Set.bottom
+              local_taint
       in
       let apply_frame frame =
         frame

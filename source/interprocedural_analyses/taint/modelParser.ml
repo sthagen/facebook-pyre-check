@@ -13,7 +13,6 @@
  *)
 
 open Core
-open Data_structures
 open Ast
 open Analysis
 open Expression
@@ -455,14 +454,14 @@ let rec parse_annotations
                               (Constant.String { StringLiteral.value = canonical_name; _ });
                           _;
                         }
-                        :: {
-                             Node.value =
-                               Expression.Constant
-                                 (Constant.String { StringLiteral.value = canonical_port; _ });
-                             _;
-                           }
-                           :: { Node.value = Expression.Constant (Constant.Integer producer_id); _ }
-                              :: remaining_arguments);
+                     :: {
+                          Node.value =
+                            Expression.Constant
+                              (Constant.String { StringLiteral.value = canonical_port; _ });
+                          _;
+                        }
+                     :: { Node.value = Expression.Constant (Constant.Integer producer_id); _ }
+                     :: remaining_arguments);
                  _;
                };
              _;
@@ -653,25 +652,26 @@ let rec parse_annotations
                       [
                         { Call.Argument.value = { Node.value = Name (Name.Identifier label); _ }; _ };
                       ];
-                  } ->
-                  if not (SerializableStringMap.mem kind taint_configuration.partial_sink_labels)
-                  then
-                    Error
-                      (annotation_error (Format.asprintf "Unrecognized partial sink `%s`." kind))
-                  else
-                    let label_options =
-                      SerializableStringMap.find kind taint_configuration.partial_sink_labels
-                    in
-                    if not (List.mem label_options label ~equal:String.equal) then
+                  } -> (
+                  match
+                    TaintConfiguration.PartialSinkLabelsMap.find_opt
+                      kind
+                      taint_configuration.partial_sink_labels
+                  with
+                  | Some { TaintConfiguration.PartialSinkLabelsMap.all_labels; _ } ->
+                      if List.mem all_labels label ~equal:String.equal then
+                        Ok (Sinks.PartialSink { kind; label })
+                      else
+                        Error
+                          (annotation_error
+                             (Format.sprintf
+                                "Unrecognized label `%s` for partial sink `%s` (choices: `%s`)"
+                                label
+                                kind
+                                (String.concat all_labels ~sep:", ")))
+                  | None ->
                       Error
-                        (annotation_error
-                           (Format.sprintf
-                              "Unrecognized label `%s` for partial sink `%s` (choices: `%s`)"
-                              label
-                              kind
-                              (String.concat label_options ~sep:", ")))
-                    else
-                      Ok (Sinks.PartialSink { kind; label })
+                        (annotation_error (Format.sprintf "Unrecognized partial sink `%s`." kind)))
               | _ -> invalid_annotation_error ()
             in
             partial_sink
@@ -1526,12 +1526,14 @@ let check_invalid_read_form_cache ~path ~location ~constraint_expression where =
          (InvalidReadFromCacheConstraint constraint_expression))
 
 
-let check_both_read_and_write_cache ~path ~location ~where models =
-  if
-    ModelQuery.Constraint.contains_read_from_cache (AllOf where)
-    && List.exists ~f:ModelQuery.Model.is_write_to_cache models
-  then
-    Error (model_verification_error ~path ~location MutuallyExclusiveReadWriteToCache)
+let check_write_to_cache_models ~path ~location ~where models =
+  if List.exists ~f:ModelQuery.Model.is_write_to_cache models then
+    if ModelQuery.Constraint.contains_read_from_cache (AllOf where) then
+      Error (model_verification_error ~path ~location MutuallyExclusiveReadWriteToCache)
+    else if not (List.for_all ~f:ModelQuery.Model.is_write_to_cache models) then
+      Error (model_verification_error ~path ~location MutuallyExclusiveTaintWriteToCache)
+    else
+      Ok models
   else
     Ok models
 
@@ -3132,9 +3134,9 @@ let rec parse_statement
               };
           }
           :: { Call.Argument.name = Some { Node.value = "find"; _ }; value = find_clause }
-             :: { Call.Argument.name = Some { Node.value = "where"; _ }; value = where_clause }
-                :: { Call.Argument.name = Some { Node.value = "model"; _ }; value = model_clause }
-                   :: remaining_arguments ->
+          :: { Call.Argument.name = Some { Node.value = "where"; _ }; value = where_clause }
+          :: { Call.Argument.name = Some { Node.value = "model"; _ }; value = model_clause }
+          :: remaining_arguments ->
             Ok ((name, find_clause, where_clause, model_clause), remaining_arguments)
         | _ -> Error [model_verification_error ~path ~location (InvalidModelQueryClauses statement)]
       in
@@ -3186,7 +3188,7 @@ let rec parse_statement
         ~find_clause:find
         ~is_object_target:(not (ModelQuery.Find.is_callable find))
         model_clause
-      >>= check_both_read_and_write_cache ~path ~location ~where
+      >>= check_write_to_cache_models ~path ~location ~where
       |> as_result_error_list
       >>= fun models ->
       parse_output_models_clause ~name ~path expected_models_clause

@@ -11,6 +11,23 @@ open Ast
 open Test
 open Analysis
 open Pyre
+open Taint
+
+module VariableWithType = struct
+  type t = {
+    name: Reference.t;
+    type_annotation: Expression.t option;
+  }
+  [@@deriving show, compare]
+
+  let location_insensitive_equal left right =
+    Reference.equal left.name right.name
+    && Option.compare
+         Expression.location_insensitive_compare
+         left.type_annotation
+         right.type_annotation
+       = 0
+end
 
 let test_find_globals context =
   let assert_found_globals ~source ~expected =
@@ -50,38 +67,34 @@ let test_find_globals context =
       ScratchProject.build_type_environment project
     in
     let global_resolution = TypeEnvironment.ReadOnly.global_resolution type_environment in
-    let is_uninteresting_global { Taint.ModelQueryExecution.VariableMetadata.name = global_name; _ }
-      =
+    let is_uninteresting_global name =
       not
         (List.exists uninteresting_globals_prefix ~f:(fun exclude_prefix ->
-             Reference.is_prefix ~prefix:exclude_prefix global_name))
+             Reference.is_prefix ~prefix:exclude_prefix name))
+    in
+    let add_type_annotation name =
+      {
+        VariableWithType.name;
+        type_annotation =
+          ModelQueryExecution.GlobalVariableQueryExecutor.get_type_annotation
+            ~resolution:global_resolution
+            name;
+      }
     in
     let actual =
-      Taint.ModelQueryExecution.get_globals_and_annotations ~resolution:global_resolution
+      ModelQueryExecution.GlobalVariableQueryExecutor.get_globals ~resolution:global_resolution
       |> List.filter ~f:is_uninteresting_global
+      |> List.map ~f:add_type_annotation
     in
     let expected =
       List.map
         ~f:(fun (reference, annotation) ->
-          {
-            Taint.ModelQueryExecution.VariableMetadata.name = reference;
-            type_annotation = annotation >>| Type.expression;
-          })
+          { VariableWithType.name = reference; type_annotation = annotation >>| Type.expression })
         expected
     in
-    let variable_metadata_location_insensitive_equal left right =
-      Reference.equal
-        left.Taint.ModelQueryExecution.VariableMetadata.name
-        right.Taint.ModelQueryExecution.VariableMetadata.name
-      && Option.compare
-           Expression.Expression.location_insensitive_compare
-           left.Taint.ModelQueryExecution.VariableMetadata.type_annotation
-           right.Taint.ModelQueryExecution.VariableMetadata.type_annotation
-         = 0
-    in
     assert_equal
-      ~cmp:(List.equal variable_metadata_location_insensitive_equal)
-      ~printer:[%show: Taint.ModelQueryExecution.VariableMetadata.t list]
+      ~cmp:(List.equal VariableWithType.location_insensitive_equal)
+      ~printer:[%show: VariableWithType.t list]
       expected
       actual
   in

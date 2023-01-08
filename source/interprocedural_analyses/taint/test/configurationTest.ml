@@ -6,7 +6,6 @@
  *)
 
 open Core
-open Data_structures
 open OUnit2
 open Taint
 open Pyre
@@ -284,6 +283,7 @@ let test_combined_source_rules _ =
            name: "test combined rule",
            sources: {"a": "A", "b": "B"},
            partial_sink: "C",
+           main_trace_source: "b",
            code: 2001,
            message_format: "some form"
         }
@@ -316,7 +316,9 @@ let test_combined_source_rules _ =
       };
     ];
   assert_equal (List.hd_exn configuration.rules).code 2001;
-  assert_equal (SerializableStringMap.to_alist configuration.partial_sink_labels) ["C", ["a"; "b"]];
+  assert_equal
+    (TaintConfiguration.PartialSinkLabelsMap.to_alist configuration.partial_sink_labels)
+    ["C", { TaintConfiguration.PartialSinkLabelsMap.all_labels = ["a"; "b"]; main_label = "b" }];
   let configuration =
     assert_parse
       {|
@@ -341,8 +343,11 @@ let test_combined_source_rules _ =
   assert_equal configuration.sources [named "A"; named "B"; named "C"];
   assert_equal configuration.sinks [];
   assert_equal
-    (SerializableStringMap.to_alist configuration.partial_sink_labels)
-    ["CombinedSink", ["a"; "b"]];
+    (TaintConfiguration.PartialSinkLabelsMap.to_alist configuration.partial_sink_labels)
+    [
+      ( "CombinedSink",
+        { TaintConfiguration.PartialSinkLabelsMap.all_labels = ["a"; "b"]; main_label = "a" } );
+    ];
   assert_equal
     ~printer:(List.to_string ~f:Rule.show)
     ~cmp:(List.equal [%compare.equal: Rule.t])
@@ -420,7 +425,7 @@ let test_lineage_analysis _ =
 let test_partial_sink_converter _ =
   let assert_triggered_sinks configuration ~partial_sink ~source ~expected_sink =
     let configuration = assert_parse configuration in
-    Taint.TaintConfiguration.get_triggered_sink configuration ~partial_sink ~source
+    TaintConfiguration.get_triggered_sink configuration ~partial_sink ~source
     |> assert_equal
          ~cmp:(Option.equal Sinks.equal)
          ~printer:(fun value -> value >>| Sinks.show |> Option.value ~default:"None")
@@ -534,7 +539,7 @@ let test_validate _ =
       configurations
       |> List.map ~f:(fun (path, content) ->
              PyrePath.create_absolute path, Yojson.Safe.from_string content)
-      |> Taint.TaintConfiguration.from_json_list
+      |> TaintConfiguration.from_json_list
       |> Core.Result.map_error
            ~f:
              (List.map ~f:(fun { TaintConfiguration.Error.path; kind } ->

@@ -7,7 +7,6 @@
 
 open Pyre
 open Core
-open Data_structures
 open OUnit2
 open Test
 open TestHelper
@@ -75,7 +74,15 @@ let set_up_environment
         sinks;
         transforms;
         features = ["special"];
-        partial_sink_labels = SerializableStringMap.of_alist_exn ["Test", ["a"; "b"]];
+        partial_sink_labels =
+          TaintConfiguration.PartialSinkLabelsMap.of_alist_exn
+            [
+              ( "Test",
+                {
+                  TaintConfiguration.PartialSinkLabelsMap.all_labels = ["a"; "b"];
+                  main_label = "a";
+                } );
+            ];
         rules;
         filtered_rule_codes = None;
         filtered_sources;
@@ -184,7 +191,15 @@ let assert_invalid_model ?path ?source ?(sources = []) ~context ~model_source ~e
         sinks = List.map ~f:(fun name -> { AnnotationParser.name; kind = Named }) ["X"; "Y"; "Test"];
         features = ["featureA"; "featureB"];
         rules = [];
-        partial_sink_labels = SerializableStringMap.of_alist_exn ["Test", ["a"; "b"]];
+        partial_sink_labels =
+          TaintConfiguration.PartialSinkLabelsMap.of_alist_exn
+            [
+              ( "Test",
+                {
+                  TaintConfiguration.PartialSinkLabelsMap.all_labels = ["a"; "b"];
+                  main_label = "a";
+                } );
+            ];
       }
   in
   let error_message =
@@ -2913,7 +2928,6 @@ let test_invalid_models context =
         find = "functions",
         where = [
           name.matches("foo"),
-          read_from_cache(kind="first", name="foo"),
         ],
         model = [
           WriteToCache(kind="second", name=f"{function_name}"),
@@ -2921,7 +2935,7 @@ let test_invalid_models context =
         ]
       )
     |}
-    ~expect:{|WriteToCache and read_from_cache cannot be used in the same model query|}
+    ~expect:{|WriteToCache cannot be used with other taint annotations in the same model query|}
     ();
   assert_invalid_model
     ~model_source:
@@ -5941,12 +5955,12 @@ let test_query_parsing context =
 
   (* Expected models *)
   let create_expected_model ?source ?rules ~model_source function_name =
-    let { Taint.ModelParseResult.models; _ }, _, _, _ =
+    let { ModelParseResult.models; _ }, _, _, _ =
       set_up_environment ?source ?rules ~context ~model_source ()
     in
     let model = Option.value_exn (Registry.get models (List.hd_exn (Registry.targets models))) in
     {
-      Taint.ModelParseResult.ModelQuery.ExpectedModel.model;
+      ModelParseResult.ModelQuery.ExpectedModel.model;
       target = Target.create_function (Ast.Reference.create function_name);
       model_source;
     }

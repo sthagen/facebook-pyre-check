@@ -162,6 +162,7 @@ type kind =
       find: string;
     }
   | MutuallyExclusiveReadWriteToCache
+  | MutuallyExclusiveTaintWriteToCache
 [@@deriving sexp, compare, show]
 
 type t = {
@@ -170,6 +171,14 @@ type t = {
   location: Location.t;
 }
 [@@deriving sexp, compare, show]
+
+let show_type_for_error annotation =
+  match annotation with
+  | Type.Callable { kind = Named reference; _ } ->
+      (* add def [function name] : ... to provide better syntax highlighting for hover *)
+      Format.asprintf "def %s%s: ..." (Reference.last reference) (Type.show_concise annotation)
+  | _ -> Type.show_concise annotation
+
 
 let description error =
   match error with
@@ -220,7 +229,7 @@ let description error =
                 Format.asprintf
                   "%s in overload `%s`"
                   reason
-                  (Type.show_for_hover
+                  (show_type_for_error
                      (Type.Callable { kind = Anonymous; implementation = overload; overloads = [] }))
             | None -> reason)
       in
@@ -232,7 +241,7 @@ let description error =
       Format.asprintf
         "Model signature parameters for `%s` do not match implementation `%s`. %s"
         name
-        (Type.show_for_hover (Type.Callable callable_type))
+        (show_type_for_error (Type.Callable callable_type))
         reasons
   | ImportedFunctionModel { name; actual_name } ->
       Format.asprintf
@@ -455,6 +464,8 @@ let description error =
         find
   | MutuallyExclusiveReadWriteToCache ->
       "WriteToCache and read_from_cache cannot be used in the same model query"
+  | MutuallyExclusiveTaintWriteToCache ->
+      "WriteToCache cannot be used with other taint annotations in the same model query"
 
 
 let code { kind; _ } =
@@ -518,6 +529,7 @@ let code { kind; _ } =
   | InvalidWriteToCacheIdentifierForFind _ -> 57
   | InvalidReadFromCacheConstraint _ -> 58
   | MutuallyExclusiveReadWriteToCache -> 59
+  | MutuallyExclusiveTaintWriteToCache -> 60
 
 
 let display { kind = error; path; location } =

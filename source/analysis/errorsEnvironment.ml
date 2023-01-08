@@ -121,7 +121,8 @@ let project_qualifiers environment = read_only environment |> ReadOnly.project_q
 
 let populate_for_modules ~scheduler environment qualifiers =
   (* Because of lazy evaluation, we can actually perform this operation using only a read-only
-     environment. But we put it on the read-write API because the behavior is explicitly stateful. *)
+     environment. But we put it on the read-write API because the behavior is explicitly
+     stateful. *)
   let environment = read_only environment in
   let timer = Timer.start () in
   let number_of_qualifiers = List.length qualifiers in
@@ -141,7 +142,7 @@ let populate_for_modules ~scheduler environment qualifiers =
         (Scheduler.Policy.fixed_chunk_count
            ~minimum_chunks_per_worker:1
            ~minimum_chunk_size:100
-           ~preferred_chunks_per_worker:2
+           ~preferred_chunks_per_worker:1
            ())
       ~initial:(0, [])
       ~map
