@@ -262,9 +262,9 @@ let sink_trees_of_argument
       |> BackwardState.Tree.read ~transform_non_leaves formal_path
       |> BackwardState.Tree.prepend actual_path
     in
-    { Issue.SinkTreeWithHandle.sink_tree; handle = Issue.SinkHandle.make_call ~call_target ~root }
+    { SinkTreeWithHandle.sink_tree; handle = IssueHandle.Sink.make_call ~call_target ~root }
   in
-  List.map sink_matches ~f:to_sink_tree_with_identifier |> Issue.SinkTreeWithHandle.filter_bottom
+  List.map sink_matches ~f:to_sink_tree_with_identifier |> Domains.SinkTreeWithHandle.filter_bottom
 
 
 let type_breadcrumbs_of_calls targets =
@@ -281,7 +281,7 @@ module ExtraTraceForTransforms = struct
   let first_hops ~named_transforms ~tito_roots ~sink_taint =
     let match_call_info = function
       | CallInfo.CallSite { port; _ } -> AccessPath.Root.Set.mem port tito_roots
-      | CallInfo.Origin _ -> false (* Skip origins because there is no subtrace to show *)
+      | CallInfo.Origin _ -> true
       | CallInfo.Declaration _
       | CallInfo.Tito ->
           false
@@ -291,7 +291,10 @@ module ExtraTraceForTransforms = struct
       | Sinks.ExtraTraceSink
         when List.equal TaintTransform.equal (Sinks.get_named_transforms sink_kind) named_transforms
         ->
-          let extra_trace = { ExtraTraceFirstHop.call_info; leaf_kind = Sink sink_kind } in
+          let message = Sinks.get_named_transforms sink_kind |> TaintTransforms.show_transforms in
+          let extra_trace =
+            { ExtraTraceFirstHop.call_info; leaf_kind = Sink sink_kind; message = Some message }
+          in
           ExtraTraceFirstHop.Set.add extra_trace so_far
       | _ -> so_far
     in
@@ -316,7 +319,7 @@ module ExtraTraceForTransforms = struct
         let extra_traces = first_hops ~tito_roots ~named_transforms ~sink_taint:tip in
         ExtraTraceFirstHop.Set.join extra_traces so_far
     in
-    let accumulate_extra_traces so_far { Issue.SinkTreeWithHandle.sink_tree; _ } =
+    let accumulate_extra_traces so_far { Domains.SinkTreeWithHandle.sink_tree; _ } =
       BackwardState.Tree.fold
         BackwardState.Tree.Path
         ~f:accumulate_extra_traces_from_sink_path

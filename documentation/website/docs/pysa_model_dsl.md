@@ -95,7 +95,7 @@ Example:
 
 ```python
 ModelQuery(
-  name = "get_foo",
+  name = "get_starting_with_foo",
   find = ...,
   where = [
     fully_qualified_name.matches("foo.*")
@@ -130,11 +130,42 @@ ModelQuery(
 
 ### `name.matches`
 
-For now, `name.matches` is equivalent to `fully_qualified_name.matches`.
+The `name.matches` clause is similar to `fully_qualified_name.matches`, but matches against the actual name of the entity, excluding module and class names.
+
+Example:
+
+```python
+ModelQuery(
+  name = "get_starting_with_foo",
+  find = ...,
+  where = [
+    name.matches("foo.*")
+  ],
+  model = ...
+)
+```
+
+:::caution
+
+`matches` performs a partial match! For instance, `matches("bar")` will match against a function named `foobarbaz`.
+To perform a full match, use `^` and `$`. For instance: `matches("^.*bar$")`.
+
+:::
 
 ### `name.equals`
 
-For now, `name.equals` is equivalent to `fully_qualified_name.equals`.
+The `name.equals` clause is similar to `fully_qualified_name.equals`, but matches against the actual name of the entity, excluding module and class names.
+
+```python
+ModelQuery(
+  name = "get_foo",
+  find = ...,
+  where = [
+    name.equals("foo")
+  ],
+  model = ...
+)
+```
 
 ### `return_annotation` clauses
 
@@ -410,7 +441,7 @@ ModelQuery(
 
 #### Decorator `name` clauses
 
-For now, `name` is equivalent to `fully_qualified_name`.
+The `name` clause is similar to `fully_qualified_name`, but matches against the actual name of the entity, excluding module and class names.
 
 #### Decorator `arguments` clauses
 
@@ -539,11 +570,11 @@ ModelQuery(
 
 ### `cls.name.matches` clause
 
-For now, `cls.name.matches` is equivalent to `cls.fully_qualified_name.matches`.
+The `cls.name.matches` clause is similar to `cls.fully_qualified_name.matches`, but matches against the actual name of the class, excluding modules.
 
 ### `cls.name.equals` clause
 
-For now, `cls.name.equals` is equivalent to `cls.fully_qualified_name.equals`.
+The `cls.name.equals` clause is similar to `cls.fully_qualified_name.equals`, but matches against the actual name of the class, excluding modules.
 
 ### `cls.extends` clause
 
@@ -1101,3 +1132,156 @@ ModelQuery(
 ```
 
 This would not produce any errors, since the models the ModelQuery generates will contain `expected_models` and not `unexpected_models`.
+
+## Cache Queries
+
+Generating models for a large number of queries can be quite slow. Cache queries allow to speed up model generation by factoring out queries with similar `where` clause into a single query, which builds a mapping from an arbitrary name to a set of matching entities. Then, other queries can read from this cache, making them quick to execute.
+
+For instance, imagine having the following queries:
+```python
+ModelQuery(
+  ...
+  find = "methods",
+  where = [
+    AnyOf(cls.extends("my_module.Foo"), cls.extends("other_module.Bar")),
+    fully_qualified_name.matches("\.ClassA\.method$"),
+  ],
+  model = ...
+)
+ModelQuery(
+  ...
+  find = "methods",
+  where = [
+    AnyOf(cls.extends("my_module.Foo"), cls.extends("other_module.Bar")),
+    fully_qualified_name.matches("\.ClassB\.method$"),
+  ],
+  model = ...
+)
+ModelQuery(
+  ...
+  find = "methods",
+  where = [
+    AnyOf(cls.extends("my_module.Foo"), cls.extends("other_module.Bar")),
+    fully_qualified_name.matches("\.ClassC\.other_method$"),
+  ],
+  model = ...
+)
+# etc.
+```
+
+We can factor out the expensive where clause into a single query which writes to a key-value cache,
+using the `WriteToCache` clause.
+```python
+ModelQuery(
+  ...
+  find = "methods",
+  where = [AnyOf(cls.extends("my_module.Foo"), cls.extends("other_module.Bar"))],
+  model = WriteToCache(kind="FooBar", name=f"{class_name}:{function_name}")
+)
+```
+
+All matching methods will be stored in a cache named `FooBar`, under the key `{class_name}:{function_name}`.
+
+After executing the query, we might get the following cache `FooBar`:
+```
+ClassA:method -> {some_module.ClassA.method}
+ClassB:method -> {some_other_module.ClassB.method}
+ClassC:other_method -> {some_module.ClassC.other_method}
+```
+
+We can then read from the cache using the where clause `read_from_cache`:
+```python
+ModelQuery(
+  find = "methods",
+  where = read_from_cache(kind="FooBar", name="ClassA:method",
+  model = ...
+)
+ModelQuery(
+  find = "methods",
+  where = read_from_cache(kind="FooBar", name="ClassB:method",
+  model = ...
+)
+ModelQuery(
+  find = "methods",
+  where = read_from_cache(kind="FooBar", name="ClassC:other_method",
+  model = ...
+)
+```
+This will generate the same models as the first example, but model generation will be a lot faster.
+
+In terms of time complexity, if the number of entities (methods here) is `N`, the number of queries is `Q` and the average cost of evaluating a where clause is `C`, the first example would have a `O(N*Q*C)` complexity. Using cache queries, this turns into `O(N*C+Q)`, which is much better.
+
+### WriteToCache clause
+
+`WriteToCache` is a model clause that is used to store entities into a cache. It takes the following arguments:
+* A `kind`, which is the name of the cache.
+* A `name` as an f-string, which will be the key for the entity in the cache.
+
+The name can use the following variables:
+* `function_name`: The (non-qualified) name of the function.
+* `method_name`: The (non-qualified) name of the method.
+* `class_name`: The (non-qualified) name of the class.
+* `capture(identifier)`: The regular expression capture group called `identifier`. See documentation below.
+
+For instance:
+```python
+ModelQuery(
+  ...
+  find = "methods",
+  model = WriteToCache(kind="cache_name", name=f"{class_name}:{function_name}")
+)
+```
+
+Note that you can write multiple entities under the same name. For instance, this happens if you use `name=f"{class_name}"` and multiple methods of the same class match against the where clause.
+
+### read_from_cache clause
+
+`read_from_cache` is a where clause that will only match against entities with the given name in the cache. It takes the following arguments:
+* A `kind`, which is the name of the cache.
+* A `name` as a string, which is the key for the entities in the cache.
+
+For instance:
+```python
+ModelQuery(
+  find = "methods",
+  where = read_from_cache(kind="cache_name", name="Class:method"),
+  model = ...
+)
+```
+
+Note that you can use `read_from_cache` in combination with other where clauses, as long as at least one `read_from_cache` clause is active on all branches.
+
+For instance, this is **disallowed**:
+```python
+ModelQuery(
+  find = "methods",
+  where = AnyOf(
+    read_from_cache(kind="cache_name", name="Class:method"),
+    cls.extends("module.Foo")
+  ),
+  model = ...
+)
+```
+
+### Regular expression capture
+
+`name.matches` and `cls.name.matches` clause can use named capturing groups, which can be used in the `name` of `WriteToCache` clauses.
+
+For instance:
+```python
+ModelQuery(
+  find = "functions",
+  where = name.matches("^get_(?P<attribute>[a-z]+)$"),
+  model = WriteToCache(kind="cache_name", name=f"{capture(attribute)}")
+)
+```
+
+For a function `get_foo`, this will create a cache for key `foo`.
+
+:::caution
+
+Be careful when using regular expression captures. If the capture group is not found (e.g, a typo), `WriteToCache` will use the empty string.
+
+:::
+
+Note that we do not support numbered capture groups, e.g `Foo(.*)`.

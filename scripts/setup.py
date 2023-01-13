@@ -5,7 +5,10 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-TODO(T132414938) Add a module-level docstring
+This script provides a the logic used to bootstrap a local opam
+switch for building Pyre by collecting all dependencies, as well
+as how to configure opam and then invoke dune for various flavors
+of builds.
 """
 
 
@@ -86,8 +89,6 @@ class Setup(NamedTuple):
         """
         if not self.release:
             return COMPILER_VERSION
-        elif COMPILER_VERSION < "4.12":
-            return f"ocaml-variants.{COMPILER_VERSION}+flambda"
         else:
             return ",".join(
                 [
@@ -200,14 +201,6 @@ class Setup(NamedTuple):
             ]
         )
         opam_environment_variables = self.opam_environment_variables()
-
-        # This is required to work around a bug in pre-OCaml 4.12 that prevents
-        # `re2` from installing correctly.
-        # See https://github.com/janestreet/re2/issues/31
-        ocamlc_location = self.run(
-            ["ocamlc", "-where"], add_environment_variables=opam_environment_variables
-        )
-        self.run(["rm", "-f", f"{ocamlc_location}/version"])
 
         self.run(
             ["opam", "install", "--yes"] + DEPENDENCIES,
