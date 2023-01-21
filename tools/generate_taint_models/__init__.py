@@ -20,7 +20,7 @@ from typing import AbstractSet, Dict, List, Mapping, Optional, Set
 from typing_extensions import Final
 
 from ...api.connection import PyreConnection, PyreStartError, Error as PyreQueryError
-from ...client import statistics_logger
+from ...client import remote_logger
 from .annotated_function_generator import (  # noqa
     AnnotatedFunctionGenerator,
     FunctionDefinition,
@@ -186,13 +186,13 @@ def run_from_parsed_arguments(
             generated_models[mode] = set(generator_options[mode].generate_models())
             elapsed_time_seconds = time.time() - start
             LOG.info(
-                f"Computed models for `{mode}` in {elapsed_time_seconds:.3f} seconds."
+                f"Computed {len(generated_models[mode])} models for `{mode}` in {elapsed_time_seconds:.3f} seconds."
             )
 
             if logger_executable is not None:
                 elapsed_time_milliseconds = int(elapsed_time_seconds * 1000)
-                statistics_logger.log(
-                    statistics_logger.LoggerCategory.PERFORMANCE,
+                remote_logger.log(
+                    remote_logger.LoggerCategory.PERFORMANCE,
                     integers={"time": elapsed_time_milliseconds},
                     normals={
                         "name": "model generation",

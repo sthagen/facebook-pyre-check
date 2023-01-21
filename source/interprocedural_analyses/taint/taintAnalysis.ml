@@ -149,7 +149,12 @@ let parse_models_and_queries_from_sources
   in
   Scheduler.map_reduce
     scheduler
-    ~policy:(Scheduler.Policy.legacy_fixed_chunk_count ())
+    ~policy:
+      (Scheduler.Policy.fixed_chunk_count
+         ~minimum_chunks_per_worker:1
+         ~minimum_chunk_size:1
+         ~preferred_chunks_per_worker:1
+         ())
     ~initial:ModelParseResult.empty
     ~map
     ~reduce:ModelParseResult.join
@@ -203,7 +208,7 @@ let initialize_models
   let stubs_hashset =
     initial_callables |> Interprocedural.FetchCallables.get_stubs |> Target.HashSet.of_list
   in
-  let { ModelParseResult.models; queries; skip_overrides; errors } =
+  let { ModelParseResult.models; queries; errors } =
     parse_models_and_queries_from_configuration
       ~scheduler
       ~static_analysis_configuration
@@ -215,14 +220,14 @@ let initialize_models
   in
   Statistics.performance ~name:"Parsed taint models" ~phase_name:"Parsing taint models" ~timer ();
 
-  let models =
+  let models, errors =
     match queries with
-    | [] -> models
+    | [] -> models, errors
     | _ ->
         Log.info "Generating models from model queries...";
         let timer = Timer.start () in
         let verbose = Option.is_some taint_configuration.dump_model_query_results_path in
-        let model_query_results, errors =
+        let model_query_results, model_query_errors =
           ModelQueryExecution.generate_models_from_queries
             ~resolution
             ~scheduler
@@ -240,7 +245,12 @@ let initialize_models
               ModelQueryExecution.DumpModelQueryResults.dump_to_file ~model_query_results ~path
           | None -> ()
         in
-        ModelVerificationError.verify_models_and_dsl errors static_analysis_configuration.verify_dsl;
+        let () =
+          ModelVerificationError.verify_models_and_dsl
+            model_query_errors
+            static_analysis_configuration.verify_dsl
+        in
+        let errors = List.append errors model_query_errors in
         let models =
           model_query_results
           |> ModelQueryExecution.ModelQueryRegistryMap.get_registry
@@ -252,7 +262,7 @@ let initialize_models
           ~phase_name:"Generating models from model queries"
           ~timer
           ();
-        models
+        models, errors
   in
 
   let models =
@@ -268,7 +278,7 @@ let initialize_models
       ~initial_models:models
   in
 
-  { ModelParseResult.models; skip_overrides; queries = []; errors }
+  { ModelParseResult.models; queries = []; errors }
 
 
 (** Aggressively remove things we do not need anymore from the shared memory. *)
@@ -370,7 +380,7 @@ let run_taint_analysis
     (* Save the cache here, in case there is a model verification error. *)
     let () = Cache.save cache in
 
-    let { ModelParseResult.models = initial_models; skip_overrides; _ } =
+    let { ModelParseResult.models = initial_models; errors = model_verification_errors; _ } =
       initialize_models
         ~scheduler
         ~static_analysis_configuration
@@ -399,10 +409,11 @@ let run_taint_analysis
           Log.info "Computing overrides...";
           let overrides =
             Interprocedural.OverrideGraph.build_whole_program_overrides
+              ~static_analysis_configuration
               ~scheduler
               ~environment:(Analysis.TypeEnvironment.read_only environment)
               ~include_unit_tests:false
-              ~skip_overrides
+              ~skip_overrides:(Registry.skip_overrides initial_models)
               ~maximum_overrides:
                 (TaintConfiguration.maximum_overrides_to_analyze taint_configuration)
               ~qualifiers
@@ -425,13 +436,14 @@ let run_taint_analysis
         ~override_graph:override_graph_shared_memory
         ~store_shared_memory:true
         ~attribute_targets:(Registry.object_targets initial_models)
+        ~skip_analysis_targets:(Registry.skip_analysis initial_models)
         ~callables:(Interprocedural.FetchCallables.get_non_stub_callables initial_callables)
     in
     Statistics.performance ~name:"Call graph built" ~phase_name:"Building call graph" ~timer ();
 
     let prune_method =
       if limit_entrypoints then
-        let entrypoint_references = Registry.get_entrypoints initial_models in
+        let entrypoint_references = Registry.entrypoints initial_models in
         let () =
           Log.info
             "Pruning call graph by the following entrypoints: %s"
@@ -452,6 +464,7 @@ let run_taint_analysis
     }
       =
       Interprocedural.DependencyGraph.build_whole_program_dependency_graph
+        ~static_analysis_configuration
         ~prune:prune_method
         ~initial_callables
         ~call_graph:whole_program_call_graph
@@ -532,6 +545,7 @@ let run_taint_analysis
         ~override_graph:override_graph_shared_memory
         ~callables
         ~skipped_overrides
+        ~model_verification_errors
         ~fixpoint_timer
         ~fixpoint_state
     in

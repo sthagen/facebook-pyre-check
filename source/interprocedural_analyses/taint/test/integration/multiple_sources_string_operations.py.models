@@ -321,8 +321,18 @@
           {
             "caller_interval": [ { "lower": 2, "upper": 3 } ],
             "is_self_call": false,
+            "extra_traces": [
+              {
+                "origin": { "line": 21, "start": 31, "end": 54 },
+                "leaf_kind": "UserControlled",
+                "trace_kind": "source"
+              }
+            ],
             "kinds": [
               {
+                "multi_source_issue_handles": [
+                  "multiple_sources_string_operations.DatabaseSchemaEditor.string_operations:4323:0:Call|str.format|0|formal(*rest0):566b359311386d7a68d733d31f31ca1f"
+                ],
                 "leaves": [ { "name": "str.format" } ],
                 "kind": "TriggeredPartialSink[UserControlledDataAndStringSQL[sql]]"
               }

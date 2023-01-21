@@ -2323,30 +2323,40 @@ let build_whole_program_call_graph
     ~override_graph
     ~store_shared_memory
     ~attribute_targets
+    ~skip_analysis_targets
     ~callables
   =
   let define_call_graphs = DefineCallGraphSharedMemory.Handle in
   let whole_program_call_graph =
     let build_call_graph whole_program_call_graph callable =
-      let callable_call_graph =
-        call_graph_of_callable
-          ~static_analysis_configuration
-          ~environment
-          ~override_graph
-          ~attribute_targets
-          ~callable
-      in
-      let () =
-        if store_shared_memory then
-          DefineCallGraphSharedMemory.set
-            define_call_graphs
-            ~callable
-            ~call_graph:callable_call_graph
-      in
-      WholeProgramCallGraph.add_or_exn
+      if Target.Set.mem callable skip_analysis_targets then
         whole_program_call_graph
-        ~callable
-        ~callees:(DefineCallGraph.all_targets callable_call_graph)
+      else
+        let callable_call_graph =
+          Metrics.with_alarm
+            ~max_time_in_seconds:60
+            ~event_name:"call graph building"
+            ~callable
+            (fun () ->
+              call_graph_of_callable
+                ~static_analysis_configuration
+                ~environment
+                ~override_graph
+                ~attribute_targets
+                ~callable)
+            ()
+        in
+        let () =
+          if store_shared_memory then
+            DefineCallGraphSharedMemory.set
+              define_call_graphs
+              ~callable
+              ~call_graph:callable_call_graph
+        in
+        WholeProgramCallGraph.add_or_exn
+          whole_program_call_graph
+          ~callable
+          ~callees:(DefineCallGraph.all_targets callable_call_graph)
     in
     Scheduler.map_reduce
       scheduler
@@ -2357,6 +2367,14 @@ let build_whole_program_call_graph
       ~reduce:WholeProgramCallGraph.merge_disjoint
       ~inputs:callables
       ()
+  in
+  let () =
+    match static_analysis_configuration.Configuration.StaticAnalysis.save_results_to with
+    | Some path ->
+        let path = PyrePath.append path ~element:"call-graph.json" in
+        Log.info "Writing the call graph to `%s`" (PyrePath.absolute path);
+        whole_program_call_graph |> WholeProgramCallGraph.to_target_graph |> TargetGraph.dump ~path
+    | None -> ()
   in
   let () =
     match static_analysis_configuration.Configuration.StaticAnalysis.dump_call_graph with
