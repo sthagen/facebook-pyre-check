@@ -63,7 +63,14 @@ module ModelQueryRegistryMap = struct
 
 
   let check_expected_and_unexpected_model_errors ~model_query_results ~queries =
-    let find_expected_and_unexpected_model_errors ~expect ~actual_models ~name ~location ~models =
+    let find_expected_and_unexpected_model_errors
+        ~expect
+        ~actual_models
+        ~name
+        ~path
+        ~location
+        ~models
+      =
       let registry_contains_model registry ~target ~model =
         (* TODO T127682824: Deal with the case of joined models *)
         match Registry.get registry target with
@@ -89,39 +96,49 @@ module ModelQueryRegistryMap = struct
             else
               ModelVerificationError.UnexpectedModelsArePresent { model_query_name = name; models }
           in
-          [{ ModelVerificationError.kind; location; path = None }]
+          [{ ModelVerificationError.kind; location; path }]
     in
-    let find_expected_model_errors ~actual_models ~name ~location ~expected_models =
+    let find_expected_model_errors ~actual_models ~name ~path ~location ~expected_models =
       find_expected_and_unexpected_model_errors
         ~expect:true
         ~actual_models
         ~name
+        ~path
         ~location
         ~models:expected_models
     in
-    let find_unexpected_model_errors ~actual_models ~name ~location ~unexpected_models =
+    let find_unexpected_model_errors ~actual_models ~name ~path ~location ~unexpected_models =
       find_expected_and_unexpected_model_errors
         ~expect:false
         ~actual_models
         ~name
+        ~path
         ~location
         ~models:unexpected_models
     in
     let expected_and_unexpected_model_errors =
       queries
-      |> List.map ~f:(fun { ModelQuery.name; location; expected_models; unexpected_models; _ } ->
+      |> List.map
+           ~f:(fun { ModelQuery.name; path; location; expected_models; unexpected_models; _ } ->
              let actual_models =
                Option.value (get model_query_results name) ~default:Registry.empty
              in
              let expected_model_errors =
                match expected_models with
                | [] -> []
-               | _ -> find_expected_model_errors ~actual_models ~name ~location ~expected_models
+               | _ ->
+                   find_expected_model_errors ~actual_models ~name ~path ~location ~expected_models
              in
              let unexpected_model_errors =
                match unexpected_models with
                | [] -> []
-               | _ -> find_unexpected_model_errors ~actual_models ~name ~location ~unexpected_models
+               | _ ->
+                   find_unexpected_model_errors
+                     ~actual_models
+                     ~name
+                     ~path
+                     ~location
+                     ~unexpected_models
              in
              List.append expected_model_errors unexpected_model_errors)
       |> List.concat
@@ -130,12 +147,11 @@ module ModelQueryRegistryMap = struct
 
 
   let check_errors ~model_query_results ~queries =
-    let model_query_names = List.map queries ~f:(fun query -> query.ModelQuery.name) in
     let errors =
-      List.filter_map model_query_names ~f:(fun model_query_name ->
-          let models = get model_query_results model_query_name in
+      List.filter_map queries ~f:(fun query ->
+          let models = get model_query_results query.ModelQuery.name in
           Statistics.log_model_query_outputs
-            ~model_query_name
+            ~model_query_name:query.name
             ~generated_models_count:(Registry.size (Option.value models ~default:Registry.empty))
             ();
           match models with
@@ -144,9 +160,9 @@ module ModelQueryRegistryMap = struct
               Some
                 {
                   ModelVerificationError.kind =
-                    ModelVerificationError.NoOutputFromModelQuery model_query_name;
-                  location = Ast.Location.any;
-                  path = None;
+                    ModelVerificationError.NoOutputFromModelQuery query.name;
+                  location = query.location;
+                  path = query.path;
                 })
     in
     Statistics.flush ();
@@ -285,10 +301,16 @@ let rec matches_decorator_constraint ~name_captures ~decorator = function
       not (matches_decorator_constraint ~name_captures ~decorator decorator_constraint)
   | ModelQuery.DecoratorConstraint.NameConstraint name_constraint ->
       let { Statement.Decorator.name = { Node.value = decorator_name; _ }; _ } = decorator in
-      matches_name_constraint ~name_captures ~name_constraint (Reference.last decorator_name)
+      matches_name_constraint
+        ~name_captures
+        ~name_constraint
+        (decorator_name |> Reference.delocalize |> Reference.last)
   | ModelQuery.DecoratorConstraint.FullyQualifiedNameConstraint name_constraint ->
       let { Statement.Decorator.name = { Node.value = decorator_name; _ }; _ } = decorator in
-      matches_name_constraint ~name_captures ~name_constraint (Reference.show decorator_name)
+      matches_name_constraint
+        ~name_captures
+        ~name_constraint
+        (decorator_name |> Reference.delocalize |> Reference.show)
   | ModelQuery.DecoratorConstraint.ArgumentsConstraint arguments_constraint -> (
       let { Statement.Decorator.arguments = decorator_arguments; _ } = decorator in
       let split_arguments =
@@ -435,6 +457,24 @@ let rec find_children ~class_hierarchy_graph ~is_transitive ~includes_self class
   child_name_set
 
 
+let find_parents ~resolution ~is_transitive ~includes_self class_name =
+  let parents =
+    if is_transitive then
+      Analysis.ClassHierarchy.successors (GlobalResolution.class_hierarchy resolution) class_name
+    else
+      Analysis.ClassHierarchy.immediate_parents
+        (GlobalResolution.class_hierarchy resolution)
+        class_name
+  in
+  let parents =
+    if includes_self then
+      class_name :: parents
+    else
+      parents
+  in
+  parents
+
+
 let rec class_matches_constraint ~resolution ~class_hierarchy_graph ~name_captures ~name = function
   | ModelQuery.ClassConstraint.AnyOf constraints ->
       List.exists
@@ -467,6 +507,16 @@ let rec class_matches_constraint ~resolution ~class_hierarchy_graph ~name_captur
     ->
       find_children ~class_hierarchy_graph ~is_transitive ~includes_self name
       |> ClassHierarchyGraph.ClassNameSet.exists (fun name ->
+             class_matches_constraint
+               ~resolution
+               ~name
+               ~class_hierarchy_graph
+               ~name_captures
+               class_constraint)
+  | ModelQuery.ClassConstraint.AnyParentConstraint
+      { class_constraint; is_transitive; includes_self } ->
+      find_parents ~resolution ~is_transitive ~includes_self name
+      |> List.exists ~f:(fun name ->
              class_matches_constraint
                ~resolution
                ~name
@@ -1179,14 +1229,23 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
           (List.length read_from_cache_queries)
           QueryKind.query_kind_name
       in
-      generate_models_from_read_cache_queries_on_targets
-        ~verbose
-        ~resolution
-        ~class_hierarchy_graph
-        ~source_sink_filter
-        ~stubs
-        ~cache
-        read_from_cache_queries
+      let results =
+        generate_models_from_read_cache_queries_on_targets
+          ~verbose
+          ~resolution
+          ~class_hierarchy_graph
+          ~source_sink_filter
+          ~stubs
+          ~cache
+          read_from_cache_queries
+      in
+      let () =
+        Log.info
+          "Generated %d models from cached %s model queries."
+          (List.length (ModelQueryRegistryMap.get_models results))
+          QueryKind.query_kind_name
+      in
+      results
     in
 
     let model_query_results_regular_queries =
@@ -1196,15 +1255,24 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
           (List.length regular_queries)
           QueryKind.query_kind_name
       in
-      generate_models_from_regular_queries_on_targets_with_multiprocessing
-        ~verbose
-        ~resolution
-        ~scheduler
-        ~class_hierarchy_graph
-        ~source_sink_filter
-        ~stubs
-        ~targets
-        regular_queries
+      let results =
+        generate_models_from_regular_queries_on_targets_with_multiprocessing
+          ~verbose
+          ~resolution
+          ~scheduler
+          ~class_hierarchy_graph
+          ~source_sink_filter
+          ~stubs
+          ~targets
+          regular_queries
+      in
+      let () =
+        Log.info
+          "Generated %d models from regular %s model queries."
+          (List.length (ModelQueryRegistryMap.get_models results))
+          QueryKind.query_kind_name
+      in
+      results
     in
 
     ModelQueryRegistryMap.merge

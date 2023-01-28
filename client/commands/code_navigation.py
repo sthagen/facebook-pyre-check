@@ -105,6 +105,13 @@ class PyreCodeNavigationDaemonLaunchAndSubscribeHandler(
             raise launch_and_subscribe_handler.PyreDaemonShutdown(
                 status_update_subscription.message or ""
             )
+        elif status_update_subscription.kind == "BusyBuilding":
+            self.server_state.server_last_status = state.ServerStatus.INCREMENTAL_CHECK
+            self.client_status_message_handler.log(
+                "The Pyre code-navigation server is busy re-building the project...",
+                short_message="Pyre code-nav (building)",
+                level=lsp.MessageType.WARNING,
+            )
         elif status_update_subscription.kind == "BusyChecking":
             self.server_state.server_last_status = state.ServerStatus.INCREMENTAL_CHECK
             self.client_status_message_handler.log(
@@ -148,7 +155,7 @@ class PyreCodeNavigationDaemonLaunchAndSubscribeHandler(
     async def send_open_state(self) -> None:
         results = await asyncio.gather(
             *[
-                self.daemon_querier.handle_file_opened(path, document.code)
+                self.querier.handle_file_opened(path, document.code)
                 for path, document in self.server_state.opened_documents.items()
             ]
         )
@@ -218,6 +225,9 @@ async def async_run_code_navigation_client(
         server_options=initial_server_options,
     )
     querier = daemon_querier.CodeNavigationDaemonQuerier(server_state=server_state)
+    client_type_error_handler = persistent.ClientTypeErrorHandler(
+        stdout, server_state, remote_logging
+    )
     server = pyre_language_server.PyreLanguageServer(
         input_channel=stdin,
         output_channel=stdout,
@@ -231,12 +241,11 @@ async def async_run_code_navigation_client(
                     stdout, server_state
                 ),
                 querier=querier,
-                client_type_error_handler=persistent.ClientTypeErrorHandler(
-                    stdout, server_state, remote_logging
-                ),
+                client_type_error_handler=client_type_error_handler,
             )
         ),
         querier=querier,
+        client_type_error_handler=client_type_error_handler,
     )
     return await server.run()
 

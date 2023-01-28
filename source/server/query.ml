@@ -56,7 +56,10 @@ module Request = struct
     | Superclasses of Reference.t list
     | Type of Expression.t
     | TypesInFiles of string list
-    | ValidateTaintModels of string option
+    | ValidateTaintModels of {
+        path: string option;
+        verify_dsl: bool;
+      }
   [@@deriving sexp, compare]
 
   let inline_decorators ?(decorators_to_skip = []) function_reference =
@@ -400,8 +403,9 @@ let help () =
            to a list of all types for that path."
     | ValidateTaintModels _ ->
         Some
-          "validate_taint_models('optional path'): Validates models and returns errors. Defaults \
-           to model path in configuration if no parameter is passed in."
+          "validate_taint_models('optional path', verify_dsl=<bool>): Validates models and returns \
+           errors. Defaults to model path in configuration if no parameter is passed in, and \
+           verify_dsl=False. Pass in verify_dsl=True to validate ModelQueries as well."
     | Help _ -> None
   in
   let path = PyrePath.current_working_directory () in
@@ -426,7 +430,7 @@ let help () =
       Superclasses [Reference.empty];
       Type (Node.create_with_default_location (Expression.Constant Constant.True));
       TypesInFiles [""];
-      ValidateTaintModels None;
+      ValidateTaintModels { path = None; verify_dsl = false };
       Request.inline_decorators (Reference.create "");
     ]
   |> List.sort ~compare:String.compare
@@ -503,6 +507,48 @@ let rec parse_request_exn query =
                  "inline_decorators expects qualified name and optional `decorators_to_skip=[...]`")
       in
       let string argument = argument |> expression |> string_of_expression in
+      let boolean argument =
+        let boolean_of_expression = function
+          | Expression.Constant Constant.True -> true
+          | Expression.Constant Constant.False -> false
+          | _ -> raise (InvalidQuery "expected boolean")
+        in
+        argument |> boolean_of_expression
+      in
+      let parse_validate_taint_models arguments =
+        let path, verify_dsl =
+          match arguments with
+          | [] -> None, false
+          | [
+           {
+             Call.Argument.name = Some { Node.value = "verify_dsl"; _ };
+             value = { Node.value = Expression.Constant (True | False) as verify_dsl; _ };
+           };
+          ] ->
+              None, boolean verify_dsl
+          | [path] -> Some (string path), false
+          | [
+              {
+                Call.Argument.name = Some { Node.value = "verify_dsl"; _ };
+                value = { Node.value = Expression.Constant (True | False) as verify_dsl; _ };
+              };
+              path;
+            ]
+          | [
+              path;
+              {
+                Call.Argument.name = Some { Node.value = "verify_dsl"; _ };
+                value = { Node.value = Expression.Constant (True | False) as verify_dsl; _ };
+              };
+            ] ->
+              Some (string path), boolean verify_dsl
+          | _ ->
+              raise
+                (InvalidQuery
+                   "validate_taint_models expects optional path and optional `verify_dsl=...`")
+        in
+        Request.ValidateTaintModels { path; verify_dsl }
+      in
       let integer argument =
         let integer_of_expression = function
           | { Node.value = Expression.Constant (Constant.Integer value); _ } -> value
@@ -565,8 +611,7 @@ let rec parse_request_exn query =
       | "superclasses", names -> Superclasses (List.map ~f:reference names)
       | "type", [argument] -> Type (expression argument)
       | "types", paths -> Request.TypesInFiles (List.map ~f:string paths)
-      | "validate_taint_models", [] -> ValidateTaintModels None
-      | "validate_taint_models", [argument] -> Request.ValidateTaintModels (Some (string argument))
+      | "validate_taint_models", arguments -> parse_validate_taint_models arguments
       | _ -> raise (InvalidQuery "unexpected query"))
   | Ok _ when String.equal query "help" -> Help (help ())
   | Ok _ -> raise (InvalidQuery "unexpected query")
@@ -706,6 +751,56 @@ let rec process_request ~type_environment ~build_system request =
             end_ = { line = stop_line; character = stop_column };
           };
       }
+    in
+    let setup_and_execute_model_queries ~taint_configuration model_queries =
+      let scheduler_wrapper scheduler =
+        let cache =
+          Taint.Cache.load ~scheduler ~configuration ~taint_configuration ~enabled:false
+        in
+        let initial_callables =
+          Taint.Cache.initial_callables cache (fun () ->
+              let timer = Timer.start () in
+              let qualifiers = ModuleTracker.ReadOnly.tracked_explicit_modules module_tracker in
+              let initial_callables =
+                Interprocedural.FetchCallables.from_qualifiers
+                  ~scheduler
+                  ~configuration
+                  ~environment:type_environment
+                  ~include_unit_tests:false
+                  ~qualifiers
+              in
+              Statistics.performance
+                ~name:"Fetched initial callables to analyze"
+                ~phase_name:"Fetching initial callables to analyze"
+                ~timer
+                ();
+              initial_callables)
+        in
+        let qualifiers =
+          Analysis.TypeEnvironment.ReadOnly.module_tracker type_environment
+          |> Analysis.ModuleTracker.ReadOnly.tracked_explicit_modules
+        in
+        let class_hierarchy_graph =
+          Interprocedural.ClassHierarchyGraph.Heap.from_qualifiers
+            ~scheduler
+            ~environment:type_environment
+            ~qualifiers
+        in
+        Taint.ModelQueryExecution.generate_models_from_queries
+          ~resolution:global_resolution
+          ~scheduler
+          ~class_hierarchy_graph:
+            (Interprocedural.ClassHierarchyGraph.SharedMemory.from_heap class_hierarchy_graph)
+          ~source_sink_filter:None
+          ~verbose:false
+          ~callables_and_stubs:
+            (Interprocedural.FetchCallables.get_callables_and_stubs initial_callables)
+          ~stubs:
+            (Interprocedural.Target.HashSet.of_list
+               (Interprocedural.FetchCallables.get_stubs initial_callables))
+          model_queries
+      in
+      Scheduler.with_scheduler ~configuration ~f:scheduler_wrapper
     in
     let module_of_path path =
       let relative_path =
@@ -1018,62 +1113,8 @@ let rec process_request ~type_environment ~build_system request =
                          query_name
                          (PyrePath.show path))
                   else
-                    let get_models_for_query scheduler =
-                      let cache =
-                        Taint.Cache.load
-                          ~scheduler
-                          ~configuration
-                          ~taint_configuration
-                          ~enabled:false
-                      in
-                      let initial_callables =
-                        Taint.Cache.initial_callables cache (fun () ->
-                            let timer = Timer.start () in
-                            let qualifiers =
-                              ModuleTracker.ReadOnly.tracked_explicit_modules module_tracker
-                            in
-                            let initial_callables =
-                              Interprocedural.FetchCallables.from_qualifiers
-                                ~scheduler
-                                ~configuration
-                                ~environment:type_environment
-                                ~include_unit_tests:false
-                                ~qualifiers
-                            in
-                            Statistics.performance
-                              ~name:"Fetched initial callables to analyze"
-                              ~phase_name:"Fetching initial callables to analyze"
-                              ~timer
-                              ();
-                            initial_callables)
-                      in
-                      let qualifiers =
-                        Analysis.TypeEnvironment.ReadOnly.module_tracker type_environment
-                        |> Analysis.ModuleTracker.ReadOnly.tracked_explicit_modules
-                      in
-                      let class_hierarchy_graph =
-                        Interprocedural.ClassHierarchyGraph.Heap.from_qualifiers
-                          ~scheduler
-                          ~environment:type_environment
-                          ~qualifiers
-                      in
-                      Taint.ModelQueryExecution.generate_models_from_queries
-                        ~resolution:global_resolution
-                        ~scheduler
-                        ~class_hierarchy_graph:
-                          (Interprocedural.ClassHierarchyGraph.SharedMemory.from_heap
-                             class_hierarchy_graph)
-                        ~source_sink_filter:None
-                        ~verbose:false
-                        ~callables_and_stubs:
-                          (Interprocedural.FetchCallables.get_callables_and_stubs initial_callables)
-                        ~stubs:
-                          (Interprocedural.Target.HashSet.of_list
-                             (Interprocedural.FetchCallables.get_stubs initial_callables))
-                        rules
-                    in
                     let models_and_names, errors =
-                      Scheduler.with_scheduler ~configuration ~f:get_models_for_query
+                      setup_and_execute_model_queries ~taint_configuration rules
                     in
                     let to_json (callable, model) =
                       `Assoc
@@ -1333,7 +1374,7 @@ let rec process_request ~type_environment ~build_system request =
           Single (Base.TypesByPath results)
         else
           Error (Format.asprintf "Not able to get lookups in: %s" (get_error_paths errors))
-    | ValidateTaintModels path ->
+    | ValidateTaintModels { path; verify_dsl } ->
         let paths =
           match path with
           | Some path ->
@@ -1348,8 +1389,8 @@ let rec process_request ~type_environment ~build_system request =
           Taint.TaintConfiguration.from_taint_model_paths paths
           |> Taint.TaintConfiguration.exception_on_error
         in
-        let get_model_errors sources =
-          let model_errors (path, source) =
+        let get_model_errors_and_model_queries sources =
+          let get_model_errors_and_model_queries (path, source) =
             Taint.ModelParser.parse
               ~resolution:global_resolution
               ~path
@@ -1359,11 +1400,25 @@ let rec process_request ~type_environment ~build_system request =
               ~callables:None
               ~stubs:(Interprocedural.Target.HashSet.create ())
               ()
-            |> fun { Taint.ModelParseResult.errors; _ } -> errors
+            |> fun { Taint.ModelParseResult.errors; queries; _ } -> errors, queries
           in
-          List.concat_map sources ~f:model_errors
+          let model_errors_and_model_queries =
+            List.map sources ~f:get_model_errors_and_model_queries
+          in
+          let errors = List.concat (List.map model_errors_and_model_queries ~f:fst) in
+          let model_queries = List.concat (List.map model_errors_and_model_queries ~f:snd) in
+          errors, model_queries
         in
-        let errors = Taint.ModelParser.get_model_sources ~paths |> get_model_errors in
+        let model_parse_errors, model_queries =
+          get_model_errors_and_model_queries (Taint.ModelParser.get_model_sources ~paths)
+        in
+        let model_query_errors =
+          if verify_dsl then
+            setup_and_execute_model_queries ~taint_configuration model_queries |> snd
+          else
+            []
+        in
+        let errors = List.append model_parse_errors model_query_errors in
         if List.is_empty errors then
           Single
             (Base.Success

@@ -270,6 +270,11 @@ module Make (Analysis : ANALYSIS) = struct
 
     let get_result callable = SharedResults.get callable |> Option.value ~default:Result.empty
 
+    let set_result callable result =
+      SharedResults.remove_batch (KeySet.singleton callable);
+      SharedResults.add callable result
+
+
     let get_is_partial callable =
       match SharedFixpoint.get callable with
       | Some { is_partial; _ } -> is_partial
@@ -339,12 +344,17 @@ module Make (Analysis : ANALYSIS) = struct
       SharedTargets.add Memory.SingletonKey.key targets
 
 
+    let targets () = SharedTargets.get Memory.SingletonKey.key |> Option.value ~default:KeySet.empty
+
+    let clear_results () =
+      let targets = targets () in
+      SharedResults.remove_batch targets
+
+
     (** Remove the fixpoint state from the shared memory. This must be called before computing
         another fixpoint. *)
     let cleanup () =
-      let targets =
-        SharedTargets.get Memory.SingletonKey.key |> Option.value ~default:KeySet.empty
-      in
+      let targets = targets () in
       let () = SharedModels.remove_batch targets in
       let () = SharedModels.remove_old_batch targets in
       let () = SharedResults.remove_batch targets in
@@ -650,6 +660,10 @@ module Make (Analysis : ANALYSIS) = struct
   let get_model (FixpointReached _) target = State.get_model target
 
   let get_result (FixpointReached _) target = State.get_result target
+
+  let set_result (FixpointReached _) target result = State.set_result target result
+
+  let clear_results (FixpointReached _) = State.clear_results ()
 
   let get_iterations (FixpointReached { iterations }) = iterations
 

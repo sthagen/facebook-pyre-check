@@ -10,7 +10,7 @@ import tempfile
 import textwrap
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Iterator, List
+from typing import Callable, Iterator, List, Optional
 from unittest.mock import CallableMixin, patch
 
 import testslide
@@ -66,7 +66,7 @@ from ..persistent import (
     type_errors_to_diagnostics,
 )
 
-from ..pyre_language_server import PyreLanguageServer, read_lsp_request
+from ..pyre_language_server import read_lsp_request
 from ..pyre_server_options import PyreServerOptions
 from ..server_state import OpenedDocumentState, ServerState
 from ..tests import server_setup
@@ -540,7 +540,7 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
         fake_task_manager = background.TaskManager(
             server_setup.WaitForeverBackgroundTask()
         )
-        server = PyreLanguageServer(
+        server = server_setup.create_pyre_language_server(
             input_channel=create_memory_text_reader(""),
             output_channel=create_memory_text_writer(),
             server_state=server_setup.mock_server_state,
@@ -568,7 +568,7 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
         fake_task_manager = background.TaskManager(
             server_setup.WaitForeverBackgroundTask()
         )
-        server = PyreLanguageServer(
+        server = server_setup.create_pyre_language_server(
             input_channel=create_memory_text_reader(""),
             output_channel=create_memory_text_writer(),
             server_state=ServerState(
@@ -600,7 +600,7 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
         fake_task_manager = background.TaskManager(
             server_setup.WaitForeverBackgroundTask()
         )
-        server = PyreLanguageServer(
+        server = server_setup.create_pyre_language_server(
             input_channel=create_memory_text_reader(""),
             output_channel=create_memory_text_writer(),
             server_state=ServerState(
@@ -632,7 +632,7 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
         fake_task_manager = background.TaskManager(
             server_setup.WaitForeverBackgroundTask()
         )
-        server = PyreLanguageServer(
+        server = server_setup.create_pyre_language_server(
             input_channel=create_memory_text_reader(""),
             output_channel=create_memory_text_writer(),
             server_state=ServerState(
@@ -665,7 +665,7 @@ class PyreDaemonLaunchAndSubscribeHandlerTest(testslide.TestCase):
         fake_task_manager = background.TaskManager(
             server_setup.WaitForeverBackgroundTask()
         )
-        server = PyreLanguageServer(
+        server = server_setup.create_pyre_language_server(
             input_channel=create_memory_text_reader(""),
             output_channel=create_memory_text_writer(),
             server_state=ServerState(
@@ -945,7 +945,7 @@ class PyreServerTest(testslide.TestCase):
                 json_rpc.Request(method="exit", parameters=None),
             ]
         )
-        server = PyreLanguageServer(
+        server = server_setup.create_pyre_language_server(
             input_channel=input_channel,
             output_channel=create_memory_text_writer(),
             server_state=server_state,
@@ -967,7 +967,7 @@ class PyreServerTest(testslide.TestCase):
                 json_rpc.Request(method="exit", parameters=None),
             ]
         )
-        server = PyreLanguageServer(
+        server = server_setup.create_pyre_language_server(
             input_channel=input_channel,
             output_channel=create_memory_text_writer(),
             server_state=server_state,
@@ -987,7 +987,7 @@ class PyreServerTest(testslide.TestCase):
                 json_rpc.Request(method="shutdown", parameters=None),
             ]
         )
-        server = PyreLanguageServer(
+        server = server_setup.create_pyre_language_server(
             # Feed only a shutdown request to input channel
             input_channel=input_channel,
             # Always rasing in the output channel
@@ -1006,7 +1006,7 @@ class PyreServerTest(testslide.TestCase):
     async def test_exit_gracefully_on_channel_closure(self) -> None:
         server_state = server_setup.mock_server_state
         noop_task_manager = background.TaskManager(server_setup.NoOpBackgroundTask())
-        server = PyreLanguageServer(
+        server = server_setup.create_pyre_language_server(
             # Feed nothing to input channel
             input_channel=create_memory_text_reader(""),
             # Always rasing in the output channel
@@ -1024,7 +1024,7 @@ class PyreServerTest(testslide.TestCase):
     @setup.async_test
     async def test_open_close(self) -> None:
         server_state = server_setup.mock_server_state
-        server = PyreLanguageServer(
+        server = server_setup.create_pyre_language_server(
             input_channel=create_memory_text_reader(""),
             output_channel=create_memory_text_writer(),
             server_state=server_state,
@@ -1081,7 +1081,7 @@ class PyreServerTest(testslide.TestCase):
                 default_message="pyre is on fire",
             )
         )
-        server = PyreLanguageServer(
+        server = server_setup.create_pyre_language_server(
             input_channel=create_memory_text_reader(""),
             output_channel=AsyncTextWriter(output_writer),
             server_state=server_setup.mock_server_state,
@@ -1116,7 +1116,7 @@ class PyreServerTest(testslide.TestCase):
             server_setup.WaitForeverBackgroundTask()
         )
         querier = server_setup.MockDaemonQuerier(mock_type_coverage=None)
-        server = PyreLanguageServer(
+        server = server_setup.create_pyre_language_server(
             input_channel=create_memory_text_reader(""),
             output_channel=AsyncTextWriter(output_writer),
             server_state=server_setup.mock_server_state,
@@ -1160,17 +1160,35 @@ class PyreServerTest(testslide.TestCase):
             ),
         )
 
+    def _expect_diagnostics(
+        self,
+        uri: str,
+        diagnostics: List[lsp.Diagnostic],
+    ) -> Callable[[str], None]:
+        def expectation(actual_json_string: str) -> None:
+            actual_output = json.loads(actual_json_string)
+            self.assertEqual(actual_output["method"], "textDocument/publishDiagnostics")
+            parameters = actual_output["params"]
+            self.assertEqual(parameters["uri"], uri)
+            self.assertEqual(
+                parameters["diagnostics"],
+                [diagnostic.to_dict() for diagnostic in diagnostics],
+            )
+
+        return expectation
+
     def _expect_telemetry_event(
         self,
         operation: str,
-        result: object,
+        result: Optional[object],
     ) -> Callable[[str], None]:
         def expectation(actual_json_string: str) -> None:
             actual_telemetry = json.loads(actual_json_string)
             self.assertEqual(actual_telemetry["method"], "telemetry/event")
             telemetry_params = actual_telemetry["params"]
             self.assertEqual(telemetry_params["operation"], operation)
-            self.assertEqual(telemetry_params["response"], result)
+            if result is not None:
+                self.assertEqual(telemetry_params["response"], result)
 
         return expectation
 
@@ -1186,6 +1204,184 @@ class PyreServerTest(testslide.TestCase):
         for raw_message, expectation in zip(output_writer.items(), expectations):
             json_string = server_setup.extract_json_from_json_rpc_message(raw_message)
             expectation(json_string)
+
+    @setup.async_test
+    async def test_did_change__basic(self) -> None:
+        tracked_path = Path("/tracked.py")
+        for enabled_telemetry_event in (True, False):
+            querier = server_setup.MockDaemonQuerier()
+            server, output_writer = await server_setup.create_server_for_request_test(
+                opened_documents={
+                    tracked_path: OpenedDocumentState(
+                        code=server_setup.DEFAULT_FILE_CONTENTS
+                    )
+                },
+                querier=querier,
+                server_options=server_setup.create_server_options(
+                    enabled_telemetry_event=enabled_telemetry_event
+                ),
+            )
+            await server.process_did_change_request(
+                parameters=lsp.DidChangeTextDocumentParameters(
+                    text_document=lsp.TextDocumentIdentifier(
+                        uri=lsp.DocumentUri.from_file_path(tracked_path).unparse(),
+                    ),
+                    content_changes=[lsp.ContentChange(text="reveal_type(1)")],
+                ),
+            )
+            # When unsaved changes is not enabled, we should send no requests.
+            self.assertEqual(
+                querier.requests,
+                [],
+            )
+            if enabled_telemetry_event:
+                expectations = [
+                    self._expect_telemetry_event(
+                        operation="didChange",
+                        result=None,
+                    ),
+                ]
+            else:
+                expectations = []
+            self._assert_output_messages(
+                output_writer,
+                expectations,
+            )
+
+    @setup.async_test
+    async def test_did_change__with_type_errors(self) -> None:
+        unsaved_file_content = "# some example code"
+        tracked_path = Path("/tracked.py")
+        for enabled_telemetry_event in (True, False):
+            querier = server_setup.MockDaemonQuerier(
+                mock_type_errors=[
+                    error.Error(
+                        line=1,
+                        column=1,
+                        stop_line=2,
+                        stop_column=2,
+                        path=Path("/tracked.py"),
+                        code=42,
+                        name="name",
+                        description="description",
+                    ),
+                ]
+            )
+            server, output_writer = await server_setup.create_server_for_request_test(
+                opened_documents={
+                    tracked_path: OpenedDocumentState(
+                        code=unsaved_file_content,
+                    )
+                },
+                querier=querier,
+                server_options=server_setup.create_server_options(
+                    enabled_telemetry_event=enabled_telemetry_event,
+                    language_server_features=LanguageServerFeatures(
+                        unsaved_changes=UnsavedChangesAvailability.ENABLED,
+                    ),
+                ),
+            )
+            await server.process_did_change_request(
+                parameters=lsp.DidChangeTextDocumentParameters(
+                    text_document=lsp.TextDocumentIdentifier(
+                        uri=lsp.DocumentUri.from_file_path(tracked_path).unparse(),
+                    ),
+                    content_changes=[lsp.ContentChange(text=unsaved_file_content)],
+                ),
+            )
+            # When unsaved changes is not enabled, we should send no requests.
+            self.assertEqual(
+                querier.requests,
+                [
+                    {"path": tracked_path, "code": unsaved_file_content},
+                ],
+            )
+            expect_diagnostics = self._expect_diagnostics(
+                uri="file:///tracked.py",
+                diagnostics=[
+                    lsp.Diagnostic(
+                        range=lsp.LspRange(
+                            start=lsp.LspPosition(line=0, character=1),
+                            end=lsp.LspPosition(line=1, character=2),
+                        ),
+                        message="description",
+                        severity=lsp.DiagnosticSeverity.ERROR,
+                        code=None,
+                        source="Pyre",
+                    )
+                ],
+            )
+            if enabled_telemetry_event:
+                expectations = [
+                    expect_diagnostics,
+                    self._expect_telemetry_event(
+                        operation="didChange",
+                        result=None,
+                    ),
+                ]
+            else:
+                expectations = [expect_diagnostics]
+            self._assert_output_messages(
+                output_writer,
+                expectations,
+            )
+
+    @setup.async_test
+    async def test_did_change__no_type_errors(self) -> None:
+        tracked_path = Path("/tracked.py")
+        for enabled_telemetry_event in (True, False):
+            querier = server_setup.MockDaemonQuerier(
+                mock_type_errors=[],
+            )
+            server, output_writer = await server_setup.create_server_for_request_test(
+                opened_documents={
+                    tracked_path: OpenedDocumentState(
+                        code=server_setup.DEFAULT_FILE_CONTENTS
+                    )
+                },
+                querier=querier,
+                server_options=server_setup.create_server_options(
+                    enabled_telemetry_event=enabled_telemetry_event,
+                    language_server_features=LanguageServerFeatures(
+                        unsaved_changes=UnsavedChangesAvailability.ENABLED,
+                    ),
+                ),
+            )
+            await server.process_did_change_request(
+                parameters=lsp.DidChangeTextDocumentParameters(
+                    text_document=lsp.TextDocumentIdentifier(
+                        uri=lsp.DocumentUri.from_file_path(tracked_path).unparse(),
+                    ),
+                    content_changes=[
+                        lsp.ContentChange(text=server_setup.DEFAULT_FILE_CONTENTS)
+                    ],
+                ),
+            )
+            # When unsaved changes is not enabled, we should send no requests.
+            self.assertEqual(
+                querier.requests,
+                [
+                    {"path": tracked_path, "code": server_setup.DEFAULT_FILE_CONTENTS},
+                ],
+            )
+            expect_diagnostics = self._expect_diagnostics(
+                uri="file:///tracked.py",
+                diagnostics=[],
+            )
+            if enabled_telemetry_event:
+                expectations = [
+                    expect_diagnostics,
+                    self._expect_telemetry_event(
+                        operation="didChange",
+                        result=None,
+                    ),
+                ]
+            else:
+                expectations = [expect_diagnostics]
+            self._assert_output_messages(
+                output_writer,
+                expectations,
+            )
 
     @setup.async_test
     async def test_hover__basic(self) -> None:

@@ -38,8 +38,25 @@
         "name": "backward",
         "roots": [
           {
+            "extra_traces": [
+              {
+                "message": "Source trace of the secondary flow: StringMayBeSQL",
+                "origin": { "line": 26, "start": 17, "end": 25 },
+                "leaf_kind": "StringMayBeSQL",
+                "trace_kind": "source"
+              },
+              {
+                "message": "Sink trace of the secondary flow: TriggeredPartialSink[UserControlledDataAndStringSQL[sql]]",
+                "origin": { "line": 30, "start": 4, "end": 9 },
+                "leaf_kind": "TriggeredPartialSink[UserControlledDataAndStringSQL[sql]]",
+                "trace_kind": "sink"
+              }
+            ],
             "kinds": [
               {
+                "multi_source_issue_handles": [
+                  "multiple_sources_string_operations.string_operations:4323:0:Call|str.format|1|formal(self):c1f427b93309544b1e0ebadf7bddae7d"
+                ],
                 "kind": "TriggeredPartialSink[UserControlledDataAndStringSQL[ucdata]]"
               }
             ],
@@ -61,189 +78,6 @@
       "parameter": "formal(**kw)"
     },
     "master_handle": "multiple_sources_string_operations.string_operations:4323:0:Call|str.format|1|formal(**kw):5a58e504a343a0f7e559f67d6c187274"
-  }
-}
-{
-  "kind": "issue",
-  "data": {
-    "callable": "multiple_sources_string_operations.string_operations",
-    "callable_line": 25,
-    "code": 4323,
-    "line": 32,
-    "start": 12,
-    "end": 27,
-    "filename": "multiple_sources_string_operations.py",
-    "message": "Potential SQL strings together with user controlled data flow into string operations",
-    "traces": [
-      {
-        "name": "forward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "leaves": [
-                  {
-                    "name": "multiple_sources_string_operations.user_controlled_input"
-                  }
-                ],
-                "kind": "UserControlled"
-              }
-            ],
-            "origin": {
-              "filename": "multiple_sources_string_operations.py",
-              "line": 27,
-              "start": 27,
-              "end": 50
-            }
-          }
-        ]
-      },
-      {
-        "name": "backward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "kind": "TriggeredPartialSink[UserControlledDataAndStringSQL[ucdata]]"
-              }
-            ],
-            "origin": {
-              "filename": "multiple_sources_string_operations.py",
-              "line": 32,
-              "start": 12,
-              "end": 27
-            }
-          }
-        ]
-      }
-    ],
-    "features": [],
-    "sink_handle": {
-      "kind": "Call",
-      "callee": "str.__add__",
-      "index": 0,
-      "parameter": "formal(other)"
-    },
-    "master_handle": "multiple_sources_string_operations.string_operations:4323:0:Call|str.__add__|0|formal(other):824fee63fe33327b00aaaac45e460e91"
-  }
-}
-{
-  "kind": "issue",
-  "data": {
-    "callable": "multiple_sources_string_operations.string_operations",
-    "callable_line": 25,
-    "code": 4323,
-    "line": 35,
-    "start": 12,
-    "end": 27,
-    "filename": "multiple_sources_string_operations.py",
-    "message": "Potential SQL strings together with user controlled data flow into string operations",
-    "traces": [
-      {
-        "name": "forward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "leaves": [
-                  {
-                    "name": "multiple_sources_string_operations.user_controlled_input"
-                  }
-                ],
-                "kind": "UserControlled"
-              }
-            ],
-            "origin": {
-              "filename": "multiple_sources_string_operations.py",
-              "line": 27,
-              "start": 27,
-              "end": 50
-            }
-          }
-        ]
-      },
-      {
-        "name": "backward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "kind": "TriggeredPartialSink[UserControlledDataAndStringSQL[ucdata]]"
-              }
-            ],
-            "origin": {
-              "filename": "multiple_sources_string_operations.py",
-              "line": 35,
-              "start": 12,
-              "end": 27
-            }
-          }
-        ]
-      }
-    ],
-    "features": [],
-    "sink_handle": {
-      "kind": "Call",
-      "callee": "str.__mod__",
-      "index": 0,
-      "parameter": "formal(__x)"
-    },
-    "master_handle": "multiple_sources_string_operations.string_operations:4323:0:Call|str.__mod__|0|formal(__x):a5880fe8f266164fb3e645908b715223"
-  }
-}
-{
-  "kind": "issue",
-  "data": {
-    "callable": "multiple_sources_string_operations.string_operations",
-    "callable_line": 25,
-    "code": 4323,
-    "line": 33,
-    "start": 22,
-    "end": 27,
-    "filename": "multiple_sources_string_operations.py",
-    "message": "Potential SQL strings together with user controlled data flow into string operations",
-    "traces": [
-      {
-        "name": "forward",
-        "roots": [
-          {
-            "kinds": [ { "kind": "StringMayBeSQL" } ],
-            "origin": {
-              "filename": "multiple_sources_string_operations.py",
-              "line": 26,
-              "start": 17,
-              "end": 25
-            }
-          }
-        ]
-      },
-      {
-        "name": "backward",
-        "roots": [
-          {
-            "kinds": [
-              {
-                "kind": "TriggeredPartialSink[UserControlledDataAndStringSQL[sql]]"
-              }
-            ],
-            "origin": {
-              "filename": "multiple_sources_string_operations.py",
-              "line": 33,
-              "start": 22,
-              "end": 27
-            }
-          }
-        ]
-      }
-    ],
-    "features": [],
-    "sink_handle": {
-      "kind": "Call",
-      "callee": "str.__add__",
-      "index": 1,
-      "parameter": "formal(other)"
-    },
-    "master_handle": "multiple_sources_string_operations.string_operations:4323:0:Call|str.__add__|1|formal(other):85c10f58bc04214eb814b120559db29d"
   }
 }
 {
@@ -285,8 +119,25 @@
         "name": "backward",
         "roots": [
           {
+            "extra_traces": [
+              {
+                "message": "Source trace of the secondary flow: StringMayBeSQL",
+                "origin": { "line": 26, "start": 17, "end": 25 },
+                "leaf_kind": "StringMayBeSQL",
+                "trace_kind": "source"
+              },
+              {
+                "message": "Sink trace of the secondary flow: TriggeredPartialSink[UserControlledDataAndStringSQL[sql]]",
+                "origin": { "line": 29, "start": 4, "end": 9 },
+                "leaf_kind": "TriggeredPartialSink[UserControlledDataAndStringSQL[sql]]",
+                "trace_kind": "sink"
+              }
+            ],
             "kinds": [
               {
+                "multi_source_issue_handles": [
+                  "multiple_sources_string_operations.string_operations:4323:0:Call|str.format|0|formal(self):92d72541ec88425dab392b4ca7f9693f"
+                ],
                 "kind": "TriggeredPartialSink[UserControlledDataAndStringSQL[ucdata]]"
               }
             ],
@@ -311,6 +162,246 @@
   }
 }
 {
+  "kind": "issue",
+  "data": {
+    "callable": "multiple_sources_string_operations.string_operations",
+    "callable_line": 25,
+    "code": 4323,
+    "line": 35,
+    "start": 12,
+    "end": 27,
+    "filename": "multiple_sources_string_operations.py",
+    "message": "Potential SQL strings together with user controlled data flow into string operations",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name": "multiple_sources_string_operations.user_controlled_input"
+                  }
+                ],
+                "kind": "UserControlled"
+              }
+            ],
+            "origin": {
+              "filename": "multiple_sources_string_operations.py",
+              "line": 27,
+              "start": 27,
+              "end": 50
+            }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "extra_traces": [
+              {
+                "message": "Source trace of the secondary flow: StringMayBeSQL",
+                "origin": { "line": 26, "start": 17, "end": 25 },
+                "leaf_kind": "StringMayBeSQL",
+                "trace_kind": "source"
+              },
+              {
+                "message": "Sink trace of the secondary flow: TriggeredPartialSink[UserControlledDataAndStringSQL[sql]]",
+                "origin": { "line": 35, "start": 4, "end": 9 },
+                "leaf_kind": "TriggeredPartialSink[UserControlledDataAndStringSQL[sql]]",
+                "trace_kind": "sink"
+              }
+            ],
+            "kinds": [
+              {
+                "multi_source_issue_handles": [
+                  "multiple_sources_string_operations.string_operations:4323:0:Call|str.__mod__|0|formal(self):e7c0cd48e95e14faadca3a7f9ef5d4bf"
+                ],
+                "kind": "TriggeredPartialSink[UserControlledDataAndStringSQL[ucdata]]"
+              }
+            ],
+            "origin": {
+              "filename": "multiple_sources_string_operations.py",
+              "line": 35,
+              "start": 12,
+              "end": 27
+            }
+          }
+        ]
+      }
+    ],
+    "features": [],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "str.__mod__",
+      "index": 0,
+      "parameter": "formal(__x)"
+    },
+    "master_handle": "multiple_sources_string_operations.string_operations:4323:0:Call|str.__mod__|0|formal(__x):a5880fe8f266164fb3e645908b715223"
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "multiple_sources_string_operations.string_operations",
+    "callable_line": 25,
+    "code": 4323,
+    "line": 33,
+    "start": 4,
+    "end": 19,
+    "filename": "multiple_sources_string_operations.py",
+    "message": "Potential SQL strings together with user controlled data flow into string operations",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name": "multiple_sources_string_operations.user_controlled_input"
+                  }
+                ],
+                "kind": "UserControlled"
+              }
+            ],
+            "origin": {
+              "filename": "multiple_sources_string_operations.py",
+              "line": 27,
+              "start": 27,
+              "end": 50
+            }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "extra_traces": [
+              {
+                "message": "Source trace of the secondary flow: StringMayBeSQL",
+                "origin": { "line": 26, "start": 17, "end": 25 },
+                "leaf_kind": "StringMayBeSQL",
+                "trace_kind": "source"
+              },
+              {
+                "message": "Sink trace of the secondary flow: TriggeredPartialSink[UserControlledDataAndStringSQL[sql]]",
+                "origin": { "line": 33, "start": 22, "end": 27 },
+                "leaf_kind": "TriggeredPartialSink[UserControlledDataAndStringSQL[sql]]",
+                "trace_kind": "sink"
+              }
+            ],
+            "kinds": [
+              {
+                "kind": "TriggeredPartialSink[UserControlledDataAndStringSQL[ucdata]]"
+              }
+            ],
+            "origin": {
+              "filename": "multiple_sources_string_operations.py",
+              "line": 33,
+              "start": 4,
+              "end": 19
+            }
+          }
+        ]
+      }
+    ],
+    "features": [],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "str.__add__",
+      "index": 1,
+      "parameter": "formal(self)"
+    },
+    "master_handle": "multiple_sources_string_operations.string_operations:4323:0:Call|str.__add__|1|formal(self):fcd2cfbceb47664570319d4cfa353761"
+  }
+}
+{
+  "kind": "issue",
+  "data": {
+    "callable": "multiple_sources_string_operations.string_operations",
+    "callable_line": 25,
+    "code": 4323,
+    "line": 32,
+    "start": 12,
+    "end": 27,
+    "filename": "multiple_sources_string_operations.py",
+    "message": "Potential SQL strings together with user controlled data flow into string operations",
+    "traces": [
+      {
+        "name": "forward",
+        "roots": [
+          {
+            "kinds": [
+              {
+                "leaves": [
+                  {
+                    "name": "multiple_sources_string_operations.user_controlled_input"
+                  }
+                ],
+                "kind": "UserControlled"
+              }
+            ],
+            "origin": {
+              "filename": "multiple_sources_string_operations.py",
+              "line": 27,
+              "start": 27,
+              "end": 50
+            }
+          }
+        ]
+      },
+      {
+        "name": "backward",
+        "roots": [
+          {
+            "extra_traces": [
+              {
+                "message": "Source trace of the secondary flow: StringMayBeSQL",
+                "origin": { "line": 26, "start": 17, "end": 25 },
+                "leaf_kind": "StringMayBeSQL",
+                "trace_kind": "source"
+              },
+              {
+                "message": "Sink trace of the secondary flow: TriggeredPartialSink[UserControlledDataAndStringSQL[sql]]",
+                "origin": { "line": 32, "start": 4, "end": 9 },
+                "leaf_kind": "TriggeredPartialSink[UserControlledDataAndStringSQL[sql]]",
+                "trace_kind": "sink"
+              }
+            ],
+            "kinds": [
+              {
+                "multi_source_issue_handles": [
+                  "multiple_sources_string_operations.string_operations:4323:0:Call|str.__add__|0|formal(self):15548d8dcf134784a1068a013ab3b52e"
+                ],
+                "kind": "TriggeredPartialSink[UserControlledDataAndStringSQL[ucdata]]"
+              }
+            ],
+            "origin": {
+              "filename": "multiple_sources_string_operations.py",
+              "line": 32,
+              "start": 12,
+              "end": 27
+            }
+          }
+        ]
+      }
+    ],
+    "features": [],
+    "sink_handle": {
+      "kind": "Call",
+      "callee": "str.__add__",
+      "index": 0,
+      "parameter": "formal(other)"
+    },
+    "master_handle": "multiple_sources_string_operations.string_operations:4323:0:Call|str.__add__|0|formal(other):824fee63fe33327b00aaaac45e460e91"
+  }
+}
+{
   "kind": "model",
   "data": {
     "callable": "multiple_sources_string_operations.DatabaseSchemaEditor.string_operations",
@@ -321,13 +412,6 @@
           {
             "caller_interval": [ { "lower": 2, "upper": 3 } ],
             "is_self_call": false,
-            "extra_traces": [
-              {
-                "origin": { "line": 21, "start": 31, "end": 54 },
-                "leaf_kind": "UserControlled",
-                "trace_kind": "source"
-              }
-            ],
             "kinds": [
               {
                 "multi_source_issue_handles": [

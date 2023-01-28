@@ -3,6 +3,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+from typing import Union
+
 
 class Node:
     def __init__(self, id) -> None:
@@ -62,6 +64,8 @@ def wrapper(id, vc):
 def no_issue_with_wrapper_call():
     id = user_controlled_input()
     vc = permissive_context()
+    # Since we do not propagate the untriggered partial sinks,
+    # we miss the issue here
     wrapper(id, vc)
 
 
@@ -136,11 +140,52 @@ def user_controlled_input_wrapper():
     return user_controlled_input()
 
 
-def demonstrate_triggered_context_2(vc):
+def demonstrate_triggered_context_more_hops(vc):
+    # More hops enable showing the source trace as a subtrace
     id = user_controlled_input_wrapper()
     Node.get(id).send(vc)
 
 
-def multiple_source_traces():
+def issue_with_triggered_context_more_hops():
     vc = permissive_context()
-    demonstrate_triggered_context_2(vc)
+    demonstrate_triggered_context_more_hops(vc)
+
+
+class A:
+    def multi_sink(self, user_controlled, permissive_context):
+        pass
+
+
+class B:
+    def multi_sink(self, user_controlled, permissive_context):
+        pass
+
+
+def muliple_main_issues_1(a_or_b: Union[A, B]):
+    # Due to multiple potential callables at the same call site
+    a_or_b.multi_sink(user_controlled_input(), permissive_context())
+
+
+def muliple_main_issues_2():
+    # Due to joining the issue handles from multiple call sites
+    vc = permissive_context()
+    multiple_triggered_context(vc)
+
+
+def multiple_triggered_context(vc):
+    id1 = user_controlled_input()
+    Node.get(id1).send(vc)
+    id2 = user_controlled_input()
+    Node.get(id2).send(vc)
+
+
+def false_negative_triggered_context(vc):
+    id = user_controlled_input()
+    # Since we do not propagate the untriggered partial sinks,
+    # we do not trigger a partial sink here
+    wrapper(id, vc)
+
+
+def no_issue_with_wrapper_call_2():
+    vc = permissive_context()
+    false_negative_triggered_context(vc)

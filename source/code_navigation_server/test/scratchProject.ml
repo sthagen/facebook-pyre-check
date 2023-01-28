@@ -77,7 +77,17 @@ type t = {
   start_options: StartOptions.t;
 }
 
-let setup ~context ?(include_typeshed_stubs = true) ?(critical_files = []) ?watchman sources =
+let setup
+    ~context
+    ?(include_typeshed_stubs = true)
+    ?(critical_files = [])
+    ?source_root
+    ?external_root
+    ?filter_directories
+    ?watchman
+    ?(build_system_initializer = BuildSystem.Initializer.null)
+    sources
+  =
   (* MacOS tends to use very long directory name as the default `temp_dir`. This unfortunately would
      make the filename of temporary socket files exceed the default Unix limit. Hard-coding temp dir
      to `/tmp` to avoid the issue for now. *)
@@ -86,12 +96,20 @@ let setup ~context ?(include_typeshed_stubs = true) ?(critical_files = []) ?watc
   (* We assume that there's only one checked source directory that acts as the global root as
      well. *)
   let source_root =
-    bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true
+    Option.value
+      source_root
+      ~default:(bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true)
   in
   (* We assume that there's only one external source directory. *)
   let external_root =
-    bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true
+    Option.value
+      external_root
+      ~default:(bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true)
   in
+  (* This is an allowlist for internal sources. In no-buck case this should be the same as source
+     root. For Buck-like setup this should be set to source dir and [source_root] needs to be set to
+     artifact dir. *)
+  let filter_directories = Option.value filter_directories ~default:[source_root] in
   let external_sources =
     if include_typeshed_stubs then
       Test.typeshed_stubs ~include_helper_builtins:false ()
@@ -110,7 +128,7 @@ let setup ~context ?(include_typeshed_stubs = true) ?(critical_files = []) ?watc
     Configuration.Analysis.create
       ~parallel:false
       ~analyze_external_sources:false
-      ~filter_directories:[source_root]
+      ~filter_directories
       ~ignore_all_errors:[]
       ~number_of_workers:1
       ~local_root:source_root
@@ -142,6 +160,7 @@ let setup ~context ?(include_typeshed_stubs = true) ?(critical_files = []) ?watc
           ~root:(PyrePath.create_absolute (bracket_tmpdir context))
           ~relative:"pyre_server_hash.sock";
       watchman;
+      build_system_initializer;
       critical_files;
     }
   in
