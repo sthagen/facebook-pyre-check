@@ -2223,8 +2223,7 @@ let test_invalid_models context =
         model = Returns(TaintSource[Test])
       )
     |}
-    ~expect:
-      {|The model query arguments for `ModelQuery(find = "functions", where = name.matches("foo"), model = Returns(TaintSource[Test]))` are invalid: expected a name, find, where and model clause, with optional `expected_models` and `unexpected_models` clauses.|}
+    ~expect:{|Missing required parameter `name` in model query.|}
     ();
   assert_invalid_model
     ~model_source:
@@ -2235,8 +2234,7 @@ let test_invalid_models context =
         model = Returns(TaintSource[Test])
       )
     |}
-    ~expect:
-      {|The model query arguments for `ModelQuery(name = "invalid_model", where = name.matches("foo"), model = Returns(TaintSource[Test]))` are invalid: expected a name, find, where and model clause, with optional `expected_models` and `unexpected_models` clauses.|}
+    ~expect:{|Missing required parameter `find` in model query.|}
     ();
   assert_invalid_model
     ~model_source:
@@ -2247,8 +2245,7 @@ let test_invalid_models context =
         model = Returns(TaintSource[Test])
       )
     |}
-    ~expect:
-      {|The model query arguments for `ModelQuery(name = "invalid_model", find = "functions", model = Returns(TaintSource[Test]))` are invalid: expected a name, find, where and model clause, with optional `expected_models` and `unexpected_models` clauses.|}
+    ~expect:{|Missing required parameter `where` in model query.|}
     ();
   assert_invalid_model
     ~model_source:
@@ -2259,8 +2256,7 @@ let test_invalid_models context =
         where = name.matches("foo")
       )
     |}
-    ~expect:
-      {|The model query arguments for `ModelQuery(name = "invalid_model", find = "functions", where = name.matches("foo"))` are invalid: expected a name, find, where and model clause, with optional `expected_models` and `unexpected_models` clauses.|}
+    ~expect:{|Missing required parameter `model` in model query.|}
     ();
   assert_invalid_model
     ~source:{|
@@ -3715,7 +3711,7 @@ let test_invalid_models context =
       )
     |}
     ~expect:
-      {|The model query arguments for `ModelQuery(name = "invalid_model", fnid = "functions", where = name.matches("foo"), model = Returns(TaintSource[Test]))` are invalid: expected a name, find, where and model clause, with optional `expected_models` and `unexpected_models` clauses.|}
+      {|Unsupported named parameter `fnid` in model query (expected: name, find, where, model, expected_models, unexpected_models).|}
     ();
   assert_invalid_model
     ~model_source:
@@ -3728,8 +3724,7 @@ let test_invalid_models context =
         model = Returns(TaintSource[Test])
       )
     |}
-    ~expect:
-      {|The model query arguments for `ModelQuery(name = "invalid_model", find = "functions", find = "functions", where = name.matches("foo"), model = Returns(TaintSource[Test]))` are invalid: expected a name, find, where and model clause, with optional `expected_models` and `unexpected_models` clauses.|}
+    ~expect:{|Duplicate parameter `find` in model query.|}
     ();
 
   (* Test expected_models and unexpected_models clauses *)
@@ -3749,8 +3744,7 @@ let test_invalid_models context =
         ]
       )
     |}
-    ~expect:
-      {|The model query arguments for `ModelQuery(name = "invalid_model", find = "functions", where = name.matches("foo"), model = Returns(TaintSource[Test]), expected_models = ["def test.food() -> TaintSource[Test]: ..."], expected_models = ["def test.food() -> TaintSource[Test]: ..."])` are invalid: expected a name, find, where and model clause, with optional `expected_models` and `unexpected_models` clauses.|}
+    ~expect:{|Duplicate parameter `expected_models` in model query.|}
     ();
   assert_invalid_model
     ~source:{|
@@ -4857,6 +4851,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where = [NameConstraint (Matches (Re2.create_exn "foo"))];
           find = Function;
@@ -4889,6 +4884,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where = [FullyQualifiedNameConstraint (Matches (Re2.create_exn "foo"))];
           find = Function;
@@ -4921,6 +4917,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where = [NameConstraint (Equals "foo")];
           find = Function;
@@ -4953,6 +4950,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where = [FullyQualifiedNameConstraint (Equals "test.foo")];
           find = Function;
@@ -4985,6 +4983,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where =
             [
@@ -5021,6 +5020,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where = [NameConstraint (Matches (Re2.create_exn "foo"))];
           find = Function;
@@ -5055,6 +5055,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where = [FullyQualifiedNameConstraint (Equals "test.foo")];
           find = Function;
@@ -5089,6 +5090,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "foo_finders";
+          logging_group_name = None;
           path = None;
           where = [NameConstraint (Matches (Re2.create_exn "foo"))];
           find = Function;
@@ -5123,6 +5125,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "foo_finders";
+          logging_group_name = None;
           path = None;
           where = [ReturnConstraint IsAnnotatedTypeConstraint];
           find = Function;
@@ -5155,6 +5158,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "foo_finders";
+          logging_group_name = None;
           path = None;
           where = [AnyParameterConstraint (AnnotationConstraint IsAnnotatedTypeConstraint)];
           find = Function;
@@ -5190,6 +5194,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 10; column = 1 } };
           name = "foo_finders";
+          logging_group_name = None;
           path = None;
           where =
             [
@@ -5232,6 +5237,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 10; column = 1 } };
           name = "foo_finders";
+          logging_group_name = None;
           path = None;
           where =
             [
@@ -5272,6 +5278,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "foo_finders";
+          logging_group_name = None;
           path = None;
           where = [NameConstraint (Matches (Re2.create_exn "foo"))];
           find = Function;
@@ -5308,6 +5315,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "foo_finders";
+          logging_group_name = None;
           path = None;
           where = [NameConstraint (Matches (Re2.create_exn "foo"))];
           find = Function;
@@ -5344,6 +5352,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "foo_finders";
+          logging_group_name = None;
           path = None;
           where = [NameConstraint (Matches (Re2.create_exn "foo"))];
           find = Function;
@@ -5384,6 +5393,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 11; column = 1 } };
           name = "foo_finders";
+          logging_group_name = None;
           path = None;
           where = [AnyParameterConstraint (AnnotationConstraint IsAnnotatedTypeConstraint)];
           find = Function;
@@ -5424,6 +5434,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 11; column = 1 } };
           name = "foo_finders";
+          logging_group_name = None;
           path = None;
           where = [AnyParameterConstraint (AnnotationConstraint IsAnnotatedTypeConstraint)];
           find = Function;
@@ -5459,6 +5470,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where = [ClassConstraint (NameConstraint (Equals "Foo"))];
           find = Method;
@@ -5493,6 +5505,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where = [ClassConstraint (FullyQualifiedNameConstraint (Equals "test.Foo"))];
           find = Method;
@@ -5527,6 +5540,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where =
             [
@@ -5565,6 +5579,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where =
             [
@@ -5601,6 +5616,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where =
             [
@@ -5637,6 +5653,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where =
             [
@@ -5673,6 +5690,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where =
             [
@@ -5709,6 +5727,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where = [ClassConstraint (NameConstraint (Matches (Re2.create_exn "Foo.*")))];
           find = Method;
@@ -5743,6 +5762,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where =
             [
@@ -5781,6 +5801,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where =
             [
@@ -5819,6 +5840,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where = [AnyDecoratorConstraint (NameConstraint (Matches (Re2.create_exn "foo")))];
           find = Method;
@@ -5851,6 +5873,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where =
             [AnyDecoratorConstraint (FullyQualifiedNameConstraint (Matches (Re2.create_exn "foo")))];
@@ -5884,6 +5907,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where =
             [
@@ -5924,6 +5948,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where =
             [
@@ -5970,6 +5995,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where =
             [
@@ -6034,6 +6060,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 19; column = 1 } };
           name = "get_POST_annotated_sources";
+          logging_group_name = None;
           path = None;
           where = [AnyDecoratorConstraint (NameConstraint (Matches (Re2.create_exn "api_view")))];
           find = Function;
@@ -6099,6 +6126,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 10; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where = [NameConstraint (Matches (Re2.create_exn "foo"))];
           find = Function;
@@ -6142,6 +6170,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 10; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where = [NameConstraint (Matches (Re2.create_exn "foo"))];
           find = Function;
@@ -6189,6 +6218,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 14; column = 1 } };
           name = "get_foo";
+          logging_group_name = None;
           path = None;
           where = [NameConstraint (Matches (Re2.create_exn "foo"))];
           find = Function;
@@ -6271,6 +6301,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 26; column = 1 } };
           name = "get_parent_of_d1_decorator_sources";
+          logging_group_name = None;
           path = None;
           where =
             [
@@ -6365,6 +6396,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 27; column = 1 } };
           name = "get_parent_of_d1_decorator_transitive_sources";
+          logging_group_name = None;
           path = None;
           where =
             [
@@ -6460,6 +6492,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 27; column = 1 } };
           name = "get_parent_of_d1_decorator_sources";
+          logging_group_name = None;
           path = None;
           where =
             [
@@ -6521,6 +6554,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "foo_finders";
+          logging_group_name = None;
           path = None;
           where = [NameConstraint (Matches (Re2.create_exn "foo"))];
           find = Global;
@@ -6553,6 +6587,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "foo_finders";
+          logging_group_name = None;
           path = None;
           where = [NameConstraint (Matches (Re2.create_exn "foo"))];
           find = Global;
@@ -6587,6 +6622,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "foo";
+          logging_group_name = None;
           path = None;
           where = [ReadFromCache { kind = "thrift"; name = "cache:name" }];
           find = Method;
@@ -6622,6 +6658,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 10; column = 1 } };
           name = "foo";
+          logging_group_name = None;
           path = None;
           where =
             [
@@ -6664,6 +6701,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 10; column = 1 } };
           name = "foo";
+          logging_group_name = None;
           path = None;
           where =
             [
@@ -6703,6 +6741,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "foo";
+          logging_group_name = None;
           path = None;
           where = [NameConstraint (Matches (Re2.create_exn "foo"))];
           find = Method;
@@ -6740,6 +6779,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "foo";
+          logging_group_name = None;
           path = None;
           where = [NameConstraint (Matches (Re2.create_exn "foo"))];
           find = Function;
@@ -6769,6 +6809,7 @@ let test_query_parsing context =
         {
           location = { start = { line = 2; column = 0 }; stop = { line = 7; column = 1 } };
           name = "foo";
+          logging_group_name = None;
           path = None;
           where = [NameConstraint (Matches (Re2.create_exn "^foo(?P<x>.*)bar(?P<y>.*)$"))];
           find = Function;
@@ -6784,6 +6825,41 @@ let test_query_parsing context =
                       WriteToCache.Substring.Capture "y";
                     ];
                 };
+            ];
+          expected_models = [];
+          unexpected_models = [];
+        };
+      ]
+    ();
+
+  assert_queries
+    ~context
+    ~model_source:
+      {|
+    ModelQuery(
+     name = "get_foo",
+     logging_group_name = "get_bar",
+     find = "functions",
+     where = name.matches("foo"),
+     model = Returns(TaintSource[Test])
+    )
+  |}
+    ~expect:
+      [
+        {
+          location = { start = { line = 2; column = 0 }; stop = { line = 8; column = 1 } };
+          name = "get_foo";
+          logging_group_name = Some "get_bar";
+          path = None;
+          where = [NameConstraint (Matches (Re2.create_exn "foo"))];
+          find = Function;
+          models =
+            [
+              Return
+                [
+                  TaintAnnotation
+                    (ModelParseResult.TaintAnnotation.from_source (Sources.NamedSource "Test"));
+                ];
             ];
           expected_models = [];
           unexpected_models = [];

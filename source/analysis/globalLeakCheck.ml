@@ -49,35 +49,49 @@ module State (Context : Context) = struct
 
   let errors () = Context.error_map |> LocalErrorMap.all_errors
 
-  let is_known_mutation_method identifier =
-    match identifier with
-    (* list mutators *)
-    | "append"
-    | "insert"
-    | "extend"
-    (* dict mutators *)
-    | "setdefault"
-    (* set mutators *)
-    | "add"
-    | "intersection_update"
-    | "difference_update"
-    | "symmetric_difference_update"
-    (* mutators for multiple of the above *)
-    | "update"
-    | "__setitem__"
-    (* mutators for objects *)
-    | "__setattr__" ->
-        true
-    | _ -> false
+  let known_mutation_methods =
+    String.Set.of_list
+      [
+        "list.append";
+        "list.insert";
+        "list.extend";
+        "dict.setdefault";
+        "dict.update";
+        "set.add";
+        "set.update";
+        "set.intersection_update";
+        "set.difference_update";
+        "set.symmetric_difference_update";
+      ]
+
+
+  let is_known_mutation_method ~resolution expression identifier =
+    let is_blocklisted_method () =
+      let expression_type =
+        Resolution.resolve_expression_to_type resolution expression
+        |> Type.class_name
+        |> Reference.show
+      in
+      String.Set.mem known_mutation_methods (expression_type ^ "." ^ identifier)
+    in
+    String.equal identifier "__setitem__"
+    or String.equal identifier "__setattr__"
+    or is_blocklisted_method ()
 
 
   let rec forward_expression
       ~error_on_global_target
+      ~resolution
       ?(is_mutable_expression = false)
       { Node.value; location }
     =
     let forward_expression ?(is_mutable_expression = is_mutable_expression) =
-      forward_expression ~error_on_global_target ~is_mutable_expression
+      forward_expression ~error_on_global_target ~is_mutable_expression ~resolution
+    in
+    let forward_generator { Comprehension.Generator.target; iterator; conditions; _ } =
+      forward_expression target;
+      forward_expression iterator;
+      List.iter ~f:forward_expression conditions
     in
     match value with
     (* interesting cases *)
@@ -85,23 +99,108 @@ module State (Context : Context) = struct
         if is_mutable_expression then
           error_on_global_target ~location target
     | Name (Name.Attribute { base; attribute; _ }) ->
-        let is_mutable_expression = is_mutable_expression or is_known_mutation_method attribute in
+        let is_mutable_expression =
+          is_mutable_expression or is_known_mutation_method ~resolution base attribute
+        in
         forward_expression ~is_mutable_expression base
     | Call { callee; arguments } ->
         forward_expression callee;
         List.iter ~f:(fun { value; _ } -> forward_expression value) arguments
-    | _ -> ()
+    | Expression.Constant _
+    | Yield None ->
+        ()
+    | Await expression
+    | Yield (Some expression)
+    | YieldFrom expression
+    | UnaryOperator { operand = expression; _ }
+    | Starred (Once expression)
+    | Starred (Twice expression) ->
+        forward_expression expression
+    | List expressions
+    | Set expressions
+    | Tuple expressions ->
+        List.iter ~f:forward_expression expressions
+    | BooleanOperator { left; right; _ }
+    | ComparisonOperator { left; right; _ } ->
+        forward_expression left;
+        forward_expression right
+    | WalrusOperator { target; value } ->
+        forward_assignment_target ~error_on_global_target ~resolution target;
+        forward_expression value
+    | Dictionary { entries; keywords } ->
+        let forward_entries { Dictionary.Entry.key; value } =
+          forward_expression key;
+          forward_expression value
+        in
+        List.iter ~f:forward_entries entries;
+        List.iter ~f:forward_expression keywords
+    | DictionaryComprehension { element = { key; value }; generators } ->
+        forward_expression key;
+        forward_expression value;
+        List.iter ~f:forward_generator generators
+    | Generator { element; generators }
+    | ListComprehension { element; generators }
+    | SetComprehension { element; generators } ->
+        forward_expression element;
+        List.iter ~f:forward_generator generators
+    | FormatString substrings ->
+        let forward_format_string = function
+          | Substring.Format expression -> forward_expression expression
+          | _ -> ()
+        in
+        List.iter ~f:forward_format_string substrings
+    | Lambda { parameters; body } ->
+        let forward_parameters { Node.value = { Parameter.value; _ }; _ } =
+          Option.iter ~f:forward_expression value
+        in
+        List.iter ~f:forward_parameters parameters;
+        forward_expression body
+    | Ternary { target; test; alternative } ->
+        forward_expression test;
+        forward_expression target;
+        forward_expression alternative
 
 
-  and forward_assignment_target ~error_on_global_target ({ Node.value; location } as expression) =
-    let forward_assignment_target = forward_assignment_target ~error_on_global_target in
+  and forward_assignment_target
+      ~error_on_global_target
+      ~resolution
+      ({ Node.value; location } as expression)
+    =
+    let forward_assignment_target = forward_assignment_target ~error_on_global_target ~resolution in
     match value with
-    (* interesting cases *)
     | Expression.Name (Name.Identifier target) -> error_on_global_target ~location target
     | Name (Name.Attribute { base; _ }) -> forward_assignment_target base
-    | Tuple values -> List.iter ~f:forward_assignment_target values
-    | Call _ -> forward_expression ~error_on_global_target ~is_mutable_expression:true expression
-    | _ -> ()
+    | Call _ ->
+        forward_expression
+          ~resolution
+          ~error_on_global_target
+          ~is_mutable_expression:true
+          expression
+    | Constant _
+    | UnaryOperator _
+    | Await _
+    | Yield _
+    | Starred (Twice _)
+    | YieldFrom _
+    | Set _
+    | Dictionary _
+    | DictionaryComprehension _
+    | Generator _
+    | ListComprehension _
+    | SetComprehension _
+    | FormatString _
+    | Lambda _
+    | Ternary _
+    | WalrusOperator _ ->
+        ()
+    | Starred (Once expression) -> forward_assignment_target expression
+    | List expressions
+    | Tuple expressions ->
+        List.iter ~f:forward_assignment_target expressions
+    | BooleanOperator { left; right; _ }
+    | ComparisonOperator { left; right; _ } ->
+        forward_assignment_target left;
+        forward_assignment_target right
 
 
   let forward ~statement_key state ~statement:{ Node.value; _ } =
@@ -131,16 +230,18 @@ module State (Context : Context) = struct
       else
         ()
     in
+    let forward_expression = forward_expression ~resolution ~error_on_global_target in
     match value with
     | Statement.Assert _ -> ()
     | Assign { target; value; _ } ->
-        forward_assignment_target ~error_on_global_target target;
-        forward_expression ~error_on_global_target value
+        forward_assignment_target ~resolution ~error_on_global_target target;
+        forward_expression value
+    | Expression expression -> forward_expression expression
+    | Raise { expression; from } ->
+        Option.iter ~f:forward_expression expression;
+        Option.iter ~f:forward_expression from
+    | Return { expression = Some expression; _ } -> forward_expression expression
     | Delete _ -> ()
-    | Expression _ -> ()
-    | Raise _ -> ()
-    | Return { expression = Some expression; _ } ->
-        forward_expression ~error_on_global_target expression
     | Return _ -> ()
     (* Control flow and nested functions/classes doesn't need to be analyzed explicitly. *)
     | If _

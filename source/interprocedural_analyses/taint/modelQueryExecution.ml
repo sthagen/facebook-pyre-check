@@ -25,9 +25,9 @@ module ModelQueryRegistryMap = struct
 
   let empty = String.Map.empty
 
-  let add model_query_map ~model_query_name ~registry =
+  let add model_query_map ~model_query_identifier ~registry =
     if not (Registry.is_empty registry) then
-      String.Map.update model_query_map model_query_name ~f:(function
+      String.Map.update model_query_map model_query_identifier ~f:(function
           | None -> registry
           | Some existing -> Registry.merge ~join:Model.join_user_models existing registry)
     else
@@ -47,10 +47,12 @@ module ModelQueryRegistryMap = struct
   let to_alist = String.Map.to_alist ~key_order:`Increasing
 
   let mapi model_query_map ~f =
-    String.Map.mapi ~f:(fun ~key ~data -> f ~model_query_name:key ~models:data) model_query_map
+    String.Map.mapi
+      ~f:(fun ~key ~data -> f ~model_query_identifier:key ~models:data)
+      model_query_map
 
 
-  let get_model_query_names = String.Map.keys
+  let get_model_query_identifiers = String.Map.keys
 
   let get_models = String.Map.data
 
@@ -147,24 +149,82 @@ module ModelQueryRegistryMap = struct
 
 
   let check_errors ~model_query_results ~queries =
-    let errors =
-      List.filter_map queries ~f:(fun query ->
-          let models = get model_query_results query.ModelQuery.name in
-          Statistics.log_model_query_outputs
-            ~model_query_name:query.name
-            ~generated_models_count:(Registry.size (Option.value models ~default:Registry.empty))
-            ();
-          match models with
-          | Some _ -> None
-          | None ->
-              Some
-                {
-                  ModelVerificationError.kind =
-                    ModelVerificationError.NoOutputFromModelQuery query.name;
-                  location = query.location;
-                  path = query.path;
-                })
+    let module LoggingGroup = struct
+      type t = {
+        name: string;
+        models_count: int;
+        (* Location and path of the first query in the group. *)
+        location: Location.t;
+        path: PyrePath.t option;
+      }
+
+      let add ({ models_count; _ } as model_group) count =
+        { model_group with models_count = models_count + count }
+    end
     in
+    let count_models
+        (logging_group_map, errors)
+        ({ ModelQuery.name; logging_group_name; location; path; _ } as query)
+      =
+      let model_query_identifier = ModelQuery.unique_identifier query in
+      let models_count =
+        get model_query_results model_query_identifier
+        |> Option.value ~default:Registry.empty
+        |> Registry.size
+      in
+      match logging_group_name with
+      | None ->
+          let () =
+            Statistics.log_model_query_outputs
+              ~is_group:false
+              ~model_query_name:model_query_identifier
+              ~generated_models_count:models_count
+              ()
+          in
+          let errors =
+            if models_count = 0 then
+              { ModelVerificationError.kind = NoOutputFromModelQuery name; location; path }
+              :: errors
+            else
+              errors
+          in
+          logging_group_map, errors
+      | Some logging_group_name ->
+          let update = function
+            | None -> { LoggingGroup.name = logging_group_name; models_count; location; path }
+            | Some existing -> LoggingGroup.add existing models_count
+          in
+          let logging_group_map =
+            String.Map.update ~f:update logging_group_map logging_group_name
+          in
+          logging_group_map, errors
+    in
+    let check_logging_group
+        ~key:logging_group_name
+        ~data:{ LoggingGroup.models_count; location; path; _ }
+        errors
+      =
+      let () =
+        Statistics.log_model_query_outputs
+          ~is_group:true
+          ~model_query_name:logging_group_name
+          ~generated_models_count:models_count
+          ()
+      in
+      if models_count = 0 then
+        {
+          ModelVerificationError.kind = NoOutputFromModelQueryGroup logging_group_name;
+          location;
+          path;
+        }
+        :: errors
+      else
+        errors
+    in
+    let logging_group_map, errors =
+      List.fold ~f:count_models ~init:(String.Map.empty, []) queries
+    in
+    let errors = String.Map.fold logging_group_map ~f:check_logging_group ~init:errors in
     Statistics.flush ();
     errors
 end
@@ -185,14 +245,12 @@ module DumpModelQueryResults = struct
               model );
         ]
     in
-    let to_json ~key:model_query_name ~data:models =
+    let to_json ~key:model_query_identifier ~data:models =
       models
       |> Registry.to_alist
       |> List.map ~f:model_to_json
       |> fun models ->
-      `List models
-      |> fun models_json ->
-      `Assoc [(* TODO(T123305362) also include filenames *) model_query_name, models_json]
+      `List models |> fun models_json -> `Assoc [model_query_identifier, models_json]
     in
     `List (String.Map.data (String.Map.mapi model_query_results ~f:to_json))
     |> Yojson.Safe.pretty_to_string
@@ -1005,7 +1063,8 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
       ~targets
       queries
     =
-    let fold model_query_results ({ ModelQuery.name = model_query_name; _ } as query) =
+    let fold model_query_results query =
+      let identifier = ModelQuery.unique_identifier query in
       let registry =
         generate_models_from_query_on_targets
           ~verbose
@@ -1016,7 +1075,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
           ~targets
           query
       in
-      ModelQueryRegistryMap.add model_query_results ~model_query_name ~registry
+      ModelQueryRegistryMap.add model_query_results ~model_query_identifier:identifier ~registry
     in
     List.fold queries ~init:ModelQueryRegistryMap.empty ~f:fold
 
@@ -1134,6 +1193,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
             model_query_name
           |> failwith
       | Set candidates ->
+          let identifier = ModelQuery.unique_identifier query in
           let registry =
             generate_models_from_query_on_targets
               ~verbose
@@ -1144,7 +1204,7 @@ module MakeQueryExecutor (QueryKind : QUERY_KIND) = struct
               ~targets:(Target.Set.elements candidates)
               query
           in
-          ModelQueryRegistryMap.add model_query_results ~model_query_name ~registry
+          ModelQueryRegistryMap.add model_query_results ~model_query_identifier:identifier ~registry
     in
     List.fold read_from_cache_queries ~init:ModelQueryRegistryMap.empty ~f:fold
 

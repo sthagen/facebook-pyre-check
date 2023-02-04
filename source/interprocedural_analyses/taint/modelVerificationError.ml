@@ -54,7 +54,11 @@ type kind =
       name: Reference.t;
       actual_name: Reference.t;
     }
-  | InvalidModelQueryClauses of Statement.t
+  | ModelQueryUnsupportedNamedParameter of string
+  | ModelQueryUnnamedParameter of Expression.t
+  | ModelQueryMissingRequiredParameter of string
+  | ModelQueryDuplicateParameter of string
+  | InvalidModelQueryNameClause of Expression.t
   | InvalidModelQueryWhereClause of {
       expression: Expression.t;
       find_clause_kind: string;
@@ -136,6 +140,7 @@ type kind =
     }
   | DuplicateNameClauses of string
   | NoOutputFromModelQuery of string
+  | NoOutputFromModelQueryGroup of string
   | ExpectedModelsAreMissing of {
       model_query_name: string;
       models: string list;
@@ -254,12 +259,26 @@ let description error =
         name
         Reference.pp
         actual_name
-  | InvalidModelQueryClauses statement ->
+  | ModelQueryUnsupportedNamedParameter name ->
       Format.asprintf
-        "The model query arguments for `%a` are invalid: expected a name, find, where and model \
-         clause, with optional `expected_models` and `unexpected_models` clauses."
-        Statement.pp
-        statement
+        "Unsupported named parameter `%s` in model query (expected: name, find, where, model, \
+         expected_models, unexpected_models)."
+        name
+  | ModelQueryUnnamedParameter argument ->
+      Format.asprintf
+        "Unsupported unnamed parameter `%a` in model query (expected: name, find, where, model, \
+         expected_models, unexpected_models)."
+        Expression.pp
+        argument
+  | ModelQueryMissingRequiredParameter name ->
+      Format.asprintf "Missing required parameter `%s` in model query." name
+  | ModelQueryDuplicateParameter name ->
+      Format.asprintf "Duplicate parameter `%s` in model query." name
+  | InvalidModelQueryNameClause argument ->
+      Format.asprintf
+        "Expected string literal for `name` argument, got `%a`."
+        Expression.pp
+        argument
   | InvalidModelQueryWhereClause { expression; find_clause_kind } ->
       Format.asprintf
         "`%s` is not a valid constraint for model queries with find clause of kind `%s`."
@@ -405,7 +424,9 @@ let description error =
         \   query names should be unique within each file."
         name
   | NoOutputFromModelQuery model_query_name ->
-      Format.sprintf "ModelQuery `%s` output no models." model_query_name
+      Format.sprintf "Model Query `%s` output no models." model_query_name
+  | NoOutputFromModelQueryGroup logging_group_name ->
+      Format.sprintf "Model Query group `%s` output no models." logging_group_name
   | ExpectedModelsAreMissing { model_query_name; models } ->
       let starting_string =
         Format.sprintf
@@ -479,7 +500,6 @@ let code { kind; _ } =
   | InvalidDefaultValue _ -> 1
   | IncompatibleModelError _ -> 2
   | ImportedFunctionModel _ -> 3
-  | InvalidModelQueryClauses _ -> 4
   | MissingAttribute _ -> 5
   | NotInEnvironment _ -> 6
   | UnexpectedDecorators _ -> 7
@@ -537,6 +557,12 @@ let code { kind; _ } =
   | MutuallyExclusiveReadWriteToCache -> 59
   | MutuallyExclusiveTaintWriteToCache -> 60
   | DeprecatedConstraint _ -> 61
+  | ModelQueryUnsupportedNamedParameter _ -> 62
+  | ModelQueryUnnamedParameter _ -> 63
+  | ModelQueryMissingRequiredParameter _ -> 64
+  | ModelQueryDuplicateParameter _ -> 65
+  | InvalidModelQueryNameClause _ -> 66
+  | NoOutputFromModelQueryGroup _ -> 67
 
 
 let display { kind = error; path; location } =

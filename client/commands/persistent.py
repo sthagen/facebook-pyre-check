@@ -29,6 +29,7 @@ status updates, and error messages.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import os
 import traceback
@@ -257,16 +258,11 @@ class ClientStatusMessageHandler:
         )
 
 
+@dataclasses.dataclass(frozen=True)
 class ClientTypeErrorHandler:
-    def __init__(
-        self,
-        client_output_channel: connections.AsyncTextWriter,
-        server_state: ServerState,
-        remote_logging: Optional[backend_arguments.RemoteLogging] = None,
-    ) -> None:
-        self.client_output_channel = client_output_channel
-        self.remote_logging = remote_logging
-        self.server_state = server_state
+    client_output_channel: connections.AsyncTextWriter
+    server_state: ServerState
+    remote_logging: Optional[backend_arguments.RemoteLogging] = None
 
     def update_type_errors(self, type_errors: Sequence[error.Error]) -> None:
         LOG.info(
@@ -348,7 +344,7 @@ class PyrePersistentDaemonLaunchAndSubscribeHandler(
             remote_logging,
         )
 
-    async def handle_type_error_subscription(
+    async def handle_type_error_event(
         self,
         type_error_subscription: subscription.TypeErrors,
     ) -> None:
@@ -364,7 +360,7 @@ class PyrePersistentDaemonLaunchAndSubscribeHandler(
             level=lsp.MessageType.INFO,
         )
 
-    async def handle_status_update_subscription(
+    async def handle_status_update_event(
         self,
         status_update_subscription: subscription.StatusUpdate,
     ) -> None:
@@ -391,13 +387,6 @@ class PyrePersistentDaemonLaunchAndSubscribeHandler(
                 short_message=READY_SHORT,
                 level=lsp.MessageType.INFO,
             )
-
-    async def handle_error_subscription(
-        self, error_subscription: subscription.Error
-    ) -> None:
-        message = error_subscription.message
-        LOG.info(f"Received error from subscription channel: {message}")
-        raise launch_and_subscribe_handler.PyreDaemonShutdown(message)
 
     async def _subscribe_to_type_errors(
         self,
@@ -467,11 +456,12 @@ async def run_persistent(
     stdin, stdout = await connections.create_async_stdin_stdout()
 
     initialize_result = await async_try_initialize_loop(
-        initial_server_options,
         stdin,
         stdout,
         remote_logging,
-        process_initialize_request,
+        compute_initialize_result=lambda parameters: process_initialize_request(
+            parameters, initial_server_options.language_server_features
+        ),
     )
     if isinstance(initialize_result, InitializationExit):
         return 0
@@ -503,7 +493,7 @@ async def run_persistent(
         stdout, server_state, remote_logging
     )
 
-    server = pyre_language_server.PyreLanguageServer(
+    server = pyre_language_server.PyreLanguageServerDispatcher(
         input_channel=stdin,
         output_channel=stdout,
         server_state=server_state,
@@ -519,8 +509,12 @@ async def run_persistent(
                 client_type_error_handler=client_type_error_handler,
             )
         ),
-        querier=querier,
-        client_type_error_handler=client_type_error_handler,
+        api=pyre_language_server.PyreLanguageServerApi(
+            output_channel=stdout,
+            server_state=server_state,
+            querier=querier,
+            client_type_error_handler=client_type_error_handler,
+        ),
     )
     return await server.run()
 

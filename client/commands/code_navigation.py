@@ -80,7 +80,7 @@ class PyreCodeNavigationDaemonLaunchAndSubscribeHandler(
     def get_type_errors_availability(self) -> features.TypeErrorsAvailability:
         return self.server_state.server_options.language_server_features.type_errors
 
-    async def handle_type_error_subscription(
+    async def handle_type_error_event(
         self, type_error_subscription: subscription.TypeErrors
     ) -> None:
         # We currently do not broadcast any type errors on the CodeNav server - the intent is to be
@@ -90,7 +90,7 @@ class PyreCodeNavigationDaemonLaunchAndSubscribeHandler(
             "The Pyre code navigation server is not expected to broadcast type errors at the moment."
         )
 
-    async def handle_status_update_subscription(
+    async def handle_status_update_event(
         self, status_update_subscription: subscription.StatusUpdate
     ) -> None:
         if not self.get_type_errors_availability().is_disabled():
@@ -126,13 +126,6 @@ class PyreCodeNavigationDaemonLaunchAndSubscribeHandler(
                 short_message=READY_SHORT,
                 level=lsp.MessageType.INFO,
             )
-
-    async def handle_error_subscription(
-        self, error_subscription: subscription.Error
-    ) -> None:
-        message = error_subscription.message
-        LOG.info(f"Received error from subscription channel: {message}")
-        raise launch_and_subscribe_handler.PyreDaemonShutdown(message)
 
     async def _subscribe(
         self,
@@ -196,11 +189,12 @@ async def async_run_code_navigation_client(
     )
     stdin, stdout = await connections.create_async_stdin_stdout()
     initialize_result = await initialization.async_try_initialize_loop(
-        initial_server_options,
         stdin,
         stdout,
         remote_logging,
-        process_initialize_request,
+        compute_initialize_result=lambda parameters: process_initialize_request(
+            parameters, initial_server_options.language_server_features
+        ),
     )
     if isinstance(initialize_result, initialization.InitializationExit):
         return 0
@@ -228,7 +222,7 @@ async def async_run_code_navigation_client(
     client_type_error_handler = persistent.ClientTypeErrorHandler(
         stdout, server_state, remote_logging
     )
-    server = pyre_language_server.PyreLanguageServer(
+    server = pyre_language_server.PyreLanguageServerDispatcher(
         input_channel=stdin,
         output_channel=stdout,
         server_state=server_state,
@@ -244,8 +238,12 @@ async def async_run_code_navigation_client(
                 client_type_error_handler=client_type_error_handler,
             )
         ),
-        querier=querier,
-        client_type_error_handler=client_type_error_handler,
+        api=pyre_language_server.PyreLanguageServerApi(
+            output_channel=stdout,
+            server_state=server_state,
+            querier=querier,
+            client_type_error_handler=client_type_error_handler,
+        ),
     )
     return await server.run()
 

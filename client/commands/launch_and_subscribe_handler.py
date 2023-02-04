@@ -85,23 +85,23 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
         self.subscription_response_parser = subscription_response_parser
 
     @abc.abstractmethod
-    async def handle_type_error_subscription(
+    async def handle_type_error_event(
         self,
         type_error_subscription: subscription.TypeErrors,
     ) -> None:
         pass
 
     @abc.abstractmethod
-    async def handle_status_update_subscription(
-        self, status_update_subscription: subscription.StatusUpdate
+    async def handle_status_update_event(
+        self,
+        status_update_subscription: subscription.StatusUpdate,
     ) -> None:
         pass
 
-    @abc.abstractmethod
-    async def handle_error_subscription(
-        self, error_subscription: subscription.Error
-    ) -> None:
-        pass
+    async def handle_error_event(self, error_subscription: subscription.Error) -> None:
+        message = error_subscription.message
+        LOG.info(f"Received error from subscription channel: {message}")
+        raise PyreDaemonShutdown(message)
 
     @abc.abstractmethod
     async def _subscribe(
@@ -164,11 +164,13 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
         self, subscription_body: subscription.Body
     ) -> None:
         if isinstance(subscription_body, subscription.TypeErrors):
-            await self.handle_type_error_subscription(subscription_body)
+            await self.handle_type_error_event(subscription_body)
         elif isinstance(subscription_body, subscription.StatusUpdate):
-            await self.handle_status_update_subscription(subscription_body)
+            await self.handle_status_update_event(subscription_body)
         elif isinstance(subscription_body, subscription.Error):
-            await self.handle_error_subscription(subscription_body)
+            await self.handle_error_event(subscription_body)
+        elif isinstance(subscription_body, subscription.IncrementalTelemetry):
+            pass
 
     async def _run_subscription_loop(
         self,
@@ -397,16 +399,13 @@ class PyreDaemonLaunchAndSubscribeHandler(background.Task):
             self.server_state.server_last_status = state.ServerStatus.DISCONNECTED
             raise
         finally:
-            log_lsp_event._log_lsp_event(
-                remote_logging=self.remote_logging,
-                event=log_lsp_event.LSPEvent.DISCONNECTED,
-                integers={"duration": int(session_timer.stop_in_millisecond())},
-                normals={
-                    **self._auxiliary_logging_info(server_options),
-                    **(
-                        {"exception": error_message}
-                        if error_message is not None
-                        else {}
-                    ),
-                },
-            )
+            if error_message is not None:
+                log_lsp_event._log_lsp_event(
+                    remote_logging=self.remote_logging,
+                    event=log_lsp_event.LSPEvent.DISCONNECTED,
+                    integers={"duration": int(session_timer.stop_in_millisecond())},
+                    normals={
+                        **self._auxiliary_logging_info(server_options),
+                        "exception": error_message,
+                    },
+                )

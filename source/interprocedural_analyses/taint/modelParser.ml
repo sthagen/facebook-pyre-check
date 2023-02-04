@@ -1349,9 +1349,7 @@ let parse_class_hierarchy_options ~path ~location ~callee ~arguments =
   let open Core.Result in
   match arguments with
   | { Call.Argument.value = first_parameter; _ } :: remaining_arguments ->
-      let parse_optional_arguments sofar argument =
-        sofar
-        >>= fun (is_transitive, includes_self) ->
+      let parse_optional_arguments (is_transitive, includes_self) argument =
         match argument with
         | { Call.Argument.name = Some { Node.value = "is_transitive"; _ }; value } ->
             parse_is_transitive ~path ~location value >>| fun value -> value, includes_self
@@ -1364,7 +1362,7 @@ let parse_class_hierarchy_options ~path ~location ~callee ~arguments =
                  ~location
                  (InvalidModelQueryClauseArguments { callee; arguments }))
       in
-      List.fold ~f:parse_optional_arguments remaining_arguments ~init:(Ok (false, true))
+      List.fold_result ~f:parse_optional_arguments remaining_arguments ~init:(false, true)
       >>| fun (is_transitive, includes_self) -> first_parameter, is_transitive, includes_self
   | _ ->
       Error
@@ -2757,6 +2755,76 @@ let parse_models ~resolution ~taint_configuration ~source_sink_filter ~callables
   >>| List.filter_map ~f:(fun x -> x)
 
 
+module ModelQueryArguments = struct
+  type t = {
+    name: string;
+    logging_group_name: string option;
+    find_clause: Expression.t;
+    where_clause: Expression.t;
+    model_clause: Expression.t;
+    expected_models_clause: Expression.t option;
+    unexpected_models_clause: Expression.t option;
+  }
+
+  let parse_arguments ~path ~location arguments =
+    let open Core.Result in
+    let required_arguments = ["name"; "find"; "where"; "model"] in
+    let valid_arguments =
+      "expected_models" :: "unexpected_models" :: "logging_group_name" :: required_arguments
+    in
+    let parse_argument arguments = function
+      | { Call.Argument.name = None; value = argument } ->
+          Error (model_verification_error ~path ~location (ModelQueryUnnamedParameter argument))
+      | { Call.Argument.name = Some { Node.value = name; _ }; value = argument } ->
+          if Option.is_some (String.Map.find arguments name) then
+            Error (model_verification_error ~path ~location (ModelQueryDuplicateParameter name))
+          else if not (List.mem ~equal:String.equal valid_arguments name) then
+            Error
+              (model_verification_error ~path ~location (ModelQueryUnsupportedNamedParameter name))
+          else
+            Ok (String.Map.set ~key:name ~data:argument arguments)
+    in
+    let check_required_argument arguments required_argument =
+      if Option.is_some (String.Map.find arguments required_argument) then
+        Ok arguments
+      else
+        Error
+          (model_verification_error
+             ~path
+             ~location
+             (ModelQueryMissingRequiredParameter required_argument))
+    in
+    let parse_name_argument = function
+      | { Node.value = Expression.Constant (Constant.String { StringLiteral.value = name; _ }); _ }
+        ->
+          Ok name
+      | argument ->
+          Error (model_verification_error ~path ~location (InvalidModelQueryNameClause argument))
+    in
+    List.fold_result ~f:parse_argument ~init:String.Map.empty arguments
+    >>= fun arguments ->
+    List.fold_result ~f:check_required_argument ~init:arguments required_arguments
+    >>= fun arguments ->
+    parse_name_argument (String.Map.find_exn arguments "name")
+    >>= fun name ->
+    String.Map.find arguments "logging_group_name"
+    |> Option.map ~f:parse_name_argument
+    |> (function
+         | None -> Ok None
+         | Some (Ok name) -> Ok (Some name)
+         | Some (Error error) -> Error error)
+    >>| fun logging_group_name ->
+    {
+      name;
+      logging_group_name;
+      find_clause = String.Map.find_exn arguments "find";
+      where_clause = String.Map.find_exn arguments "where";
+      model_clause = String.Map.find_exn arguments "model";
+      expected_models_clause = String.Map.find arguments "expected_models";
+      unexpected_models_clause = String.Map.find arguments "unexpected_models";
+    }
+end
+
 let rec parse_statement
     ~resolution
     ~path
@@ -3152,59 +3220,17 @@ let rec parse_statement
         | Ok result -> Ok result
         | Error error -> Error [error]
       in
-      let clauses =
-        match arguments with
-        | {
-            Call.Argument.name = Some { Node.value = "name"; _ };
-            value =
-              {
-                Node.value = Expression.Constant (Constant.String { StringLiteral.value = name; _ });
-                _;
-              };
-          }
-          :: { Call.Argument.name = Some { Node.value = "find"; _ }; value = find_clause }
-          :: { Call.Argument.name = Some { Node.value = "where"; _ }; value = where_clause }
-          :: { Call.Argument.name = Some { Node.value = "model"; _ }; value = model_clause }
-          :: remaining_arguments ->
-            Ok ((name, find_clause, where_clause, model_clause), remaining_arguments)
-        | _ -> Error [model_verification_error ~path ~location (InvalidModelQueryClauses statement)]
-      in
-      let clauses =
-        clauses
-        >>= fun (required_arguments, remaining_arguments) ->
-        match remaining_arguments with
-        | [
-         {
-           Call.Argument.name = Some { Node.value = "expected_models"; _ };
-           value = expected_models_clause;
-         };
-        ] ->
-            Ok (required_arguments, Some expected_models_clause, None)
-        | [
-         {
-           Call.Argument.name = Some { Node.value = "unexpected_models"; _ };
-           value = unexpected_models_clause;
-         };
-        ] ->
-            Ok (required_arguments, None, Some unexpected_models_clause)
-        | [
-         {
-           Call.Argument.name = Some { Node.value = "expected_models"; _ };
-           value = expected_models_clause;
-         };
-         {
-           Call.Argument.name = Some { Node.value = "unexpected_models"; _ };
-           value = unexpected_models_clause;
-         };
-        ] ->
-            Ok (required_arguments, Some expected_models_clause, Some unexpected_models_clause)
-        | [] -> Ok (required_arguments, None, None)
-        | _ -> Error [model_verification_error ~path ~location (InvalidModelQueryClauses statement)]
-      in
-      clauses
-      >>= fun ( (name, find_clause, where_clause, model_clause),
-                expected_models_clause,
-                unexpected_models_clause ) ->
+      ModelQueryArguments.parse_arguments ~path ~location arguments
+      |> as_result_error_list
+      >>= fun {
+                ModelQueryArguments.name;
+                logging_group_name;
+                find_clause;
+                where_clause;
+                model_clause;
+                expected_models_clause;
+                unexpected_models_clause;
+              } ->
       parse_find_clause ~path find_clause
       |> as_result_error_list
       >>= fun find ->
@@ -3231,6 +3257,7 @@ let rec parse_statement
             where;
             models;
             name;
+            logging_group_name;
             path;
             location;
             expected_models;
@@ -3379,9 +3406,7 @@ let create_callable_model_from_annotations
             | _ -> None)
       >>= fun callable_annotation ->
       let default_model = if is_obscure then Model.obscure_model else Model.empty_model in
-      List.fold annotations ~init:(Ok default_model) ~f:(fun accumulator model_annotation ->
-          accumulator
-          >>= fun accumulator ->
+      List.fold_result annotations ~init:default_model ~f:(fun accumulator model_annotation ->
           add_taint_annotation_to_model
             ~path:None
             ~location:Location.any
@@ -3395,9 +3420,7 @@ let create_callable_model_from_annotations
 
 let create_attribute_model_from_annotations ~resolution ~name ~source_sink_filter annotations =
   let open Core.Result in
-  List.fold annotations ~init:(Ok Model.empty_model) ~f:(fun accumulator annotation ->
-      accumulator
-      >>= fun accumulator ->
+  List.fold_result annotations ~init:Model.empty_model ~f:(fun accumulator annotation ->
       let model_annotation =
         match annotation with
         | TaintAnnotation.Source _ -> Ok (ModelAnnotation.ReturnAnnotation annotation)

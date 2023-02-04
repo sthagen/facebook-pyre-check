@@ -331,11 +331,14 @@ module ModelQuery : sig
     models: Model.t list;
     find: Find.t;
     name: string;
+    logging_group_name: string option;
     path: PyrePath.t option;
     expected_models: ExpectedModel.t list;
     unexpected_models: ExpectedModel.t list;
   }
   [@@deriving show, equal]
+
+  val unique_identifier : t -> string
 end
 
 type t = {

@@ -50,7 +50,11 @@ type kind =
       name: Reference.t;
       actual_name: Reference.t;
     }
-  | InvalidModelQueryClauses of Statement.t
+  | ModelQueryUnsupportedNamedParameter of string
+  | ModelQueryUnnamedParameter of Expression.t
+  | ModelQueryMissingRequiredParameter of string
+  | ModelQueryDuplicateParameter of string
+  | InvalidModelQueryNameClause of Expression.t
   | InvalidModelQueryWhereClause of {
       expression: Expression.t;
       find_clause_kind: string;
@@ -132,6 +136,7 @@ type kind =
     }
   | DuplicateNameClauses of string
   | NoOutputFromModelQuery of string
+  | NoOutputFromModelQueryGroup of string
   | ExpectedModelsAreMissing of {
       model_query_name: string;
       models: string list;

@@ -199,12 +199,7 @@ module TaintKindsWithFeatures = struct
     >>| fun features -> { kinds = left.kinds @ right.kinds; features }
 
 
-  let concat list =
-    let ( >>= ) = Core.Result.( >>= ) in
-    List.fold
-      ~f:(fun sofar kinds_with_features -> sofar >>= fun sofar -> join sofar kinds_with_features)
-      ~init:(Ok empty)
-      list
+  let concat list = List.fold_result ~f:join ~init:empty list
 end
 
 module SanitizeAnnotation = struct
@@ -586,11 +581,16 @@ module ModelQuery = struct
     models: Model.t list;
     find: Find.t;
     name: string;
+    logging_group_name: string option;
     path: PyrePath.t option;
     expected_models: ExpectedModel.t list;
     unexpected_models: ExpectedModel.t list;
   }
   [@@deriving show, equal]
+
+  let unique_identifier = function
+    | { name; path = None; _ } -> name
+    | { name; path = Some path; _ } -> Format.sprintf "%s/%s" (PyrePath.get_suffix_path path) name
 end
 
 type t = {
