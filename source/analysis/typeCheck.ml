@@ -5083,7 +5083,14 @@ module State (Context : Context) = struct
     match value with
     | Statement.Assign { Assign.target; annotation; value } ->
         forward_assignment ~resolution ~location ~target ~annotation ~value
-    | Assert { Assert.test; origin; _ } -> forward_assert ~resolution ~origin test
+    | Assert { Assert.test; origin; message } ->
+        let message_errors =
+          Option.value
+            ~default:[]
+            (message >>| forward_expression ~resolution >>| fun { Resolved.errors; _ } -> errors)
+        in
+        let resolution, errors = forward_assert ~resolution ~origin test in
+        resolution, message_errors @ errors
     | Delete expressions ->
         let process_expression (resolution, errors_sofar) expression =
           let { Resolved.resolution; errors; _ } = forward_expression ~resolution expression in
@@ -5340,9 +5347,7 @@ module State (Context : Context) = struct
           errors
       in
       let check_override_decorator errors =
-        let override_decorator_name = "pyre_extensions.override" in
-        let has_override_decorator = StatementDefine.has_decorator define override_decorator_name in
-        if has_override_decorator then
+        if StatementDefine.is_override_method define then
           match define with
           | { Ast.Statement.Define.signature = { parent = Some parent; _ }; _ } -> (
               let possibly_overridden_attribute =

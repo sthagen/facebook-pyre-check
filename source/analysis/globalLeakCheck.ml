@@ -36,6 +36,8 @@ module type Context = sig
   val local_annotations : LocalAnnotationMap.ReadOnly.t option
 
   val error_map : LocalErrorMap.t
+
+  val is_global : resolution:Resolution.t -> Reference.t -> bool
 end
 
 module State (Context : Context) = struct
@@ -203,6 +205,17 @@ module State (Context : Context) = struct
         forward_assignment_target right
 
 
+  and forward_assert ~resolution ~error_on_global_target ?(origin = Assert.Origin.Assertion) test =
+    (* Ignore global errors from the [assert (not foo)] in the else-branch because it's the same
+       [foo] as in the true-branch. We can either ignore it here or de-duplicate it in the error
+       map. We ignore it here instead. *)
+    match origin with
+    | Assert.Origin.If { true_branch = false; _ }
+    | Assert.Origin.While { true_branch = false; _ } ->
+        ()
+    | _ -> forward_expression ~resolution ~error_on_global_target test
+
+
   let forward ~statement_key state ~statement:{ Node.value; _ } =
     let { Node.value = { Define.signature = { Define.Signature.parent; _ }; _ }; _ } =
       Context.define
@@ -218,7 +231,7 @@ module State (Context : Context) = struct
     in
     let error_on_global_target ~location target =
       let reference = Reference.create target |> Reference.delocalize in
-      let is_global = Resolution.is_global resolution ~reference in
+      let is_global = Context.is_global ~resolution (Reference.create target) in
       if is_global then
         let error =
           Error.create
@@ -232,7 +245,8 @@ module State (Context : Context) = struct
     in
     let forward_expression = forward_expression ~resolution ~error_on_global_target in
     match value with
-    | Statement.Assert _ -> ()
+    | Statement.Assert { test; origin; _ } ->
+        forward_assert ~resolution ~error_on_global_target ~origin test
     | Assign { target; value; _ } ->
         forward_assignment_target ~resolution ~error_on_global_target target;
         forward_expression value
@@ -272,6 +286,7 @@ end
 
 let global_leak_errors ~type_environment ~qualifier define =
   let global_resolution = TypeEnvironment.ReadOnly.global_resolution type_environment in
+  let scope = Scope.Scope.of_define (Node.value define) in
 
   let module Context = struct
     let qualifier = qualifier
@@ -287,6 +302,21 @@ let global_leak_errors ~type_environment ~qualifier define =
 
 
     let error_map = LocalErrorMap.empty ()
+
+    let is_global ~resolution reference =
+      let reference = Reference.delocalize reference in
+      let is_global_in_scope () =
+        scope
+        >>| (fun { Scope.Scope.globals; _ } ->
+              let sanitized_identifier = Identifier.sanitized (Reference.last reference) in
+              Identifier.Set.mem globals sanitized_identifier)
+        |> Option.value ~default:false
+      in
+      (* We're using `Resolution.is_global` to detect global reads on references, even if the
+         `global` keyword isn't used within the callable. `Scope.globals` is used here as a backup,
+         for the case where the global keyword is used but `Resolution.is_global` fails to determine
+         if the reference is a global. *)
+      Resolution.is_global resolution ~reference || is_global_in_scope ()
   end
   in
   let module State = State (Context) in
@@ -298,11 +328,19 @@ let global_leak_errors ~type_environment ~qualifier define =
   |> Option.value ~default:[]
 
 
-(* TODO: Use this function to limit by entrypoints in the future. *)
-let should_run_analysis ~type_environment:_ _ = true
-
-let check_define ~type_environment ~qualifier define =
-  if should_run_analysis ~type_environment define then
-    global_leak_errors ~type_environment ~qualifier define
-  else
-    []
+let check_qualifier ~type_environment qualifier =
+  let global_resolution = TypeEnvironment.ReadOnly.global_resolution type_environment in
+  match GlobalResolution.define_body global_resolution qualifier with
+  | Some define -> Some (global_leak_errors ~type_environment ~qualifier define)
+  | None ->
+      (* assume the target is a nested definition and see if we can find it by performing name
+         mangling *)
+      Reference.prefix qualifier
+      >>| (fun prefix ->
+            let qualifier =
+              Preprocessing.qualify_local_identifier ~qualifier:prefix (Reference.last qualifier)
+              |> Reference.create
+            in
+            GlobalResolution.define_body global_resolution qualifier
+            >>| global_leak_errors ~type_environment ~qualifier)
+      |> Option.join

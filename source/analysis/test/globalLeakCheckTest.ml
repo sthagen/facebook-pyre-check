@@ -10,13 +10,19 @@ open OUnit2
 open Analysis
 open Test
 
-let run_check_module
-    ~type_environment
-    ({ Ast.Source.module_path = { Ast.ModulePath.qualifier; _ }; _ } as source)
-  =
+let run_check_module ~type_environment source =
   source
   |> Preprocessing.defines ~include_toplevels:false ~include_nested:true
-  |> List.map ~f:(GlobalLeakCheck.check_define ~type_environment ~qualifier)
+  |> List.map
+       ~f:(fun
+            {
+              Ast.Node.value =
+                { Ast.Statement.Define.signature = { Ast.Statement.Define.Signature.name; _ }; _ };
+              _;
+            }
+          -> name)
+  |> List.map ~f:(GlobalLeakCheck.check_qualifier ~type_environment)
+  |> List.map ~f:Caml.Option.get
   |> List.concat
 
 
@@ -159,7 +165,7 @@ let test_global_assignment context =
         if my_global := (a := 3):
           print("hi")
     |}
-    [ (* TODO (T142189949): leaks should be detected on walrus mutations in if statements *) ];
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
   assert_global_leak_errors
     {|
       my_global: int = 1
@@ -168,7 +174,7 @@ let test_global_assignment context =
         if a := (my_global := 3):
           print("hi")
     |}
-    [ (* TODO (T142189949): leaks should be detected on walrus mutations in if statements *) ];
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
   assert_global_leak_errors
     {|
       my_global: int = 1
@@ -827,7 +833,231 @@ let test_global_statements context =
         a = 1 if True else my_global.setdefault("a", 1)
     |}
     ["Global leak [3100]: Data is leaked to global `test.my_global`."];
-
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo():
+        if my_global == 1:
+          my_global = 3
+    |}
+    [];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo():
+        if my_global == 1:
+          my_global = 3
+        else:
+          my_global = 4
+    |}
+    [];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo():
+        if my_global := 3:
+          my_global = 3
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo():
+        global my_global
+        if my_global := (a := 3):
+          print("hi")
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo():
+        global my_global
+        if True:
+          my_global = 2
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo():
+        global my_global
+        if True:
+          my_global = 2
+        else:
+          my_local = 3
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo():
+        global my_global
+        if True:
+          my_local = 2
+        else:
+          my_global = 3
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo():
+        global my_global
+        if True:
+          my_local = 2
+        elif my_global == 1:
+          my_global = 3
+        else:
+          my_local = 4
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: int = 0
+      my_global_t: int = 1
+      def foo():
+        global my_global
+        if True:
+          my_local = 2
+        elif my_global_t := 3:
+          my_local = 3
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global_t`."];
+  assert_global_leak_errors
+    {|
+      my_global: int = 0
+      def foo():
+        while True:
+          my_global += 1
+    |}
+    [];
+  assert_global_leak_errors
+    {|
+      my_global: int = 0
+      def foo():
+        while True:
+          my_local += 1
+    |}
+    [];
+  assert_global_leak_errors
+    {|
+      my_global: int = 0
+      def foo():
+        global my_global
+        while True:
+          my_global += 1
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: int = 0
+      def foo():
+        global my_global
+        while my_global := 3:
+          print("hi")
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: int = 0
+      def foo():
+        while my_global := 3:
+          print("hi")
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: Dict[str, int] = {}
+      def foo() -> None:
+        for i in "hello":
+          print("hi")
+    |}
+    [];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo() -> None:
+        for i in range(0, my_global):
+          print("hi")
+    |}
+    [];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo() -> None:
+        global my_global
+        for i in range(0, 10):
+          my_global = 4
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: List[int] = []
+      def foo() -> None:
+        for i in (my_global := [1]):
+          print("hi")
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: Dict[str, int] = {}
+      def foo() -> None:
+        for i in range(my_global.setdefault("a", 1)):
+          print("hi")
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
+  assert_global_leak_errors
+    {|
+      def foo() -> None:
+        with open("hello", "r") as f:
+          print("hi")
+    |}
+    [];
+  assert_global_leak_errors
+    {|
+      def foo() -> None:
+        with open("hello", "r") as f, open("world", "r") as f1:
+          print("hi")
+    |}
+    [];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo() -> None:
+        global my_global
+        with open("hello", "r") as f:
+          my_global = 2
+          print("hi")
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo() -> None:
+        global my_global
+        with open("hello", "r") as my_global:
+          print("hi")
+    |}
+    ["Global leak [3100]: Data is leaked to global `my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo() -> None:
+        global my_global
+        with open("hello", "r") as f, open("world", "r") as f1:
+          my_global = 2
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo() -> None:
+        global my_global
+        with open("hello", "r") as my_global, open("world", "r") as f1:
+          print("hi")
+    |}
+    ["Global leak [3100]: Data is leaked to global `my_global`."];
   ()
 
 
@@ -946,7 +1176,127 @@ let test_recursive_coverage context =
         a = (1 if my_global.setdefault("a", 1) else 2) if True else 4
     |}
     ["Global leak [3100]: Data is leaked to global `test.my_global`."];
-
+  assert_global_leak_errors
+    {|
+      def foo() -> None:
+        try:
+          x = 5
+        except:
+          print("An exception occurred")
+    |}
+    [];
+  assert_global_leak_errors
+    {|
+      def foo() -> None:
+        try:
+          my_local= 5
+        except NameError:
+          print("Variable my_local is not defined")
+        except:
+          print("An exception occurred")
+    |}
+    [];
+  assert_global_leak_errors
+    {|
+      def foo() -> None:
+        try:
+          x = 5
+        except:
+          print("An exception occurred")
+        else:
+          print("No exception")
+    |}
+    [];
+  assert_global_leak_errors
+    {|
+      def foo() -> None:
+        try:
+          x = 5
+        except:
+          print("An exception occurred")
+        finally:
+          print("try except is complete")
+    |}
+    [];
+  assert_global_leak_errors
+    {|
+      def foo() -> None:
+        try:
+          my_local = 1
+        except Exception as e:
+          my_local = 2
+    |}
+    [];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo() -> None:
+        global my_global
+        try:
+          my_local = 1
+        except Exception as my_global:
+          my_local = 2
+    |}
+    ["Global leak [3100]: Data is leaked to global `my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo() -> None:
+        global my_global
+        try:
+          my_global = 1
+        except:
+          print("An exception occurred")
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo() -> None:
+        try:
+          global my_global
+          my_global = 1
+        except:
+          print("An exception occurred")
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo() -> None:
+        try:
+          my_local = 1
+        except:
+          global my_global
+          my_global = 1
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo() -> None:
+        try:
+          my_local = 1
+        except:
+          my_local = 2
+        else:
+          global my_global
+          my_global = 1
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
+  assert_global_leak_errors
+    {|
+      my_global: int = 1
+      def foo() -> None:
+        try:
+          my_local = 1
+        except:
+          my_local = 2
+        finally:
+          global my_global
+          my_global = 1
+    |}
+    ["Global leak [3100]: Data is leaked to global `test.my_global`."];
   ()
 
 

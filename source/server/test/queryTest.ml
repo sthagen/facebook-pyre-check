@@ -3162,23 +3162,10 @@ let test_dump_call_graph context =
           {
             "response": {
               "typing.Iterable.__iter__": [],
+              "str.substr": [],
+              "str.lower": [],
+              "pyre_extensions.override": [],
               "pyre_extensions.generic.Generic.__class_getitem__": [],
-              "bar.bar2": [],
-              "bar.bar2.inner": [
-                {
-                  "locations": [
-                    {
-                      "path": "bar.py",
-                      "start": { "line": 8, "column": 11 },
-                      "stop": { "line": 8, "column": 14 }
-                    }
-                  ],
-                  "kind": "function",
-                  "target": "bar.bar"
-                }
-              ],
-              "bar.bar": [],
-              "contextlib.ContextManager.__enter__": [],
               "foo.not_called": [
                 {
                   "locations": [
@@ -3231,16 +3218,178 @@ let test_dump_call_graph context =
                   "target": "foo.foo2"
                 }
               ],
-              "pyre_extensions.override": [],
               "dict.items": [],
-              "dict.add_both": [],
               "dict.add_value": [],
               "dict.add_key": [],
-              "str.substr": [],
-              "str.lower": []
+              "dict.add_both": [],
+              "contextlib.ContextManager.__enter__": [],
+              "bar.bar2.inner": [
+                {
+                  "locations": [
+                    {
+                      "path": "bar.py",
+                      "start": { "line": 8, "column": 11 },
+                      "stop": { "line": 8, "column": 14 }
+                    }
+                  ],
+                  "kind": "function",
+                  "target": "bar.bar"
+                }
+              ],
+              "bar.bar2": [],
+              "bar.bar": []
             }
           }
     |}
+      );
+    ]
+  in
+  assert_queries_with_local_root
+    ~custom_source_root
+    ~context
+    ~sources
+    (List.map queries_and_expected_responses ~f:(fun (query, response) ->
+         ( query,
+           fun _ ->
+             response
+             |> Yojson.Safe.from_string
+             |> fun json -> `List [`String "Query"; json] |> Yojson.Safe.to_string )))
+
+
+let test_global_leaks context =
+  (* TODO (T144319460): the global write in `nested_run()` should be caught after define statements
+     are implemented *)
+  let sources =
+    [
+      ( "foo.py",
+        {|
+          from typing import List
+
+          glob: List[int] = []
+
+          def nested_run():
+              def do_the_thing():
+                  glob.append(1)
+              do_the_thing()
+
+
+          def nested_run_2():
+              def do_the_thing_2():
+                  def another_nest():
+                     glob.append(2)
+                  another_nest()
+              do_the_thing_2()
+
+
+          def immediate_example():
+              glob.append(1)
+
+
+          def get_these():
+              immediate_example()
+              nested_run()
+        |}
+      );
+    ]
+  in
+  let custom_source_root =
+    OUnit2.bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true
+  in
+  let queries_and_expected_responses =
+    [
+      ( "global_leaks(foo.get_these)",
+        {|
+          {
+            "response": {
+              "errors": []
+            }
+          }
+        |}
+      );
+      ( "global_leaks(foo.immediate_example)",
+        {|
+          {
+            "response": {
+              "errors": [
+                {
+                  "line": 21,
+                  "column": 4,
+                  "stop_line": 21,
+                  "stop_column": 8,
+                  "path": "*",
+                  "code": 3100,
+                  "name": "Global leak",
+                  "description": "Global leak [3100]: Data is leaked to global `foo.glob`.",
+                  "long_description": "Global leak [3100]: Data is leaked to global `foo.glob`.",
+                  "concise_description": "Global leak [3100]: Data is leaked to global `glob`.",
+                  "define": "foo.immediate_example"
+                }
+              ]
+            }
+          }
+        |}
+      );
+      ( "global_leaks(foo.nested_run)",
+        {|
+          {
+            "response": {
+              "errors": []
+            }
+          }
+        |}
+      );
+      ( "global_leaks(foo.nested_run.do_the_thing)",
+        {|
+          {
+            "response": {
+              "errors": [
+                {
+                  "line": 8,
+                  "column": 8,
+                  "stop_line": 8,
+                  "stop_column": 12,
+                  "path": "*",
+                  "code": 3100,
+                  "name": "Global leak",
+                  "description": "Global leak [3100]: Data is leaked to global `foo.glob`.",
+                  "long_description": "Global leak [3100]: Data is leaked to global `foo.glob`.",
+                  "concise_description": "Global leak [3100]: Data is leaked to global `glob`.",
+                  "define": "foo.nested_run.do_the_thing"
+                }
+              ]
+            }
+          }
+        |}
+      );
+      ( "global_leaks(foo.nested_run_2.do_the_thing_2.another_nest)",
+        {|
+          {
+            "response": {
+              "errors": [
+                {
+                  "line": 15,
+                  "column": 11,
+                  "stop_line": 15,
+                  "stop_column": 15,
+                  "path": "*",
+                  "code": 3100,
+                  "name": "Global leak",
+                  "description": "Global leak [3100]: Data is leaked to global `foo.glob`.",
+                  "long_description": "Global leak [3100]: Data is leaked to global `foo.glob`.",
+                  "concise_description": "Global leak [3100]: Data is leaked to global `glob`.",
+                  "define": "foo.nested_run_2.do_the_thing_2.another_nest"
+                }
+              ]
+            }
+          }
+        |}
+      );
+      ( "global_leaks(foo.this_one_doesnt_exist)",
+        {|
+          {
+            "error": "No qualifier found for `foo.this_one_doesnt_exist`"
+          }
+        |}
       );
     ]
   in
@@ -3275,5 +3424,6 @@ let () =
          "expression_level_coverage" >:: OUnitLwt.lwt_wrapper test_expression_level_coverage;
          "hover" >:: OUnitLwt.lwt_wrapper test_hover;
          "dump_call_graph" >:: OUnitLwt.lwt_wrapper test_dump_call_graph;
+         "global_leaks" >:: OUnitLwt.lwt_wrapper test_global_leaks;
        ]
   |> Test.run
