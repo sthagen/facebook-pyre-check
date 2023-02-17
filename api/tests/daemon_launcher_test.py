@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Union
 
 from pyre_extensions import override
+from tools.pyre.client import daemon_socket
 
 from ...client import configuration as configuration_module, identifiers
 
@@ -29,8 +30,42 @@ class FakeFrontendConfiguration(frontend_configuration.OpenSource):
             "test", Path("test"), "test", targets=[]
         )
 
+    def get_project_identifier(self) -> str:
+        return "test"
 
-class SuccessfulPyreServerStarter(PyreServerStarterBase):
+
+class AlreadyStartedServerStarter(PyreServerStarterBase):
+    @override
+    async def server_already_exists(
+        self,
+        socket_path: Path,
+    ) -> bool:
+        return True
+
+    @override
+    async def run(
+        self,
+        binary_location: str,
+        configuration: frontend_configuration.Base,
+        flavor: identifiers.PyreFlavor,
+    ) -> Union[
+        initialization.StartSuccess,
+        initialization.BuckStartFailure,
+        initialization.OtherStartFailure,
+    ]:
+        raise NotImplementedError()
+
+
+class NotStartedServerStarter(PyreServerStarterBase):
+    @override
+    async def server_already_exists(
+        self,
+        socket_path: Path,
+    ) -> bool:
+        return False
+
+
+class SuccessfulPyreServerStarter(NotStartedServerStarter):
     @override
     async def run(
         self,
@@ -45,7 +80,7 @@ class SuccessfulPyreServerStarter(PyreServerStarterBase):
         return initialization.StartSuccess()
 
 
-class FailedPyreServerStarter(PyreServerStarterBase):
+class FailedPyreServerStarter(NotStartedServerStarter):
     @override
     async def run(
         self,
@@ -63,10 +98,18 @@ class FailedPyreServerStarter(PyreServerStarterBase):
 class DaemonLauncherTest(unittest.TestCase):
     @setup.async_test
     async def test_successful_start(self) -> None:
-        result = await _start_server(
-            FakeFrontendConfiguration(), SuccessfulPyreServerStarter()
+        configuration = FakeFrontendConfiguration()
+        result = await _start_server(configuration, SuccessfulPyreServerStarter())
+        assert isinstance(result, StartedServerInfo)
+        self.assertEqual(
+            result,
+            StartedServerInfo(
+                daemon_socket.get_socket_path(
+                    configuration.get_project_identifier(),
+                    flavor=identifiers.PyreFlavor.CODE_NAVIGATION,
+                ),
+            ),
         )
-        self.assertEqual(result, StartedServerInfo())
 
     @setup.async_test
     async def test_failed_start(self) -> None:
@@ -74,3 +117,17 @@ class DaemonLauncherTest(unittest.TestCase):
             FakeFrontendConfiguration(), FailedPyreServerStarter()
         )
         self.assertEqual(result, StartFailure("message"))
+
+    @setup.async_test
+    async def test_already_started(self) -> None:
+        configuration = FakeFrontendConfiguration()
+        result = await _start_server(configuration, AlreadyStartedServerStarter())
+        self.assertEqual(
+            result,
+            StartedServerInfo(
+                daemon_socket.get_socket_path(
+                    configuration.get_project_identifier(),
+                    flavor=identifiers.PyreFlavor.CODE_NAVIGATION,
+                ),
+            ),
+        )

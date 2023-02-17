@@ -289,15 +289,13 @@ class PyreLanguageServerApi:
         if document_path not in self.server_state.opened_documents:
             return
 
-        time_since_last_ready_ms = (
-            self.server_state.daemon_status.milliseconds_not_ready()
-        )
+        daemon_status_before = self.server_state.status_tracker.get_status()
         did_change_timer = timer.Timer()
+
         process_unsaved_changes = (
             self.server_state.server_options.language_server_features.unsaved_changes.is_enabled()
         )
         error_message = None
-        server_status_before = self.server_state.daemon_status.get().value
         code_changes = str(
             "".join(
                 [content_change.text for content_change in parameters.content_changes]
@@ -324,10 +322,9 @@ class PyreLanguageServerApi:
                     self.server_state.opened_documents
                 ),
                 "duration_ms": did_change_timer.stop_in_millisecond(),
-                "time_since_last_ready_ms": time_since_last_ready_ms,
-                "server_status_before": str(server_status_before),
                 "error_message": error_message,
                 "overlays_enabled": process_unsaved_changes,
+                **daemon_status_before.as_telemetry_dict(),
             },
             activity_key,
         )
@@ -347,10 +344,7 @@ class PyreLanguageServerApi:
         if document_path not in self.server_state.opened_documents:
             return
 
-        time_since_last_ready_ms = (
-            self.server_state.daemon_status.milliseconds_not_ready()
-        )
-        server_status_before = self.server_state.daemon_status.get().value
+        daemon_status_before = self.server_state.status_tracker.get_status()
 
         code_changes = self.server_state.opened_documents[document_path].code
 
@@ -371,11 +365,10 @@ class PyreLanguageServerApi:
                 "server_state_open_documents_count": len(
                     self.server_state.opened_documents
                 ),
-                "server_status_before": str(server_status_before),
-                "time_since_last_ready_ms": time_since_last_ready_ms,
                 # We don't do any blocking work on didSave, but analytics are easier if
                 # we avoid needlessly introducing NULL values.
                 "duration_ms": 0,
+                **daemon_status_before.as_telemetry_dict(),
             },
             activity_key,
         )
@@ -392,11 +385,10 @@ class PyreLanguageServerApi:
                 f"Document URI is not a file: {parameters.text_document.uri}"
             )
         document_path = document_path.resolve()
-        time_since_last_ready_ms = (
-            self.server_state.daemon_status.milliseconds_not_ready()
-        )
+
+        daemon_status_before = self.server_state.status_tracker.get_status()
         type_coverage_timer = timer.Timer()
-        server_status_before = self.server_state.daemon_status.get().value
+
         response = await self.querier.get_type_coverage(path=document_path)
         if response is not None:
             await lsp.write_json_rpc(
@@ -413,12 +405,8 @@ class PyreLanguageServerApi:
                 "operation": "typeCoverage",
                 "filePath": str(document_path),
                 "duration_ms": type_coverage_timer.stop_in_millisecond(),
-                "time_since_last_ready_ms": time_since_last_ready_ms,
-                "server_state_open_documents_count": len(
-                    self.server_state.opened_documents
-                ),
-                "server_status_before": str(server_status_before),
                 "coverage_type": self.get_language_server_features().type_coverage.value,
+                **daemon_status_before.as_telemetry_dict(),
             },
             activity_key,
         )
@@ -442,7 +430,7 @@ class PyreLanguageServerApi:
         document_path = document_path.resolve()
 
         if document_path not in self.server_state.opened_documents:
-            await lsp.write_json_rpc(
+            return await lsp.write_json_rpc(
                 self.output_channel,
                 json_rpc.SuccessResponse(
                     id=request_id,
@@ -450,55 +438,49 @@ class PyreLanguageServerApi:
                     result=lsp.LspHoverResponse.empty().to_dict(),
                 ),
             )
-        else:
-            time_since_last_ready_ms = (
-                self.server_state.daemon_status.milliseconds_not_ready()
+        daemon_status_before = self.server_state.status_tracker.get_status()
+        hover_timer = timer.Timer()
+
+        await self.update_overlay_if_needed(document_path)
+        result = await self.querier.get_hover(
+            path=document_path,
+            position=parameters.position.to_pyre_position(),
+        )
+        error_message = None
+        if isinstance(result, DaemonQueryFailure):
+            LOG.info(
+                daemon_failure_string("hover", str(type(result)), result.error_message)
             )
-            hover_timer = timer.Timer()
-            server_status_before = self.server_state.daemon_status.get().value
-            await self.update_overlay_if_needed(document_path)
-            result = await self.querier.get_hover(
-                path=document_path,
-                position=parameters.position.to_pyre_position(),
-            )
-            error_message = None
-            if isinstance(result, DaemonQueryFailure):
-                LOG.info(
-                    daemon_failure_string(
-                        "hover", str(type(result)), result.error_message
-                    )
-                )
-                error_message = result.error_message
-                result = lsp.LspHoverResponse.empty()
-            raw_result = lsp.LspHoverResponse.cached_schema().dump(
-                result,
-            )
-            await lsp.write_json_rpc(
-                self.output_channel,
-                json_rpc.SuccessResponse(
-                    id=request_id,
-                    activity_key=activity_key,
-                    result=raw_result,
+            error_message = result.error_message
+            result = lsp.LspHoverResponse.empty()
+        raw_result = lsp.LspHoverResponse.cached_schema().dump(
+            result,
+        )
+        await lsp.write_json_rpc(
+            self.output_channel,
+            json_rpc.SuccessResponse(
+                id=request_id,
+                activity_key=activity_key,
+                result=raw_result,
+            ),
+        )
+        await self.write_telemetry(
+            {
+                "type": "LSP",
+                "operation": "hover",
+                "filePath": str(document_path),
+                "nonEmpty": len(result.contents) > 0,
+                "response": raw_result,
+                "duration_ms": hover_timer.stop_in_millisecond(),
+                "server_state_open_documents_count": len(
+                    self.server_state.opened_documents
                 ),
-            )
-            await self.write_telemetry(
-                {
-                    "type": "LSP",
-                    "operation": "hover",
-                    "filePath": str(document_path),
-                    "nonEmpty": len(result.contents) > 0,
-                    "response": raw_result,
-                    "duration_ms": hover_timer.stop_in_millisecond(),
-                    "time_since_last_ready_ms": time_since_last_ready_ms,
-                    "server_state_open_documents_count": len(
-                        self.server_state.opened_documents
-                    ),
-                    "server_status_before": str(server_status_before),
-                    "error_message": error_message,
-                    "overlays_enabled": self.server_state.server_options.language_server_features.unsaved_changes.is_enabled(),
-                },
-                activity_key,
-            )
+                "error_message": error_message,
+                "overlays_enabled": self.server_state.server_options.language_server_features.unsaved_changes.is_enabled(),
+                **daemon_status_before.as_telemetry_dict(),
+            },
+            activity_key,
+        )
 
     async def _get_definition_result(
         self, document_path: Path, position: lsp.LspPosition
@@ -549,9 +531,6 @@ class PyreLanguageServerApi:
             raise json_rpc.InvalidRequestError(
                 f"Document URI is not a file: {parameters.text_document.uri}"
             )
-        time_since_last_ready_ms = (
-            self.server_state.daemon_status.milliseconds_not_ready()
-        )
         document_path = document_path.resolve()
         if document_path not in self.server_state.opened_documents:
             return await lsp.write_json_rpc(
@@ -562,7 +541,7 @@ class PyreLanguageServerApi:
                     result=lsp.LspLocation.cached_schema().dump([], many=True),
                 ),
             )
-        server_status_before = self.server_state.daemon_status.get().value
+        daemon_status_before = self.server_state.status_tracker.get_status()
         shadow_mode = self.get_language_server_features().definition.is_shadow()
         # In shadow mode, we need to return an empty response immediately
         if shadow_mode:
@@ -608,17 +587,16 @@ class PyreLanguageServerApi:
                 "count": len(output_result),
                 "response": output_result,
                 "duration_ms": result_with_durations.overall_duration,
-                "time_since_last_ready_ms": time_since_last_ready_ms,
                 "overlay_update_duration": result_with_durations.overlay_update_duration,
                 "query_duration": result_with_durations.query_duration,
                 "server_state_open_documents_count": len(
                     self.server_state.opened_documents
                 ),
-                "server_status_before": str(server_status_before),
                 "overlays_enabled": self.server_state.server_options.language_server_features.unsaved_changes.is_enabled(),
                 "error_message": error_message,
                 "is_dirty": self.server_state.opened_documents[document_path].is_dirty,
                 "truncated_file_contents": source_code_if_sampled,
+                **daemon_status_before.as_telemetry_dict(),
             },
             activity_key,
         )
