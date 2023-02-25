@@ -1071,6 +1071,40 @@ let test_find_narrowest_spanning_symbol context =
          cfg_data = { define_name = !&"test.Foo.my_method"; node_id = 0; statement_index = 0 };
          use_postcondition_info = false;
        });
+  assert_narrowest_expression
+    ~source:{|
+        from typing import Callable
+        #                    ^- cursor
+    |}
+    (Some
+       {
+         symbol_with_definition = Expression (parse_single_expression "typing.Callable");
+         cfg_data = { define_name = !&"test.$toplevel"; node_id = 4; statement_index = 0 };
+         use_postcondition_info = false;
+       });
+  assert_narrowest_expression
+    ~source:{|
+        from typing import Callable
+        #        ^- cursor
+    |}
+    (Some
+       {
+         symbol_with_definition = Expression (parse_single_expression "typing");
+         cfg_data = { define_name = !&"test.$toplevel"; node_id = 4; statement_index = 0 };
+         use_postcondition_info = false;
+       });
+  assert_narrowest_expression
+    ~source:{|
+        import foo
+        foo(abc=5)
+        #     ^- cursor
+    |}
+    (Some
+       {
+         symbol_with_definition = Expression (parse_single_expression "foo");
+         cfg_data = { define_name = !&"test.$toplevel"; node_id = 4; statement_index = 1 };
+         use_postcondition_info = false;
+       });
   ()
 
 
@@ -1083,7 +1117,10 @@ let test_resolve_definition_for_symbol context =
 
       def return_str() -> str:
           return "hello"
-    |} );
+      def contains_kw_args(foo: str, **kwargs) -> str:
+          return "hello"
+    |}
+      );
     ]
   in
   let module_reference = !&"test" in
@@ -1629,6 +1666,24 @@ let test_resolve_definition_for_symbol context =
         # No definition found.
     |}
     (Some "dataclasses:6:0-6:46");
+  assert_resolved_definition_with_location_string
+    ~source:
+      {|
+        from library import contains_kw_args
+
+        contains_kw_args(foo="test")
+        #                 ^- cursor
+      |}
+    (Some "library:6:0-7:18");
+  assert_resolved_definition_with_location_string
+    ~source:
+      {|
+        from library import contains_kw_args
+
+        contains_kw_args(kw="test")
+        #                 ^- cursor
+      |}
+    (Some "library:6:0-7:18");
   ()
 
 
@@ -1790,9 +1845,9 @@ let test_lookup_call_arguments context =
     [
       "2:0-5:15/typing.Any";
       "2:4-2:6/typing_extensions.Literal[12]";
-      "3:4-3:20/typing_extensions.Literal['argval']";
+      "3:4-3:11/typing_extensions.Literal['argval']";
       "3:12-3:20/typing_extensions.Literal['argval']";
-      "4:4-5:14/typing_extensions.Literal['nextline']";
+      "4:4-4:13/typing_extensions.Literal['nextline']";
       "5:4-5:14/typing_extensions.Literal['nextline']";
     ];
   assert_annotation
@@ -1806,10 +1861,10 @@ let test_lookup_call_arguments context =
     ~annotation:(Some "2:0-5:15/typing.Any");
   assert_annotation
     ~position:{ Location.line = 3; column = 4 }
-    ~annotation:(Some "3:4-3:20/typing_extensions.Literal['argval']");
+    ~annotation:(Some "3:4-3:11/typing_extensions.Literal['argval']");
   assert_annotation
-    ~position:{ Location.line = 3; column = 11 }
-    ~annotation:(Some "3:4-3:20/typing_extensions.Literal['argval']");
+    ~position:{ Location.line = 3; column = 10 }
+    ~annotation:(Some "3:4-3:11/typing_extensions.Literal['argval']");
   assert_annotation
     ~position:{ Location.line = 3; column = 19 }
     ~annotation:(Some "3:12-3:20/typing_extensions.Literal['argval']");
@@ -1821,16 +1876,13 @@ let test_lookup_call_arguments context =
     ~annotation:(Some "2:0-5:15/typing.Any");
   assert_annotation
     ~position:{ Location.line = 4; column = 4 }
-    ~annotation:(Some "4:4-5:14/typing_extensions.Literal['nextline']");
+    ~annotation:(Some "4:4-4:13/typing_extensions.Literal['nextline']");
   assert_annotation
-    ~position:{ Location.line = 4; column = 13 }
-    ~annotation:(Some "4:4-5:14/typing_extensions.Literal['nextline']");
+    ~position:{ Location.line = 4; column = 12 }
+    ~annotation:(Some "4:4-4:13/typing_extensions.Literal['nextline']");
   assert_annotation
-    ~position:{ Location.line = 4; column = 14 }
-    ~annotation:(Some "4:4-5:14/typing_extensions.Literal['nextline']");
-  assert_annotation
-    ~position:{ Location.line = 5; column = 3 }
-    ~annotation:(Some "4:4-5:14/typing_extensions.Literal['nextline']");
+    ~position:{ Location.line = 5; column = 4 }
+    ~annotation:(Some "5:4-5:14/typing_extensions.Literal['nextline']");
   assert_annotation
     ~position:{ Location.line = 5; column = 13 }
     ~annotation:(Some "5:4-5:14/typing_extensions.Literal['nextline']");

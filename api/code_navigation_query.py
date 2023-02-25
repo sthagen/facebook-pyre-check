@@ -32,11 +32,11 @@ class CodeNavConnection:
         self, module_name: str, class_name: str
     ) -> code_navigation_request.ErrorResponse | code_navigation_request.SuperclassesResponse:
         class_expression = code_navigation_request.ClassExpression(
-            module=code_navigation_request.ModuleOfName(module_name),
+            module=module_name,
             qualified_name=class_name,
         )
         superclasses_request = code_navigation_request.SuperclassesRequest(
-            class_=class_expression, overlay_id=None
+            class_=class_expression,
         )
         response = await code_navigation_request.async_handle_superclasses(
             self.server_info.socket_path, superclasses_request

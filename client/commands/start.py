@@ -37,14 +37,16 @@ from typing import (
 )
 
 from .. import (
+    backend_arguments,
     command_arguments,
     configuration as configuration_module,
     daemon_socket,
     find_directories,
+    frontend_configuration,
     identifiers,
     log,
 )
-from . import backend_arguments, commands, frontend_configuration, server_event, stop
+from . import commands, server_event, stop
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -217,8 +219,7 @@ def get_critical_files(
     # TODO(T137504540) update critical files for overridden configs as well
     configuration_name = (
         find_directories.CODENAV_CONFIGURATION_FILE
-        if flavor
-        in [identifiers.PyreFlavor.CODE_NAVIGATION, identifiers.PyreFlavor.CLASSIC_NAV]
+        if flavor == identifiers.PyreFlavor.CODE_NAVIGATION
         else find_directories.CONFIGURATION_FILE
     )
     local_root = configuration.get_local_root()

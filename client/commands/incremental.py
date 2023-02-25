@@ -16,16 +16,18 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
 from .. import (
+    backend_arguments,
     command_arguments,
     configuration as configuration_module,
     daemon_socket,
     error,
+    frontend_configuration,
     identifiers,
     remote_logger,
 )
 
 from ..language_server import connections
-from . import backend_arguments, commands, frontend_configuration, server_event, start
+from . import commands, server_event, start
 
 
 LOG: logging.Logger = logging.getLogger(__name__)

@@ -11,10 +11,14 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import testslide
 
-from ... import command_arguments, configuration
+from ... import (
+    backend_arguments,
+    command_arguments,
+    configuration,
+    frontend_configuration,
+)
 from ...configuration import search_path
 from ...tests import setup
-from .. import backend_arguments, frontend_configuration
 from ..infer import (
     AnnotateModuleInPlace,
     Arguments,

@@ -3155,10 +3155,16 @@ let test_dump_call_graph context =
   let custom_source_root =
     OUnit2.bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true
   in
+  let set_path_in_json json =
+    let root_str = PyrePath.show custom_source_root in
+    Format.sprintf json root_str root_str root_str root_str root_str root_str
+  in
+
   let queries_and_expected_responses =
     [
       ( "dump_call_graph()",
-        {|
+        set_path_in_json
+          {|
           {
             "response": {
               "typing.Iterable.__iter__": [],
@@ -3170,7 +3176,7 @@ let test_dump_call_graph context =
                 {
                   "locations": [
                     {
-                      "path": "foo.py",
+                      "path": "%s/foo.py",
                       "start": { "line": 10, "column": 2 },
                       "stop": { "line": 10, "column": 7 }
                     }
@@ -3184,7 +3190,7 @@ let test_dump_call_graph context =
                 {
                   "locations": [
                     {
-                      "path": "foo.py",
+                      "path": "%s/foo.py",
                       "start": { "line": 4, "column": 9 },
                       "stop": { "line": 4, "column": 16 }
                     }
@@ -3198,7 +3204,7 @@ let test_dump_call_graph context =
                 {
                   "locations": [
                     {
-                      "path": "foo.py",
+                      "path": "%s/foo.py",
                       "start": { "line": 4, "column": 19 },
                       "stop": { "line": 4, "column": 23 }
                     }
@@ -3209,7 +3215,7 @@ let test_dump_call_graph context =
                 {
                   "locations": [
                     {
-                      "path": "foo.py",
+                      "path": "%s/foo.py",
                       "start": { "line": 4, "column": 9 },
                       "stop": { "line": 4, "column": 13 }
                     }
@@ -3227,7 +3233,7 @@ let test_dump_call_graph context =
                 {
                   "locations": [
                     {
-                      "path": "bar.py",
+                      "path": "%s/bar.py",
                       "start": { "line": 8, "column": 11 },
                       "stop": { "line": 8, "column": 14 }
                     }
@@ -3236,7 +3242,19 @@ let test_dump_call_graph context =
                   "target": "bar.bar"
                 }
               ],
-              "bar.bar2": [],
+              "bar.bar2": [
+                {
+                  "locations": [
+                    {
+                      "path": "%s/bar.py",
+                      "start": { "line": 10, "column": 9 },
+                      "stop": { "line": 10, "column": 14 }
+                    }
+                  ],
+                  "kind": "function",
+                  "target": "bar.bar2.inner"
+                }
+              ],
               "bar.bar": []
             }
           }
@@ -3295,6 +3313,8 @@ let test_global_leaks context =
   let custom_source_root =
     OUnit2.bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true
   in
+  let temp_file_name = PyrePath.append custom_source_root ~element:"foo.py" in
+  let set_path_in_json json = Format.sprintf json (PyrePath.show temp_file_name) in
   let queries_and_expected_responses =
     [
       ( "global_leaks(foo.get_these)",
@@ -3307,7 +3327,8 @@ let test_global_leaks context =
         |}
       );
       ( "global_leaks(foo.immediate_example)",
-        {|
+        set_path_in_json
+          {|
           {
             "response": {
               "errors": [
@@ -3316,12 +3337,12 @@ let test_global_leaks context =
                   "column": 4,
                   "stop_line": 21,
                   "stop_column": 8,
-                  "path": "*",
+                  "path": "%s",
                   "code": 3100,
                   "name": "Global leak",
-                  "description": "Global leak [3100]: Data is leaked to global `foo.glob`.",
-                  "long_description": "Global leak [3100]: Data is leaked to global `foo.glob`.",
-                  "concise_description": "Global leak [3100]: Data is leaked to global `glob`.",
+                  "description": "Global leak [3100]: Data is leaked to global `foo.glob` of type `typing.List[int]`.",
+                  "long_description": "Global leak [3100]: Data is leaked to global `foo.glob` of type `typing.List[int]`.",
+                  "concise_description": "Global leak [3100]: Data is leaked to global `glob` of type `typing.List[int]`.",
                   "define": "foo.immediate_example"
                 }
               ]
@@ -3339,7 +3360,8 @@ let test_global_leaks context =
         |}
       );
       ( "global_leaks(foo.nested_run.do_the_thing)",
-        {|
+        set_path_in_json
+          {|
           {
             "response": {
               "errors": [
@@ -3348,12 +3370,12 @@ let test_global_leaks context =
                   "column": 8,
                   "stop_line": 8,
                   "stop_column": 12,
-                  "path": "*",
+                  "path": "%s",
                   "code": 3100,
                   "name": "Global leak",
-                  "description": "Global leak [3100]: Data is leaked to global `foo.glob`.",
-                  "long_description": "Global leak [3100]: Data is leaked to global `foo.glob`.",
-                  "concise_description": "Global leak [3100]: Data is leaked to global `glob`.",
+                  "description": "Global leak [3100]: Data is leaked to global `foo.glob` of type `typing.List[int]`.",
+                  "long_description": "Global leak [3100]: Data is leaked to global `foo.glob` of type `typing.List[int]`.",
+                  "concise_description": "Global leak [3100]: Data is leaked to global `glob` of type `typing.List[int]`.",
                   "define": "foo.nested_run.do_the_thing"
                 }
               ]
@@ -3362,7 +3384,8 @@ let test_global_leaks context =
         |}
       );
       ( "global_leaks(foo.nested_run_2.do_the_thing_2.another_nest)",
-        {|
+        set_path_in_json
+          {|
           {
             "response": {
               "errors": [
@@ -3371,12 +3394,12 @@ let test_global_leaks context =
                   "column": 11,
                   "stop_line": 15,
                   "stop_column": 15,
-                  "path": "*",
+                  "path": "%s",
                   "code": 3100,
                   "name": "Global leak",
-                  "description": "Global leak [3100]: Data is leaked to global `foo.glob`.",
-                  "long_description": "Global leak [3100]: Data is leaked to global `foo.glob`.",
-                  "concise_description": "Global leak [3100]: Data is leaked to global `glob`.",
+                  "description": "Global leak [3100]: Data is leaked to global `foo.glob` of type `typing.List[int]`.",
+                  "long_description": "Global leak [3100]: Data is leaked to global `foo.glob` of type `typing.List[int]`.",
+                  "concise_description": "Global leak [3100]: Data is leaked to global `glob` of type `typing.List[int]`.",
                   "define": "foo.nested_run_2.do_the_thing_2.another_nest"
                 }
               ]

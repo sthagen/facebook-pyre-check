@@ -9,16 +9,6 @@
 
 open Base
 
-module Module = struct
-  (** A helper type that help specifying a Python module. *)
-  type t =
-    | OfPath of string
-        (** Specify a module at the given file path. The path is expected to be absolute. Symlinks
-            will not be followed.*)
-    | OfName of string  (** Specify a module with a given dot-qualified name directly. *)
-  [@@deriving sexp, compare, yojson { strict = false }, hash]
-end
-
 module FileUpdateEvent = struct
   module Kind = struct
     type t =
@@ -36,7 +26,7 @@ end
 
 module ClassExpression = struct
   type t = {
-    module_: Module.t; [@key "module"]
+    module_: string; [@key "module"]
     qualified_name: string;
   }
   [@@deriving sexp, compare, yojson { strict = false }]
@@ -55,7 +45,7 @@ module Command = struct
         overlay_id: string option;
       }
     | LocalUpdate of {
-        module_: Module.t; [@key "module"]
+        path: string;
         content: string option;
         overlay_id: string;
       }
@@ -66,24 +56,21 @@ end
 module Query = struct
   type t =
     | GetTypeErrors of {
-        module_: Module.t; [@key "module"]
+        path: string;
         overlay_id: string option;
       }
     | Hover of {
-        module_: Module.t; [@key "module"]
+        path: string;
         position: Ast.Location.position;
         overlay_id: string option;
       }
     | LocationOfDefinition of {
-        module_: Module.t; [@key "module"]
+        path: string;
         position: Ast.Location.position;
         overlay_id: string option;
       }
     | GetInfo (* Poll the server's state. *)
-    | Superclasses of {
-        class_: ClassExpression.t; [@key "class"]
-        overlay_id: string option;
-      }
+    | Superclasses of { class_: ClassExpression.t [@key "class"] }
   [@@deriving sexp, compare, yojson { strict = false }]
 end
 

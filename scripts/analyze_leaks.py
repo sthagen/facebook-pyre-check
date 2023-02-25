@@ -6,9 +6,29 @@
 import abc
 import json
 import sys
-import subprocess
+import os
 from collections import defaultdict, deque
-from typing import cast, Collection, Deque, Dict, List, Optional, Set, TextIO, Union
+from typing import (
+    cast,
+    Collection,
+    Deque,
+    Dict,
+    List,
+    Optional,
+    Set,
+    TextIO,
+    Union,
+    Tuple,
+)
+from pathlib import Path
+
+from ..client import (
+    daemon_socket,
+    find_directories,
+    identifiers,
+)
+from ..client.commands import daemon_query
+from ..client.language_server import connections
 
 import click
 from typing_extensions import TypeAlias
@@ -16,13 +36,14 @@ from typing_extensions import TypeAlias
 
 Trace: TypeAlias = List[str]
 JSON = Union[Dict[str, "JSON"], List["JSON"], str, int, float, bool, None]
+DEFAULT_WORKING_DIRECTORY: str = os.getcwd()
 
 
 class InputFormat(abc.ABC):
     call_graph: Dict[str, JSON]
 
     def __init__(self, call_graph: JSON) -> None:
-        if not isinstance(call_graph, Dict):
+        if not isinstance(call_graph, dict):
             raise ValueError(
                 f"Call graph structure in call graph file is not a JSON dict: {type(call_graph)}"
             )
@@ -62,6 +83,16 @@ class PysaCallGraphInputFormat(InputFormat):
 
 
 class PyreCallGraphInputFormat(InputFormat):
+    def __init__(self, call_graph: JSON) -> None:
+        super().__init__(call_graph)
+        if "response" in self.call_graph:
+            response = self.call_graph["response"]
+            if not isinstance(response, dict):
+                raise ValueError(
+                    f"PyreCallGraphInputFormat expected call graph to have type dict for response key, got {type(response)}: {response}"
+                )
+            self.call_graph: Dict[str, JSON] = response
+
     def validate_callees(self, callees: List[JSON]) -> Set[str]:
         result = set()
         for callee in callees:
@@ -178,17 +209,22 @@ class CallGraph:
         self.call_graph = call_graph.to_call_graph()
         self.entrypoints = entrypoints
 
-    def get_transitive_callees(self) -> Set[str]:
-        transitive_callees = set()
-        stack = list(self.entrypoints.entrypoints)
+    def get_transitive_callees_and_traces(self) -> Dict[str, Trace]:
+        transitive_callees = {}
+        queue: Deque[Tuple[str, Trace]] = deque(
+            [(entrypoint, [entrypoint]) for entrypoint in self.entrypoints.entrypoints]
+        )
 
-        while stack:
-            callable = stack.pop()
+        while queue:
+            callable, trace = queue.popleft()
             if callable in transitive_callees:
                 continue
-            transitive_callees.add(callable)
+            transitive_callees[callable] = trace
             if callable in self.call_graph:
-                stack += self.call_graph[callable]
+                queue += [
+                    (next_callable, trace + [next_callable])
+                    for next_callable in self.call_graph[callable]
+                ]
 
         return transitive_callees
 
@@ -198,56 +234,70 @@ class CallGraph:
         return "batch(" + ", ".join(single_callee_query) + ")"
 
     @staticmethod
-    def analyze_pyre_query_results(pyre_stdout: str) -> Dict[str, List[object]]:
+    def analyze_pyre_query_results(pyre_results: object) -> Dict[str, List[object]]:
         results = {"global_leaks": [], "errors": []}
-        try:
-            pyre_results = json.loads(pyre_stdout)
-            if not isinstance(pyre_results, dict):
+        if not isinstance(pyre_results, dict):
+            raise RuntimeError(
+                f"Expected dict for Pyre query results, got {type(pyre_results)}: {pyre_results}"
+            )
+        if "response" not in pyre_results:
+            raise RuntimeError("`response` key not in Pyre query results", pyre_results)
+        if not isinstance(pyre_results["response"], list):
+            response = pyre_results["response"]
+            raise RuntimeError(
+                f"Expected response value type to be list, got {type(response)}: {response}"
+            )
+        for query_response in pyre_results["response"]:
+            if not isinstance(query_response, dict):
                 raise RuntimeError(
-                    f"Expected dict for Pyre query results, got {type(pyre_results)}: {pyre_results}"
+                    f"Expected dict for pyre response list type, got {type(query_response)}: {query_response}"
                 )
-            if "response" not in pyre_results:
+            elif "error" in query_response:
+                results["errors"].append(query_response["error"])
+            elif (
+                "response" in query_response and "errors" in query_response["response"]
+            ):
+                results["global_leaks"] += query_response["response"]["errors"]
+            else:
                 raise RuntimeError(
-                    "`response` key not in Pyre query results", pyre_results
+                    "Unexpected response from Pyre query", query_response
                 )
-            if not isinstance(pyre_results["response"], list):
-                response = pyre_results["response"]
-                raise RuntimeError(
-                    f"Expected response value type to be list, got {type(response)}: {response}"
-                )
-            for query_response in pyre_results["response"]:
-                if not isinstance(query_response, dict):
-                    raise RuntimeError(
-                        f"Expected dict for pyre response list type, got {type(query_response)}: {query_response}"
-                    )
-                elif "error" in query_response:
-                    results["errors"].append(query_response["error"])
-                elif (
-                    "response" in query_response
-                    and "errors" in query_response["response"]
-                ):
-                    results["global_leaks"] += query_response["response"]["errors"]
-                else:
-                    raise RuntimeError(
-                        "Unexpected response from Pyre query", query_response
-                    )
 
-            return results
-        except json.JSONDecodeError as e:
-            raise RuntimeError("Pyre query returned non-JSON response") from e
+        return results
 
-    def find_issues(self) -> Dict[str, List[object]]:
-        all_callables = self.get_transitive_callees()
-        query = self.prepare_issues_for_query(all_callables)
+    def find_issues(self, search_start_path: Path) -> Dict[str, List[object]]:
+        all_callables = set(self.get_transitive_callees_and_traces())
+        query_str = self.prepare_issues_for_query(all_callables)
 
-        pyre_process = subprocess.run(
-            ["pyre", "-n", "query", query], capture_output=True, text=True
+        project_root = find_directories.find_global_and_local_root(search_start_path)
+        if not project_root:
+            raise ValueError(
+                f"Given project path {search_start_path} is not in a Pyre project"
+            )
+
+        local_relative_path = (
+            str(project_root.local_root.relative_to(project_root.global_root))
+            if project_root.local_root
+            else None
         )
 
-        if pyre_process.returncode != 0:
-            raise Exception("Pyre returned nonzero exit code", pyre_process.stderr)
+        project_identifier = identifiers.get_project_identifier(
+            project_root.global_root, local_relative_path
+        )
 
-        return self.analyze_pyre_query_results(pyre_process.stdout)
+        socket_path = daemon_socket.get_socket_path(
+            project_identifier,
+            flavor=identifiers.PyreFlavor.CLASSIC,
+        )
+
+        try:
+            response = daemon_query.execute_query(socket_path, query_str)
+            return self.analyze_pyre_query_results(response.payload)
+        except connections.ConnectionFailure as e:
+            raise RuntimeError(
+                "A running Pyre server is required for queries to be responded. "
+                "Please run `pyre` first to set up a server."
+            ) from e
 
 
 def validate_json_list(json_list: JSON, from_file: str, level: str) -> None:
@@ -288,8 +338,19 @@ def analyze() -> None:
     default="pyre",
     help="The format of the call_graph_file, see CALL_GRAPH_FILE for more info.",
 )
+@click.option(
+    "--project-path",
+    type=str,
+    default=DEFAULT_WORKING_DIRECTORY,
+    help="The path to the project in which global leaks will be searched for. \
+    The given directory or parent directory must have a global .pyre_configuration. \
+    Default: current directory.",
+)
 def leaks(
-    call_graph_file: TextIO, entrypoints_file: TextIO, call_graph_kind: str
+    call_graph_file: TextIO,
+    entrypoints_file: TextIO,
+    call_graph_kind: str,
+    project_path: str,
 ) -> None:
     """
     Find global leaks for the given entrypoints and their transitive callees.
@@ -320,7 +381,7 @@ def leaks(
 
     call_graph = CallGraph(input_format, entrypoints)
 
-    issues = call_graph.find_issues()
+    issues = call_graph.find_issues(Path(project_path))
     print(json.dumps(issues))
 
 

@@ -25,9 +25,13 @@ from typing import Any, Dict, IO, Iterator, List, Optional, Sequence, Set, Union
 
 from typing_extensions import Protocol
 
-from .. import configuration as configuration_module, find_directories
-from ..configuration import search_path
-from . import frontend_configuration
+from . import (
+    configuration as configuration_module,
+    find_directories,
+    frontend_configuration,
+)
+
+from .configuration import search_path
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

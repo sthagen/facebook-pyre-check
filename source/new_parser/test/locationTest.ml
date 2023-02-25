@@ -638,7 +638,7 @@ let test_call_locations _ =
                                           (Expression.Name (Name.Identifier "args")))));
                            };
                            {
-                             Call.Argument.name = Some (node ~start:(1, 7) ~stop:(1, 12) "a");
+                             Call.Argument.name = Some (node ~start:(1, 7) ~stop:(1, 8) "a");
                              value =
                                node
                                  ~start:(1, 11)
@@ -687,7 +687,7 @@ let test_call_locations _ =
                                  (Expression.Constant (Constant.Integer 1));
                            };
                            {
-                             Call.Argument.name = Some (node ~start:(1, 7) ~stop:(1, 17) "second");
+                             Call.Argument.name = Some (node ~start:(1, 7) ~stop:(1, 13) "second");
                              value =
                                node
                                  ~start:(1, 16)
@@ -723,7 +723,7 @@ let test_call_locations _ =
                                  (Expression.Constant (Constant.Integer 1));
                            };
                            {
-                             Call.Argument.name = Some (node ~start:(1, 7) ~stop:(2, 1) "second");
+                             Call.Argument.name = Some (node ~start:(1, 7) ~stop:(1, 13) "second");
                              value =
                                node
                                  ~start:(2, 0)
@@ -1870,7 +1870,7 @@ let test_import_locations _ =
             ~stop:(1, 15)
             (Statement.Import
                {
-                 Import.from = Some !&"a";
+                 Import.from = Some (node ~start:(1, 5) ~stop:(1, 6) !&"a");
                  imports = [node ~start:(1, 14) ~stop:(1, 15) { Import.name = !&"*"; alias = None }];
                });
         ];
@@ -1883,7 +1883,7 @@ let test_import_locations _ =
             ~stop:(1, 22)
             (Statement.Import
                {
-                 Import.from = Some !&".....foo";
+                 Import.from = Some (node ~start:(1, 5) ~stop:(1, 13) !&".....foo");
                  imports = [node ~start:(1, 21) ~stop:(1, 22) { Import.name = !&"b"; alias = None }];
                });
         ];
@@ -1896,7 +1896,7 @@ let test_import_locations _ =
             ~stop:(1, 20)
             (Statement.Import
                {
-                 Import.from = Some !&"a";
+                 Import.from = Some (node ~start:(1, 5) ~stop:(1, 6) !&"a");
                  imports =
                    [
                      node ~start:(1, 15) ~stop:(1, 16) { Import.name = !&"b"; alias = None };
@@ -1913,7 +1913,7 @@ let test_import_locations _ =
             ~stop:(1, 31)
             (Statement.Import
                {
-                 Import.from = Some !&"f";
+                 Import.from = Some (node ~start:(1, 5) ~stop:(1, 6) !&"f");
                  imports =
                    [
                      node ~start:(1, 14) ~stop:(1, 20) { Import.name = !&"a"; alias = Some "b" };
@@ -1938,6 +1938,20 @@ let test_import_locations _ =
                      node ~start:(1, 15) ~stop:(1, 16) { Import.name = !&"c"; alias = None };
                      node ~start:(1, 18) ~stop:(1, 24) { Import.name = !&"d"; alias = Some "e" };
                    ];
+               });
+        ];
+    (* Note two spaces before `a`: Invalid location *)
+    assert_parsed
+      "from  a import b"
+      ~expected:
+        [
+          node
+            ~start:(1, 0)
+            ~stop:(1, 16)
+            (Statement.Import
+               {
+                 Import.from = Some (node ~start:(1, 5) ~stop:(1, 6) !&"a");
+                 imports = [node ~start:(1, 15) ~stop:(1, 16) { Import.name = !&"b"; alias = None }];
                });
         ]
   in

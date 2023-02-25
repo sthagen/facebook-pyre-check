@@ -5113,6 +5113,7 @@ let test_assert _ =
     ]
 
 
+(* TODO(T145739378) Add location information on from *)
 let test_import _ =
   assert_parsed_equal
     "import a"
@@ -5156,50 +5157,71 @@ let test_import _ =
     "from a import b"
     [
       +Statement.Import
-         { Import.from = Some !&"a"; imports = [+{ Import.name = !&"b"; alias = None }] };
+         {
+           Import.from = Some (node ~start:(1, 5) ~stop:(1, 6) !&"a");
+           imports = [+{ Import.name = !&"b"; alias = None }];
+         };
     ];
   assert_parsed_equal
     "from a import *"
     [
       +Statement.Import
-         { Import.from = Some !&"a"; imports = [+{ Import.name = !&"*"; alias = None }] };
+         {
+           Import.from = Some (node ~start:(1, 5) ~stop:(1, 6) !&"a");
+           imports = [+{ Import.name = !&"*"; alias = None }];
+         };
     ];
   assert_parsed_equal
     "from . import b"
     [
       +Statement.Import
-         { Import.from = Some !&"."; imports = [+{ Import.name = !&"b"; alias = None }] };
+         {
+           Import.from = Some (node ~start:(1, 5) ~stop:(1, 6) !&".");
+           imports = [+{ Import.name = !&"b"; alias = None }];
+         };
     ];
   assert_parsed_equal
     "from ...foo import b"
     [
       +Statement.Import
-         { Import.from = Some !&"...foo"; imports = [+{ Import.name = !&"b"; alias = None }] };
+         {
+           Import.from = Some (node ~start:(1, 5) ~stop:(1, 11) !&"...foo");
+           imports = [+{ Import.name = !&"b"; alias = None }];
+         };
     ];
   assert_parsed_equal
     "from .....foo import b"
     [
       +Statement.Import
-         { Import.from = Some !&".....foo"; imports = [+{ Import.name = !&"b"; alias = None }] };
+         {
+           Import.from = Some (node ~start:(1, 5) ~stop:(1, 13) !&".....foo");
+           imports = [+{ Import.name = !&"b"; alias = None }];
+         };
     ];
   assert_parsed_equal
     "from .a import b"
     [
       +Statement.Import
-         { Import.from = Some !&".a"; imports = [+{ Import.name = !&"b"; alias = None }] };
+         {
+           Import.from = Some (node ~start:(1, 5) ~stop:(1, 7) !&".a");
+           imports = [+{ Import.name = !&"b"; alias = None }];
+         };
     ];
   assert_parsed_equal
     "from ..a import b"
     [
       +Statement.Import
-         { Import.from = Some !&"..a"; imports = [+{ Import.name = !&"b"; alias = None }] };
+         {
+           Import.from = Some (node ~start:(1, 5) ~stop:(1, 6) !&"..a");
+           imports = [+{ Import.name = !&"b"; alias = None }];
+         };
     ];
   assert_parsed_equal
     "from a import (b, c)"
     [
       +Statement.Import
          {
-           Import.from = Some !&"a";
+           Import.from = Some (node ~start:(1, 5) ~stop:(1, 6) !&"a");
            imports =
              [+{ Import.name = !&"b"; alias = None }; +{ Import.name = !&"c"; alias = None }];
          };
@@ -5208,14 +5230,17 @@ let test_import _ =
     "from a.b import c"
     [
       +Statement.Import
-         { Import.from = Some !&"a.b"; imports = [+{ Import.name = !&"c"; alias = None }] };
+         {
+           Import.from = Some (node ~start:(1, 5) ~stop:(1, 6) !&"a.b");
+           imports = [+{ Import.name = !&"c"; alias = None }];
+         };
     ];
   assert_parsed_equal
     "from f import a as b, c, d as e"
     [
       +Statement.Import
          {
-           Import.from = Some !&"f";
+           Import.from = Some (node ~start:(1, 5) ~stop:(1, 6) !&"f");
            imports =
              [
                +{ Import.name = !&"a"; alias = Some "b" };

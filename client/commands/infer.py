@@ -32,13 +32,15 @@ import libcst
 from libcst.codemod import CodemodContext
 
 from .. import (
+    backend_arguments,
     command_arguments,
     configuration as configuration_module,
     dataclasses_json_extensions as json_mixins,
+    frontend_configuration,
     log,
 )
 from ..libcst_vendored_visitors import ApplyTypeAnnotationsVisitor
-from . import backend_arguments, commands, frontend_configuration, start
+from . import commands, start
 
 LOG: logging.Logger = logging.getLogger(__name__)
 

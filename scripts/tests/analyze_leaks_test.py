@@ -60,6 +60,31 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
             {"something_that.my_function_calls", "builtins.print"},
         )
 
+    def test_load_pyre_call_graph_happy_path_with_response(self) -> None:
+        json_call_graph: JSON = {
+            "response": {
+                "my_module.my_function": [
+                    {
+                        "keys_we_dont_need": [1, 2, 3],
+                        "target": "something_that.my_function_calls",
+                    },
+                    {"target": "builtins.print"},
+                    {"direct_target": "my_module.my_function"},
+                ],
+                "something_that.my_function_calls": [{"direct_target": "int.__str__"}],
+            }
+        }
+
+        call_graph = PyreCallGraphInputFormat(json_call_graph)
+        result = call_graph.to_call_graph()
+
+        self.assertEqual(len(result), 2)
+        self.assertSetEqual(result["something_that.my_function_calls"], {"int.__str__"})
+        self.assertSetEqual(
+            result["my_module.my_function"],
+            {"something_that.my_function_calls", "builtins.print"},
+        )
+
     def test_load_call_graph_bad_root(self) -> None:
         call_graph: JSON = ["1234"]
 
@@ -412,9 +437,9 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         entrypoints = Entrypoints(entrypoints_list, input_format.get_keys())
         call_graph = CallGraph(input_format, entrypoints)
 
-        callees = call_graph.get_transitive_callees()
+        callees = call_graph.get_transitive_callees_and_traces()
 
-        self.assertEqual(callees, set())
+        self.assertEqual(callees, {})
 
     def test_get_transitive_callees_f1(self) -> None:
         entrypoints_list: JSON = ["f1"]
@@ -424,9 +449,11 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         entrypoints = Entrypoints(entrypoints_list, input_format.get_keys())
         call_graph = CallGraph(input_format, entrypoints)
 
-        callees = call_graph.get_transitive_callees()
+        callees = call_graph.get_transitive_callees_and_traces()
 
-        self.assertEqual(callees, {"f1", "f2", "f3"})
+        self.assertEqual(
+            callees, {"f1": ["f1"], "f2": ["f1", "f2"], "f3": ["f1", "f3"]}
+        )
 
     def test_get_transitive_callees_f2(self) -> None:
         entrypoints_list: JSON = ["f2"]
@@ -436,9 +463,11 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         entrypoints = Entrypoints(entrypoints_list, input_format.get_keys())
         call_graph = CallGraph(input_format, entrypoints)
 
-        callees = call_graph.get_transitive_callees()
+        callees = call_graph.get_transitive_callees_and_traces()
 
-        self.assertEqual(callees, {"f1", "f2", "f3"})
+        self.assertEqual(
+            callees, {"f1": ["f2", "f1"], "f2": ["f2"], "f3": ["f2", "f1", "f3"]}
+        )
 
     def test_get_transitive_callees_f3(self) -> None:
         entrypoints_list: JSON = ["f3"]
@@ -448,9 +477,9 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         entrypoints = Entrypoints(entrypoints_list, input_format.get_keys())
         call_graph = CallGraph(input_format, entrypoints)
 
-        callees = call_graph.get_transitive_callees()
+        callees = call_graph.get_transitive_callees_and_traces()
 
-        self.assertEqual(callees, {"f3"})
+        self.assertEqual(callees, {"f3": ["f3"]})
 
     def test_get_transitive_callees_multiple(self) -> None:
         entrypoints_list: JSON = ["f1", "f4"]
@@ -470,9 +499,19 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
             entrypoints,
         )
 
-        callees = call_graph.get_transitive_callees()
+        callees = call_graph.get_transitive_callees_and_traces()
 
-        self.assertEqual(callees, {"f1", "f2", "f3", "f4", "f5", "print"})
+        self.assertEqual(
+            callees,
+            {
+                "f1": ["f1"],
+                "f2": ["f1", "f2"],
+                "f3": ["f1", "f3"],
+                "f4": ["f4"],
+                "f5": ["f4", "f5"],
+                "print": ["f4", "f5", "print"],
+            },
+        )
 
     def test_prepare_issues_for_query(self) -> None:
         callees = ["f1", "f2", "f3"]
@@ -483,24 +522,32 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         self.assertEqual(result_query, expected_query)
 
     def test_analyze_pyre_query_results(self) -> None:
-        example_pyre_stdout = """
-        {
+        example_pyre_stdout = {
             "response": [
                 {"error": "we failed to find your callable"},
                 {
                     "response": {
-                        "errors": [{"error_msg": "found an error for you", "location": "your_location"}]
+                        "errors": [
+                            {
+                                "error_msg": "found an error for you",
+                                "location": "your_location",
+                            }
+                        ]
                     }
                 },
                 {"error": "we failed to find your callable 2"},
                 {
                     "response": {
-                        "errors": [{"error_msg": "found an error for you2", "location": "your_location2"}]
+                        "errors": [
+                            {
+                                "error_msg": "found an error for you2",
+                                "location": "your_location2",
+                            }
+                        ]
                     }
-                }
+                },
             ]
         }
-        """
 
         results = CallGraph.analyze_pyre_query_results(example_pyre_stdout)
         expected_results = {

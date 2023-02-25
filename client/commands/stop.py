@@ -13,9 +13,14 @@ via a socket connection.
 import logging
 from pathlib import Path
 
-from .. import configuration as configuration_module, daemon_socket, identifiers
+from .. import (
+    configuration as configuration_module,
+    daemon_socket,
+    frontend_configuration,
+    identifiers,
+)
 from ..language_server import connections
-from . import commands, frontend_configuration
+from . import commands
 
 
 LOG: logging.Logger = logging.getLogger(__name__)
@@ -28,7 +33,6 @@ def stop_message(flavor: identifiers.PyreFlavor) -> str:
         if flavor not in (
             identifiers.PyreFlavor.CLASSIC,
             identifiers.PyreFlavor.SHADOW,
-            identifiers.PyreFlavor.CLASSIC_NAV,
         ):
             raise AssertionError(
                 f"Attempted to stop a server for unsupported flavor {flavor}"

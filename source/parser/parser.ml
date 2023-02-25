@@ -448,7 +448,18 @@ module ParserToAst = struct
               body = List.map ~f:convert_statement body;
               orelse = List.map ~f:convert_statement orelse;
             }
-      | Import { from; imports } -> AstStatement.Import { from; imports }
+      | Import { from = None; imports } -> AstStatement.Import { from = None; imports }
+      | Import { from = Some from; imports } ->
+          let new_location =
+            match location with
+            | { start = { line; column }; _ } ->
+                (* Add 5 characters for 'from ' *)
+                {
+                  Location.start = { line; column = column + 5 };
+                  stop = { line; column = column + 5 + String.length ([%show: Reference.t] from) };
+                }
+          in
+          AstStatement.Import { from = Some (Node.create ~location:new_location from); imports }
       | Nonlocal identifiers -> AstStatement.Nonlocal identifiers
       | Pass -> AstStatement.Pass
       | Raise { expression; from } ->

@@ -27,11 +27,13 @@ from typing import Iterable, List, Optional
 import click
 
 from . import (
+    backend_arguments,
     command_arguments,
     commands,
     configuration as configuration_module,
     filesystem,
     find_directories,
+    frontend_configuration,
     identifiers,
     log,
 )
@@ -952,7 +954,7 @@ def persistent(
     return commands.persistent.run(
         read_server_options=commands.pyre_server_options.PyreServerOptions.create_reader(
             start_command_argument=start_command_argument,
-            read_frontend_configuration=lambda: commands.frontend_configuration.OpenSource(
+            read_frontend_configuration=lambda: frontend_configuration.OpenSource(
                 configuration_module.create_configuration(
                     command_argument, base_directory
                 )
@@ -979,7 +981,7 @@ def persistent(
                 telemetry=language_server_features.TelemetryAvailability.DISABLED,
             ),
         ),
-        remote_logging=commands.backend_arguments.RemoteLogging.create(
+        remote_logging=backend_arguments.RemoteLogging.create(
             configuration.logger,
             start_command_argument.get_log_identifier(),
         ),

@@ -223,19 +223,9 @@ end
     code! *)
 module Testing : sig
   module Request : sig
-    module Module : sig
-      (** A helper type that help specifying a Python module. *)
-      type t =
-        | OfPath of string
-            (** Specify a module at the given file path. The path is expected to be absolute.
-                Symlinks will not be followed.*)
-        | OfName of string  (** Specify a module with a given dot-qualified name directly. *)
-      [@@deriving sexp, compare, yojson { strict = false }]
-    end
-
     module ClassExpression : sig
       type t = {
-        module_: Module.t; [@key "module"]
+        module_: string; [@key "module"]
         qualified_name: string;
       }
       [@@deriving sexp, compare, yojson { strict = false }]
@@ -300,7 +290,7 @@ module Testing : sig
                 command, the server will respond with a {!Response.ErrorKind.UntrackedFileClosed}
                 error. *)
         | LocalUpdate of {
-            module_: Module.t;
+            path: string;
             content: string option;
             overlay_id: string;
           }
@@ -340,7 +330,7 @@ module Testing : sig
           the query gets processed. *)
       type t =
         | GetTypeErrors of {
-            module_: Module.t;
+            path: string;
             overlay_id: string option;
           }
             (** A query that asks the server to type check a given module. The server will send back
@@ -351,7 +341,7 @@ module Testing : sig
                 find the overlay with the given ID, it will respond with a
                 {!Response.ErrorKind.OverlayNotFound} error. *)
         | Hover of {
-            module_: Module.t;
+            path: string;
             position: Ast.Location.position;
             overlay_id: string option;
           }
@@ -365,7 +355,7 @@ module Testing : sig
                 find the overlay with the given ID, it will respond with a
                 {!Response.ErrorKind.OverlayNotFound} error. *)
         | LocationOfDefinition of {
-            module_: Module.t;
+            path: string;
             position: Ast.Location.position;
             overlay_id: string option;
           }
@@ -381,10 +371,7 @@ module Testing : sig
         | GetInfo
             (** A query that asks for server metadata, intended to be consumed by the `pyre servers`
                 command. *)
-        | Superclasses of {
-            class_: ClassExpression.t;
-            overlay_id: string option;
-          }
+        | Superclasses of { class_: ClassExpression.t }
             (** A query that asks the server to return the superclasses of a given class. The server
                 will send back a {!Response.Superclasses} response as result if a class matching the
                 fully qualified name is found. Only class names that are found in the type
@@ -421,7 +408,7 @@ module Testing : sig
       type t =
         | InvalidRequest of string
             (** This error occurs when the client has sent a request which the server cannot parse. *)
-        | ModuleNotTracked of { module_: Request.Module.t }
+        | ModuleNotTracked of { path: string }
             (** This error occurs when the client has requested info on a module which the server
                 cannot find. *)
         | OverlayNotFound of { overlay_id: string }
