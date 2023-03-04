@@ -4,10 +4,12 @@
 # LICENSE file in the root directory of this source tree.
 
 import abc
+import enum
 import json
 import sys
 import os
 from collections import defaultdict, deque
+from dataclasses import dataclass
 from typing import (
     cast,
     Collection,
@@ -40,84 +42,135 @@ DEFAULT_WORKING_DIRECTORY: str = os.getcwd()
 
 
 class InputFormat(abc.ABC):
-    call_graph: Dict[str, JSON]
+    call_graph: Dict[str, Set[str]]
+    original_call_graph: Dict[str, JSON]
 
     def __init__(self, call_graph: JSON) -> None:
+        self.original_call_graph = self.validate_top_level_dict(call_graph)
+        self.call_graph = self._to_call_graph()
+
+    @staticmethod
+    def validate_top_level_dict(call_graph: JSON) -> Dict[str, JSON]:
         if not isinstance(call_graph, dict):
             raise ValueError(
                 f"Call graph structure in call graph file is not a JSON dict: {type(call_graph)}"
             )
-
-        self.call_graph = call_graph
+        return call_graph
 
     @abc.abstractmethod
-    def validate_callees(self, callees: List[JSON]) -> Set[str]:
+    def extract_callee(self, callee: JSON) -> str:
         ...
 
-    def to_call_graph(self) -> Dict[str, Set[str]]:
+    def validate_callees(self, callees: List[JSON]) -> Set[str]:
+        return {self.extract_callee(callee) for callee in callees}
+
+    def _to_call_graph(self) -> Dict[str, Set[str]]:
         result = {}
-        call_graph = self.call_graph
+        call_graph = self.original_call_graph
 
         for caller, callees in call_graph.items():
             if not isinstance(callees, list):
                 raise ValueError(
                     f"Expected value for caller {caller} to be list of callers with location, got {type(callees)}: {callees}"
                 )
-            result[caller] = self.validate_callees(callees) - {caller}
+            formatted_qualifier = self.extract_caller(caller)
+            result[formatted_qualifier] = self.validate_callees(callees) - {
+                formatted_qualifier
+            }
         return result
 
     def get_keys(self) -> Set[str]:
         return set(self.call_graph)
 
+    @abc.abstractmethod
+    def extract_caller(self, qualifier: str) -> str:
+        ...
+
 
 class PysaCallGraphInputFormat(InputFormat):
-    def validate_callees(self, callees: List[JSON]) -> Set[str]:
-        result = set()
-        for callee in callees:
-            if not isinstance(callee, str):
-                raise ValueError(
-                    f"Expected value for individual callee to be a string, got {type(callee)}: {callee}"
-                )
-            result.add(callee)
-        return result
+    def extract_callee(self, callee: JSON) -> str:
+        if not isinstance(callee, str):
+            raise ValueError(
+                f"Expected value for individual callee to be a string, got {type(callee)}: {callee}"
+            )
+        return callee
+
+    def extract_caller(self, qualifier: str) -> str:
+        return qualifier
 
 
 class PyreCallGraphInputFormat(InputFormat):
     def __init__(self, call_graph: JSON) -> None:
-        super().__init__(call_graph)
-        if "response" in self.call_graph:
-            response = self.call_graph["response"]
+        self.original_call_graph = self.validate_top_level_dict(call_graph)
+        if "response" in self.original_call_graph:
+            response = self.original_call_graph["response"]
             if not isinstance(response, dict):
                 raise ValueError(
                     f"PyreCallGraphInputFormat expected call graph to have type dict for response key, got {type(response)}: {response}"
                 )
-            self.call_graph: Dict[str, JSON] = response
+            self.original_call_graph: Dict[str, JSON] = response
+        self.call_graph: Dict[str, Set[str]] = self._to_call_graph()
 
-    def validate_callees(self, callees: List[JSON]) -> Set[str]:
-        result = set()
-        for callee in callees:
-            if not isinstance(callee, dict):
-                raise ValueError(
-                    f"Expected value for individual callee to be a dict of callee with location, got {type(callee)}: {callee}"
-                )
-            if "target" not in callee and "direct_target" not in callee:
-                raise ValueError(
-                    f"Expected callee dict to have key `target` or `direct_target`: {callee}"
-                )
-            if "target" in callee and isinstance(callee["target"], str):
-                result.add(callee["target"])
-            elif "direct_target" in callee and isinstance(callee["direct_target"], str):
-                result.add(callee["direct_target"])
-            else:
-                target_type = (
-                    type(callee["target"])
-                    if "target" in callee
-                    else type(callee["direct_target"])
-                )
-                raise ValueError(
-                    f"Expected callee dict to have key `target` or `direct_target` with type str, got {target_type}"
-                )
-        return result
+    def extract_callee(self, callee: JSON) -> str:
+        if not isinstance(callee, dict):
+            raise ValueError(
+                f"Expected value for individual callee to be a dict of callee with location, got {type(callee)}: {callee}"
+            )
+        if "target" not in callee and "direct_target" not in callee:
+            raise ValueError(
+                f"Expected callee dict to have key `target` or `direct_target`: {callee}"
+            )
+
+        target = callee.get("target")
+        direct_target = callee.get("direct_target")
+        if target and isinstance(target, str):
+            return target
+        elif direct_target and isinstance(direct_target, str):
+            return direct_target
+        else:
+            target_type = (
+                type(callee["target"])
+                if "target" in callee
+                else type(callee["direct_target"])
+            )
+            raise ValueError(
+                f"Expected callee dict to have key `target` or `direct_target` with type str, got {target_type}"
+            )
+
+    def extract_caller(self, qualifier: str) -> str:
+        return qualifier
+
+
+class DynamicCallGraphInputFormat(InputFormat):
+    def extract_caller(self, qualifier: str) -> str:
+        return self.format_qualifier(qualifier)
+
+    @staticmethod
+    def format_qualifier(qualifier: str) -> str:
+        qualifier = qualifier.replace("<locals>.", "")
+        split = qualifier.split(":")
+        if len(split) != 2:
+            return qualifier
+        module_qualifier, callable = split
+        return f"{module_qualifier}.{callable}"
+
+    def extract_callee(self, callee: JSON) -> str:
+        if not isinstance(callee, str):
+            raise ValueError(
+                f"Expected value for individual callee to be a string, got {type(callee)}: {callee}"
+            )
+        mapped_qualifier = self.format_qualifier(callee)
+        return mapped_qualifier
+
+
+class InputType(enum.Enum):
+    PYSA = PysaCallGraphInputFormat
+    PYRE = PyreCallGraphInputFormat
+    DYNAMIC = DynamicCallGraphInputFormat
+
+    @staticmethod
+    def members() -> List[str]:
+        return [input_type.name for input_type in InputType]
 
 
 class Entrypoints:
@@ -151,7 +204,7 @@ class DependencyGraph:
     def __init__(self, input_call_graph: InputFormat, entrypoints: Entrypoints) -> None:
         self.entrypoints = entrypoints
         self.dependency_graph = defaultdict(lambda: set())
-        call_graph = input_call_graph.to_call_graph()
+        call_graph = input_call_graph.call_graph
 
         for caller, callees in call_graph.items():
             for callee in callees:
@@ -201,12 +254,40 @@ class DependencyGraph:
         return " -> ".join(node_path)
 
 
+@dataclass(frozen=True)
+class LeakAnalysisScriptError:
+    error_message: str
+    bad_value: JSON
+
+    def to_json(self) -> JSON:
+        return {"error_message": self.error_message, "bad_value": self.bad_value}
+
+
+@dataclass(frozen=True)
+class LeakAnalysisResult:
+    global_leaks: List[Dict[str, JSON]]
+    query_errors: List[JSON]
+    script_errors: List[LeakAnalysisScriptError]
+
+    def _script_errors_to_json(self) -> List[JSON]:
+        return [script_error.to_json() for script_error in self.script_errors]
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "global_leaks": self.global_leaks,
+                "query_errors": self.query_errors,
+                "script_errors": self._script_errors_to_json(),
+            }
+        )
+
+
 class CallGraph:
     call_graph: Dict[str, Set[str]]
     entrypoints: Entrypoints
 
     def __init__(self, call_graph: InputFormat, entrypoints: Entrypoints) -> None:
-        self.call_graph = call_graph.to_call_graph()
+        self.call_graph = call_graph.call_graph
         self.entrypoints = entrypoints
 
     def get_transitive_callees_and_traces(self) -> Dict[str, Trace]:
@@ -234,8 +315,10 @@ class CallGraph:
         return "batch(" + ", ".join(single_callee_query) + ")"
 
     @staticmethod
-    def analyze_pyre_query_results(pyre_results: object) -> Dict[str, List[object]]:
-        results = {"global_leaks": [], "errors": []}
+    def collect_pyre_query_results(pyre_results: object) -> LeakAnalysisResult:
+        global_leaks: List[Dict[str, JSON]] = []
+        query_errors: List[JSON] = []
+        script_errors: List[LeakAnalysisScriptError] = []
         if not isinstance(pyre_results, dict):
             raise RuntimeError(
                 f"Expected dict for Pyre query results, got {type(pyre_results)}: {pyre_results}"
@@ -249,25 +332,62 @@ class CallGraph:
             )
         for query_response in pyre_results["response"]:
             if not isinstance(query_response, dict):
-                raise RuntimeError(
-                    f"Expected dict for pyre response list type, got {type(query_response)}: {query_response}"
+                script_errors.append(
+                    LeakAnalysisScriptError(
+                        error_message=f"Expected dict for pyre response list type, got {type(query_response)}",
+                        bad_value=query_response,
+                    )
                 )
             elif "error" in query_response:
-                results["errors"].append(query_response["error"])
+                query_errors.append(query_response["error"])
             elif (
                 "response" in query_response and "errors" in query_response["response"]
             ):
-                results["global_leaks"] += query_response["response"]["errors"]
+                global_leaks += query_response["response"]["errors"]
             else:
-                raise RuntimeError(
-                    "Unexpected response from Pyre query", query_response
+                script_errors.append(
+                    LeakAnalysisScriptError(
+                        error_message="Unexpected single query response from Pyre",
+                        bad_value=query_response,
+                    )
                 )
 
-        return results
+        return LeakAnalysisResult(
+            global_leaks=global_leaks,
+            query_errors=query_errors,
+            script_errors=script_errors,
+        )
 
-    def find_issues(self, search_start_path: Path) -> Dict[str, List[object]]:
-        all_callables = set(self.get_transitive_callees_and_traces())
-        query_str = self.prepare_issues_for_query(all_callables)
+    @staticmethod
+    def attach_trace_to_query_results(
+        pyre_results: LeakAnalysisResult, callables_and_traces: Dict[str, Trace]
+    ) -> None:
+        for issue in pyre_results.global_leaks:
+            if "define" not in issue:
+                pyre_results.script_errors.append(
+                    LeakAnalysisScriptError(
+                        error_message="Key `define` not present in global leak result, skipping trace",
+                        bad_value=issue,
+                    )
+                )
+                continue
+
+            define = issue["define"]
+            if define not in callables_and_traces:
+                pyre_results.script_errors.append(
+                    LeakAnalysisScriptError(
+                        error_message="Define not known in analyzed callables, skipping trace",
+                        bad_value=issue,
+                    )
+                )
+                continue
+
+            trace = callables_and_traces[define]
+            issue["trace"] = cast(JSON, trace)
+
+    def find_issues(self, search_start_path: Path) -> LeakAnalysisResult:
+        all_callables = self.get_transitive_callees_and_traces()
+        query_str = self.prepare_issues_for_query(all_callables.keys())
 
         project_root = find_directories.find_global_and_local_root(search_start_path)
         if not project_root:
@@ -292,7 +412,9 @@ class CallGraph:
 
         try:
             response = daemon_query.execute_query(socket_path, query_str)
-            return self.analyze_pyre_query_results(response.payload)
+            collected_results = self.collect_pyre_query_results(response.payload)
+            self.attach_trace_to_query_results(collected_results, all_callables)
+            return collected_results
         except connections.ConnectionFailure as e:
             raise RuntimeError(
                 "A running Pyre server is required for queries to be responded. "
@@ -333,9 +455,9 @@ def analyze() -> None:
 @click.argument("call_graph_file", type=click.File("r"))
 @click.argument("entrypoints_file", type=click.File("r"))
 @click.option(
-    "--call_graph_kind",
-    type=click.Choice(["pyre", "pysa"], case_sensitive=False),
-    default="pyre",
+    "--call-graph-kind",
+    type=click.Choice(InputType.members(), case_sensitive=False),
+    default="PYRE",
     help="The format of the call_graph_file, see CALL_GRAPH_FILE for more info.",
 )
 @click.option(
@@ -371,18 +493,15 @@ def leaks(
     call_graph_data = load_json_from_file(call_graph_file, "CALL_GRAPH_FILE")
     entrypoints_json = load_json_from_file(entrypoints_file, "ENTRYPOINTS_FILE")
 
-    input_format = (
-        PyreCallGraphInputFormat(call_graph_data)
-        if call_graph_kind == "pyre"
-        else PysaCallGraphInputFormat(call_graph_data)
-    )
+    input_format_type = InputType[call_graph_kind.upper()].value
+    input_format = input_format_type(call_graph_data)
 
     entrypoints = Entrypoints(entrypoints_json, input_format.get_keys())
 
     call_graph = CallGraph(input_format, entrypoints)
 
     issues = call_graph.find_issues(Path(project_path))
-    print(json.dumps(issues))
+    print(issues.to_json())
 
 
 @analyze.command()
@@ -390,9 +509,9 @@ def leaks(
 @click.argument("call_graph_file", type=click.File("r"))
 @click.argument("entrypoints_file", type=click.File("r"))
 @click.option(
-    "--call_graph_kind",
-    type=click.Choice(["pyre", "pysa"], case_sensitive=False),
-    default="pyre",
+    "--call-graph-kind",
+    type=click.Choice(InputType.members(), case_sensitive=False),
+    default="PYRE",
     help="The format of the call_graph_file, see CALL_GRAPH_FILE for more info.",
 )
 def trace(
@@ -423,11 +542,8 @@ def trace(
     call_graph_data = load_json_from_file(call_graph_file, "CALL_GRAPH_FILE")
     entrypoints_json = load_json_from_file(entrypoints_file, "ENTRYPOINTS_FILE")
 
-    input_format = (
-        PyreCallGraphInputFormat(call_graph_data)
-        if call_graph_kind == "pyre"
-        else PysaCallGraphInputFormat(call_graph_data)
-    )
+    input_format_type = InputType[call_graph_kind.upper()].value
+    input_format = input_format_type(call_graph_data)
 
     entrypoints = Entrypoints(entrypoints_json, input_format.get_keys())
 

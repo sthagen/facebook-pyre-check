@@ -19,7 +19,7 @@ json messages to the editor, which is responsible for loggign them.
 import enum
 from typing import Dict, Optional
 
-from .. import backend_arguments, remote_logger, version
+from . import backend_arguments, remote_logger, version
 
 
 class LSPEvent(enum.Enum):
@@ -34,7 +34,7 @@ class LSPEvent(enum.Enum):
     COVERED = "covered"
 
 
-def _log_lsp_event(
+def log(
     remote_logging: Optional[backend_arguments.RemoteLogging],
     event: LSPEvent,
     integers: Optional[Dict[str, int]] = None,

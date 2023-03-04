@@ -19,15 +19,9 @@ import traceback
 from pathlib import Path
 from typing import Dict, Optional, TYPE_CHECKING
 
-from .. import backend_arguments, background_tasks, timer
+from .. import backend_arguments, background_tasks, log_lsp_event, timer
 from ..language_server import connections, features, protocol as lsp
-from . import (
-    daemon_querier,
-    log_lsp_event,
-    pyre_server_options,
-    server_state as state,
-    subscription,
-)
+from . import daemon_querier, pyre_server_options, server_state as state, subscription
 from .initialization import (
     async_start_pyre_server,
     BuckStartFailure,
@@ -143,7 +137,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
             LOG.info("Reading Pyre server configurations...")
             return server_options_reader()
         except Exception:
-            log_lsp_event._log_lsp_event(
+            log_lsp_event.log(
                 remote_logging=remote_logging,
                 event=log_lsp_event.LSPEvent.NOT_CONFIGURED,
                 normals={
@@ -241,7 +235,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
                 )
             self.server_state.consecutive_start_failure = 0
             self.server_state.is_user_notified_on_buck_failure = False
-            log_lsp_event._log_lsp_event(
+            log_lsp_event.log(
                 remote_logging=self.remote_logging,
                 event=log_lsp_event.LSPEvent.CONNECTED,
                 integers={"duration": int(connection_timer.stop_in_millisecond())},
@@ -301,7 +295,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
             # Buck start failures are intentionally not counted towards
             # `consecutive_start_failure` -- they happen far too often in practice
             # so we do not want them to trigger suspensions.
-            log_lsp_event._log_lsp_event(
+            log_lsp_event.log(
                 remote_logging=self.remote_logging,
                 event=log_lsp_event.LSPEvent.NOT_CONNECTED,
                 integers={"duration": int(connection_timer.stop_in_millisecond())},
@@ -334,7 +328,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
                 self.server_state.consecutive_start_failure
                 < CONSECUTIVE_START_ATTEMPT_THRESHOLD
             ):
-                log_lsp_event._log_lsp_event(
+                log_lsp_event.log(
                     remote_logging=self.remote_logging,
                     event=log_lsp_event.LSPEvent.NOT_CONNECTED,
                     integers={"duration": int(connection_timer.stop_in_millisecond())},
@@ -351,7 +345,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
                     fallback_to_notification=True,
                 )
             else:
-                log_lsp_event._log_lsp_event(
+                log_lsp_event.log(
                     remote_logging=self.remote_logging,
                     event=log_lsp_event.LSPEvent.SUSPENDED,
                     integers={"duration": int(connection_timer.stop_in_millisecond())},
@@ -404,7 +398,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
             raise
         finally:
             if error_message is not None:
-                log_lsp_event._log_lsp_event(
+                log_lsp_event.log(
                     remote_logging=self.remote_logging,
                     event=log_lsp_event.LSPEvent.DISCONNECTED,
                     integers={"duration": int(session_timer.stop_in_millisecond())},

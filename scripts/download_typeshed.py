@@ -4,7 +4,14 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-TODO(T132414938) Add a module-level docstring
+Script to download, trim, and patch typeshed zip files.
+
+- By "trimming" we mean removing files only needed for python2
+- By "patching" patching we mean altering the stubs. Pyre's patches are
+  stored in ./typeshed-patches. These patches are needed because:
+  - off-the-shelf typeshed sometimes doesn't play well with Pyre
+  - Pyre has some custom extensions (e.g. type arithmetic) that require
+    modifying standard library stubs.
 """
 
 
@@ -15,6 +22,7 @@ import dataclasses
 import io
 import json
 import logging
+import os
 import pathlib
 import shutil
 import subprocess
@@ -144,7 +152,6 @@ class TrimmedTypeshed:
         )
 
 
-
 @dataclasses.dataclass(frozen=True)
 class PatchedTypeshed:
     results: List[PatchResult]
@@ -180,13 +187,11 @@ class PatchedTypeshed:
 
         return PatchResult(FileEntry(entry.path, new_data), False)
 
-
     @staticmethod
     def _entry_path_to_patch_path(input: str) -> Path:
         """Removes the first component of the path, and changes the suffix to `.patch`."""
         parts = Path(input).with_suffix(".patch").parts
         return Path("/".join(parts[1:]))
-
 
     @classmethod
     def from_trimmed_typeshed(
@@ -210,12 +215,12 @@ class PatchedTypeshed:
 def get_default_typeshed_url() -> str:
     commit_hash = json.loads(
         urllib.request.urlopen(
-            "https://api.github.com/repos/python/typeshed/commits/master"
+            "https://api.github.com/repos/python/typeshed/commits/main"
         )
         .read()
         .decode("utf-8")
     )["sha"]
-    LOG.info(f"Found typeshed master at commit {commit_hash}")
+    LOG.info(f"Found typeshed main at commit {commit_hash}")
     return f"https://api.github.com/repos/python/typeshed/zipball/{commit_hash}"
 
 
@@ -240,10 +245,11 @@ def download_typeshed(url: str) -> io.BytesIO:
     return downloaded
 
 
-
-
-def write_output(patched_typeshed: PatchedTypeshed, output: str) -> None:
-    with zipfile.ZipFile(output, mode="w") as output_file:
+def write_output_to_zip(
+    patched_typeshed: PatchedTypeshed,
+    output_zip_path: str,
+) -> None:
+    with zipfile.ZipFile(output_zip_path, mode="w") as output_file:
         for patch_result in patched_typeshed.results:
             data = patch_result.entry.data
             if data is not None:
@@ -253,6 +259,25 @@ def write_output(patched_typeshed: PatchedTypeshed, output: str) -> None:
                 output_file.writestr(f"{patch_result.entry.path}/", bytes())
                 if patch_result.failed:
                     LOG.warning(f"Failed to apply patch to {patch_result.entry.path}!")
+
+
+def write_output_to_directory(
+    patched_typeshed: PatchedTypeshed,
+    output_directory_path: Path,
+) -> None:
+    os.makedirs(output_directory_path, exist_ok=False)
+    for patch_result in patched_typeshed.results:
+        path = output_directory_path / Path(patch_result.entry.path)
+        data = patch_result.entry.data
+        if data is not None:
+            os.makedirs(path.parent, exist_ok=True)
+            with path.open("wb") as output_file:
+                if data is not None:
+                    output_file.write(data)
+                elif patch_result.failed:
+                    LOG.warning(f"Failed to apply patch to {patch_result.entry.path}!")
+                else:
+                    pass
 
 
 def _find_entry(typeshed_path: Path, entries: List[FileEntry]) -> Optional[FileEntry]:
@@ -265,8 +290,6 @@ def _find_entry(typeshed_path: Path, entries: List[FileEntry]) -> Optional[FileE
         ):
             return entry
     return None
-
-
 
 
 def main() -> None:
@@ -287,7 +310,7 @@ def main() -> None:
         "--output",
         required=True,
         type=str,
-        help="Where to store the downloaded typeshed zip file.",
+        help="Where to store the downloaded typeshed (as either a directory or zip file).",
     )
     parser.add_argument(
         "-p",
@@ -296,6 +319,13 @@ def main() -> None:
         type=str,
         help="Where the .patch files for amending typeshed are located.",
     )
+    parser.add_argument(
+        "-d",
+        "--as-directory",
+        action="store_true",
+        help="Write the contents to a directory instead of a zip file.",
+    )
+    parser.set_defaults(as_directory=False)
     arguments = parser.parse_args()
     logging.basicConfig(
         format="[%(asctime)s][%(levelname)s]: %(message)s", level=logging.INFO
@@ -307,9 +337,15 @@ def main() -> None:
     LOG.info(f"{downloaded.getbuffer().nbytes} bytes downloaded from {url}")
     trimmed_typeshed = TrimmedTypeshed.from_raw_zip(downloaded)
     trimmed_typeshed.log_statistics()
-    patched_typeshed = PatchedTypeshed.from_trimmed_typeshed(patch_directory, trimmed_typeshed)
-    write_output(patched_typeshed, arguments.output)
-    LOG.info(f"Zip file written to {arguments.output}")
+    patched_typeshed = PatchedTypeshed.from_trimmed_typeshed(
+        patch_directory, trimmed_typeshed
+    )
+    if arguments.as_directory:
+        write_output_to_directory(patched_typeshed, arguments.output)
+        LOG.info(f"Patched typeshed directory written to {arguments.output}")
+    else:
+        write_output_to_zip(patched_typeshed, arguments.output)
+        LOG.info(f"Patched typeshed zip written to {arguments.output}")
 
 
 if __name__ == "__main__":

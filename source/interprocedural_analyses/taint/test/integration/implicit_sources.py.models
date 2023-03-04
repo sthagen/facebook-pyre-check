@@ -13,7 +13,7 @@
               "filename": "implicit_sources.py",
               "line": 25,
               "start": 11,
-              "end": 55
+              "end": 31
             }
           }
         ]
@@ -57,7 +57,7 @@
               "filename": "implicit_sources.py",
               "line": 20,
               "start": 11,
-              "end": 52
+              "end": 31
             }
           }
         ]
@@ -103,6 +103,57 @@
               "start": 11,
               "end": 30
             }
+          }
+        ]
+      }
+    ]
+  }
+}
+{
+  "kind": "model",
+  "data": {
+    "callable": "implicit_sources.string_literal_arguments_source",
+    "tito": [
+      {
+        "port": "formal(x)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "return_paths": { "": 4 },
+                "length": 1,
+                "kind": "LocalReturn"
+              }
+            ],
+            "local_features": [
+              { "always-via": "string_concat_lhs" }, { "always-via": "tito" }
+            ],
+            "tito_positions": [ { "line": 56, "start": 15, "end": 16 } ],
+            "tito": null
+          }
+        ]
+      },
+      {
+        "port": "formal(template)",
+        "taint": [
+          {
+            "kinds": [
+              {
+                "return_paths": { "": 0 },
+                "length": 1,
+                "kind": "LocalReturn"
+              }
+            ],
+            "local_features": [
+              { "via": "obscure:model" },
+              { "via": "format-string" },
+              { "always-via": "tito" }
+            ],
+            "tito_positions": [
+              { "line": 52, "start": 15, "end": 23 },
+              { "line": 54, "start": 15, "end": 23 }
+            ],
+            "tito": null
           }
         ]
       }

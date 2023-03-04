@@ -25,10 +25,11 @@ from .. import (
     daemon_socket,
     frontend_configuration,
     identifiers,
+    log_lsp_event,
 )
 from ..language_server import features
 
-from . import commands, log_lsp_event, start
+from . import commands, start
 
 PyreServerOptionsReader = Callable[[], "PyreServerOptions"]
 FrontendConfigurationReader = Callable[[], frontend_configuration.Base]
@@ -108,7 +109,7 @@ def read_server_options(
         LOG.info("Reading Pyre server configurations...")
         return server_options_reader()
     except Exception:
-        log_lsp_event._log_lsp_event(
+        log_lsp_event.log(
             remote_logging=remote_logging,
             event=log_lsp_event.LSPEvent.NOT_CONFIGURED,
             normals={

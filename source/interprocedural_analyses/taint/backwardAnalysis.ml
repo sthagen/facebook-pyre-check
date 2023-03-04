@@ -60,8 +60,6 @@ module type FUNCTION_CONTEXT = sig
   val caller_class_interval : Interprocedural.ClassIntervalSet.t
 end
 
-let ( |>> ) (taint, state) f = f taint, state
-
 module State (FunctionContext : FUNCTION_CONTEXT) = struct
   type t = { taint: BackwardState.t }
 
@@ -148,8 +146,8 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     callees
 
 
-  let get_format_string_callees ~location =
-    CallGraph.DefineCallGraph.resolve_format_string FunctionContext.call_graph_of_define ~location
+  let get_string_format_callees ~location =
+    CallGraph.DefineCallGraph.resolve_string_format FunctionContext.call_graph_of_define ~location
 
 
   let global_resolution = TypeEnvironment.ReadOnly.global_resolution FunctionContext.environment
@@ -1693,18 +1691,18 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           };
         arguments;
       } ->
-        let formatted_string = Substring.Literal (Node.create ~location value) in
         let arguments_formatted_string =
-          List.map ~f:(fun call_argument -> Substring.Format call_argument.value) arguments
+          List.map ~f:(fun call_argument -> call_argument.value) arguments
         in
-        let substrings = formatted_string :: arguments_formatted_string in
         analyze_joined_string
           ~resolution
           ~taint
           ~state
-          ~location:(Location.with_module ~module_reference:FunctionContext.qualifier location)
+          ~location
           ~breadcrumbs:(Features.BreadcrumbSet.singleton (Features.format_string ()))
-          substrings
+          ~increase_trace_length:true
+          ~string_literal:value
+          arguments_formatted_string
     (* Special case `"str" + s` and `s + "str"` for Literal String Sinks *)
     | {
      callee =
@@ -1718,15 +1716,15 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
          };
        ];
     } ->
-        let formatted_string = Substring.Literal (Node.create ~location value) in
-        let substrings = [formatted_string; Substring.Format expression] in
         analyze_joined_string
           ~resolution
           ~taint
           ~state
-          ~location:(Location.with_module ~module_reference:FunctionContext.qualifier location)
+          ~location
           ~breadcrumbs:(Features.BreadcrumbSet.singleton (Features.string_concat_left_hand_side ()))
-          substrings
+          ~increase_trace_length:true
+          ~string_literal:value
+          [expression]
     | {
      callee =
        {
@@ -1742,16 +1740,88 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
        };
      arguments = [{ Call.Argument.value = expression; name = None }];
     } ->
-        let formatted_string = Substring.Literal (Node.create ~location value) in
-        let substrings = [formatted_string; Substring.Format expression] in
         analyze_joined_string
           ~resolution
           ~taint
           ~state
-          ~location:(Location.with_module ~module_reference:FunctionContext.qualifier location)
+          ~location
           ~breadcrumbs:
             (Features.BreadcrumbSet.singleton (Features.string_concat_right_hand_side ()))
-          substrings
+          ~increase_trace_length:true
+          ~string_literal:value
+          [expression]
+    | {
+        callee =
+          {
+            Node.value = Name (Name.Attribute { base; attribute = "__add__" as function_name; _ });
+            _;
+          };
+        arguments;
+      }
+    | {
+        callee =
+          {
+            Node.value = Name (Name.Attribute { base; attribute = "__mod__" as function_name; _ });
+            _;
+          };
+        arguments;
+      }
+    | {
+        callee =
+          {
+            Node.value = Name (Name.Attribute { base; attribute = "format" as function_name; _ });
+            _;
+          };
+        arguments;
+      } ->
+        (* User-defined or inferred models. *)
+        let state_from_normal_models =
+          apply_callees
+            ~resolution
+            ~is_property:false
+            ~call_location:location
+            ~state
+            ~callee
+            ~arguments
+            ~call_taint:taint
+            callees
+        in
+        let is_string_format =
+          List.exists callees.call_targets ~f:(fun call_target ->
+              match Interprocedural.Target.class_name call_target.target with
+              | Some class_name -> String.equal "str" class_name
+              | None -> false)
+        in
+        if not is_string_format then
+          state_from_normal_models
+        else
+          (* Additional hard-coded models for analyzing implicit sinks during string formatting
+             operations. *)
+          let breadcrumbs =
+            match function_name with
+            | "__mod__"
+            | "format" ->
+                Features.BreadcrumbSet.singleton (Features.format_string ())
+            | _ -> Features.BreadcrumbSet.empty
+          in
+          let substrings =
+            arguments
+            |> List.map ~f:(fun argument -> argument.Call.Argument.value)
+            |> List.cons base
+          in
+          let string_literal, substrings = CallModel.arguments_for_string_format substrings in
+          let state_from_string_format =
+            analyze_joined_string
+              ~resolution
+              ~taint
+              ~state
+              ~location
+              ~breadcrumbs
+              ~increase_trace_length:true
+              ~string_literal
+              substrings
+          in
+          join state_from_normal_models state_from_string_format
     | {
      Call.callee = { Node.value = Name (Name.Identifier "reveal_taint"); _ };
      arguments = [{ Call.Argument.value = expression; _ }];
@@ -1795,7 +1865,23 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           callees
 
 
-  and analyze_joined_string ~resolution ~taint ~state ~location ~breadcrumbs substrings =
+  and analyze_joined_string
+      ~resolution
+      ~taint
+      ~state
+      ~location
+      ~breadcrumbs
+      ~increase_trace_length
+      ~string_literal
+      substrings
+    =
+    let triggered_taint =
+      Issue.TriggeredSinkLocationMap.get FunctionContext.triggered_sinks ~location
+    in
+    let location_with_module =
+      Location.with_module ~module_reference:FunctionContext.qualifier location
+    in
+    let state = { state with taint = BackwardState.join state.taint triggered_taint } in
     let taint =
       let literal_string_sinks =
         FunctionContext.taint_configuration.implicit_sinks.literal_string_sinks
@@ -1803,17 +1889,11 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       if List.is_empty literal_string_sinks then
         taint
       else
-        let value =
-          List.map substrings ~f:(function
-              | Substring.Format _ -> ""
-              | Substring.Literal { Node.value; _ } -> value)
-          |> String.concat ~sep:""
-        in
         List.fold
           literal_string_sinks
           ~f:(fun taint { TaintConfiguration.sink_kind; pattern } ->
-            if Re2.matches pattern value then
-              BackwardTaint.singleton (CallInfo.Origin location) sink_kind Frame.initial
+            if Re2.matches pattern string_literal then
+              BackwardTaint.singleton (CallInfo.Origin location_with_module) sink_kind Frame.initial
               |> BackwardState.Tree.create_leaf
               |> BackwardState.Tree.join taint
             else
@@ -1865,31 +1945,39 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       in
       new_taint, join state_to_join new_state
     in
-    let analyze_nested_expression state = function
-      | Substring.Format ({ Node.location = expression_location; _ } as expression) ->
-          let new_taint, new_state =
-            (match get_format_string_callees ~location:expression_location with
-            | Some { CallGraph.FormatStringCallees.call_targets } ->
-                List.fold
-                  call_targets
-                  ~init:(taint, state)
-                  ~f:(fun (taint_to_join, state_to_join) call_target ->
-                    analyze_stringify_callee
-                      ~taint_to_join
-                      ~state_to_join
-                      ~call_target
-                      ~call_location:expression_location
-                      ~base:expression
-                      ~base_state:state)
-            | _ -> taint, state)
-            |>> BackwardState.Tree.transform
-                  Features.TitoPositionSet.Element
-                  Add
-                  ~f:expression_location
-            |>> BackwardState.Tree.add_local_breadcrumb (Features.tito ())
-          in
-          analyze_expression ~resolution ~taint:new_taint ~state:new_state ~expression
-      | Substring.Literal _ -> state
+    let analyze_nested_expression state ({ Node.location = expression_location; _ } as expression) =
+      let new_taint, new_state =
+        match get_string_format_callees ~location:expression_location with
+        | Some { CallGraph.StringFormatCallees.stringify_targets; _ } ->
+            List.fold
+              stringify_targets
+              ~init:(taint, state)
+              ~f:(fun (taint_to_join, state_to_join) call_target ->
+                analyze_stringify_callee
+                  ~taint_to_join
+                  ~state_to_join
+                  ~call_target
+                  ~call_location:expression_location
+                  ~base:expression
+                  ~base_state:state)
+        | _ -> taint, state
+      in
+      let new_taint =
+        new_taint
+        |> BackwardState.Tree.transform Features.TitoPositionSet.Element Add ~f:expression_location
+        |> BackwardState.Tree.add_local_breadcrumb (Features.tito ())
+      in
+      let new_taint =
+        if increase_trace_length then
+          BackwardState.Tree.transform
+            Domains.TraceLength.Self
+            Map
+            ~f:TraceLength.increase_length
+            new_taint
+        else
+          new_taint
+      in
+      analyze_expression ~resolution ~taint:new_taint ~state:new_state ~expression
     in
     List.fold (List.rev substrings) ~f:analyze_nested_expression ~init:state
 
@@ -1980,12 +2068,22 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         let taint = BackwardState.Tree.prepend [Abstract.TreeDomain.Label.AnyIndex] taint in
         analyze_expression ~resolution ~taint ~state ~expression
     | FormatString substrings ->
+        let substrings =
+          List.map substrings ~f:(function
+              | Substring.Format expression -> expression
+              | Substring.Literal { Node.value; location } ->
+                  Expression.Constant (Constant.String { StringLiteral.value; kind = String })
+                  |> Node.create ~location)
+        in
+        let string_literal, substrings = CallModel.arguments_for_string_format substrings in
         analyze_joined_string
           ~resolution
           ~taint
           ~state
-          ~location:(Location.with_module ~module_reference:FunctionContext.qualifier location)
+          ~location
           ~breadcrumbs:(Features.BreadcrumbSet.singleton (Features.format_string ()))
+          ~increase_trace_length:false
+          ~string_literal
           substrings
     | Ternary { target; test; alternative } ->
         let state_then = analyze_expression ~resolution ~taint ~state ~expression:target in

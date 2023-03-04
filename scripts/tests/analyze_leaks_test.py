@@ -6,9 +6,13 @@
 
 import unittest
 
+from typing import cast, Dict, List
 from ..analyze_leaks import (
+    LeakAnalysisResult,
+    LeakAnalysisScriptError,
     CallGraph,
     DependencyGraph,
+    DynamicCallGraphInputFormat,
     Entrypoints,
     JSON,
     PyreCallGraphInputFormat,
@@ -17,7 +21,7 @@ from ..analyze_leaks import (
 
 
 class AnalyzeIssueTraceTest(unittest.TestCase):
-    def test_load_pysa_call_graph_happy_path(self) -> None:
+    def test_load_pysa_call_graph_input_format(self) -> None:
         json_call_graph: JSON = {
             "my_module.my_function": [
                 "something_that.my_function_calls",
@@ -28,7 +32,7 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         }
 
         call_graph = PysaCallGraphInputFormat(json_call_graph)
-        result = call_graph.to_call_graph()
+        result = call_graph.call_graph
 
         self.assertEqual(len(result), 2)
         self.assertSetEqual(result["something_that.my_function_calls"], {"int.__str__"})
@@ -37,7 +41,7 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
             {"something_that.my_function_calls", "builtins.print"},
         )
 
-    def test_load_pyre_call_graph_happy_path(self) -> None:
+    def test_load_pyre_call_graph_input_format(self) -> None:
         json_call_graph: JSON = {
             "my_module.my_function": [
                 {
@@ -51,7 +55,7 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         }
 
         call_graph = PyreCallGraphInputFormat(json_call_graph)
-        result = call_graph.to_call_graph()
+        result = call_graph.call_graph
 
         self.assertEqual(len(result), 2)
         self.assertSetEqual(result["something_that.my_function_calls"], {"int.__str__"})
@@ -60,7 +64,7 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
             {"something_that.my_function_calls", "builtins.print"},
         )
 
-    def test_load_pyre_call_graph_happy_path_with_response(self) -> None:
+    def test_load_pyre_call_graph_input_format_with_response(self) -> None:
         json_call_graph: JSON = {
             "response": {
                 "my_module.my_function": [
@@ -76,7 +80,7 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         }
 
         call_graph = PyreCallGraphInputFormat(json_call_graph)
-        result = call_graph.to_call_graph()
+        result = call_graph.call_graph
 
         self.assertEqual(len(result), 2)
         self.assertSetEqual(result["something_that.my_function_calls"], {"int.__str__"})
@@ -84,6 +88,36 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
             result["my_module.my_function"],
             {"something_that.my_function_calls", "builtins.print"},
         )
+
+    def test_load_dynamic_call_graph_input_format(self) -> None:
+        json_call_graph: JSON = {
+            "my_module:my_function": [
+                "something.that:my_module.my_function.calls",
+                "something_else.that:my_module.<locals>.my_function.<locals>.calls",
+            ],
+            "something.that:my_module.my_function.calls": [],
+            "something_else.that:my_module.<locals>.my_function.<locals>.calls": [
+                "another.function:with.<locals>.in_it"
+            ],
+            "incorrectly.formatted_qualifier": [
+                "incorrectly.formatted_qualifier",
+                "another.incorrectly.formatted",
+            ],
+        }
+        call_graph = DynamicCallGraphInputFormat(json_call_graph)
+        result = call_graph.call_graph
+        expected_call_graph = {
+            "my_module.my_function": {
+                "something.that.my_module.my_function.calls",
+                "something_else.that.my_module.my_function.calls",
+            },
+            "something.that.my_module.my_function.calls": set(),
+            "something_else.that.my_module.my_function.calls": {
+                "another.function.with.in_it"
+            },
+            "incorrectly.formatted_qualifier": {"another.incorrectly.formatted"},
+        }
+        self.assertEqual(result, expected_call_graph)
 
     def test_load_call_graph_bad_root(self) -> None:
         call_graph: JSON = ["1234"]
@@ -97,62 +131,47 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
     def test_load_call_graph_bad_callers(self) -> None:
         call_graph: JSON = {"caller": 1234}
 
-        pyre_call_graph = PyreCallGraphInputFormat(call_graph)
-        pysa_call_graph = PysaCallGraphInputFormat(call_graph)
+        with self.assertRaises(ValueError):
+            PyreCallGraphInputFormat(call_graph)
 
         with self.assertRaises(ValueError):
-            pyre_call_graph.to_call_graph()
-
-        with self.assertRaises(ValueError):
-            pysa_call_graph.to_call_graph()
+            PysaCallGraphInputFormat(call_graph)
 
     def test_load_call_graph_bad_callees(self) -> None:
         call_graph: JSON = {"caller": [1, 2, 3]}
 
-        pyre_call_graph = PyreCallGraphInputFormat(call_graph)
-        pysa_call_graph = PysaCallGraphInputFormat(call_graph)
+        with self.assertRaises(ValueError):
+            PyreCallGraphInputFormat(call_graph)
 
         with self.assertRaises(ValueError):
-            pyre_call_graph.to_call_graph()
-
-        with self.assertRaises(ValueError):
-            pysa_call_graph.to_call_graph()
+            PysaCallGraphInputFormat(call_graph)
 
     def test_load_call_graph_bad_callees_dict_keys(self) -> None:
         call_graph: JSON = {"caller": {"callee": 123}}
 
-        pyre_call_graph = PyreCallGraphInputFormat(call_graph)
-        pysa_call_graph = PysaCallGraphInputFormat(call_graph)
+        with self.assertRaises(ValueError):
+            PyreCallGraphInputFormat(call_graph)
 
         with self.assertRaises(ValueError):
-            pyre_call_graph.to_call_graph()
-
-        with self.assertRaises(ValueError):
-            pysa_call_graph.to_call_graph()
+            PysaCallGraphInputFormat(call_graph)
 
     def test_load_call_graph_bad_callees_dict_target(self) -> None:
         call_graph: JSON = {"caller": {"target": 123}}
 
-        pyre_call_graph = PyreCallGraphInputFormat(call_graph)
-        pysa_call_graph = PysaCallGraphInputFormat(call_graph)
+        with self.assertRaises(ValueError):
+            PyreCallGraphInputFormat(call_graph)
 
         with self.assertRaises(ValueError):
-            pyre_call_graph.to_call_graph()
-
-        with self.assertRaises(ValueError):
-            pysa_call_graph.to_call_graph()
+            PysaCallGraphInputFormat(call_graph)
 
     def test_load_call_graph_bad_callees_dict_direct_target(self) -> None:
         call_graph: JSON = {"caller": {"direct_target": 123}}
 
-        pyre_call_graph = PyreCallGraphInputFormat(call_graph)
-        pysa_call_graph = PysaCallGraphInputFormat(call_graph)
+        with self.assertRaises(ValueError):
+            PyreCallGraphInputFormat(call_graph)
 
         with self.assertRaises(ValueError):
-            pyre_call_graph.to_call_graph()
-
-        with self.assertRaises(ValueError):
-            pysa_call_graph.to_call_graph()
+            PysaCallGraphInputFormat(call_graph)
 
     def test_create_dependency_graph(self) -> None:
         call_graph_json: JSON = {
@@ -521,7 +540,7 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
 
         self.assertEqual(result_query, expected_query)
 
-    def test_analyze_pyre_query_results(self) -> None:
+    def test_collect_pyre_query_results(self) -> None:
         example_pyre_stdout = {
             "response": [
                 {"error": "we failed to find your callable"},
@@ -542,63 +561,82 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
                             {
                                 "error_msg": "found an error for you2",
                                 "location": "your_location2",
+                                "define": "my_func_with_trace",
                             }
                         ]
                     }
                 },
+                ["not_expected"],
+                {"not_expected": 1},
             ]
         }
 
-        results = CallGraph.analyze_pyre_query_results(example_pyre_stdout)
-        expected_results = {
-            "global_leaks": [
-                {"error_msg": "found an error for you", "location": "your_location"},
-                {"error_msg": "found an error for you2", "location": "your_location2"},
+        results = CallGraph.collect_pyre_query_results(
+            example_pyre_stdout,
+        )
+        expected_results = LeakAnalysisResult(
+            global_leaks=[
+                {
+                    "error_msg": "found an error for you",
+                    "location": "your_location",
+                },
+                {
+                    "error_msg": "found an error for you2",
+                    "location": "your_location2",
+                    "define": "my_func_with_trace",
+                },
             ],
-            "errors": [
+            query_errors=[
                 "we failed to find your callable",
                 "we failed to find your callable 2",
             ],
-        }
-
-        print(results)
-        print(expected_results)
+            script_errors=[
+                LeakAnalysisScriptError(
+                    error_message="Expected dict for pyre response list type, got <class 'list'>",
+                    bad_value=["not_expected"],
+                ),
+                LeakAnalysisScriptError(
+                    error_message="Unexpected single query response from Pyre",
+                    bad_value={"not_expected": 1},
+                ),
+            ],
+        )
 
         self.assertEqual(results, expected_results)
 
-    def test_analyze_pyre_query_results_non_json(self) -> None:
+    def test_collect_pyre_query_results_non_json(self) -> None:
         example_pyre_stdout = """
             this is not a valid response
         """
 
         with self.assertRaises(RuntimeError):
-            CallGraph.analyze_pyre_query_results(example_pyre_stdout)
+            CallGraph.collect_pyre_query_results(example_pyre_stdout)
 
-    def test_analyze_pyre_query_results_not_top_level_dict(self) -> None:
+    def test_collect_pyre_query_results_not_top_level_dict(self) -> None:
         example_pyre_stdout = """
             ["this is a list"]
         """
 
         with self.assertRaises(RuntimeError):
-            CallGraph.analyze_pyre_query_results(example_pyre_stdout)
+            CallGraph.collect_pyre_query_results(example_pyre_stdout)
 
-    def test_analyze_pyre_query_results_no_response_present(self) -> None:
+    def test_collect_pyre_query_results_no_response_present(self) -> None:
         example_pyre_stdout = """
             {"not a response": 1}
         """
 
         with self.assertRaises(RuntimeError):
-            CallGraph.analyze_pyre_query_results(example_pyre_stdout)
+            CallGraph.collect_pyre_query_results(example_pyre_stdout)
 
-    def test_analyze_pyre_query_results_response_not_a_list(self) -> None:
+    def test_collect_pyre_query_results_response_not_a_list(self) -> None:
         example_pyre_stdout = """
             {"response": 1}
         """
 
         with self.assertRaises(RuntimeError):
-            CallGraph.analyze_pyre_query_results(example_pyre_stdout)
+            CallGraph.collect_pyre_query_results(example_pyre_stdout)
 
-    def test_analyze_pyre_query_results_response_batch_response_not_a_dict(
+    def test_collect_pyre_query_results_response_batch_response_not_a_dict(
         self,
     ) -> None:
         example_pyre_stdout = """
@@ -610,9 +648,9 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         """
 
         with self.assertRaises(RuntimeError):
-            CallGraph.analyze_pyre_query_results(example_pyre_stdout)
+            CallGraph.collect_pyre_query_results(example_pyre_stdout)
 
-    def test_analyze_pyre_query_results_response_batch_response_no_nested_error_or_response(
+    def test_collect_pyre_query_results_response_batch_response_no_nested_error_or_response(
         self,
     ) -> None:
         example_pyre_stdout = """
@@ -625,4 +663,147 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         """
 
         with self.assertRaises(RuntimeError):
-            CallGraph.analyze_pyre_query_results(example_pyre_stdout)
+            CallGraph.collect_pyre_query_results(example_pyre_stdout)
+
+    def test_attach_trace_to_query_results(self) -> None:
+        pyre_results = LeakAnalysisResult(
+            global_leaks=[
+                {
+                    "error_msg": "found an error for you",
+                    "location": "your_location",
+                },
+                {
+                    "error_msg": "found an error for you2",
+                    "location": "your_location2",
+                    "define": "my_func_with_trace",
+                },
+                {
+                    "error_msg": "found an error for you3",
+                    "location": "your_location3",
+                    "define": "my_func_without_trace",
+                },
+            ],
+            query_errors=[
+                {"errors": "we failed to find your callable"},
+                {"errors": "we failed to find your callable 2"},
+            ],
+            script_errors=[],
+        )
+        expected = LeakAnalysisResult(
+            global_leaks=cast(
+                List[Dict[str, JSON]],
+                [
+                    {
+                        "error_msg": "found an error for you",
+                        "location": "your_location",
+                    },
+                    {
+                        "error_msg": "found an error for you2",
+                        "location": "your_location2",
+                        "define": "my_func_with_trace",
+                        "trace": ["func_1", "my_func_with_trace"],
+                    },
+                    {
+                        "error_msg": "found an error for you3",
+                        "location": "your_location3",
+                        "define": "my_func_without_trace",
+                    },
+                ],
+            ),
+            query_errors=[
+                {"errors": "we failed to find your callable"},
+                {"errors": "we failed to find your callable 2"},
+            ],
+            script_errors=[
+                LeakAnalysisScriptError(
+                    error_message="Key `define` not present in global leak result, skipping trace",
+                    bad_value={
+                        "error_msg": "found an error for you",
+                        "location": "your_location",
+                    },
+                ),
+                LeakAnalysisScriptError(
+                    error_message="Define not known in analyzed callables, skipping trace",
+                    bad_value={
+                        "error_msg": "found an error for you3",
+                        "location": "your_location3",
+                        "define": "my_func_without_trace",
+                    },
+                ),
+            ],
+        )
+        callables_and_traces = {
+            "my_func_with_trace": ["func_1", "my_func_with_trace"],
+        }
+
+        self.assertNotEqual(pyre_results, expected)
+        CallGraph.attach_trace_to_query_results(pyre_results, callables_and_traces)
+        print(pyre_results)
+        print(expected)
+        self.assertEqual(pyre_results, expected)
+
+    def assert_format_qualifier(self, input: str, expected: str) -> None:
+        self.assertEqual(DynamicCallGraphInputFormat.format_qualifier(input), expected)
+
+    def test_dynamic_call_graph_input_format_format_qualifier_1(self) -> None:
+        self.assert_format_qualifier(
+            "this_is.a_normal_qualifier",
+            "this_is.a_normal_qualifier",
+        )
+
+    def test_dynamic_call_graph_input_format_format_qualifier_2(self) -> None:
+        self.assert_format_qualifier(
+            "this.is_a.qualifier:with.an_included.path",
+            "this.is_a.qualifier.with.an_included.path",
+        )
+
+    def test_dynamic_call_graph_input_format_format_qualifier_3(self) -> None:
+        self.assert_format_qualifier(
+            "this_qualifier_is_probably_broken_but_its_ok",
+            "this_qualifier_is_probably_broken_but_its_ok",
+        )
+
+    def test_dynamic_call_graph_input_format_format_qualifier_4(self) -> None:
+        self.assert_format_qualifier(
+            "this_is.<locals>.a_normal_qualifier",
+            "this_is.a_normal_qualifier",
+        )
+
+    def test_dynamic_call_graph_input_format_format_qualifier_5(self) -> None:
+        self.assert_format_qualifier(
+            "this.is_a.qualifier:with.<locals>.an_included.path",
+            "this.is_a.qualifier.with.an_included.path",
+        )
+
+    def test_dynamic_call_graph_input_format_format_qualifier_6(self) -> None:
+        self.assert_format_qualifier(
+            "this.is:a.<locals>.qualifier.<locals>.with.<locals>.and_included.<locals>.path",
+            "this.is.a.qualifier.with.and_included.path",
+        )
+
+    def test_dynamic_call_graph_input_format_get_keys_extracts_caller(self) -> None:
+        input_format = DynamicCallGraphInputFormat(
+            {
+                "my_module:my_function": [
+                    "something.that:my_module.my_function.calls",
+                    "something_else.that:my_module.<locals>.my_function.<locals>.calls",
+                ],
+                "something.that:my_module.my_function.calls": [],
+                "something_else.that:my_module.<locals>.my_function.<locals>.calls": [
+                    "another.function:with.<locals>.in_it"
+                ],
+                "incorrectly.formatted_qualifier": [
+                    "incorrectly.formatted_qualifier",
+                    "another.incorrectly.formatted",
+                ],
+            }
+        )
+
+        expected = {
+            "my_module.my_function",
+            "something.that.my_module.my_function.calls",
+            "something_else.that.my_module.my_function.calls",
+            "incorrectly.formatted_qualifier",
+        }
+
+        self.assertEqual(input_format.get_keys(), expected)

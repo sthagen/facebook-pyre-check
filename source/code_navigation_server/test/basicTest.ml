@@ -10,38 +10,6 @@ open OUnit2
 module Request = CodeNavigationServer.Testing.Request
 module Response = CodeNavigationServer.Testing.Response
 
-let position line column = { Ast.Location.line; column }
-
-let range start_line start_column stop_line stop_column =
-  { Ast.Location.start = position start_line start_column; stop = position stop_line stop_column }
-
-
-let assert_type_error_count ?overlay_id ~path ~expected client =
-  let%lwt raw_response =
-    ScratchProject.ClientConnection.send_request
-      client
-      Request.(Query (Query.GetTypeErrors { path; overlay_id }))
-  in
-  match Yojson.Safe.from_string raw_response with
-  | `List [`String "TypeErrors"; `List errors] ->
-      assert_equal
-        ~ctxt:(ScratchProject.ClientConnection.get_context client)
-        ~cmp:Int.equal
-        ~printer:Int.to_string
-        expected
-        (List.length errors);
-      Lwt.return_unit
-  | _ as json ->
-      let message =
-        Format.sprintf "Expected type error response but got: `%s`" (Yojson.Safe.to_string json)
-      in
-      assert_failure message
-
-
-let assert_type_error_count_for_path ?overlay_id ~path ~expected client =
-  assert_type_error_count client ?overlay_id ~expected ~path
-
-
 let test_no_op_server context =
   ScratchProject.setup ~context ~include_typeshed_stubs:false []
   |> ScratchProject.test_server_with_one_connection ~f:(fun _ -> Lwt.return_unit)
@@ -140,48 +108,36 @@ let test_file_opened_and_closed_request context =
     let source_root = ScratchProject.source_root_of project in
     PyrePath.append source_root ~element:"test.py" |> PyrePath.absolute
   in
+  let open TestHelper in
   ScratchProject.test_server_with
     project
     ~style:ScratchProject.ClientConnection.Style.Sequential
     ~clients:
       [
         assert_type_error_count_for_path ~path:test_path ~expected:1;
-        ScratchProject.ClientConnection.assert_response
-          ~request:
-            Request.(
-              Command
-                (Command.FileOpened
-                   {
-                     path = test_path;
-                     content = Some "reveal_type(43)\nreveal_type(44)";
-                     overlay_id = Some "foo";
-                   }))
-          ~expected:Response.Ok;
+        open_file ~path:test_path ~content:"reveal_type(43)\nreveal_type(44)" ~overlay_id:"foo";
         assert_type_error_count_for_path ~path:test_path ~overlay_id:"foo" ~expected:2;
         ScratchProject.ClientConnection.assert_response
           ~request:
             Request.(
               Command (Command.FileClosed { path = "/untracked/file.py"; overlay_id = Some "foo" }))
           ~expected:
-            (Response.Error (Response.ErrorKind.UntrackedFileClosed { path = "/untracked/file.py" }));
+            (Response.Error (Response.ErrorKind.FileNotOpened { path = "/untracked/file.py" }));
         assert_type_error_count_for_path ~path:test_path ~overlay_id:"foo" ~expected:2;
         ScratchProject.ClientConnection.assert_response
           ~request:
             Request.(
               Command
                 (Command.FileClosed { path = test_path; overlay_id = Some "untracked overlay id" }))
-          ~expected:(Response.Error (Response.ErrorKind.UntrackedFileClosed { path = test_path }));
+          ~expected:(Response.Error (Response.ErrorKind.FileNotOpened { path = test_path }));
         assert_type_error_count_for_path ~path:test_path ~overlay_id:"foo" ~expected:2;
-        ScratchProject.ClientConnection.assert_response
-          ~request:
-            Request.(Command (Command.FileClosed { path = test_path; overlay_id = Some "foo" }))
-          ~expected:Response.Ok;
+        close_file ~path:test_path ~overlay_id:"foo";
         assert_type_error_count_for_path ~path:test_path ~overlay_id:"foo" ~expected:1;
         (* Now that foo is no longer tracked as an open file, this should error. *)
         ScratchProject.ClientConnection.assert_response
           ~request:
             Request.(Command (Command.FileClosed { path = test_path; overlay_id = Some "foo" }))
-          ~expected:(Response.Error (Response.ErrorKind.UntrackedFileClosed { path = test_path }));
+          ~expected:(Response.Error (Response.ErrorKind.FileNotOpened { path = test_path }));
       ]
 
 
@@ -191,6 +147,7 @@ let test_local_update_request context =
   in
   let root = ScratchProject.source_root_of project in
   let test_path = PyrePath.create_relative ~root ~relative:"test.py" |> PyrePath.absolute in
+  let open TestHelper in
   ScratchProject.test_server_with
     project
     ~style:ScratchProject.ClientConnection.Style.Sequential
@@ -246,6 +203,7 @@ let test_file_update_request context =
   let root = ScratchProject.source_root_of project in
   let test_path = PyrePath.create_relative ~root ~relative:"test.py" in
   let test2_path = PyrePath.create_relative ~root ~relative:"test2.py" in
+  let open TestHelper in
   ScratchProject.test_server_with
     project
     ~style:ScratchProject.ClientConnection.Style.Sequential
@@ -294,6 +252,7 @@ let test_file_and_local_update context =
   let root = ScratchProject.source_root_of project in
   let test_path = PyrePath.create_relative ~root ~relative:"test.py" in
   let test2_path = PyrePath.create_relative ~root ~relative:"test2.py" in
+  let open TestHelper in
   ScratchProject.test_server_with
     project
     ~style:ScratchProject.ClientConnection.Style.Sequential
@@ -341,6 +300,7 @@ let test_hover_request context =
   in
   let root = ScratchProject.source_root_of project in
   let test_path = PyrePath.create_relative ~root ~relative:"test.py" |> PyrePath.absolute in
+  let open TestHelper in
   ScratchProject.test_server_with
     project
     ~style:ScratchProject.ClientConnection.Style.Sequential
@@ -394,6 +354,7 @@ let test_location_of_definition_request context =
   let root = ScratchProject.source_root_of project in
   let test_path = PyrePath.create_relative ~root ~relative:"test.py" |> PyrePath.absolute in
   let test2_path = PyrePath.create_relative ~root ~relative:"test2.py" |> PyrePath.absolute in
+  let open TestHelper in
   ScratchProject.test_server_with
     project
     ~style:ScratchProject.ClientConnection.Style.Sequential
@@ -554,17 +515,7 @@ let test_superclasses context =
             Response.(
               Error (ErrorKind.InvalidRequest "Cannot find class `CDoesNotExist` in module `test`."));
         (* Overlay. *)
-        ScratchProject.ClientConnection.assert_response
-          ~request:
-            Request.(
-              Command
-                (Command.FileOpened
-                   {
-                     path = test_path;
-                     content = Some "class OnlyInOverlay: ...";
-                     overlay_id = Some "foo";
-                   }))
-          ~expected:Response.Ok;
+        TestHelper.open_file ~path:test_path ~content:"class OnlyInOverlay: ..." ~overlay_id:"foo";
         ScratchProject.ClientConnection.assert_response
           ~request:
             Request.(
@@ -632,6 +583,7 @@ let test_watchman_integration context =
         "since", `String watchman_initial_clock;
       ]
   in
+  let open TestHelper in
   ScratchProject.test_server_with
     project
     ~style:ScratchProject.ClientConnection.Style.Sequential

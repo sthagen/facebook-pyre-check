@@ -148,9 +148,19 @@ module IdentifierCallees : sig
   type t = { global_targets: CallTarget.t list } [@@deriving eq, show]
 end
 
-(** An aggregate of all implicit callees for any expression used in a f-string. *)
-module FormatStringCallees : sig
-  type t = { call_targets: CallTarget.t list } [@@deriving eq, show]
+(** An aggregate of callees for formatting strings. *)
+module StringFormatCallees : sig
+  type t = {
+    (* Implicit callees for any expression that is stringified. *)
+    stringify_targets: CallTarget.t list;
+    (* Artificial callees for distinguishing f-strings within a function. *)
+    f_string_targets: CallTarget.t list;
+  }
+  [@@deriving eq, show]
+
+  val from_stringify_targets : CallTarget.t list -> t
+
+  val from_f_string_targets : CallTarget.t list -> t
 end
 
 (** An aggregate of all possible callees for an arbitrary expression. *)
@@ -159,7 +169,7 @@ module ExpressionCallees : sig
     call: CallCallees.t option;
     attribute_access: AttributeAccessCallees.t option;
     identifier: IdentifierCallees.t option;
-    format_string: FormatStringCallees.t option;
+    string_format: StringFormatCallees.t option;
   }
   [@@deriving eq, show]
 
@@ -171,7 +181,7 @@ module ExpressionCallees : sig
 
   val from_identifier : IdentifierCallees.t -> t
 
-  val from_format_string : FormatStringCallees.t -> t
+  val from_string_format : StringFormatCallees.t -> t
 end
 
 (** An aggregate of all possible callees for an arbitrary location.
@@ -210,7 +220,7 @@ module DefineCallGraph : sig
     identifier:string ->
     IdentifierCallees.t option
 
-  val resolve_format_string : t -> location:Ast.Location.t -> FormatStringCallees.t option
+  val resolve_string_format : t -> location:Ast.Location.t -> StringFormatCallees.t option
 
   (* For testing purpose only. *)
   val equal_ignoring_types : t -> t -> bool

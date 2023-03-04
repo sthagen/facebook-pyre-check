@@ -8,30 +8,6 @@
 open Core
 open OUnit2
 
-let test_rotate _ =
-  let create_file path = Out_channel.create path |> Out_channel.close in
-  let base_log_file = Filename_unix.temp_file "log" "" in
-  Sys_unix.remove base_log_file;
-  assert_equal (Sys_unix.is_file base_log_file) `No;
-  let rotated_file = Log.rotate base_log_file in
-  (* The rotational logging gives the path to log to, doesn't create the actual file. *)
-  create_file rotated_file;
-  assert_equal (Sys_unix.is_file rotated_file) `Yes;
-  assert_equal (Sys_unix.is_file base_log_file) `Yes;
-  let create_path number = Format.sprintf "%s.0000-%d" base_log_file number in
-  [2; 3; 5; 8; 11] |> List.map ~f:create_path |> List.iter ~f:create_file;
-  assert_equal (Sys_unix.is_file base_log_file) `Yes;
-  let actual_path = Log.rotate ~number_to_keep:3 base_log_file in
-  assert_equal (Sys_unix.is_file base_log_file) `No;
-  assert_equal (Core_unix.lstat base_log_file).Core_unix.st_kind Core_unix.S_LNK;
-  assert_equal (Sys_unix.is_file (create_path 11)) `No;
-  assert_equal (Sys_unix.is_file (create_path 2)) `No;
-  assert_equal (Sys_unix.is_file (create_path 3)) `No;
-  assert_equal (Sys_unix.is_file (create_path 5)) `Yes;
-  assert_equal (Sys_unix.is_file (create_path 8)) `Yes;
-  assert_equal (Sys_unix.is_file actual_path) `No
-
-
 let assert_enabled section = assert_bool "Section should be enabled" (Log.is_enabled section)
 
 let assert_disabled section =
@@ -54,11 +30,25 @@ let test_initialize_default_on _ =
   assert_enabled `Warning
 
 
+let test_truncate context =
+  let assert_string_equals ~expected =
+    assert_equal ~ctxt:context ~printer:Fn.id ~cmp:String.equal expected
+  in
+
+  assert_string_equals (Log.truncate "abc" ~size:5) ~expected:"abc";
+  assert_string_equals (Log.truncate "abc" ~size:3) ~expected:"abc";
+  assert_string_equals (Log.truncate "abc" ~size:2) ~expected:"ab..(truncated 1 bytes)";
+  assert_string_equals (Log.truncate "abc" ~size:1) ~expected:"a..(truncated 2 bytes)";
+  assert_string_equals (Log.truncate "abc" ~size:0) ~expected:"..(truncated 3 bytes)";
+  assert_string_equals (Log.truncate "abc" ~size:(-1)) ~expected:"..(truncated 3 bytes)";
+  ()
+
+
 let () =
   "log"
   >::: [
-         "rotate" >:: test_rotate;
          "initialize_default_off" >:: test_initialize_default_off;
          "initialize_default_on" >:: test_initialize_default_on;
+         "truncate" >:: test_truncate;
        ]
   |> run_test_tt_main

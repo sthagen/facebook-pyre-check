@@ -158,8 +158,8 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     callees
 
 
-  let get_format_string_callees ~location =
-    CallGraph.DefineCallGraph.resolve_format_string FunctionContext.call_graph_of_define ~location
+  let get_string_format_callees ~location =
+    CallGraph.DefineCallGraph.resolve_string_format FunctionContext.call_graph_of_define ~location
 
 
   let global_resolution = TypeEnvironment.ReadOnly.global_resolution FunctionContext.environment
@@ -227,38 +227,173 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       ~define:FunctionContext.definition
 
 
-  (* Store all triggered sinks seen in `triggered_sinks_to_propagate` to propagate
-   * them up in the backward analysis. *)
-  let store_triggered_sinks_to_propagate ~call_location ~triggered_sinks_for_call ~sink_taint =
-    if not (Issue.TriggeredSinkHashMap.is_empty triggered_sinks_for_call) then
-      let add_sink ~root sink sofar =
-        match Sinks.extract_partial_sink sink with
-        | Some sink -> (
-            match Issue.TriggeredSinkHashMap.find triggered_sinks_for_call sink with
-            | Some triggered_sink ->
-                let taint = BackwardState.Tree.create_leaf triggered_sink in
-                BackwardState.assign ~root ~path:[] taint BackwardState.bottom
-                |> BackwardState.join sofar
-            | None -> sofar)
-        | _ -> sofar
-      in
-      let add_taint (root, taint) sofar =
-        BackwardState.Tree.fold BackwardTaint.kind taint ~f:(add_sink ~root) ~init:sofar
-      in
+  let gather_triggered_sinks_to_propagate ~triggered_sinks ~path (root, taint_tree) taint_so_far =
+    let add_sink sink sofar =
+      match Sinks.extract_partial_sink sink with
+      | Some sink -> (
+          match Issue.TriggeredSinkHashMap.find triggered_sinks sink with
+          | Some triggered_sink ->
+              let taint = BackwardState.Tree.create_leaf triggered_sink in
+              BackwardState.assign ~root ~path taint BackwardState.bottom
+              |> BackwardState.join sofar
+          | None -> sofar)
+      | _ -> sofar
+    in
+    BackwardState.Tree.fold BackwardTaint.kind taint_tree ~f:add_sink ~init:taint_so_far
+
+
+  (* Store all triggered sinks seen in `triggered_sinks` to propagate them up in the backward
+     analysis. *)
+  let store_triggered_sinks_to_propagate_for_call ~location ~triggered_sinks sink_taint =
+    if not (Issue.TriggeredSinkHashMap.is_empty triggered_sinks) then
       let triggered_sinks =
-        BackwardState.fold BackwardState.KeyValue sink_taint ~init:BackwardState.bottom ~f:add_taint
+        BackwardState.fold
+          BackwardState.KeyValue
+          sink_taint
+          ~init:BackwardState.bottom
+          ~f:(gather_triggered_sinks_to_propagate ~path:[] ~triggered_sinks)
       in
       Issue.TriggeredSinkLocationMap.add
         FunctionContext.triggered_sinks_to_propagate
-        ~location:call_location
+        ~location
         ~taint:triggered_sinks
 
 
-  let create_call_target_for_string_combine ~call_targets ~default_target =
-    call_targets
-    |> List.min_elt ~compare:CallGraph.CallTarget.compare
-    |> Option.value ~default:(CallGraph.CallTarget.create default_target)
+  let store_triggered_sinks_to_propagate_for_string_combine
+      ~location
+      ~triggered_sinks
+      nested_expressions
+    =
+    if not (Issue.TriggeredSinkHashMap.is_empty triggered_sinks) then
+      let accumulate so_far nested_expression =
+        match AccessPath.of_expression nested_expression with
+        | Some access_path ->
+            let root, taint_tree =
+              access_path.root, FunctionContext.string_combine_partial_sink_tree
+            in
+            gather_triggered_sinks_to_propagate
+              ~path:access_path.path
+              ~triggered_sinks
+              (root, taint_tree)
+              so_far
+        | None -> (* TODO(T146550300): False negative *) so_far
+      in
+      let triggered_sinks = List.fold nested_expressions ~f:accumulate ~init:BackwardState.bottom in
+      Issue.TriggeredSinkLocationMap.add
+        FunctionContext.triggered_sinks_to_propagate
+        ~location
+        ~taint:triggered_sinks
 
+
+  module StringFormatCall = struct
+    (* Represent what to analyze when creating strings from string formatting operations, such as
+       `str.__add__`, `str.__mod__`, `e.format`, and f-strings. *)
+    module Argument = struct
+      type string_literal = {
+        value: string;
+        value_location: Location.t;
+      }
+
+      type t = {
+        (* Any expression used in the string formatting. *)
+        nested_expressions: Expression.t list;
+        (* Any string literal used in the string formatting. *)
+        string_literal: string_literal;
+        (* If a triggered flow exists on any expression used in the string formatting, this is the
+           responsible call site. *)
+        call_target_for_string_combine_rules: CallGraph.CallTarget.t option;
+        (* Location of the string formatting operation. *)
+        location: Location.t;
+      }
+    end
+
+    let create_call_target_for_string_combine ~call_targets ~default_target =
+      call_targets
+      |> List.min_elt ~compare:CallGraph.CallTarget.compare
+      |> Option.value ~default:(CallGraph.CallTarget.create default_target)
+
+
+    let implicit_string_literal_sources { Argument.value; value_location } =
+      if String.equal "" value then
+        ForwardState.Tree.empty
+      else
+        let value_location =
+          Location.with_module ~module_reference:FunctionContext.qualifier value_location
+        in
+        let literal_string_regular_expressions =
+          FunctionContext.taint_configuration.implicit_sources.literal_strings
+        in
+        let add_matching_source_kind tree { TaintConfiguration.pattern; source_kind = kind } =
+          if Re2.matches pattern value then
+            ForwardTaint.singleton (CallInfo.Origin value_location) kind Frame.initial
+            |> ForwardState.Tree.create_leaf
+            |> ForwardState.Tree.join tree
+          else
+            tree
+        in
+        List.fold
+          literal_string_regular_expressions
+          ~init:ForwardState.Tree.empty
+          ~f:add_matching_source_kind
+
+
+    let check_flow_implicit_string_literal_sinks
+        ~string_literal:{ Argument.value; value_location }
+        taint
+      =
+      (* We try to be a bit clever about bailing out early and not computing the matches. *)
+      let literal_string_sinks =
+        FunctionContext.taint_configuration.implicit_sinks.literal_string_sinks
+      in
+      if
+        (not (String.equal "" value))
+        && (not (List.is_empty literal_string_sinks))
+        && not (ForwardState.Tree.is_bottom taint)
+      then
+        let value_location_with_module =
+          Location.with_module ~module_reference:FunctionContext.qualifier value_location
+        in
+        List.iter literal_string_sinks ~f:(fun { TaintConfiguration.sink_kind; pattern } ->
+            if Re2.matches pattern value then
+              let sink_tree =
+                BackwardTaint.singleton
+                  (CallInfo.Origin value_location_with_module)
+                  sink_kind
+                  Frame.initial
+                |> BackwardState.Tree.create_leaf
+              in
+              check_flow
+                ~location:value_location_with_module
+                ~sink_handle:(IssueHandle.Sink.LiteralStringSink sink_kind)
+                ~source_tree:taint
+                ~sink_tree)
+
+
+    (* Check triggered flows into partial sinks that are introduced onto expressions that are used
+       in the string operations. *)
+    let check_triggered_flows
+        ~triggered_sinks
+        ~parameter_index
+        ~call_target_for_string_combine_rules
+        ~location
+        source_tree
+      =
+      match call_target_for_string_combine_rules with
+      | Some { CallGraph.CallTarget.target; index; _ } ->
+          let location =
+            Location.with_module ~module_reference:FunctionContext.qualifier location
+          in
+          let sink_handle =
+            IssueHandle.Sink.StringFormat { callee = target; index; parameter_index }
+          in
+          check_triggered_flows
+            ~triggered_sinks_for_call:triggered_sinks
+            ~sink_handle
+            ~location
+            ~source_tree
+            ~sink_tree:FunctionContext.string_combine_partial_sink_tree
+      | None -> ()
+  end
 
   let return_sink ~resolution ~return_location =
     let taint =
@@ -581,10 +716,10 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     let tito_taint = TaintInTaintOutEffects.get tito_effects ~kind:Sinks.LocalReturn in
     let () =
       (* Need to be called after calling `check_triggered_flows` *)
-      store_triggered_sinks_to_propagate
-        ~call_location
-        ~triggered_sinks_for_call
-        ~sink_taint:backward.sink_taint
+      store_triggered_sinks_to_propagate_for_call
+        ~location:call_location
+        ~triggered_sinks:triggered_sinks_for_call
+        backward.sink_taint
     in
     let apply_tito_side_effects tito_effects state =
       (* We also have to consider the cases when the updated parameter has a global model, in which
@@ -1785,7 +1920,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                           Node.value = Constant (Constant.String { StringLiteral.value; _ });
                           location = value_location;
                         };
-                      attribute = "__mod__";
+                      attribute = "__mod__" as function_name;
                       _;
                     });
               _;
@@ -1804,7 +1939,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                           Node.value = Constant (Constant.String { StringLiteral.value; _ });
                           location = value_location;
                         };
-                      attribute = "format";
+                      attribute = "format" as function_name;
                       _;
                     });
               _;
@@ -1814,21 +1949,28 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           let nested_expressions =
             List.map ~f:(fun call_argument -> call_argument.value) arguments
           in
+          let default_target =
+            match function_name with
+            | "__mod__" -> Interprocedural.Target.StringCombineArtificialTargets.str_mod
+            | "format" -> Interprocedural.Target.StringCombineArtificialTargets.str_format
+            | _ -> failwith "Expect either `__mod__` or `format`"
+          in
           let call_target_for_string_combine_rules =
             Some
-              (create_call_target_for_string_combine
+              (StringFormatCall.create_call_target_for_string_combine
                  ~call_targets:callees.call_targets
-                 ~default_target:(Interprocedural.Target.Object "<str.format>"))
+                 ~default_target)
           in
-          analyze_string_literal
+          analyze_joined_string
             ~resolution
             ~state
-            ~location
-            ~nested_expressions
             ~breadcrumbs:(Features.BreadcrumbSet.singleton (Features.format_string ()))
-            ~value_location
-            ~call_target_for_string_combine_rules
-            value
+            {
+              StringFormatCall.Argument.nested_expressions;
+              string_literal = { value; value_location };
+              call_target_for_string_combine_rules;
+              location;
+            }
       (* Special case `"str" + s` and `s + "str"` for Literal String Sinks *)
       | {
        callee =
@@ -1847,20 +1989,21 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       } ->
           let call_target_for_string_combine_rules =
             Some
-              (create_call_target_for_string_combine
+              (StringFormatCall.create_call_target_for_string_combine
                  ~call_targets:callees.call_targets
-                 ~default_target:(Interprocedural.Target.Object "<str.__add__>"))
+                 ~default_target:Interprocedural.Target.StringCombineArtificialTargets.str_add)
           in
-          analyze_string_literal
+          analyze_joined_string
             ~resolution
             ~state
-            ~location
-            ~nested_expressions:[expression]
             ~breadcrumbs:
               (Features.BreadcrumbSet.singleton (Features.string_concat_left_hand_side ()))
-            ~value_location
-            ~call_target_for_string_combine_rules
-            value
+            {
+              StringFormatCall.Argument.nested_expressions = [expression];
+              string_literal = { value; value_location };
+              call_target_for_string_combine_rules;
+              location;
+            }
       | {
        callee =
          {
@@ -1882,20 +2025,111 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       } ->
           let call_target_for_string_combine_rules =
             Some
-              (create_call_target_for_string_combine
+              (StringFormatCall.create_call_target_for_string_combine
                  ~call_targets:callees.call_targets
-                 ~default_target:(Interprocedural.Target.Object "<str.__add__>"))
+                 ~default_target:Interprocedural.Target.StringCombineArtificialTargets.str_add)
           in
-          analyze_string_literal
+          analyze_joined_string
             ~resolution
             ~state
-            ~location
-            ~nested_expressions:[expression]
             ~breadcrumbs:
               (Features.BreadcrumbSet.singleton (Features.string_concat_right_hand_side ()))
-            ~value_location
-            ~call_target_for_string_combine_rules
-            value
+            {
+              StringFormatCall.Argument.nested_expressions = [expression];
+              string_literal = { value; value_location };
+              call_target_for_string_combine_rules;
+              location;
+            }
+      | {
+          callee =
+            {
+              Node.value = Name (Name.Attribute { base; attribute = "__add__" as function_name; _ });
+              _;
+            };
+          arguments;
+        }
+      | {
+          callee =
+            {
+              Node.value = Name (Name.Attribute { base; attribute = "__mod__" as function_name; _ });
+              _;
+            };
+          arguments;
+        }
+      | {
+          callee =
+            {
+              Node.value = Name (Name.Attribute { base; attribute = "format" as function_name; _ });
+              _;
+            };
+          arguments;
+        } ->
+          (* User-defined or inferred models. *)
+          let taint, state =
+            apply_callees
+              ~resolution
+              ~is_result_used
+              ~is_property:false
+              ~call_location:location
+              ~callee
+              ~arguments
+              ~state
+              callees
+          in
+          let is_string_format =
+            List.exists callees.call_targets ~f:(fun call_target ->
+                match Interprocedural.Target.class_name call_target.target with
+                | Some class_name -> String.equal "str" class_name
+                | None -> false)
+          in
+          if not is_string_format then
+            taint, state
+          else
+            (* Additional hard-coded models for analyzing implicit sinks during string formatting
+               operations. *)
+            let taint_from_string_format, state_from_string_format =
+              let breadcrumbs =
+                match function_name with
+                | "__mod__"
+                | "format" ->
+                    Features.BreadcrumbSet.singleton (Features.format_string ())
+                | _ -> Features.BreadcrumbSet.empty
+              in
+              let default_target =
+                match function_name with
+                | "__add__" -> Interprocedural.Target.StringCombineArtificialTargets.str_add
+                | "__mod__" -> Interprocedural.Target.StringCombineArtificialTargets.str_mod
+                | "format" -> Interprocedural.Target.StringCombineArtificialTargets.str_format
+                | _ -> failwith "Expect either `__add__` or `__mod__` or `format`"
+              in
+              let call_target_for_string_combine_rules =
+                Some
+                  (StringFormatCall.create_call_target_for_string_combine
+                     ~call_targets:callees.call_targets
+                     ~default_target)
+              in
+              let nested_expressions =
+                arguments
+                |> List.map ~f:(fun call_argument -> call_argument.Call.Argument.value)
+                |> List.cons base
+              in
+              let string_literal, nested_expressions =
+                CallModel.arguments_for_string_format nested_expressions
+              in
+              analyze_joined_string
+                ~resolution
+                ~state
+                ~breadcrumbs
+                {
+                  StringFormatCall.Argument.nested_expressions;
+                  string_literal =
+                    { StringFormatCall.Argument.value = string_literal; value_location = location };
+                  call_target_for_string_combine_rules;
+                  location;
+                }
+            in
+            ( ForwardState.Tree.join taint taint_from_string_format,
+              join state state_from_string_format )
       | {
        callee = { Node.value = Expression.Name (Name.Identifier "reveal_taint"); _ };
        arguments = [{ Call.Argument.value = expression; _ }];
@@ -2075,56 +2309,26 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
   (* If there exists a triggered flow, `call_target_for_string_combine_rules` is the responsible
      callsite. We assume there is a call to `call_target_for_string_combine_rules` whose arguments
-     are `value` followed by `nested_expressions`. *)
-  and analyze_string_literal
+     are `string_literal` followed by `nested_expressions`. *)
+  and analyze_joined_string
       ~resolution
       ~state
-      ~location
-      ~nested_expressions
       ~breadcrumbs
-      ~value_location
-      ~call_target_for_string_combine_rules
-      value
+      {
+        StringFormatCall.Argument.nested_expressions;
+        string_literal = { value_location = string_literal_location; _ } as string_literal;
+        call_target_for_string_combine_rules;
+        location;
+      }
     =
-    let location = Location.with_module ~module_reference:FunctionContext.qualifier location in
-    let value_taint =
-      let literal_string_regular_expressions =
-        FunctionContext.taint_configuration.implicit_sources.literal_strings
-      in
-      let add_matching_source_kind tree { TaintConfiguration.pattern; source_kind = kind } =
-        if Re2.matches pattern value then
-          ForwardTaint.singleton (CallInfo.Origin location) kind Frame.initial
-          |> ForwardState.Tree.create_leaf
-          |> ForwardState.Tree.join tree
-        else
-          tree
-      in
-      List.fold
-        literal_string_regular_expressions
-        ~init:ForwardState.Tree.empty
-        ~f:add_matching_source_kind
-    in
-    (* Check triggered flows into partial sinks that are introduced onto expressions that are used
-       in the string operations. *)
+    let string_literal_taint = StringFormatCall.implicit_string_literal_sources string_literal in
     let triggered_sinks = Issue.TriggeredSinkHashMap.create () in
-    let check_triggered_flows ~location ~parameter_index source_tree =
-      match call_target_for_string_combine_rules with
-      | Some { CallGraph.CallTarget.target; index; _ } ->
-          let location =
-            Location.with_module ~module_reference:FunctionContext.qualifier location
-          in
-          let sink_handle =
-            IssueHandle.Sink.StringFormat { callee = target; index; parameter_index }
-          in
-          check_triggered_flows
-            ~triggered_sinks_for_call:triggered_sinks
-            ~sink_handle
-            ~location
-            ~source_tree
-            ~sink_tree:FunctionContext.string_combine_partial_sink_tree
-      | None -> ()
-    in
-    check_triggered_flows ~location:value_location value_taint ~parameter_index:0;
+    StringFormatCall.check_triggered_flows
+      ~triggered_sinks
+      ~parameter_index:0
+      ~call_target_for_string_combine_rules
+      ~location:string_literal_location
+      string_literal_taint;
 
     let analyze_stringify_callee
         (taint_to_join, state_to_join)
@@ -2176,11 +2380,17 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         |>> ForwardState.Tree.add_local_breadcrumb (Features.tito ())
       in
       let expression_taint, state =
-        match get_format_string_callees ~location:expression_location with
-        | Some { CallGraph.FormatStringCallees.call_targets } ->
+        match get_string_format_callees ~location:expression_location with
+        | Some { CallGraph.StringFormatCallees.stringify_targets; f_string_targets } ->
+            let taint, state =
+              if List.is_empty f_string_targets then
+                ForwardState.Tree.empty, { taint = ForwardState.empty }
+              else (* If there exists an f-string target, treat as TITO. *)
+                base_taint, base_state
+            in
             List.fold
-              call_targets
-              ~init:(ForwardState.Tree.empty, { taint = ForwardState.empty })
+              stringify_targets
+              ~init:(taint, state)
               ~f:(fun (taint_to_join, state_to_join) call_target ->
                 analyze_stringify_callee
                   (taint_to_join, state_to_join)
@@ -2191,10 +2401,12 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                   ~base_state)
         | None -> base_taint, base_state
       in
-      check_triggered_flows
+      StringFormatCall.check_triggered_flows
+        ~triggered_sinks
+        ~parameter_index:(index + 1)
+        ~call_target_for_string_combine_rules
         ~location:expression_location
-        expression_taint
-        ~parameter_index:(index + 1);
+        expression_taint;
       ForwardState.Tree.join expression_taint taint, state
     in
     let taint, state =
@@ -2203,25 +2415,14 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         ~f:analyze_nested_expression
         ~init:(ForwardState.Tree.empty, state)
       |>> ForwardState.Tree.add_local_breadcrumbs breadcrumbs
-      |>> ForwardState.Tree.join value_taint
+      |>> ForwardState.Tree.join string_literal_taint
     in
-    (* Compute flows of user-controlled data -> literal string sinks if applicable. *)
-    let literal_string_sinks =
-      FunctionContext.taint_configuration.implicit_sinks.literal_string_sinks
-    in
-    (* We try to be a bit clever about bailing out early and not computing the matches. *)
-    if (not (List.is_empty literal_string_sinks)) && not (ForwardState.Tree.is_bottom taint) then
-      List.iter literal_string_sinks ~f:(fun { TaintConfiguration.sink_kind; pattern } ->
-          if Re2.matches pattern value then
-            let sink_tree =
-              BackwardTaint.singleton (CallInfo.Origin location) sink_kind Frame.initial
-              |> BackwardState.Tree.create_leaf
-            in
-            check_flow
-              ~location
-              ~sink_handle:(IssueHandle.Sink.LiteralStringSink sink_kind)
-              ~source_tree:taint
-              ~sink_tree);
+    store_triggered_sinks_to_propagate_for_string_combine
+      ~location
+      ~triggered_sinks
+      nested_expressions;
+    (* Compute flows to literal string sinks if applicable. *)
+    StringFormatCall.check_flow_implicit_string_literal_sinks ~string_literal taint;
     taint, state
 
 
@@ -2261,15 +2462,16 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       | Call { callee; arguments } ->
           analyze_call ~resolution ~location ~state ~is_result_used ~callee ~arguments
       | Constant (Constant.String { StringLiteral.value; _ }) ->
-          analyze_string_literal
+          analyze_joined_string
             ~resolution
             ~state
-            ~location
-            ~nested_expressions:[]
             ~breadcrumbs:Features.BreadcrumbSet.empty
-            ~value_location:location
-            ~call_target_for_string_combine_rules:None
-            value
+            {
+              StringFormatCall.Argument.nested_expressions = [];
+              string_literal = { value; value_location = location };
+              call_target_for_string_combine_rules = None;
+              location;
+            }
       | Constant _ -> ForwardState.Tree.empty, state
       | Dictionary { Dictionary.entries; keywords } ->
           let taint, state =
@@ -2345,27 +2547,36 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           analyze_expression ~resolution ~state ~is_result_used ~expression
           |>> ForwardState.Tree.read [Abstract.TreeDomain.Label.AnyIndex]
       | FormatString substrings ->
-          let value =
+          let substrings =
             List.map substrings ~f:(function
-                | Substring.Format _ -> "{}"
-                | Substring.Literal { Node.value; _ } -> value)
-            |> String.concat ~sep:""
+                | Substring.Format expression -> expression
+                | Substring.Literal { Node.value; location } ->
+                    Expression.Constant (Constant.String { StringLiteral.value; kind = String })
+                    |> Node.create ~location)
           in
-          let nested_expressions =
-            List.filter_map substrings ~f:(function
-                | Substring.Format expression -> Some expression
-                | _ -> None)
+          let string_literal, nested_expressions =
+            CallModel.arguments_for_string_format substrings
           in
-          analyze_string_literal
+          let call_target_for_string_combine_rules =
+            let call_targets =
+              match get_string_format_callees ~location with
+              | Some { CallGraph.StringFormatCallees.f_string_targets; _ } -> f_string_targets
+              | None -> []
+            in
+            StringFormatCall.create_call_target_for_string_combine
+              ~call_targets
+              ~default_target:Interprocedural.Target.StringCombineArtificialTargets.format_string
+          in
+          analyze_joined_string
             ~resolution
             ~state
-            ~location
-            ~nested_expressions
             ~breadcrumbs:(Features.BreadcrumbSet.singleton (Features.format_string ()))
-            ~value_location:location
-            ~call_target_for_string_combine_rules:
-              (Some (CallGraph.CallTarget.create (Interprocedural.Target.Object "<format-string>")))
-            value
+            {
+              StringFormatCall.Argument.nested_expressions;
+              string_literal = { value = string_literal; value_location = location };
+              call_target_for_string_combine_rules = Some call_target_for_string_combine_rules;
+              location;
+            }
       | Ternary { target; test; alternative } ->
           let state = analyze_condition ~resolution test state in
           let taint_then, state_then =

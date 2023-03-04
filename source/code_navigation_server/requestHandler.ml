@@ -130,9 +130,9 @@ let handle_superclasses
     ErrorsEnvironment.ReadOnly.type_environment root_environment
     |> TypeEnvironment.ReadOnly.global_resolution
   in
-  let get_module_by_name ~module_tracker name =
+  let get_module_by_name name =
     let module_name = Ast.Reference.create name in
-    Option.some_if (ModuleTracker.ReadOnly.is_module_tracked module_tracker module_name) module_name
+    Option.some_if (GlobalResolution.module_exists global_resolution module_name) module_name
   in
   let to_class_expression superclass =
     (* TODO(T139769506): Instead of this hack where we assume `a.b.c` is a module when looking at
@@ -149,8 +149,7 @@ let handle_superclasses
     | None -> None
   in
 
-  let module_tracker = ErrorsEnvironment.ReadOnly.module_tracker root_environment in
-  match get_module_by_name ~module_tracker module_ with
+  match get_module_by_name module_ with
   | None ->
       Response.ErrorKind.InvalidRequest (Format.sprintf "Cannot find module with name `%s`" module_)
       |> Result.fail
@@ -193,86 +192,6 @@ let with_broadcast_busy_checking ~subscriptions ~overlay_id f =
 
 let with_broadcast_busy_building ~subscriptions f =
   with_broadcast ~subscriptions ~status:Response.Status.BusyBuilding f
-
-
-let handle_local_update
-    ~path
-    ~content
-    ~overlay_id
-    ~subscriptions
-    { State.environment; build_system; _ }
-    : Response.t Lwt.t
-  =
-  let module_tracker =
-    OverlaidEnvironment.root environment |> ErrorsEnvironment.ReadOnly.module_tracker
-  in
-  match get_modules ~module_tracker ~build_system path with
-  | Result.Error kind -> Lwt.return (Response.Error kind)
-  | Result.Ok modules ->
-      let code_updates =
-        let code_update =
-          match content with
-          | Some content -> ModuleTracker.Overlay.CodeUpdate.NewCode content
-          | None -> ModuleTracker.Overlay.CodeUpdate.ResetCode
-        in
-        let to_update module_name =
-          ModuleTracker.ReadOnly.lookup_full_path module_tracker module_name
-          |> Option.map ~f:(fun artifact_path -> artifact_path, code_update)
-        in
-        List.filter_map modules ~f:to_update
-      in
-
-      let%lwt () =
-        match code_updates with
-        | [] -> Lwt.return_unit
-        | _ ->
-            let run_local_update () =
-              OverlaidEnvironment.update_overlay_with_code environment ~code_updates overlay_id
-              |> Lwt.return
-            in
-            let%lwt _ =
-              with_broadcast_busy_checking
-                ~subscriptions
-                ~overlay_id:(Some overlay_id)
-                run_local_update
-            in
-            Lwt.return_unit
-      in
-      Lwt.return Response.Ok
-
-
-let handle_file_opened ~path ~content ~overlay_id ~subscriptions state : Response.t Lwt.t =
-  let%lwt response =
-    match overlay_id with
-    | Some overlay_id -> handle_local_update ~path ~content ~overlay_id ~subscriptions state
-    | None -> Lwt.return Response.Ok
-  in
-  let () =
-    match response with
-    | Response.Error _ -> ()
-    | _ ->
-        let { State.open_files; _ } = state in
-        let source_path = PyrePath.create_absolute path |> SourcePath.create in
-        OpenFiles.open_file open_files ~source_path ~overlay_id
-  in
-  Lwt.return response
-
-
-let handle_file_closed ~path ~overlay_id ~subscriptions ({ State.open_files; _ } as state)
-    : Response.t Lwt.t
-  =
-  let source_path = PyrePath.create_absolute path |> SourcePath.create in
-  if OpenFiles.contains open_files ~source_path ~overlay_id then
-    let%lwt response =
-      match overlay_id with
-      | Some overlay_id -> handle_local_update ~path ~content:None ~overlay_id ~subscriptions state
-      | None -> Lwt.return Response.Ok
-    in
-    match OpenFiles.close_file open_files ~source_path ~overlay_id with
-    | Result.Ok () -> Lwt.return response
-    | Result.Error error_kind -> Lwt.return (Response.Error error_kind)
-  else
-    Lwt.return (Response.Error (Response.ErrorKind.UntrackedFileClosed { path }))
 
 
 let get_raw_path { Request.FileUpdateEvent.path; _ } = PyrePath.create_absolute path
@@ -353,6 +272,81 @@ let handle_working_set_update ~subscriptions { State.environment; build_system; 
   handle_non_critical_file_update ~subscriptions ~environment artifact_path_events
 
 
+let handle_local_update
+    ~path
+    ~content
+    ~overlay_id
+    ~subscriptions
+    { State.environment; build_system; _ }
+    : Response.t Lwt.t
+  =
+  let module_tracker =
+    OverlaidEnvironment.root environment |> ErrorsEnvironment.ReadOnly.module_tracker
+  in
+  match get_modules ~module_tracker ~build_system path with
+  | Result.Error kind -> Lwt.return (Response.Error kind)
+  | Result.Ok modules ->
+      let code_updates =
+        let code_update =
+          match content with
+          | Some content -> ModuleTracker.Overlay.CodeUpdate.NewCode content
+          | None -> ModuleTracker.Overlay.CodeUpdate.ResetCode
+        in
+        let to_update module_name =
+          ModuleTracker.ReadOnly.lookup_full_path module_tracker module_name
+          |> Option.map ~f:(fun artifact_path -> artifact_path, code_update)
+        in
+        List.filter_map modules ~f:to_update
+      in
+
+      let%lwt () =
+        match code_updates with
+        | [] -> Lwt.return_unit
+        | _ ->
+            let run_local_update () =
+              OverlaidEnvironment.update_overlay_with_code environment ~code_updates overlay_id
+              |> Lwt.return
+            in
+            let%lwt _ =
+              with_broadcast_busy_checking
+                ~subscriptions
+                ~overlay_id:(Some overlay_id)
+                run_local_update
+            in
+            Lwt.return_unit
+      in
+      Lwt.return Response.Ok
+
+
+let handle_file_opened ~path ~content ~overlay_id ~subscriptions ({ State.open_files; _ } as state) =
+  let () =
+    let source_path = PyrePath.create_absolute path |> SourcePath.create in
+    OpenFiles.open_file open_files ~source_path ~overlay_id
+  in
+  let%lwt () = handle_working_set_update ~subscriptions state in
+  match overlay_id with
+  | Some overlay_id -> handle_local_update ~path ~content ~overlay_id ~subscriptions state
+  | None -> Lwt.return Response.Ok
+
+
+let handle_file_closed ~path ~overlay_id ~subscriptions ({ State.open_files; _ } as state) =
+  let source_path = PyrePath.create_absolute path |> SourcePath.create in
+  match OpenFiles.contains open_files ~source_path ~overlay_id with
+  | false -> Lwt.return (Response.Error (Response.ErrorKind.FileNotOpened { path }))
+  | true -> (
+      let%lwt update_response =
+        match overlay_id with
+        | Some overlay_id ->
+            handle_local_update ~path ~content:None ~overlay_id ~subscriptions state
+        | None -> Lwt.return Response.Ok
+      in
+      match OpenFiles.close_file open_files ~source_path ~overlay_id with
+      | Result.Error error_kind -> Lwt.return (Response.Error error_kind)
+      | Result.Ok () ->
+          let%lwt () = handle_working_set_update ~subscriptions state in
+          Lwt.return update_response)
+
+
 let response_from_result = function
   | Result.Ok response -> response
   | Result.Error kind -> Response.Error kind
@@ -414,14 +408,12 @@ let handle_command ~server:{ ServerInternal.state; subscriptions; properties } =
   | Request.Command.FileOpened { path; content; overlay_id } ->
       let f state =
         let%lwt response = handle_file_opened ~path ~content ~overlay_id ~subscriptions state in
-        let%lwt () = handle_working_set_update ~subscriptions state in
         Lwt.return_ok response
       in
       Server.ExclusiveLock.read state ~f
   | Request.Command.FileClosed { path; overlay_id } ->
       let f state =
         let%lwt response = handle_file_closed ~path ~overlay_id ~subscriptions state in
-        let%lwt () = handle_working_set_update ~subscriptions state in
         Lwt.return_ok response
       in
       Server.ExclusiveLock.read state ~f
