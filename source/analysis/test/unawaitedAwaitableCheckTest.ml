@@ -59,6 +59,27 @@ let test_forward context =
         await awaited
     |}
     [];
+  assert_awaitable_errors
+    {|
+      from asyncio.futures import Future
+
+      def future() -> Future[int]: ...
+
+      async def main() -> None:
+        unawaited = future()
+    |}
+    ["Unawaited awaitable [1001]: Awaitable assigned to `unawaited` is never awaited."];
+  assert_awaitable_errors
+    {|
+      from asyncio.futures import Future
+
+      def future() -> Future[int]: ...
+
+      async def main() -> None:
+        awaited = future()
+        await awaited
+    |}
+    [];
 
   (* Assert. *)
   assert_awaitable_errors

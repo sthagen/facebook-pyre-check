@@ -5,7 +5,11 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-(* TODO(T132410158) Add a module-level doc comment. *)
+(* This module defines Pyre's check for uninitialized local variables. This check, which is
+   independent of type checking but makes use of the same control flow graph, catches situations
+   where code uses a local variable that may not have been defined yet. For example an uninitialized
+   local error can occur if a variable is bound inside an `if` statement and then used
+   unconditionally later on. *)
 
 open Core
 open Ast
@@ -47,9 +51,13 @@ module AccessCollector = struct
     | Name (Name.Identifier identifier) ->
         (* For simple names, add them to the result *)
         Set.add collected { Define.NameAccess.name = identifier; location = expression_location }
-    | Name (Name.Attribute _) ->
-        (* For attribute access, we currently skip *)
-        collected
+    | Name (Name.Attribute { Name.Attribute.base; _ }) -> (
+        (* We want to recursively collect attribute access in base expressions of attribute lookups,
+           but we have to short-circuit identifiers because, due to qualification, we aren't able to
+           reliably distinguish attribute access on locals from globals. (see T94414920) *)
+        match base.value with
+        | Name (Name.Identifier _) -> collected
+        | _ -> from_expression collected base)
     (* The rest is boilerplates to make sure that expressions are visited recursively *)
     | Await await -> from_expression collected await
     | BooleanOperator { BooleanOperator.left; right; _ }
@@ -63,11 +71,12 @@ module AccessCollector = struct
     | Dictionary { Dictionary.entries; keywords } ->
         let collected = List.fold entries ~init:collected ~f:from_entry in
         List.fold keywords ~init:collected ~f:from_expression
-    | DictionaryComprehension comprehension -> from_comprehension from_entry collected comprehension
+    | DictionaryComprehension comprehension ->
+        from_comprehension ~collected from_entry comprehension
     | Generator comprehension
     | ListComprehension comprehension
     | SetComprehension comprehension ->
-        from_comprehension from_expression collected comprehension
+        from_comprehension ~collected from_expression comprehension
     | List expressions
     | Set expressions
     | Tuple expressions ->
@@ -95,12 +104,12 @@ module AccessCollector = struct
   (* Generators are as special as lambdas -- they bind their own names, which we want to exclude *)
   and from_comprehension :
         'a.
+        collected:NameAccessSet.t ->
         (NameAccessSet.t -> 'a -> NameAccessSet.t) ->
-        NameAccessSet.t ->
         'a Comprehension.t ->
         NameAccessSet.t
     =
-   fun from_element collected { Comprehension.element; generators } ->
+   fun ~collected from_element { Comprehension.element; generators } ->
     let remove_bound_names ~bound_names =
       Set.filter ~f:(fun { Define.NameAccess.name; _ } -> not (Identifier.Set.mem bound_names name))
     in

@@ -15,23 +15,35 @@ let range start_line start_column stop_line stop_column =
   { Ast.Location.start = position start_line start_column; stop = position stop_line stop_column }
 
 
-let open_file ?overlay_id ?content ~path =
+let register_client ~client_id =
   ScratchProject.ClientConnection.assert_response
-    ~request:Request.(Command (Command.FileOpened { path; content; overlay_id }))
+    ~request:Request.(Command (Command.RegisterClient { client_id }))
     ~expected:Response.Ok
 
 
-let close_file ?overlay_id ~path =
+let dispose_client ~client_id =
   ScratchProject.ClientConnection.assert_response
-    ~request:Request.(Command (Command.FileClosed { path; overlay_id }))
+    ~request:Request.(Command (Command.DisposeClient { client_id }))
     ~expected:Response.Ok
 
 
-let assert_type_error_count ?overlay_id ~path ~expected client =
+let open_file ?content ~client_id ~path =
+  ScratchProject.ClientConnection.assert_response
+    ~request:Request.(Command (Command.FileOpened { path; content; client_id }))
+    ~expected:Response.Ok
+
+
+let close_file ~client_id ~path =
+  ScratchProject.ClientConnection.assert_response
+    ~request:Request.(Command (Command.FileClosed { path; client_id }))
+    ~expected:Response.Ok
+
+
+let assert_type_error_count ~client_id ~path ~expected client =
   let%lwt raw_response =
     ScratchProject.ClientConnection.send_request
       client
-      Request.(Query (Query.GetTypeErrors { path; overlay_id }))
+      Request.(Query (Query.GetTypeErrors { path; client_id }))
   in
   match Yojson.Safe.from_string raw_response with
   | `List [`String "TypeErrors"; `List errors] ->
@@ -49,5 +61,5 @@ let assert_type_error_count ?overlay_id ~path ~expected client =
       assert_failure message
 
 
-let assert_type_error_count_for_path ?overlay_id ~path ~expected client =
-  assert_type_error_count client ?overlay_id ~expected ~path
+let assert_type_error_count_for_path ~client_id ~path ~expected client =
+  assert_type_error_count client ~client_id ~expected ~path

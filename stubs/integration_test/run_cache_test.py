@@ -3,6 +3,15 @@
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
+"""
+Run an integration test for Pysa verifying that dumping the enviornment
+to a cache and reloading produces expected results.
+
+This test has no dependencies aside from stdlib, you should be able to run
+it any environment simply by running `./run_cache_test.py` from the
+containing directory (or any parent, it is not sensitive to your current
+working directory.)
+"""
 
 import json
 import logging
@@ -10,7 +19,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -287,7 +295,7 @@ def run_test_changed_models(
         "description": "Possible shell injection [5001]: Data from [UserControlled] source(s) may reach [RemoteCodeExecution] sink(s)",
         "line": 20,
         "name": "Possible shell injection",
-        "path": "lru_cache_test.py",
+        "path": "fixture_source/integration_test/lru_cache_test.py",
         "stop_column": 18,
         "stop_line": 20,
     }
@@ -370,29 +378,19 @@ def run_tests() -> None:
     cache_path = Path(".pyre/.pysa_cache")
     LOG.info(f"Cache file path: {cache_path.resolve()}")
 
-    # Extract typeshed.
-    with tempfile.TemporaryDirectory() as directory:
-        LOG.info(f"Extracting typeshed into `{directory}`...")
-        subprocess.check_call(
-            ["unzip", "../typeshed/typeshed.zip", "-d", directory],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        typeshed_path = f"{directory}/typeshed-master"
+    typeshed_path = Path("../typeshed/typeshed").absolute().as_posix()
+    with open("result.json") as file:
+        expected = json.loads(file.read())
 
-        expected = None
-        with open("result.json") as file:
-            expected = json.loads(file.read())
+        run_test_no_cache(typeshed_path, cache_path, expected)
+        run_test_cache_first_and_second_runs(typeshed_path, cache_path, expected)
+        run_test_invalid_cache_file(typeshed_path, cache_path, expected)
+        run_test_changed_pysa_file(typeshed_path, cache_path, expected)
+        run_test_changed_taint_config_file(typeshed_path, cache_path, expected)
+        run_test_changed_models(typeshed_path, cache_path, expected)
+        run_test_changed_source_files(typeshed_path, cache_path, expected)
 
-            run_test_no_cache(typeshed_path, cache_path, expected)
-            run_test_cache_first_and_second_runs(typeshed_path, cache_path, expected)
-            run_test_invalid_cache_file(typeshed_path, cache_path, expected)
-            run_test_changed_pysa_file(typeshed_path, cache_path, expected)
-            run_test_changed_taint_config_file(typeshed_path, cache_path, expected)
-            run_test_changed_models(typeshed_path, cache_path, expected)
-            run_test_changed_source_files(typeshed_path, cache_path, expected)
-
-        LOG.info("All runs produced expected output.")
+    LOG.info("All runs produced expected output.")
 
 
 if __name__ == "__main__":

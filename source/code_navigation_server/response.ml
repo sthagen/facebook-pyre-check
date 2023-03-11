@@ -13,7 +13,8 @@ module ErrorKind = struct
   type t =
     | InvalidRequest of string
     | ModuleNotTracked of { path: string }
-    | OverlayNotFound of { overlay_id: string }
+    | ClientAlreadyRegistered of { client_id: string }
+    | ClientNotRegistered of { client_id: string }
     | FileNotOpened of { path: string }
   [@@deriving sexp, compare, yojson { strict = false }]
 end
@@ -42,7 +43,7 @@ module Status = struct
   type t =
     | Idle
     | BusyBuilding
-    | BusyChecking of { overlay_id: string option }
+    | BusyChecking of { client_id: string option }
     | Stop of { message: string }
   [@@deriving sexp, compare, yojson { strict = false }]
 end

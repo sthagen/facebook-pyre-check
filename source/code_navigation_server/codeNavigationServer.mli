@@ -169,30 +169,6 @@ end
 
 (** {1 Server State}*)
 
-(** This module contains the state tracking open files in the code navigation server. *)
-module OpenFiles : sig
-  type t
-
-  (** Mark a file as opened in the open file state. *)
-  val open_file : t -> source_path:SourcePath.t -> overlay_id:string option -> unit
-
-  (** Mark a file as closed in the open file state. *)
-  val close_file
-    :  t ->
-    source_path:SourcePath.t ->
-    overlay_id:string option ->
-    (unit, Response.ErrorKind.t) Result.t
-
-  (** Evaluates to the list of current open files. *)
-  val open_files : t -> SourcePath.t list
-
-  (** Returns true iff the open files currently tracks `overlay_id`. *)
-  val contains : t -> source_path:SourcePath.t -> overlay_id:string option -> bool
-
-  (** Creates a new open files state object with no files marked as open. *)
-  val create : unit -> t
-end
-
 (** This module contains APIs that are relevant to the internal state of the code navigation server. *)
 module State : sig
   (** A type that represent the internal state of the server. *)
@@ -260,51 +236,75 @@ module Testing : sig
         | Stop
             (** A command that asks the server to stop. The server will shut itself down immediately
                 when this request gets processed. No response will be sent back to the client. *)
+        | RegisterClient of { client_id: string }
+            (** A command that register a client with the server using a given ID. The ID can be an
+                arbitrary string chosen on the client side. After client registration, the server
+                will be informed about the existence of the ID and allocate some states on its side
+                to prepare for future requests coming from the same client. Subsequent stateful
+                requests (e.g. file open/close) will only succeed if the corresponding [client_id]
+                has already been registered with the server.
+
+                The server will send back a {!Response.Ok} response when the registration succeeds,
+                and a {!Response.ErrorKind.ClientAlreadyRegistered} response when the given ID is
+                already registered.
+
+                TODO: extend this request with an expiration timer so client states can be
+                auto-recollected without any explicit disposal request. *)
+        | DisposeClient of { client_id: string }
+            (** A command that inform the server that a given client ID is no longer in use. After
+                client disposal, the server will discard the associated states with that ID so it
+                can be re-used by future clients.
+
+                The server will send back a {!Response.Ok} response when the registration succeeds,
+                and a {!Response.ErrorKind.ClientNotRegistered} response when the given ID is not
+                registered. *)
         | FileOpened of {
             path: string;
             content: string option;
-            overlay_id: string option;
+            client_id: string;
           }
-            (** A command that asks the server to create an overlay for a given module and mark a
-                file as tracked. [content] specifies the content of the source file corresponds to
+            (** A command that asks the server to add the given file [path] to the working set of
+                the given client. [content] specifies the content of the source file corresponds to
                 the module.[content] being [None] indicates that contents of the source file should
-                match what was stored on the filesystem.
+                match what was stored on the filesystem. File open is a stateful operation on the
+                server side, and it requires the client to have a prior ID registration with the
+                server.
 
-                The server will send back a {!Response.Ok} response when the update succeeds, and a
-                new overlay with that ID will be created.
-
-                If the provided module is not covered by the code navigation server, the server will
-                respond with a {!Response.ErrorKind.ModuleNotTracked} error. We don't allow
-                specifying closed opened/closed files by name. *)
+                The server will send back a {!Response.Ok} response when the update succeeds. If the
+                provided client ID is not registered previously, the server will respond with a
+                {!Response.ErrorKind.ClientNotRegistered} error. If the provided module is not
+                covered by the code navigation server, the server will respond with a
+                {!Response.ErrorKind.ModuleNotTracked} error. *)
         | FileClosed of {
             path: string;
-            overlay_id: string option;
+            client_id: string;
           }
-            (** A command that notifies the server that a previouly open file was closed. The server
-                will send back a {!Response.Ok} response when the update succeeds.
+            (** A command that asks the server to remove a given file [path] from the working set of
+                the given client. File close is a stateful operation on the server side, and it
+                requires the client to have a prior ID registration with the server.
 
-                If the provided module is not covered by the code navigation server, the server will
-                respond with a {!Response.ErrorKind.ModuleNotTracked} error.
-
-                If closing a file that was not previously opened by a `{Command.FileOpened}`
-                command, the server will respond with a {!Response.ErrorKind.UntrackedFileClosed}
-                error. *)
+                The server will send back a {!Response.Ok} response when the update succeeds. If the
+                provided client ID is not registered previously, the server will respond with a
+                {!Response.ErrorKind.ClientNotRegistered} error. If the given file was not
+                previously opened by a `{!Command.FileOpened}` command for the client, the server
+                will respond with a {!Response.ErrorKind.FileNotOpened} error. *)
         | LocalUpdate of {
             path: string;
             content: string option;
-            overlay_id: string;
+            client_id: string;
           }
-            (** A command that asks the server to update a given module locally for an overlay.
+            (** A command that asks the server to update a given module locally for a given client.
                 [content] specifies the content of the source file corresponds to the module.
                 [content] being [None] indicates that contents of the source file should match what
                 was stored on the filesystem.
 
                 The server will send back a {!Response.Ok} response when the update succeeds. If the
-                overlay with the given ID does not exist yet, a new overlay with that ID will be
-                created.
-
-                If the provided module is not covered by the code navigation server, the server will
-                respond with a {!Response.ErrorKind.ModuleNotTracked} error. *)
+                provided client ID is not registered previously, the server will respond with a
+                {!Response.ErrorKind.ClientNotRegistered} error. If the given file was not
+                previously opened by a `{!Command.FileOpened}` command for the client, the server
+                will respond with a {!Response.ErrorKind.FileNotOpened} error. If the provided
+                module is not covered by the code navigation server, the server will respond with a
+                {!Response.ErrorKind.ModuleNotTracked} error. *)
         | FileUpdate of FileUpdateEvent.t list
             (** A command that notify the server that a file has changed on disk, so the server
                 needs to incrementally adjust its internal state accordingly. Events will get
@@ -320,54 +320,54 @@ module Testing : sig
     module Query : sig
       (** A type representing queries sent from the clients to the server.
 
-          The code navigation server supports a primitive form of isolation between different
-          clients. Many kinds of requests that query server state can optionally specify an
-          [overlay_id], and the server will attempt to guarantee that type checking states for
-          different [overlay_id]s will not interfere with each other. Overlays are implicitly
-          created the first time a {!Command.LocalUpdate} command is sent to the server.
+          The code navigation server supports a form of isolation between different clients. Many
+          kinds of requests that query server state must specify a [client_id], and the server will
+          attempt to guarantee that type checking states for different [client_id]s will not
+          interfere with each other. [client_id]s are explicitly registered with the server via
+          {!Command.RegisterClient} command and disposed via {!Command.DisposeClient} command.
 
           The server will send back a query response and close its connection with the client once
           the query gets processed. *)
       type t =
         | GetTypeErrors of {
             path: string;
-            overlay_id: string option;
+            client_id: string;
           }
             (** A query that asks the server to type check a given module. The server will send back
                 a {!Response.TypeErrors} response when the type checking completes.
 
-                If the provided module is not covered by the code navigation server, the server will
-                respond with a {!Response.ErrorKind.ModuleNotTracked} error. If the server cannot
-                find the overlay with the given ID, it will respond with a
-                {!Response.ErrorKind.OverlayNotFound} error. *)
+                If the given file was not previously opened by a `{!Command.FileOpened}` command for
+                the client, the server will respond with a {!Response.ErrorKind.FileNotOpened}
+                error. If the provided module is opened but not covered by the code navigation
+                server, the server will respond with a {!Response.ErrorKind.ModuleNotTracked} error. *)
         | Hover of {
             path: string;
             position: Ast.Location.position;
-            overlay_id: string option;
+            client_id: string;
           }
             (** A query that asks the server to return hover information at a given location in a
                 given module. The server will send back a {!Response.Hover} response as result. The
                 response will contain an empty list if the server do not have any hover text to show
                 at the location.
 
-                If the provided module is not covered by the code navigation server, the server will
-                respond with a {!Response.ErrorKind.ModuleNotTracked} error. If the server cannot
-                find the overlay with the given ID, it will respond with a
-                {!Response.ErrorKind.OverlayNotFound} error. *)
+                If the given file was not previously opened by a `{!Command.FileOpened}` command for
+                the client, the server will respond with a {!Response.ErrorKind.FileNotOpened}
+                error. If the provided module is opened but not covered by the code navigation
+                server, the server will respond with a {!Response.ErrorKind.ModuleNotTracked} error. *)
         | LocationOfDefinition of {
             path: string;
             position: Ast.Location.position;
-            overlay_id: string option;
+            client_id: string;
           }
             (** A query that asks the server to return the location of definitions for a given
                 cursor point in a given module. The server will send back a
                 {!Response.LocationOfDefinition} response as result. The response will contain an
                 empty list if a definition cannot be found.
 
-                If the provided module is not covered by the code navigation server, the server will
-                respond with a {!Response.ErrorKind.ModuleNotTracked} error. If the server cannot
-                find the overlay with the given ID, it will respond with a
-                {!Response.ErrorKind.OverlayNotFound} error. *)
+                If the given file was not previously opened by a `{!Command.FileOpened}` command for
+                the client, the server will respond with a {!Response.ErrorKind.FileNotOpened}
+                error. If the provided module is opened but not covered by the code navigation
+                server, the server will respond with a {!Response.ErrorKind.ModuleNotTracked} error. *)
         | GetInfo
             (** A query that asks for server metadata, intended to be consumed by the `pyre servers`
                 command. *)
@@ -411,9 +411,12 @@ module Testing : sig
         | ModuleNotTracked of { path: string }
             (** This error occurs when the client has requested info on a module which the server
                 cannot find. *)
-        | OverlayNotFound of { overlay_id: string }
-            (** This error occurs when the client has requested info from an overlay whose id does
-                not exist within the server. *)
+        | ClientAlreadyRegistered of { client_id: string }
+            (** This error occurs when mulitple registration on the same [client_id] were received
+                from the server side, without any interleaving requests to dispose the [client_id]. *)
+        | ClientNotRegistered of { client_id: string }
+            (** This error occurs when the client tried to request a stateful operation but the
+                corresponding state was not registered with the server. *)
         | FileNotOpened of { path: string }
             (** This error occurs when the client has send a command on a file not tracked by the
                 server. *)
@@ -456,11 +459,11 @@ module Testing : sig
         | BusyBuilding
             (** This response is sent when the code navigation server is about to start performing
                 an incremental build system update. *)
-        | BusyChecking of { overlay_id: string option }
+        | BusyChecking of { client_id: string option }
             (** This response is sent when the code navigation server is about to start performing
                 an incremental update request.
 
-                [overlay_id] will be [None] if the incremental update is on the whole project (i.e.
+                [client_id] will be [None] if the incremental update is on the whole project (i.e.
                 the server is handling a {!Testing.Request.FileUpdateEvent}), and will bet set if
                 the incremental update is on a given overlay (i.e. the server is handling a
                 {!Testing.Request.LocalUpdate}). *)
@@ -560,5 +563,83 @@ module Testing : sig
         The message being sent is constructed by forcing [message]. The message is constructed
         lazily to avoid the cost of the construction when [subscriptions] is empty *)
     val broadcast : response:Response.t Lazy.t -> t -> unit Lwt.t
+  end
+
+  (** Clients of the Code Navigation server can request that the server preserve some states for
+      them. Having a client state requested is a pre-requisite for many stateful operations in the
+      protocol (e.g. file open/close). *)
+  module ClientState : sig
+    (** An opaque type representing a collection of client states. *)
+    type t
+
+    (** Create an empty collection of client states. *)
+    val create : unit -> t
+
+    (** [register states client_id] informs the server to allocate new state in [states] for a
+        client whose ID is [client_id]. The ID can be arbitrarily chosen by the client, with the
+        only restriction being that it should not conflict with the IDs of other clients already
+        registered in [states].
+
+        Return [true] if the registration is successful and [false] (i.e. client id already taken)
+        otherwise. *)
+    val register : t -> string -> bool
+
+    (** [dispose states client_id] informs the server to dispose the state for client with
+        [client_id] in [states]. After the disposal, the [client_id] can be freely reused by future
+        clients connected to the server.
+
+        Return [true] if the dispoal is successful and [false] (i.e. client id does not exist)
+        otherwise. *)
+    val dispose : t -> string -> bool
+
+    (** This module exposes an abstract type used to represent overlay ID, which is the main handle
+        to interact with {!module: Analysis.OverlaidEnvironment}. It is considered an implementation
+        detail of the server and should not be exposed to the client. *)
+    module OverlayId : sig
+      (** An opaque type representing an overlay ID. *)
+      type t
+
+      (** Convert the overlay id into a string, for interaction with {!module:
+          Analysis.OverlaidEnvironment}*)
+      val to_string : t -> string
+    end
+
+    (** This module contains common client state operations related to working set maintenance.
+
+        The Code navigation server maintains a working set in the state for each client, to figure
+        out what files to (lazily) run its analysis on. Files that are neither included in the
+        working set nor served as dependency of other files in the working set will not be loaded
+        and examined. *)
+    module WorkingSet : sig
+      (** Add a file with path [source_path] to the working set of the client with [client_id] as
+          its ID. If the addition is successful, return the {!OverlayId.t} associated with the file.
+
+          Note that this API only concerns with the working set itself and does not (and is not
+          intended to) check for existence of [source_path]. Further interpretation of the paths
+          should be performed on the caller side. *)
+      val add
+        :  client_id:string ->
+        source_path:SourcePath.t ->
+        t ->
+        [> `Ok of OverlayId.t | `ClientNotRegistered ]
+
+      (** Remove a file with path [source_path] from the working set of the client with [client_id]
+          as its ID. *)
+      val remove
+        :  client_id:string ->
+        source_path:SourcePath.t ->
+        t ->
+        [> `Ok of OverlayId.t | `ClientNotRegistered | `FileNotAdded ]
+
+      (** Look up the {!OverlayId.t} for a given [source_path] and a given [client_id]. *)
+      val lookup
+        :  client_id:string ->
+        source_path:SourcePath.t ->
+        t ->
+        [> `Ok of OverlayId.t | `ClientNotRegistered | `FileNotAdded ]
+
+      (** Return a list of all source paths currently included in the given working set. *)
+      val to_list : t -> SourcePath.t list
+    end
   end
 end

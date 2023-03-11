@@ -35,19 +35,21 @@ end
 module Command = struct
   type t =
     | Stop
+    | RegisterClient of { client_id: string }
+    | DisposeClient of { client_id: string }
     | FileOpened of {
         path: string;
         content: string option;
-        overlay_id: string option;
+        client_id: string;
       }
     | FileClosed of {
         path: string;
-        overlay_id: string option;
+        client_id: string;
       }
     | LocalUpdate of {
         path: string;
         content: string option;
-        overlay_id: string;
+        client_id: string;
       }
     | FileUpdate of FileUpdateEvent.t list
   [@@deriving sexp, compare, yojson { strict = false }]
@@ -57,17 +59,17 @@ module Query = struct
   type t =
     | GetTypeErrors of {
         path: string;
-        overlay_id: string option;
+        client_id: string;
       }
     | Hover of {
         path: string;
         position: Ast.Location.position;
-        overlay_id: string option;
+        client_id: string;
       }
     | LocationOfDefinition of {
         path: string;
         position: Ast.Location.position;
-        overlay_id: string option;
+        client_id: string;
       }
     | GetInfo (* Poll the server's state. *)
     | Superclasses of { class_: ClassExpression.t [@key "class"] }

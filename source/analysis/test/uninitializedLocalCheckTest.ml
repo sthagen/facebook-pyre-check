@@ -146,6 +146,30 @@ let test_simple context =
             self.a = b
     |}
     [];
+  assert_uninitialized_errors
+    {|
+      class A:
+          def __init__(self, x: int) -> None: ...
+          def meth(self) -> None: ...
+
+      def f():
+        # Make sure we catch problems in chained calls
+        A(x=x).meth()
+        x = 5
+    |}
+    ["Uninitialized local [61]: Local variable `x` is undefined, or not always defined."];
+  assert_uninitialized_errors
+    {|
+      class A:
+          z: int
+          def __init__(self, x: int) -> None: ...
+
+      def f():
+        # Make sure we catch problems in a call chained with a field access
+        _ = A(x=x).z
+        x = 5
+    |}
+    ["Uninitialized local [61]: Local variable `x` is undefined, or not always defined."];
 
   (* TODO (T94201165): walrus operator same-expression false negative *)
   assert_uninitialized_errors {|
@@ -164,6 +188,20 @@ let test_simple context =
         _ = x.field
         x = Foo()
     |} [];
+  (* TODO(T94414920): binary operators desugar into method calls, which under the hood are attribute
+     reads *)
+  assert_uninitialized_errors
+    {|
+      def test_method() -> None:
+        try:
+          a = 5
+        except Exception:
+          print("Exception!")
+        finally:
+          b = a + 5
+          print(b)
+    |}
+    [];
 
   assert_uninitialized_errors
     {|
