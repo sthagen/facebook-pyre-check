@@ -24,7 +24,7 @@ from .protocol import PyreHoverResponse
 @dataclasses.dataclass(frozen=True)
 class HoverRequest:
     path: str
-    overlay_id: Optional[str]
+    client_id: str
     position: lsp.PyrePosition
 
     def to_json(self) -> List[object]:
@@ -32,7 +32,7 @@ class HoverRequest:
             "Hover",
             {
                 "path": self.path,
-                "overlay_id": self.overlay_id,
+                "client_id": self.client_id,
                 "position": {
                     "line": self.position.line,
                     "column": self.position.character,
@@ -44,7 +44,7 @@ class HoverRequest:
 @dataclasses.dataclass(frozen=True)
 class LocationOfDefinitionRequest:
     path: str
-    overlay_id: Optional[str]
+    client_id: str
     position: lsp.PyrePosition
 
     def to_json(self) -> List[object]:
@@ -52,7 +52,7 @@ class LocationOfDefinitionRequest:
             "LocationOfDefinition",
             {
                 "path": self.path,
-                "overlay_id": self.overlay_id,
+                "client_id": self.client_id,
                 "position": {
                     "line": self.position.line,
                     "column": self.position.character,
@@ -109,10 +109,36 @@ class LocationOfDefinitionResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
 
 
 @dataclasses.dataclass(frozen=True)
+class RegisterClient:
+    client_id: str
+
+    def to_json(self) -> List[object]:
+        return [
+            "RegisterClient",
+            {
+                "client_id": self.client_id,
+            },
+        ]
+
+
+@dataclasses.dataclass(frozen=True)
+class DisposeClient:
+    client_id: str
+
+    def to_json(self) -> List[object]:
+        return [
+            "DisposeClient",
+            {
+                "client_id": self.client_id,
+            },
+        ]
+
+
+@dataclasses.dataclass(frozen=True)
 class LocalUpdate:
     path: str
     content: str
-    overlay_id: str
+    client_id: str
 
     def to_json(self) -> List[object]:
         return [
@@ -120,7 +146,7 @@ class LocalUpdate:
             {
                 "path": self.path,
                 "content": self.content,
-                "overlay_id": self.overlay_id,
+                "client_id": self.client_id,
             },
         ]
 
@@ -129,7 +155,7 @@ class LocalUpdate:
 class FileOpened:
     path: Path
     content: Optional[str]
-    overlay_id: Optional[str]
+    client_id: str
 
     def to_json(self) -> List[object]:
         return [
@@ -137,7 +163,7 @@ class FileOpened:
             {
                 "path": f"{self.path}",
                 "content": self.content,
-                "overlay_id": self.overlay_id,
+                "client_id": self.client_id,
             },
         ]
 
@@ -145,14 +171,14 @@ class FileOpened:
 @dataclasses.dataclass(frozen=True)
 class FileClosed:
     path: Path
-    overlay_id: Optional[str]
+    client_id: str
 
     def to_json(self) -> List[object]:
         return [
             "FileClosed",
             {
                 "path": f"{self.path}",
-                "overlay_id": self.overlay_id,
+                "client_id": self.client_id,
             },
         ]
 
@@ -248,6 +274,26 @@ async def async_handle_definition_request(
         expected_response_kind="LocationOfDefinition",
         response_type=LocationOfDefinitionResponse,
     )
+
+
+async def async_handle_register_client(
+    socket_path: Path, register_client: RegisterClient
+) -> Union[str, daemon_connection.DaemonConnectionFailure]:
+    raw_command = json.dumps(["Command", register_client.to_json()])
+    response = await daemon_connection.attempt_send_async_raw_request(
+        socket_path, raw_command
+    )
+    return response
+
+
+async def async_handle_dispose_client(
+    socket_path: Path, dispose_client: DisposeClient
+) -> Union[str, daemon_connection.DaemonConnectionFailure]:
+    raw_command = json.dumps(["Command", dispose_client.to_json()])
+    response = await daemon_connection.attempt_send_async_raw_request(
+        socket_path, raw_command
+    )
+    return response
 
 
 async def async_handle_local_update(

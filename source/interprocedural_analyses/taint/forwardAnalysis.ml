@@ -244,14 +244,12 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           | None -> None)
       | None -> None
     in
-    let transform_partial_sink (path, leaf_taint) =
-      let leaf_taint =
-        BackwardTaint.transform BackwardTaint.kind_frame FilterMap ~f:update_kind_frame leaf_taint
-      in
-      path, leaf_taint
-    in
     let taint_tree =
-      BackwardState.Tree.transform BackwardState.Tree.Path Map taint_tree ~f:transform_partial_sink
+      BackwardState.Tree.transform
+        BackwardTaint.kind_frame
+        FilterMap
+        taint_tree
+        ~f:update_kind_frame
     in
     BackwardState.assign ~weak:true ~root ~path taint_tree taint_so_far
 
@@ -283,11 +281,10 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       let accumulate so_far nested_expression =
         match AccessPath.of_expression nested_expression with
         | Some access_path ->
-            let root, taint_tree = access_path.root, sink_tree in
             gather_triggered_sinks_to_propagate
               ~path:access_path.path
               ~triggered_sinks
-              (root, taint_tree)
+              (access_path.root, sink_tree)
               so_far
         | None -> (* TODO(T146550300): False negative *) so_far
       in
@@ -299,26 +296,24 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
 
   module StringFormatCall = struct
+    type string_literal = {
+      value: string;
+      location: Location.t;
+    }
+
     (* Represent what to analyze when creating strings from string formatting operations, such as
        `str.__add__`, `str.__mod__`, `e.format`, and f-strings. *)
-    module Argument = struct
-      type string_literal = {
-        value: string;
-        value_location: Location.t;
-      }
-
-      type t = {
-        (* Any expression used in the string formatting. *)
-        nested_expressions: Expression.t list;
-        (* Any string literal used in the string formatting. *)
-        string_literal: string_literal;
-        (* If a triggered flow exists on any expression used in the string formatting, this is the
-           responsible call site. *)
-        call_target_for_string_combine_rules: CallGraph.CallTarget.t option;
-        (* Location of the string formatting operation. *)
-        location: Location.t;
-      }
-    end
+    type t = {
+      (* Any expression used in the string formatting. *)
+      nested_expressions: Expression.t list;
+      (* Any string literal used in the string formatting. *)
+      string_literal: string_literal;
+      (* If a triggered flow exists on any expression used in the string formatting, this is the
+         responsible call site. *)
+      call_target_for_string_combine_rules: CallGraph.CallTarget.t option;
+      (* Location of the string formatting operation. *)
+      location: Location.t;
+    }
 
     let create_call_target_for_string_combine ~call_targets ~default_target =
       call_targets
@@ -326,12 +321,12 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       |> Option.value ~default:(CallGraph.CallTarget.create default_target)
 
 
-    let implicit_string_literal_sources { Argument.value; value_location } =
+    let implicit_string_literal_sources { value; location } =
       if String.equal "" value then
         ForwardState.Tree.empty
       else
         let value_location =
-          Location.with_module ~module_reference:FunctionContext.qualifier value_location
+          Location.with_module ~module_reference:FunctionContext.qualifier location
         in
         let literal_string_regular_expressions =
           FunctionContext.taint_configuration.implicit_sources.literal_strings
@@ -350,10 +345,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           ~f:add_matching_source_kind
 
 
-    let check_flow_implicit_string_literal_sinks
-        ~string_literal:{ Argument.value; value_location }
-        taint
-      =
+    let check_flow_implicit_string_literal_sinks ~string_literal:{ value; location } taint =
       (* We try to be a bit clever about bailing out early and not computing the matches. *)
       let literal_string_sinks =
         FunctionContext.taint_configuration.implicit_sinks.literal_string_sinks
@@ -364,7 +356,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         && not (ForwardState.Tree.is_bottom taint)
       then
         let value_location_with_module =
-          Location.with_module ~module_reference:FunctionContext.qualifier value_location
+          Location.with_module ~module_reference:FunctionContext.qualifier location
         in
         List.iter literal_string_sinks ~f:(fun { TaintConfiguration.sink_kind; pattern } ->
             if Re2.matches pattern value then
@@ -1980,8 +1972,8 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
             ~state
             ~breadcrumbs:(Features.BreadcrumbSet.singleton (Features.format_string ()))
             {
-              StringFormatCall.Argument.nested_expressions;
-              string_literal = { value; value_location };
+              StringFormatCall.nested_expressions;
+              string_literal = { value; location = value_location };
               call_target_for_string_combine_rules;
               location;
             }
@@ -2013,8 +2005,8 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
             ~breadcrumbs:
               (Features.BreadcrumbSet.singleton (Features.string_concat_left_hand_side ()))
             {
-              StringFormatCall.Argument.nested_expressions = [expression];
-              string_literal = { value; value_location };
+              StringFormatCall.nested_expressions = [expression];
+              string_literal = { value; location = value_location };
               call_target_for_string_combine_rules;
               location;
             }
@@ -2049,8 +2041,8 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
             ~breadcrumbs:
               (Features.BreadcrumbSet.singleton (Features.string_concat_right_hand_side ()))
             {
-              StringFormatCall.Argument.nested_expressions = [expression];
-              string_literal = { value; value_location };
+              StringFormatCall.nested_expressions = [expression];
+              string_literal = { value; location = value_location };
               call_target_for_string_combine_rules;
               location;
             }
@@ -2079,7 +2071,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           arguments;
         } ->
           (* User-defined or inferred models. *)
-          let taint, state =
+          let taint_from_model, state_from_model =
             apply_callees
               ~resolution
               ~is_result_used
@@ -2093,11 +2085,11 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           let is_string_format =
             List.exists callees.call_targets ~f:(fun call_target ->
                 match Interprocedural.Target.class_name call_target.target with
-                | Some class_name -> String.equal "str" class_name
-                | None -> false)
+                | Some "str" -> true
+                | _ -> false)
           in
           if not is_string_format then
-            taint, state
+            taint_from_model, state_from_model
           else
             (* Additional hard-coded models for analyzing implicit sinks during string formatting
                operations. *)
@@ -2135,15 +2127,14 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                 ~state
                 ~breadcrumbs
                 {
-                  StringFormatCall.Argument.nested_expressions;
-                  string_literal =
-                    { StringFormatCall.Argument.value = string_literal; value_location = location };
+                  StringFormatCall.nested_expressions;
+                  string_literal = { StringFormatCall.value = string_literal; location };
                   call_target_for_string_combine_rules;
                   location;
                 }
             in
-            ( ForwardState.Tree.join taint taint_from_string_format,
-              join state state_from_string_format )
+            ( ForwardState.Tree.join taint_from_model taint_from_string_format,
+              join state_from_model state_from_string_format )
       | {
        callee = { Node.value = Expression.Name (Name.Identifier "reveal_taint"); _ };
        arguments = [{ Call.Argument.value = expression; _ }];
@@ -2329,22 +2320,16 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       ~state
       ~breadcrumbs
       {
-        StringFormatCall.Argument.nested_expressions;
-        string_literal = { value_location = string_literal_location; _ } as string_literal;
+        StringFormatCall.nested_expressions;
+        string_literal = { location = string_literal_location; _ } as string_literal;
         call_target_for_string_combine_rules;
         location;
       }
     =
-    let callee, receiver_class_interval =
+    let callee =
       match call_target_for_string_combine_rules with
-      | Some call_target ->
-          let receiver_class_interval =
-            Interprocedural.ClassIntervalSetGraph.SharedMemory.of_type
-              class_interval_graph
-              call_target.receiver_type
-          in
-          Some call_target.target, receiver_class_interval
-      | None -> None, Interprocedural.ClassIntervalSet.top
+      | Some call_target -> Some call_target.target
+      | None -> None
     in
     let string_combine_partial_sink_tree =
       BackwardState.Tree.apply_call
@@ -2354,8 +2339,8 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         ~arguments:[]
         ~port:AccessPath.Root.LocalResult
         ~is_self_call:false
-        ~caller_class_interval:FunctionContext.caller_class_interval
-        ~receiver_class_interval
+        ~caller_class_interval:Interprocedural.ClassIntervalSet.top
+        ~receiver_class_interval:Interprocedural.ClassIntervalSet.top
         FunctionContext.string_combine_partial_sink_tree
     in
     let string_literal_taint = StringFormatCall.implicit_string_literal_sources string_literal in
@@ -2419,16 +2404,11 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       in
       let expression_taint, state =
         match get_string_format_callees ~location:expression_location with
-        | Some { CallGraph.StringFormatCallees.stringify_targets; f_string_targets } ->
-            let taint, state =
-              if List.is_empty f_string_targets then
-                ForwardState.Tree.empty, { taint = ForwardState.empty }
-              else (* If there exists an f-string target, treat as TITO. *)
-                base_taint, base_state
-            in
+        | Some { CallGraph.StringFormatCallees.stringify_targets = _ :: _ as stringify_targets; _ }
+          ->
             List.fold
               stringify_targets
-              ~init:(taint, state)
+              ~init:(ForwardState.Tree.empty, { taint = ForwardState.empty })
               ~f:(fun (taint_to_join, state_to_join) call_target ->
                 analyze_stringify_callee
                   (taint_to_join, state_to_join)
@@ -2437,7 +2417,13 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                   ~base:expression
                   ~base_taint
                   ~base_state)
-        | None -> base_taint, base_state
+        | _ ->
+            (* When there is no stringify target, treat as TITO. Meanwhile, we do not analyze
+               f_string_targets because they are artificial targets that are introduced only for
+               distinguishing f-strings at different locations from the same function. Such targets
+               are only used in the issue sink handles, to distinguish the locations of the
+               issues. *)
+            base_taint, base_state
       in
       StringFormatCall.check_triggered_flows
         ~triggered_sinks
@@ -2507,8 +2493,8 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
             ~state
             ~breadcrumbs:Features.BreadcrumbSet.empty
             {
-              StringFormatCall.Argument.nested_expressions = [];
-              string_literal = { value; value_location = location };
+              StringFormatCall.nested_expressions = [];
+              string_literal = { value; location };
               call_target_for_string_combine_rules = None;
               location;
             }
@@ -2612,8 +2598,8 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
             ~state
             ~breadcrumbs:(Features.BreadcrumbSet.singleton (Features.format_string ()))
             {
-              StringFormatCall.Argument.nested_expressions;
-              string_literal = { value = string_literal; value_location = location };
+              StringFormatCall.nested_expressions;
+              string_literal = { value = string_literal; location };
               call_target_for_string_combine_rules = Some call_target_for_string_combine_rules;
               location;
             }

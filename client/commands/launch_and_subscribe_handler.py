@@ -21,7 +21,7 @@ from typing import Dict, Optional, TYPE_CHECKING
 
 from .. import backend_arguments, background_tasks, log_lsp_event, timer
 from ..language_server import connections, features, protocol as lsp
-from . import daemon_querier, pyre_server_options, server_state as state, subscription
+from . import pyre_server_options, server_state as state, subscription
 from .initialization import (
     async_start_pyre_server,
     BuckStartFailure,
@@ -55,7 +55,6 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
     server_state: ServerState
     client_status_message_handler: ClientStatusMessageHandler
     client_type_error_handler: ClientTypeErrorHandler
-    querier: daemon_querier.AbstractDaemonQuerier
     subscription_response_parser: PyreSubscriptionResponseParser
 
     def __init__(
@@ -65,7 +64,6 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
         client_status_message_handler: ClientStatusMessageHandler,
         client_type_error_handler: ClientTypeErrorHandler,
         subscription_response_parser: PyreSubscriptionResponseParser,
-        querier: daemon_querier.AbstractDaemonQuerier,
         remote_logging: Optional[backend_arguments.RemoteLogging] = None,
     ) -> None:
         self.server_options_reader = server_options_reader
@@ -73,7 +71,6 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
         self.server_state = server_state
         self.client_status_message_handler = client_status_message_handler
         self.client_type_error_handler = client_type_error_handler
-        self.querier = querier
         self.subscription_response_parser = subscription_response_parser
 
     @abc.abstractmethod
@@ -104,7 +101,11 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
         pass
 
     @abc.abstractmethod
-    async def send_open_state(self) -> None:
+    async def client_setup(self) -> None:
+        pass
+
+    @abc.abstractmethod
+    async def client_teardown(self) -> None:
         pass
 
     def get_type_errors_availability(self) -> features.TypeErrorsAvailability:
@@ -224,14 +225,11 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
                     fallback_to_notification=True,
                 )
             else:
-                asyncio.gather(
-                    self.send_open_state(),
-                    self.client_status_message_handler.log_and_show_status_message_to_client(
-                        f"Pyre server at `{project_identifier}` has been initialized.",
-                        short_message="Pyre Ready",
-                        level=lsp.MessageType.INFO,
-                        fallback_to_notification=True,
-                    ),
+                await self.client_status_message_handler.log_and_show_status_message_to_client(
+                    f"Pyre server at `{project_identifier}` has been initialized.",
+                    short_message="Pyre Ready",
+                    level=lsp.MessageType.INFO,
+                    fallback_to_notification=True,
                 )
             self.server_state.consecutive_start_failure = 0
             self.server_state.is_user_notified_on_buck_failure = False
@@ -262,6 +260,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
 
         connection_timer = timer.Timer()
         try:
+            await self.client_setup()
             await self.connect_and_subscribe(
                 server_options,
                 socket_path,
@@ -285,6 +284,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
             flavor,
         )
         if isinstance(start_status, StartSuccess):
+            await self.client_setup()
             await self.connect_and_subscribe(
                 server_options,
                 socket_path,
@@ -395,6 +395,7 @@ class PyreDaemonLaunchAndSubscribeHandler(background_tasks.Task):
             self.server_state.status_tracker.set_status(
                 state.ConnectionStatus.DISCONNECTED
             )
+            await self.client_teardown()
             raise
         finally:
             if error_message is not None:

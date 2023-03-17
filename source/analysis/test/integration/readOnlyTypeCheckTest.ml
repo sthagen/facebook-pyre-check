@@ -32,8 +32,8 @@ let test_ignore_readonly context =
         y: str = x
     |}
     [
-      "ReadOnly violation - Incompatible variable type [3001]: y is declared to have type `str` \
-       but is used as type `pyre_extensions.ReadOnly[int]`.";
+      "Incompatible variable type [9]: y is declared to have type `str` but is used as type \
+       `pyre_extensions.ReadOnly[int]`.";
     ];
   assert_type_errors
     {|
@@ -337,10 +337,8 @@ let test_assignment context =
         y: List[int] = xs
     |}
     [
-      (* TODO(T130377746): We should emit a readonly violation error here instead of the regular
-         incompatible variable type error. *)
-      "Incompatible variable type [9]: y is declared to have type `List[int]` but is used as type \
-       `List[pyre_extensions.ReadOnly[int]]`.";
+      "ReadOnly violation - Incompatible variable type [3001]: y is declared to have type \
+       `typing.List[int]` but is used as type `typing.List[pyre_extensions.ReadOnly[int]]`.";
     ];
   (* We cannot assign to any attribute of a readonly object. *)
   assert_type_errors_including_readonly
@@ -612,10 +610,40 @@ let test_function_call context =
         expect_list_mutable(xs)
     |}
     [
-      (* TODO(T130377746): We should emit a readonly violation error here instead of the regular
-         incompatible parameter type error. *)
-      "Incompatible parameter type [6]: In call `expect_list_mutable`, for 1st positional \
-       argument, expected `List[pyre_extensions.ReadOnly[int]]` but got `List[int]`.";
+      "ReadOnly violation - Incompatible parameter type [3002]: In call \
+       `test.expect_list_mutable`, for 1st positional argument, expected \
+       `typing.List[pyre_extensions.ReadOnly[int]]` but got `typing.List[int]`.";
+    ];
+  assert_type_errors_including_readonly
+    {|
+      from pyre_extensions import ReadOnly
+      from typing import List
+
+      def expect_list_list_mutable(xs: List[List[ReadOnly[int]]]) -> None: ...
+
+      def main(xs: List[List[int]]) -> None:
+        expect_list_list_mutable(xs)
+    |}
+    [
+      "ReadOnly violation - Incompatible parameter type [3002]: In call \
+       `test.expect_list_list_mutable`, for 1st positional argument, expected \
+       `typing.List[typing.List[pyre_extensions.ReadOnly[int]]]` but got \
+       `typing.List[typing.List[int]]`.";
+    ];
+  assert_type_errors_including_readonly
+    {|
+      from pyre_extensions import ReadOnly
+      from typing import Union
+
+      def expect_union(xs: Union[int, str]) -> None: ...
+
+      def main(readonly_int: ReadOnly[int] | ReadOnly[str]) -> None:
+        expect_union(readonly_int)
+    |}
+    [
+      "ReadOnly violation - Incompatible parameter type [3002]: In call `test.expect_union`, for \
+       1st positional argument, expected `typing.Union[int, str]` but got \
+       `typing.Union[pyre_extensions.ReadOnly[int], pyre_extensions.ReadOnly[str]]`.";
     ];
   assert_type_errors_including_readonly
     {|
@@ -962,7 +990,8 @@ let test_captured_variable_for_specially_decorated_functions context =
     [
       "Revealed type [-1]: Revealed type for `parameter` is `pyre_extensions.ReadOnly[Foo]`.";
       "ReadOnly violation - Assigning to readonly attribute [3003]: Cannot assign to attribute `x` \
-       since it is readonly";
+       since it is readonly\n\
+       Note that this is a zone entrypoint and any captured variables are treated as readonly";
       "Revealed type [-1]: Revealed type for `not_captured` is `Foo`.";
     ];
   (* Outer local variable should be marked as readonly within the entrypoint. *)
@@ -985,7 +1014,8 @@ let test_captured_variable_for_specially_decorated_functions context =
     [
       "Revealed type [-1]: Revealed type for `local_variable` is `pyre_extensions.ReadOnly[Foo]`.";
       "ReadOnly violation - Assigning to readonly attribute [3003]: Cannot assign to attribute `x` \
-       since it is readonly";
+       since it is readonly\n\
+       Note that this is a zone entrypoint and any captured variables are treated as readonly";
     ];
   assert_type_errors
     {|
@@ -1028,7 +1058,8 @@ let test_captured_variable_for_specially_decorated_functions context =
     [
       "Revealed type [-1]: Revealed type for `self` is `pyre_extensions.ReadOnly[Foo]`.";
       "ReadOnly violation - Assigning to readonly attribute [3003]: Cannot assign to attribute `x` \
-       since it is readonly";
+       since it is readonly\n\
+       Note that this is a zone entrypoint and any captured variables are treated as readonly";
     ];
   (* `cls` captured in a nested entrypoint should be marked as readonly. *)
   assert_type_errors
@@ -1099,10 +1130,8 @@ let test_return_type context =
         return x
     |}
     [
-      (* TODO(T130377746): We should emit a readonly violation error here instead of the regular
-         incompatible return type error. *)
-      "Incompatible return type [7]: Expected `List[int]` but got \
-       `List[pyre_extensions.ReadOnly[int]]`.";
+      "ReadOnly violation - Incompatible return type [3004]: Expected `typing.List[int]` but got \
+       `typing.List[pyre_extensions.ReadOnly[int]]`.";
     ];
   ()
 

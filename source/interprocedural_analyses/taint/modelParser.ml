@@ -1846,7 +1846,8 @@ let parse_model_clause
           match mode with
           | { Node.value = Expression.Name (Name.Identifier mode_name); location } -> (
               match Model.Mode.from_string mode_name with
-              | Some Model.Mode.SkipDecoratorWhenInlining ->
+              | Some Model.Mode.SkipDecoratorWhenInlining
+              | Some Model.Mode.IgnoreDecorator ->
                   Error
                     (model_verification_error
                        ~path
@@ -2431,6 +2432,7 @@ let adjust_sanitize_and_modes_and_skipped_override
     | "SkipOverrides" -> Ok (sanitizers, Model.ModeSet.add SkipOverrides modes)
     | "SkipObscure" -> Ok (sanitizers, Model.ModeSet.remove Obscure modes)
     | "Entrypoint" -> Ok (sanitizers, Model.ModeSet.add Entrypoint modes)
+    | "IgnoreDecorator" -> Ok (sanitizers, Model.ModeSet.add IgnoreDecorator modes)
     | _ -> Ok (sanitizers, modes)
   in
   List.fold_result
@@ -2470,7 +2472,8 @@ let create_model_from_signature
           | ["SkipDecoratorWhenInlining"]
           | ["SkipOverrides"]
           | ["Entrypoint"]
-          | ["SkipObscure"] ->
+          | ["SkipObscure"]
+          | ["IgnoreDecorator"] ->
               Either.first decorator
           | _ -> Either.Second decorator_expression)
     in
@@ -3332,6 +3335,29 @@ let create ~resolution ~path ~taint_configuration ~source_sink_filter ~callables
          |> function
          | Ok result -> Ok result
          | Error error -> Error [error]))
+
+
+let parse_decorators_to_skip_when_inlining ~path ~source =
+  let open Result in
+  let from_statement = function
+    | { Node.value = Statement.Define { signature = { name; decorators; _ }; _ }; _ }
+      when List.exists decorators ~f:(name_is ~name:"SkipDecoratorWhenInlining") ->
+        Some name
+    | _ -> None
+  in
+  try
+    String.split ~on:'\n' source
+    |> Parser.parse
+    >>| List.filter_map ~f:from_statement
+    |> Result.ok
+    |> Option.value ~default:[]
+  with
+  | exn ->
+      Log.warning
+        "Ignoring `%s` when trying to get decorators to skip because of exception: %s"
+        (PyrePath.show path)
+        (Exn.to_string exn);
+      []
 
 
 let get_model_sources ~paths =

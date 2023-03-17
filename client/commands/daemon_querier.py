@@ -224,14 +224,20 @@ class AbstractDaemonQuerier(abc.ABC):
     ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
         raise NotImplementedError()
 
+    @abc.abstractmethod
+    async def handle_register_client(
+        self,
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    async def handle_dispose_client(
+        self,
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
+        raise NotImplementedError()
+
     def get_language_server_features(self) -> features.LanguageServerFeatures:
         return self.server_state.server_options.language_server_features
-
-    def _get_overlay_id(self, path: Path) -> Optional[str]:
-        unsaved_changes_enabled = (
-            self.get_language_server_features().unsaved_changes.is_enabled()
-        )
-        return f"{path}, pid_{os.getpid()}" if unsaved_changes_enabled else None
 
 
 class PersistentDaemonQuerier(AbstractDaemonQuerier):
@@ -411,6 +417,22 @@ class PersistentDaemonQuerier(AbstractDaemonQuerier):
         )
         return daemon_response
 
+    async def handle_register_client(
+        self,
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
+        return "Ok"
+
+    async def handle_dispose_client(
+        self,
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
+        return "Ok"
+
+    def _get_overlay_id(self, path: Path) -> Optional[str]:
+        unsaved_changes_enabled = (
+            self.get_language_server_features().unsaved_changes.is_enabled()
+        )
+        return f"{path}, pid_{os.getpid()}" if unsaved_changes_enabled else None
+
 
 class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
     async def get_type_errors(
@@ -432,7 +454,7 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
     ) -> Union[daemon_query.DaemonQueryFailure, lsp.LspHoverResponse]:
         hover_request = code_navigation_request.HoverRequest(
             path=str(path),
-            overlay_id=self._get_overlay_id(path),
+            client_id=self._get_client_id(),
             position=position,
         )
         response = await code_navigation_request.async_handle_hover_request(
@@ -457,7 +479,7 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
     ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.LspLocation]]:
         definition_request = code_navigation_request.LocationOfDefinitionRequest(
             path=str(path),
-            overlay_id=self._get_overlay_id(path),
+            client_id=self._get_client_id(),
             position=position,
         )
         response = await code_navigation_request.async_handle_definition_request(
@@ -483,13 +505,9 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
         path: Path,
         code: str,
     ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
-        overlay_id = self._get_overlay_id(path)
-        if overlay_id is None:
-            raise AssertionError(
-                "Unsaved changes should always be enabled when updating overlays."
-            )
+        client_id = self._get_client_id()
         local_update = code_navigation_request.LocalUpdate(
-            overlay_id=overlay_id,
+            client_id=client_id,
             path=str(path),
             content=code,
         )
@@ -502,10 +520,10 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
         path: Path,
         code: str,
     ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
-        overlay_id = self._get_overlay_id(path)
+        client_id = self._get_client_id()
         file_opened = code_navigation_request.FileOpened(
             path=path,
-            overlay_id=overlay_id,
+            client_id=client_id,
             content=code,
         )
         return await code_navigation_request.async_handle_file_opened(
@@ -516,10 +534,29 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
         self,
         path: Path,
     ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
-        overlay_id = self._get_overlay_id(path)
-        file_closed = code_navigation_request.FileClosed(
-            overlay_id=overlay_id, path=path
-        )
+        client_id = self._get_client_id()
+        file_closed = code_navigation_request.FileClosed(client_id=client_id, path=path)
         return await code_navigation_request.async_handle_file_closed(
             self.socket_path, file_closed
+        )
+
+    def _get_client_id(self) -> str:
+        return f"codenav_pid_{os.getpid()}"
+
+    async def handle_register_client(
+        self,
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
+        client_id = self._get_client_id()
+        register_client = code_navigation_request.RegisterClient(client_id=client_id)
+        return await code_navigation_request.async_handle_register_client(
+            self.socket_path, register_client
+        )
+
+    async def handle_dispose_client(
+        self,
+    ) -> Union[daemon_connection.DaemonConnectionFailure, str]:
+        client_id = self._get_client_id()
+        dispose_client = code_navigation_request.DisposeClient(client_id=client_id)
+        return await code_navigation_request.async_handle_dispose_client(
+            self.socket_path, dispose_client
         )

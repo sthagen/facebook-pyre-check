@@ -111,6 +111,16 @@ let incompatible_annotation_with_attribute_error ~define ~explicit ~original_ann
   | _ -> None
 
 
+(* Return true if the mismatch between `actual` and `expected` is due to readonlyness.
+
+   We check this by stripping any `ReadOnly` types in both and checking if they are compatible. *)
+let is_readonlyness_mismatch ~global_resolution ~actual ~expected =
+  GlobalResolution.less_or_equal
+    global_resolution
+    ~left:(Type.ReadOnly.strip_readonly actual)
+    ~right:(Type.ReadOnly.strip_readonly expected)
+
+
 let errors_from_not_found
     ?(callee_base_expression = None)
     ~callable
@@ -217,9 +227,7 @@ let errors_from_not_found
               | _ ->
                   if Type.is_primitive_string actual && Type.is_literal_string expected then
                     location, Error.NonLiteralString { name; position; callee }
-                  else if
-                    Type.ReadOnly.is_readonly actual && not (Type.ReadOnly.is_readonly expected)
-                  then
+                  else if is_readonlyness_mismatch ~global_resolution ~actual ~expected then
                     ( location,
                       Error.ReadOnlynessMismatch
                         (IncompatibleParameterType
@@ -280,10 +288,11 @@ let errors_from_not_found
 
 
 let incompatible_variable_type_error_kind
+    ~global_resolution
     ~declare_location
     ({ Error.mismatch = { expected; actual; _ }; _ } as incompatible_type)
   =
-  if Type.ReadOnly.is_readonly actual && not (Type.ReadOnly.is_readonly expected) then
+  if is_readonlyness_mismatch ~global_resolution ~actual ~expected then
     Error.ReadOnlynessMismatch (IncompatibleVariableType { incompatible_type; declare_location })
   else
     Error.IncompatibleVariableType { incompatible_type; declare_location }
@@ -945,8 +954,7 @@ module State (Context : Context) = struct
               ~expected:return_annotation
               ~covariant:true
           in
-          if Type.ReadOnly.is_readonly actual && not (Type.ReadOnly.is_readonly return_annotation)
-          then
+          if is_readonlyness_mismatch ~global_resolution ~actual ~expected:return_annotation then
             Error.ReadOnlynessMismatch (IncompatibleReturnType { mismatch; define_location })
           else
             Error.IncompatibleReturnType
@@ -4270,6 +4278,7 @@ module State (Context : Context) = struct
                             |> fun kind -> emit_error ~errors ~location ~kind
                         | None when is_incompatible ->
                             incompatible_variable_type_error_kind
+                              ~global_resolution
                               ~declare_location:(instantiate_path ~global_resolution location)
                               {
                                 Error.name = reference;
@@ -5596,6 +5605,7 @@ module State (Context : Context) = struct
             errors
           else
             incompatible_variable_type_error_kind
+              ~global_resolution
               ~declare_location:(instantiate_path ~global_resolution location)
               {
                 Error.name = Reference.create name;

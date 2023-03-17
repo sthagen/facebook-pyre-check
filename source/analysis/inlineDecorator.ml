@@ -10,7 +10,6 @@
 open Ast
 open Core
 open Pyre
-open PyreParser
 open Statement
 open Expression
 
@@ -25,8 +24,12 @@ end
 (** This is basically a global variable storing whether decorators should be inlined. *)
 module ShouldInlineDecorators = Memory.WithCache.Make (SharedMemoryKeys.StringKey) (BooleanValue)
 
-let set_should_inline_decorators should_inline_decorators =
-  ShouldInlineDecorators.add "should_inline" should_inline_decorators
+(** The keys represent the decorators to skip. The values are dont-care values. *)
+module DecoratorsToSkip = Memory.WithCache.Make (SharedMemoryKeys.ReferenceKey) (BooleanValue)
+
+let setup_decorator_inlining ~decorators_to_skip ~enable =
+  ShouldInlineDecorators.add "should_inline" enable;
+  List.iter decorators_to_skip ~f:(fun decorator -> DecoratorsToSkip.add decorator true)
 
 
 let should_inline_decorators () =
@@ -34,8 +37,6 @@ let should_inline_decorators () =
 
 
 let inlined_original_function_name = "_original_function"
-
-let skip_inlining_decorator_name = "SkipDecoratorWhenInlining"
 
 let make_wrapper_function_name decorator_reference =
   Reference.delocalize decorator_reference
@@ -48,37 +49,6 @@ let args_local_variable_name = "_args"
 
 let kwargs_local_variable_name = "_kwargs"
 
-let decorators_to_skip ~path source =
-  let open Result in
-  let from_statement = function
-    | { Node.value = Statement.Define { signature = { name; decorators; _ }; _ }; _ }
-      when List.exists decorators ~f:(name_is ~name:skip_inlining_decorator_name) ->
-        Some name
-    | _ -> None
-  in
-  try
-    String.split ~on:'\n' source
-    |> Parser.parse
-    >>| List.filter_map ~f:from_statement
-    |> Result.ok
-    |> Option.value ~default:[]
-  with
-  | exn ->
-      Log.dump
-        "Ignoring `%s` when trying to get decorators to skip because of exception: %s"
-        (PyrePath.show path)
-        (Exn.to_string exn);
-      []
-
-
-module DecoratorModuleValue = struct
-  type t = Ast.Reference.t
-
-  let prefix = Prefix.make ()
-
-  let description = "Module for a decorator that has been inlined."
-end
-
 module Decorators = struct
   type t = Define.t list
 
@@ -90,9 +60,16 @@ end
 (** Mapping from a decorator reference to its body. *)
 module ModuleDecorators = Memory.WithCache.Make (SharedMemoryKeys.ReferenceKey) (Decorators)
 
+module DecoratorModuleValue = struct
+  type t = Ast.Reference.t
+
+  let prefix = Prefix.make ()
+
+  let description = "Module for a decorator that has been inlined."
+end
+
+(** Mapping from an inlined decorator function name to its original name. *)
 module InlinedNameToOriginalName =
-  Memory.WithCache.Make (SharedMemoryKeys.ReferenceKey) (DecoratorModuleValue)
-module DecoratorsToSkip =
   Memory.WithCache.Make (SharedMemoryKeys.ReferenceKey) (DecoratorModuleValue)
 
 (* Pysa doesn't care about metadata like `unbound_names`. So, strip them. *)
@@ -580,6 +557,8 @@ let add_function_decorator_module_mapping
   let qualified_inlined_name = Reference.combine qualifier name in
   InlinedNameToOriginalName.add qualified_inlined_name outer_decorator_reference
 
+
+let original_name_from_inlined_name = InlinedNameToOriginalName.get
 
 let make_wrapper_define
     ~location

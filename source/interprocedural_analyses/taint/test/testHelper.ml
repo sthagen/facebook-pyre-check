@@ -456,12 +456,13 @@ type test_environment = {
 let set_up_decorator_inlining ~handle models =
   let decorators_to_skip =
     models
-    >>| Analysis.InlineDecorator.decorators_to_skip ~path:(PyrePath.create_absolute handle)
+    >>| (fun models ->
+          ModelParser.parse_decorators_to_skip_when_inlining
+            ~path:(PyrePath.create_absolute handle)
+            ~source:models)
     |> Option.value ~default:[]
   in
-  List.iter decorators_to_skip ~f:(fun decorator ->
-      Analysis.InlineDecorator.DecoratorsToSkip.add decorator decorator);
-  Analysis.InlineDecorator.set_should_inline_decorators true
+  Analysis.InlineDecorator.setup_decorator_inlining ~decorators_to_skip ~enable:true
 
 
 let initialize

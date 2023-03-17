@@ -323,7 +323,6 @@ class PyrePersistentDaemonLaunchAndSubscribeHandler(
         server_state: ServerState,
         client_status_message_handler: ClientStatusMessageHandler,
         client_type_error_handler: ClientTypeErrorHandler,
-        querier: daemon_querier.AbstractDaemonQuerier,
         remote_logging: Optional[backend_arguments.RemoteLogging] = None,
     ) -> None:
         super().__init__(
@@ -332,7 +331,6 @@ class PyrePersistentDaemonLaunchAndSubscribeHandler(
             client_status_message_handler,
             client_type_error_handler,
             PyrePersistentSubscriptionResponseParser(),
-            querier,
             remote_logging,
         )
 
@@ -437,8 +435,12 @@ class PyrePersistentDaemonLaunchAndSubscribeHandler(
                 server_output_channel,
             )
 
-    async def send_open_state(self) -> None:
-        """Unnecessary to send open state on server instantiation for persistent server."""
+    async def client_setup(self) -> None:
+        """Persistent server does not require any client-side setup"""
+        pass
+
+    async def client_teardown(self) -> None:
+        """Persistent server does not require any client-side teardown"""
         pass
 
 
@@ -501,7 +503,6 @@ async def run_persistent(
                 client_status_message_handler=ClientStatusMessageHandler(
                     stdout, server_state
                 ),
-                querier=querier,
                 client_type_error_handler=client_type_error_handler,
             )
         ),

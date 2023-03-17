@@ -18,7 +18,7 @@ class CodeNavigationRequestsTest(testslide.TestCase):
     def test_serialize_request(self) -> None:
         hover_request = code_navigation_request.HoverRequest(
             path="/a/b.py",
-            overlay_id=None,
+            client_id="foo",
             position=lsp.PyrePosition(line=1, character=2),
         )
         self.assertEqual(
@@ -27,7 +27,7 @@ class CodeNavigationRequestsTest(testslide.TestCase):
                 "Hover",
                 {
                     "path": "/a/b.py",
-                    "overlay_id": None,
+                    "client_id": "foo",
                     "position": {"line": 1, "column": 2},
                 },
             ],
@@ -35,7 +35,7 @@ class CodeNavigationRequestsTest(testslide.TestCase):
 
         hover_request = code_navigation_request.HoverRequest(
             path="/a/b.py",
-            overlay_id="overlay_key",
+            client_id="foo",
             position=lsp.PyrePosition(line=1, character=2),
         )
         self.assertEqual(
@@ -44,14 +44,14 @@ class CodeNavigationRequestsTest(testslide.TestCase):
                 "Hover",
                 {
                     "path": "/a/b.py",
-                    "overlay_id": "overlay_key",
+                    "client_id": "foo",
                     "position": {"line": 1, "column": 2},
                 },
             ],
         )
         definition_request = code_navigation_request.LocationOfDefinitionRequest(
             path="/a/b.py",
-            overlay_id="overlay_key",
+            client_id="foo",
             position=lsp.PyrePosition(line=1, character=2),
         )
         self.assertEqual(
@@ -60,7 +60,7 @@ class CodeNavigationRequestsTest(testslide.TestCase):
                 "LocationOfDefinition",
                 {
                     "path": "/a/b.py",
-                    "overlay_id": "overlay_key",
+                    "client_id": "foo",
                     "position": {"line": 1, "column": 2},
                 },
             ],
@@ -157,11 +157,35 @@ class CodeNavigationRequestsTest(testslide.TestCase):
             ),
         )
 
+    def test_register_client_json(self) -> None:
+        register_client = code_navigation_request.RegisterClient(client_id="foo")
+        self.assertEqual(
+            register_client.to_json(),
+            [
+                "RegisterClient",
+                {
+                    "client_id": "foo",
+                },
+            ],
+        )
+
+    def test_dispose_client_json(self) -> None:
+        dispose_client = code_navigation_request.DisposeClient(client_id="foo")
+        self.assertEqual(
+            dispose_client.to_json(),
+            [
+                "DisposeClient",
+                {
+                    "client_id": "foo",
+                },
+            ],
+        )
+
     def test_local_update_json(self) -> None:
         local_update = code_navigation_request.LocalUpdate(
             path="/a/b.py",
             content="def foo() -> int: pass\n",
-            overlay_id="/a/b.py 1234",
+            client_id="/a/b.py 1234",
         )
         self.assertEqual(
             local_update.to_json(),
@@ -170,7 +194,7 @@ class CodeNavigationRequestsTest(testslide.TestCase):
                 {
                     "path": "/a/b.py",
                     "content": "def foo() -> int: pass\n",
-                    "overlay_id": "/a/b.py 1234",
+                    "client_id": "/a/b.py 1234",
                 },
             ],
         )
@@ -179,7 +203,7 @@ class CodeNavigationRequestsTest(testslide.TestCase):
         local_update = code_navigation_request.FileOpened(
             path=Path("/a/b.py"),
             content="def foo() -> int: pass\n",
-            overlay_id="/a/b.py 1234",
+            client_id="/a/b.py 1234",
         )
         self.assertEqual(
             local_update.to_json(),
@@ -188,7 +212,7 @@ class CodeNavigationRequestsTest(testslide.TestCase):
                 {
                     "path": "/a/b.py",
                     "content": "def foo() -> int: pass\n",
-                    "overlay_id": "/a/b.py 1234",
+                    "client_id": "/a/b.py 1234",
                 },
             ],
         )
@@ -196,7 +220,7 @@ class CodeNavigationRequestsTest(testslide.TestCase):
     def test_file_closed_json(self) -> None:
         local_update = code_navigation_request.FileClosed(
             path=Path("/a/b.py"),
-            overlay_id="/a/b.py 1234",
+            client_id="/a/b.py 1234",
         )
         self.assertEqual(
             local_update.to_json(),
@@ -204,7 +228,7 @@ class CodeNavigationRequestsTest(testslide.TestCase):
                 "FileClosed",
                 {
                     "path": "/a/b.py",
-                    "overlay_id": "/a/b.py 1234",
+                    "client_id": "/a/b.py 1234",
                 },
             ],
         )

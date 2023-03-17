@@ -55,6 +55,8 @@ class PyreCodeNavigationSubscriptionResponseParser(
 class PyreCodeNavigationDaemonLaunchAndSubscribeHandler(
     launch_and_subscribe_handler.PyreDaemonLaunchAndSubscribeHandler
 ):
+    querier: daemon_querier.AbstractDaemonQuerier
+
     def __init__(
         self,
         server_options_reader: pyre_server_options.PyreServerOptionsReader,
@@ -70,9 +72,9 @@ class PyreCodeNavigationDaemonLaunchAndSubscribeHandler(
             client_status_message_handler,
             client_type_error_handler,
             PyreCodeNavigationSubscriptionResponseParser(),
-            querier,
             remote_logging,
         )
+        self.querier = querier
 
     def get_type_errors_availability(self) -> features.TypeErrorsAvailability:
         return self.server_state.server_options.language_server_features.type_errors
@@ -148,7 +150,8 @@ class PyreCodeNavigationDaemonLaunchAndSubscribeHandler(
             server_output_channel,
         )
 
-    async def send_open_state(self) -> None:
+    async def client_setup(self) -> None:
+        await self.querier.handle_register_client()
         results = await asyncio.gather(
             *[
                 self.querier.handle_file_opened(path, document.code)
@@ -157,6 +160,9 @@ class PyreCodeNavigationDaemonLaunchAndSubscribeHandler(
         )
         if len(results) > 0:
             LOG.info(f"Sent {len(results)} open messages to daemon for existing state.")
+
+    async def client_teardown(self) -> None:
+        await self.querier.handle_dispose_client()
 
 
 def process_initialize_request(

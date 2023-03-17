@@ -1789,8 +1789,8 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         let is_string_format =
           List.exists callees.call_targets ~f:(fun call_target ->
               match Interprocedural.Target.class_name call_target.target with
-              | Some class_name -> String.equal "str" class_name
-              | None -> false)
+              | Some "str" -> true
+              | _ -> false)
         in
         if not is_string_format then
           state_from_normal_models
@@ -1948,7 +1948,8 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     let analyze_nested_expression state ({ Node.location = expression_location; _ } as expression) =
       let new_taint, new_state =
         match get_string_format_callees ~location:expression_location with
-        | Some { CallGraph.StringFormatCallees.stringify_targets; _ } ->
+        | Some { CallGraph.StringFormatCallees.stringify_targets = _ :: _ as stringify_targets; _ }
+          ->
             List.fold
               stringify_targets
               ~init:(taint, state)
@@ -1972,7 +1973,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
           BackwardState.Tree.transform
             Domains.TraceLength.Self
             Map
-            ~f:TraceLength.increase_length
+            ~f:TraceLength.increase
             new_taint
         else
           new_taint

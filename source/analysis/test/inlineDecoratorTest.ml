@@ -12,42 +12,6 @@ open Analysis
 open Ast
 open Test
 
-let test_decorators_to_skip _ =
-  let assert_decorators_to_skip source expected =
-    assert_equal
-      ~cmp:[%equal: Reference.t list]
-      ~printer:[%show: Reference.t list]
-      expected
-      (trim_extra_indentation source
-      |> InlineDecorator.decorators_to_skip ~path:(PyrePath.create_absolute "/root/test.py")
-      |> List.sort ~compare:[%compare: Reference.t])
-  in
-  assert_decorators_to_skip
-    {|
-    @SkipDecoratorWhenInlining
-    def foo.skip_this_decorator(f): ...
-
-    @SkipObscure
-    @SkipDecoratorWhenInlining
-    @SkipOverrides
-    def bar.skip_this_decorator2(f): ...
-
-    @SkipObscure
-    @SkipOverrides
-    def bar.dont_skip(self: TaintInTaintOut[LocalReturn]): ...
-
-    @Sanitize
-    def bar.dont_skip2(self: TaintInTaintOut[LocalReturn]): ...
-
-    def baz.dont_skip3(): ...
-  |}
-    [!&"bar.skip_this_decorator2"; !&"foo.skip_this_decorator"];
-  assert_decorators_to_skip {|
-    @CouldNotParse
-  |} [];
-  ()
-
-
 let test_decorator_body context =
   Memory.reset_shared_memory ();
   let assert_decorator_body
@@ -154,7 +118,7 @@ let test_decorator_body context =
 
 let get_expected_actual_sources ~context ~additional_sources ~handle source expected =
   Memory.reset_shared_memory ();
-  InlineDecorator.set_should_inline_decorators true;
+  InlineDecorator.setup_decorator_inlining ~decorators_to_skip:[] ~enable:true;
   let ast_environment =
     ScratchProject.setup ~context ~external_sources:additional_sources [handle, source]
     |> ScratchProject.build_ast_environment
@@ -1678,7 +1642,7 @@ let test_decorator_location context =
               ([%show: Reference.t option] outer_decorator_reference))
           ~cmp:[%equal: Reference.t option]
           expected
-          (InlineDecorator.InlinedNameToOriginalName.get inlined_function_reference))
+          (InlineDecorator.original_name_from_inlined_name inlined_function_reference))
   in
   let additional_sources =
     [
@@ -2173,7 +2137,6 @@ let test_uniquify_names _ =
 let () =
   "inline"
   >::: [
-         "decorators_to_skip" >:: test_decorators_to_skip;
          "decorator_body" >:: test_decorator_body;
          "inline_decorators" >:: test_inline_decorators;
          "decorator_location" >:: test_decorator_location;
