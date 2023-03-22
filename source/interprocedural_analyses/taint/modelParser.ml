@@ -3337,27 +3337,55 @@ let create ~resolution ~path ~taint_configuration ~source_sink_filter ~callables
          | Error error -> Error [error]))
 
 
-let parse_decorators_to_skip_when_inlining ~path ~source =
+let parse_decorator_modes ~path ~source =
   let open Result in
-  let from_statement = function
-    | { Node.value = Statement.Define { signature = { name; decorators; _ }; _ }; _ }
-      when List.exists decorators ~f:(name_is ~name:"SkipDecoratorWhenInlining") ->
-        Some name
-    | _ -> None
+  let update_actions actions decorator action =
+    Reference.Map.update actions decorator ~f:(function
+        | None -> action
+        | Some existing_action ->
+            let () =
+              Log.warning
+                "%a: Found multiple modes for decorator `%a`: was @%s, it is now @%s."
+                PyrePath.pp
+                path
+                Reference.pp
+                decorator
+                (DecoratorPreprocessing.Action.to_mode existing_action)
+                (DecoratorPreprocessing.Action.to_mode action)
+            in
+            action)
+  in
+  let parse_statement actions = function
+    | { Node.value = Statement.Define { signature = { name; decorators; _ }; _ }; _ } ->
+        let name =
+          (* To properly work on a decorator factory implemented with a class, the user needs to
+             model `Class.__call__` (since modeling a class directly is generally not allowed). We
+             need to discard the `__call__` afterward to properly match the decorator. *)
+          match Reference.last name with
+          | "__call__" -> Reference.prefix name |> Option.value ~default:Reference.empty
+          | _ -> name
+        in
+        if List.exists decorators ~f:(name_is ~name:"IgnoreDecorator") then
+          update_actions actions name DecoratorPreprocessing.Action.Discard
+        else if List.exists decorators ~f:(name_is ~name:"SkipDecoratorWhenInlining") then
+          update_actions actions name DecoratorPreprocessing.Action.DoNotInline
+        else
+          actions
+    | _ -> actions
   in
   try
     String.split ~on:'\n' source
     |> Parser.parse
-    >>| List.filter_map ~f:from_statement
+    >>| List.fold ~init:Reference.Map.empty ~f:parse_statement
     |> Result.ok
-    |> Option.value ~default:[]
+    |> Option.value ~default:Reference.Map.empty
   with
   | exn ->
       Log.warning
         "Ignoring `%s` when trying to get decorators to skip because of exception: %s"
         (PyrePath.show path)
         (Exn.to_string exn);
-      []
+      Reference.Map.empty
 
 
 let get_model_sources ~paths =

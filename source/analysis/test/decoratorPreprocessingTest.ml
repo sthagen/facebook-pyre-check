@@ -12,14 +12,9 @@ open Analysis
 open Ast
 open Test
 
-let test_decorator_body context =
+let test_find_decorator_body context =
   Memory.reset_shared_memory ();
-  let assert_decorator_body
-      ?(should_skip_decorator = fun _ -> false)
-      ~expected_handle
-      decorator_reference
-      expected
-    =
+  let assert_decorator_body ~expected_handle decorator_reference expected =
     let additional_sources =
       [
         ( "file1.py",
@@ -64,7 +59,7 @@ let test_decorator_body context =
       in
       List.find_exn sources ~f:(fun { Source.module_path; _ } ->
           String.equal (ModulePath.relative module_path) expected_handle)
-      |> InlineDecorator.sanitize_defines ~strip_decorators:true
+      |> DecoratorPreprocessing.sanitize_defines ~strip_decorators:true
       |> Source.statements
       |> List.last_exn
       |> function
@@ -76,7 +71,7 @@ let test_decorator_body context =
       ~cmp:(Option.equal (fun left right -> Define.location_insensitive_compare left right = 0))
       ~printer:[%show: Define.t option]
       (expected >>| get_expected_define)
-      (InlineDecorator.decorator_body ~should_skip_decorator ~get_source decorator_reference)
+      (DecoratorPreprocessing.find_decorator_body ~get_source decorator_reference)
   in
   assert_decorator_body
     ~expected_handle:"file1.py"
@@ -92,11 +87,6 @@ let test_decorator_body context =
 
         return inner
   |});
-  assert_decorator_body
-    ~expected_handle:"file1.py"
-    ~should_skip_decorator:(Reference.equal !&"file1.decorator1")
-    !&"file1.decorator1"
-    None;
   assert_decorator_body
     ~expected_handle:"some_module/file2.py"
     !&"some_module.file2.decorator2"
@@ -118,7 +108,10 @@ let test_decorator_body context =
 
 let get_expected_actual_sources ~context ~additional_sources ~handle source expected =
   Memory.reset_shared_memory ();
-  InlineDecorator.setup_decorator_inlining ~decorators_to_skip:[] ~enable:true;
+  DecoratorPreprocessing.setup_preprocessing
+    ~decorator_actions:Reference.Map.empty
+    ~enable_inlining:true
+    ~enable_discarding:true;
   let ast_environment =
     ScratchProject.setup ~context ~external_sources:additional_sources [handle, source]
     |> ScratchProject.build_ast_environment
@@ -126,8 +119,8 @@ let get_expected_actual_sources ~context ~additional_sources ~handle source expe
   let get_source = AstEnvironment.ReadOnly.get_processed_source ast_environment in
   let actual =
     get_source !&"test"
-    >>| (fun source -> InlineDecorator.inline_decorators ~get_source source)
-    >>| InlineDecorator.sanitize_defines ~strip_decorators:false
+    >>| (fun source -> DecoratorPreprocessing.preprocess_source ~get_source source)
+    >>| DecoratorPreprocessing.sanitize_defines ~strip_decorators:false
     |> fun optional -> Option.value_exn optional
   in
   let expected =
@@ -137,7 +130,7 @@ let get_expected_actual_sources ~context ~additional_sources ~handle source expe
     in
     List.find_exn sources ~f:(fun { Source.module_path; _ } ->
         String.equal (ModulePath.relative module_path) handle)
-    |> InlineDecorator.sanitize_defines ~strip_decorators:false
+    |> DecoratorPreprocessing.sanitize_defines ~strip_decorators:false
   in
   expected, actual
 
@@ -1642,7 +1635,7 @@ let test_decorator_location context =
               ([%show: Reference.t option] outer_decorator_reference))
           ~cmp:[%equal: Reference.t option]
           expected
-          (InlineDecorator.original_name_from_inlined_name inlined_function_reference))
+          (DecoratorPreprocessing.original_name_from_inlined_name inlined_function_reference))
   in
   let additional_sources =
     [
@@ -1812,7 +1805,7 @@ let test_requalify_name _ =
       ~cmp:[%compare.equal: Name.t]
       ~printer:[%show: Name.t]
       expected
-      (InlineDecorator.requalify_name ~old_qualifier ~new_qualifier name)
+      (DecoratorPreprocessing.requalify_name ~old_qualifier ~new_qualifier name)
   in
   assert_requalified
     ~old_qualifier:!&"test.foo"
@@ -1844,7 +1837,7 @@ let test_replace_signature _ =
         [{ Node.value = Define { signature = { name = callee_name; _ } as new_signature; _ }; _ }] )
       ->
         let actual =
-          InlineDecorator.replace_signature_if_always_passing_on_arguments
+          DecoratorPreprocessing.replace_signature_if_always_passing_on_arguments
             ~callee_name:(Reference.show callee_name)
             ~new_signature
             given
@@ -2076,7 +2069,7 @@ let test_rename_local_variables _ =
   let assert_renamed ~pairs given expected =
     match parse expected |> Source.statements, parse given |> Source.statements with
     | [{ Node.value = Define expected; _ }], [{ Node.value = Define given; _ }] ->
-        let actual = InlineDecorator.rename_local_variables ~pairs given in
+        let actual = DecoratorPreprocessing.rename_local_variables ~pairs given in
         let printer = [%show: Statement.statement] in
         assert_equal
           ~cmp:(fun left right ->
@@ -2124,8 +2117,9 @@ let test_uniquify_names _ =
       ~printer:[%show: Reference.t list]
       (List.map expected ~f:Reference.create)
       (List.map given ~f:Reference.create
-      |> InlineDecorator.uniquify_names ~get_reference:Fn.id ~set_reference:(fun reference _ ->
-             reference))
+      |> DecoratorPreprocessing.uniquify_names
+           ~get_reference:Fn.id
+           ~set_reference:(fun reference _ -> reference))
   in
   assert_uniquified
     ["a.b"; "a.c"; "a.b"; "a.b"; "a.c"; "foo"]
@@ -2137,7 +2131,7 @@ let test_uniquify_names _ =
 let () =
   "inline"
   >::: [
-         "decorator_body" >:: test_decorator_body;
+         "find_decorator_body" >:: test_find_decorator_body;
          "inline_decorators" >:: test_inline_decorators;
          "decorator_location" >:: test_decorator_location;
          "requalify_name" >:: test_requalify_name;

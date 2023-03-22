@@ -4,16 +4,20 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-This module defines a suite of libcst visitors that discover annotation
-information and typing-related comments in code, and can thereby produce
-various code statistics (counts of annotations, annotated functions, fixmes,
-etc).
+This module defines shared logic used by Pyre coverage tooling, including
+- LibCST visitors to collect coverage information, and dataclasses
+  representing the resulting data.
+- Helpers for determining which files correspond to modules where Pyre
+  should collect coverage information.
+- Helpers for parsing code into LibCST modules with position metadata
 """
 
-
 import dataclasses
+import itertools
 import logging
+import re
 from enum import Enum
+from pathlib import Path
 from re import compile
 from typing import Dict, Iterable, List, Optional, Pattern, Sequence, Set, Tuple
 
@@ -298,7 +302,11 @@ class AnnotationCountCollector(StatisticsCollector, AnnotationCollector):
     def annotated_attributes(self) -> List[AnnotationInfo]:
         return [a for a in self.attributes if a.is_annotated]
 
-    def build_result(self) -> ModuleAnnotationData:
+    def collect(
+        self,
+        module: cst.MetadataWrapper,
+    ) -> ModuleAnnotationData:
+        module.visit(self)
         return ModuleAnnotationData(
             line_count=self.line_count,
             total_functions=[function.code_range for function in self.functions],
@@ -379,7 +387,11 @@ class SuppressionCountCollector(StatisticsCollector):
             else:
                 self.codes[code] = [suppression_line]
 
-    def build_result(self) -> ModuleSuppressionData:
+    def collect(
+        self,
+        module: cst.MetadataWrapper,
+    ) -> ModuleSuppressionData:
+        module.visit(self)
         return ModuleSuppressionData(code=self.codes, no_code=self.no_code)
 
 
@@ -448,7 +460,11 @@ class StrictCountCollector(StatisticsCollector):
         else:
             self.strict_count += 1
 
-    def build_result(self) -> ModuleStrictData:
+    def collect(
+        self,
+        module: cst.MetadataWrapper,
+    ) -> ModuleStrictData:
+        module.visit(self)
         return ModuleStrictData(
             mode=ModuleMode.UNSAFE if self.is_unsafe_module() else ModuleMode.STRICT,
             explicit_comment_line=self.explicit_unsafe_comment_line
@@ -518,27 +534,26 @@ class CoverageCollector(AnnotationCollector):
         return CoveredAndUncoveredLines(covered_lines, uncovered_lines)
 
 
-def coverage_collector_for_module(
-    relative_path: str, module: cst.Module, strict_default: bool
+def _coverage_collector_for_module(
+    relative_path: str, module: cst.MetadataWrapper, strict_default: bool
 ) -> CoverageCollector:
-    module_with_metadata = cst.MetadataWrapper(module)
     strict_count_collector = StrictCountCollector(strict_default)
     try:
-        module_with_metadata.visit(strict_count_collector)
+        module.visit(strict_count_collector)
     except RecursionError:
         LOG.warning(f"LibCST encountered recursion error in `{relative_path}`")
     coverage_collector = CoverageCollector(strict_count_collector.is_strict_module())
     try:
-        module_with_metadata.visit(coverage_collector)
+        module.visit(coverage_collector)
     except RecursionError:
         LOG.warning(f"LibCST encountered recursion error in `{relative_path}`")
     return coverage_collector
 
 
 def collect_coverage_for_module(
-    relative_path: str, module: cst.Module, strict_default: bool
+    relative_path: str, module: cst.MetadataWrapper, strict_default: bool
 ) -> FileCoverage:
-    coverage_collector = coverage_collector_for_module(
+    coverage_collector = _coverage_collector_for_module(
         relative_path, module, strict_default
     )
     covered_and_uncovered_lines = coverage_collector.covered_and_uncovered_lines()
@@ -551,3 +566,91 @@ def collect_coverage_for_module(
 
 def _code_range_to_lines(code_range: CodeRange) -> Set[int]:
     return set(range(code_range.start.line - 1, code_range.end.line))
+
+
+def module_from_code(code: str) -> Optional[cst.MetadataWrapper]:
+    try:
+        raw_module = cst.parse_module(code)
+        return cst.MetadataWrapper(raw_module)
+    except cst.ParserSyntaxError:
+        LOG.exception("Parsing failure")
+        return None
+
+
+def module_from_path(path: Path) -> Optional[cst.MetadataWrapper]:
+    try:
+        return module_from_code(path.read_text())
+    except FileNotFoundError:
+        return None
+
+
+def get_paths_to_collect(
+    paths: Optional[Sequence[Path]],
+    local_root: Optional[Path],
+    global_root: Path,
+) -> Iterable[Path]:
+    """
+    If `paths` is None, return the project root in a singleton list.
+
+    Otherwise, verify that every path in `paths` is a valid subpath
+    of the project, and return a deduplicated list of these paths (which
+    can be either directory or file paths).
+    """
+    root = local_root or global_root
+    if paths is None:
+        return [root]
+    else:
+        absolute_paths = set()
+        for path in paths:
+            absolute_path = path if path.is_absolute() else Path.cwd() / path
+            if root not in absolute_path.parents:
+                raise ValueError(
+                    f"`{path}` is not nested under the project at `{root}`",
+                )
+            absolute_paths.add(absolute_path)
+        return absolute_paths
+
+
+def _is_excluded(path: Path, excludes: Sequence[str]) -> bool:
+    try:
+        return any(
+            [re.match(exclude_pattern, str(path)) for exclude_pattern in excludes]
+        )
+    except re.error:
+        LOG.warning("Could not parse `excludes`: %s", excludes)
+        return False
+
+
+def _should_ignore(path: Path, excludes: Sequence[str]) -> bool:
+    return (
+        path.suffix != ".py"
+        or path.name.startswith("__")
+        or path.name.startswith(".")
+        or _is_excluded(path, excludes)
+    )
+
+
+def find_module_paths(paths: Iterable[Path], excludes: Sequence[str]) -> Iterable[Path]:
+    """
+    Given a set of paths (which can be file paths or directory paths)
+    where we want to collect data, return an iterable of all the module
+    paths after recursively expanding directories, and ignoring directory
+    exclusions specified in `excludes`.
+    """
+
+    def _get_paths_for_file(target_file: Path) -> Iterable[Path]:
+        return [target_file] if not _should_ignore(target_file, excludes) else []
+
+    def _get_paths_in_directory(target_directory: Path) -> Iterable[Path]:
+        return (
+            path
+            for path in target_directory.glob("**/*.py")
+            if not _should_ignore(path, excludes)
+        )
+
+    return itertools.chain.from_iterable(
+        _get_paths_for_file(path)
+        if not path.is_dir()
+        else _get_paths_in_directory(path)
+        for path in paths
+    )

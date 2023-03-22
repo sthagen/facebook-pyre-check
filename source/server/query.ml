@@ -637,11 +637,13 @@ module InlineDecorators = struct
             (TypeEnvironment.ReadOnly.ast_environment type_environment)
         in
         let define_with_inlining =
-          InlineDecorator.inline_decorators_for_define
-            ~get_decorator_body:
-              (InlineDecorator.decorator_body
-                 ~should_skip_decorator:(Set.mem decorators_to_skip)
-                 ~get_source)
+          DecoratorPreprocessing.inline_decorators_for_define
+            ~get_source
+            ~get_decorator_action:(fun reference ->
+              if Set.mem decorators_to_skip reference then
+                Some DecoratorPreprocessing.Action.DoNotInline
+              else
+                None)
             ~location:Location.any
             define
         in

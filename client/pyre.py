@@ -22,7 +22,7 @@ import sys
 import textwrap
 import traceback
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Sequence
 
 import click
 
@@ -209,6 +209,14 @@ def _check_open_source_version(
     is_flag=True,
     help="Enable verbose non-interactive logging.",
 )
+@click.option(
+    "--log-level",
+    type=click.Choice(
+        ["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"], case_sensitive=True
+    ),
+    default="DEBUG",
+    help="The granularity of the messages the Pyre client will log. Default is 'DEBUG'.",
+)
 @click.option("--logging-sections", type=str, hidden=True)
 @click.option("--dot-pyre-directory", type=str, hidden=True)
 @click.option(
@@ -292,6 +300,7 @@ def pyre(
     enable_profiling: bool,
     enable_memory_profiling: bool,
     noninteractive: bool,
+    log_level: str,
     logging_sections: Optional[str],
     dot_pyre_directory: Optional[str],
     source_directory: Iterable[str],
@@ -1314,7 +1323,7 @@ def start(
 
 
 @pyre.command()
-@click.argument("directories", type=str, nargs=-1)
+@click.argument("files_and_directories", type=str, nargs=-1)
 @click.option(
     "--log-results",
     is_flag=True,
@@ -1336,7 +1345,7 @@ def start(
 @click.pass_context
 def statistics(
     context: click.Context,
-    directories: Iterable[str],
+    files_and_directories: Iterable[str],
     log_results: bool,
     aggregate: bool,
     print_summary: bool,
@@ -1344,16 +1353,18 @@ def statistics(
     """
     Collect various syntactic metrics on type coverage.
 
-    If no directories are specified, defaults to counting all sources in the project.
+    If no paths are specified, defaults to counting all sources in the project.
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = configuration_module.create_configuration(
         command_argument, Path(".")
     )
+    paths: Optional[Sequence[Path]] = [Path(d) for d in files_and_directories]
+    paths = None if len(paths) == 0 else paths
     return commands.statistics.run(
         configuration,
         command_arguments.StatisticsArguments(
-            directories=list(directories),
+            paths=paths,
             log_identifier=command_argument.log_identifier,
             log_results=log_results,
             aggregate=aggregate,
@@ -1486,7 +1497,15 @@ def run_default_command(
 # Need the default argument here since this is our entry point in setup.py
 def main(argv: List[str] = sys.argv[1:]) -> int:
     noninteractive = ("-n" in argv) or ("--noninteractive" in argv)
-    with log.configured_logger(noninteractive):
+    logging_level = logging.DEBUG
+    if "--log-level" in argv:
+        log_level_descriptor_index = argv.index("--log-level") + 1
+        if (
+            log_level_descriptor_index < len(argv)
+            and argv[log_level_descriptor_index] in log.LOG_LEVELS
+        ):
+            logging_level = log.LOG_LEVELS[argv[log_level_descriptor_index]]
+    with log.configured_logger(noninteractive, logging_level=logging_level):
         try:
             return_code = pyre(argv, auto_envvar_prefix="PYRE", standalone_mode=False)
         except configuration_module.InvalidConfiguration as error:

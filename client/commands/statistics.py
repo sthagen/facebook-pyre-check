@@ -14,20 +14,16 @@ and pyre-fixme and pyre-ignore directives.
 
 
 import dataclasses
-import itertools
 import json
 import logging
-import re
 from pathlib import Path
-from typing import Dict, Iterable, Mapping, Optional, Sequence
-
-import libcst as cst
+from typing import Dict, Iterable, Mapping
 
 from .. import (
     command_arguments,
     configuration as configuration_module,
+    coverage_data,
     frontend_configuration,
-    libcst_collectors as collectors,
     log,
 )
 from . import commands
@@ -36,131 +32,12 @@ from . import commands
 LOG: logging.Logger = logging.getLogger(__name__)
 
 
-def find_roots(
-    explicitly_specified_directories: Sequence[str],
-    local_root: Optional[Path],
-    global_root: Path,
-) -> Iterable[Path]:
-    root = local_root or global_root
-    absolute_root = Path(root)
-    if len(explicitly_specified_directories) > 0:
-        absolute_paths = set()
-        for directory in explicitly_specified_directories:
-            path = Path(directory)
-            absolute_path = path if path.is_absolute() else Path.cwd() / path
-            if absolute_root in absolute_path.parents:
-                absolute_paths.add(absolute_path)
-            else:
-                LOG.warning(
-                    "`%s` is not a subdirectory of the project at `%s`", directory, root
-                )
-                LOG.warning("Gathering statistics in `%s`", root)
-                return [root]
-        return absolute_paths
-
-    return [root]
-
-
-def _is_excluded(path: Path, excludes: Sequence[str]) -> bool:
-    try:
-        return any(
-            [re.match(exclude_pattern, str(path)) for exclude_pattern in excludes]
-        )
-    except re.error:
-        LOG.warning("Could not parse `excludes`: %s", excludes)
-        return False
-
-
-def _should_ignore(path: Path, excludes: Sequence[str]) -> bool:
-    return (
-        path.name.startswith("__")
-        or path.name.startswith(".")
-        or _is_excluded(path, excludes)
-    )
-
-
-def has_py_extension_and_not_ignored(path: Path, excludes: Sequence[str]) -> bool:
-    return path.suffix == ".py" and not _should_ignore(path, excludes)
-
-
-def find_paths_to_parse(
-    paths: Iterable[Path], excludes: Sequence[str]
-) -> Iterable[Path]:
-    def _get_paths_for_file(target_file: Path) -> Iterable[Path]:
-        return (
-            [target_file]
-            if has_py_extension_and_not_ignored(target_file, excludes)
-            else []
-        )
-
-    def _get_paths_in_directory(target_directory: Path) -> Iterable[Path]:
-        return (
-            path
-            for path in target_directory.glob("**/*.py")
-            if not _should_ignore(path, excludes)
-        )
-
-    return itertools.chain.from_iterable(
-        _get_paths_for_file(path)
-        if not path.is_dir()
-        else _get_paths_in_directory(path)
-        for path in paths
-    )
-
-
-def parse_text_to_module(text: str) -> Optional[cst.Module]:
-    try:
-        return cst.parse_module(text)
-    except cst.ParserSyntaxError:
-        return None
-
-
-def parse_path_to_module(path: Path) -> Optional[cst.Module]:
-    try:
-        return parse_text_to_module(path.read_text())
-    except FileNotFoundError:
-        return None
-
-
-def _collect_annotation_statistics(
-    module: cst.MetadataWrapper,
-) -> collectors.ModuleAnnotationData:
-    collector = collectors.AnnotationCountCollector()
-    module.visit(collector)
-    return collector.build_result()
-
-
-def _collect_fixme_statistics(
-    module: cst.MetadataWrapper,
-) -> collectors.ModuleSuppressionData:
-    collector = collectors.FixmeCountCollector()
-    module.visit(collector)
-    return collector.build_result()
-
-
-def _collect_ignore_statistics(
-    module: cst.MetadataWrapper,
-) -> collectors.ModuleSuppressionData:
-    collector = collectors.IgnoreCountCollector()
-    module.visit(collector)
-    return collector.build_result()
-
-
-def _collect_strict_file_statistics(
-    module: cst.MetadataWrapper,
-    strict_default: bool,
-) -> collectors.ModuleStrictData:
-    collector = collectors.StrictCountCollector(strict_default)
-    module.visit(collector)
-    return collector.build_result()
-
-
 @dataclasses.dataclass(frozen=True)
 class StatisticsData:
-    annotations: collectors.ModuleAnnotationData
-    fixmes: collectors.ModuleSuppressionData
-    ignores: collectors.ModuleSuppressionData
-    strict: collectors.ModuleStrictData
+    annotations: coverage_data.ModuleAnnotationData
+    fixmes: coverage_data.ModuleSuppressionData
+    ignores: coverage_data.ModuleSuppressionData
+    strict: coverage_data.ModuleStrictData
 
 
 def collect_statistics(
@@ -168,26 +45,19 @@ def collect_statistics(
 ) -> Dict[str, StatisticsData]:
     data: Dict[str, StatisticsData] = {}
     for path in sources:
-        module = parse_path_to_module(path)
+        module = coverage_data.module_from_path(path)
         if module is None:
             continue
         try:
-            module_with_position_metadata = cst.MetadataWrapper(module)
-            annotation_statistics = _collect_annotation_statistics(
-                module_with_position_metadata
-            )
-            fixme_statistics = _collect_fixme_statistics(module_with_position_metadata)
-            ignore_statistics = _collect_ignore_statistics(
-                module_with_position_metadata
-            )
-            strict_file_statistics = _collect_strict_file_statistics(
-                module_with_position_metadata, strict_default
-            )
+            annotations = coverage_data.AnnotationCountCollector().collect(module)
+            fixmes = coverage_data.FixmeCountCollector().collect(module)
+            ignores = coverage_data.IgnoreCountCollector().collect(module)
+            modes = coverage_data.StrictCountCollector(strict_default).collect(module)
             statistics_data = StatisticsData(
-                annotation_statistics,
-                fixme_statistics,
-                ignore_statistics,
-                strict_file_statistics,
+                annotations,
+                fixmes,
+                ignores,
+                modes,
             )
             data[str(path)] = statistics_data
         except RecursionError:
@@ -201,9 +71,9 @@ def collect_all_statistics(
 ) -> Dict[str, StatisticsData]:
     local_root = configuration.get_local_root()
     return collect_statistics(
-        find_paths_to_parse(
-            find_roots(
-                statistics_arguments.directories,
+        coverage_data.find_module_paths(
+            coverage_data.get_paths_to_collect(
+                statistics_arguments.paths,
                 local_root=Path(local_root) if local_root is not None else None,
                 global_root=Path(configuration.get_global_root()),
             ),
@@ -241,7 +111,7 @@ def aggregate_statistics(
     }
 
     for statistics_data in data.values():
-        annotation_counts = collectors.AnnotationCountCollector.get_result_counts(
+        annotation_counts = coverage_data.AnnotationCountCollector.get_result_counts(
             statistics_data.annotations
         )
         for key in aggregate_annotations.keys():
@@ -260,13 +130,13 @@ def aggregate_statistics(
             ]
         ),
         strict=sum(
-            1 if strictness.mode == collectors.ModuleMode.STRICT else 0
+            1 if strictness.mode == coverage_data.ModuleMode.STRICT else 0
             for strictness in [
                 statistics_data.strict for statistics_data in data.values()
             ]
         ),
         unsafe=sum(
-            1 if strictness.mode == collectors.ModuleMode.UNSAFE else 0
+            1 if strictness.mode == coverage_data.ModuleMode.UNSAFE else 0
             for strictness in [
                 statistics_data.strict for statistics_data in data.values()
             ]

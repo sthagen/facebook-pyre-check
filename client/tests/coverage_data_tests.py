@@ -3,32 +3,74 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import tempfile
 import textwrap
 import unittest
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import libcst as cst
 from libcst.metadata import CodePosition, CodeRange, MetadataWrapper
 
-from ..libcst_collectors import (
+from ..coverage_data import (
     AnnotationCollector,
     AnnotationCountCollector,
     collect_coverage_for_module,
+    find_module_paths,
     FixmeCountCollector,
     FunctionAnnotationKind,
+    get_paths_to_collect,
     IgnoreCountCollector,
+    module_from_code,
+    module_from_path,
     ModuleMode,
     StrictCountCollector,
 )
+from ..tests import setup
 
 
-def parse_source(source: str) -> cst.Module:
-    return cst.parse_module(textwrap.dedent(source.rstrip()))
+def parse_code(code: str) -> MetadataWrapper:
+    module = module_from_code(textwrap.dedent(code.rstrip()))
+    if module is None:
+        raise RuntimeError(f"Failed to parse code {code}")
+    return module
+
+
+class ParsingHelpersTest(unittest.TestCase):
+    def test_module_from_path(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            source_path = root_path / "source.py"
+            source_path.write_text("reveal_type(42)")
+
+            self.assertIsNotNone(module_from_path(source_path))
+            self.assertIsNone(module_from_path(root_path / "nonexistent.py"))
+
+    def test_module_from_code(self) -> None:
+        self.assertIsNotNone(
+            module_from_code(
+                textwrap.dedent(
+                    """
+                    def foo() -> int:
+                        pass
+                    """
+                )
+            )
+        )
+        self.assertIsNone(
+            module_from_code(
+                textwrap.dedent(
+                    """
+                    def foo() ->
+                    """
+                )
+            )
+        )
 
 
 class AnnotationCollectorTest(unittest.TestCase):
     def _build_and_visit_annotation_collector(self, source: str) -> AnnotationCollector:
-        source_module = MetadataWrapper(parse_source(source))
+        source_module = parse_code(source)
         collector = AnnotationCollector()
         source_module.visit(collector)
         return collector
@@ -60,10 +102,8 @@ class AnnotationCollectorTest(unittest.TestCase):
 
 class AnnotationCountCollectorTest(unittest.TestCase):
     def assert_counts(self, source: str, expected: Dict[str, int]) -> None:
-        collector = AnnotationCountCollector()
-        source_module = MetadataWrapper(parse_source(source))
-        source_module.visit(collector)
-        result = collector.build_result()
+        source_module = parse_code(source)
+        result = AnnotationCountCollector().collect(source_module)
         self.assertDictEqual(
             expected, AnnotationCountCollector.get_result_counts(result)
         )
@@ -582,12 +622,8 @@ class FixmeCountCollectorTest(unittest.TestCase):
         expected_codes: Dict[int, List[int]],
         expected_no_codes: List[int],
     ) -> None:
-        source_module = MetadataWrapper(
-            parse_source(source.replace("FIXME", "pyre-fixme"))
-        )
-        collector = FixmeCountCollector()
-        source_module.visit(collector)
-        result = collector.build_result()
+        source_module = parse_code(source.replace("FIXME", "pyre-fixme"))
+        result = FixmeCountCollector().collect(source_module)
         self.assertEqual(expected_codes, result.code)
         self.assertEqual(expected_no_codes, result.no_code)
 
@@ -688,12 +724,8 @@ class IgnoreCountCollectorTest(unittest.TestCase):
         expected_codes: Dict[int, List[int]],
         expected_no_codes: List[int],
     ) -> None:
-        source_module = MetadataWrapper(
-            parse_source(source.replace("IGNORE", "pyre-ignore"))
-        )
-        collector = IgnoreCountCollector()
-        source_module.visit(collector)
-        result = collector.build_result()
+        source_module = parse_code(source.replace("IGNORE", "pyre-ignore"))
+        result = IgnoreCountCollector().collect(source_module)
         self.assertEqual(expected_codes, result.code)
         self.assertEqual(expected_no_codes, result.no_code)
 
@@ -719,10 +751,8 @@ class StrictCountCollectorTest(unittest.TestCase):
         mode: ModuleMode,
         explicit_comment_line: Optional[int],
     ) -> None:
-        source_module = MetadataWrapper(parse_source(source))
-        collector = StrictCountCollector(default_strict)
-        source_module.visit(collector)
-        result = collector.build_result()
+        source_module = parse_code(source)
+        result = StrictCountCollector(default_strict).collect(source_module)
         self.assertEqual(mode, result.mode)
         self.assertEqual(explicit_comment_line, result.explicit_comment_line)
 
@@ -814,7 +844,9 @@ class CoverageTest(unittest.TestCase):
         expected_covered: List[int],
         expected_uncovered: List[int],
     ) -> None:
-        module = cst.parse_module(textwrap.dedent(file_content).strip())
+        module = cst.MetadataWrapper(
+            cst.parse_module(textwrap.dedent(file_content).strip())
+        )
         actual_coverage = collect_coverage_for_module(
             "test.py", module, strict_default=False
         )
@@ -891,7 +923,9 @@ class CoverageTest(unittest.TestCase):
         )
 
     def contains_uncovered_lines(self, file_content: str, strict_default: bool) -> bool:
-        module = cst.parse_module(textwrap.dedent(file_content).strip())
+        module = cst.MetadataWrapper(
+            cst.parse_module(textwrap.dedent(file_content).strip())
+        )
         actual_coverage = collect_coverage_for_module("test.py", module, strict_default)
         return len(actual_coverage.uncovered_lines) > 0
 
@@ -932,3 +966,157 @@ class CoverageTest(unittest.TestCase):
                 strict_default=True,
             )
         )
+
+
+class ModuleFindingHelpersTest(unittest.TestCase):
+    def test_get_paths_to_collect__duplicate_directories(self) -> None:
+        self.assertCountEqual(
+            get_paths_to_collect(
+                [Path("/root/foo.py"), Path("/root/bar.py"), Path("/root/foo.py")],
+                local_root=None,
+                global_root=Path("/root"),
+            ),
+            [Path("/root/foo.py"), Path("/root/bar.py")],
+        )
+
+        self.assertCountEqual(
+            get_paths_to_collect(
+                [Path("/root/foo"), Path("/root/bar"), Path("/root/foo")],
+                local_root=None,
+                global_root=Path("/root"),
+            ),
+            [Path("/root/foo"), Path("/root/bar")],
+        )
+
+    def test_get_paths_to_collect__expand_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()  # resolve is necessary on OSX 11.6
+            with setup.switch_working_directory(root_path):
+                self.assertCountEqual(
+                    get_paths_to_collect(
+                        [Path("foo.py"), Path("bar.py")],
+                        local_root=None,
+                        global_root=root_path,
+                    ),
+                    [root_path / "foo.py", root_path / "bar.py"],
+                )
+
+    def test_get_paths_to_collect__invalid_given_subdirectory(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()  # resolve is necessary on OSX 11.6
+            with setup.switch_working_directory(root_path):
+                # this is how a valid call behaves: subdirectory lives under project_root
+                self.assertCountEqual(
+                    get_paths_to_collect(
+                        [Path("project_root/subdirectory")],
+                        local_root=None,
+                        global_root=root_path / "project_root",
+                    ),
+                    [root_path / "project_root/subdirectory"],
+                )
+                # ./subdirectory isn't part of ./project_root
+                self.assertRaisesRegex(
+                    ValueError,
+                    ".* is not nested under the project .*",
+                    get_paths_to_collect,
+                    [Path("subdirectory")],
+                    local_root=None,
+                    global_root=root_path / "project_root",
+                )
+                # ./subdirectory isn't part of ./local_root
+                self.assertRaisesRegex(
+                    ValueError,
+                    ".* is not nested under the project .*",
+                    get_paths_to_collect,
+                    [Path("subdirectory")],
+                    local_root=root_path / "local_root",
+                    global_root=root_path,
+                )
+
+    def test_get_paths_to_collect__local_root(self) -> None:
+        self.assertCountEqual(
+            get_paths_to_collect(
+                None,
+                local_root=Path("/root/local"),
+                global_root=Path("/root"),
+            ),
+            [Path("/root/local")],
+        )
+
+    def test_get_paths_to_collect__global_root(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()  # resolve is necessary on OSX 11.6
+            with setup.switch_working_directory(root_path):
+                self.assertCountEqual(
+                    get_paths_to_collect(
+                        None,
+                        local_root=None,
+                        global_root=Path("/root"),
+                    ),
+                    [Path("/root")],
+                )
+
+    def test_find_module_paths__basic(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            setup.ensure_files_exist(
+                root_path,
+                ["s0.py", "a/s1.py", "b/s2.py", "b/c/s3.py", "b/s4.txt", "b/__s5.py"],
+            )
+            setup.ensure_directories_exists(root_path, ["b/d"])
+            self.assertCountEqual(
+                find_module_paths(
+                    [
+                        root_path / "a/s1.py",
+                        root_path / "b/s2.py",
+                        root_path / "b/s4.txt",
+                    ],
+                    excludes=[],
+                ),
+                [
+                    root_path / "a/s1.py",
+                    root_path / "b/s2.py",
+                ],
+            )
+            self.assertCountEqual(
+                find_module_paths([root_path], excludes=[]),
+                [
+                    root_path / "s0.py",
+                    root_path / "a/s1.py",
+                    root_path / "b/s2.py",
+                    root_path / "b/c/s3.py",
+                ],
+            )
+
+    def test_find_module_paths__with_exclude(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            setup.ensure_files_exist(
+                root_path,
+                ["s0.py", "a/s1.py", "b/s2.py", "b/c/s3.py", "b/s4.txt", "b/__s5.py"],
+            )
+            setup.ensure_directories_exists(root_path, ["b/d"])
+            self.assertCountEqual(
+                find_module_paths(
+                    [
+                        root_path / "a/s1.py",
+                        root_path / "b/s2.py",
+                        root_path / "b/s4.txt",
+                    ],
+                    excludes=[r".*2\.py"],
+                ),
+                [
+                    root_path / "a/s1.py",
+                ],
+            )
+            self.assertCountEqual(
+                find_module_paths(
+                    [root_path],
+                    excludes=[r".*2\.py"],
+                ),
+                [
+                    root_path / "s0.py",
+                    root_path / "a/s1.py",
+                    root_path / "b/c/s3.py",
+                ],
+            )
