@@ -5,11 +5,12 @@
 
 import tempfile
 import textwrap
-import unittest
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import libcst as cst
+
+import testslide
 from libcst.metadata import CodePosition, CodeRange, MetadataWrapper
 
 from ..coverage_data import (
@@ -35,7 +36,7 @@ def parse_code(code: str) -> MetadataWrapper:
     return module
 
 
-class ParsingHelpersTest(unittest.TestCase):
+class ParsingHelpersTest(testslide.TestCase):
     def test_module_from_path(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root)
@@ -67,7 +68,7 @@ class ParsingHelpersTest(unittest.TestCase):
         )
 
 
-class AnnotationCollectorTest(unittest.TestCase):
+class AnnotationCollectorTest(testslide.TestCase):
     def _build_and_visit_annotation_collector(self, source: str) -> AnnotationCollector:
         source_module = parse_code(source)
         collector = AnnotationCollector()
@@ -99,7 +100,7 @@ class AnnotationCollectorTest(unittest.TestCase):
         self.assertEqual(collector.line_count, 2)
 
 
-class AnnotationCountCollectorTest(unittest.TestCase):
+class AnnotationCountCollectorTest(testslide.TestCase):
     def assert_counts(self, source: str, expected: Dict[str, int]) -> None:
         source_module = parse_code(source)
         result = AnnotationCountCollector().collect(source_module)
@@ -525,7 +526,7 @@ class AnnotationCountCollectorTest(unittest.TestCase):
         )
 
 
-class FunctionAnnotationKindTest(unittest.TestCase):
+class FunctionAnnotationKindTest(testslide.TestCase):
     def test_from_function_data(self) -> None:
         three_parameters = [
             cst.Param(name=cst.Name("x1"), annotation=None),
@@ -614,7 +615,7 @@ class FunctionAnnotationKindTest(unittest.TestCase):
         )
 
 
-class FixmeCountCollectorTest(unittest.TestCase):
+class FixmeCountCollectorTest(testslide.TestCase):
     def assert_counts(
         self,
         source: str,
@@ -716,7 +717,9 @@ class FixmeCountCollectorTest(unittest.TestCase):
         )
 
 
-class IgnoreCountCollectorTest(unittest.TestCase):
+class IgnoreCountCollectorTest(testslide.TestCase):
+    maxDiff = 2000
+
     def assert_counts(
         self,
         source: str,
@@ -742,7 +745,7 @@ class IgnoreCountCollectorTest(unittest.TestCase):
         )
 
 
-class StrictCountCollectorTest(unittest.TestCase):
+class StrictCountCollectorTest(testslide.TestCase):
     def assert_counts(
         self,
         source: str,
@@ -836,13 +839,12 @@ class StrictCountCollectorTest(unittest.TestCase):
         )
 
 
-class ModuleFindingHelpersTest(unittest.TestCase):
+class ModuleFindingHelpersTest(testslide.TestCase):
     def test_get_paths_to_collect__duplicate_directories(self) -> None:
         self.assertCountEqual(
             get_paths_to_collect(
                 [Path("/root/foo.py"), Path("/root/bar.py"), Path("/root/foo.py")],
-                local_root=None,
-                global_root=Path("/root"),
+                root=Path("/root"),
             ),
             [Path("/root/foo.py"), Path("/root/bar.py")],
         )
@@ -850,8 +852,7 @@ class ModuleFindingHelpersTest(unittest.TestCase):
         self.assertCountEqual(
             get_paths_to_collect(
                 [Path("/root/foo"), Path("/root/bar"), Path("/root/foo")],
-                local_root=None,
-                global_root=Path("/root"),
+                root=Path("/root"),
             ),
             [Path("/root/foo"), Path("/root/bar")],
         )
@@ -863,8 +864,7 @@ class ModuleFindingHelpersTest(unittest.TestCase):
                 self.assertCountEqual(
                     get_paths_to_collect(
                         [Path("foo.py"), Path("bar.py")],
-                        local_root=None,
-                        global_root=root_path,
+                        root=root_path,
                     ),
                     [root_path / "foo.py", root_path / "bar.py"],
                 )
@@ -877,8 +877,7 @@ class ModuleFindingHelpersTest(unittest.TestCase):
                 self.assertCountEqual(
                     get_paths_to_collect(
                         [Path("project_root/subdirectory")],
-                        local_root=None,
-                        global_root=root_path / "project_root",
+                        root=root_path / "project_root",
                     ),
                     [root_path / "project_root/subdirectory"],
                 )
@@ -888,8 +887,7 @@ class ModuleFindingHelpersTest(unittest.TestCase):
                     ".* is not nested under the project .*",
                     get_paths_to_collect,
                     [Path("subdirectory")],
-                    local_root=None,
-                    global_root=root_path / "project_root",
+                    root=root_path / "project_root",
                 )
                 # ./subdirectory isn't part of ./local_root
                 self.assertRaisesRegex(
@@ -897,32 +895,17 @@ class ModuleFindingHelpersTest(unittest.TestCase):
                     ".* is not nested under the project .*",
                     get_paths_to_collect,
                     [Path("subdirectory")],
-                    local_root=root_path / "local_root",
-                    global_root=root_path,
+                    root=root_path / "local_root",
                 )
 
-    def test_get_paths_to_collect__local_root(self) -> None:
+    def test_get_paths_to_collect__no_explicit_paths(self) -> None:
         self.assertCountEqual(
             get_paths_to_collect(
                 None,
-                local_root=Path("/root/local"),
-                global_root=Path("/root"),
+                root=Path("/root/local"),
             ),
             [Path("/root/local")],
         )
-
-    def test_get_paths_to_collect__global_root(self) -> None:
-        with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root).resolve()  # resolve is necessary on OSX 11.6
-            with setup.switch_working_directory(root_path):
-                self.assertCountEqual(
-                    get_paths_to_collect(
-                        None,
-                        local_root=None,
-                        global_root=Path("/root"),
-                    ),
-                    [Path("/root")],
-                )
 
     def test_find_module_paths__basic(self) -> None:
         with tempfile.TemporaryDirectory() as root:
