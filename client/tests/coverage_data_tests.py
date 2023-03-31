@@ -6,7 +6,7 @@
 import tempfile
 import textwrap
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Optional, Sequence
 
 import libcst as cst
 
@@ -15,17 +15,22 @@ from libcst.metadata import CodePosition, CodeRange, MetadataWrapper
 
 from ..coverage_data import (
     AnnotationCollector,
-    AnnotationCountCollector,
     find_module_paths,
-    FixmeCountCollector,
+    FunctionAnnotationInfo,
     FunctionAnnotationKind,
+    FunctionIdentifier,
     get_paths_to_collect,
-    IgnoreCountCollector,
     module_from_code,
     module_from_path,
     ModuleMode,
-    StrictCountCollector,
+    ModuleModeCollector,
+    ParameterAnnotationInfo,
+    ReturnAnnotationInfo,
+    SuppressionCollector,
+    SuppressionKind,
+    TypeErrorSuppression,
 )
+
 from ..tests import setup
 
 
@@ -69,6 +74,8 @@ class ParsingHelpersTest(testslide.TestCase):
 
 
 class AnnotationCollectorTest(testslide.TestCase):
+    maxDiff = 2000
+
     def _build_and_visit_annotation_collector(self, source: str) -> AnnotationCollector:
         source_module = parse_code(source)
         collector = AnnotationCollector()
@@ -99,507 +106,313 @@ class AnnotationCollectorTest(testslide.TestCase):
         source_module.visit(collector)
         self.assertEqual(collector.line_count, 2)
 
-
-class AnnotationCountCollectorTest(testslide.TestCase):
-    def assert_counts(self, source: str, expected: Dict[str, int]) -> None:
-        source_module = parse_code(source)
-        result = AnnotationCountCollector().collect(source_module)
-        self.assertDictEqual(
-            expected, AnnotationCountCollector.get_result_counts(result)
+    def _assert_function_annotations(
+        self,
+        code: str,
+        expected: Sequence[FunctionAnnotationInfo],
+    ) -> None:
+        module = parse_code(code)
+        collector = AnnotationCollector()
+        module.visit(collector)
+        actual = collector.functions
+        self.assertEqual(
+            actual,
+            expected,
         )
 
-    def test_count_annotations(self) -> None:
-        self.assert_counts(
+    def test_function_annotations__standalone_no_annotations(self) -> None:
+        f = FunctionIdentifier(
+            parent=None,
+            name="f",
+        )
+        self._assert_function_annotations(
             """
-            def foo(x) -> int:
+            def f(x):
                 pass
             """,
-            {
-                "annotated_return_count": 1,
-                "annotated_globals_count": 0,
-                "annotated_parameter_count": 0,
-                "return_count": 1,
-                "globals_count": 0,
-                "parameter_count": 1,
-                "attribute_count": 0,
-                "annotated_attribute_count": 0,
-                "function_count": 1,
-                "partially_annotated_function_count": 1,
-                "fully_annotated_function_count": 0,
-                "line_count": 3,
-            },
+            [
+                FunctionAnnotationInfo(
+                    code_range=CodeRange(
+                        start=CodePosition(line=2, column=0),
+                        end=CodePosition(line=3, column=8),
+                    ),
+                    annotation_kind=FunctionAnnotationKind.NOT_ANNOTATED,
+                    returns=ReturnAnnotationInfo(
+                        function_identifier=f,
+                        is_annotated=False,
+                        code_range=CodeRange(
+                            start=CodePosition(line=2, column=4),
+                            end=CodePosition(line=2, column=5),
+                        ),
+                    ),
+                    parameters=[
+                        ParameterAnnotationInfo(
+                            function_identifier=f,
+                            name="x",
+                            is_annotated=False,
+                            code_range=CodeRange(
+                                start=CodePosition(line=2, column=6),
+                                end=CodePosition(line=2, column=7),
+                            ),
+                        )
+                    ],
+                    is_method_or_classmethod=False,
+                )
+            ],
         )
 
-        self.assert_counts(
+    def test_function_annotations__standalone_partially_annotated(self) -> None:
+        f = FunctionIdentifier(
+            parent=None,
+            name="f",
+        )
+        g = FunctionIdentifier(
+            parent=None,
+            name="g",
+        )
+        self._assert_function_annotations(
             """
-            def bar(x: int, y):
+            def f(x) -> None:
+                pass
+
+            def g(x: int):
                 pass
             """,
-            {
-                "annotated_return_count": 0,
-                "annotated_globals_count": 0,
-                "annotated_parameter_count": 1,
-                "return_count": 1,
-                "globals_count": 0,
-                "parameter_count": 2,
-                "attribute_count": 0,
-                "annotated_attribute_count": 0,
-                "function_count": 1,
-                "partially_annotated_function_count": 1,
-                "fully_annotated_function_count": 0,
-                "line_count": 3,
-            },
+            [
+                FunctionAnnotationInfo(
+                    code_range=CodeRange(
+                        start=CodePosition(line=2, column=0),
+                        end=CodePosition(line=3, column=8),
+                    ),
+                    annotation_kind=FunctionAnnotationKind.PARTIALLY_ANNOTATED,
+                    returns=ReturnAnnotationInfo(
+                        function_identifier=f,
+                        is_annotated=True,
+                        code_range=CodeRange(
+                            start=CodePosition(line=2, column=4),
+                            end=CodePosition(line=2, column=5),
+                        ),
+                    ),
+                    parameters=[
+                        ParameterAnnotationInfo(
+                            function_identifier=f,
+                            name="x",
+                            is_annotated=False,
+                            code_range=CodeRange(
+                                start=CodePosition(line=2, column=6),
+                                end=CodePosition(line=2, column=7),
+                            ),
+                        )
+                    ],
+                    is_method_or_classmethod=False,
+                ),
+                FunctionAnnotationInfo(
+                    code_range=CodeRange(
+                        start=CodePosition(line=5, column=0),
+                        end=CodePosition(line=6, column=8),
+                    ),
+                    annotation_kind=FunctionAnnotationKind.PARTIALLY_ANNOTATED,
+                    returns=ReturnAnnotationInfo(
+                        function_identifier=g,
+                        is_annotated=False,
+                        code_range=CodeRange(
+                            start=CodePosition(line=5, column=4),
+                            end=CodePosition(line=5, column=5),
+                        ),
+                    ),
+                    parameters=[
+                        ParameterAnnotationInfo(
+                            function_identifier=g,
+                            name="x",
+                            is_annotated=True,
+                            code_range=CodeRange(
+                                start=CodePosition(line=5, column=6),
+                                end=CodePosition(line=5, column=7),
+                            ),
+                        )
+                    ],
+                    is_method_or_classmethod=False,
+                ),
+            ],
         )
 
-        self.assert_counts(
-            """
-            a = foo()
-            b: int = bar()
-            """,
-            {
-                "annotated_return_count": 0,
-                "annotated_globals_count": 2,
-                "annotated_parameter_count": 0,
-                "return_count": 0,
-                "globals_count": 2,
-                "parameter_count": 0,
-                "attribute_count": 0,
-                "annotated_attribute_count": 0,
-                "function_count": 0,
-                "partially_annotated_function_count": 0,
-                "fully_annotated_function_count": 0,
-                "line_count": 3,
-            },
+    def test_function_annotations__standalone_fully_annotated(self) -> None:
+        f = FunctionIdentifier(
+            parent=None,
+            name="f",
         )
-
-        self.assert_counts(
+        self._assert_function_annotations(
             """
-            class A:
-                a: int = 100
-                b = ""
-            """,
-            {
-                "annotated_return_count": 0,
-                "annotated_globals_count": 0,
-                "annotated_parameter_count": 0,
-                "return_count": 0,
-                "globals_count": 0,
-                "parameter_count": 0,
-                "attribute_count": 2,
-                "annotated_attribute_count": 2,
-                "function_count": 0,
-                "partially_annotated_function_count": 0,
-                "fully_annotated_function_count": 0,
-                "line_count": 4,
-            },
-        )
-
-        # For now, don't count annotations inside of functions
-        self.assert_counts(
-            """
-            def foo():
-                a: int = 100
-            """,
-            {
-                "annotated_return_count": 0,
-                "annotated_globals_count": 0,
-                "annotated_parameter_count": 0,
-                "return_count": 1,
-                "globals_count": 0,
-                "parameter_count": 0,
-                "attribute_count": 0,
-                "annotated_attribute_count": 0,
-                "function_count": 1,
-                "partially_annotated_function_count": 0,
-                "fully_annotated_function_count": 0,
-                "line_count": 3,
-            },
-        )
-
-        self.assert_counts(
-            """
-            def foo():
-                def bar(x: int) -> int:
-                    pass
-            """,
-            {
-                "annotated_return_count": 1,
-                "annotated_globals_count": 0,
-                "annotated_parameter_count": 1,
-                "return_count": 2,
-                "globals_count": 0,
-                "parameter_count": 1,
-                "attribute_count": 0,
-                "annotated_attribute_count": 0,
-                "function_count": 2,
-                "partially_annotated_function_count": 0,
-                "fully_annotated_function_count": 1,
-                "line_count": 4,
-            },
-        )
-
-        self.assert_counts(
-            """
-            class A:
-                def bar(self, x: int):
-                    pass
-            """,
-            {
-                "annotated_return_count": 0,
-                "annotated_globals_count": 0,
-                "annotated_parameter_count": 1,
-                "return_count": 1,
-                "globals_count": 0,
-                "parameter_count": 1,
-                "attribute_count": 0,
-                "annotated_attribute_count": 0,
-                "function_count": 1,
-                "partially_annotated_function_count": 1,
-                "fully_annotated_function_count": 0,
-                "line_count": 4,
-            },
-        )
-
-        self.assert_counts(
-            """
-            class A:
-                def bar(this, x: int) -> None:
-                    pass
-            """,
-            {
-                "annotated_return_count": 1,
-                "annotated_globals_count": 0,
-                "annotated_parameter_count": 1,
-                "return_count": 1,
-                "globals_count": 0,
-                "parameter_count": 1,
-                "attribute_count": 0,
-                "annotated_attribute_count": 0,
-                "function_count": 1,
-                "partially_annotated_function_count": 0,
-                "fully_annotated_function_count": 1,
-                "line_count": 4,
-            },
-        )
-
-        self.assert_counts(
-            """
-            class A:
-                @classmethod
-                def bar(cls, x: int):
-                    pass
-            """,
-            {
-                "annotated_return_count": 0,
-                "annotated_globals_count": 0,
-                "annotated_parameter_count": 1,
-                "return_count": 1,
-                "globals_count": 0,
-                "parameter_count": 1,
-                "attribute_count": 0,
-                "annotated_attribute_count": 0,
-                "function_count": 1,
-                "partially_annotated_function_count": 1,
-                "fully_annotated_function_count": 0,
-                "line_count": 5,
-            },
-        )
-
-        self.assert_counts(
-            """
-            def bar(self, x: int):
+            def f(x: int) -> None:
                 pass
             """,
-            {
-                "annotated_return_count": 0,
-                "annotated_globals_count": 0,
-                "annotated_parameter_count": 1,
-                "return_count": 1,
-                "globals_count": 0,
-                "parameter_count": 2,
-                "attribute_count": 0,
-                "annotated_attribute_count": 0,
-                "function_count": 1,
-                "partially_annotated_function_count": 1,
-                "fully_annotated_function_count": 0,
-                "line_count": 3,
-            },
+            [
+                FunctionAnnotationInfo(
+                    code_range=CodeRange(
+                        start=CodePosition(line=2, column=0),
+                        end=CodePosition(line=3, column=8),
+                    ),
+                    annotation_kind=FunctionAnnotationKind.FULLY_ANNOTATED,
+                    returns=ReturnAnnotationInfo(
+                        function_identifier=f,
+                        is_annotated=True,
+                        code_range=CodeRange(
+                            start=CodePosition(line=2, column=4),
+                            end=CodePosition(line=2, column=5),
+                        ),
+                    ),
+                    parameters=[
+                        ParameterAnnotationInfo(
+                            function_identifier=f,
+                            name="x",
+                            is_annotated=True,
+                            code_range=CodeRange(
+                                start=CodePosition(line=2, column=6),
+                                end=CodePosition(line=2, column=7),
+                            ),
+                        )
+                    ],
+                    is_method_or_classmethod=False,
+                )
+            ],
         )
 
-        self.assert_counts(
+    def test_function_annotations__annotated_method(self) -> None:
+        a_dot_f = FunctionIdentifier(
+            parent="A",
+            name="f",
+        )
+        self._assert_function_annotations(
             """
             class A:
+                def f(self, x: int) -> None:
+                    pass
+            """,
+            [
+                FunctionAnnotationInfo(
+                    code_range=CodeRange(
+                        start=CodePosition(line=3, column=4),
+                        end=CodePosition(line=4, column=12),
+                    ),
+                    annotation_kind=FunctionAnnotationKind.FULLY_ANNOTATED,
+                    returns=ReturnAnnotationInfo(
+                        function_identifier=a_dot_f,
+                        is_annotated=True,
+                        code_range=CodeRange(
+                            start=CodePosition(line=3, column=8),
+                            end=CodePosition(line=3, column=9),
+                        ),
+                    ),
+                    parameters=[
+                        ParameterAnnotationInfo(
+                            function_identifier=a_dot_f,
+                            name="self",
+                            is_annotated=False,
+                            code_range=CodeRange(
+                                start=CodePosition(line=3, column=10),
+                                end=CodePosition(line=3, column=14),
+                            ),
+                        ),
+                        ParameterAnnotationInfo(
+                            function_identifier=a_dot_f,
+                            name="x",
+                            is_annotated=True,
+                            code_range=CodeRange(
+                                start=CodePosition(line=3, column=16),
+                                end=CodePosition(line=3, column=17),
+                            ),
+                        ),
+                    ],
+                    is_method_or_classmethod=True,
+                )
+            ],
+        )
+
+    def test_function_annotations__partially_annotated_static_method(self) -> None:
+        a_dot_f = FunctionIdentifier(
+            parent="A",
+            name="f",
+        )
+        self._assert_function_annotations(
+            """
+            class A:
+
                 @staticmethod
-                def bar(self, x: int) -> None:
+                def f(self, x: int) -> None:
                     pass
             """,
-            {
-                "annotated_return_count": 1,
-                "annotated_globals_count": 0,
-                "annotated_parameter_count": 1,
-                "return_count": 1,
-                "globals_count": 0,
-                "parameter_count": 2,
-                "attribute_count": 0,
-                "annotated_attribute_count": 0,
-                "function_count": 1,
-                "partially_annotated_function_count": 1,
-                "fully_annotated_function_count": 0,
-                "line_count": 5,
-            },
-        )
-
-        self.assert_counts(
-            """
-            def foo(x: str) -> str:
-                return x
-            """,
-            {
-                "return_count": 1,
-                "annotated_return_count": 1,
-                "globals_count": 0,
-                "annotated_globals_count": 0,
-                "parameter_count": 1,
-                "annotated_parameter_count": 1,
-                "attribute_count": 0,
-                "annotated_attribute_count": 0,
-                "function_count": 1,
-                "partially_annotated_function_count": 0,
-                "fully_annotated_function_count": 1,
-                "line_count": 3,
-            },
-        )
-        self.assert_counts(
-            """
-            class Test:
-                def foo(self, input: str) -> None:
-                    class Foo:
-                        pass
-
-                    pass
-
-                def bar(self, input: str) -> None:
-                    pass
-            """,
-            {
-                "return_count": 2,
-                "annotated_return_count": 2,
-                "globals_count": 0,
-                "annotated_globals_count": 0,
-                "parameter_count": 2,
-                "annotated_parameter_count": 2,
-                "attribute_count": 0,
-                "annotated_attribute_count": 0,
-                "function_count": 2,
-                "partially_annotated_function_count": 0,
-                "fully_annotated_function_count": 2,
-                "line_count": 10,
-            },
-        )
-        # Ensure globals and attributes with literal values are considered annotated.
-        self.assert_counts(
-            """
-            x: int = 1
-            y = 2
-            z = foo
-
-            class Foo:
-                x = 1
-                y = foo
-            """,
-            {
-                "return_count": 0,
-                "annotated_return_count": 0,
-                "globals_count": 3,
-                "annotated_globals_count": 3,
-                "parameter_count": 0,
-                "annotated_parameter_count": 0,
-                "attribute_count": 2,
-                "annotated_attribute_count": 2,
-                "function_count": 0,
-                "partially_annotated_function_count": 0,
-                "fully_annotated_function_count": 0,
-                "line_count": 8,
-            },
-        )
-
-    def test_count_annotations__partially_annotated_methods(self) -> None:
-        self.assert_counts(
-            """
-            class A:
-                def bar(self): ...
-            """,
-            {
-                "return_count": 1,
-                "annotated_return_count": 0,
-                "globals_count": 0,
-                "annotated_globals_count": 0,
-                "parameter_count": 0,
-                "annotated_parameter_count": 0,
-                "attribute_count": 0,
-                "annotated_attribute_count": 0,
-                "function_count": 1,
-                "partially_annotated_function_count": 0,
-                "fully_annotated_function_count": 0,
-                "line_count": 3,
-            },
-        )
-        self.assert_counts(
-            """
-            class A:
-                def bar(self) -> None: ...
-            """,
-            {
-                "return_count": 1,
-                "annotated_return_count": 1,
-                "globals_count": 0,
-                "annotated_globals_count": 0,
-                "parameter_count": 0,
-                "annotated_parameter_count": 0,
-                "attribute_count": 0,
-                "annotated_attribute_count": 0,
-                "function_count": 1,
-                "partially_annotated_function_count": 0,
-                "fully_annotated_function_count": 1,
-                "line_count": 3,
-            },
-        )
-        self.assert_counts(
-            """
-            class A:
-                def baz(self, x): ...
-            """,
-            {
-                "return_count": 1,
-                "annotated_return_count": 0,
-                "globals_count": 0,
-                "annotated_globals_count": 0,
-                "parameter_count": 1,
-                "annotated_parameter_count": 0,
-                "attribute_count": 0,
-                "annotated_attribute_count": 0,
-                "function_count": 1,
-                "partially_annotated_function_count": 0,
-                "fully_annotated_function_count": 0,
-                "line_count": 3,
-            },
-        )
-        self.assert_counts(
-            """
-            class A:
-                def baz(self, x) -> None: ...
-            """,
-            {
-                "return_count": 1,
-                "annotated_return_count": 1,
-                "globals_count": 0,
-                "annotated_globals_count": 0,
-                "parameter_count": 1,
-                "annotated_parameter_count": 0,
-                "attribute_count": 0,
-                "annotated_attribute_count": 0,
-                "function_count": 1,
-                "partially_annotated_function_count": 1,
-                "fully_annotated_function_count": 0,
-                "line_count": 3,
-            },
-        )
-        self.assert_counts(
-            """
-            class A:
-                def baz(self: Foo): ...
-            """,
-            {
-                "return_count": 1,
-                "annotated_return_count": 0,
-                "globals_count": 0,
-                "annotated_globals_count": 0,
-                "parameter_count": 0,
-                "annotated_parameter_count": 0,
-                "attribute_count": 0,
-                "annotated_attribute_count": 0,
-                "function_count": 1,
-                "partially_annotated_function_count": 1,
-                "fully_annotated_function_count": 0,
-                "line_count": 3,
-            },
+            [
+                FunctionAnnotationInfo(
+                    code_range=CodeRange(
+                        start=CodePosition(line=5, column=4),
+                        end=CodePosition(line=6, column=12),
+                    ),
+                    annotation_kind=FunctionAnnotationKind.PARTIALLY_ANNOTATED,
+                    returns=ReturnAnnotationInfo(
+                        function_identifier=a_dot_f,
+                        is_annotated=True,
+                        code_range=CodeRange(
+                            start=CodePosition(line=5, column=8),
+                            end=CodePosition(line=5, column=9),
+                        ),
+                    ),
+                    parameters=[
+                        ParameterAnnotationInfo(
+                            function_identifier=a_dot_f,
+                            name="self",
+                            is_annotated=False,
+                            code_range=CodeRange(
+                                start=CodePosition(line=5, column=10),
+                                end=CodePosition(line=5, column=14),
+                            ),
+                        ),
+                        ParameterAnnotationInfo(
+                            function_identifier=a_dot_f,
+                            name="x",
+                            is_annotated=True,
+                            code_range=CodeRange(
+                                start=CodePosition(line=5, column=16),
+                                end=CodePosition(line=5, column=17),
+                            ),
+                        ),
+                    ],
+                    is_method_or_classmethod=False,
+                )
+            ],
         )
 
 
 class FunctionAnnotationKindTest(testslide.TestCase):
+
+    ANNOTATION = cst.Annotation(cst.Name("Foo"))
+
+    def _parameter(self, name: str, annotated: bool) -> cst.Param:
+        return cst.Param(
+            name=cst.Name(name),
+            annotation=self.ANNOTATION if annotated else None,
+        )
+
     def test_from_function_data(self) -> None:
-        three_parameters = [
-            cst.Param(name=cst.Name("x1"), annotation=None),
-            cst.Param(name=cst.Name("x2"), annotation=None),
-            cst.Param(name=cst.Name("x3"), annotation=None),
-        ]
         self.assertEqual(
             FunctionAnnotationKind.from_function_data(
                 is_return_annotated=True,
-                annotated_parameter_count=3,
-                is_method_or_classmethod=False,
-                parameters=three_parameters,
+                is_non_static_method=False,
+                parameters=[
+                    self._parameter("x0", annotated=True),
+                    self._parameter("x1", annotated=True),
+                    self._parameter("x2", annotated=True),
+                ],
             ),
             FunctionAnnotationKind.FULLY_ANNOTATED,
         )
         self.assertEqual(
             FunctionAnnotationKind.from_function_data(
                 is_return_annotated=True,
-                annotated_parameter_count=0,
-                is_method_or_classmethod=False,
-                parameters=three_parameters,
-            ),
-            FunctionAnnotationKind.PARTIALLY_ANNOTATED,
-        )
-        self.assertEqual(
-            FunctionAnnotationKind.from_function_data(
-                is_return_annotated=False,
-                annotated_parameter_count=0,
-                is_method_or_classmethod=False,
-                parameters=three_parameters,
-            ),
-            FunctionAnnotationKind.NOT_ANNOTATED,
-        )
-        self.assertEqual(
-            FunctionAnnotationKind.from_function_data(
-                is_return_annotated=False,
-                annotated_parameter_count=1,
-                is_method_or_classmethod=False,
-                parameters=three_parameters,
-            ),
-            FunctionAnnotationKind.PARTIALLY_ANNOTATED,
-        )
-        # An untyped `self` parameter of a method does not count for partial
-        # annotation. As per PEP 484, we need an explicitly annotated parameter.
-        self.assertEqual(
-            FunctionAnnotationKind.from_function_data(
-                is_return_annotated=False,
-                annotated_parameter_count=1,
-                is_method_or_classmethod=True,
-                parameters=three_parameters,
-            ),
-            FunctionAnnotationKind.NOT_ANNOTATED,
-        )
-        self.assertEqual(
-            FunctionAnnotationKind.from_function_data(
-                is_return_annotated=False,
-                annotated_parameter_count=2,
-                is_method_or_classmethod=True,
-                parameters=three_parameters,
-            ),
-            FunctionAnnotationKind.PARTIALLY_ANNOTATED,
-        )
-        # An annotated `self` suffices to make Pyre typecheck the method.
-        self.assertEqual(
-            FunctionAnnotationKind.from_function_data(
-                is_return_annotated=False,
-                annotated_parameter_count=1,
-                is_method_or_classmethod=True,
+                is_non_static_method=False,
                 parameters=[
-                    cst.Param(
-                        name=cst.Name("self"),
-                        annotation=cst.Annotation(cst.Name("Foo")),
-                    )
+                    self._parameter("x0", annotated=False),
+                    self._parameter("x1", annotated=False),
+                    self._parameter("x2", annotated=False),
                 ],
             ),
             FunctionAnnotationKind.PARTIALLY_ANNOTATED,
@@ -607,145 +420,315 @@ class FunctionAnnotationKindTest(testslide.TestCase):
         self.assertEqual(
             FunctionAnnotationKind.from_function_data(
                 is_return_annotated=False,
-                annotated_parameter_count=0,
-                is_method_or_classmethod=True,
-                parameters=[],
+                is_non_static_method=False,
+                parameters=[
+                    self._parameter("x0", annotated=False),
+                    self._parameter("x1", annotated=False),
+                    self._parameter("x2", annotated=False),
+                ],
             ),
             FunctionAnnotationKind.NOT_ANNOTATED,
         )
-
-
-class FixmeCountCollectorTest(testslide.TestCase):
-    def assert_counts(
-        self,
-        source: str,
-        expected_codes: Dict[int, List[int]],
-        expected_no_codes: List[int],
-    ) -> None:
-        source_module = parse_code(source.replace("FIXME", "pyre-fixme"))
-        result = FixmeCountCollector().collect(source_module)
-        self.assertEqual(expected_codes, result.code)
-        self.assertEqual(expected_no_codes, result.no_code)
-
-    def test_count_fixmes(self) -> None:
-        self.assert_counts("# FIXME[2]: Example Error Message", {2: [1]}, [])
-        self.assert_counts(
-            "# FIXME[3]: Example Error Message \n\n\n # FIXME[34]: Example",
-            {3: [1], 34: [4]},
-            [],
+        self.assertEqual(
+            FunctionAnnotationKind.from_function_data(
+                is_return_annotated=False,
+                is_non_static_method=False,
+                parameters=[
+                    self._parameter("x0", annotated=True),
+                    self._parameter("x1", annotated=False),
+                    self._parameter("x2", annotated=False),
+                ],
+            ),
+            FunctionAnnotationKind.PARTIALLY_ANNOTATED,
         )
-        self.assert_counts(
-            "# FIXME[2]: Example Error Message\n\n\n# FIXME[2]: message",
-            {2: [1, 4]},
-            [],
+        # An untyped `self` parameter of a method is not required, but it also
+        # does not count for partial annotation. As per PEP 484, we need an
+        # explicitly annotated parameter or return before we'll typecheck a method.
+        #
+        # Check several edge cases related to this.
+        self.assertEqual(
+            FunctionAnnotationKind.from_function_data(
+                is_return_annotated=True,
+                is_non_static_method=True,
+                parameters=[
+                    self._parameter("self", annotated=False),
+                    self._parameter("x1", annotated=False),
+                ],
+            ),
+            FunctionAnnotationKind.PARTIALLY_ANNOTATED,
         )
-        self.assert_counts(
-            """
-            def foo(x: str) -> int:
-                return x  # FIXME[7]
-            """,
-            {7: [3]},
-            [],
+        self.assertEqual(
+            FunctionAnnotationKind.from_function_data(
+                is_return_annotated=True,
+                is_non_static_method=True,
+                parameters=[
+                    self._parameter("self", annotated=True),
+                    self._parameter("x1", annotated=False),
+                ],
+            ),
+            FunctionAnnotationKind.PARTIALLY_ANNOTATED,
         )
-        self.assert_counts(
-            """
-            def foo(x: str) -> int:
-                # FIXME[7]: comments
-                return x
-            """,
-            {7: [3]},
-            [],
+        self.assertEqual(
+            FunctionAnnotationKind.from_function_data(
+                is_return_annotated=True,
+                is_non_static_method=True,
+                parameters=[
+                    self._parameter("self", annotated=False),
+                ],
+            ),
+            FunctionAnnotationKind.FULLY_ANNOTATED,
         )
-        self.assert_counts(
-            """
-            def foo(x: str) -> int:
-                return x # unrelated # FIXME[7]
-            """,
-            {7: [3]},
-            [],
-        )
-        self.assert_counts(
-            """
-            def foo(x: str) -> int:
-                return x # unrelated   #  FIXME[7] comments
-            """,
-            {7: [3]},
-            [],
-        )
-        self.assert_counts(
-            """
-            def foo(x: str) -> int:
-                return x  # FIXME
-            """,
-            {},
-            [3],
-        )
-        self.assert_counts(
-            """
-            def foo(x: str) -> int:
-                return x  # FIXME: comments
-            """,
-            {},
-            [3],
-        )
-        self.assert_counts(
-            """
-            def foo(x: str) -> int:
-                return x # FIXME[7, 8]
-            """,
-            {7: [3], 8: [3]},
-            [],
-        )
-        self.assert_counts(
-            """
-            # FIXME[8]
-            def foo(x: str) -> int:
-                return x # FIXME[7, 8]
-            """,
-            {7: [4], 8: [2, 4]},
-            [],
-        )
-        # Invalid suppression
-        self.assert_counts(
-            """
-            # FIXME[8,]
-            def foo(x: str) -> int:
-                return x
-            """,
-            {},
-            [2],
+        # An explicitly annotated `self` suffices to make Pyre typecheck the method.
+        self.assertEqual(
+            FunctionAnnotationKind.from_function_data(
+                is_return_annotated=False,
+                is_non_static_method=True,
+                parameters=[
+                    self._parameter("self", annotated=True),
+                ],
+            ),
+            FunctionAnnotationKind.PARTIALLY_ANNOTATED,
         )
 
 
-class IgnoreCountCollectorTest(testslide.TestCase):
+class SuppressionCollectorTest(testslide.TestCase):
     maxDiff = 2000
 
-    def assert_counts(
-        self,
-        source: str,
-        expected_codes: Dict[int, List[int]],
-        expected_no_codes: List[int],
+    def _assert_suppressions(
+        self, source: str, expected: Sequence[TypeErrorSuppression]
     ) -> None:
-        source_module = parse_code(source.replace("IGNORE", "pyre-ignore"))
-        result = IgnoreCountCollector().collect(source_module)
-        self.assertEqual(expected_codes, result.code)
-        self.assertEqual(expected_no_codes, result.no_code)
+        source_module = parse_code(
+            source.replace("PYRE_FIXME", "pyre-fixme")
+            .replace("PYRE_IGNORE", "pyre-ignore")
+            .replace("TYPE_IGNORE", "type: ignore")
+        )
+        actual = SuppressionCollector().collect(source_module)
+        self.assertEqual(actual, expected)
 
-    def test_count_ignores(self) -> None:
-        self.assert_counts("# IGNORE[2]: Example Error Message", {2: [1]}, [])
-        self.assert_counts(
-            "# IGNORE[3]: Example Error Message \n\n\n # pyre-ignore[34]: Example",
-            {3: [1], 34: [4]},
+    def test_find_fixmes__simple(self) -> None:
+        self._assert_suppressions(
+            """
+            # PYRE_FIXME
+            # PYRE_FIXME with message
+            # PYRE_FIXME[1]
+            # PYRE_FIXME[10, 11] with message
+            # PYRE_FIXME[10,]  (trailing comma is illegal, codes are ignored)
+            """,
+            [
+                TypeErrorSuppression(
+                    kind=SuppressionKind.PYRE_FIXME,
+                    code_range=CodeRange(
+                        start=CodePosition(line=2, column=0),
+                        end=CodePosition(line=2, column=12),
+                    ),
+                    error_codes=None,
+                ),
+                TypeErrorSuppression(
+                    kind=SuppressionKind.PYRE_FIXME,
+                    code_range=CodeRange(
+                        start=CodePosition(line=3, column=0),
+                        end=CodePosition(line=3, column=25),
+                    ),
+                    error_codes=None,
+                ),
+                TypeErrorSuppression(
+                    kind=SuppressionKind.PYRE_FIXME,
+                    code_range=CodeRange(
+                        start=CodePosition(line=4, column=0),
+                        end=CodePosition(line=4, column=15),
+                    ),
+                    error_codes=[1],
+                ),
+                TypeErrorSuppression(
+                    kind=SuppressionKind.PYRE_FIXME,
+                    code_range=CodeRange(
+                        start=CodePosition(line=5, column=0),
+                        end=CodePosition(line=5, column=33),
+                    ),
+                    error_codes=[10, 11],
+                ),
+                TypeErrorSuppression(
+                    kind=SuppressionKind.PYRE_FIXME,
+                    code_range=CodeRange(
+                        start=CodePosition(line=6, column=0),
+                        end=CodePosition(line=6, column=65),
+                    ),
+                    error_codes=[],
+                ),
+            ],
+        )
+
+    def test_find_ignores__simple(self) -> None:
+        self._assert_suppressions(
+            """
+            # PYRE_IGNORE
+            # PYRE_IGNORE with message
+            # PYRE_IGNORE[1]
+            # PYRE_IGNORE[10, 11]
+            # PYRE_IGNORE[10, 11] with message
+            # PYRE_IGNORE[10,]  (trailing comma is illegal, codes are ignored)
+            """,
+            [
+                TypeErrorSuppression(
+                    kind=SuppressionKind.PYRE_IGNORE,
+                    code_range=CodeRange(
+                        start=CodePosition(line=2, column=0),
+                        end=CodePosition(line=2, column=13),
+                    ),
+                    error_codes=None,
+                ),
+                TypeErrorSuppression(
+                    kind=SuppressionKind.PYRE_IGNORE,
+                    code_range=CodeRange(
+                        start=CodePosition(line=3, column=0),
+                        end=CodePosition(line=3, column=26),
+                    ),
+                    error_codes=None,
+                ),
+                TypeErrorSuppression(
+                    kind=SuppressionKind.PYRE_IGNORE,
+                    code_range=CodeRange(
+                        start=CodePosition(line=4, column=0),
+                        end=CodePosition(line=4, column=16),
+                    ),
+                    error_codes=[1],
+                ),
+                TypeErrorSuppression(
+                    kind=SuppressionKind.PYRE_IGNORE,
+                    code_range=CodeRange(
+                        start=CodePosition(line=5, column=0),
+                        end=CodePosition(line=5, column=21),
+                    ),
+                    error_codes=[10, 11],
+                ),
+                TypeErrorSuppression(
+                    kind=SuppressionKind.PYRE_IGNORE,
+                    code_range=CodeRange(
+                        start=CodePosition(line=6, column=0),
+                        end=CodePosition(line=6, column=34),
+                    ),
+                    error_codes=[10, 11],
+                ),
+                TypeErrorSuppression(
+                    kind=SuppressionKind.PYRE_IGNORE,
+                    code_range=CodeRange(
+                        start=CodePosition(line=7, column=0),
+                        end=CodePosition(line=7, column=66),
+                    ),
+                    error_codes=[],
+                ),
+            ],
+        )
+
+    def test_find_type_ignores(self) -> None:
+        self._assert_suppressions(
+            """
+            # TYPE_IGNORE
+            # TYPE_IGNORE[1]  (codes won't be parsed)
+            """,
+            [
+                TypeErrorSuppression(
+                    kind=SuppressionKind.TYPE_IGNORE,
+                    code_range=CodeRange(
+                        start=CodePosition(line=2, column=0),
+                        end=CodePosition(line=2, column=14),
+                    ),
+                    error_codes=None,
+                ),
+                TypeErrorSuppression(
+                    kind=SuppressionKind.TYPE_IGNORE,
+                    code_range=CodeRange(
+                        start=CodePosition(line=3, column=0),
+                        end=CodePosition(line=3, column=42),
+                    ),
+                    error_codes=None,
+                ),
+            ],
+        )
+
+    def test_find_suppressions__trailing_comments(self) -> None:
+        self._assert_suppressions(
+            """
+            a: int = 42.0 # PYRE_FIXME
+            b: int = 42.0 # leading comment # PYRE_FIXME[3, 4]
+            c: int = 42.0 # leading comment # PYRE_IGNORE[5]
+            f: int = 42.0 # leading comment # TYPE_IGNORE
+            """,
+            [
+                TypeErrorSuppression(
+                    kind=SuppressionKind.PYRE_FIXME,
+                    code_range=CodeRange(
+                        start=CodePosition(line=2, column=14),
+                        end=CodePosition(line=2, column=26),
+                    ),
+                    error_codes=None,
+                ),
+                TypeErrorSuppression(
+                    kind=SuppressionKind.PYRE_FIXME,
+                    code_range=CodeRange(
+                        start=CodePosition(line=3, column=14),
+                        end=CodePosition(line=3, column=50),
+                    ),
+                    error_codes=[3, 4],
+                ),
+                TypeErrorSuppression(
+                    kind=SuppressionKind.PYRE_IGNORE,
+                    code_range=CodeRange(
+                        start=CodePosition(line=4, column=14),
+                        end=CodePosition(line=4, column=48),
+                    ),
+                    error_codes=[5],
+                ),
+                TypeErrorSuppression(
+                    kind=SuppressionKind.TYPE_IGNORE,
+                    code_range=CodeRange(
+                        start=CodePosition(line=5, column=14),
+                        end=CodePosition(line=5, column=46),
+                    ),
+                    error_codes=None,
+                ),
+            ],
+        )
+
+    def test_find_suppressions__multiline_string(self) -> None:
+        self._assert_suppressions(
+            """
+            '''
+            # PYRE_IGNORE
+            '''
+            """,
             [],
         )
-        self.assert_counts(
-            "# IGNORE[2]: Example Error Message\n\n\n# pyre-ignore[2]: message",
-            {2: [1, 4]},
-            [],
+
+    def test_find_suppressions__nested_suppressions(self) -> None:
+        # If there are multiple suppressions, we count all of them. This is unlikely
+        # to arise in practice but needs to have well-defined behavior.
+        self._assert_suppressions(
+            """
+            # # PYRE_IGNORE # TYPE_IGNORE
+            """,
+            [
+                TypeErrorSuppression(
+                    kind=SuppressionKind.PYRE_IGNORE,
+                    code_range=CodeRange(
+                        start=CodePosition(line=2, column=0),
+                        end=CodePosition(line=2, column=30),
+                    ),
+                    error_codes=None,
+                ),
+                TypeErrorSuppression(
+                    kind=SuppressionKind.TYPE_IGNORE,
+                    code_range=CodeRange(
+                        start=CodePosition(line=2, column=0),
+                        end=CodePosition(line=2, column=30),
+                    ),
+                    error_codes=None,
+                ),
+            ],
         )
 
 
-class StrictCountCollectorTest(testslide.TestCase):
+class ModuleModecollectorTest(testslide.TestCase):
     def assert_counts(
         self,
         source: str,
@@ -754,7 +737,7 @@ class StrictCountCollectorTest(testslide.TestCase):
         explicit_comment_line: Optional[int],
     ) -> None:
         source_module = parse_code(source)
-        result = StrictCountCollector(default_strict).collect(source_module)
+        result = ModuleModeCollector(default_strict).collect(source_module)
         self.assertEqual(mode, result.mode)
         self.assertEqual(explicit_comment_line, result.explicit_comment_line)
 
@@ -805,7 +788,7 @@ class StrictCountCollectorTest(testslide.TestCase):
                 return 1
             """,
             default_strict=True,
-            mode=ModuleMode.UNSAFE,
+            mode=ModuleMode.IGNORE_ALL,
             explicit_comment_line=2,
         )
         self.assert_counts(

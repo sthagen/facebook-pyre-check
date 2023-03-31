@@ -16,8 +16,12 @@ and pyre-fixme and pyre-ignore directives.
 import dataclasses
 import json
 import logging
+import re
 from pathlib import Path
-from typing import Dict, Iterable, Mapping
+from typing import Dict, Iterable, List, Mapping, Optional
+
+import libcst
+from libcst.metadata import CodeRange
 
 from .. import (
     command_arguments,
@@ -33,11 +37,141 @@ LOG: logging.Logger = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass(frozen=True)
+class ModuleSuppressionData:
+    code: Dict[coverage_data.ErrorCode, List[coverage_data.LineNumber]]
+    no_code: List[coverage_data.LineNumber]
+
+
+class SuppressionCountCollector(coverage_data.VisitorWithPositionData):
+    def __init__(self, regex: str) -> None:
+        self.no_code: List[int] = []
+        self.codes: Dict[int, List[int]] = {}
+        self.regex: re.Pattern[str] = re.compile(regex)
+
+    def error_codes(self, line: str) -> Optional[List[coverage_data.ErrorCode]]:
+        match = self.regex.match(line)
+        if match is None:
+            # No suppression on line
+            return None
+        code_group = match.group(1)
+        if code_group is None:
+            # Code-less error suppression
+            return []
+        code_strings = code_group.strip("[] ").split(",")
+        try:
+            codes = [int(code) for code in code_strings]
+            return codes
+        except ValueError:
+            LOG.warning("Invalid error suppression code: %s", line)
+            return []
+
+    def visit_Comment(self, node: libcst.Comment) -> None:
+        error_codes = self.error_codes(node.value)
+        if error_codes is None:
+            return
+        suppression_line = self.code_range(node).start.line
+        if len(error_codes) == 0:
+            self.no_code.append(suppression_line)
+            return
+        for code in error_codes:
+            if code in self.codes:
+                self.codes[code].append(suppression_line)
+            else:
+                self.codes[code] = [suppression_line]
+
+    def collect(
+        self,
+        module: libcst.MetadataWrapper,
+    ) -> ModuleSuppressionData:
+        module.visit(self)
+        return ModuleSuppressionData(code=self.codes, no_code=self.no_code)
+
+
+class FixmeCountCollector(SuppressionCountCollector):
+    def __init__(self) -> None:
+        super().__init__(r".*# *pyre-fixme(\[(\d* *,? *)*\])?")
+
+
+class IgnoreCountCollector(SuppressionCountCollector):
+    def __init__(self) -> None:
+        super().__init__(r".*# *pyre-ignore(\[(\d* *,? *)*\])?")
+
+
+class TypeIgnoreCountCollector(SuppressionCountCollector):
+    def __init__(self) -> None:
+        super().__init__(r".*# *type: ignore")
+
+
+@dataclasses.dataclass(frozen=True)
+class ModuleAnnotationData:
+    line_count: int
+    total_functions: List[CodeRange]
+    partially_annotated_functions: List[CodeRange]
+    fully_annotated_functions: List[CodeRange]
+    total_parameters: List[CodeRange]
+    annotated_parameters: List[CodeRange]
+    total_returns: List[CodeRange]
+    annotated_returns: List[CodeRange]
+    total_globals: List[CodeRange]
+    annotated_globals: List[CodeRange]
+    total_attributes: List[CodeRange]
+    annotated_attributes: List[CodeRange]
+
+    def to_count_dict(self) -> Dict[str, int]:
+        return {
+            "return_count": len(self.total_returns),
+            "annotated_return_count": len(self.annotated_returns),
+            "globals_count": len(self.total_globals),
+            "annotated_globals_count": len(self.annotated_globals),
+            "parameter_count": len(self.total_parameters),
+            "annotated_parameter_count": len(self.annotated_parameters),
+            "attribute_count": len(self.total_attributes),
+            "annotated_attribute_count": len(self.annotated_attributes),
+            "function_count": len(self.total_functions),
+            "partially_annotated_function_count": len(
+                self.partially_annotated_functions
+            ),
+            "fully_annotated_function_count": len(self.fully_annotated_functions),
+            "line_count": self.line_count,
+        }
+
+
+class AnnotationCountCollector(coverage_data.AnnotationCollector):
+    def collect(
+        self,
+        module: libcst.MetadataWrapper,
+    ) -> ModuleAnnotationData:
+        module.visit(self)
+        return ModuleAnnotationData(
+            line_count=self.line_count,
+            total_functions=[function.code_range for function in self.functions],
+            partially_annotated_functions=[
+                f.code_range for f in self.functions if f.is_partially_annotated
+            ],
+            fully_annotated_functions=[
+                f.code_range for f in self.functions if f.is_fully_annotated
+            ],
+            total_parameters=[p.code_range for p in list(self.parameters())],
+            annotated_parameters=[
+                p.code_range for p in self.parameters() if p.is_annotated
+            ],
+            total_returns=[r.code_range for r in self.returns()],
+            annotated_returns=[r.code_range for r in self.returns() if r.is_annotated],
+            total_globals=[g.code_range for g in self.globals],
+            annotated_globals=[g.code_range for g in self.globals if g.is_annotated],
+            total_attributes=[a.code_range for a in self.attributes],
+            annotated_attributes=[
+                a.code_range for a in self.attributes if a.is_annotated
+            ],
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class StatisticsData:
-    annotations: coverage_data.ModuleAnnotationData
-    fixmes: coverage_data.ModuleSuppressionData
-    ignores: coverage_data.ModuleSuppressionData
-    strict: coverage_data.ModuleStrictData
+    annotations: ModuleAnnotationData
+    fixmes: ModuleSuppressionData
+    ignores: ModuleSuppressionData
+    strict: coverage_data.ModuleModeInfo
 
 
 def collect_statistics(
@@ -49,10 +183,10 @@ def collect_statistics(
         if module is None:
             continue
         try:
-            annotations = coverage_data.AnnotationCountCollector().collect(module)
-            fixmes = coverage_data.FixmeCountCollector().collect(module)
-            ignores = coverage_data.IgnoreCountCollector().collect(module)
-            modes = coverage_data.StrictCountCollector(strict_default).collect(module)
+            annotations = AnnotationCountCollector().collect(module)
+            fixmes = FixmeCountCollector().collect(module)
+            ignores = IgnoreCountCollector().collect(module)
+            modes = coverage_data.ModuleModeCollector(strict_default).collect(module)
             statistics_data = StatisticsData(
                 annotations,
                 fixmes,
@@ -111,9 +245,7 @@ def aggregate_statistics(
     }
 
     for statistics_data in data.values():
-        annotation_counts = coverage_data.AnnotationCountCollector.get_result_counts(
-            statistics_data.annotations
-        )
+        annotation_counts = statistics_data.annotations.to_count_dict()
         for key in aggregate_annotations.keys():
             aggregate_annotations[key] += annotation_counts[key]
 
