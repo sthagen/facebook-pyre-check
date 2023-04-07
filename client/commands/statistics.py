@@ -10,6 +10,13 @@ This command allows users to get some simple information about the number of
 code objects (e.g. returns, parameters), how many of those code objects have
 annotations, and some other information such as the number of strict files
 and pyre-fixme and pyre-ignore directives.
+
+We intend to replace this command with the newer `pyre report`, which uses
+a more ganular and tabular data format that will work better for downstream
+purproses.
+
+The `pyre statistics` command is in maintenance mode while we build out `pyre
+report` and migrate use cases.
 """
 
 
@@ -226,7 +233,7 @@ def collect_statistics(
             annotations = AnnotationCountCollector().collect(module)
             fixmes = FixmeCountCollector().collect(module)
             ignores = IgnoreCountCollector().collect(module)
-            modes = coverage_data.collect_mode_info(module, strict_default)
+            modes = coverage_data.collect_mode(module, strict_default)
             statistics_data = StatisticsData(
                 annotations,
                 fixmes,

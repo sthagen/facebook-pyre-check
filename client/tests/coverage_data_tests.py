@@ -18,7 +18,7 @@ from ..coverage_data import (
     AnnotationCollector,
     find_module_paths,
     FunctionAnnotationInfo,
-    FunctionAnnotationKind,
+    FunctionAnnotationStatus,
     FunctionIdentifier,
     get_paths_to_collect,
     Location,
@@ -117,17 +117,13 @@ class AnnotationCollectorTest(testslide.TestCase):
         expected: Sequence[FunctionAnnotationInfo],
     ) -> None:
         module = parse_code(code)
-        actual = coverage_data.collect_function_annotations(module)
+        actual = coverage_data.collect_functions(module)
         self.assertEqual(
             actual,
             expected,
         )
 
     def test_function_annotations__standalone_no_annotations(self) -> None:
-        f = FunctionIdentifier(
-            parent=None,
-            name="f",
-        )
         self._assert_function_annotations(
             """
             def f(x):
@@ -135,15 +131,18 @@ class AnnotationCollectorTest(testslide.TestCase):
             """,
             [
                 FunctionAnnotationInfo(
+                    identifier=FunctionIdentifier(
+                        parent=None,
+                        name="f",
+                    ),
                     location=Location(
                         start_line=2,
                         start_column=0,
                         end_line=3,
                         end_column=8,
                     ),
-                    annotation_kind=FunctionAnnotationKind.NOT_ANNOTATED,
+                    annotation_status=FunctionAnnotationStatus.NOT_ANNOTATED,
                     returns=ReturnAnnotationInfo(
-                        function_identifier=f,
                         is_annotated=False,
                         location=Location(
                             start_line=2,
@@ -154,7 +153,6 @@ class AnnotationCollectorTest(testslide.TestCase):
                     ),
                     parameters=[
                         ParameterAnnotationInfo(
-                            function_identifier=f,
                             name="x",
                             is_annotated=False,
                             location=Location(
@@ -171,14 +169,6 @@ class AnnotationCollectorTest(testslide.TestCase):
         )
 
     def test_function_annotations__standalone_partially_annotated(self) -> None:
-        f = FunctionIdentifier(
-            parent=None,
-            name="f",
-        )
-        g = FunctionIdentifier(
-            parent=None,
-            name="g",
-        )
         self._assert_function_annotations(
             """
             def f(x) -> None:
@@ -189,15 +179,18 @@ class AnnotationCollectorTest(testslide.TestCase):
             """,
             [
                 FunctionAnnotationInfo(
+                    identifier=FunctionIdentifier(
+                        parent=None,
+                        name="f",
+                    ),
                     location=Location(
                         start_line=2,
                         start_column=0,
                         end_line=3,
                         end_column=8,
                     ),
-                    annotation_kind=FunctionAnnotationKind.PARTIALLY_ANNOTATED,
+                    annotation_status=FunctionAnnotationStatus.PARTIALLY_ANNOTATED,
                     returns=ReturnAnnotationInfo(
-                        function_identifier=f,
                         is_annotated=True,
                         location=Location(
                             start_line=2,
@@ -208,7 +201,6 @@ class AnnotationCollectorTest(testslide.TestCase):
                     ),
                     parameters=[
                         ParameterAnnotationInfo(
-                            function_identifier=f,
                             name="x",
                             is_annotated=False,
                             location=Location(
@@ -222,15 +214,18 @@ class AnnotationCollectorTest(testslide.TestCase):
                     is_method_or_classmethod=False,
                 ),
                 FunctionAnnotationInfo(
+                    identifier=FunctionIdentifier(
+                        parent=None,
+                        name="g",
+                    ),
                     location=Location(
                         start_line=5,
                         start_column=0,
                         end_line=6,
                         end_column=8,
                     ),
-                    annotation_kind=FunctionAnnotationKind.PARTIALLY_ANNOTATED,
+                    annotation_status=FunctionAnnotationStatus.PARTIALLY_ANNOTATED,
                     returns=ReturnAnnotationInfo(
-                        function_identifier=g,
                         is_annotated=False,
                         location=Location(
                             start_line=5,
@@ -241,7 +236,6 @@ class AnnotationCollectorTest(testslide.TestCase):
                     ),
                     parameters=[
                         ParameterAnnotationInfo(
-                            function_identifier=g,
                             name="x",
                             is_annotated=True,
                             location=Location(
@@ -258,10 +252,6 @@ class AnnotationCollectorTest(testslide.TestCase):
         )
 
     def test_function_annotations__standalone_fully_annotated(self) -> None:
-        f = FunctionIdentifier(
-            parent=None,
-            name="f",
-        )
         self._assert_function_annotations(
             """
             def f(x: int) -> None:
@@ -269,15 +259,18 @@ class AnnotationCollectorTest(testslide.TestCase):
             """,
             [
                 FunctionAnnotationInfo(
+                    identifier=FunctionIdentifier(
+                        parent=None,
+                        name="f",
+                    ),
                     location=Location(
                         start_line=2,
                         start_column=0,
                         end_line=3,
                         end_column=8,
                     ),
-                    annotation_kind=FunctionAnnotationKind.FULLY_ANNOTATED,
+                    annotation_status=FunctionAnnotationStatus.FULLY_ANNOTATED,
                     returns=ReturnAnnotationInfo(
-                        function_identifier=f,
                         is_annotated=True,
                         location=Location(
                             start_line=2,
@@ -288,7 +281,6 @@ class AnnotationCollectorTest(testslide.TestCase):
                     ),
                     parameters=[
                         ParameterAnnotationInfo(
-                            function_identifier=f,
                             name="x",
                             is_annotated=True,
                             location=Location(
@@ -305,10 +297,6 @@ class AnnotationCollectorTest(testslide.TestCase):
         )
 
     def test_function_annotations__annotated_method(self) -> None:
-        a_dot_f = FunctionIdentifier(
-            parent="A",
-            name="f",
-        )
         self._assert_function_annotations(
             """
             class A:
@@ -317,15 +305,18 @@ class AnnotationCollectorTest(testslide.TestCase):
             """,
             [
                 FunctionAnnotationInfo(
+                    identifier=FunctionIdentifier(
+                        parent="A",
+                        name="f",
+                    ),
                     location=Location(
                         start_line=3,
                         start_column=4,
                         end_line=4,
                         end_column=12,
                     ),
-                    annotation_kind=FunctionAnnotationKind.FULLY_ANNOTATED,
+                    annotation_status=FunctionAnnotationStatus.FULLY_ANNOTATED,
                     returns=ReturnAnnotationInfo(
-                        function_identifier=a_dot_f,
                         is_annotated=True,
                         location=Location(
                             start_line=3,
@@ -336,7 +327,6 @@ class AnnotationCollectorTest(testslide.TestCase):
                     ),
                     parameters=[
                         ParameterAnnotationInfo(
-                            function_identifier=a_dot_f,
                             name="self",
                             is_annotated=False,
                             location=Location(
@@ -347,7 +337,6 @@ class AnnotationCollectorTest(testslide.TestCase):
                             ),
                         ),
                         ParameterAnnotationInfo(
-                            function_identifier=a_dot_f,
                             name="x",
                             is_annotated=True,
                             location=Location(
@@ -364,10 +353,6 @@ class AnnotationCollectorTest(testslide.TestCase):
         )
 
     def test_function_annotations__partially_annotated_static_method(self) -> None:
-        a_dot_inner_dot_f = FunctionIdentifier(
-            parent="A.Inner",
-            name="f",
-        )
         self._assert_function_annotations(
             """
             class A:
@@ -378,15 +363,18 @@ class AnnotationCollectorTest(testslide.TestCase):
             """,
             [
                 FunctionAnnotationInfo(
+                    identifier=FunctionIdentifier(
+                        parent="A.Inner",
+                        name="f",
+                    ),
                     location=Location(
                         start_line=5,
                         start_column=8,
                         end_line=6,
                         end_column=16,
                     ),
-                    annotation_kind=FunctionAnnotationKind.PARTIALLY_ANNOTATED,
+                    annotation_status=FunctionAnnotationStatus.PARTIALLY_ANNOTATED,
                     returns=ReturnAnnotationInfo(
-                        function_identifier=a_dot_inner_dot_f,
                         is_annotated=True,
                         location=Location(
                             start_line=5,
@@ -397,7 +385,6 @@ class AnnotationCollectorTest(testslide.TestCase):
                     ),
                     parameters=[
                         ParameterAnnotationInfo(
-                            function_identifier=a_dot_inner_dot_f,
                             name="self",
                             is_annotated=False,
                             location=Location(
@@ -408,7 +395,6 @@ class AnnotationCollectorTest(testslide.TestCase):
                             ),
                         ),
                         ParameterAnnotationInfo(
-                            function_identifier=a_dot_inner_dot_f,
                             name="x",
                             is_annotated=True,
                             location=Location(
@@ -425,7 +411,7 @@ class AnnotationCollectorTest(testslide.TestCase):
         )
 
 
-class FunctionAnnotationKindTest(testslide.TestCase):
+class FunctionAnnotationStatusTest(testslide.TestCase):
 
     ANNOTATION = cst.Annotation(cst.Name("Foo"))
 
@@ -437,7 +423,7 @@ class FunctionAnnotationKindTest(testslide.TestCase):
 
     def test_from_function_data(self) -> None:
         self.assertEqual(
-            FunctionAnnotationKind.from_function_data(
+            FunctionAnnotationStatus.from_function_data(
                 is_return_annotated=True,
                 is_non_static_method=False,
                 parameters=[
@@ -446,10 +432,10 @@ class FunctionAnnotationKindTest(testslide.TestCase):
                     self._parameter("x2", annotated=True),
                 ],
             ),
-            FunctionAnnotationKind.FULLY_ANNOTATED,
+            FunctionAnnotationStatus.FULLY_ANNOTATED,
         )
         self.assertEqual(
-            FunctionAnnotationKind.from_function_data(
+            FunctionAnnotationStatus.from_function_data(
                 is_return_annotated=True,
                 is_non_static_method=False,
                 parameters=[
@@ -458,10 +444,10 @@ class FunctionAnnotationKindTest(testslide.TestCase):
                     self._parameter("x2", annotated=False),
                 ],
             ),
-            FunctionAnnotationKind.PARTIALLY_ANNOTATED,
+            FunctionAnnotationStatus.PARTIALLY_ANNOTATED,
         )
         self.assertEqual(
-            FunctionAnnotationKind.from_function_data(
+            FunctionAnnotationStatus.from_function_data(
                 is_return_annotated=False,
                 is_non_static_method=False,
                 parameters=[
@@ -470,10 +456,10 @@ class FunctionAnnotationKindTest(testslide.TestCase):
                     self._parameter("x2", annotated=False),
                 ],
             ),
-            FunctionAnnotationKind.NOT_ANNOTATED,
+            FunctionAnnotationStatus.NOT_ANNOTATED,
         )
         self.assertEqual(
-            FunctionAnnotationKind.from_function_data(
+            FunctionAnnotationStatus.from_function_data(
                 is_return_annotated=False,
                 is_non_static_method=False,
                 parameters=[
@@ -482,7 +468,7 @@ class FunctionAnnotationKindTest(testslide.TestCase):
                     self._parameter("x2", annotated=False),
                 ],
             ),
-            FunctionAnnotationKind.PARTIALLY_ANNOTATED,
+            FunctionAnnotationStatus.PARTIALLY_ANNOTATED,
         )
         # An untyped `self` parameter of a method is not required, but it also
         # does not count for partial annotation. As per PEP 484, we need an
@@ -490,7 +476,7 @@ class FunctionAnnotationKindTest(testslide.TestCase):
         #
         # Check several edge cases related to this.
         self.assertEqual(
-            FunctionAnnotationKind.from_function_data(
+            FunctionAnnotationStatus.from_function_data(
                 is_return_annotated=True,
                 is_non_static_method=True,
                 parameters=[
@@ -498,10 +484,10 @@ class FunctionAnnotationKindTest(testslide.TestCase):
                     self._parameter("x1", annotated=False),
                 ],
             ),
-            FunctionAnnotationKind.PARTIALLY_ANNOTATED,
+            FunctionAnnotationStatus.PARTIALLY_ANNOTATED,
         )
         self.assertEqual(
-            FunctionAnnotationKind.from_function_data(
+            FunctionAnnotationStatus.from_function_data(
                 is_return_annotated=True,
                 is_non_static_method=True,
                 parameters=[
@@ -509,28 +495,28 @@ class FunctionAnnotationKindTest(testslide.TestCase):
                     self._parameter("x1", annotated=False),
                 ],
             ),
-            FunctionAnnotationKind.PARTIALLY_ANNOTATED,
+            FunctionAnnotationStatus.PARTIALLY_ANNOTATED,
         )
         self.assertEqual(
-            FunctionAnnotationKind.from_function_data(
+            FunctionAnnotationStatus.from_function_data(
                 is_return_annotated=True,
                 is_non_static_method=True,
                 parameters=[
                     self._parameter("self", annotated=False),
                 ],
             ),
-            FunctionAnnotationKind.FULLY_ANNOTATED,
+            FunctionAnnotationStatus.FULLY_ANNOTATED,
         )
         # An explicitly annotated `self` suffices to make Pyre typecheck the method.
         self.assertEqual(
-            FunctionAnnotationKind.from_function_data(
+            FunctionAnnotationStatus.from_function_data(
                 is_return_annotated=False,
                 is_non_static_method=True,
                 parameters=[
                     self._parameter("self", annotated=True),
                 ],
             ),
-            FunctionAnnotationKind.PARTIALLY_ANNOTATED,
+            FunctionAnnotationStatus.PARTIALLY_ANNOTATED,
         )
 
 
@@ -818,7 +804,7 @@ class ModuleModecollectorTest(testslide.TestCase):
         explicit_comment_line: Optional[int],
     ) -> None:
         source_module = parse_code(source)
-        result = coverage_data.collect_mode_info(source_module, default_strict)
+        result = coverage_data.collect_mode(source_module, default_strict)
         self.assertEqual(mode, result.mode)
         self.assertEqual(explicit_comment_line, result.explicit_comment_line)
 

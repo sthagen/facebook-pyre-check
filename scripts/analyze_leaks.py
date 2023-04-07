@@ -300,6 +300,118 @@ class LeakAnalysisResult:
             }
         )
 
+def is_valid_callee(callee: str) -> bool:
+    components = callee.strip().split(".")
+    is_valid_callee = all(component.isidentifier() and not keyword.iskeyword(component) for component in components)
+    return is_valid_callee
+
+
+def prepare_issues_for_query(callees: List[str]) -> str:
+    single_callee_query = [f"global_leaks({callee})" for callee in callees if is_valid_callee(callee)]
+    return "batch(" + ", ".join(single_callee_query) + ")"
+
+
+def collect_pyre_query_results(pyre_results: object) -> LeakAnalysisResult:
+    global_leaks: List[Dict[str, JSON]] = []
+    query_errors: List[JSON] = []
+    script_errors: List[LeakAnalysisScriptError] = []
+    if not isinstance(pyre_results, dict):
+        raise RuntimeError(
+            f"Expected dict for Pyre query results, got {type(pyre_results)}: {pyre_results}"
+        )
+    if "response" not in pyre_results:
+        raise RuntimeError("`response` key not in Pyre query results", pyre_results)
+    if not isinstance(pyre_results["response"], list):
+        response = pyre_results["response"]
+        raise RuntimeError(
+            f"Expected response value type to be list, got {type(response)}: {response}"
+        )
+    for query_response in pyre_results["response"]:
+        if not isinstance(query_response, dict):
+            script_errors.append(
+                LeakAnalysisScriptError(
+                    error_message=f"Expected dict for pyre response list type, got {type(query_response)}",
+                    bad_value=query_response,
+                )
+            )
+        elif "error" in query_response:
+            query_errors.append(query_response["error"])
+        elif (
+            "response" in query_response and "errors" in query_response["response"]
+        ):
+            global_leaks += query_response["response"]["errors"]
+        else:
+            script_errors.append(
+                LeakAnalysisScriptError(
+                    error_message="Unexpected single query response from Pyre",
+                    bad_value=query_response,
+                )
+            )
+
+    return LeakAnalysisResult(
+        global_leaks=global_leaks,
+        query_errors=query_errors,
+        script_errors=script_errors,
+    )
+
+def find_issues(callees: List[str], search_start_path: Path) -> LeakAnalysisResult:
+    query_str = prepare_issues_for_query(callees)
+    project_root = find_directories.find_global_and_local_root(search_start_path)
+    if not project_root:
+        raise ValueError(
+            f"Given project path {search_start_path} is not in a Pyre project"
+        )
+
+    local_relative_path = (
+        str(project_root.local_root.relative_to(project_root.global_root))
+        if project_root.local_root
+        else None
+    )
+
+    project_identifier = identifiers.get_project_identifier(
+        project_root.global_root, local_relative_path
+    )
+
+    socket_path = daemon_socket.get_socket_path(
+        project_identifier,
+        flavor=identifiers.PyreFlavor.CLASSIC,
+    )
+
+    try:
+        response = daemon_query.execute_query(socket_path, query_str)
+        collected_results = collect_pyre_query_results(response.payload)
+        return collected_results
+    except connections.ConnectionFailure as e:
+        raise RuntimeError(
+            "A running Pyre server is required for queries to be responded. "
+            "Please run `pyre` first to set up a server."
+        ) from e
+
+def attach_trace_to_query_results(
+    pyre_results: LeakAnalysisResult, callables_and_traces: Dict[str, Trace]
+) -> None:
+    for issue in pyre_results.global_leaks:
+        if "define" not in issue:
+            pyre_results.script_errors.append(
+                LeakAnalysisScriptError(
+                    error_message="Key `define` not present in global leak result, skipping trace",
+                    bad_value=issue,
+                )
+            )
+            continue
+
+        define = issue["define"]
+        if define not in callables_and_traces:
+            pyre_results.script_errors.append(
+                LeakAnalysisScriptError(
+                    error_message="Define not known in analyzed callables, skipping trace",
+                    bad_value=issue,
+                )
+            )
+            continue
+
+        trace = callables_and_traces[define]
+        issue["trace"] = cast(JSON, trace)
 
 class CallGraph:
     call_graph: Dict[str, Set[str]]
@@ -327,124 +439,6 @@ class CallGraph:
                 ]
 
         return transitive_callees
-
-    @staticmethod
-    def is_valid_callee(callee: str) -> bool:
-        components = callee.strip().split(".")
-        is_valid_callee = all(component.isidentifier() and not keyword.iskeyword(component) for component in components)
-        return is_valid_callee
-
-    @staticmethod
-    def prepare_issues_for_query(callees: Collection[str]) -> str:
-        single_callee_query = [f"global_leaks({callee})" for callee in callees if CallGraph.is_valid_callee(callee)]
-        return "batch(" + ", ".join(single_callee_query) + ")"
-
-    @staticmethod
-    def collect_pyre_query_results(pyre_results: object) -> LeakAnalysisResult:
-        global_leaks: List[Dict[str, JSON]] = []
-        query_errors: List[JSON] = []
-        script_errors: List[LeakAnalysisScriptError] = []
-        if not isinstance(pyre_results, dict):
-            raise RuntimeError(
-                f"Expected dict for Pyre query results, got {type(pyre_results)}: {pyre_results}"
-            )
-        if "response" not in pyre_results:
-            raise RuntimeError("`response` key not in Pyre query results", pyre_results)
-        if not isinstance(pyre_results["response"], list):
-            response = pyre_results["response"]
-            raise RuntimeError(
-                f"Expected response value type to be list, got {type(response)}: {response}"
-            )
-        for query_response in pyre_results["response"]:
-            if not isinstance(query_response, dict):
-                script_errors.append(
-                    LeakAnalysisScriptError(
-                        error_message=f"Expected dict for pyre response list type, got {type(query_response)}",
-                        bad_value=query_response,
-                    )
-                )
-            elif "error" in query_response:
-                query_errors.append(query_response["error"])
-            elif (
-                "response" in query_response and "errors" in query_response["response"]
-            ):
-                global_leaks += query_response["response"]["errors"]
-            else:
-                script_errors.append(
-                    LeakAnalysisScriptError(
-                        error_message="Unexpected single query response from Pyre",
-                        bad_value=query_response,
-                    )
-                )
-
-        return LeakAnalysisResult(
-            global_leaks=global_leaks,
-            query_errors=query_errors,
-            script_errors=script_errors,
-        )
-
-    @staticmethod
-    def attach_trace_to_query_results(
-        pyre_results: LeakAnalysisResult, callables_and_traces: Dict[str, Trace]
-    ) -> None:
-        for issue in pyre_results.global_leaks:
-            if "define" not in issue:
-                pyre_results.script_errors.append(
-                    LeakAnalysisScriptError(
-                        error_message="Key `define` not present in global leak result, skipping trace",
-                        bad_value=issue,
-                    )
-                )
-                continue
-
-            define = issue["define"]
-            if define not in callables_and_traces:
-                pyre_results.script_errors.append(
-                    LeakAnalysisScriptError(
-                        error_message="Define not known in analyzed callables, skipping trace",
-                        bad_value=issue,
-                    )
-                )
-                continue
-
-            trace = callables_and_traces[define]
-            issue["trace"] = cast(JSON, trace)
-
-    def find_issues(self, search_start_path: Path) -> LeakAnalysisResult:
-        all_callables = self.get_transitive_callees_and_traces()
-        query_str = self.prepare_issues_for_query(all_callables.keys())
-
-        project_root = find_directories.find_global_and_local_root(search_start_path)
-        if not project_root:
-            raise ValueError(
-                f"Given project path {search_start_path} is not in a Pyre project"
-            )
-
-        local_relative_path = (
-            str(project_root.local_root.relative_to(project_root.global_root))
-            if project_root.local_root
-            else None
-        )
-
-        project_identifier = identifiers.get_project_identifier(
-            project_root.global_root, local_relative_path
-        )
-
-        socket_path = daemon_socket.get_socket_path(
-            project_identifier,
-            flavor=identifiers.PyreFlavor.CLASSIC,
-        )
-
-        try:
-            response = daemon_query.execute_query(socket_path, query_str)
-            collected_results = self.collect_pyre_query_results(response.payload)
-            self.attach_trace_to_query_results(collected_results, all_callables)
-            return collected_results
-        except connections.ConnectionFailure as e:
-            raise RuntimeError(
-                "A running Pyre server is required for queries to be responded. "
-                "Please run `pyre` first to set up a server."
-            ) from e
 
 
 def validate_json_list(json_list: JSON, from_file: str, level: str) -> None:
@@ -475,6 +469,39 @@ def analyze() -> None:
     """
     pass
 
+@analyze.command()
+@click.argument("callables_file", type=click.File("r"))
+@click.option(
+    "--project-path",
+    type=str,
+    default=DEFAULT_WORKING_DIRECTORY,
+    help="The path to the project in which global leaks will be searched for. \
+    The given directory or parent directory must have a global .pyre_configuration. \
+    Default: current directory.",
+)
+def callable_leaks(
+    callables_file: TextIO,
+    project_path: str,
+) -> None:
+    """
+    Run local global leak analysis per callable given in the callables_file.
+
+    The output of this script will be a JSON object containing three keys:
+    - `global_leaks`: any global leaks that are returned from `pyre query "global_leaks(...)"` for
+        callable checked.
+    - `query_errors`: any errors that occurred during pyre's analysis, for example, no qualifier found
+    - `script_errors`: any errors that occurred during the analysis, for example, a definition not
+        found for a callable
+
+    CALLABLES_FILE: a file containing a JSON list of fully qualified paths of callables
+
+    Example usage: ./analyze_leaks.py -- callable-leaks <CALLABLES_FILE>
+    """
+    callables = load_json_from_file(callables_file, "CALLABLES_FILE")
+    validate_json_list(callables, "CALLABLES_FILE", "top level")
+    issues = find_issues(cast(List[str], callables), Path(project_path))
+    print(issues.to_json())
+
 
 @analyze.command()
 @click.option("--call-graph-kind-and-path", type=(click.Choice(InputType.members(), case_sensitive=False), click.File("r")), multiple=True, required=True)
@@ -487,7 +514,7 @@ def analyze() -> None:
     The given directory or parent directory must have a global .pyre_configuration. \
     Default: current directory.",
 )
-def leaks(
+def entrypoint_leaks(
     call_graph_kind_and_path: Tuple[Tuple[str, TextIO], ...],
     entrypoints_file: TextIO,
     project_path: str,
@@ -508,7 +535,7 @@ def leaks(
         return from `pyre analyze --dump-call-graph ...` or `pyre query "dump_call_graph()"`)
     ENTRYPOINTS_FILE: a file containing a JSON list of qualified paths for entrypoints
 
-    Example usage: ./analyze_leaks.py -- leaks <ENTRYPOINTS_FILE> --call-graph-kind-and-path <KIND1> <CALL_GRAPH_1> --call-graph-kind-and-path <KIND2> <CALL_GRAPH2>
+    Example usage: ./analyze_leaks.py -- entrypoint-leaks <ENTRYPOINTS_FILE> --call-graph-kind-and-path <KIND1> <CALL_GRAPH_1> --call-graph-kind-and-path <KIND2> <CALL_GRAPH2>
     """
     entrypoints_json = load_json_from_file(entrypoints_file, "ENTRYPOINTS_FILE")
     input_format = UnionCallGraphFormat()
@@ -524,7 +551,9 @@ def leaks(
 
     call_graph = CallGraph(input_format, entrypoints)
 
-    issues = call_graph.find_issues(Path(project_path))
+    all_callables = call_graph.get_transitive_callees_and_traces()
+    issues = find_issues(list(all_callables.keys()), Path(project_path))
+    attach_trace_to_query_results(issues, all_callables)
     print(issues.to_json())
 
 

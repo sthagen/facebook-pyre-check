@@ -8,18 +8,21 @@ import unittest
 
 from typing import cast, Dict, List, Set
 
-from tools.pyre.scripts.analyze_leaks import UnionCallGraphFormat
-
 from ..analyze_leaks import (
+    attach_trace_to_query_results,
     CallGraph,
+    collect_pyre_query_results,
     DependencyGraph,
     DynamicCallGraphInputFormat,
     Entrypoints,
+    is_valid_callee,
     JSON,
     LeakAnalysisResult,
     LeakAnalysisScriptError,
+    prepare_issues_for_query,
     PyreCallGraphInputFormat,
     PysaCallGraphInputFormat,
+    UnionCallGraphFormat,
 )
 
 
@@ -569,17 +572,17 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         )
 
     def test_is_valid_callee(self) -> None:
-        self.assertTrue(CallGraph.is_valid_callee("f1"))
-        self.assertTrue(CallGraph.is_valid_callee("f1.f2.f3"))
-        self.assertFalse(CallGraph.is_valid_callee("11"))
-        self.assertFalse(CallGraph.is_valid_callee("-f1.f2"))
-        self.assertFalse(CallGraph.is_valid_callee("f1#f2"))
+        self.assertTrue(is_valid_callee("f1"))
+        self.assertTrue(is_valid_callee("f1.f2.f3"))
+        self.assertFalse(is_valid_callee("11"))
+        self.assertFalse(is_valid_callee("-f1.f2"))
+        self.assertFalse(is_valid_callee("f1#f2"))
 
 
     def test_prepare_issues_for_query(self) -> None:
         callees = ["f1", "f2", "f3", "f1#f2", "f1.f2.f3", "11", "-f1.f2"]
 
-        result_query = CallGraph.prepare_issues_for_query(callees)
+        result_query = prepare_issues_for_query(callees)
         expected_query = "batch(global_leaks(f1), global_leaks(f2), global_leaks(f3), global_leaks(f1.f2.f3))"
 
         self.assertEqual(result_query, expected_query)
@@ -616,7 +619,7 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
             ]
         }
 
-        results = CallGraph.collect_pyre_query_results(
+        results = collect_pyre_query_results(
             example_pyre_stdout,
         )
         expected_results = LeakAnalysisResult(
@@ -655,7 +658,7 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         """
 
         with self.assertRaises(RuntimeError):
-            CallGraph.collect_pyre_query_results(example_pyre_stdout)
+            collect_pyre_query_results(example_pyre_stdout)
 
     def test_collect_pyre_query_results_not_top_level_dict(self) -> None:
         example_pyre_stdout = """
@@ -663,7 +666,7 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         """
 
         with self.assertRaises(RuntimeError):
-            CallGraph.collect_pyre_query_results(example_pyre_stdout)
+            collect_pyre_query_results(example_pyre_stdout)
 
     def test_collect_pyre_query_results_no_response_present(self) -> None:
         example_pyre_stdout = """
@@ -671,7 +674,7 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         """
 
         with self.assertRaises(RuntimeError):
-            CallGraph.collect_pyre_query_results(example_pyre_stdout)
+            collect_pyre_query_results(example_pyre_stdout)
 
     def test_collect_pyre_query_results_response_not_a_list(self) -> None:
         example_pyre_stdout = """
@@ -679,7 +682,7 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         """
 
         with self.assertRaises(RuntimeError):
-            CallGraph.collect_pyre_query_results(example_pyre_stdout)
+            collect_pyre_query_results(example_pyre_stdout)
 
     def test_collect_pyre_query_results_response_batch_response_not_a_dict(
         self,
@@ -693,7 +696,7 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         """
 
         with self.assertRaises(RuntimeError):
-            CallGraph.collect_pyre_query_results(example_pyre_stdout)
+            collect_pyre_query_results(example_pyre_stdout)
 
     def test_collect_pyre_query_results_response_batch_response_no_nested_error_or_response(
         self,
@@ -708,7 +711,7 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         """
 
         with self.assertRaises(RuntimeError):
-            CallGraph.collect_pyre_query_results(example_pyre_stdout)
+            collect_pyre_query_results(example_pyre_stdout)
 
     def test_attach_trace_to_query_results(self) -> None:
         pyre_results = LeakAnalysisResult(
@@ -782,9 +785,7 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         }
 
         self.assertNotEqual(pyre_results, expected)
-        CallGraph.attach_trace_to_query_results(pyre_results, callables_and_traces)
-        print(pyre_results)
-        print(expected)
+        attach_trace_to_query_results(pyre_results, callables_and_traces)
         self.assertEqual(pyre_results, expected)
 
     def assert_format_qualifier(self, input: str, expected: str) -> None:
