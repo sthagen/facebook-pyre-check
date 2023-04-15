@@ -18,7 +18,10 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "Obj{django.http.request.HttpRequest.GET}" }
+                  {
+                    "port": "leaf:return",
+                    "name": "Obj{django.http.request.HttpRequest.GET}"
+                  }
                 ],
                 "kind": "Test"
               }
@@ -39,7 +42,7 @@
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink" } ],
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
                 "kind": "Test"
               }
             ],
@@ -82,7 +85,10 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "Obj{django.http.request.HttpRequest.GET}" }
+                  {
+                    "port": "leaf:return",
+                    "name": "Obj{django.http.request.HttpRequest.GET}"
+                  }
                 ],
                 "kind": "Test"
               }
@@ -103,7 +109,7 @@
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink" } ],
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
                 "kind": "Test"
               }
             ],
@@ -146,7 +152,10 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "Obj{django.http.request.HttpRequest.GET}" }
+                  {
+                    "port": "leaf:return",
+                    "name": "Obj{django.http.request.HttpRequest.GET}"
+                  }
                 ],
                 "kind": "Test"
               }
@@ -167,7 +176,7 @@
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink" } ],
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
                 "kind": "Test"
               }
             ],

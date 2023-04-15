@@ -180,6 +180,15 @@ module CallInfo = struct
         CallSite { port; path; location = Location.WithModule.any; callees }
     | Declaration _ -> Declaration { leaf_name_provided = false }
     | Tito -> Tito
+
+
+  let replace_location ~location call_info =
+    match call_info with
+    | Tito
+    | Declaration _ ->
+        call_info
+    | Origin _ -> Origin location
+    | CallSite callsite -> CallSite { callsite with location }
 end
 
 module TraceLength = struct
@@ -475,6 +484,23 @@ module Frame = struct
       from
 end
 
+module ExportLeafNames = struct
+  type t =
+    | Always
+    | Never
+    (* Only export leaf names on leaf frames, which include `Declaration` frames (user-declared
+       taint) and `Origin` frames (the first frame of a source or sink trace). *)
+    | OnlyOnLeaves
+
+  let should_export ~call_info export_leaf_names =
+    match export_leaf_names, call_info with
+    | Always, _ -> true
+    | Never, _ -> false
+    | OnlyOnLeaves, CallInfo.Declaration _ -> true
+    | OnlyOnLeaves, CallInfo.Origin _ -> true
+    | OnlyOnLeaves, _ -> false
+end
+
 module type TAINT_DOMAIN = sig
   include Abstract.Domain.S
 
@@ -555,6 +581,7 @@ module type TAINT_DOMAIN = sig
     is_valid_callee:
       (port:AccessPath.Root.t -> path:Abstract.TreeDomain.Label.path -> callee:Target.t -> bool) ->
     filename_lookup:(Reference.t -> string option) option ->
+    export_leaf_names:ExportLeafNames.t ->
     t ->
     Yojson.Safe.t
 
@@ -756,7 +783,7 @@ end = struct
     Map.fold kind ~init:[] ~f:List.cons map |> List.dedup_and_sort ~compare:Kind.compare
 
 
-  let to_json ~expand_overrides ~is_valid_callee ~filename_lookup taint =
+  let to_json ~expand_overrides ~is_valid_callee ~filename_lookup ~export_leaf_names taint =
     let cons_if_non_empty key list assoc =
       if List.is_empty list then
         assoc
@@ -817,13 +844,18 @@ end = struct
             ("length", `Int trace_length) :: json
         in
 
-        let leaves =
-          Frame.get Frame.Slots.LeafName frame
-          |> LeafNameSet.elements
-          |> List.map ~f:LeafNameInterned.unintern
-          |> List.map ~f:LeafName.to_json
+        let json =
+          if ExportLeafNames.should_export ~call_info:trace_info export_leaf_names then
+            let leaves =
+              Frame.get Frame.Slots.LeafName frame
+              |> LeafNameSet.elements
+              |> List.map ~f:LeafNameInterned.unintern
+              |> List.map ~f:LeafName.to_json
+            in
+            cons_if_non_empty "leaves" leaves json
+          else
+            json
         in
-        let json = cons_if_non_empty "leaves" leaves json in
 
         let return_paths =
           Frame.get Frame.Slots.ReturnAccessPath frame |> ReturnAccessPathTree.to_json
@@ -1242,8 +1274,17 @@ end = struct
             else
               let open Features in
               let make_leaf_name callee =
-                LeafName.{ leaf = Target.external_name callee; port = None }
-                |> LeafNameInterned.intern
+                let port =
+                  let root_name =
+                    match port with
+                    | AccessPath.Root.LocalResult -> Some "return"
+                    | _ -> AccessPath.Root.parameter_name port
+                  in
+                  root_name
+                  |> Option.map ~f:(fun root ->
+                         Format.asprintf "leaf:%s%a" root Abstract.TreeDomain.Label.pp_path path)
+                in
+                LeafName.{ leaf = Target.external_name callee; port } |> LeafNameInterned.intern
               in
               List.map ~f:make_leaf_name callees |> Features.LeafNameSet.of_list
           in
@@ -1571,14 +1612,20 @@ module MakeTaintEnvironment (Taint : TAINT_DOMAIN) () = struct
       end)
       (Tree)
 
-  let to_json ~expand_overrides ~is_valid_callee ~filename_lookup environment =
+  let to_json ~expand_overrides ~is_valid_callee ~filename_lookup ~export_leaf_names environment =
     let element_to_json json_list (root, tree) =
       let path_to_json (path, tip) json_list =
         let port = AccessPath.create root path |> AccessPath.to_json in
         ( path,
           [
             "port", port;
-            "taint", Taint.to_json ~expand_overrides ~is_valid_callee ~filename_lookup tip;
+            ( "taint",
+              Taint.to_json
+                ~expand_overrides
+                ~is_valid_callee
+                ~filename_lookup
+                ~export_leaf_names
+                tip );
           ] )
         :: json_list
       in

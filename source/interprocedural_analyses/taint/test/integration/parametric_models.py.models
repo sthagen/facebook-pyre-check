@@ -17,7 +17,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "parametric_models.f" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "parametric_models.f" }
+                ],
                 "kind": "WithSubkind[A]"
               }
             ],
@@ -31,7 +33,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "parametric_models.g" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "parametric_models.g" }
+                ],
                 "kind": "WithSubkind[B]"
               }
             ],
@@ -50,7 +54,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "parametric_models.sink" } ],
+                "leaves": [
+                  { "port": "leaf:x", "name": "parametric_models.sink" }
+                ],
                 "kind": "ExpectsSubkind"
               }
             ],
@@ -91,7 +97,12 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_source" } ], "kind": "Test" }
+              {
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "parametric_models.py",
@@ -108,12 +119,22 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "parametric_models.sink_subkind_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:x",
+                    "name": "parametric_models.sink_subkind_a"
+                  }
+                ],
                 "length": 1,
                 "kind": "SinkWithSubkind[SinkA]"
               },
               {
-                "leaves": [ { "name": "parametric_models.sink_subkind_b" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:x",
+                    "name": "parametric_models.sink_subkind_b"
+                  }
+                ],
                 "length": 1,
                 "kind": "SinkWithSubkind[SinkB]"
               }
@@ -196,7 +217,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "parametric_models.sink_subkind_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:x",
+                    "name": "parametric_models.sink_subkind_a"
+                  }
+                ],
                 "kind": "SinkWithSubkind[SinkA]"
               }
             ],
@@ -210,7 +236,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "parametric_models.sink_subkind_b" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:x",
+                    "name": "parametric_models.sink_subkind_b"
+                  }
+                ],
                 "kind": "SinkWithSubkind[SinkB]"
               }
             ],

@@ -647,6 +647,7 @@ let to_json ~taint_configuration ~expand_overrides ~is_valid_callee ~filename_lo
       ~expand_overrides
       ~is_valid_callee
       ~filename_lookup:(Some filename_lookup)
+      ~export_leaf_names:ExportLeafNames.Always
       issue.flow.source_taint
   in
   let sink_traces =
@@ -654,6 +655,7 @@ let to_json ~taint_configuration ~expand_overrides ~is_valid_callee ~filename_lo
       ~expand_overrides
       ~is_valid_callee
       ~filename_lookup:(Some filename_lookup)
+      ~export_leaf_names:ExportLeafNames.Always
       issue.flow.sink_taint
   in
   let features = get_issue_features issue.flow in
@@ -819,17 +821,41 @@ module MultiSource = struct
     | _ -> false
 
 
-  let get_first_sink_hops { flow = { Flow.sink_taint; _ }; _ } =
+  let show_call_info ~filename_lookup call_info =
+    let show_location location =
+      let { Location.WithPath.path; start; _ } =
+        Location.WithModule.instantiate ~lookup:filename_lookup location
+      in
+      Format.asprintf "%s:%s" path (Location.show_position start)
+    in
+    match call_info with
+    | CallInfo.Tito -> "tito"
+    | Declaration _ -> "declaration"
+    | Origin location -> Format.asprintf "%s (leaf)" (show_location location)
+    | CallSite { location; callees; _ } ->
+        Format.asprintf
+          "%s (resolving to: %s)"
+          (show_location location)
+          (callees |> List.map ~f:Target.external_name |> String.concat ~sep:"; ")
+
+
+  let get_first_sink_hops ~main_issue_location ~filename_lookup { flow = { Flow.sink_taint; _ }; _ }
+    =
     BackwardTaint.reduce
       BackwardTaint.kind
       ~using:(Context (BackwardTaint.call_info, Acc))
       ~f:(fun call_info sink_kind so_far ->
         let extra_trace =
           {
-            ExtraTraceFirstHop.call_info;
+            ExtraTraceFirstHop.call_info =
+              CallInfo.replace_location ~location:main_issue_location call_info;
             leaf_kind = Sink sink_kind;
             message =
-              Some (Format.asprintf "Sink trace of the secondary flow: %s" (Sinks.show sink_kind));
+              Some
+                (Format.asprintf
+                   "Sink trace of secondary flow leading to %s begins at %s"
+                   (Sinks.show sink_kind)
+                   (show_call_info ~filename_lookup call_info));
           }
         in
         ExtraTraceFirstHop.Set.add extra_trace so_far)
@@ -837,20 +863,26 @@ module MultiSource = struct
       sink_taint
 
 
-  let get_first_source_hops { flow = { Flow.source_taint; _ }; _ } =
+  let get_first_source_hops
+      ~main_issue_location
+      ~filename_lookup
+      { flow = { Flow.source_taint; _ }; _ }
+    =
     ForwardTaint.reduce
       ForwardTaint.kind
       ~using:(Context (ForwardTaint.call_info, Acc))
       ~f:(fun call_info source_kind so_far ->
         let extra_trace =
           {
-            ExtraTraceFirstHop.call_info;
+            ExtraTraceFirstHop.call_info =
+              CallInfo.replace_location ~location:main_issue_location call_info;
             leaf_kind = Source source_kind;
             message =
               Some
                 (Format.asprintf
-                   "Source trace of the secondary flow: %s"
-                   (Sources.show source_kind));
+                   "Source trace of secondary flow from %s begins at %s"
+                   (Sources.show source_kind)
+                   (show_call_info ~filename_lookup call_info));
           }
         in
         ExtraTraceFirstHop.Set.add extra_trace so_far)

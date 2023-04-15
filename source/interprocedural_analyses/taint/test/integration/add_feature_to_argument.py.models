@@ -18,7 +18,9 @@
             "kinds": [
               {
                 "features": [ { "always-via": "special_source" } ],
-                "leaves": [ { "name": "_test_source" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
                 "kind": "Test"
               }
             ],
@@ -43,7 +45,7 @@
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink" } ],
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
                 "kind": "Test"
               }
             ],
@@ -202,7 +204,9 @@
             "kinds": [
               {
                 "features": [ { "always-via": "special_source" } ],
-                "leaves": [ { "name": "_test_source" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
                 "kind": "Test"
               }
             ],
@@ -231,7 +235,9 @@
             "kinds": [
               {
                 "features": [ { "always-via": "special_source" } ],
-                "leaves": [ { "name": "_test_source" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
                 "kind": "Test"
               }
             ],
@@ -261,7 +267,10 @@
               {
                 "features": [ { "always-via": "string_concat_lhs" } ],
                 "leaves": [
-                  { "name": "add_feature_to_argument.add_feature_to_first" }
+                  {
+                    "port": "leaf:first",
+                    "name": "add_feature_to_argument.add_feature_to_first"
+                  }
                 ],
                 "kind": "AddFeatureToArgument"
               }
@@ -291,7 +300,10 @@
               {
                 "features": [ { "always-via": "string_concat_rhs" } ],
                 "leaves": [
-                  { "name": "add_feature_to_argument.add_feature_to_second" }
+                  {
+                    "port": "leaf:second",
+                    "name": "add_feature_to_argument.add_feature_to_second"
+                  }
                 ],
                 "kind": "AddFeatureToArgument"
               }
@@ -313,7 +325,10 @@
               {
                 "features": [ { "always-via": "string_concat_lhs" } ],
                 "leaves": [
-                  { "name": "add_feature_to_argument.add_feature_to_first" }
+                  {
+                    "port": "leaf:first",
+                    "name": "add_feature_to_argument.add_feature_to_first"
+                  }
                 ],
                 "kind": "AddFeatureToArgument"
               }
@@ -343,7 +358,10 @@
               {
                 "features": [ { "always-via": "string_concat_lhs" } ],
                 "leaves": [
-                  { "name": "add_feature_to_argument.add_feature_to_first" }
+                  {
+                    "port": "leaf:first",
+                    "name": "add_feature_to_argument.add_feature_to_first"
+                  }
                 ],
                 "kind": "AddFeatureToArgument"
               }
@@ -359,7 +377,7 @@
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink" } ],
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
                 "kind": "Test"
               }
             ],
@@ -389,7 +407,10 @@
               {
                 "features": [ { "always-via": "string_concat_lhs" } ],
                 "leaves": [
-                  { "name": "add_feature_to_argument.add_feature_to_first" }
+                  {
+                    "port": "leaf:first",
+                    "name": "add_feature_to_argument.add_feature_to_first"
+                  }
                 ],
                 "kind": "AddFeatureToArgument"
               }
@@ -405,7 +426,7 @@
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink" } ],
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
                 "kind": "Test"
               }
             ],
@@ -434,7 +455,7 @@
             "kinds": [
               {
                 "features": [ { "always-via": "special_sink" } ],
-                "leaves": [ { "name": "_test_sink" } ],
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
                 "kind": "Test"
               }
             ],
@@ -457,9 +478,6 @@
             "kinds": [
               {
                 "features": [ { "always-via": "string_concat_rhs" } ],
-                "leaves": [
-                  { "name": "add_feature_to_argument.add_feature_to_second" }
-                ],
                 "length": 1,
                 "kind": "AddFeatureToArgument"
               }
@@ -486,9 +504,6 @@
             "kinds": [
               {
                 "features": [ { "always-via": "string_concat_lhs" } ],
-                "leaves": [
-                  { "name": "add_feature_to_argument.add_feature_to_first" }
-                ],
                 "length": 1,
                 "kind": "AddFeatureToArgument"
               }
@@ -523,7 +538,9 @@
             "kinds": [
               {
                 "features": [ { "always-via": "special_source" } ],
-                "leaves": [ { "name": "_test_source" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
                 "kind": "Test"
               }
             ],

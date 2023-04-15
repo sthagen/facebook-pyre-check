@@ -26,7 +26,12 @@
             "kinds": [
               {
                 "features": [ { "always-via": "tito" } ],
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "length": 1,
                 "kind": "TransformX@SourceA"
               }
@@ -55,7 +60,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "kind": "SinkB"
               }
             ],
@@ -100,7 +107,12 @@
             "kinds": [
               {
                 "features": [ { "always-via": "tito" } ],
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "length": 1,
                 "kind": "SourceA"
               }
@@ -128,7 +140,9 @@
                   { "always-via": "transform-tito-depth:1" },
                   { "always-via": "tito" }
                 ],
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "length": 1,
                 "kind": "TransformX:SinkB"
               }
@@ -183,7 +197,12 @@
                   { "always-via": "transform-tito-depth:1" },
                   { "always-via": "tito" }
                 ],
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "length": 1,
                 "kind": "TransformX:SourceA"
               }
@@ -209,7 +228,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "kind": "SinkB"
               }
             ],
@@ -261,7 +282,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "TransformX@SourceA"
               }
             ],
@@ -288,7 +314,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "kind": "SinkB"
               }
             ],
@@ -346,7 +374,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "TransformX@SourceA"
               }
             ],
@@ -370,7 +403,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "kind": "SinkB"
               }
             ],
@@ -414,7 +449,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "SourceA"
               }
             ],
@@ -437,7 +477,9 @@
                   { "always-via": "transform-tito-depth:1" },
                   { "always-via": "tito" }
                 ],
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "length": 1,
                 "kind": "TransformX:SinkB"
               }
@@ -502,7 +544,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "TransformX@SourceA"
               }
             ],
@@ -526,7 +573,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "kind": "SinkB"
               }
             ],
@@ -578,7 +627,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "TransformX@SourceA"
               }
             ],
@@ -602,7 +656,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "kind": "SinkB"
               }
             ],
@@ -654,7 +710,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "TransformX@SourceA"
               }
             ],
@@ -679,7 +740,9 @@
             "kinds": [
               {
                 "features": [ { "always-via": "tito" } ],
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "length": 1,
                 "kind": "SinkB"
               }
@@ -736,7 +799,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "TransformX@SourceA"
               }
             ],
@@ -763,7 +831,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "kind": "SinkB"
               }
             ],
@@ -821,7 +891,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "TransformZ:TransformY@SourceA"
               }
             ],
@@ -848,7 +923,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "kind": "SinkB"
               }
             ],
@@ -900,7 +977,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "TransformY@SourceA"
               }
             ],
@@ -928,7 +1010,9 @@
                   { "always-via": "transform-tito-depth:1" },
                   { "always-via": "tito" }
                 ],
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "length": 1,
                 "kind": "TransformZ:SinkB"
               }
@@ -991,7 +1075,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "TransformZ:TransformY@SourceA"
               }
             ],
@@ -1015,7 +1104,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "kind": "SinkB"
               }
             ],
@@ -1059,7 +1150,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "SourceA"
               }
             ],
@@ -1082,7 +1178,9 @@
                   { "always-via": "transform-tito-depth:1" },
                   { "always-via": "tito" }
                 ],
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "length": 1,
                 "kind": "TransformY:TransformZ:SinkB"
               }
@@ -1137,7 +1235,12 @@
                   { "always-via": "transform-tito-depth:1" },
                   { "always-via": "tito" }
                 ],
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "length": 1,
                 "kind": "TransformX:SourceA"
               }
@@ -1162,7 +1265,9 @@
             "kinds": [
               {
                 "features": [ { "always-via": "tito" } ],
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "length": 1,
                 "kind": "SinkB"
               }
@@ -1215,7 +1320,12 @@
                   { "always-via": "transform-tito-depth:1" },
                   { "always-via": "tito" }
                 ],
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "length": 1,
                 "kind": "TransformY:TransformX:SourceA"
               }
@@ -1243,7 +1353,9 @@
                   { "always-via": "transform-tito-depth:1" },
                   { "always-via": "tito" }
                 ],
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "length": 1,
                 "kind": "NotSource[SourceA]:TransformY:TransformZ:SinkB"
               }
@@ -1306,7 +1418,12 @@
                   { "always-via": "transform-tito-depth:1" },
                   { "always-via": "tito" }
                 ],
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "length": 1,
                 "kind": "TransformZ@TransformY:SourceA"
               }
@@ -1337,7 +1454,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "kind": "SinkB"
               }
             ],
@@ -1385,7 +1504,12 @@
                   { "always-via": "transform-tito-depth:1" },
                   { "always-via": "tito" }
                 ],
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "length": 1,
                 "kind": "TransformY:SourceA"
               }
@@ -1415,7 +1539,9 @@
                   { "always-via": "transform-tito-depth:1" },
                   { "always-via": "tito" }
                 ],
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "length": 1,
                 "kind": "TransformZ:SinkB"
               }
@@ -1470,7 +1596,12 @@
                   { "always-via": "transform-tito-depth:2" },
                   { "always-via": "tito" }
                 ],
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "length": 1,
                 "kind": "TransformZ:TransformY:SourceA"
               }
@@ -1496,7 +1627,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "kind": "SinkB"
               }
             ],
@@ -1540,7 +1673,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_c" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_c"
+                  }
+                ],
                 "kind": "SourceC"
               }
             ],
@@ -1559,7 +1697,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_d" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_d" }
+                ],
                 "kind": "SinkD"
               }
             ],
@@ -1605,7 +1745,12 @@
                   { "always-via": "transform-tito-depth:1" },
                   { "always-via": "tito" }
                 ],
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "length": 1,
                 "kind": "TransformY:TransformX:SourceA"
               }
@@ -1633,7 +1778,9 @@
                   { "always-via": "transform-tito-depth:1" },
                   { "always-via": "tito" }
                 ],
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "length": 1,
                 "kind": "TransformY:TransformZ:SinkB"
               }
@@ -1675,13 +1822,7 @@
         "port": "formal(arg)",
         "taint": [
           {
-            "kinds": [
-              {
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
-                "length": 1,
-                "kind": "TransformX:ExtraTraceSink"
-              }
-            ],
+            "kinds": [ { "length": 1, "kind": "TransformX:ExtraTraceSink" } ],
             "call": {
               "position": {
                 "filename": "taint_transform.py",
@@ -1728,7 +1869,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "kind": "SinkB"
               }
             ],
@@ -1771,7 +1914,9 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "kind": "NotSource[SourceA]:TransformY:TransformZ@SinkB"
               }
             ],
@@ -1807,7 +1952,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:arg",
+                    "name": "taint_transform.transform_x"
+                  }
+                ],
                 "kind": "TransformX:ExtraTraceSink"
               }
             ],
@@ -1870,7 +2020,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.transform_y" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:arg",
+                    "name": "taint_transform.transform_y"
+                  }
+                ],
                 "kind": "TransformX@TransformY:ExtraTraceSink"
               }
             ],
@@ -1893,7 +2048,6 @@
             "kinds": [
               {
                 "features": [ { "always-via": "tito" } ],
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
                 "length": 1,
                 "kind": "TransformX:ExtraTraceSink"
               }
@@ -1948,7 +2102,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:arg",
+                    "name": "taint_transform.transform_x"
+                  }
+                ],
                 "kind": "TransformX:ExtraTraceSink"
               }
             ],
@@ -2009,7 +2168,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:arg",
+                    "name": "taint_transform.transform_x"
+                  }
+                ],
                 "kind": "TransformX:ExtraTraceSink"
               }
             ],
@@ -2194,7 +2358,9 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "kind": "TransformY:TransformZ@SinkB"
               }
             ],
@@ -2234,7 +2400,9 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "kind": "TransformX@SinkB"
               }
             ],
@@ -2280,7 +2448,9 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "kind": "TransformY:TransformZ@SinkB"
               }
             ],
@@ -2323,7 +2493,9 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "kind": "TransformZ@SinkB"
               }
             ],
@@ -2370,7 +2542,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "SourceA"
               }
             ],
@@ -2407,7 +2584,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "TransformX@SourceA"
               }
             ],
@@ -2450,7 +2632,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "NotSink[SinkB]:TransformX@SourceA"
               }
             ],
@@ -2512,7 +2699,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "TransformZ:TransformY@SourceA"
               }
             ],
@@ -2552,7 +2744,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "TransformY@SourceA"
               }
             ],
@@ -2592,7 +2789,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "TransformX@SourceA"
               }
             ],
@@ -2632,11 +2834,21 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "SourceA"
               },
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "TransformX@SourceA"
               }
             ],
@@ -2677,7 +2889,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "TransformX@SourceA"
               }
             ],
@@ -2723,7 +2940,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "TransformY:TransformX@SourceA"
               }
             ],
@@ -2770,7 +2992,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "taint_transform.source_a"
+                  }
+                ],
                 "kind": "TransformX@SourceA"
               }
             ],
@@ -2803,7 +3030,6 @@
             "kinds": [
               {
                 "features": [ { "always-via": "tito" } ],
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
                 "length": 1,
                 "kind": "TransformX:ExtraTraceSink"
               }
@@ -2860,7 +3086,6 @@
             "kinds": [
               {
                 "features": [ { "always-via": "tito" } ],
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
                 "length": 1,
                 "kind": "TransformX:ExtraTraceSink"
               }
@@ -2916,13 +3141,7 @@
         "port": "formal(arg)",
         "taint": [
           {
-            "kinds": [
-              {
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
-                "length": 1,
-                "kind": "TransformX:ExtraTraceSink"
-              }
-            ],
+            "kinds": [ { "length": 1, "kind": "TransformX:ExtraTraceSink" } ],
             "call": {
               "position": {
                 "filename": "taint_transform.py",
@@ -2972,13 +3191,7 @@
         "port": "formal(arg)",
         "taint": [
           {
-            "kinds": [
-              {
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
-                "length": 1,
-                "kind": "TransformX:ExtraTraceSink"
-              }
-            ],
+            "kinds": [ { "length": 1, "kind": "TransformX:ExtraTraceSink" } ],
             "local_features": [ { "always-via": "tito" } ],
             "tito_positions": [ { "line": 570, "start": 33, "end": 36 } ],
             "call": {
@@ -3033,7 +3246,6 @@
             "kinds": [
               {
                 "features": [ { "always-via": "tito" } ],
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
                 "length": 1,
                 "kind": "TransformX:ExtraTraceSink"
               }
@@ -3090,7 +3302,6 @@
             "kinds": [
               {
                 "features": [ { "always-via": "tito" } ],
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
                 "length": 1,
                 "kind": "TransformX:ExtraTraceSink"
               }
@@ -3146,13 +3357,7 @@
         "port": "formal(arg)",
         "taint": [
           {
-            "kinds": [
-              {
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
-                "length": 1,
-                "kind": "TransformX:ExtraTraceSink"
-              }
-            ],
+            "kinds": [ { "length": 1, "kind": "TransformX:ExtraTraceSink" } ],
             "call": {
               "position": {
                 "filename": "taint_transform.py",
@@ -3202,13 +3407,7 @@
         "port": "formal(arg)",
         "taint": [
           {
-            "kinds": [
-              {
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
-                "length": 1,
-                "kind": "TransformX:ExtraTraceSink"
-              }
-            ],
+            "kinds": [ { "length": 1, "kind": "TransformX:ExtraTraceSink" } ],
             "local_features": [ { "always-via": "tito" } ],
             "tito_positions": [ { "line": 546, "start": 35, "end": 38 } ],
             "call": {
@@ -3263,7 +3462,6 @@
             "kinds": [
               {
                 "features": [ { "always-via": "tito" } ],
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
                 "length": 1,
                 "kind": "TransformX:ExtraTraceSink"
               }
@@ -3297,11 +3495,7 @@
               }
             ],
             "kinds": [
-              {
-                "leaves": [ { "name": "taint_transform.transform_y" } ],
-                "length": 1,
-                "kind": "TransformX@TransformY:ExtraTraceSink"
-              }
+              { "length": 1, "kind": "TransformX@TransformY:ExtraTraceSink" }
             ],
             "local_features": [
               { "always-via": "transform-tito-depth:2" },
@@ -3365,7 +3559,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:arg",
+                    "name": "taint_transform.transform_x"
+                  }
+                ],
                 "kind": "TransformX:ExtraTraceSink"
               }
             ],
@@ -3411,7 +3610,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.transform_y" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:arg",
+                    "name": "taint_transform.transform_y"
+                  }
+                ],
                 "kind": "TransformY:ExtraTraceSink"
               }
             ],
@@ -3433,7 +3637,12 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.transform_z" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:arg",
+                    "name": "taint_transform.transform_z"
+                  }
+                ],
                 "kind": "TransformY@TransformZ:ExtraTraceSink"
               }
             ],
@@ -3556,7 +3765,9 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "taint_transform.sink_b" }
+                ],
                 "kind": "TransformX@SinkB"
               }
             ],
@@ -3591,7 +3802,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:arg",
+                    "name": "taint_transform.transform_x"
+                  }
+                ],
                 "kind": "TransformX:ExtraTraceSink"
               }
             ],
@@ -3640,7 +3856,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:arg",
+                    "name": "taint_transform.transform_x"
+                  }
+                ],
                 "kind": "TransformX:ExtraTraceSink"
               }
             ],
@@ -3719,7 +3940,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:arg",
+                    "name": "taint_transform.transform_x"
+                  }
+                ],
                 "kind": "TransformX:ExtraTraceSink"
               }
             ],
@@ -3766,7 +3992,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:arg",
+                    "name": "taint_transform.transform_x"
+                  }
+                ],
                 "kind": "TransformX:ExtraTraceSink"
               }
             ],
@@ -3815,7 +4046,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:arg",
+                    "name": "taint_transform.transform_x"
+                  }
+                ],
                 "kind": "TransformX:ExtraTraceSink"
               }
             ],
@@ -3865,7 +4101,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.transform_x" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:arg",
+                    "name": "taint_transform.transform_x"
+                  }
+                ],
                 "kind": "TransformX:ExtraTraceSink"
               }
             ],
@@ -3925,7 +4166,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "taint_transform.transform_y" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:arg",
+                    "name": "taint_transform.transform_y"
+                  }
+                ],
                 "kind": "TransformY:ExtraTraceSink"
               }
             ],

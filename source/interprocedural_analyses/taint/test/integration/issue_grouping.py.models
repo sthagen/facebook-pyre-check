@@ -17,7 +17,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "issue_grouping.source_b" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "issue_grouping.source_b"
+                  }
+                ],
                 "kind": "SourceB"
               }
             ],
@@ -39,7 +44,9 @@
                 "features": [
                   { "has": "first-index" }, { "first-index": "b" }
                 ],
-                "leaves": [ { "name": "issue_grouping.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "issue_grouping.sink_b" }
+                ],
                 "length": 1,
                 "kind": "SinkB"
               }
@@ -86,7 +93,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "issue_grouping.source_a" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "issue_grouping.source_a"
+                  }
+                ],
                 "kind": "SourceA"
               }
             ],
@@ -108,7 +120,9 @@
                 "features": [
                   { "has": "first-index" }, { "first-index": "a" }
                 ],
-                "leaves": [ { "name": "issue_grouping.sink_a" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "issue_grouping.sink_a" }
+                ],
                 "length": 1,
                 "kind": "SinkA"
               }
@@ -148,7 +162,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "issue_grouping.sink_a" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "issue_grouping.sink_a" }
+                ],
                 "kind": "SinkA"
               }
             ],
@@ -170,7 +186,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "issue_grouping.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "issue_grouping.sink_b" }
+                ],
                 "kind": "SinkB"
               }
             ],

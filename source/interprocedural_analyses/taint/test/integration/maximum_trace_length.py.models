@@ -17,7 +17,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "_test_source" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
                 "length": 2,
                 "kind": "Test"
               }
@@ -41,7 +43,7 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "_test_sink" } ],
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
                 "length": 2,
                 "kind": "Test"
               }
@@ -88,7 +90,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "_test_source" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
                 "length": 2,
                 "kind": "Test"
               }
@@ -112,7 +116,7 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "_test_sink" } ],
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
                 "length": 1,
                 "kind": "Test"
               }
@@ -159,7 +163,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "_test_source" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
                 "length": 1,
                 "kind": "Test"
               }
@@ -183,7 +189,7 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "_test_sink" } ],
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
                 "length": 1,
                 "kind": "Test"
               }
@@ -274,13 +280,7 @@
         "port": "formal(x)",
         "taint": [
           {
-            "kinds": [
-              {
-                "leaves": [ { "name": "_test_sink" } ],
-                "length": 1,
-                "kind": "Test"
-              }
-            ],
+            "kinds": [ { "length": 1, "kind": "Test" } ],
             "call": {
               "position": {
                 "filename": "maximum_trace_length.py",
@@ -307,7 +307,10 @@
         "taint": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "maximum_trace_length.py",
@@ -330,13 +333,7 @@
         "port": "result",
         "taint": [
           {
-            "kinds": [
-              {
-                "leaves": [ { "name": "_test_source" } ],
-                "length": 1,
-                "kind": "Test"
-              }
-            ],
+            "kinds": [ { "length": 1, "kind": "Test" } ],
             "call": {
               "position": {
                 "filename": "maximum_trace_length.py",
@@ -363,7 +360,12 @@
         "taint": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_source" } ], "kind": "Test" }
+              {
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "maximum_trace_length.py",

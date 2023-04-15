@@ -25,7 +25,9 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "_test_source" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
                 "kind": "TransformX@TestSource"
               }
             ],
@@ -48,7 +50,10 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "TestSink" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "TestSink"
+              }
             ],
             "origin": {
               "filename": "extra_trace.py",
@@ -131,11 +136,11 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "_test_sink" } ],
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
                 "kind": "TransformX@TestSink"
               },
               {
-                "leaves": [ { "name": "_test_sink" } ],
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
                 "kind": "TransformY@TestSink"
               }
             ],
@@ -199,11 +204,15 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "_test_source" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
                 "kind": "TransformX@TestSource"
               },
               {
-                "leaves": [ { "name": "_test_source" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
                 "kind": "TransformY:TransformX@TestSource"
               }
             ],
@@ -238,13 +247,7 @@
         "port": "formal(arg)",
         "taint": [
           {
-            "kinds": [
-              {
-                "leaves": [ { "name": "extra_trace.transform_x" } ],
-                "length": 1,
-                "kind": "TransformX:ExtraTraceSink"
-              }
-            ],
+            "kinds": [ { "length": 1, "kind": "TransformX:ExtraTraceSink" } ],
             "call": {
               "position": {
                 "filename": "extra_trace.py",
@@ -298,9 +301,12 @@
               }
             ],
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "TestSink" },
               {
-                "leaves": [ { "name": "_test_sink" } ],
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "TestSink"
+              },
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
                 "kind": "TransformX@TestSink"
               }
             ],
@@ -339,11 +345,15 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "_test_source" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
                 "kind": "TestSource"
               },
               {
-                "leaves": [ { "name": "_test_source" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
                 "kind": "TransformX@TestSource"
               }
             ],
@@ -374,7 +384,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "extra_trace.transform_x" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "extra_trace.transform_x" }
+                ],
                 "kind": "TransformX:ExtraTraceSink"
               }
             ],
@@ -442,7 +454,7 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "_test_sink" } ],
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
                 "kind": "TransformX:TransformY:TransformZ@TestSink"
               }
             ],
@@ -500,7 +512,9 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "_test_source" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
                 "kind": "TransformZ:TransformY:TransformX@TestSource"
               }
             ],
@@ -548,7 +562,9 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "_test_source" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
                 "kind": "TransformY:TransformX@TestSource"
               }
             ],
@@ -609,7 +625,9 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "extra_trace.transform_y" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "extra_trace.transform_y" }
+                ],
                 "kind": "TransformX@TransformY:ExtraTraceSink"
               }
             ],
@@ -626,13 +644,7 @@
             }
           },
           {
-            "kinds": [
-              {
-                "leaves": [ { "name": "extra_trace.transform_x" } ],
-                "length": 1,
-                "kind": "TransformX:ExtraTraceSink"
-              }
-            ],
+            "kinds": [ { "length": 1, "kind": "TransformX:ExtraTraceSink" } ],
             "call": {
               "position": {
                 "filename": "extra_trace.py",
@@ -742,7 +754,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "extra_trace.transform_y" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "extra_trace.transform_y" }
+                ],
                 "kind": "TransformY:ExtraTraceSink"
               }
             ],
@@ -766,7 +780,9 @@
             ],
             "kinds": [
               {
-                "leaves": [ { "name": "extra_trace.transform_z" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "extra_trace.transform_z" }
+                ],
                 "kind": "TransformY@TransformZ:ExtraTraceSink"
               }
             ],

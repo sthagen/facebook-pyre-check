@@ -98,7 +98,7 @@ let parse_untrimmed ?(handle = "") ?(coerce_special_methods = false) source =
     match PyreNewParser.parse_module ~context ~enable_type_comment:true source with
     | Result.Ok statements ->
         let typecheck_flags =
-          let qualifier = ModulePath.qualifier_of_relative handle in
+          let qualifier = ModulePath.qualifier_from_relative_path handle in
           Source.TypecheckFlags.parse ~qualifier (String.split source ~on:'\n')
         in
         let source = Source.create ~typecheck_flags ~relative:handle statements in
@@ -148,8 +148,8 @@ let parse_single_define source =
   | _ -> failwith "Could not parse single define"
 
 
-let parse_single_class source =
-  match parse_single_statement source with
+let parse_single_class ?(preprocess = false) source =
+  match parse_single_statement ~preprocess source with
   | { Node.value = Statement.Class definition; _ } -> definition
   | _ -> failwith "Could not parse single class"
 
@@ -1468,6 +1468,7 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
         def abstractmethod(callable: _FuncT) -> _FuncT: ...
         class abstractproperty(property): ...
         class ABC(metaclass=ABCMeta): ...
+        def abstractclassmethod(callable: _FuncT) -> _FuncT: ...
         |}
     );
     ( "mock.pyi",
@@ -3099,6 +3100,11 @@ module ScratchProject = struct
 
   let configuration_of { controls; _ } = EnvironmentControls.configuration controls
 
+  let local_root_of project =
+    let { Configuration.Analysis.local_root; _ } = configuration_of project in
+    local_root
+
+
   (* Incremental checks already call ModuleTracker.update, so we don't need to update the state
      here. *)
   let add_source project ~is_external (relative, content) =
@@ -3214,14 +3220,14 @@ module ScratchProject = struct
 
 
   let add_file project content ~relative =
-    let { Configuration.Analysis.local_root; _ } = configuration_of project in
+    let local_root = local_root_of project in
     let content = trim_extra_indentation content in
     let file = File.create ~content (PyrePath.create_relative ~root:local_root ~relative) in
     File.write file
 
 
   let delete_file project ~relative =
-    let { Configuration.Analysis.local_root; _ } = configuration_of project in
+    let local_root = local_root_of project in
     PyrePath.create_relative ~root:local_root ~relative |> PyrePath.absolute |> Core_unix.remove
 
 
@@ -3256,7 +3262,7 @@ let assert_errors
     errors
   =
   let in_memory = List.is_empty other_sources in
-  (if ModulePath.qualifier_of_relative handle |> Reference.is_empty then
+  (if ModulePath.qualifier_from_relative_path handle |> Reference.is_empty then
      let message =
        Format.sprintf
          "Cannot use %s as test file name: Empty qualifier in test is no longer acceptable."

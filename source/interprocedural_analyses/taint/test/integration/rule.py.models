@@ -17,7 +17,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "rule.source" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "rule.source" }
+                ],
                 "kind": "MyTestSource"
               }
             ],
@@ -35,7 +37,10 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "rule.sink" } ], "kind": "MyTestSink" }
+              {
+                "leaves": [ { "port": "leaf:x", "name": "rule.sink" } ],
+                "kind": "MyTestSink"
+              }
             ],
             "origin": {
               "filename": "rule.py",

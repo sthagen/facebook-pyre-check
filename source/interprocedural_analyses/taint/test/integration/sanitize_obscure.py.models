@@ -66,7 +66,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "sanitize_obscure.a_sink" } ],
+                "leaves": [
+                  { "port": "leaf:x", "name": "sanitize_obscure.a_sink" }
+                ],
                 "kind": "TestA"
               }
             ],
@@ -97,7 +99,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "sanitize_obscure.a_source" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "sanitize_obscure.a_source"
+                  }
+                ],
                 "kind": "TestA"
               }
             ],
@@ -128,7 +135,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "sanitize_obscure.b_sink" } ],
+                "leaves": [
+                  { "port": "leaf:x", "name": "sanitize_obscure.b_sink" }
+                ],
                 "kind": "TestB"
               }
             ],
@@ -159,7 +168,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "sanitize_obscure.b_sink" } ],
+                "leaves": [
+                  { "port": "leaf:x", "name": "sanitize_obscure.b_sink" }
+                ],
                 "kind": "TestB"
               }
             ],
@@ -190,7 +201,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "sanitize_obscure.b_sink" } ],
+                "leaves": [
+                  { "port": "leaf:x", "name": "sanitize_obscure.b_sink" }
+                ],
                 "kind": "TestB"
               }
             ],
@@ -221,7 +234,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "sanitize_obscure.b_sink" } ],
+                "leaves": [
+                  { "port": "leaf:x", "name": "sanitize_obscure.b_sink" }
+                ],
                 "kind": "TestB"
               }
             ],
@@ -252,7 +267,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "sanitize_obscure.b_sink" } ],
+                "leaves": [
+                  { "port": "leaf:x", "name": "sanitize_obscure.b_sink" }
+                ],
                 "kind": "TestB"
               }
             ],
@@ -283,7 +300,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "sanitize_obscure.b_source" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "sanitize_obscure.b_source"
+                  }
+                ],
                 "kind": "TestB"
               }
             ],
@@ -314,7 +336,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "sanitize_obscure.b_source" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "sanitize_obscure.b_source"
+                  }
+                ],
                 "kind": "TestB"
               }
             ],
@@ -345,7 +372,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "sanitize_obscure.b_source" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "sanitize_obscure.b_source"
+                  }
+                ],
                 "kind": "TestB"
               }
             ],
@@ -376,7 +408,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "sanitize_obscure.b_source" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "sanitize_obscure.b_source"
+                  }
+                ],
                 "kind": "TestB"
               }
             ],
@@ -407,7 +444,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "sanitize_obscure.b_source" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "sanitize_obscure.b_source"
+                  }
+                ],
                 "kind": "TestB"
               }
             ],
@@ -438,7 +480,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "sanitize_obscure.b_source" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "sanitize_obscure.b_source"
+                  }
+                ],
                 "kind": "TestB"
               }
             ],

@@ -30,18 +30,19 @@ LOG: logging.Logger = logging.getLogger(__name__)
 
 COMPILER_VERSION = "4.14.0"
 DEPENDENCIES = [
-    "base64.3.5.0",
+    "base64.3.5.1",
     "core.v0.15.1",
     "core_unix.v0.15.2",
     "re2.v0.15.0",
-    "dune.3.4.1",
+    "dune.3.7.1",
     "yojson.2.0.2",
     "ppx_deriving_yojson.3.7.0",
-    "ounit.2.2.6",
+    "ppx_yojson_conv.v0.15.1",
+    "ounit2.2.2.7",
     "menhir.20220210",
     "lwt.5.6.1",
     "lwt_ppx.2.1.0",
-    "ounit2-lwt.2.2.6",
+    "ounit2-lwt.2.2.7",
     "pyre-ast.0.1.8",
     "mtime.1.4.0",
     "errpy.0.0.7",
@@ -274,10 +275,12 @@ class Setup(NamedTuple):
             )
 
         self.produce_dune_file(pyre_directory, build_type_override)
-        # Note: we do not run `make clean` because we want the result of the
-        # explicit `produce_dune_file` to remain.
         if run_clean:
-            run_in_opam_environment(["dune", "clean"])
+            # Note: we do not run `make clean` because we want the result of the
+            # explicit `produce_dune_file` to remain.
+            # Dune 3.7 runs into `rmdir` failure when cleaning the `_build` directory
+            # for some reason. Manually clean the dir to work around the issue.
+            run_in_opam_environment(["rm", "-rf", "_build"])
         if self.release:
             LOG.info("Running a release build. This may take a while.")
             run_in_opam_environment(["make", "release"])

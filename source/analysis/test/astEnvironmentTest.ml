@@ -730,7 +730,7 @@ module IncrementalTest = struct
       (if force_load_external_sources then
          (* If we don't do this, external sources are ignored due to lazy loading *)
          let load_source { handle; _ } =
-           let qualifier = ModulePath.qualifier_of_relative handle in
+           let qualifier = ModulePath.qualifier_from_relative_path handle in
            let _ = AstEnvironment.ReadOnly.get_raw_source ast_environment qualifier in
            ()
          in
@@ -763,7 +763,15 @@ module IncrementalTest = struct
              "Expected dependencies %s are not a subset of actual dependencies %s"
              (Reference.Set.sexp_of_t expected_set |> Sexp.to_string)
              (Reference.Set.sexp_of_t actual_set |> Sexp.to_string))
-          false
+          false;
+      if not (Set.is_subset actual_set ~of_:expected_set) then
+        assert_bool
+          (Format.asprintf
+             "Actual dependencies %s are not a subset of expected dependencies %s"
+             (Reference.Set.sexp_of_t actual_set |> Sexp.to_string)
+             (Reference.Set.sexp_of_t expected_set |> Sexp.to_string))
+          false;
+      ()
     in
     assert_parser_dependency expected_dependencies invalidated_modules;
 
@@ -776,6 +784,7 @@ let test_parser_update context =
 
   let open IncrementalTest in
   let assert_parser_update = assert_parser_update ~context in
+
   (* Single project file update *)
   assert_parser_update
     [{ handle = "test.py"; old_source = None; new_source = Some "def foo() -> None: ..." }]
@@ -811,7 +820,7 @@ let test_parser_update context =
         new_source = Some "def foo   (x  :    int)  ->    None: ...";
       };
     ]
-    ~expected:(Expectation.create []);
+    ~expected:(Expectation.create [!&"test"]);
   assert_parser_update
     [
       {
@@ -825,11 +834,6 @@ let test_parser_update context =
   (* Single external file update. *)
   (* These tests rely on us force-loading sources, which causes them to be counted as invalidated.
      Otherwise, they would be ignored due to laziness. *)
-  assert_parser_update
-    ~external_setups:
-      [{ handle = "test.pyi"; old_source = None; new_source = Some "def foo() -> None: ..." }]
-    []
-    ~expected:(Expectation.create []);
   assert_parser_update
     ~external_setups:
       [{ handle = "test.pyi"; old_source = Some "def foo() -> None: ..."; new_source = None }]
@@ -855,6 +859,11 @@ let test_parser_update context =
           new_source = Some "def foo(x: int) -> int: ...";
         };
       ]
+    []
+    ~expected:(Expectation.create [!&"test"]);
+  assert_parser_update
+    ~external_setups:
+      [{ handle = "test.pyi"; old_source = None; new_source = Some "def foo() -> None: ..." }]
     []
     ~expected:(Expectation.create [!&"test"]);
 
@@ -925,7 +934,7 @@ let test_parser_update context =
     ~preprocess_all_sources:true
     ~external_setups:[{ handle = "a.py"; old_source = Some "x = 1"; new_source = Some "x = 2" }]
     [{ handle = "b.py"; old_source = Some "from a import *"; new_source = Some "from a import *" }]
-    ~expected:(Expectation.create [!&"a"]);
+    ~expected:(Expectation.create [!&"a"; !&"b"]);
   assert_parser_update
     ~preprocess_all_sources:true
     ~external_setups:
@@ -955,7 +964,7 @@ let test_parser_update context =
         new_source = Some "from a import *\nfrom b import *";
       };
     ]
-    ~expected:(Expectation.create [!&"a"; !&"b"]);
+    ~expected:(Expectation.create [!&"a"; !&"b"; !&"c"]);
   assert_parser_update
     ~preprocess_all_sources:true
     [
@@ -995,7 +1004,7 @@ let test_parser_update context =
       { handle = "b.py"; old_source = Some "from a import *"; new_source = Some "from a import *" };
       { handle = "c.py"; old_source = Some "from b import *"; new_source = Some "from b import *" };
     ]
-    ~expected:(Expectation.create [!&"a"]);
+    ~expected:(Expectation.create [!&"a"; !&"b"; !&"c"]);
   assert_parser_update
     ~preprocess_all_sources:true
     [
@@ -1011,13 +1020,13 @@ let test_parser_update context =
     ~external_setups:
       [{ handle = "a.py"; old_source = Some "x = 1"; new_source = Some "def x() -> None: ..." }]
     [{ handle = "b.py"; old_source = Some "from a import *"; new_source = Some "from a import *" }]
-    ~expected:(Expectation.create [!&"a"]);
+    ~expected:(Expectation.create [!&"a"; !&"b"]);
   ()
 
 
 let make_overlay_testing_functions ~context ~test_sources =
   let project = ScratchProject.setup ~context test_sources in
-  let { Configuration.Analysis.local_root; _ } = ScratchProject.configuration_of project in
+  let local_root = ScratchProject.local_root_of project in
   let parent_read_only =
     ScratchProject.global_environment project |> AnnotatedGlobalEnvironment.ReadOnly.ast_environment
   in

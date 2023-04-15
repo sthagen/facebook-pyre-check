@@ -16,7 +16,12 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_source" } ], "kind": "Test" }
+              {
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
+                "kind": "Test"
+              }
             ],
             "local_features": [
               { "has": "first-field" },
@@ -40,7 +45,10 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -85,7 +93,12 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_source" } ], "kind": "Test" }
+              {
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
+                "kind": "Test"
+              }
             ],
             "local_features": [
               { "has": "first-field" },
@@ -109,7 +122,10 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -154,7 +170,12 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_source" } ], "kind": "Test" }
+              {
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
+                "kind": "Test"
+              }
             ],
             "local_features": [
               { "has": "first-field" },
@@ -178,7 +199,10 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -223,7 +247,12 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_source" } ], "kind": "Test" }
+              {
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
+                "kind": "Test"
+              }
             ],
             "local_features": [
               { "has": "first-field" },
@@ -252,7 +281,10 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -302,7 +334,12 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_source" } ], "kind": "Test" }
+              {
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
+                "kind": "Test"
+              }
             ],
             "local_features": [
               { "has": "first-field" },
@@ -326,7 +363,10 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -371,7 +411,12 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_source" } ], "kind": "Test" }
+              {
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
+                "kind": "Test"
+              }
             ],
             "local_features": [
               { "has": "first-field" },
@@ -395,7 +440,10 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -440,7 +488,12 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_source" } ], "kind": "Test" }
+              {
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
+                "kind": "Test"
+              }
             ],
             "local_features": [
               { "has": "first-field" },
@@ -464,7 +517,10 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -509,7 +565,12 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_source" } ], "kind": "Test" }
+              {
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
+                "kind": "Test"
+              }
             ],
             "local_features": [
               { "has": "first-field" },
@@ -537,7 +598,10 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -586,7 +650,12 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_source" } ], "kind": "Test" }
+              {
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -603,7 +672,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "Obj{via_type_of.Test4_C.x}" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "Obj{via_type_of.Test4_C.x}"
+                  }
+                ],
                 "kind": "Test"
               }
             ],
@@ -644,7 +718,12 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_source" } ], "kind": "Test" }
+              {
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -661,7 +740,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "Obj{via_type_of.Test4_C.y}" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "Obj{via_type_of.Test4_C.y}"
+                  }
+                ],
                 "kind": "Test"
               }
             ],
@@ -702,7 +786,12 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_source" } ], "kind": "Test" }
+              {
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -719,7 +808,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "Obj{via_type_of.Test4_C.z}" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "Obj{via_type_of.Test4_C.z}"
+                  }
+                ],
                 "kind": "Test"
               }
             ],
@@ -1111,7 +1205,10 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "via_type_of.return_via_parameter_type" }
+                  {
+                    "port": "leaf:return",
+                    "name": "via_type_of.return_via_parameter_type"
+                  }
                 ],
                 "kind": "Test"
               }
@@ -1194,7 +1291,10 @@
         "taint": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -1226,7 +1326,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "Obj{via_type_of.Test3_C.x}" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "Obj{via_type_of.Test3_C.x}"
+                  }
+                ],
                 "kind": "Test"
               }
             ],
@@ -1247,7 +1352,10 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -1281,7 +1389,10 @@
         "taint": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -1313,7 +1424,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "Obj{via_type_of.Test3_C.y}" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "Obj{via_type_of.Test3_C.y}"
+                  }
+                ],
                 "kind": "Test"
               }
             ],
@@ -1334,7 +1450,10 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -1366,7 +1485,10 @@
         "taint": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -1398,7 +1520,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "Obj{via_type_of.Test3_C.z}" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "Obj{via_type_of.Test3_C.z}"
+                  }
+                ],
                 "kind": "Test"
               }
             ],
@@ -1419,7 +1546,10 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -1451,7 +1581,10 @@
         "taint": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -1467,7 +1600,10 @@
         "taint": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -1483,7 +1619,10 @@
         "taint": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -1515,7 +1654,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "Obj{via_type_of.Test3_C.x}" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "Obj{via_type_of.Test3_C.x}"
+                  }
+                ],
                 "kind": "Test"
               }
             ],
@@ -1532,7 +1676,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "Obj{via_type_of.Test3_C.y}" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "Obj{via_type_of.Test3_C.y}"
+                  }
+                ],
                 "kind": "Test"
               }
             ],
@@ -1549,7 +1698,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "Obj{via_type_of.Test3_C.z}" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:return",
+                    "name": "Obj{via_type_of.Test3_C.z}"
+                  }
+                ],
                 "kind": "Test"
               }
             ],
@@ -1570,7 +1724,10 @@
         "roots": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_sink" } ], "kind": "Test" }
+              {
+                "leaves": [ { "port": "leaf:arg", "name": "_test_sink" } ],
+                "kind": "Test"
+              }
             ],
             "origin": {
               "filename": "via_type_of.py",
@@ -1635,7 +1792,10 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "via_type_of.return_via_parameter_type" }
+                  {
+                    "port": "leaf:return",
+                    "name": "via_type_of.return_via_parameter_type"
+                  }
                 ],
                 "kind": "Test"
               }
@@ -1665,7 +1825,10 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "via_type_of.return_via_parameter_type" }
+                  {
+                    "port": "leaf:return",
+                    "name": "via_type_of.return_via_parameter_type"
+                  }
                 ],
                 "kind": "Test"
               }
@@ -1694,7 +1857,12 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "via_type_of.sink_via_type_of" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:x",
+                    "name": "via_type_of.sink_via_type_of"
+                  }
+                ],
                 "kind": "Test"
               }
             ],
@@ -1723,7 +1891,10 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "via_type_of.return_via_parameter_type" }
+                  {
+                    "port": "leaf:return",
+                    "name": "via_type_of.return_via_parameter_type"
+                  }
                 ],
                 "kind": "Test"
               }
@@ -1751,7 +1922,12 @@
         "taint": [
           {
             "kinds": [
-              { "leaves": [ { "name": "_test_source" } ], "kind": "Test" }
+              {
+                "leaves": [
+                  { "port": "leaf:return", "name": "_test_source" }
+                ],
+                "kind": "Test"
+              }
             ],
             "local_features": [
               { "always-via-type": "typing.List[int]" },
@@ -1782,9 +1958,6 @@
             "kinds": [
               {
                 "features": [ { "always-via-type": "typing.Any" } ],
-                "leaves": [
-                  { "name": "via_type_of.return_via_parameter_type" }
-                ],
                 "length": 1,
                 "kind": "Test"
               }

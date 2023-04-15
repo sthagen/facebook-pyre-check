@@ -40,7 +40,12 @@
             "is_self_call": false,
             "kinds": [
               {
-                "leaves": [ { "name": "class_level_taint.ClassSink.sink" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:self",
+                    "name": "class_level_taint.ClassSink.sink"
+                  }
+                ],
                 "kind": "Test"
               }
             ],
@@ -77,7 +82,10 @@
             "kinds": [
               {
                 "leaves": [
-                  { "name": "class_level_taint.ClassSource.source" }
+                  {
+                    "port": "leaf:return",
+                    "name": "class_level_taint.ClassSource.source"
+                  }
                 ],
                 "kind": "Test"
               }
@@ -99,7 +107,12 @@
             "is_self_call": false,
             "kinds": [
               {
-                "leaves": [ { "name": "class_level_taint.ClassSink.sink" } ],
+                "leaves": [
+                  {
+                    "port": "leaf:argument",
+                    "name": "class_level_taint.ClassSink.sink"
+                  }
+                ],
                 "kind": "Test"
               }
             ],

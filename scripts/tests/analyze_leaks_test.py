@@ -10,16 +10,20 @@ from typing import cast, Dict, List, Set
 
 from ..analyze_leaks import (
     attach_trace_to_query_results,
-    CallGraph,
     collect_pyre_query_results,
-    DependencyGraph,
-    DynamicCallGraphInputFormat,
-    Entrypoints,
     is_valid_callee,
-    JSON,
     LeakAnalysisResult,
     LeakAnalysisScriptError,
     prepare_issues_for_query,
+    validate_json_list,
+)
+
+from ..callgraph_utilities import (
+    CallGraph,
+    DependencyGraph,
+    DynamicCallGraphInputFormat,
+    Entrypoints,
+    JSON,
     PyreCallGraphInputFormat,
     PysaCallGraphInputFormat,
     UnionCallGraphFormat,
@@ -479,15 +483,13 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         entrypoints_list: JSON = {"not_a_list": True}
 
         with self.assertRaises(ValueError):
-            input_format = PysaCallGraphInputFormat({"my.entrypoint.one": ["print"]})
-            Entrypoints(entrypoints_list, input_format.get_keys())
+            validate_json_list(entrypoints_list, "ENTRYPOINTS_FILE", "top-level")
 
     def test_validate_entrypoints_file_bad_list_elements(self) -> None:
         entrypoints_list: JSON = [True, 1]
 
         with self.assertRaises(ValueError):
-            input_format = PysaCallGraphInputFormat({"my.entrypoint.one": ["print"]})
-            Entrypoints(entrypoints_list, input_format.get_keys())
+            validate_json_list(entrypoints_list, "ENTRYPOINTS_FILE", "top-level")
 
     def test_get_transitive_callees_empty(self) -> None:
         entrypoints_list: JSON = []
@@ -578,7 +580,6 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         self.assertFalse(is_valid_callee("-f1.f2"))
         self.assertFalse(is_valid_callee("f1#f2"))
 
-
     def test_prepare_issues_for_query(self) -> None:
         callees = ["f1", "f2", "f3", "f1#f2", "f1.f2.f3", "11", "-f1.f2"]
 
@@ -586,7 +587,6 @@ class AnalyzeIssueTraceTest(unittest.TestCase):
         expected_query = "batch(global_leaks(f1), global_leaks(f2), global_leaks(f3), global_leaks(f1.f2.f3))"
 
         self.assertEqual(result_query, expected_query)
-
 
     def test_collect_pyre_query_results(self) -> None:
         example_pyre_stdout = {

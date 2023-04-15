@@ -17,7 +17,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "multi_subkind.source_a" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "multi_subkind.source_a" }
+                ],
                 "kind": "SourceA[KindA]"
               }
             ],
@@ -31,7 +33,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "multi_subkind.source_b" } ],
+                "leaves": [
+                  { "port": "leaf:return", "name": "multi_subkind.source_b" }
+                ],
                 "kind": "SourceA[KindB]"
               }
             ],
@@ -53,7 +57,9 @@
                 "features": [
                   { "has": "first-index" }, { "first-index": "a" }
                 ],
-                "leaves": [ { "name": "multi_subkind.sink_a" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "multi_subkind.sink_a" }
+                ],
                 "length": 1,
                 "kind": "SinkA[KindA]"
               }
@@ -75,7 +81,9 @@
                 "features": [
                   { "has": "first-index" }, { "first-index": "b" }
                 ],
-                "leaves": [ { "name": "multi_subkind.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "multi_subkind.sink_b" }
+                ],
                 "length": 1,
                 "kind": "SinkA[KindB]"
               }
@@ -119,7 +127,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "multi_subkind.sink_a" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "multi_subkind.sink_a" }
+                ],
                 "kind": "SinkA[KindA]"
               }
             ],
@@ -141,7 +151,9 @@
           {
             "kinds": [
               {
-                "leaves": [ { "name": "multi_subkind.sink_b" } ],
+                "leaves": [
+                  { "port": "leaf:arg", "name": "multi_subkind.sink_b" }
+                ],
                 "kind": "SinkA[KindB]"
               }
             ],

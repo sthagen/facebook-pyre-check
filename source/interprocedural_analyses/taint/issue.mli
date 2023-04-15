@@ -135,9 +135,17 @@ module MultiSource : sig
 
   val is_main_issue : sink:Sinks.t -> taint_configuration:TaintConfiguration.Heap.t -> issue -> bool
 
-  val get_first_sink_hops : issue -> ExtraTraceFirstHop.Set.t
+  val get_first_sink_hops
+    :  main_issue_location:Location.WithModule.t ->
+    filename_lookup:(Reference.t -> string option) ->
+    issue ->
+    ExtraTraceFirstHop.Set.t
 
-  val get_first_source_hops : issue -> ExtraTraceFirstHop.Set.t
+  val get_first_source_hops
+    :  main_issue_location:Location.WithModule.t ->
+    filename_lookup:(Reference.t -> string option) ->
+    issue ->
+    ExtraTraceFirstHop.Set.t
 
   val attach_extra_traces
     :  source_traces:ExtraTraceFirstHop.Set.t ->

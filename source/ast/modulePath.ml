@@ -73,42 +73,55 @@ let pp formatter { raw; qualifier; is_stub; is_external; is_init } =
     is_init
 
 
-let qualifier_of_relative relative =
+let file_name_parts_for_relative_path path =
+  Filename.parts path
+  |> (* `Filename.parts` for a relative path "foo/bar.py" returns `["."; "foo"; "bar.py"]`. Strip
+        the current directory ".". *)
+  List.tl_exn
+
+
+let strip_stub_package path_parts =
+  let strip_stub_suffix name =
+    (* Stub packages have their directories named as `XXX-stubs`. See PEP 561. *)
+    match String.chop_suffix name ~suffix:"-stubs" with
+    | Some result -> result
+    | None -> name
+  in
+  (* NOTE: We currently assume that `foo-stubs` may occur at any level in the path. This does not
+     match PEP 561: https://peps.python.org/pep-0561/#stub-only-packages. *)
+  List.map path_parts ~f:strip_stub_suffix
+
+
+let is_in_stub_package path =
+  let path_parts = file_name_parts_for_relative_path path in
+  [%compare.equal: string list] (strip_stub_package path_parts) path_parts |> not
+
+
+let qualifier_from_relative_path relative =
   match relative with
   | "" -> Reference.empty
   | _ ->
-      let qualifier =
-        let reversed_elements =
-          let strip_stub_suffix name =
-            (* Stub packages have their directories named as `XXX-stubs`. See PEP 561. *)
-            match String.chop_suffix name ~suffix:"-stubs" with
-            | Some result -> result
-            | None -> name
-          in
-          Filename.parts relative
-          |> (* Strip current directory. *) List.tl_exn
-          |> List.map ~f:strip_stub_suffix
-          |> List.rev
-        in
-        let last_without_suffix =
-          let last = List.hd_exn reversed_elements in
-          match String.rindex last '.' with
-          | Some index -> String.slice last 0 index
-          | _ -> last
-        in
-        let strip = function
-          | ["builtins"]
-          | ["builtins"; "future"] ->
-              []
-          | "__init__" :: tail -> tail
-          | elements -> elements
-        in
-        last_without_suffix :: List.tl_exn reversed_elements
-        |> strip
-        |> List.rev_map ~f:(String.split ~on:'.')
-        |> List.concat
+      let strip_implicit_qualifier_parts = function
+        | ["builtins"]
+        | ["builtins"; "future"] ->
+            []
+        | "__init__" :: tail -> tail
+        | elements -> elements
       in
-      Reference.create_from_list qualifier
+      let reversed_elements =
+        file_name_parts_for_relative_path relative |> strip_stub_package |> List.rev
+      in
+      let last_without_suffix =
+        let last = List.hd_exn reversed_elements in
+        match String.rindex last '.' with
+        | Some index -> String.slice last 0 index
+        | _ -> last
+      in
+      last_without_suffix :: List.tl_exn reversed_elements
+      |> strip_implicit_qualifier_parts
+      |> List.rev_map ~f:(String.split ~on:'.')
+      |> List.concat
+      |> Reference.create_from_list
 
 
 let is_internal_path
@@ -150,8 +163,8 @@ let create ~configuration:({ Configuration.Analysis.excludes; _ } as configurati
       | Some { Configuration.Extension.include_suffix_in_module_qualifier; _ }
         when include_suffix_in_module_qualifier ->
           (* Ensure extension is not stripped when creating qualifier *)
-          qualifier_of_relative (relative ^ ".py")
-      | _ -> qualifier_of_relative relative
+          qualifier_from_relative_path (relative ^ ".py")
+      | _ -> qualifier_from_relative_path relative
     in
     let is_stub = PyrePath.is_path_python_stub relative in
     let is_init = PyrePath.is_path_python_init relative in
@@ -175,7 +188,7 @@ let is_in_project { is_external; _ } = not is_external
 
 let create_for_testing ~relative ~is_external ~priority =
   let raw = Raw.{ relative; priority } in
-  let qualifier = qualifier_of_relative relative in
+  let qualifier = qualifier_from_relative_path relative in
   let is_stub = PyrePath.is_path_python_stub relative in
   let is_init = PyrePath.is_path_python_init relative in
   { raw; qualifier; is_stub; is_external; is_init }
@@ -200,24 +213,20 @@ let same_module_compare
       _;
     }
   =
-  (* Stub file always takes precedence *)
-  let stub_priority _ =
+  let stub_comes_before_py_file _ =
     match left_is_stub, right_is_stub with
     | true, false -> -1
     | false, true -> 1
     | _, _ -> 0
   in
-  (* Priority based on priority number. Smaller int means higher priority. *)
-  let number_priority _ = Int.compare left_priority right_priority in
-  (* Package takes precedence over file module with the same name *)
-  let is_init_priority _ =
+  let lower_path_priority_value_comes_first _ = Int.compare left_priority right_priority in
+  let package_comes_before_file_module _ =
     match left_is_init, right_is_init with
     | true, false -> -1
     | false, true -> 1
     | _, _ -> 0
   in
-  (* prioritize extensions in the order listed in the configuration. *)
-  let extension_priority _ =
+  let extension_order_from_configuration _ =
     let extensions = Configuration.Analysis.extension_suffixes configuration in
     let find_extension_index path =
       let extensions =
@@ -239,22 +248,32 @@ let same_module_compare
     | Some left, Some right -> left - right
     | _ -> 0
   in
-  (* Prioritize the file `b.py` within a directory `a` over `a.b.py` if importing as `a.b`. Note:
-     files with multiple dots are not valid in vanilla python. *)
-  let file_path_priority _ =
+  let vanilla_module_comes_before_dotted_file _ =
     let is_slash char = Char.equal char (Char.of_string "/") in
     String.count right_path ~f:is_slash - String.count left_path ~f:is_slash
   in
+  let stub_package_shadows_regular_path _ =
+    match is_in_stub_package left_path, is_in_stub_package right_path with
+    | true, false -> -1
+    | false, true -> 1
+    | _ -> 0
+  in
   let priority_order =
-    [stub_priority; number_priority; is_init_priority; extension_priority; file_path_priority]
+    [
+      stub_comes_before_py_file;
+      lower_path_priority_value_comes_first;
+      package_comes_before_file_module;
+      extension_order_from_configuration;
+      stub_package_shadows_regular_path;
+      vanilla_module_comes_before_dotted_file;
+    ]
   in
   (* Return the first nonzero comparison *)
-  Option.value
-    (List.find_map priority_order ~f:(fun priority_function ->
-         match priority_function () with
-         | 0 -> None
-         | n -> Some n))
-    ~default:0
+  List.find_map priority_order ~f:(fun priority_function ->
+      match priority_function () with
+      | 0 -> None
+      | n -> Some n)
+  |> Option.value ~default:0
 
 
 let is_stub { is_stub; _ } = is_stub
