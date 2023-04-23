@@ -783,25 +783,51 @@ module FromReadOnlyUpstream = struct
       ast_environment: AstEnvironment.ReadOnly.t;
     }
 
-    let load_module_if_tracked { environment; ast_environment } qualifier =
+    let try_load_module { environment; ast_environment } qualifier =
       if not (Modules.mem environment.modules qualifier) then
-        if
-          ModuleTracker.ReadOnly.is_module_tracked
-            (AstEnvironment.ReadOnly.module_tracker ast_environment)
+        match
+          AstEnvironment.ReadOnly.get_processed_source
+            ~track_dependency:true
+            ast_environment
             qualifier
-        then
-          match
-            AstEnvironment.ReadOnly.get_processed_source
-              ~track_dependency:true
-              ast_environment
-              qualifier
-          with
-          | Some source -> set_module_data environment source
-          | None -> ()
+        with
+        | Some source -> set_module_data environment source
+        | None ->
+            if
+              ModuleTracker.ReadOnly.is_module_tracked
+                (AstEnvironment.ReadOnly.module_tracker ast_environment)
+                qualifier
+            then
+              Modules.add environment.modules qualifier (Module.create_implicit ())
 
 
-    let load_all_possible_modules loader ~is_qualifier reference =
-      let load_module_if_tracked = load_module_if_tracked loader in
+    (* Try to load a module, with dependency tracking of our attempt and caching of successful
+       reads. *)
+    let try_load_module_with_cache ?dependency ({ environment; _ } as loader) qualifier =
+      if not (Modules.mem environment.modules ?dependency qualifier) then
+        (* Note: a dependency should be registered above even if no module exists, so we no longer
+           need dependency tracking. *)
+        try_load_module loader qualifier
+
+
+    (* Pyre currently handles imports by transforming the source code so that
+     * all names are fully qualified. This means that it is never possible, in
+     * general, to look at a name and load the module where it lives, because
+     * when we see a name like `foo.bar.baz` it could be:
+     * - a module `baz` in a package `foo.bar`
+     * - a name `bar` in a module `foo.bar`
+     * - a nested name `bar.baz` in a module `foo`; this could happen via
+     *   nested classes or via re-exports.
+     *
+     * As a result, we always have to attempt to load all of the "possible"
+     * modules where this name might live - `foo`, `foo.bar`, and `foo.bar.baz`.
+     * We load them in left-to-right order so that in the event of a collision (which
+     * does happen, and unlike the Python runtime Pyre is not capable of resolving these)
+     * the name bound in the closer-to-root module always wins in initial check. Incremental
+     * behavior in the presence of fully-qualified-name collisions is undefined.
+     *)
+    let load_all_possible_modules_for_symbol ?dependency loader ~is_qualifier reference =
+      let load_module_if_tracked = try_load_module_with_cache ?dependency loader in
       let ancestors_descending = Reference.possible_qualifiers_after_delocalize reference in
       List.iter ancestors_descending ~f:load_module_if_tracked;
       if is_qualifier then load_module_if_tracked reference;
@@ -852,24 +878,36 @@ module FromReadOnlyUpstream = struct
 
       let is_qualifier = In.is_qualifier
 
+      (* See the comment on load_all_possible_modules_for_symbol for a description of why this works
+         as it does *)
       let mem { loader; table } ?dependency key =
         (* First handle the case where it's already in the hash map *)
         match In.mem table ?dependency key with
         | true -> true
         | false ->
             (* If no precomputed value exists, we make sure all potential qualifiers are loaded *)
-            LazyLoader.load_all_possible_modules loader ~is_qualifier (In.key_to_reference key);
+            LazyLoader.load_all_possible_modules_for_symbol
+              ?dependency
+              loader
+              ~is_qualifier
+              (In.key_to_reference key);
             (* We try fetching again *)
             In.mem table ?dependency key
 
 
+      (* See the comment on load_all_possible_modules_for_symbol for a description of why this works
+         as it does *)
       let get { loader; table } ?dependency key =
         (* The first get finds precomputed values *)
         match In.get table ?dependency key with
         | Some _ as hit -> hit
         | None ->
             (* If no precomputed value exists, we make sure all potential qualifiers are loaded *)
-            LazyLoader.load_all_possible_modules loader ~is_qualifier (In.key_to_reference key);
+            LazyLoader.load_all_possible_modules_for_symbol
+              ?dependency
+              loader
+              ~is_qualifier
+              (In.key_to_reference key);
             (* We try fetching again *)
             In.get table ?dependency key
     end
@@ -920,12 +958,7 @@ module FromReadOnlyUpstream = struct
       in
       match Modules.get modules ?dependency qualifier with
       | Some _ as result -> result
-      | None -> (
-          (* Handle implicit namespace modules. These are tracked in ModuleTracker, but not by
-             AstEnvironment or by any of the tables in this environment. *)
-          match ModuleTracker.ReadOnly.is_module_tracked module_tracker qualifier with
-          | true -> Some (Module.create_implicit ())
-          | false -> None)
+      | None -> None
     in
     let module_exists ?dependency qualifier =
       let qualifier =
@@ -935,12 +968,7 @@ module FromReadOnlyUpstream = struct
             Reference.empty
         | _ -> qualifier
       in
-      match Modules.mem modules ?dependency qualifier with
-      | true -> true
-      | false ->
-          ModuleTracker.ReadOnly.is_module_tracked
-            (AstEnvironment.ReadOnly.module_tracker ast_environment)
-            qualifier
+      Modules.mem modules ?dependency qualifier
     in
     let get_class_summary = ClassSummaries.get class_summaries in
     let class_exists = ClassSummaries.mem class_summaries in
@@ -982,14 +1010,8 @@ module FromReadOnlyUpstream = struct
   let update ({ ast_environment; key_tracker; define_names; _ } as environment) ~scheduler upstream =
     let invalidated_modules = AstEnvironment.UpdateResult.invalidated_modules upstream in
     let map sources =
-      let register qualifier =
-        AstEnvironment.ReadOnly.get_processed_source
-          ~track_dependency:true
-          ast_environment
-          qualifier
-        >>| set_module_data environment
-        |> Option.value ~default:()
-      in
+      let loader = LazyLoader.{ environment; ast_environment } in
+      let register qualifier = LazyLoader.try_load_module loader qualifier in
       List.iter sources ~f:register
     in
     let update () =

@@ -759,31 +759,66 @@ let test_resolve_exports context =
   ()
 
 
-let assert_updates
+(* Create a convenient marker type for sources in update tests *)
+module AssertUpdateSource = struct
+  type t =
+    | Local of string * string
+    | External of string * string
+
+  (* This is just here to suppress an unused constructor error *)
+  let _ = External ("", "")
+end
+
+let assert_update
     ~context
-    ?original_source
-    ?new_source
-    ~middle_actions
+    ~original_sources
+    ~new_sources
+    ~middle_queries_with_expectations
     ~expected_triggers
-    ?post_actions
+    ?post_queries_with_expectations
     ()
   =
   Memory.reset_shared_memory ();
-  let sources = original_source >>| (fun source -> "test.py", source) |> Option.to_list in
   let project =
+    let original_local_sources, original_external_sources =
+      let partition = function
+        | AssertUpdateSource.Local (relative, code) -> Either.First (relative, code)
+        | AssertUpdateSource.External (relative, code) -> Either.Second (relative, code)
+      in
+      List.partition_map ~f:partition original_sources
+    in
     ScratchProject.setup
       ~include_typeshed_stubs:false
       ~track_dependencies:true
       ~in_memory:false
-      sources
+      original_local_sources
+      ~external_sources:original_external_sources
       ~context
   in
-  let configuration = ScratchProject.configuration_of project in
   let read_only =
     ScratchProject.errors_environment project
     |> ErrorsEnvironment.Testing.ReadOnly.unannotated_global_environment
   in
   let execute_action = function
+    | `ModuleMetadata (qualifier, dependency, expected) ->
+        let expected =
+          match expected with
+          | `None -> "None"
+          | `Explicit -> "Explicit"
+          | `Implicit -> "Implicit"
+        in
+        let actual =
+          match
+            UnannotatedGlobalEnvironment.ReadOnly.get_module_metadata
+              read_only
+              ~dependency
+              qualifier
+          with
+          | None -> "None"
+          | Some module_metadata ->
+              if Module.is_implicit module_metadata then "Implicit" else "Explicit"
+        in
+        assert_equal ~ctxt:context actual expected ~printer:Fn.id
     | `Get (class_name, dependency, expected_number_of_statements) ->
         let printer number =
           number >>| Format.sprintf "number of attributes: %d" |> Option.value ~default:"No class"
@@ -874,17 +909,36 @@ let assert_updates
           qualifier
         |> ignore
   in
-  List.iter middle_actions ~f:execute_action;
-  if Option.is_some original_source then
-    ScratchProject.delete_file project ~relative:"test.py";
-  new_source >>| ScratchProject.add_file project ~relative:"test.py" |> Option.value ~default:();
-  let { Configuration.Analysis.local_root; _ } = configuration in
-  let event =
-    Test.relative_artifact_path ~root:local_root ~relative:"test.py"
-    |> ArtifactPath.Event.(create ~kind:Kind.Unknown)
+  List.iter middle_queries_with_expectations ~f:execute_action;
+  let remove_source = function
+    | AssertUpdateSource.Local (relative, _) ->
+        ScratchProject.delete_from_local_root project ~relative
+    | AssertUpdateSource.External (relative, _) ->
+        ScratchProject.delete_from_external_root project ~relative
+  in
+  List.iter original_sources ~f:remove_source;
+  let add_source = function
+    | AssertUpdateSource.Local (relative, code) ->
+        ScratchProject.add_to_local_root project ~relative code
+    | AssertUpdateSource.External (relative, code) ->
+        ScratchProject.add_to_external_root project ~relative code
+  in
+  List.iter new_sources ~f:add_source;
+  let events =
+    let local_root = ScratchProject.local_root_of project in
+    let external_root = ScratchProject.external_root_of project in
+    let to_event assert_update_source =
+      let root, relative =
+        match assert_update_source with
+        | AssertUpdateSource.Local (relative, _) -> local_root, relative
+        | AssertUpdateSource.External (relative, _) -> external_root, relative
+      in
+      Test.relative_artifact_path ~root ~relative |> ArtifactPath.Event.(create ~kind:Kind.Unknown)
+    in
+    List.concat [original_sources; new_sources] |> List.map ~f:to_event
   in
   let update_result =
-    ScratchProject.update_environment project [event]
+    ScratchProject.update_environment project events
     |> ErrorsEnvironment.Testing.UpdateResult.unannotated_global_environment
   in
   let printer set =
@@ -893,7 +947,7 @@ let assert_updates
     |> List.to_string ~f:SharedMemoryKeys.show_dependency
   in
   let expected_triggers = SharedMemoryKeys.DependencyKey.RegisteredSet.of_list expected_triggers in
-  post_actions >>| List.iter ~f:execute_action |> Option.value ~default:();
+  post_queries_with_expectations >>| List.iter ~f:execute_action |> Option.value ~default:();
   assert_equal
     ~cmp:SharedMemoryKeys.DependencyKey.RegisteredSet.equal
     ~printer
@@ -912,182 +966,335 @@ let alias_dependency =
   SharedMemoryKeys.DependencyKey.Registry.register (TypeCheckDefine (Reference.create "dep"))
 
 
-let test_get_class_summary context =
-  let assert_updates = assert_updates ~context in
+let test_get_explicit_module_metadata context =
   let dependency = type_check_dependency in
-  assert_updates
-    ~original_source:{|
-      class Foo:
-        x: int
-    |}
-    ~new_source:{|
-      class Foo:
-        x: str
-    |}
-    ~middle_actions:[`Get ("test.Foo", dependency, Some 1)]
+  let assert_update = assert_update ~context in
+  (* No actual change *)
+  assert_update
+    ~original_sources:[AssertUpdateSource.Local ("a.py", "x: int = 1")]
+    ~middle_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `Explicit)]
+    ~new_sources:[AssertUpdateSource.Local ("a.py", "x: int = 1")]
+    ~expected_triggers:[]
+    ~post_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `Explicit)]
+    ();
+  assert_update
+    ~original_sources:[AssertUpdateSource.External ("a.py", "x: int = 1")]
+    ~middle_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `Explicit)]
+    ~new_sources:[AssertUpdateSource.External ("a.py", "x: int = 1")]
+    ~expected_triggers:[]
+    ~post_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `Explicit)]
+    ();
+  (* Updated code *)
+  assert_update
+    ~original_sources:[AssertUpdateSource.Local ("a.py", "x: int = 1")]
+    ~middle_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `Explicit)]
+    ~new_sources:[AssertUpdateSource.Local ("a.py", "a: int = 2")]
+    ~expected_triggers:[dependency]
+    ~post_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `Explicit)]
+    ();
+  assert_update
+    ~original_sources:[AssertUpdateSource.External ("a.py", "x: int = 1")]
+    ~middle_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `Explicit)]
+    ~new_sources:[AssertUpdateSource.External ("a.py", "a: int = 2")]
+    ~expected_triggers:[dependency]
+    ~post_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `Explicit)]
+    ();
+  (* Deleted code *)
+  assert_update
+    ~original_sources:[AssertUpdateSource.Local ("a.py", "x: int = 1")]
+    ~middle_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `Explicit)]
+    ~new_sources:[]
+    ~expected_triggers:[dependency]
+    ~post_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `None)]
+    ();
+  assert_update
+    ~original_sources:[AssertUpdateSource.External ("a.py", "x: int = 1")]
+    ~middle_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `Explicit)]
+    ~new_sources:[]
+    ~expected_triggers:[dependency]
+    ~post_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `None)]
+    ();
+  (* Added code *)
+  assert_update
+    ~original_sources:[]
+    ~middle_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `None)]
+    ~new_sources:[AssertUpdateSource.Local ("a.py", "x: int = 1")]
+    ~expected_triggers:[dependency]
+    ~post_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `Explicit)]
+    ();
+  assert_update
+    ~original_sources:[]
+    ~middle_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `None)]
+    ~new_sources:[AssertUpdateSource.External ("a.py", "x: int = 1")]
+    ~expected_triggers:[dependency]
+    ~post_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `Explicit)]
+    ();
+  ()
+
+
+let test_get_implicit_module_metadata context =
+  let dependency = type_check_dependency in
+  let assert_update = assert_update ~context in
+  (* Changed nested module -> no change to implicit *)
+  assert_update
+    ~original_sources:[AssertUpdateSource.Local ("a/b.py", "x: int = 1")]
+    ~new_sources:[AssertUpdateSource.Local ("a/b.py", "x: int = 2")]
+    ~middle_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `Implicit)]
+    ~expected_triggers:[]
+    ~post_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `Implicit)]
+    ();
+  (* Deleted nested module -> deleted implicit *)
+  assert_update
+    ~original_sources:[AssertUpdateSource.Local ("a/b.py", "x: int = 1")]
+    ~new_sources:[]
+    ~middle_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `Implicit)]
+    ~expected_triggers:[dependency]
+    ~post_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `None)]
+    ();
+  (* Added nested module -> added implicit *)
+  assert_update
+    ~original_sources:[]
+    ~new_sources:[AssertUpdateSource.Local ("a/b.py", "x: int = 1")]
+    ~middle_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `None)]
+    ~expected_triggers:[dependency]
+    ~post_queries_with_expectations:[`ModuleMetadata (!&"a", dependency, `Implicit)]
+    ();
+  ()
+
+
+let test_get_class_summary context =
+  let assert_update = assert_update ~context in
+  let dependency = type_check_dependency in
+  assert_update
+    ~original_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        class Foo:
+          x: int
+      |})]
+    ~new_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        class Foo:
+          x: str
+      |})]
+    ~middle_queries_with_expectations:[`Get ("test.Foo", dependency, Some 1)]
     ~expected_triggers:[dependency]
     ();
-  assert_updates
-    ~original_source:{|
-      class Foo:
-        x: int
-    |}
-    ~new_source:{|
-      class Foo:
-        x: str
-    |}
-    ~middle_actions:[`Get ("test.Missing", dependency, None)]
+  assert_update
+    ~original_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        class Foo:
+          x: int
+      |})]
+    ~new_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        class Foo:
+          x: str
+      |})]
+    ~middle_queries_with_expectations:[`Get ("test.Missing", dependency, None)]
     ~expected_triggers:[]
     ();
-  assert_updates
-    ~original_source:{|
-      class Foo:
-        x: int
-    |}
-    ~new_source:{|
-      class Unrelated:
-        x: int
-      class Foo:
-        x: int
-    |}
-    ~middle_actions:[`Get ("test.Foo", dependency, Some 1)]
+  assert_update
+    ~original_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        class Foo:
+          x: int
+      |})]
+    ~new_sources:
+      [
+        AssertUpdateSource.Local
+          ( "test.py",
+            {|
+              class Unrelated:
+                x: int
+              class Foo:
+                x: int
+            |}
+          );
+      ]
+    ~middle_queries_with_expectations:[`Get ("test.Foo", dependency, Some 1)]
     ~expected_triggers:[dependency]
     ();
 
   (* Last class definition wins *)
-  assert_updates
-    ~original_source:
-      {|
-      class Foo:
-        x: int
-      class Foo:
-        x: int
-        y: int
-    |}
-    ~new_source:{|
-      class Unrelated:
-        x: int
-      class Foo:
-        x: int
-    |}
-    ~middle_actions:[`Get ("test.Foo", dependency, Some 2)]
+  assert_update
+    ~original_sources:
+      [
+        AssertUpdateSource.Local
+          ( "test.py",
+            {|
+              class Foo:
+                x: int
+              class Foo:
+                x: int
+                y: int
+            |}
+          );
+      ]
+    ~new_sources:
+      [
+        AssertUpdateSource.Local
+          ( "test.py",
+            {|
+              class Unrelated:
+                x: int
+              class Foo:
+                x: int
+            |}
+          );
+      ]
+    ~middle_queries_with_expectations:[`Get ("test.Foo", dependency, Some 2)]
     ~expected_triggers:[dependency]
-    ~post_actions:[`Get ("test.Foo", dependency, Some 1)]
+    ~post_queries_with_expectations:[`Get ("test.Foo", dependency, Some 1)]
     ();
-  assert_updates
-    ~original_source:
-      {|
-      class Foo:
-        def method(self) -> None:
-         print("hello")
-    |}
-    ~new_source:{|
-      class Foo:
-        def method(self) -> int:
-          return 1
-    |}
-    ~middle_actions:[`Get ("test.Foo", dependency, Some 1)]
+  assert_update
+    ~original_sources:
+      [
+        AssertUpdateSource.Local
+          ( "test.py",
+            {|
+              class Foo:
+                def method(self) -> None:
+                  print("hello")
+            |}
+          );
+      ]
+    ~new_sources:
+      [
+        AssertUpdateSource.Local
+          ( "test.py",
+            {|
+              class Foo:
+                def method(self) -> int:
+                  return 1
+            |}
+          );
+      ]
+    ~middle_queries_with_expectations:[`Get ("test.Foo", dependency, Some 1)]
     ~expected_triggers:[dependency]
-    ~post_actions:[`Get ("test.Foo", dependency, Some 1)]
+    ~post_queries_with_expectations:[`Get ("test.Foo", dependency, Some 1)]
     ();
-  assert_updates
-    ~original_source:
-      {|
-      class Foo:
-        def method(self) -> None:
-         print("hellobo")
-    |}
-    ~new_source:
-      {|
-      class Foo:
-        def method(self) -> None:
-         print("goodbye")
-    |}
-    ~middle_actions:[`Get ("test.Foo", dependency, Some 1)]
+  assert_update
+    ~original_sources:
+      [
+        AssertUpdateSource.Local
+          ( "test.py",
+            {|
+              class Foo:
+                def method(self) -> None:
+                  print("hellobo")
+            |}
+          );
+      ]
+    ~new_sources:
+      [
+        AssertUpdateSource.Local
+          ( "test.py",
+            {|
+              class Foo:
+                def method(self) -> None:
+                  print("goodbye")
+            |}
+          );
+      ]
+    ~middle_queries_with_expectations:[`Get ("test.Foo", dependency, Some 1)]
     ~expected_triggers:[]
-    ~post_actions:[`Get ("test.Foo", dependency, Some 1)]
+    ~post_queries_with_expectations:[`Get ("test.Foo", dependency, Some 1)]
     ();
   ()
 
 
 let test_class_exists_and_all_classes context =
-  let assert_updates = assert_updates ~context in
+  let assert_update = assert_update ~context in
   let dependency = type_check_dependency in
 
   (* class exists *)
-  assert_updates
-    ~new_source:{|
-      class Foo:
-        x: int
-    |}
-    ~middle_actions:[`Mem ("test.Foo", dependency, false)]
+  assert_update
+    ~original_sources:[]
+    ~middle_queries_with_expectations:[`Mem ("test.Foo", dependency, false)]
+    ~new_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        class Foo:
+          x: int
+      |})]
     ~expected_triggers:[dependency]
     ();
-  assert_updates
-    ~original_source:{|
-      class Foo:
-        x: int
-    |}
-    ~middle_actions:[`Mem ("test.Foo", dependency, true)]
+  assert_update
+    ~original_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        class Foo:
+          x: int
+      |})]
+    ~middle_queries_with_expectations:[`Mem ("test.Foo", dependency, true)]
+    ~new_sources:[]
     ~expected_triggers:[dependency]
     ();
-  assert_updates
-    ~original_source:{|
-      class Foo:
-        x: int
-    |}
-    ~new_source:{|
-      class Foo:
-        x: int
-    |}
-    ~middle_actions:[`Mem ("test.Foo", dependency, true)]
+  assert_update
+    ~original_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        class Foo:
+          x: int
+      |})]
+    ~new_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        class Foo:
+          x: int
+      |})]
+    ~middle_queries_with_expectations:[`Mem ("test.Foo", dependency, true)]
     ~expected_triggers:[]
     ();
 
-  assert_updates
-    ~original_source:{|
-      class Foo:
-        x: int
-    |}
-    ~new_source:{|
-      class Foo:
-        x: str
-    |}
-    ~middle_actions:[`Mem ("test.Foo", dependency, true)]
+  assert_update
+    ~original_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        class Foo:
+          x: int
+      |})]
+    ~new_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        class Foo:
+          x: str
+      |})]
+    ~middle_queries_with_expectations:[`Mem ("test.Foo", dependency, true)]
     ~expected_triggers:[]
     ();
 
   (* all_classes *)
-  assert_updates
-    ~original_source:{|
-      class Foo:
-        x: int
-      class Bar:
-        y: str
-    |}
-    ~new_source:{|
+  assert_update
+    ~original_sources:
+      [
+        AssertUpdateSource.Local
+          ( "test.py",
+            {|
+            class Foo:
+              x: int
+            class Bar:
+              y: str
+          |}
+          );
+      ]
+    ~new_sources:[AssertUpdateSource.Local ("test.py", {|
       class Foo:
         x: str
-    |}
-    ~middle_actions:[`AllClasses ["test.Bar"; "test.Foo"]]
+    |})]
+    ~middle_queries_with_expectations:[`AllClasses ["test.Bar"; "test.Foo"]]
     ~expected_triggers:[]
-    ~post_actions:[`AllClasses ["test.Foo"]]
+    ~post_queries_with_expectations:[`AllClasses ["test.Foo"]]
     ();
   ()
 
 
 let test_get_unannotated_global context =
-  let assert_updates = assert_updates ~context in
+  let assert_update = assert_update ~context in
   let dependency = alias_dependency in
 
-  assert_updates
-    ~original_source:{|
-      x: int = 7
-    |}
-    ~new_source:{|
-      x: int = 9
-    |}
-    ~middle_actions:
+  assert_update
+    ~original_sources:[AssertUpdateSource.Local ("test.py", {|
+        x: int = 7
+      |})]
+    ~new_sources:[AssertUpdateSource.Local ("test.py", {|
+        x: int = 9
+      |})]
+    ~middle_queries_with_expectations:
       [
         `Global
           ( Reference.create "test.x",
@@ -1102,7 +1309,7 @@ let test_get_unannotated_global context =
                  }) );
       ]
     ~expected_triggers:[dependency]
-    ~post_actions:
+    ~post_queries_with_expectations:
       [
         `Global
           ( Reference.create "test.x",
@@ -1117,14 +1324,16 @@ let test_get_unannotated_global context =
                  }) );
       ]
     ();
-  assert_updates
-    ~original_source:{|
-      import target.member as alias
-    |}
-    ~new_source:{|
-      import target.member as new_alias
-    |}
-    ~middle_actions:
+  assert_update
+    ~original_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        import target.member as alias
+      |})]
+    ~new_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        import target.member as new_alias
+      |})]
+    ~middle_queries_with_expectations:
       [
         `Global
           ( Reference.create "test.alias",
@@ -1135,16 +1344,24 @@ let test_get_unannotated_global context =
                     { target = !&"target.member"; implicit_alias = false })) );
       ]
     ~expected_triggers:[dependency]
-    ~post_actions:[`Global (Reference.create "test.alias", dependency, None)]
+    ~post_queries_with_expectations:[`Global (Reference.create "test.alias", dependency, None)]
     ();
-  assert_updates
-    ~original_source:{|
-      from target import member, other_member
-    |}
-    ~new_source:{|
-      from target import other_member, member
-    |}
-    ~middle_actions:
+  assert_update
+    ~original_sources:
+      [
+        AssertUpdateSource.Local
+          ("test.py", {|
+        from target import member, other_member
+      |});
+      ]
+    ~new_sources:
+      [
+        AssertUpdateSource.Local
+          ("test.py", {|
+        from target import other_member, member
+      |});
+      ]
+    ~middle_queries_with_expectations:
       [
         `Global
           ( Reference.create "test.member",
@@ -1163,7 +1380,7 @@ let test_get_unannotated_global context =
       ]
       (* Location insensitive *)
     ~expected_triggers:[]
-    ~post_actions:
+    ~post_queries_with_expectations:
       [
         `Global
           ( Reference.create "test.member",
@@ -1183,11 +1400,12 @@ let test_get_unannotated_global context =
     ();
 
   (* Removing a source should trigger lookup dependencies *)
-  assert_updates
-    ~original_source:{|
-      from target import member
-    |}
-    ~middle_actions:
+  assert_update
+    ~original_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        from target import member
+      |})]
+    ~middle_queries_with_expectations:
       [
         `Global
           ( Reference.create "test.member",
@@ -1197,18 +1415,21 @@ let test_get_unannotated_global context =
                  (UnannotatedGlobal.ImportEntry.Name
                     { from = !&"target"; target = "member"; implicit_alias = true })) );
       ]
+    ~new_sources:[]
     ~expected_triggers:[dependency]
-    ~post_actions:[`Global (Reference.create "test.member", dependency, None)]
+    ~post_queries_with_expectations:[`Global (Reference.create "test.member", dependency, None)]
     ();
 
   (* Adding a source should trigger lookup dependencies *)
-  assert_updates
-    ~new_source:{|
-      from target import member
-    |}
-    ~middle_actions:[`Global (Reference.create "test.member", dependency, None)]
+  assert_update
+    ~original_sources:[]
+    ~new_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        from target import member
+      |})]
+    ~middle_queries_with_expectations:[`Global (Reference.create "test.member", dependency, None)]
     ~expected_triggers:[dependency]
-    ~post_actions:
+    ~post_queries_with_expectations:
       [
         `Global
           ( Reference.create "test.member",
@@ -1221,12 +1442,13 @@ let test_get_unannotated_global context =
     ();
 
   (* Don't infer * as a real thing *)
-  assert_updates
-    ~original_source:{|
+  assert_update
+    ~original_sources:[AssertUpdateSource.Local ("test.py", {|
       from target import *
-    |}
-    ~middle_actions:[`Global (Reference.create "test.*", dependency, None)]
-    ~expected_triggers:[]
+    |})]
+    ~middle_queries_with_expectations:[`Global (Reference.create "test.*", dependency, None)]
+    ~new_sources:[]
+    ~expected_triggers:[dependency]
     ();
 
   let open Statement in
@@ -1242,11 +1464,12 @@ let test_get_unannotated_global context =
            node ~start:(2, 20) ~stop:(2, 24) (Expression.Name (Name.Identifier "bool"));
          ])
   in
-  assert_updates
-    ~original_source:{|
-      X, Y, Z = int, str, bool
-    |}
-    ~middle_actions:
+  assert_update
+    ~original_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        X, Y, Z = int, str, bool
+      |})]
+    ~middle_queries_with_expectations:
       [
         `Global
           ( Reference.create "test.X",
@@ -1282,20 +1505,22 @@ let test_get_unannotated_global context =
                    total_length = 3;
                  }) );
       ]
+    ~new_sources:[]
     ~expected_triggers:[dependency]
     ();
 
   (* First global wins. *)
-  assert_updates
-    ~original_source:{|
-      X = int
-      X = str
-    |}
-    ~new_source:{|
-      X = int
-      X = str
-    |}
-    ~middle_actions:
+  assert_update
+    ~original_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        X = int
+        X = str
+      |})]
+    ~new_sources:[AssertUpdateSource.Local ("test.py", {|
+        X = int
+        X = str
+      |})]
+    ~middle_queries_with_expectations:
       [
         `Global
           ( Reference.create "test.X",
@@ -1313,20 +1538,32 @@ let test_get_unannotated_global context =
     ();
 
   (* Only recurse into ifs *)
-  assert_updates
-    ~original_source:{|
-      if condition:
-        X = int
-      else:
-        X = str
-    |}
-    ~new_source:{|
-      if condition:
-        X = int
-      else:
-        X = str
-    |}
-    ~middle_actions:
+  assert_update
+    ~original_sources:
+      [
+        AssertUpdateSource.Local
+          ( "test.py",
+            {|
+            if condition:
+              X = int
+            else:
+              X = str
+          |}
+          );
+      ]
+    ~new_sources:
+      [
+        AssertUpdateSource.Local
+          ( "test.py",
+            {|
+            if condition:
+              X = int
+            else:
+              X = str
+          |}
+          );
+      ]
+    ~middle_queries_with_expectations:
       [
         `Global
           ( Reference.create "test.X",
@@ -1371,16 +1608,24 @@ let test_get_unannotated_global context =
     }
   in
 
-  assert_updates
-    ~original_source:{|
-      def foo() -> None:
-       print("hellobo")
-    |}
-    ~new_source:{|
-      def foo() -> None:
-       print("goodbye")
-    |}
-    ~middle_actions:
+  assert_update
+    ~original_sources:
+      [
+        AssertUpdateSource.Local
+          ("test.py", {|
+            def foo() -> None:
+              print("hellobo")
+          |});
+      ]
+    ~new_sources:
+      [
+        AssertUpdateSource.Local
+          ("test.py", {|
+            def foo() -> None:
+              print("goodbye")
+          |});
+      ]
+    ~middle_queries_with_expectations:
       [
         `Global
           ( Reference.create "test.foo",
@@ -1390,7 +1635,7 @@ let test_get_unannotated_global context =
                  [
                    create_simple_signature
                      ~start:(2, 0)
-                     ~stop:(3, 17)
+                     ~stop:(3, 18)
                      !&"test.foo"
                      (Some
                         (node
@@ -1400,7 +1645,7 @@ let test_get_unannotated_global context =
                  ]) );
       ]
     ~expected_triggers:[]
-    ~post_actions:
+    ~post_queries_with_expectations:
       [
         `Global
           ( Reference.create "test.foo",
@@ -1410,7 +1655,7 @@ let test_get_unannotated_global context =
                  [
                    create_simple_signature
                      ~start:(2, 0)
-                     ~stop:(3, 17)
+                     ~stop:(3, 18)
                      !&"test.foo"
                      (Some
                         (node
@@ -1424,19 +1669,21 @@ let test_get_unannotated_global context =
 
 
 let test_dependencies_and_new_values context =
-  let assert_updates = assert_updates ~context in
+  let assert_update = assert_update ~context in
 
   (* we should be able to keep different dependencies straight *)
-  assert_updates
-    ~original_source:{|
-      class Foo:
-        x: int
-    |}
-    ~new_source:{|
-      class Foo:2376
-        x: str
-    |}
-    ~middle_actions:
+  assert_update
+    ~original_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        class Foo:
+          x: int
+      |})]
+    ~new_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        class Foo:2376
+          x: str
+      |})]
+    ~middle_queries_with_expectations:
       [
         `Get ("test.Foo", alias_dependency, Some 1); `Get ("test.Foo", type_check_dependency, Some 1);
       ]
@@ -1444,15 +1691,15 @@ let test_dependencies_and_new_values context =
     ();
 
   (* Addition should add values when previously they were missing *)
-  assert_updates
-    ~original_source:{|
-    |}
-    ~new_source:{|
+  assert_update
+    ~original_sources:[AssertUpdateSource.Local ("test.py", {|
+    |})]
+    ~new_sources:[AssertUpdateSource.Local ("test.py", {|
       x: int = 9
-    |}
-    ~middle_actions:[`Global (Reference.create "test.x", alias_dependency, None)]
+    |})]
+    ~middle_queries_with_expectations:[`Global (Reference.create "test.x", alias_dependency, None)]
     ~expected_triggers:[alias_dependency]
-    ~post_actions:
+    ~post_queries_with_expectations:
       [
         `Global
           ( Reference.create "test.x",
@@ -1469,20 +1716,19 @@ let test_dependencies_and_new_values context =
     ();
 
   (* We should propagate triggered dependencies from AstEnvironment *)
-  assert_updates
-    ~original_source:{|
-    |}
-    ~new_source:{|
-      x: int = 9
-    |}
-    ~middle_actions:[`GetRawSource (Reference.create "test", alias_dependency)]
+  assert_update
+    ~original_sources:[AssertUpdateSource.Local ("test.py", {||})]
+    ~new_sources:[AssertUpdateSource.Local ("test.py", {|
+        x: int = 9
+      |})]
+    ~middle_queries_with_expectations:[`GetRawSource (Reference.create "test", alias_dependency)]
     ~expected_triggers:[alias_dependency]
     ();
   ()
 
 
 let test_get_define_body context =
-  let assert_updates = assert_updates ~context in
+  let assert_update = assert_update ~context in
   let dependency = type_check_dependency in
   let open Statement in
   let open Expression in
@@ -1514,16 +1760,18 @@ let test_get_define_body context =
       }
   in
   (* Body doesn't change *)
-  assert_updates
-    ~original_source:{|
-      def foo():
-        return 1
-    |}
-    ~new_source:{|
-      def foo():
-        return 1
-    |}
-    ~middle_actions:
+  assert_update
+    ~original_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        def foo():
+          return 1
+      |})]
+    ~new_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        def foo():
+          return 1
+      |})]
+    ~middle_queries_with_expectations:
       [
         `DefineBody
           ( !&"test.foo",
@@ -1541,7 +1789,7 @@ let test_get_define_body context =
                  ]) );
       ]
     ~expected_triggers:[]
-    ~post_actions:
+    ~post_queries_with_expectations:
       [
         `DefineBody
           ( !&"test.foo",
@@ -1561,16 +1809,18 @@ let test_get_define_body context =
     ();
 
   (* Body changes *)
-  assert_updates
-    ~original_source:{|
-      def foo():
-        return 1
-    |}
-    ~new_source:{|
-      def foo():
-        return 2
-    |}
-    ~middle_actions:
+  assert_update
+    ~original_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        def foo():
+          return 1
+      |})]
+    ~new_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        def foo():
+          return 2
+      |})]
+    ~middle_queries_with_expectations:
       [
         `DefineBody
           ( !&"test.foo",
@@ -1588,7 +1838,7 @@ let test_get_define_body context =
                  ]) );
       ]
     ~expected_triggers:[dependency]
-    ~post_actions:
+    ~post_queries_with_expectations:
       [
         `DefineBody
           ( !&"test.foo",
@@ -1607,18 +1857,25 @@ let test_get_define_body context =
       ]
     ();
 
-  assert_updates
-    ~original_source:{|
-      def foo():
-        return 1
-    |}
-    ~new_source:{|
-      def foo():
-        return 2
-      def foo():
-        return 3
-    |}
-    ~middle_actions:
+  assert_update
+    ~original_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        def foo():
+          return 1
+      |})]
+    ~new_sources:
+      [
+        AssertUpdateSource.Local
+          ( "test.py",
+            {|
+            def foo():
+              return 2
+            def foo():
+              return 3
+          |}
+          );
+      ]
+    ~middle_queries_with_expectations:
       [
         `DefineBody
           ( !&"test.foo",
@@ -1636,7 +1893,7 @@ let test_get_define_body context =
                  ]) );
       ]
     ~expected_triggers:[dependency]
-    ~post_actions:
+    ~post_queries_with_expectations:
       [
         (* Last define wins *)
         `DefineBody
@@ -1655,18 +1912,25 @@ let test_get_define_body context =
                  ]) );
       ]
     ();
-  assert_updates
-    ~original_source:{|
-      def foo():
-        return 1
-      def foo():
-        return 2
-    |}
-    ~new_source:{|
-      def foo():
-        return 3
-    |}
-    ~middle_actions:
+  assert_update
+    ~original_sources:
+      [
+        AssertUpdateSource.Local
+          ( "test.py",
+            {|
+            def foo():
+              return 1
+            def foo():
+              return 2
+          |}
+          );
+      ]
+    ~new_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        def foo():
+          return 3
+      |})]
+    ~middle_queries_with_expectations:
       [
         (* Last define wins *)
         `DefineBody
@@ -1685,7 +1949,7 @@ let test_get_define_body context =
                  ]) );
       ]
     ~expected_triggers:[dependency]
-    ~post_actions:
+    ~post_queries_with_expectations:
       [
         `DefineBody
           ( !&"test.foo",
@@ -1704,28 +1968,38 @@ let test_get_define_body context =
       ]
     ();
 
-  assert_updates
-    ~original_source:
-      {|
-      from typing import overload
-      @overload
-      def foo(x: int) -> int: ...
-      @overload
-      def foo(x: str) -> str: ...
-      def foo(x):
-        return x
-    |}
-    ~new_source:
-      {|
-      from typing import overload
-      @overload
-      def foo(x: str) -> str: ...
-      def foo(x):
-        return x
-      @overload
-      def foo(x: int) -> int: ...
-    |}
-    ~middle_actions:
+  assert_update
+    ~original_sources:
+      [
+        AssertUpdateSource.Local
+          ( "test.py",
+            {|
+              from typing import overload
+              @overload
+              def foo(x: int) -> int: ...
+              @overload
+              def foo(x: str) -> str: ...
+              def foo(x):
+                return x
+            |}
+          );
+      ]
+    ~new_sources:
+      [
+        AssertUpdateSource.Local
+          ( "test.py",
+            {|
+              from typing import overload
+              @overload
+              def foo(x: str) -> str: ...
+              def foo(x):
+                return x
+              @overload
+              def foo(x: int) -> int: ...
+            |}
+          );
+      ]
+    ~middle_queries_with_expectations:
       [
         (let body =
            node
@@ -1766,7 +2040,7 @@ let test_get_define_body context =
          `DefineBody (!&"test.foo", dependency, Some body));
       ]
     ~expected_triggers:[dependency]
-    ~post_actions:
+    ~post_queries_with_expectations:
       [
         (let body =
            node
@@ -1964,26 +2238,36 @@ let test_get_define_body context =
             ];
         }
     in
-    assert_updates
-      ~original_source:
-        {|
-      from typing import overload
-      @overload
-      def foo(x: int) -> int: ...
-      def foo(x):
-        return x
-    |}
-      ~new_source:
-        {|
-      from typing import overload
-      @overload
-      def foo(x: int) -> int: ...
-      def foo(x):
-        return x
-      @overload
-      def foo(x: str) -> str: ...
-    |}
-      ~middle_actions:
+    assert_update
+      ~original_sources:
+        [
+          AssertUpdateSource.Local
+            ( "test.py",
+              {|
+                from typing import overload
+                @overload
+                def foo(x: int) -> int: ...
+                def foo(x):
+                  return x
+              |}
+            );
+        ]
+      ~new_sources:
+        [
+          AssertUpdateSource.Local
+            ( "test.py",
+              {|
+                from typing import overload
+                @overload
+                def foo(x: int) -> int: ...
+                def foo(x):
+                  return x
+                @overload
+                def foo(x: str) -> str: ...
+              |}
+            );
+        ]
+      ~middle_queries_with_expectations:
         [
           (let definition =
              let open FunctionDefinition in
@@ -1993,7 +2277,7 @@ let test_get_define_body context =
            `Define (!&"test.foo", dependency, Some definition));
         ]
       ~expected_triggers:[dependency]
-      ~post_actions:
+      ~post_queries_with_expectations:
         [
           (let definition =
              let open FunctionDefinition in
@@ -2010,22 +2294,28 @@ let test_get_define_body context =
       ()
   in
 
-  assert_updates
-    ~original_source:{|
-      class A:
-        foo: int
-    |}
-    ~new_source:
-      {|
-      class A:
-        @property
-        def foo(self) -> int: ...
-        @foo.setter
-        def foo(self, value: int) -> None: ...
-    |}
-    ~middle_actions:[`Define (!&"test.A.foo", dependency, None)]
+  assert_update
+    ~original_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+          class A:
+            foo: int
+        |})]
+    ~new_sources:
+      [
+        AssertUpdateSource.Local
+          ( "test.py",
+            {|
+              class A:
+                @property
+                def foo(self) -> int: ...
+                @foo.setter
+                def foo(self, value: int) -> None: ...
+            |}
+          );
+      ]
+    ~middle_queries_with_expectations:[`Define (!&"test.A.foo", dependency, None)]
     ~expected_triggers:[dependency]
-    ~post_actions:
+    ~post_queries_with_expectations:
       [
         (let definition =
            let open FunctionDefinition in
@@ -2150,18 +2440,24 @@ let test_get_define_body context =
     ();
 
   (* Location-only change *)
-  assert_updates
-    ~original_source:{|
-      def foo():
-        return 1
-    |}
-    ~new_source:
-      {|
-      # The truth is, the game was rigged from the start.
-      def foo():
+  assert_update
+    ~original_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        def foo():
           return 1
-    |}
-    ~middle_actions:
+      |})]
+    ~new_sources:
+      [
+        AssertUpdateSource.Local
+          ( "test.py",
+            {|
+              # The truth is, the game was rigged from the start.
+              def foo():
+                  return 1
+            |}
+          );
+      ]
+    ~middle_queries_with_expectations:
       [
         `DefineBody
           ( !&"test.foo",
@@ -2179,7 +2475,7 @@ let test_get_define_body context =
                  ]) );
       ]
     ~expected_triggers:[dependency]
-    ~post_actions:
+    ~post_queries_with_expectations:
       [
         `DefineBody
           ( !&"test.foo",
@@ -2199,16 +2495,19 @@ let test_get_define_body context =
     ();
 
   (* Added define *)
-  assert_updates
-    ~original_source:{|
-    |}
-    ~new_source:{|
-      def foo():
-        return 2
-    |}
-    ~middle_actions:[`DefineBody (!&"test.foo", dependency, None)]
+  assert_update
+    ~original_sources:[AssertUpdateSource.Local ("test.py", {||})]
+    ~new_sources:
+      [
+        AssertUpdateSource.Local
+          ("test.py", {|
+            def foo():
+              return 2
+          |});
+      ]
+    ~middle_queries_with_expectations:[`DefineBody (!&"test.foo", dependency, None)]
     ~expected_triggers:[dependency]
-    ~post_actions:
+    ~post_queries_with_expectations:
       [
         `DefineBody
           ( !&"test.foo",
@@ -2228,14 +2527,16 @@ let test_get_define_body context =
     ();
 
   (* Removed define *)
-  assert_updates
-    ~original_source:{|
-      def foo():
-        return 1
-    |}
-    ~new_source:{|
-    |}
-    ~middle_actions:
+  assert_update
+    ~original_sources:
+      [
+        AssertUpdateSource.Local ("test.py", {|
+          def foo():
+            return 1
+        |});
+      ]
+    ~new_sources:[AssertUpdateSource.Local ("test.py", {||})]
+    ~middle_queries_with_expectations:
       [
         `DefineBody
           ( !&"test.foo",
@@ -2253,58 +2554,74 @@ let test_get_define_body context =
                  ]) );
       ]
     ~expected_triggers:[dependency]
-    ~post_actions:[`DefineBody (!&"test.foo", dependency, None)]
+    ~post_queries_with_expectations:[`DefineBody (!&"test.foo", dependency, None)]
     ();
   ()
 
 
 let test_get_define_names context =
-  let assert_updates = assert_updates ~context in
+  let assert_update = assert_update ~context in
   let dependency = alias_dependency in
-  assert_updates
-    ~original_source:{|
-      def foo():
-        return 1
-    |}
-    ~middle_actions:[`GetDefineNames (!&"test", dependency, 2)]
-    ~new_source:{|
-      def foo():
-        return 5
-    |}
+  assert_update
+    ~original_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        def foo():
+          return 1
+      |})]
+    ~new_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        def foo():
+          return 5
+      |})]
+    ~middle_queries_with_expectations:[`GetDefineNames (!&"test", dependency, 2)]
     ~expected_triggers:[]
-    ~post_actions:[`GetDefineNames (!&"test", dependency, 2)]
+    ~post_queries_with_expectations:[`GetDefineNames (!&"test", dependency, 2)]
     ();
-  assert_updates
-    ~original_source:{|
-      def foo():
-        return 1
-    |}
-    ~middle_actions:[`GetDefineNames (!&"test", dependency, 2)]
-    ~new_source:{|
-      def foo():
-        return 1
+  assert_update
+    ~original_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        def foo():
+          return 1
+      |})]
+    ~middle_queries_with_expectations:[`GetDefineNames (!&"test", dependency, 2)]
+    ~new_sources:
+      [
+        AssertUpdateSource.Local
+          ( "test.py",
+            {|
+            def foo():
+              return 1
 
-      def bar():
-        return 1
-    |}
+            def bar():
+              return 1
+          |}
+          );
+      ]
     ~expected_triggers:[dependency]
-    ~post_actions:[`GetDefineNames (!&"test", dependency, 3)]
+    ~post_queries_with_expectations:[`GetDefineNames (!&"test", dependency, 3)]
     ();
-  assert_updates
-    ~original_source:{|
-      def foo():
-        return 1
+  assert_update
+    ~original_sources:
+      [
+        AssertUpdateSource.Local
+          ( "test.py",
+            {|
+          def foo():
+            return 1
 
-      def bar():
-        return 1
-    |}
-    ~middle_actions:[`GetDefineNames (!&"test", dependency, 3)]
-    ~new_source:{|
-      def foo():
-        return 1
-    |}
+          def bar():
+            return 1
+        |}
+          );
+      ]
+    ~middle_queries_with_expectations:[`GetDefineNames (!&"test", dependency, 3)]
+    ~new_sources:
+      [AssertUpdateSource.Local ("test.py", {|
+        def foo():
+          return 1
+      |})]
     ~expected_triggers:[dependency]
-    ~post_actions:[`GetDefineNames (!&"test", dependency, 2)]
+    ~post_queries_with_expectations:[`GetDefineNames (!&"test", dependency, 2)]
     ();
   ()
 
@@ -2586,8 +2903,8 @@ let test_overlay_propagation context =
      should see the updated information (this is a grey-box test, updating only the parent is an
      illegal operation with undefined behavior in production!) *)
   let update_code relative new_code =
-    ScratchProject.delete_file project ~relative;
-    ScratchProject.add_file project ~relative new_code;
+    ScratchProject.delete_from_local_root project ~relative;
+    ScratchProject.add_to_local_root project ~relative new_code;
     ()
   in
   update_code "on_filesystem.py" {|
@@ -2634,6 +2951,8 @@ let () =
          "legacy_resolve_exports" >:: test_legacy_resolve_exports;
          "resolve_exports" >:: test_resolve_exports;
          (* Tests of dependency tracking across an update *)
+         "get_explicit_module_metadata" >:: test_get_explicit_module_metadata;
+         "get_implicit_module_metadata" >:: test_get_implicit_module_metadata;
          "get_class_summary" >:: test_get_class_summary;
          "class_exists_and_all_classes" >:: test_class_exists_and_all_classes;
          "get_unannotated_global" >:: test_get_unannotated_global;

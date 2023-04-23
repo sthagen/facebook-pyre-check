@@ -53,6 +53,7 @@ module State (Context : Context) = struct
 
   type leaked_global = {
     reference: Reference.t;
+    kind: Error.kind;
     location: Location.t;
   }
 
@@ -67,8 +68,42 @@ module State (Context : Context) = struct
     errors: leaked_global list;
   }
 
-  let append_errors_for_globals ~location globals errors =
-    List.map ~f:(fun { global; _ } -> { reference = global; location }) globals @ errors
+  let get_type_and_reference ~resolution global =
+    Resolution.resolve_reference resolution global, Reference.delocalize global
+
+
+  let construct_global_leak_kind ~resolution global =
+    let target_type, delocalized_reference = get_type_and_reference ~resolution global in
+    Error.GlobalLeak { global_name = delocalized_reference; global_type = target_type }
+
+
+  let construct_global_return method_name ~resolution global =
+    let target_type, delocalized_reference = get_type_and_reference ~resolution global in
+    Error.LeakToGlobal
+      (ReturnOfGlobalVariable
+         { global_name = delocalized_reference; global_type = target_type; method_name })
+
+
+  let construct_write_to_global_variable_kind ~resolution global =
+    let target_type, delocalized_reference = get_type_and_reference ~resolution global in
+    let category =
+      match target_type with
+      | Primitive _ -> Error.GlobalLeaks.Primitive
+      | Parametric { name = "type"; _ } -> Error.GlobalLeaks.Class
+      | Parametric { name = "list" | "dict" | "set"; _ } -> Error.GlobalLeaks.MutableDataStructure
+      | _ -> Error.GlobalLeaks.Other
+    in
+    Error.LeakToGlobal
+      (WriteToGlobalVariable
+         { global_name = delocalized_reference; global_type = target_type; category })
+
+
+  let append_errors_for_reachable_globals ~resolution ~location construct_leak_kind globals errors =
+    List.map
+      ~f:(fun { global; _ } ->
+        { reference = global; location; kind = construct_leak_kind ~resolution global })
+      globals
+    @ errors
 
 
   let empty_result = { reachable_globals = []; errors = [] }
@@ -132,7 +167,9 @@ module State (Context : Context) = struct
       in
       target_errors @ iterator_errors @ condition_errors
     in
-    let append_errors_for_globals = append_errors_for_globals ~location in
+    let append_errors_for_globals =
+      append_errors_for_reachable_globals ~resolution ~location construct_global_leak_kind
+    in
     let expression_type () = Resolution.resolve_expression_to_type resolution expression in
     match value with
     (* interesting cases *)
@@ -152,7 +189,16 @@ module State (Context : Context) = struct
           |> Option.value ~default:reachable_globals
         in
         if is_known_mutation_method ~resolution base attribute then
-          { reachable_globals = []; errors = append_errors_for_globals reachable_globals errors }
+          {
+            reachable_globals = [];
+            errors =
+              append_errors_for_reachable_globals
+                ~resolution
+                ~location
+                construct_write_to_global_variable_kind
+                reachable_globals
+                errors;
+          }
         else
           { sub_expression_result with reachable_globals }
     | Call
@@ -201,8 +247,8 @@ module State (Context : Context) = struct
               | _ -> [])
         in
         let get_errors_from_forward_expression { Call.Argument.value; _ } =
-          let { errors; _ } = forward_expression value in
-          errors
+          let { errors; reachable_globals } = forward_expression value in
+          append_errors_for_globals reachable_globals errors
         in
         List.concat_map ~f:get_errors_from_forward_expression arguments
         |> fun argument_errors -> { errors = argument_errors @ errors; reachable_globals }
@@ -241,7 +287,13 @@ module State (Context : Context) = struct
            outside of the walrus expression, causing a global leak. *)
         {
           reachable_globals = value_globals;
-          errors = append_errors_for_globals reachable_globals (value_errors @ errors);
+          errors =
+            append_errors_for_reachable_globals
+              ~resolution
+              ~location
+              construct_write_to_global_variable_kind
+              reachable_globals
+              (value_errors @ errors);
         }
     | Dictionary { entries; keywords } ->
         let forward_entries { Dictionary.Entry.key; value } =
@@ -371,19 +423,21 @@ module State (Context : Context) = struct
 
 
   let forward ~statement_key _ ~statement:{ Node.value; location } =
-    let { Node.value = { Define.signature = { Define.Signature.parent; _ }; _ }; _ } =
+    let { Node.value = { Define.signature = { Define.Signature.parent = name; _ }; _ }; _ } =
       Context.define
     in
     let resolution =
       TypeCheck.resolution_with_key
         ~global_resolution:Context.global_resolution
         ~local_annotations:Context.local_annotations
-        ~parent
+        ~parent:name
         ~statement_key
         (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
         (module TypeCheck.DummyContext)
     in
-    let prepare_globals_for_errors = append_errors_for_globals ~location in
+    let prepare_globals_for_errors =
+      append_errors_for_reachable_globals ~resolution ~location construct_global_leak_kind
+    in
     let module_reference =
       let rec get_module_qualifier qualifier =
         let module_tracker = GlobalResolution.module_tracker Context.global_resolution in
@@ -400,15 +454,10 @@ module State (Context : Context) = struct
       in
       get_module_qualifier (Context.qualifier |> Reference.delocalize)
     in
-    let emit_error_for_global { reference; location } =
-      let target_type = Resolution.resolve_reference resolution reference in
-      let delocalized_reference = Reference.delocalize reference in
+    let emit_error_for_global { location; kind; _ } =
+      let location_with_module_reference = Location.with_module ~module_reference location in
       let error =
-        Error.create
-          ~location:(Location.with_module ~module_reference location)
-          ~kind:
-            (Error.GlobalLeak { global_name = delocalized_reference; global_type = target_type })
-          ~define:Context.define
+        Error.create ~location:location_with_module_reference ~kind ~define:Context.define
       in
       LocalErrorMap.append Context.error_map ~statement_key ~error
     in
@@ -419,8 +468,19 @@ module State (Context : Context) = struct
           errors
       | Assign { target; value; _ } ->
           let { reachable_globals; errors } = forward_assignment_target ~resolution target in
-          let { errors = value_errors; _ } = forward_expression ~resolution value in
-          prepare_globals_for_errors reachable_globals (value_errors @ errors)
+          let { errors = value_errors; reachable_globals = value_reachable_globals } =
+            forward_expression ~resolution value
+          in
+          let leaks_to_global_variables =
+            append_errors_for_reachable_globals
+              ~resolution
+              ~location
+              construct_write_to_global_variable_kind
+              reachable_globals
+              []
+          in
+          leaks_to_global_variables
+          @ prepare_globals_for_errors value_reachable_globals (value_errors @ errors)
       | Expression expression ->
           let { errors; _ } = forward_expression ~resolution expression in
           errors
@@ -438,7 +498,15 @@ module State (Context : Context) = struct
             let is_safe_global { expression_type; _ } = not (Type.is_meta expression_type) in
             List.filter ~f:is_safe_global reachable_globals
           in
-          prepare_globals_for_errors reachable_globals errors
+          let leak_to_global_returns =
+            append_errors_for_reachable_globals
+              ~resolution
+              ~location
+              (construct_global_return name)
+              reachable_globals
+              []
+          in
+          leak_to_global_returns @ prepare_globals_for_errors [] errors
       | Delete _
       | Return _ ->
           []

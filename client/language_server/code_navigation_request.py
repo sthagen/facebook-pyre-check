@@ -18,8 +18,6 @@ from .. import dataclasses_json_extensions as json_mixins
 
 from . import daemon_connection, protocol as lsp
 
-from .protocol import PyreHoverResponse
-
 
 @dataclasses.dataclass(frozen=True)
 class HoverRequest:
@@ -68,7 +66,7 @@ class ErrorResponse:
 
 @dataclasses.dataclass(frozen=True)
 class HoverResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
-    contents: List[PyreHoverResponse]
+    contents: List[lsp.PyreHoverResponse]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -273,6 +271,23 @@ async def async_handle_definition_request(
         response,
         expected_response_kind="LocationOfDefinition",
         response_type=LocationOfDefinitionResponse,
+    )
+
+
+async def async_handle_completion_request(
+    socket_path: Path,
+    completion_request: lsp.CompletionRequest,
+) -> Union[lsp.CompletionResponse, ErrorResponse]:
+    raw_request = json.dumps(["Query", completion_request.to_json()])
+    response = await daemon_connection.attempt_send_async_raw_request(
+        socket_path, raw_request
+    )
+    if isinstance(response, daemon_connection.DaemonConnectionFailure):
+        return ErrorResponse(message=response.error_message)
+    return parse_raw_response(
+        response,
+        expected_response_kind="Completion",
+        response_type=lsp.CompletionResponse,
     )
 
 

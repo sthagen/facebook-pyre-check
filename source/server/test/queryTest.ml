@@ -171,9 +171,26 @@ let test_parse_query context =
   assert_fails_to_parse "hover_info_for_position(path='/foo.py', line=42)";
   assert_fails_to_parse "hover_info_for_position(path='/foo.py', column=10)";
   assert_fails_to_parse "hover_info_for_position(path=99, line=42, column=10)";
-  assert_parses "global_leaks(path.to.my_function)" (GlobalLeaks !&"path.to.my_function");
-  assert_fails_to_parse "global_leaks()";
-  assert_fails_to_parse "global_leaks(my.function1, my.function2)";
+  assert_parses
+    "global_leaks(path.to.my_function)"
+    (GlobalLeaks { qualifiers = [!&"path.to.my_function"]; parse_errors = [] });
+  assert_parses
+    "global_leaks([path.to.my_function], my_valid.qualifier)"
+    (GlobalLeaks
+       {
+         qualifiers = [!&"my_valid.qualifier"];
+         parse_errors =
+           ["Invalid qualifier provided, expected reference but got `[path.to.my_function]`"];
+       });
+  assert_parses
+    "global_leaks(path.to.my_function, invalid.qualifier(), path.to.my_function2)"
+    (GlobalLeaks
+       {
+         qualifiers = [!&"path.to.my_function"; !&"path.to.my_function2"];
+         parse_errors =
+           ["Invalid qualifier provided, expected reference but got `invalid.qualifier()`"];
+       });
+  assert_parses "global_leaks()" (GlobalLeaks { qualifiers = []; parse_errors = [] });
   ()
 
 
@@ -3314,103 +3331,61 @@ let test_global_leaks context =
     OUnit2.bracket_tmpdir context |> PyrePath.create_absolute ~follow_symbolic_links:true
   in
   let temp_file_name = PyrePath.append custom_source_root ~element:"foo.py" in
-  let set_path_in_json json = Format.sprintf json (PyrePath.show temp_file_name) in
+  let set_path_in_json =
+    String.substr_replace_all ~pattern:"%s" ~with_:(PyrePath.show temp_file_name)
+  in
   let queries_and_expected_responses =
     [
-      ( "global_leaks(foo.get_these)",
-        {|
-          {
-            "response": {
-              "errors": []
-            }
-          }
-        |}
-      );
-      ( "global_leaks(foo.immediate_example)",
+      ( "global_leaks(foo.get_these, foo.immediate_example, foo.nested_run, \
+         foo.nested_run.do_the_thing, foo.nested_run_2.do_the_thing_2.another_nest, \
+         foo.this_one_doesnt_exist)",
         set_path_in_json
           {|
           {
             "response": {
-              "errors": [
-                {
-                  "line": 21,
-                  "column": 4,
-                  "stop_line": 21,
-                  "stop_column": 15,
-                  "path": "%s",
-                  "code": 3100,
-                  "name": "Global leak",
-                  "description": "Global leak [3100]: Data is leaked to global `foo.glob` of type `typing.List[int]`.",
-                  "long_description": "Global leak [3100]: Data is leaked to global `foo.glob` of type `typing.List[int]`.",
-                  "concise_description": "Global leak [3100]: Data is leaked to global `glob` of type `typing.List[int]`.",
-                  "define": "foo.immediate_example"
-                }
+              "query_errors": ["No qualifier found for `foo.this_one_doesnt_exist`"],
+              "global_leaks": [
+                  {
+                    "line": 21,
+                    "column": 4,
+                    "stop_line": 21,
+                    "stop_column": 15,
+                    "path": "%s",
+                    "code": 3101,
+                    "name": "Leak to a mutable datastructure",
+                    "description": "Leak to a mutable datastructure [3101]: Data write to global variable `foo.glob` of type `typing.List[int]`.",
+                    "long_description": "Leak to a mutable datastructure [3101]: Data write to global variable `foo.glob` of type `typing.List[int]`.",
+                    "concise_description": "Leak to a mutable datastructure [3101]: Data write to global variable `glob` of type `typing.List[int]`.",
+                    "define": "foo.immediate_example"
+                  },
+                  {
+                    "line": 8,
+                    "column": 8,
+                    "stop_line": 8,
+                    "stop_column": 19,
+                    "path": "%s",
+                    "code": 3101,
+                    "name": "Leak to a mutable datastructure",
+                    "description": "Leak to a mutable datastructure [3101]: Data write to global variable `foo.glob` of type `typing.List[int]`.",
+                    "long_description": "Leak to a mutable datastructure [3101]: Data write to global variable `foo.glob` of type `typing.List[int]`.",
+                    "concise_description": "Leak to a mutable datastructure [3101]: Data write to global variable `glob` of type `typing.List[int]`.",
+                    "define": "foo.nested_run.do_the_thing"
+                  },
+                  {
+                    "line": 15,
+                    "column": 11,
+                    "stop_line": 15,
+                    "stop_column": 22,
+                    "path": "%s",
+                    "code": 3101,
+                    "name": "Leak to a mutable datastructure",
+                    "description": "Leak to a mutable datastructure [3101]: Data write to global variable `foo.glob` of type `typing.List[int]`.",
+                    "long_description": "Leak to a mutable datastructure [3101]: Data write to global variable `foo.glob` of type `typing.List[int]`.",
+                    "concise_description": "Leak to a mutable datastructure [3101]: Data write to global variable `glob` of type `typing.List[int]`.",
+                    "define": "foo.nested_run_2.do_the_thing_2.another_nest"
+                  }
               ]
-            }
-          }
-        |}
-      );
-      ( "global_leaks(foo.nested_run)",
-        {|
-          {
-            "response": {
-              "errors": []
-            }
-          }
-        |}
-      );
-      ( "global_leaks(foo.nested_run.do_the_thing)",
-        set_path_in_json
-          {|
-          {
-            "response": {
-              "errors": [
-                {
-                  "line": 8,
-                  "column": 8,
-                  "stop_line": 8,
-                  "stop_column": 19,
-                  "path": "%s",
-                  "code": 3100,
-                  "name": "Global leak",
-                  "description": "Global leak [3100]: Data is leaked to global `foo.glob` of type `typing.List[int]`.",
-                  "long_description": "Global leak [3100]: Data is leaked to global `foo.glob` of type `typing.List[int]`.",
-                  "concise_description": "Global leak [3100]: Data is leaked to global `glob` of type `typing.List[int]`.",
-                  "define": "foo.nested_run.do_the_thing"
-                }
-              ]
-            }
-          }
-        |}
-      );
-      ( "global_leaks(foo.nested_run_2.do_the_thing_2.another_nest)",
-        set_path_in_json
-          {|
-          {
-            "response": {
-              "errors": [
-                {
-                  "line": 15,
-                  "column": 11,
-                  "stop_line": 15,
-                  "stop_column": 22,
-                  "path": "%s",
-                  "code": 3100,
-                  "name": "Global leak",
-                  "description": "Global leak [3100]: Data is leaked to global `foo.glob` of type `typing.List[int]`.",
-                  "long_description": "Global leak [3100]: Data is leaked to global `foo.glob` of type `typing.List[int]`.",
-                  "concise_description": "Global leak [3100]: Data is leaked to global `glob` of type `typing.List[int]`.",
-                  "define": "foo.nested_run_2.do_the_thing_2.another_nest"
-                }
-              ]
-            }
-          }
-        |}
-      );
-      ( "global_leaks(foo.this_one_doesnt_exist)",
-        {|
-          {
-            "error": "No qualifier found for `foo.this_one_doesnt_exist`"
+            } 
           }
         |}
       );

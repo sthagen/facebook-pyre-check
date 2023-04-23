@@ -301,6 +301,140 @@ let join_mismatch ~resolution left right =
   }
 
 
+module GlobalLeaks = struct
+  type type_category =
+    | MutableDataStructure
+    | Primitive
+    | Class
+    | Other
+  [@@deriving compare, sexp, show, hash]
+
+  type leak =
+    | WriteToGlobalVariable of {
+        global_name: Reference.t;
+        global_type: Type.t;
+        category: type_category;
+      }
+    | WriteToClassAttribute of {
+        class_name: Reference.t;
+        attribute_name: Reference.t;
+        attribute_type: Type.t;
+      }
+    | WriteToLocalVariable of {
+        global_name: Reference.t;
+        global_type: Type.t;
+        local_name: Reference.t;
+      }
+    | WriteToMethodArgument of {
+        global_name: Reference.t;
+        global_type: Type.t;
+        method_name: Reference.t;
+      }
+    | ReturnOfGlobalVariable of {
+        global_name: Reference.t;
+        global_type: Type.t;
+        method_name: Reference.t option;
+      }
+  [@@deriving compare, sexp, show, hash]
+
+  let error_messages ~concise kind =
+    let pp_reference = pp_reference ~concise in
+    let message =
+      match kind with
+      | WriteToGlobalVariable { global_name; global_type; _ } ->
+          [
+            Format.asprintf
+              "Data write to global variable `%a` of type `%a`."
+              pp_reference
+              global_name
+              Type.pp
+              global_type;
+          ]
+      | WriteToClassAttribute { class_name; attribute_name; attribute_type } ->
+          [
+            Format.asprintf
+              "Data write to class attribute `%a` of type `%a` defined in class `%a`"
+              pp_reference
+              attribute_name
+              Type.pp
+              attribute_type
+              pp_reference
+              class_name;
+          ]
+      | WriteToLocalVariable { global_name; global_type; local_name } ->
+          [
+            Format.asprintf
+              "Potential data leak to global `%a` of type `%a` via alias to local `%a`"
+              pp_reference
+              global_name
+              Type.pp
+              global_type
+              pp_reference
+              local_name;
+          ]
+      | WriteToMethodArgument { global_name; global_type; method_name } ->
+          [
+            Format.asprintf
+              "Potential data leak to global `%a` of type `%a` via method arguments to method `%a`."
+              pp_reference
+              global_name
+              Type.pp
+              global_type
+              pp_reference
+              method_name;
+          ]
+      | ReturnOfGlobalVariable { global_name; global_type; method_name } -> (
+          match method_name with
+          | Some name ->
+              [
+                Format.asprintf
+                  "Potential data leak to global `%a` of type `%a` via return from method `%a`."
+                  pp_reference
+                  global_name
+                  Type.pp
+                  global_type
+                  pp_reference
+                  name;
+              ]
+          | None ->
+              [
+                Format.asprintf
+                  "Potential data leak to global `%a` of type `%a`."
+                  pp_reference
+                  global_name
+                  Type.pp
+                  global_type;
+              ])
+    in
+    message
+
+
+  let code_of_kind = function
+    | WriteToGlobalVariable { category; _ } -> (
+        match category with
+        | MutableDataStructure -> 3101
+        | Primitive -> 3102
+        | Class -> 3103
+        | Other -> 3104)
+    | WriteToClassAttribute _ -> 3105
+    | WriteToLocalVariable _ -> 3106
+    | WriteToMethodArgument _ -> 3107
+    | ReturnOfGlobalVariable _ -> 3108
+
+
+  let name_of_kind = function
+    | WriteToGlobalVariable { category; _ } -> (
+        match category with
+        | MutableDataStructure -> "Leak to a mutable datastructure"
+        | Primitive -> "Leak to a primitive global"
+        | Class -> "Leak to a class variable"
+        | Other -> "Leak to other types")
+    | WriteToClassAttribute _ -> "Leak to a class attribute"
+    | WriteToLocalVariable _ -> "Leak via local variable"
+    | WriteToMethodArgument _ -> "Leak via method argument"
+    | ReturnOfGlobalVariable _ -> "Leak via method return"
+end
+
 module ReadOnly = struct
   type readonlyness_mismatch =
     | IncompatibleVariableType of {
@@ -635,6 +769,7 @@ and kind =
       decorator: invalid_override_kind;
     }
   | InvalidAssignment of invalid_assignment_kind
+  | LeakToGlobal of GlobalLeaks.leak
   | MissingArgument of {
       callee: Reference.t option;
       parameter: SignatureSelectionTypes.missing_argument;
@@ -676,6 +811,7 @@ and kind =
       annotation: Annotation.t;
       qualify: bool;
     }
+  | SuppressionCommentWithoutErrorCode of { suppressed_error_codes: int list }
   | UnsafeCast of {
       expression: Expression.t;
       annotation: Type.t;
@@ -809,6 +945,7 @@ let code_of_kind = function
   | TupleConcatenationError _ -> 60
   | UninitializedLocal _ -> 61
   | NonLiteralString _ -> 62
+  | SuppressionCommentWithoutErrorCode _ -> 63
   | ParserFailure _ -> 404
   (* Additional errors. *)
   | UnawaitedAwaitable _ -> 1001
@@ -819,6 +956,7 @@ let code_of_kind = function
   (* Privacy-related errors: 3xxx. *)
   | ReadOnlynessMismatch kind -> ReadOnly.code_of_kind kind
   | GlobalLeak _ -> 3100
+  | LeakToGlobal kind -> GlobalLeaks.code_of_kind kind
 
 
 let name_of_kind = function
@@ -852,6 +990,7 @@ let name_of_kind = function
   | InvalidInheritance _ -> "Invalid inheritance"
   | InvalidOverride _ -> "Invalid override"
   | InvalidAssignment _ -> "Invalid assignment"
+  | LeakToGlobal kind -> GlobalLeaks.name_of_kind kind
   | MissingArgument _ -> "Missing argument"
   | MissingAttributeAnnotation _ -> "Missing attribute annotation"
   | MissingCaptureAnnotation _ -> "Missing annotation for captured variable"
@@ -869,6 +1008,7 @@ let name_of_kind = function
   | RedundantCast _ -> "Redundant cast"
   | RevealedLocals _ -> "Revealed locals"
   | RevealedType _ -> "Revealed type"
+  | SuppressionCommentWithoutErrorCode _ -> "Suppression comment without error code"
   | TooManyArguments _ -> "Too many arguments"
   | Top -> "Undefined error"
   | TypedDictionaryAccessWithNonLiteral _ -> "TypedDict accessed with a non-literal"
@@ -1497,14 +1637,19 @@ let rec messages ~concise ~signature location kind =
               match parameter with
               | KeywordOnly { name; _ }
               | Named { name; _ } ->
-                  Format.asprintf "%a" pp_identifier name
-              | _ -> Type.Callable.Parameter.show_concise parameter
+                  Format.asprintf "`%a`" pp_identifier name
+              | PositionalOnly { index; _ } ->
+                  Format.asprintf
+                    "of type `%s` at index %d"
+                    (Type.Callable.Parameter.show_concise parameter)
+                    index
+              | _ -> Format.asprintf "`%s`" (Type.Callable.Parameter.show_concise parameter)
             in
             let signature_description =
               if parameter_exists_in_overridden_signature then "overriding" else "overridden"
             in
             Format.asprintf
-              "Could not find parameter `%s` in %s signature."
+              "Could not find parameter %s in %s signature."
               parameter
               signature_description
       in
@@ -2028,6 +2173,7 @@ let rec messages ~concise ~signature location kind =
               class_name
               (if concise then "." else method_message);
           ])
+  | LeakToGlobal kind -> GlobalLeaks.error_messages ~concise kind
   | MissingArgument { parameter = Named name; _ } when concise ->
       [Format.asprintf "Argument `%a` expected." pp_identifier name]
   | MissingArgument { parameter = PositionalOnly index; _ } when concise ->
@@ -2466,6 +2612,13 @@ let rec messages ~concise ~signature location kind =
           "Revealed type for `%s` is %s."
           (show_sanitized_expression expression)
           (Annotation.display_as_revealed_type annotation);
+      ]
+  | SuppressionCommentWithoutErrorCode { suppressed_error_codes } ->
+      [
+        Format.asprintf
+          "Using an `# pyre-ignore` or `# pyre-fixme` without an error code suppresses all Pyre \
+           errors. Use `# pyre-fixme[%s]` to suppress specific errors."
+          (List.map suppressed_error_codes ~f:[%show: int] |> String.concat ~sep:", ");
       ]
   | UnsupportedOperand (Binary { operator_name; left_operand; right_operand }) ->
       [
@@ -3067,6 +3220,7 @@ let due_to_analysis_limitations { kind; _ } =
   | InvalidType _
   | IncompatibleOverload _
   | IncompleteType _
+  | LeakToGlobal _
   | MissingArgument _
   | MissingAttributeAnnotation _
   | MissingCaptureAnnotation _
@@ -3088,6 +3242,7 @@ let due_to_analysis_limitations { kind; _ } =
   | RedefinedClass _
   | RevealedLocals _
   | RevealedType _
+  | SuppressionCommentWithoutErrorCode _
   | UnsafeCast _
   | UnawaitedAwaitable _
   | UnboundName _
@@ -3183,6 +3338,8 @@ let join ~resolution left right =
     | InvalidTypeParameters left, InvalidTypeParameters right
       when [%compare.equal: AttributeResolution.type_parameters_mismatch] left right ->
         InvalidTypeParameters left
+    | LeakToGlobal left, LeakToGlobal right when [%compare.equal: GlobalLeaks.leak] left right ->
+        LeakToGlobal left
     | ( MissingArgument { callee = left_callee; parameter = Named left_name },
         MissingArgument { callee = right_callee; parameter = Named right_name } )
       when Option.equal Reference.equal_sanitized left_callee right_callee
@@ -3272,6 +3429,13 @@ let join ~resolution left right =
                 left_annotation
                 right_annotation;
             qualify = left_qualify || right_qualify (* lol *);
+          }
+    | ( SuppressionCommentWithoutErrorCode { suppressed_error_codes = left_error_codes },
+        SuppressionCommentWithoutErrorCode { suppressed_error_codes = right_error_codes } ) ->
+        SuppressionCommentWithoutErrorCode
+          {
+            suppressed_error_codes =
+              List.dedup_and_sort ~compare:[%compare: int] (left_error_codes @ right_error_codes);
           }
     | ( IncompatibleParameterType
           ({
@@ -3573,6 +3737,7 @@ let join ~resolution left right =
     | InvalidOverride _, _
     | InvalidAssignment _, _
     | InvalidClassInstantiation _, _
+    | LeakToGlobal _, _
     | MissingArgument _, _
     | MissingAttributeAnnotation _, _
     | MissingCaptureAnnotation _, _
@@ -3590,6 +3755,7 @@ let join ~resolution left right =
     | RedundantCast _, _
     | RevealedLocals _, _
     | RevealedType _, _
+    | SuppressionCommentWithoutErrorCode _, _
     | UnsafeCast _, _
     | TooManyArguments _, _
     | TupleConcatenationError _, _
@@ -3865,6 +4031,7 @@ let suppress ~mode ~ignore_codes error =
     | MissingAttributeAnnotation _
     | MissingGlobalAnnotation _
     | ProhibitedAny _
+    | SuppressionCommentWithoutErrorCode _
     | Unpack { unpack_problem = UnacceptableType Type.Any; _ }
     | Unpack { unpack_problem = UnacceptableType Type.Top; _ } ->
         true
@@ -4057,6 +4224,7 @@ let dequalify
     | InvalidAssignment kind -> InvalidAssignment (dequalify_invalid_assignment kind)
     | InvalidClassInstantiation kind ->
         InvalidClassInstantiation (dequalify_invalid_class_instantiation kind)
+    | LeakToGlobal leak -> LeakToGlobal leak
     | TooManyArguments ({ callee; _ } as extra_argument) ->
         TooManyArguments { extra_argument with callee = Option.map ~f:dequalify_reference callee }
     | Top -> Top
@@ -4165,6 +4333,8 @@ let dequalify
     | TupleConcatenationError expressions -> TupleConcatenationError expressions
     | ReadOnlynessMismatch mismatch ->
         ReadOnlynessMismatch (ReadOnly.dequalify ~dequalify_type:dequalify mismatch)
+    | SuppressionCommentWithoutErrorCode error_codes ->
+        SuppressionCommentWithoutErrorCode error_codes
     | TypedDictionaryAccessWithNonLiteral expression ->
         TypedDictionaryAccessWithNonLiteral expression
     | TypedDictionaryKeyNotFound { typed_dictionary_name; missing_key } ->

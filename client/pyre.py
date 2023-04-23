@@ -78,10 +78,9 @@ def show_pyre_version(arguments: command_arguments.CommandArguments) -> None:
 
 
 def start_logging_to_directory(
-    log_directory: str,
+    log_directory_path: Path,
     flavor: identifiers.PyreFlavor,
 ) -> None:
-    log_directory_path = Path(log_directory)
     log_directory_path.mkdir(parents=True, exist_ok=True)
     log.enable_file_logging(log_directory_path / f"pyre{flavor.path_suffix()}.stderr")
 
@@ -90,7 +89,7 @@ def _run_check_command(
     arguments: command_arguments.CommandArguments,
 ) -> commands.ExitCode:
     configuration = _create_and_check_configuration(arguments, Path("."))
-    start_logging_to_directory(configuration.log_directory, CLASSIC_FLAVOR)
+    start_logging_to_directory(configuration.get_log_directory(), CLASSIC_FLAVOR)
     check_arguments = command_arguments.CheckArguments.create(arguments)
     return commands.check.run(configuration, check_arguments)
 
@@ -101,7 +100,7 @@ def _run_incremental_command(
     no_watchman: bool,
 ) -> commands.ExitCode:
     configuration = _create_and_check_configuration(arguments, Path("."))
-    start_logging_to_directory(configuration.log_directory, CLASSIC_FLAVOR)
+    start_logging_to_directory(configuration.get_log_directory(), CLASSIC_FLAVOR)
     start_arguments = command_arguments.StartArguments.create(
         arguments,
         no_watchman=no_watchman,
@@ -168,31 +167,31 @@ def _check_open_source_version(
 def _create_configuration(
     arguments: command_arguments.CommandArguments,
     base_directory: Path,
-) -> configuration_module.Configuration:
+) -> frontend_configuration.OpenSource:
     configuration = configuration_module.create_configuration(arguments, base_directory)
-    return configuration
+    return frontend_configuration.OpenSource(configuration)
 
 
 def _create_and_check_configuration(
     arguments: command_arguments.CommandArguments,
     base_directory: Path,
-) -> configuration_module.Configuration:
-    configuration = _create_configuration(arguments, base_directory)
+) -> frontend_configuration.OpenSource:
+    configuration = configuration_module.create_configuration(arguments, base_directory)
     _check_open_source_version(configuration)
-    return configuration
+    return frontend_configuration.OpenSource(configuration)
 
 
 def _create_and_check_codenav_configuration(
     arguments: command_arguments.CommandArguments,
     base_directory: Path,
-) -> configuration_module.Configuration:
+) -> frontend_configuration.OpenSource:
     configuration = configuration_module.create_overridden_configuration(
         arguments,
         base_directory,
         find_directories.CODENAV_CONFIGURATION_FILE,
     )
     _check_open_source_version(configuration)
-    return configuration
+    return frontend_configuration.OpenSource(configuration)
 
 
 @click.group(
@@ -586,7 +585,7 @@ def analyze(
         return commands.ExitCode.SUCCESS
 
     configuration = _create_and_check_configuration(command_argument, Path("."))
-    start_logging_to_directory(configuration.log_directory, CLASSIC_FLAVOR)
+    start_logging_to_directory(configuration.get_log_directory(), CLASSIC_FLAVOR)
     return commands.analyze.run(
         configuration,
         command_arguments.AnalyzeArguments(
@@ -976,7 +975,7 @@ def persistent(
     base_directory: Path = Path(".").resolve()
     configuration = _create_configuration(command_argument, base_directory)
     start_logging_to_directory(
-        configuration.log_directory,
+        configuration.get_log_directory(),
         flavor=start_command_argument.flavor,
     )
     return commands.persistent.run(
@@ -1010,7 +1009,7 @@ def persistent(
             ),
         ),
         remote_logging=backend_arguments.RemoteLogging.create(
-            configuration.logger,
+            configuration.get_remote_logger(),
             start_command_argument.get_log_identifier(),
         ),
     )
@@ -1037,7 +1036,10 @@ def profile(context: click.Context, profile_output: str) -> int:
 
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration(command_argument, Path("."))
-    return commands.profile.run(configuration, get_profile_output(profile_output))
+    return commands.profile.run(
+        configuration,
+        get_profile_output(profile_output),
+    )
 
 
 @pyre.command()
@@ -1051,7 +1053,7 @@ def pysa_language_server(context: click.Context, no_watchman: bool) -> int:
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration(command_argument, Path("."))
-    start_logging_to_directory(configuration.log_directory, CLASSIC_FLAVOR)
+    start_logging_to_directory(configuration.get_log_directory(), CLASSIC_FLAVOR)
     return commands.pysa_server.run(
         configuration,
         command_arguments.StartArguments.create(
@@ -1085,7 +1087,7 @@ def query(
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration(command_argument, Path("."))
-    start_logging_to_directory(configuration.log_directory, CLASSIC_FLAVOR)
+    start_logging_to_directory(configuration.get_log_directory(), CLASSIC_FLAVOR)
     return commands.query.run(
         configuration,
         command_arguments.QueryArguments(
@@ -1173,7 +1175,7 @@ def restart(
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_and_check_configuration(command_argument, Path("."))
-    start_logging_to_directory(configuration.log_directory, CLASSIC_FLAVOR)
+    start_logging_to_directory(configuration.get_log_directory(), CLASSIC_FLAVOR)
     start_arguments = command_arguments.StartArguments.create(
         command_argument=command_argument,
         no_watchman=no_watchman,
@@ -1306,7 +1308,7 @@ def start(
         )
     else:
         configuration = _create_and_check_configuration(command_argument, Path("."))
-    start_logging_to_directory(configuration.log_directory, flavor_choice)
+    start_logging_to_directory(configuration.get_log_directory(), flavor_choice)
     return commands.start.run(
         configuration,
         command_arguments.StartArguments.create(
@@ -1340,7 +1342,7 @@ def report(
     paths: Optional[Sequence[Path]] = [Path(d) for d in files_and_directories]
     paths = None if len(paths) == 0 else paths
     return commands.report.run(
-        raw_configuration=configuration,
+        frontend_configuration.OpenSource(configuration),
         paths=paths,
     )
 
@@ -1474,7 +1476,7 @@ def stop(context: click.Context, flavor: Optional[str]) -> int:
         )
     else:
         configuration = _create_and_check_configuration(command_argument, Path("."))
-    start_logging_to_directory(configuration.log_directory, flavor_choice)
+    start_logging_to_directory(configuration.get_log_directory(), flavor_choice)
     return commands.stop.run(configuration, flavor_choice)
 
 
@@ -1486,7 +1488,7 @@ def validate_models(context: click.Context) -> int:
     """
     command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     configuration = _create_configuration(command_argument, Path("."))
-    start_logging_to_directory(configuration.log_directory, CLASSIC_FLAVOR)
+    start_logging_to_directory(configuration.get_log_directory(), CLASSIC_FLAVOR)
     return commands.validate_models.run(configuration, output=command_argument.output)
 
 

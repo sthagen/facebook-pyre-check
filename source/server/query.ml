@@ -25,7 +25,10 @@ module Request = struct
     | Defines of Reference.t list
     | DumpCallGraph
     | ExpressionLevelCoverage of string list
-    | GlobalLeaks of Reference.t
+    | GlobalLeaks of {
+        qualifiers: Reference.t list;
+        parse_errors: string list;
+      }
     | Help of string
     | HoverInfoForPosition of {
         path: PyrePath.t;
@@ -177,6 +180,12 @@ module Response = struct
     }
     [@@deriving sexp, compare, to_yojson]
 
+    type global_leak_errors = {
+      global_leaks: Analysis.AnalysisError.Instantiated.t list;
+      query_errors: string list;
+    }
+    [@@deriving sexp, compare, to_yojson]
+
     type t =
       | Boolean of bool
       | Callees of Analysis.Callgraph.callee list
@@ -193,6 +202,7 @@ module Response = struct
       | FoundPath of string
       | FoundReferences of code_location list
       | FunctionDefinition of Statement.Define.t
+      | GlobalLeakErrors of global_leak_errors
       | Help of string
       | HoverInfoForPosition of hover_info
       | ModelVerificationErrors of Taint.ModelVerificationError.t list
@@ -237,6 +247,17 @@ module Response = struct
             ]
       | ExpressionLevelCoverageResponse paths ->
           `List (List.map paths ~f:coverage_response_at_path_to_yojson)
+      | GlobalLeakErrors { global_leaks; query_errors } ->
+          let string_to_yojson string = `String string in
+          `Assoc
+            [
+              "query_errors", `List (List.map ~f:string_to_yojson query_errors);
+              ( "global_leaks",
+                `List
+                  (List.map
+                     ~f:(fun error -> AnalysisError.Instantiated.to_yojson error)
+                     global_leaks) );
+            ]
       | Help string -> `Assoc ["help", `String string]
       | ModelVerificationErrors errors ->
           `Assoc ["errors", `List (List.map errors ~f:Taint.ModelVerificationError.to_json)]
@@ -356,8 +377,8 @@ let help () =
            from above, along with a list of known coverage gaps."
     | GlobalLeaks _ ->
         Some
-          "global_leaks(function): analyzes the transitive call graph for the given function and \
-           raises errors when global variables are mutated."
+          "global_leaks(function1, ...): analyzes the transitive call graph for the given function \
+           and raises errors when global variables are mutated."
     | HoverInfoForPosition _ ->
         Some
           "hover_info_for_position(path='<absolute path>', line=<line>, character=<character>): \
@@ -577,7 +598,22 @@ let rec parse_request_exn query =
       | "dump_class_hierarchy", [] -> Request.Superclasses []
       | "expression_level_coverage", paths ->
           Request.ExpressionLevelCoverage (List.map ~f:string paths)
-      | "global_leaks", [name] -> Request.GlobalLeaks (reference name)
+      | "global_leaks", arguments ->
+          let single_argument_to_reference { Call.Argument.value = qualifier; _ } =
+            let construct_invalid_qualifier_string () =
+              Ast.Expression.show qualifier
+              |> Format.sprintf "Invalid qualifier provided, expected reference but got `%s`"
+            in
+            match qualifier with
+            | { Node.value = Name name; _ } -> (
+                match name_to_reference name with
+                | None -> Result.Error (construct_invalid_qualifier_string ())
+                | Some name -> Result.Ok name)
+            | _ -> Result.Error (construct_invalid_qualifier_string ())
+          in
+          List.map ~f:single_argument_to_reference arguments
+          |> List.partition_result
+          |> fun (qualifiers, parse_errors) -> Request.GlobalLeaks { qualifiers; parse_errors }
       | "help", _ -> Request.Help (help ())
       | "hover_info_for_position", [path; line; column] ->
           Request.HoverInfoForPosition
@@ -1026,18 +1062,26 @@ let rec process_request ~type_environment ~build_system request =
 
         let results = List.concat_map paths ~f:extract_paths |> List.map ~f:find_resolved_types in
         Single (Base.ExpressionLevelCoverageResponse results)
-    | GlobalLeaks qualifier ->
+    | GlobalLeaks { qualifiers; parse_errors } ->
         let lookup =
           let module_tracker = GlobalResolution.module_tracker global_resolution in
           PathLookup.instantiate_path_with_build_system ~build_system ~module_tracker
         in
-        Analysis.GlobalLeakCheck.check_qualifier ~type_environment qualifier
-        >>| List.map ~f:(fun error ->
-                AnalysisError.instantiate ~show_error_traces:true ~lookup error)
-        >>| (fun errors -> Single (Base.Errors errors))
-        |> Option.value
-             ~default:
-               (Error (Format.sprintf "No qualifier found for `%s`" (Reference.show qualifier)))
+        let find_leak_errors_for_qualifier qualifier =
+          Analysis.GlobalLeakCheck.check_qualifier ~type_environment qualifier
+          >>| List.map ~f:(fun error ->
+                  AnalysisError.instantiate ~show_error_traces:true ~lookup error)
+          |> Result.of_option
+               ~error:(Format.sprintf "No qualifier found for `%s`" (Reference.show qualifier))
+        in
+        let construct_result (global_leaks, errors) =
+          Single
+            (Base.GlobalLeakErrors
+               { global_leaks = List.concat global_leaks; query_errors = parse_errors @ errors })
+        in
+        List.map ~f:find_leak_errors_for_qualifier qualifiers
+        |> List.partition_result
+        |> construct_result
     | Help help_list -> Single (Base.Help help_list)
     | HoverInfoForPosition { path; position } ->
         module_of_path path

@@ -6163,7 +6163,7 @@ module State (Context : Context) = struct
           let open Annotated in
           begin
             match define with
-            | { Ast.Statement.Define.signature = { parent = Some parent; _ }; _ } -> (
+            | { Ast.Statement.Define.signature = { parent = Some parent; decorators; _ }; _ } -> (
                 GlobalResolution.overrides
                   (Reference.show parent)
                   ~resolution:global_resolution
@@ -6387,22 +6387,36 @@ module State (Context : Context) = struct
                             | KeywordOnly { default = has_default; _ } -> has_default
                             | PositionalOnly { default = has_default; _ } -> has_default
                           in
-                          (* TODO(T150016653): Figure out how to handle abstract class methods and
-                             decorators that result in Anonymous kinds *)
-                          let cannot_evaluate =
+                          (* TODO(T150016653): Figure out how to handle decorators and clean up
+                             hardcoding. This is a yucky hack. *)
+                          let allowlisted_non_modifying_decorators =
+                            [
+                              Reference.create "staticmethod";
+                              Reference.create "classmethod";
+                              Reference.create "override";
+                            ]
+                          in
+                          let is_equal_to_decorator_ref name ref =
+                            [%compare.equal: Reference.t option]
+                              (name_to_reference name)
+                              (Option.some ref)
+                          in
+                          let is_non_modifying_decorator = function
+                            | { Node.value = decorator; _ } -> (
+                                match decorator with
+                                | Expression.Name decorator_name ->
+                                    List.exists
+                                      ~f:(is_equal_to_decorator_ref decorator_name)
+                                      allowlisted_non_modifying_decorators
+                                | _ -> false)
+                          in
+                          let are_overriding_function_possibly_changed =
+                            not (List.for_all ~f:is_non_modifying_decorator decorators)
+                          in
+                          let are_overridden_function_args_possibly_changed =
                             match kind with
                             | Anonymous -> true
                             | Named function_name -> (
-                                let is_abstract_class_method_decorator = function
-                                  | { Node.value = decorator; _ } -> (
-                                      match decorator with
-                                      | Expression.Name decorator_name ->
-                                          [%compare.equal: Reference.t option]
-                                            (name_to_reference decorator_name)
-                                            (Option.some
-                                               (Reference.create "abc.abstractclassmethod"))
-                                      | _ -> false)
-                                in
                                 let definition =
                                   GlobalResolution.define_body global_resolution function_name
                                 in
@@ -6414,9 +6428,14 @@ module State (Context : Context) = struct
                                         { StatementDefine.signature = { decorators; _ }; _ };
                                       _;
                                     } ->
-                                    List.exists decorators ~f:is_abstract_class_method_decorator)
+                                    not (List.for_all ~f:is_non_modifying_decorator decorators))
                           in
-                          if is_args_kwargs_or_has_default || cannot_evaluate then
+
+                          if
+                            is_args_kwargs_or_has_default
+                            || are_overriding_function_possibly_changed
+                            || are_overridden_function_args_possibly_changed
+                          then
                             errors
                           else
                             emit_error
