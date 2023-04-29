@@ -309,7 +309,9 @@ def create_server_arguments(
     nonexistent directories. It is idempotent though, since it does not alter
     any filesystem state.
     """
-    source_paths = backend_arguments.get_source_path_for_server(configuration)
+    source_paths = backend_arguments.get_source_path_for_server(
+        configuration, start_arguments.flavor
+    )
 
     logging_sections = start_arguments.logging_sections
     additional_logging_sections = (
@@ -522,6 +524,7 @@ def run(
         raise configuration_module.InvalidConfiguration(
             "Cannot locate a Pyre binary to run."
         )
+    LOG.info(f"Pyre binary is located at `{binary_location}`")
 
     log_directory = configuration.get_log_directory()
     server_arguments = create_server_arguments(configuration, start_arguments)

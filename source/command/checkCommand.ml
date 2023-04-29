@@ -141,7 +141,10 @@ let with_performance_tracking ~debug f =
 
 
 let do_check configuration =
-  Scheduler.with_scheduler ~configuration ~f:(fun scheduler ->
+  Scheduler.with_scheduler
+    ~configuration
+    ~should_log_exception:(fun _ -> true)
+    ~f:(fun scheduler ->
       with_performance_tracking ~debug:configuration.debug (fun () ->
           let read_write_environment =
             Analysis.EnvironmentControls.create ~populate_call_graph:false configuration
@@ -180,18 +183,13 @@ let print_errors errors =
 
 
 let run_check ~build_system check_configuration =
-  try
-    let errors =
-      compute_errors
-        ~configuration:(CheckConfiguration.analysis_configuration_of check_configuration)
-        ~build_system
-        ()
-    in
-    print_errors errors
-  with
-  | exn ->
-      Log.log_exception "Pyre check failed." exn (Worker.exception_backtrace exn);
-      raise exn
+  let errors =
+    compute_errors
+      ~configuration:(CheckConfiguration.analysis_configuration_of check_configuration)
+      ~build_system
+      ()
+  in
+  print_errors errors
 
 
 let run_check_in_lwt check_configuration =

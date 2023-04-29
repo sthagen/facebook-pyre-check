@@ -385,6 +385,7 @@ class ServerCapabilities(json_mixins.CamlCaseAndExcludeJsonMixin):
     definition_provider: Optional[bool] = None
     document_symbol_provider: Optional[bool] = None
     references_provider: Optional[bool] = None
+    completion_provider: Optional[bool] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -608,6 +609,18 @@ class PyreDefinitionResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
         self,
     ) -> "LspLocation":
         return LspLocation(uri=self.path, range=self.range.to_lsp_range())
+
+
+@dataclasses.dataclass(frozen=True)
+class CompletionParameters(json_mixins.CamlCaseAndExcludeJsonMixin):
+    text_document: TextDocumentIdentifier
+    position: LspPosition
+
+    @staticmethod
+    def from_json_rpc_parameters(
+        parameters: json_rpc.Parameters,
+    ) -> "CompletionParameters":
+        return _parse_parameters(parameters, target=CompletionParameters)
 
 
 @dataclasses.dataclass(frozen=True)

@@ -72,16 +72,25 @@ module State (Context : Context) = struct
     Resolution.resolve_reference resolution global, Reference.delocalize global
 
 
-  let construct_global_leak_kind ~resolution global =
-    let target_type, delocalized_reference = get_type_and_reference ~resolution global in
-    Error.GlobalLeak { global_name = delocalized_reference; global_type = target_type }
-
-
   let construct_global_return method_name ~resolution global =
     let target_type, delocalized_reference = get_type_and_reference ~resolution global in
     Error.LeakToGlobal
       (ReturnOfGlobalVariable
          { global_name = delocalized_reference; global_type = target_type; method_name })
+
+
+  let construct_write_to_class_attribute attribute_name ~resolution global =
+    let _, delocalized_reference_class = get_type_and_reference ~resolution global in
+    let target_type, delocalized_reference_class_attribute =
+      Reference.create ~prefix:global attribute_name |> get_type_and_reference ~resolution
+    in
+    Error.LeakToGlobal
+      (WriteToClassAttribute
+         {
+           class_name = delocalized_reference_class;
+           attribute_type = target_type;
+           attribute_name = delocalized_reference_class_attribute;
+         })
 
 
   let construct_write_to_global_variable_kind ~resolution global =
@@ -96,6 +105,20 @@ module State (Context : Context) = struct
     Error.LeakToGlobal
       (WriteToGlobalVariable
          { global_name = delocalized_reference; global_type = target_type; category })
+
+
+  let construct_global_write_to_local_variable local ~resolution global =
+    let target_type, delocalized_reference = get_type_and_reference ~resolution global in
+    Error.LeakToGlobal
+      (WriteToLocalVariable
+         { global_name = delocalized_reference; global_type = target_type; local })
+
+
+  let construct_write_to_method_argument_error callee ~resolution global =
+    let target_type, delocalized_reference = get_type_and_reference ~resolution global in
+    Error.LeakToGlobal
+      (WriteToMethodArgument
+         { global_name = delocalized_reference; global_type = target_type; callee })
 
 
   let append_errors_for_reachable_globals ~resolution ~location construct_leak_kind globals errors =
@@ -167,9 +190,6 @@ module State (Context : Context) = struct
       in
       target_errors @ iterator_errors @ condition_errors
     in
-    let append_errors_for_globals =
-      append_errors_for_reachable_globals ~resolution ~location construct_global_leak_kind
-    in
     let expression_type () = Resolution.resolve_expression_to_type resolution expression in
     match value with
     (* interesting cases *)
@@ -204,12 +224,38 @@ module State (Context : Context) = struct
     | Call
         {
           callee = { Node.value = Name (Name.Attribute { attribute = "__setattr__"; _ }); _ };
-          arguments = [{ Call.Argument.value = object_; _ }; _; { Call.Argument.value; _ }];
+          arguments =
+            [
+              { Call.Argument.value = object_; _ };
+              {
+                Call.Argument.value =
+                  {
+                    Node.value =
+                      Constant (Constant.String { StringLiteral.value = attribute_name; _ });
+                    _;
+                  };
+                _;
+              };
+              { Call.Argument.value; _ };
+            ];
         }
     | Call
         {
           callee = { Node.value = Name (Name.Identifier "setattr"); _ };
-          arguments = [{ Call.Argument.value = object_; _ }; _; { Call.Argument.value; _ }];
+          arguments =
+            [
+              { Call.Argument.value = object_; _ };
+              {
+                Call.Argument.value =
+                  {
+                    Node.value =
+                      Constant (Constant.String { StringLiteral.value = attribute_name; _ });
+                    _;
+                  };
+                _;
+              };
+              { Call.Argument.value; _ };
+            ];
         } ->
         (* Adds special casing for `<anything>.__setattr__(...)` and `setattr(...)` to error if the
            first argument (the object) has a reachable global or a mutation occurs in the third
@@ -221,7 +267,13 @@ module State (Context : Context) = struct
         let { errors = value_errors; _ } = forward_expression value in
         {
           empty_result with
-          errors = append_errors_for_globals reachable_globals (value_errors @ errors);
+          errors =
+            append_errors_for_reachable_globals
+              ~resolution
+              ~location
+              (construct_write_to_class_attribute attribute_name)
+              reachable_globals
+              (value_errors @ errors);
         }
     | Call { callee; arguments } ->
         let { errors; reachable_globals } = forward_expression callee in
@@ -248,7 +300,12 @@ module State (Context : Context) = struct
         in
         let get_errors_from_forward_expression { Call.Argument.value; _ } =
           let { errors; reachable_globals } = forward_expression value in
-          append_errors_for_globals reachable_globals errors
+          append_errors_for_reachable_globals
+            ~resolution
+            ~location
+            (construct_write_to_method_argument_error callee)
+            reachable_globals
+            errors
         in
         List.concat_map ~f:get_errors_from_forward_expression arguments
         |> fun argument_errors -> { errors = argument_errors @ errors; reachable_globals }
@@ -435,9 +492,6 @@ module State (Context : Context) = struct
         (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
         (module TypeCheck.DummyContext)
     in
-    let prepare_globals_for_errors =
-      append_errors_for_reachable_globals ~resolution ~location construct_global_leak_kind
-    in
     let module_reference =
       let rec get_module_qualifier qualifier =
         let module_tracker = GlobalResolution.module_tracker Context.global_resolution in
@@ -479,8 +533,15 @@ module State (Context : Context) = struct
               reachable_globals
               []
           in
-          leaks_to_global_variables
-          @ prepare_globals_for_errors value_reachable_globals (value_errors @ errors)
+          let global_writes_to_locals =
+            append_errors_for_reachable_globals
+              ~resolution
+              ~location
+              (construct_global_write_to_local_variable target)
+              value_reachable_globals
+              []
+          in
+          leaks_to_global_variables @ global_writes_to_locals @ value_errors @ errors
       | Expression expression ->
           let { errors; _ } = forward_expression ~resolution expression in
           errors
@@ -506,7 +567,7 @@ module State (Context : Context) = struct
               reachable_globals
               []
           in
-          leak_to_global_returns @ prepare_globals_for_errors [] errors
+          leak_to_global_returns @ errors
       | Delete _
       | Return _ ->
           []

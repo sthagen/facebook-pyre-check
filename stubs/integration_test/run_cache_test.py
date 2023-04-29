@@ -26,6 +26,12 @@ from typing import Any, Dict, List
 LOG: logging.Logger = logging.getLogger(__name__)
 
 
+def get_dot_pyre_directory_from_cache_path(cache_path: Path) -> Path:
+    # Cache path is `.pyre/.pysa_cache`, so dot-pyre path should be its
+    # parent
+    return cache_path.parent
+
+
 def normalized_json_dump(normalized: List[Dict[str, Any]]):
     normalized = sorted(
         normalized,
@@ -75,6 +81,8 @@ def run_test_no_cache(
     returncode = run_and_check_output(
         [
             "pyre",
+            "--dot-pyre-directory",
+            str(get_dot_pyre_directory_from_cache_path(cache_path)),
             "--typeshed",
             f"{typeshed_path}",
             "--noninteractive",
@@ -105,6 +113,8 @@ def run_test_cache_first_and_second_runs(
     returncode = run_and_check_output(
         [
             "pyre",
+            "--dot-pyre-directory",
+            str(get_dot_pyre_directory_from_cache_path(cache_path)),
             "--typeshed",
             f"{typeshed_path}",
             "--noninteractive",
@@ -126,6 +136,8 @@ def run_test_cache_first_and_second_runs(
     returncode = run_and_check_output(
         [
             "pyre",
+            "--dot-pyre-directory",
+            str(get_dot_pyre_directory_from_cache_path(cache_path)),
             "--typeshed",
             f"{typeshed_path}",
             "--noninteractive",
@@ -159,6 +171,8 @@ def run_test_invalid_cache_file(
     returncode = run_and_check_output(
         [
             "pyre",
+            "--dot-pyre-directory",
+            str(get_dot_pyre_directory_from_cache_path(cache_path)),
             "--typeshed",
             f"{typeshed_path}",
             "--noninteractive",
@@ -194,6 +208,8 @@ def run_test_changed_pysa_file(
     returncode = run_and_check_output(
         [
             "pyre",
+            "--dot-pyre-directory",
+            str(get_dot_pyre_directory_from_cache_path(cache_path)),
             "--typeshed",
             f"{typeshed_path}",
             "--noninteractive",
@@ -245,6 +261,8 @@ def run_test_changed_taint_config_file(
     returncode = run_and_check_output(
         [
             "pyre",
+            "--dot-pyre-directory",
+            str(get_dot_pyre_directory_from_cache_path(cache_path)),
             "--typeshed",
             f"{typeshed_path}",
             "--noninteractive",
@@ -291,11 +309,11 @@ def run_test_changed_models(
     new_issue = {
         "code": 5001,
         "column": 9,
-        "define": "integration_test.lru_cache_test.test_cached_sanitizer",
+        "define": "integration_test.functools.test_cached_sanitizer",
         "description": "Possible shell injection [5001]: Data from [UserControlled] source(s) may reach [RemoteCodeExecution] sink(s)",
         "line": 20,
         "name": "Possible shell injection",
-        "path": "fixture_source/integration_test/lru_cache_test.py",
+        "path": "fixture_source/integration_test/functools.py",
         "stop_column": 18,
         "stop_line": 20,
     }
@@ -303,6 +321,8 @@ def run_test_changed_models(
     returncode = run_and_check_output(
         [
             "pyre",
+            "--dot-pyre-directory",
+            str(get_dot_pyre_directory_from_cache_path(cache_path)),
             "--typeshed",
             f"{typeshed_path}",
             "--noninteractive",
@@ -342,6 +362,8 @@ def run_test_changed_source_files(
     returncode = run_and_check_output(
         [
             "pyre",
+            "--dot-pyre-directory",
+            str(get_dot_pyre_directory_from_cache_path(cache_path)),
             "--typeshed",
             f"{typeshed_path}",
             "--noninteractive",
@@ -376,6 +398,7 @@ def run_tests() -> None:
     LOG.info("Running in `%s`", os.getcwd())
 
     cache_path = Path(".pyre/.pysa_cache")
+    cache_path.mkdir(parents=True, exist_ok=True)
     LOG.info(f"Cache file path: {cache_path.resolve()}")
 
     typeshed_path = Path("../typeshed/typeshed").absolute().as_posix()

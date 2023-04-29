@@ -323,7 +323,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
 
     let implicit_string_literal_sources { value; location } =
       if String.equal "" value then
-        ForwardState.Tree.empty
+        ForwardTaint.bottom
       else
         let value_location =
           Location.with_module ~module_reference:FunctionContext.qualifier location
@@ -331,17 +331,16 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
         let literal_string_regular_expressions =
           FunctionContext.taint_configuration.implicit_sources.literal_strings
         in
-        let add_matching_source_kind tree { TaintConfiguration.pattern; source_kind = kind } =
+        let add_matching_source_kind sofar { TaintConfiguration.pattern; source_kind = kind } =
           if Re2.matches pattern value then
             ForwardTaint.singleton (CallInfo.Origin value_location) kind Frame.initial
-            |> ForwardState.Tree.create_leaf
-            |> ForwardState.Tree.join tree
+            |> ForwardTaint.join sofar
           else
-            tree
+            sofar
         in
         List.fold
           literal_string_regular_expressions
-          ~init:ForwardState.Tree.empty
+          ~init:ForwardTaint.bottom
           ~f:add_matching_source_kind
 
 
@@ -353,7 +352,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       if
         (not (String.equal "" value))
         && (not (List.is_empty literal_string_sinks))
-        && not (ForwardState.Tree.is_bottom taint)
+        && not (ForwardTaint.is_bottom taint)
       then
         let value_location_with_module =
           Location.with_module ~module_reference:FunctionContext.qualifier location
@@ -370,7 +369,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
               check_flow
                 ~location:value_location_with_module
                 ~sink_handle:(IssueHandle.Sink.LiteralStringSink sink_kind)
-                ~source_tree:taint
+                ~source_tree:(ForwardState.Tree.create_leaf taint)
                 ~sink_tree)
 
 
@@ -2047,94 +2046,55 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
               location;
             }
       | {
-          callee =
-            {
-              Node.value = Name (Name.Attribute { base; attribute = "__add__" as function_name; _ });
-              _;
-            };
-          arguments;
-        }
-      | {
-          callee =
-            {
-              Node.value = Name (Name.Attribute { base; attribute = "__mod__" as function_name; _ });
-              _;
-            };
-          arguments;
-        }
-      | {
-          callee =
-            {
-              Node.value = Name (Name.Attribute { base; attribute = "format" as function_name; _ });
-              _;
-            };
-          arguments;
-        } ->
-          (* User-defined or inferred models. *)
-          let taint_from_model, state_from_model =
-            apply_callees
-              ~resolution
-              ~is_result_used
-              ~is_property:false
-              ~call_location:location
-              ~callee
-              ~arguments
-              ~state
-              callees
+       callee =
+         {
+           Node.value =
+             Name
+               (Name.Attribute
+                 { base; attribute = ("__add__" | "__mod__" | "format") as function_name; _ });
+           _;
+         };
+       arguments;
+      }
+        when CallGraph.CallCallees.is_string_method callees ->
+          let breadcrumbs =
+            match function_name with
+            | "__mod__"
+            | "format" ->
+                Features.BreadcrumbSet.singleton (Features.format_string ())
+            | _ -> Features.BreadcrumbSet.empty
           in
-          let is_string_format =
-            List.exists callees.call_targets ~f:(fun call_target ->
-                match Interprocedural.Target.class_name call_target.target with
-                | Some "str" -> true
-                | _ -> false)
+          let default_target =
+            match function_name with
+            | "__add__" -> Interprocedural.Target.StringCombineArtificialTargets.str_add
+            | "__mod__" -> Interprocedural.Target.StringCombineArtificialTargets.str_mod
+            | "format" -> Interprocedural.Target.StringCombineArtificialTargets.str_format
+            | _ -> failwith "Expect either `__add__` or `__mod__` or `format`"
           in
-          if not is_string_format then
-            taint_from_model, state_from_model
-          else
-            (* Additional hard-coded models for analyzing implicit sinks during string formatting
-               operations. *)
-            let taint_from_string_format, state_from_string_format =
-              let breadcrumbs =
-                match function_name with
-                | "__mod__"
-                | "format" ->
-                    Features.BreadcrumbSet.singleton (Features.format_string ())
-                | _ -> Features.BreadcrumbSet.empty
-              in
-              let default_target =
-                match function_name with
-                | "__add__" -> Interprocedural.Target.StringCombineArtificialTargets.str_add
-                | "__mod__" -> Interprocedural.Target.StringCombineArtificialTargets.str_mod
-                | "format" -> Interprocedural.Target.StringCombineArtificialTargets.str_format
-                | _ -> failwith "Expect either `__add__` or `__mod__` or `format`"
-              in
-              let call_target_for_string_combine_rules =
-                Some
-                  (StringFormatCall.create_call_target_for_string_combine
-                     ~call_targets:callees.call_targets
-                     ~default_target)
-              in
-              let nested_expressions =
-                arguments
-                |> List.map ~f:(fun call_argument -> call_argument.Call.Argument.value)
-                |> List.cons base
-              in
-              let string_literal, nested_expressions =
-                CallModel.arguments_for_string_format nested_expressions
-              in
-              analyze_joined_string
-                ~resolution
-                ~state
-                ~breadcrumbs
-                {
-                  StringFormatCall.nested_expressions;
-                  string_literal = { StringFormatCall.value = string_literal; location };
-                  call_target_for_string_combine_rules;
-                  location;
-                }
-            in
-            ( ForwardState.Tree.join taint_from_model taint_from_string_format,
-              join state_from_model state_from_string_format )
+          let call_target_for_string_combine_rules =
+            Some
+              (StringFormatCall.create_call_target_for_string_combine
+                 ~call_targets:callees.call_targets
+                 ~default_target)
+          in
+          let nested_expressions =
+            arguments
+            |> List.map ~f:(fun call_argument -> call_argument.Call.Argument.value)
+            |> List.cons base
+          in
+          let string_literal, nested_expressions =
+            CallModel.arguments_for_string_format nested_expressions
+          in
+          analyze_joined_string
+            ~resolution
+            ~state
+            ~breadcrumbs
+            {
+              StringFormatCall.nested_expressions;
+              string_literal = { StringFormatCall.value = string_literal; location };
+              call_target_for_string_combine_rules;
+              location;
+            }
       | {
        callee = { Node.value = Expression.Name (Name.Identifier "reveal_taint"); _ };
        arguments = [{ Call.Argument.value = expression; _ }];
@@ -2351,7 +2311,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       ~call_target_for_string_combine_rules
       ~location:string_literal_location
       ~string_combine_partial_sink_tree
-      string_literal_taint;
+      (ForwardState.Tree.create_leaf string_literal_taint);
 
     let analyze_stringify_callee
         (taint_to_join, state_to_join)
@@ -2425,22 +2385,22 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
                issues. *)
             base_taint, base_state
       in
+      let expression_taint =
+        ForwardState.Tree.collapse ~breadcrumbs:(Features.tito_broadening_set ()) expression_taint
+      in
       StringFormatCall.check_triggered_flows
         ~triggered_sinks
         ~parameter_index:(index + 1)
         ~call_target_for_string_combine_rules
         ~location:expression_location
         ~string_combine_partial_sink_tree
-        expression_taint;
-      ForwardState.Tree.join expression_taint taint, state
+        (ForwardState.Tree.create_leaf expression_taint);
+      ForwardTaint.join expression_taint taint, state
     in
     let taint, state =
-      List.foldi
-        nested_expressions
-        ~f:analyze_nested_expression
-        ~init:(ForwardState.Tree.empty, state)
-      |>> ForwardState.Tree.add_local_breadcrumbs breadcrumbs
-      |>> ForwardState.Tree.join string_literal_taint
+      List.foldi nested_expressions ~f:analyze_nested_expression ~init:(ForwardTaint.bottom, state)
+      |>> ForwardTaint.add_local_breadcrumbs breadcrumbs
+      |>> ForwardTaint.join string_literal_taint
     in
     store_triggered_sinks_to_propagate_for_string_combine
       ~location
@@ -2449,7 +2409,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       nested_expressions;
     (* Compute flows to literal string sinks if applicable. *)
     StringFormatCall.check_flow_implicit_string_literal_sinks ~string_literal taint;
-    taint, state
+    ForwardState.Tree.create_leaf taint, state
 
 
   and analyze_expression

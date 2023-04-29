@@ -827,8 +827,7 @@ let rec process_request ~type_environment ~build_system request =
         Taint.ModelQueryExecution.generate_models_from_queries
           ~resolution:global_resolution
           ~scheduler
-          ~class_hierarchy_graph:
-            (Interprocedural.ClassHierarchyGraph.SharedMemory.from_heap class_hierarchy_graph)
+          ~class_hierarchy_graph
           ~source_sink_filter:None
           ~verbose:false
           ~callables_and_stubs:
@@ -838,7 +837,10 @@ let rec process_request ~type_environment ~build_system request =
                (Interprocedural.FetchCallables.get_stubs initial_callables))
           model_queries
       in
-      Scheduler.with_scheduler ~configuration ~f:scheduler_wrapper
+      Scheduler.with_scheduler
+        ~configuration
+        ~should_log_exception:(fun _ -> true)
+        ~f:scheduler_wrapper
     in
     let module_of_path path =
       let relative_path =
@@ -1399,7 +1401,10 @@ let rec process_request ~type_environment ~build_system request =
                   ~f:load_modules
                   ~inputs:(ModuleTracker.ReadOnly.tracked_explicit_modules module_tracker)
               in
-              Scheduler.with_scheduler ~configuration ~f:load_all_modules;
+              Scheduler.with_scheduler
+                ~configuration
+                ~should_log_exception:(fun _ -> true)
+                ~f:load_all_modules;
               UnannotatedGlobalEnvironment.ReadOnly.all_classes unannotated_global_environment
               |> List.map ~f:Reference.create
           | _ ->

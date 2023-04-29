@@ -9,7 +9,7 @@ from typing import Iterable, Tuple
 
 import testslide
 
-from .. import command_arguments, configuration, frontend_configuration
+from .. import command_arguments, configuration, frontend_configuration, identifiers
 from ..backend_arguments import (
     BaseArguments,
     BuckSourcePath,
@@ -18,6 +18,7 @@ from ..backend_arguments import (
     find_watchman_root,
     get_checked_directory_allowlist,
     get_source_path,
+    get_source_path_for_server,
     RemoteLogging,
     SimpleSourcePath,
     WithUnwatchedDependencySourcePath,
@@ -291,7 +292,7 @@ class ArgumentsTest(testslide.TestCase):
                 get_source_path(
                     frontend_configuration.OpenSource(
                         configuration.Configuration(
-                            project_root=str(root_path / "project"),
+                            global_root=root_path / "project",
                             dot_pyre_directory=(root_path / ".pyre"),
                             source_directories=[raw_element],
                         )
@@ -310,7 +311,7 @@ class ArgumentsTest(testslide.TestCase):
                 get_source_path(
                     frontend_configuration.OpenSource(
                         configuration.Configuration(
-                            project_root=str(root_path / "project"),
+                            global_root=root_path / "project",
                             dot_pyre_directory=(root_path / ".pyre"),
                             source_directories=[raw_element],
                         )
@@ -338,7 +339,7 @@ class ArgumentsTest(testslide.TestCase):
                 get_source_path(
                     frontend_configuration.OpenSource(
                         configuration.Configuration(
-                            project_root=str(root_path / "project"),
+                            global_root=root_path / "project",
                             relative_local_root="local",
                             dot_pyre_directory=(root_path / ".pyre"),
                             source_directories=[raw_element],
@@ -370,7 +371,7 @@ class ArgumentsTest(testslide.TestCase):
                 get_source_path(
                     frontend_configuration.OpenSource(
                         configuration.Configuration(
-                            project_root=str(root_path / "project"),
+                            global_root=root_path / "project",
                             dot_pyre_directory=(root_path / ".pyre"),
                             source_directories=[raw_element],
                             unwatched_dependency=unwatched_dependency,
@@ -494,6 +495,40 @@ class ArgumentsTest(testslide.TestCase):
                 ),
             )
 
+    def test_get_code_navigation_server_artifact_root(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root).resolve()
+            setup.ensure_directories_exists(root_path, [".pyre", "repo_root"])
+            setup.ensure_files_exist(
+                root_path, ["repo_root/.buckconfig", "repo_root/buck_root/.buckconfig"]
+            )
+            setup.write_configuration_file(
+                root_path / "repo_root" / "buck_root",
+                {"targets": ["//ct:lavos"], "bxl_builder": "//ct:robo"},
+            )
+            self.assertEqual(
+                get_source_path_for_server(
+                    frontend_configuration.OpenSource(
+                        configuration.create_configuration(
+                            command_arguments.CommandArguments(
+                                dot_pyre_directory=root_path / ".pyre",
+                                use_buck2=True,
+                            ),
+                            root_path / "repo_root" / "buck_root",
+                        )
+                    ),
+                    flavor=identifiers.PyreFlavor.CODE_NAVIGATION,
+                ),
+                BuckSourcePath(
+                    source_root=root_path / "repo_root",
+                    artifact_root=root_path / ".pyre" / "link_trees__code_navigation",
+                    checked_directory=root_path / "repo_root" / "buck_root",
+                    targets=["//ct:lavos"],
+                    bxl_builder="//ct:robo",
+                    use_buck2=True,
+                ),
+            )
+
     def test_get_buck_source_path__no_buck_root(self) -> None:
         # Specify an explicit base directory to make sure the content of parent
         # directories will not intervene.
@@ -504,7 +539,7 @@ class ArgumentsTest(testslide.TestCase):
                 get_source_path(
                     frontend_configuration.OpenSource(
                         configuration.Configuration(
-                            project_root=str(root_path / "project"),
+                            global_root=root_path / "project",
                             dot_pyre_directory=(root_path / ".pyre"),
                             targets=["//ct:frog"],
                         )
@@ -517,7 +552,7 @@ class ArgumentsTest(testslide.TestCase):
             get_source_path(
                 frontend_configuration.OpenSource(
                     configuration.Configuration(
-                        project_root="project",
+                        global_root=Path("project"),
                         dot_pyre_directory=Path(".pyre"),
                         source_directories=None,
                         targets=None,
@@ -531,7 +566,7 @@ class ArgumentsTest(testslide.TestCase):
             get_source_path(
                 frontend_configuration.OpenSource(
                     configuration.Configuration(
-                        project_root="project",
+                        global_root=Path("project"),
                         dot_pyre_directory=Path(".pyre"),
                         source_directories=[search_path.SimpleRawElement("src")],
                         targets=["//ct:ayla"],
@@ -574,7 +609,7 @@ class ArgumentsTest(testslide.TestCase):
 
             test_configuration = frontend_configuration.OpenSource(
                 configuration.Configuration(
-                    project_root=str(root_path),
+                    global_root=root_path,
                     dot_pyre_directory=Path(".pyre"),
                     only_check_paths=[
                         str(root_path / "a"),
@@ -595,7 +630,7 @@ class ArgumentsTest(testslide.TestCase):
 
             test_configuration = frontend_configuration.OpenSource(
                 configuration.Configuration(
-                    project_root=str(root_path),
+                    global_root=root_path,
                     dot_pyre_directory=Path(".pyre"),
                     only_check_paths=[
                         str(root_path / "a"),
@@ -616,7 +651,7 @@ class ArgumentsTest(testslide.TestCase):
 
             test_configuration = frontend_configuration.OpenSource(
                 configuration.Configuration(
-                    project_root=str(root_path),
+                    global_root=root_path,
                     dot_pyre_directory=Path(".pyre"),
                     only_check_paths=[],
                 )

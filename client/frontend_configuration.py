@@ -15,10 +15,17 @@ with additional configuration, using open-source Pyre as a library.
 
 import abc
 import json
+import logging
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import List, Optional
 
-from . import configuration as configuration_module
+from . import configuration as configuration_module, find_directories
+
+LOG: logging.Logger = logging.getLogger(__name__)
 
 # TODO(T120824066): Break this class down into smaller pieces. Ideally, one
 # class per command.
@@ -28,11 +35,11 @@ class Base(abc.ABC):
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def get_log_directory(self) -> Path:
+    def get_binary_location(self, download_if_needed: bool = False) -> Optional[Path]:
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def get_binary_location(self, download_if_needed: bool = False) -> Optional[Path]:
+    def get_typeshed_location(self, download_if_needed: bool = False) -> Optional[Path]:
         raise NotImplementedError()
 
     @abc.abstractmethod
@@ -88,7 +95,7 @@ class Base(abc.ABC):
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def get_existent_search_paths(
+    def get_existent_user_specified_search_paths(
         self,
     ) -> List[configuration_module.search_path.Element]:
         raise NotImplementedError()
@@ -170,6 +177,34 @@ class Base(abc.ABC):
             return None
         return self.get_global_root() / relative_local_root
 
+    def get_log_directory(self) -> Path:
+        dot_pyre_directory = self.get_dot_pyre_directory()
+        relative_local_root = self.get_relative_local_root()
+        return (
+            dot_pyre_directory
+            if relative_local_root is None
+            else dot_pyre_directory / relative_local_root
+        )
+
+    def get_existent_typeshed_search_paths(
+        self,
+    ) -> List[configuration_module.search_path.Element]:
+        typeshed_root = self.get_typeshed_location(download_if_needed=True)
+        if typeshed_root is None:
+            return []
+        return [
+            configuration_module.search_path.SimpleElement(str(element))
+            for element in find_directories.find_typeshed_search_paths(typeshed_root)
+        ]
+
+    def get_existent_search_paths(
+        self,
+    ) -> List[configuration_module.search_path.Element]:
+        return [
+            *self.get_existent_user_specified_search_paths(),
+            *self.get_existent_typeshed_search_paths(),
+        ]
+
 
 class OpenSource(Base):
     def __init__(
@@ -179,24 +214,62 @@ class OpenSource(Base):
         self.configuration = configuration
 
     def get_dot_pyre_directory(self) -> Path:
-        return self.configuration.dot_pyre_directory
-
-    def get_log_directory(self) -> Path:
-        return Path(self.configuration.log_directory)
+        return (
+            self.configuration.dot_pyre_directory
+            or self.get_global_root() / find_directories.LOG_DIRECTORY
+        )
 
     def get_binary_location(self, download_if_needed: bool = False) -> Optional[Path]:
-        location = self.configuration.get_binary_respecting_override()
+        binary = self.configuration.binary
+        if binary is not None:
+            return Path(binary)
+
+        LOG.info(
+            f"No binary specified, looking for `{find_directories.BINARY_NAME}` in PATH"
+        )
+        binary_candidate = shutil.which(find_directories.BINARY_NAME)
+        if binary_candidate is None:
+            binary_candidate_name = os.path.join(
+                os.path.dirname(sys.argv[0]), find_directories.BINARY_NAME
+            )
+            binary_candidate = shutil.which(binary_candidate_name)
+
         # Auto-download is not supported in OSS
-        return Path(location) if location is not None else None
+        return Path(binary_candidate) if binary_candidate is not None else None
+
+    def get_typeshed_location(self, download_if_needed: bool = False) -> Optional[Path]:
+        typeshed = self.configuration.typeshed
+        if typeshed is not None:
+            return Path(typeshed)
+
+        LOG.info("No typeshed specified, looking for it...")
+        auto_determined_typeshed = find_directories.find_typeshed()
+        if auto_determined_typeshed is None:
+            # Auto-download is not supported in OSS
+            LOG.warning(
+                "Could not find a suitable typeshed. Types for Python builtins "
+                "and standard libraries may be missing!"
+            )
+            return None
+        else:
+            LOG.info(f"Found: `{auto_determined_typeshed}`")
+            return auto_determined_typeshed
 
     def get_binary_version(self) -> Optional[str]:
-        return self.configuration.get_binary_version()
+        binary = self.get_binary_location()
+        if binary is None:
+            return None
+        # lint-ignore: NoUnsafeExecRule
+        status = subprocess.run(
+            [str(binary), "-version"], stdout=subprocess.PIPE, universal_newlines=True
+        )
+        return status.stdout.strip() if status.returncode == 0 else None
 
     def get_content_for_display(self) -> str:
         return json.dumps(self.configuration.to_json(), indent=2)
 
     def get_global_root(self) -> Path:
-        return Path(self.configuration.project_root)
+        return self.configuration.global_root
 
     def get_relative_local_root(self) -> Optional[str]:
         return self.configuration.relative_local_root
@@ -228,13 +301,10 @@ class OpenSource(Base):
     def get_only_check_paths(self) -> List[str]:
         return list(self.configuration.only_check_paths)
 
-    def get_existent_search_paths(
+    def get_existent_user_specified_search_paths(
         self,
     ) -> List[configuration_module.search_path.Element]:
-        return (
-            self.configuration.expand_and_get_existent_search_paths()
-            + self.configuration.expand_and_get_typeshed_search_paths()
-        )
+        return self.configuration.expand_and_get_existent_search_paths()
 
     def get_existent_source_directories(
         self,

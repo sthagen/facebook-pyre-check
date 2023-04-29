@@ -201,11 +201,6 @@ and unawaited_awaitable = {
   expression: Expression.t;
 }
 
-and leak_to_global = {
-  global_name: Reference.t;
-  global_type: Type.t;
-}
-
 and undefined_import =
   | UndefinedModule of Reference.t
   | UndefinedName of {
@@ -281,12 +276,12 @@ module GlobalLeaks : sig
     | WriteToLocalVariable of {
         global_name: Reference.t;
         global_type: Type.t;
-        local_name: Reference.t;
+        local: Expression.t;
       }
     | WriteToMethodArgument of {
         global_name: Reference.t;
         global_type: Type.t;
-        method_name: Reference.t;
+        callee: Expression.t;
       }
     | ReturnOfGlobalVariable of {
         global_name: Reference.t;
@@ -522,7 +517,6 @@ and kind =
   | DeadStore of Identifier.t
   | Deobfuscation of Source.t
   | UnawaitedAwaitable of unawaited_awaitable
-  | GlobalLeak of leak_to_global
   (* Errors from run-time edge cases *)
   | BroadcastError of {
       expression: Expression.t;

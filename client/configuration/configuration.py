@@ -26,10 +26,7 @@ import dataclasses
 import glob
 import json
 import logging
-import os
-import shutil
 import site
-import subprocess
 import sys
 from dataclasses import field
 from logging import Logger
@@ -52,11 +49,9 @@ import psutil
 from .. import command_arguments, dataclasses_merge, find_directories, identifiers
 from ..filesystem import expand_global_root, expand_relative_path
 from ..find_directories import (
-    BINARY_NAME,
     CONFIGURATION_FILE,
     get_relative_local_root,
     LOCAL_CONFIGURATION_FILE,
-    LOG_DIRECTORY,
 )
 from . import (
     exceptions,
@@ -546,13 +541,13 @@ def merge_partial_configurations(
 
 @dataclasses.dataclass(frozen=True)
 class Configuration:
-    project_root: str
-    dot_pyre_directory: Path
+    global_root: Path
 
     binary: Optional[str] = None
     buck_mode: Optional[platform_aware.PlatformAware[str]] = None
     bxl_builder: Optional[str] = None
     only_check_paths: Sequence[str] = field(default_factory=list)
+    dot_pyre_directory: Optional[Path] = None
     enable_readonly_analysis: Optional[bool] = None
     enable_unawaited_awaitable_analysis: Optional[bool] = None
     excludes: Sequence[str] = field(default_factory=list)
@@ -587,7 +582,7 @@ class Configuration:
 
     @staticmethod
     def from_partial_configuration(
-        project_root: Path,
+        global_root: Path,
         relative_local_root: Optional[str],
         partial_configuration: PartialConfiguration,
     ) -> "Configuration":
@@ -596,15 +591,13 @@ class Configuration:
         only_check_paths = partial_configuration.only_check_paths
 
         return Configuration(
-            project_root=str(project_root),
-            dot_pyre_directory=_get_optional_value(
-                partial_configuration.dot_pyre_directory, project_root / LOG_DIRECTORY
-            ),
+            global_root=global_root,
+            dot_pyre_directory=partial_configuration.dot_pyre_directory,
             binary=partial_configuration.binary,
             buck_mode=partial_configuration.buck_mode,
             bxl_builder=partial_configuration.bxl_builder,
             only_check_paths=[
-                expand_global_root(path, global_root=str(project_root))
+                expand_global_root(path, global_root=str(global_root))
                 for path in only_check_paths
             ],
             enable_readonly_analysis=partial_configuration.enable_readonly_analysis,
@@ -614,7 +607,7 @@ class Configuration:
             excludes=partial_configuration.excludes,
             extensions=partial_configuration.extensions,
             ignore_all_errors=_expand_all_globs(
-                expand_global_root(path, global_root=str(project_root))
+                expand_global_root(path, global_root=str(global_root))
                 for path in ignore_all_errors
             ),
             include_suppressed_errors=partial_configuration.include_suppressed_errors,
@@ -627,7 +620,7 @@ class Configuration:
             python_version=partial_configuration.python_version,
             relative_local_root=relative_local_root,
             search_path=[
-                path.expand_global_root(str(project_root)) for path in search_path
+                path.expand_global_root(str(global_root)) for path in search_path
             ],
             shared_memory=partial_configuration.shared_memory,
             site_package_search_strategy=partial_configuration.site_package_search_strategy
@@ -656,21 +649,9 @@ class Configuration:
         on fields that come from the command arguments.
         """
         return identifiers.get_project_identifier(
-            Path(self.project_root),
+            self.global_root,
             self.relative_local_root,
         )
-
-    @property
-    def log_directory(self) -> str:
-        if self.relative_local_root is None:
-            return str(self.dot_pyre_directory)
-        return str(self.dot_pyre_directory / self.relative_local_root)
-
-    @property
-    def local_root(self) -> Optional[str]:
-        if self.relative_local_root is None:
-            return None
-        return os.path.join(self.project_root, self.relative_local_root)
 
     def to_json(self) -> Dict[str, object]:
         """
@@ -695,7 +676,7 @@ class Configuration:
         unwatched_dependency = self.unwatched_dependency
         version_hash = self.version_hash
         return {
-            "global_root": self.project_root,
+            "global_root": str(self.global_root),
             "dot_pyre_directory": str(self.dot_pyre_directory),
             **({"binary": binary} if binary is not None else {}),
             **({"buck_mode": buck_mode.to_json()} if buck_mode is not None else {}),
@@ -809,20 +790,6 @@ class Configuration:
             return site_roots
         return get_default_site_roots()
 
-    def expand_and_get_typeshed_search_paths(
-        self,
-    ) -> List[search_path_module.Element]:
-        typeshed_root = self.get_typeshed_respecting_override()
-        if typeshed_root is None:
-            return []
-
-        return [
-            search_path_module.SimpleElement(str(element))
-            for element in find_directories.find_typeshed_search_paths(
-                Path(typeshed_root)
-            )
-        ]
-
     def expand_and_get_existent_search_paths(
         self,
     ) -> List[search_path_module.Element]:
@@ -847,56 +814,6 @@ class Configuration:
             )
         else:
             return []
-
-    def get_binary_respecting_override(self) -> Optional[str]:
-        binary = self.binary
-        if binary is not None:
-            return binary
-
-        LOG.info(f"No binary specified, looking for `{BINARY_NAME}` in PATH")
-        binary_candidate = shutil.which(BINARY_NAME)
-        if binary_candidate is None:
-            binary_candidate_name = os.path.join(
-                os.path.dirname(sys.argv[0]), BINARY_NAME
-            )
-            binary_candidate = shutil.which(binary_candidate_name)
-        if binary_candidate is not None:
-            return binary_candidate
-        return None
-
-    def get_typeshed_respecting_override(self) -> Optional[str]:
-        typeshed = self.typeshed
-        if typeshed is not None:
-            return typeshed
-
-        LOG.info("No typeshed specified, looking for it...")
-        auto_determined_typeshed = find_directories.find_typeshed()
-        if auto_determined_typeshed is None:
-            LOG.warning(
-                "Could not find a suitable typeshed. Types for Python builtins "
-                "and standard libraries may be missing!"
-            )
-            return None
-        else:
-            LOG.info(f"Found: `{auto_determined_typeshed}`")
-            return str(auto_determined_typeshed)
-
-    def get_version_hash_respecting_override(self) -> Optional[str]:
-        overriding_version_hash = os.getenv("PYRE_VERSION_HASH")
-        if overriding_version_hash:
-            LOG.warning(f"Version hash overridden with `{overriding_version_hash}`")
-            return overriding_version_hash
-        return self.version_hash
-
-    def get_binary_version(self) -> Optional[str]:
-        binary = self.get_binary_respecting_override()
-        if binary is None:
-            return None
-        # lint-ignore: NoUnsafeExecRule
-        status = subprocess.run(
-            [binary, "-version"], stdout=subprocess.PIPE, universal_newlines=True
-        )
-        return status.stdout.strip() if status.returncode == 0 else None
 
     def get_number_of_workers(self) -> int:
         number_of_workers = self.number_of_workers
@@ -948,13 +865,6 @@ class Configuration:
 def create_configuration(
     arguments: command_arguments.CommandArguments, base_directory: Path
 ) -> Configuration:
-    if arguments.configuration_path:
-        LOG.info("using overridden configuration of " + arguments.configuration_path)
-        configuration_path = Path(arguments.configuration_path)
-
-        return create_overridden_configuration(
-            arguments, configuration_path.parent, configuration_path.name
-        )
     local_root_argument = arguments.local_configuration
     search_base = (
         base_directory
@@ -1016,7 +926,6 @@ def create_overridden_configuration(
     base_directory: Path,
     configuration: str,
 ) -> Configuration:
-    base_directory = base_directory.resolve()
     if arguments.local_configuration:
         LOG.warning(
             f"Local configuration provided but skipped due to overridden global configuration {base_directory / configuration}"
@@ -1040,8 +949,8 @@ def check_nested_local_configuration(configuration: Configuration) -> None:
     """
     Raises `InvalidConfiguration` if the check fails.
     """
-    local_root = configuration.local_root
-    if local_root is None:
+    relative_local_root = configuration.relative_local_root
+    if relative_local_root is None:
         return
 
     def is_subdirectory(child: Path, parent: Path) -> bool:
@@ -1049,7 +958,7 @@ def check_nested_local_configuration(configuration: Configuration) -> None:
 
     # We search from the parent of the local root, looking for another local
     # configuration file that lives above the current one
-    local_root_path = Path(local_root).resolve()
+    local_root_path = (configuration.global_root / relative_local_root).resolve()
     current_directory = local_root_path.parent
     while True:
         found_root = find_directories.find_global_and_local_root(current_directory)
