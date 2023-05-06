@@ -142,6 +142,8 @@ module Make (Analysis : ANALYSIS) = struct
 
     let is_empty = Target.Map.is_empty
 
+    let singleton ~target ~model = Target.Map.singleton target model
+
     let size registry = Target.Map.length registry
 
     let set registry ~target ~model = Target.Map.set ~key:target ~data:model registry
@@ -160,6 +162,10 @@ module Make (Analysis : ANALYSIS) = struct
         | `Left model
         | `Right model ->
             Some model)
+
+
+    let merge_skewed ~join left right =
+      Target.Map.merge_skewed left right ~combine:(fun ~key:_ left right -> join left right)
 
 
     let of_alist ~join = Target.Map.of_alist_reduce ~f:join

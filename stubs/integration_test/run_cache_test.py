@@ -74,7 +74,7 @@ def run_and_check_output(
 
 
 def run_test_no_cache(
-    typeshed_path: str, cache_path: Path, expected: List[Dict[str, Any]]
+    typeshed_path: str, cache_path: Path, expected: List[Dict[str, Any]], output_file_name: str
 ) -> None:
     # Run Pysa without the cache argument.
     LOG.info("Testing with no --use-cache flag:")
@@ -88,9 +88,10 @@ def run_test_no_cache(
             "--noninteractive",
             "analyze",
             "--check-invariants",
+            "--inline-decorators",
         ],
         expected,
-        "result.no_cache",
+        output_file_name,
     )
     if returncode == 0:
         LOG.info("Run produced expected results\n")
@@ -99,7 +100,7 @@ def run_test_no_cache(
 
 
 def run_test_cache_first_and_second_runs(
-    typeshed_path: str, cache_path: Path, expected: List[Dict[str, Any]]
+    typeshed_path: str, cache_path: Path, expected: List[Dict[str, Any]], output_file_names: List[str]
 ) -> None:
     # Ensure the cache file doesn't already exist for a clean run.
     try:
@@ -121,9 +122,10 @@ def run_test_cache_first_and_second_runs(
             "analyze",
             "--use-cache",
             "--check-invariants",
+            "--inline-decorators",
         ],
         expected,
-        "result.cache1",
+        output_file_names[0],
     )
     if returncode == 0:
         LOG.info("Run produced expected results\n")
@@ -144,9 +146,10 @@ def run_test_cache_first_and_second_runs(
             "analyze",
             "--use-cache",
             "--check-invariants",
+            "--inline-decorators",
         ],
         expected,
-        "result.cache2",
+        output_file_names[1],
     )
     if returncode == 0:
         LOG.info("Run produced expected results\n")
@@ -155,7 +158,7 @@ def run_test_cache_first_and_second_runs(
 
 
 def run_test_invalid_cache_file(
-    typeshed_path: str, cache_path: Path, expected: List[Dict[str, Any]]
+    typeshed_path: str, cache_path: Path, expected: List[Dict[str, Any]], output_file_name: str
 ) -> None:
     LOG.info("Testing fallback behavior with invalid cache file:")
 
@@ -179,9 +182,10 @@ def run_test_invalid_cache_file(
             "analyze",
             "--use-cache",
             "--check-invariants",
+            "--inline-decorators",
         ],
         expected,
-        "result.cache3",
+        output_file_name,
     )
 
     if returncode == 0:
@@ -191,7 +195,7 @@ def run_test_invalid_cache_file(
 
 
 def run_test_changed_pysa_file(
-    typeshed_path: str, cache_path: Path, expected: List[Dict[str, Any]]
+    typeshed_path: str, cache_path: Path, expected: List[Dict[str, Any]], output_file_name: str
 ) -> None:
     # Run Pysa after adding a new Pysa model and ensure the cache is not
     # invalidated.
@@ -216,9 +220,10 @@ def run_test_changed_pysa_file(
             "analyze",
             "--use-cache",
             "--check-invariants",
+            "--inline-decorators",
         ],
         expected,
-        "result.cache4",
+        output_file_name,
     )
 
     # Clean up
@@ -235,13 +240,13 @@ def run_test_changed_pysa_file(
 
 
 def run_test_changed_taint_config_file(
-    typeshed_path: str, cache_path: Path, expected: List[Dict[str, Any]]
+    typeshed_path: str, cache_path: Path, expected: List[Dict[str, Any]], output_file_name: str
 ) -> None:
     # Run Pysa after adding a new Pysa model and ensure the cache is not
     # invalidated.
     LOG.info("Testing cache is not invalidated after taint.config change:")
 
-    test_taint_config = Path("test_taint/taint.config")
+    test_taint_config = Path("test_taint/test_taint.config")
     try:
         test_taint_config.unlink()
     except FileNotFoundError:
@@ -269,9 +274,10 @@ def run_test_changed_taint_config_file(
             "analyze",
             "--use-cache",
             "--check-invariants",
+            "--inline-decorators",
         ],
         expected,
-        "result.cache5",
+        output_file_name,
     )
 
     # Clean up
@@ -290,7 +296,7 @@ def run_test_changed_taint_config_file(
 
 
 def run_test_changed_models(
-    typeshed_path: str, cache_path: Path, expected: List[Dict[str, Any]]
+    typeshed_path: str, cache_path: Path, expected: List[Dict[str, Any]], output_file_name: str
 ) -> None:
     # Run Pysa after adding a new Pysa model and ensure the cache is not
     # invalidated.
@@ -298,6 +304,7 @@ def run_test_changed_models(
 
     # Remove a test taint file
     test_model_path = Path("test_taint/sanitize.pysa")
+    # Save contents for cleanup phase
     original_content = open(test_model_path).read()
     try:
         test_model_path.unlink()
@@ -311,11 +318,11 @@ def run_test_changed_models(
         "column": 9,
         "define": "integration_test.functools.test_cached_sanitizer",
         "description": "Possible shell injection [5001]: Data from [UserControlled] source(s) may reach [RemoteCodeExecution] sink(s)",
-        "line": 20,
+        "line": 58,
         "name": "Possible shell injection",
         "path": "fixture_source/integration_test/functools.py",
         "stop_column": 18,
-        "stop_line": 20,
+        "stop_line": 58,
     }
 
     returncode = run_and_check_output(
@@ -329,9 +336,10 @@ def run_test_changed_models(
             "analyze",
             "--use-cache",
             "--check-invariants",
+            "--inline-decorators",
         ],
         expected + [new_issue],
-        "result.cache7",
+        output_file_name,
     )
 
     # Restore the original model file
@@ -344,10 +352,10 @@ def run_test_changed_models(
 
 
 def run_test_changed_source_files(
-    typeshed_path: str, cache_path: Path, expected: List[Dict[str, Any]]
+    typeshed_path: str, cache_path: Path, expected: List[Dict[str, Any]], output_file_name: str
 ) -> None:
     # Run Pysa after adding a new file to test cache invalidation.
-    # Pysa should detect that the source has chagned and fall back
+    # Pysa should detect that the source has changed and fall back
     # to doing a clean run.
     LOG.info("Testing cache invalidation after source files change:")
 
@@ -370,9 +378,10 @@ def run_test_changed_source_files(
             "analyze",
             "--use-cache",
             "--check-invariants",
+            "--inline-decorators",
         ],
         expected,
-        "result.cache6",
+        output_file_name,
     )
 
     # Clean up
@@ -381,6 +390,125 @@ def run_test_changed_source_files(
     except FileNotFoundError:
         LOG.warning(f"Could not clean up {new_file_path.absolute()} after test run.")
         pass
+
+    if returncode == 0:
+        LOG.info("Run produced expected results\n")
+    else:
+        sys.exit(returncode)
+
+
+def run_test_changed_decorators(
+    typeshed_path: str, cache_path: Path, expected: List[Dict[str, Any]], output_file_name: str
+) -> None:
+    # Run Pysa after adding a new model with @IgnoreDecorator to test cache invalidation.
+    # Pysa should detect that the decorator modes have changed and fall back
+    # to doing a clean run.
+    LOG.info("Testing cache invalidation after decorator mode change:")
+
+    new_model_path = Path("test_taint/test_decorator.pysa")
+    try:
+        new_model_path.unlink()
+    except FileNotFoundError:
+        pass
+
+    with open(new_model_path, "w") as f:
+        f.write(
+            "@IgnoreDecorator\ndef integration_test.cache.ignore_decorator(): ...\n"
+        )
+
+    # Expected should have an additional issue from ignoring the decorator
+    new_issue = {
+        "code": 5001,
+        "column": 19,
+        "define": "integration_test.cache.test_ignore_decorator",
+        "description": "Possible shell injection [5001]: Data from [UserControlled] source(s) may reach [RemoteCodeExecution] sink(s)",
+        "line": 23,
+        "name": "Possible shell injection",
+        "path": "fixture_source/integration_test/cache.py",
+        "stop_column": 27,
+        "stop_line": 23,
+    }
+
+    returncode = run_and_check_output(
+        [
+            "pyre",
+            "--dot-pyre-directory",
+            str(get_dot_pyre_directory_from_cache_path(cache_path)),
+            "--typeshed",
+            f"{typeshed_path}",
+            "--noninteractive",
+            "analyze",
+            "--use-cache",
+            "--check-invariants",
+            "--inline-decorators",
+        ],
+        expected + [new_issue],
+        output_file_name,
+    )
+
+    # Clean up
+    try:
+        new_model_path.unlink()
+    except FileNotFoundError:
+        LOG.warning(f"Could not clean up {new_model_path.absolute()} after test run.")
+        pass
+
+    if returncode == 0:
+        LOG.info("Run produced expected results\n")
+    else:
+        sys.exit(returncode)
+
+
+def run_test_changed_overrides(
+    typeshed_path: str, cache_path: Path, expected: List[Dict[str, Any]], output_file_name: str
+) -> None:
+    # Run Pysa after removing a @SkipOverrides model to test cache invalidation.
+    # Pysa should detect that the override graph has changed and fall back
+    # to doing a clean run.
+    LOG.info("Testing cache invalidation after skip override change:")
+
+    # Remove a test taint file
+    test_model_path = Path("test_taint/skip_overrides.pysa")
+    # Save contents for cleanup phase
+    original_content = open(test_model_path).read()
+    try:
+        test_model_path.unlink()
+    except FileNotFoundError:
+        LOG.warning(f"Could not remove up {test_model_path.absolute()}.")
+        pass
+
+    # Expected should have an additional issue from not skipping overrides
+    new_issue = {
+        "code": 5001,
+        "column": 20,
+        "define": "integration_test.cache.test_skip_overrides",
+        "description": "Possible shell injection [5001]: Data from [UserControlled] source(s) may reach [RemoteCodeExecution] sink(s)",
+        "line": 37,
+        "name": "Possible shell injection",
+        "path": "fixture_source/integration_test/cache.py",
+        "stop_column": 28,
+        "stop_line": 37,
+    }
+
+    returncode = run_and_check_output(
+        [
+            "pyre",
+            "--dot-pyre-directory",
+            str(get_dot_pyre_directory_from_cache_path(cache_path)),
+            "--typeshed",
+            f"{typeshed_path}",
+            "--noninteractive",
+            "analyze",
+            "--use-cache",
+            "--check-invariants",
+            "--inline-decorators",
+        ],
+        expected + [new_issue],
+        "result.cache9",
+    )
+
+    # Restore the original model file
+    open(test_model_path, "w").write(original_content)
 
     if returncode == 0:
         LOG.info("Run produced expected results\n")
@@ -403,15 +531,17 @@ def run_tests() -> None:
 
     typeshed_path = Path("../typeshed/typeshed").absolute().as_posix()
     with open("result.json") as file:
-        expected = json.loads(file.read())
+        expected = json.load(file)
 
-        run_test_no_cache(typeshed_path, cache_path, expected)
-        run_test_cache_first_and_second_runs(typeshed_path, cache_path, expected)
-        run_test_invalid_cache_file(typeshed_path, cache_path, expected)
-        run_test_changed_pysa_file(typeshed_path, cache_path, expected)
-        run_test_changed_taint_config_file(typeshed_path, cache_path, expected)
-        run_test_changed_models(typeshed_path, cache_path, expected)
-        run_test_changed_source_files(typeshed_path, cache_path, expected)
+    run_test_no_cache(typeshed_path, cache_path, expected, "result.no_cache")
+    run_test_cache_first_and_second_runs(typeshed_path, cache_path, expected, ["result.cache1", "result.cache2"])
+    run_test_invalid_cache_file(typeshed_path, cache_path, expected, "result.cache3")
+    run_test_changed_pysa_file(typeshed_path, cache_path, expected, "result.cache4")
+    run_test_changed_taint_config_file(typeshed_path, cache_path, expected, "result.cache5")
+    run_test_changed_models(typeshed_path, cache_path, expected, "result.cache7")
+    run_test_changed_source_files(typeshed_path, cache_path, expected, "result.cache6")
+    run_test_changed_decorators(typeshed_path, cache_path, expected, "result.cache8")
+    run_test_changed_overrides(typeshed_path, cache_path, expected, "result.cache9")
 
     LOG.info("All runs produced expected output.")
 

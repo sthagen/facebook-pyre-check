@@ -10,10 +10,10 @@ open Interprocedural
 
 type t
 
-val load
+val try_load
   :  scheduler:Scheduler.t ->
   configuration:Configuration.Analysis.t ->
-  taint_configuration:TaintConfiguration.Heap.t ->
+  decorator_configuration:Analysis.DecoratorPreprocessing.Configuration.t ->
   enabled:bool ->
   t
 
@@ -24,8 +24,3 @@ val type_environment : t -> (unit -> TypeEnvironment.t) -> TypeEnvironment.t
 val class_hierarchy_graph : t -> (unit -> ClassHierarchyGraph.Heap.t) -> ClassHierarchyGraph.Heap.t
 
 val initial_callables : t -> (unit -> FetchCallables.t) -> FetchCallables.t
-
-val override_graph
-  :  t ->
-  (unit -> OverrideGraph.whole_program_overrides) ->
-  OverrideGraph.whole_program_overrides

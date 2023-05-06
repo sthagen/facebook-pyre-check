@@ -61,9 +61,6 @@ let initialize_configuration
           ~maximum_tito_depth
     |> TaintConfiguration.exception_on_error
   in
-  let taint_configuration_shared_memory =
-    TaintConfiguration.SharedMemory.from_heap taint_configuration
-  in
   (* In order to save time, sanity check models before starting the analysis. *)
   let () =
     ModelParser.get_model_sources ~paths:taint_model_paths
@@ -76,15 +73,21 @@ let initialize_configuration
       ~timer
       ()
   in
-  taint_configuration, taint_configuration_shared_memory
+  taint_configuration
 
 
-let setup_decorator_preprocessing ~inline_decorators { Configuration.Analysis.taint_model_paths; _ }
+let parse_decorator_preprocessing_configuration
+    ~static_analysis_configuration:
+      {
+        Configuration.StaticAnalysis.configuration = { taint_model_paths; _ };
+        inline_decorators;
+        _;
+      }
   =
   let timer = Timer.start () in
   let () = Log.info "Parsing taint models for decorator modes..." in
   let decorator_actions =
-    let combine_decorator_modes ~key:decorator left right =
+    let combine_decorator_modes decorator left right =
       let () =
         Log.warning
           "Found multiple modes for decorator `%a`: was @%s, it is now @%s"
@@ -93,27 +96,30 @@ let setup_decorator_preprocessing ~inline_decorators { Configuration.Analysis.ta
           (Analysis.DecoratorPreprocessing.Action.to_mode left)
           (Analysis.DecoratorPreprocessing.Action.to_mode right)
       in
-      right
+      Some right
     in
     ModelParser.get_model_sources ~paths:taint_model_paths
     |> List.map ~f:(fun (path, source) -> ModelParser.parse_decorator_modes ~path ~source)
     |> List.fold
-         ~init:Ast.Reference.Map.empty
-         ~f:(Ast.Reference.Map.merge_skewed ~combine:combine_decorator_modes)
+         ~init:Ast.Reference.SerializableMap.empty
+         ~f:(Ast.Reference.SerializableMap.union combine_decorator_modes)
   in
-  Analysis.DecoratorPreprocessing.setup_preprocessing
-    ~decorator_actions
-    ~enable_inlining:inline_decorators
-    ~enable_discarding:true;
-  Statistics.performance
-    ~name:"Parsed taint models for decorator modes"
-    ~phase_name:"Parsed taint models for decorator modes"
-    ~timer
-    ()
+  let () =
+    Statistics.performance
+      ~name:"Parsed taint models for decorator modes"
+      ~phase_name:"Parsed taint models for decorator modes"
+      ~timer
+      ()
+  in
+  {
+    Analysis.DecoratorPreprocessing.Configuration.actions = decorator_actions;
+    enable_inlining = inline_decorators;
+    enable_discarding = true;
+  }
 
 
 (** Perform a full type check and build a type environment. *)
-let type_check ~scheduler ~configuration ~cache =
+let type_check ~scheduler ~configuration ~decorator_configuration ~cache =
   Cache.type_environment cache (fun () ->
       Log.info "Starting type checking...";
       let configuration =
@@ -121,6 +127,7 @@ let type_check ~scheduler ~configuration ~cache =
            schedule a type check for external files. *)
         { configuration with Configuration.Analysis.analyze_external_sources = true }
       in
+      let () = Analysis.DecoratorPreprocessing.setup_preprocessing decorator_configuration in
       let errors_environment =
         Analysis.EnvironmentControls.create ~populate_call_graph:false configuration
         |> Analysis.ErrorsEnvironment.create
@@ -319,7 +326,6 @@ let run_taint_analysis
       ({
          Configuration.StaticAnalysis.configuration;
          repository_root;
-         inline_decorators;
          use_cache;
          limit_entrypoints;
          _;
@@ -328,17 +334,24 @@ let run_taint_analysis
     ~scheduler
     ()
   =
-  let taint_configuration, taint_configuration_shared_memory =
-    initialize_configuration ~static_analysis_configuration
-  in
+  let taint_configuration = initialize_configuration ~static_analysis_configuration in
 
   (* Parse taint models to find decorators to inline or discard. This must be done early because
      inlining is a preprocessing phase of type-checking. *)
-  let () = setup_decorator_preprocessing ~inline_decorators configuration in
+  let decorator_configuration =
+    parse_decorator_preprocessing_configuration ~static_analysis_configuration
+  in
 
-  let cache = Cache.load ~scheduler ~configuration ~taint_configuration ~enabled:use_cache in
+  let cache =
+    Cache.try_load ~scheduler ~configuration ~decorator_configuration ~enabled:use_cache
+  in
 
-  let environment = type_check ~scheduler ~configuration ~cache in
+  (* We should NOT store anything in memory before calling `Cache.try_load` *)
+  let taint_configuration_shared_memory =
+    TaintConfiguration.SharedMemory.from_heap taint_configuration
+  in
+
+  let environment = type_check ~scheduler ~configuration ~decorator_configuration ~cache in
 
   compact_ocaml_heap ~name:"after type check";
 
@@ -402,11 +415,8 @@ let run_taint_analysis
           ();
         initial_callables)
   in
-
   (* Save the cache here, in case there is a model verification error. *)
   let () = Cache.save cache in
-
-  compact_ocaml_heap ~name:"before initial models";
 
   let { ModelParseResult.models = initial_models; errors = model_verification_errors; _ } =
     initialize_models
@@ -425,6 +435,7 @@ let run_taint_analysis
     |> Analysis.TypeEnvironment.ReadOnly.module_tracker
   in
 
+  Log.info "Computing overrides...";
   let timer = Timer.start () in
   let {
     Interprocedural.OverrideGraph.override_graph_heap;
@@ -432,25 +443,29 @@ let run_taint_analysis
     skipped_overrides;
   }
     =
-    Cache.override_graph cache (fun () ->
-        Log.info "Computing overrides...";
-        let overrides =
-          Interprocedural.OverrideGraph.build_whole_program_overrides
-            ~static_analysis_configuration
-            ~scheduler
-            ~environment:(Analysis.TypeEnvironment.read_only environment)
-            ~include_unit_tests:false
-            ~skip_overrides:(Registry.skip_overrides initial_models)
-            ~maximum_overrides:(TaintConfiguration.maximum_overrides_to_analyze taint_configuration)
-            ~qualifiers
-        in
-        Statistics.performance
-          ~name:"Overrides computed"
-          ~phase_name:"Computing overrides"
-          ~timer
-          ();
-        overrides)
+    Interprocedural.OverrideGraph.build_whole_program_overrides
+      ~static_analysis_configuration
+      ~scheduler
+      ~environment:(Analysis.TypeEnvironment.read_only environment)
+      ~include_unit_tests:false
+      ~skip_overrides:(Registry.skip_overrides initial_models)
+      ~maximum_overrides:(TaintConfiguration.maximum_overrides_to_analyze taint_configuration)
+      ~qualifiers
   in
+  Statistics.performance ~name:"Overrides computed" ~phase_name:"Computing overrides" ~timer ();
+
+  Log.info "Indexing global constants...";
+  let timer = Timer.start () in
+  let global_constants =
+    Interprocedural.GlobalConstants.SharedMemory.from_qualifiers
+      ~environment:(Analysis.TypeEnvironment.read_only environment)
+      ~qualifiers
+  in
+  Statistics.performance
+    ~name:"Finished constant propagation analysis"
+    ~phase_name:"Indexing global constants"
+    ~timer
+    ();
 
   Log.info "Building call graph...";
   let timer = Timer.start () in
@@ -535,6 +550,7 @@ let run_taint_analysis
           type_environment = Analysis.TypeEnvironment.read_only environment;
           class_interval_graph;
           define_call_graphs;
+          global_constants;
         }
       ~initial_callables:(Interprocedural.FetchCallables.get_non_stub_callables initial_callables)
       ~stubs:(Interprocedural.FetchCallables.get_stubs initial_callables)

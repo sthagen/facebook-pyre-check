@@ -38,17 +38,19 @@ from ..start import (
 
 
 class TestSavedStateConfiguration(frontend_configuration.OpenSource):
-    saved_state_project: Optional[str]
+    saved_state_project: Optional[frontend_configuration.SavedStateProject]
 
     def __init__(
         self,
         configuration: configuration_module.Configuration,
-        saved_state_project: Optional[str] = None,
+        saved_state_project: Optional[frontend_configuration.SavedStateProject] = None,
     ) -> None:
         super().__init__(configuration)
         self.saved_state_project = saved_state_project
 
-    def get_saved_state_project(self) -> Optional[str]:
+    def get_saved_state_project(
+        self,
+    ) -> Optional[frontend_configuration.SavedStateProject]:
         return self.saved_state_project
 
     def get_include_suppressed_errors(self) -> Optional[bool]:
@@ -305,7 +307,10 @@ class StartTest(testslide.TestCase):
         )
 
         saved_state_configuration = TestSavedStateConfiguration(
-            empty_configuration, saved_state_project="test_saved_state"
+            empty_configuration,
+            saved_state_project=frontend_configuration.SavedStateProject(
+                name="test_saved_state"
+            ),
         )
         self.assertEqual(
             get_saved_state_action(
@@ -333,24 +338,6 @@ class StartTest(testslide.TestCase):
             LoadSavedStateFromFile(shared_memory_path="foo", changed_files_path="bar"),
         )
 
-        # Ensure command_arguments override internal_configuration
-        self.assertEqual(
-            get_saved_state_action(
-                command_arguments.StartArguments(saved_state_project="my_project"),
-                saved_state_configuration,
-            ),
-            LoadSavedStateFromProject(project_name="my_project"),
-        )
-        self.assertEqual(
-            get_saved_state_action(
-                command_arguments.StartArguments(saved_state_project="my_project"),
-                saved_state_configuration,
-                relative_local_root="local/root",
-            ),
-            LoadSavedStateFromProject(
-                project_name="my_project", project_metadata="local$root"
-            ),
-        )
         self.assertEqual(
             get_saved_state_action(
                 command_arguments.StartArguments(
@@ -409,7 +396,6 @@ class StartTest(testslide.TestCase):
                     command_arguments.StartArguments(
                         debug=True,
                         no_watchman=False,
-                        saved_state_project="project",
                         sequential=False,
                         show_error_traces=True,
                         store_type_check_resolution=True,
@@ -455,9 +441,7 @@ class StartTest(testslide.TestCase):
                             MatchPolicy.FULL_PATH, str(root_path / "critical")
                         ),
                     ],
-                    saved_state_action=LoadSavedStateFromProject(
-                        project_name="project", project_metadata="local"
-                    ),
+                    saved_state_action=None,
                     show_error_traces=True,
                     store_type_check_resolution=True,
                     strict=True,
@@ -510,9 +494,7 @@ class StartTest(testslide.TestCase):
                         root_path,
                     )
                 ),
-                command_arguments.StartArguments(
-                    no_saved_state=True, saved_state_project="some/project"
-                ),
+                command_arguments.StartArguments(no_saved_state=True),
             )
             self.assertIsNone(arguments.saved_state_action)
 

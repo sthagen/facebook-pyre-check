@@ -44,12 +44,12 @@ val parse_access_path
 val parse_decorator_modes
   :  path:PyrePath.t ->
   source:string ->
-  Analysis.DecoratorPreprocessing.Action.t Ast.Reference.Map.t
+  Analysis.DecoratorPreprocessing.Action.t Ast.Reference.SerializableMap.t
 
 (* Exposed for model queries. *)
 val create_callable_model_from_annotations
   :  resolution:Analysis.GlobalResolution.t ->
-  callable:Interprocedural.Target.t ->
+  modelable:ModelParseResult.Modelable.t ->
   source_sink_filter:SourceSinkFilter.t option ->
   is_obscure:bool ->
   ModelParseResult.ModelAnnotation.t list ->

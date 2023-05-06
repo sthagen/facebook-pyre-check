@@ -63,17 +63,11 @@ def show_pyre_version_as_json(
 
 
 def _show_pyre_version(arguments: command_arguments.CommandArguments) -> None:
-    binary_version: Optional[str] = None
-    client_version: str = __version__
-    try:
-        open_source_configuration = _create_configuration(arguments, Path("."))
-        binary_version = open_source_configuration.get_binary_version()
-    except Exception:
-        pass
+    # Open-source binary version is usually not useful to show to the user
     if arguments.output == command_arguments.JSON:
-        show_pyre_version_as_json(binary_version, client_version)
+        show_pyre_version_as_json(binary_version=None, client_version=__version__)
     else:
-        show_pyre_version_as_text(binary_version, client_version)
+        show_pyre_version_as_text(binary_version=None, client_version=__version__)
 
 
 def start_logging_to_directory(
@@ -370,7 +364,6 @@ def pyre(
         save_initial_state_to=save_initial_state_to,
         load_initial_state_from=load_initial_state_from,
         changed_files_path=changed_files_path,
-        saved_state_project=None,
         dot_pyre_directory=Path(dot_pyre_directory)
         if dot_pyre_directory is not None
         else None,

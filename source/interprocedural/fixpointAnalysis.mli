@@ -122,6 +122,8 @@ module Make (Analysis : ANALYSIS) : sig
 
     val is_empty : t -> bool
 
+    val singleton : target:Target.t -> model:Analysis.Model.t -> t
+
     val size : t -> int
 
     val set : t -> target:Target.t -> model:Analysis.Model.t -> t
@@ -136,6 +138,12 @@ module Make (Analysis : ANALYSIS) : sig
     val get : t -> Target.t -> Analysis.Model.t option
 
     val merge : join:(Analysis.Model.t -> Analysis.Model.t -> Analysis.Model.t) -> t -> t -> t
+
+    val merge_skewed
+      :  join:(Analysis.Model.t -> Analysis.Model.t -> Analysis.Model.t) ->
+      t ->
+      t ->
+      t
 
     val of_alist
       :  join:(Analysis.Model.t -> Analysis.Model.t -> Analysis.Model.t) ->

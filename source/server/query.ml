@@ -377,8 +377,8 @@ let help () =
            from above, along with a list of known coverage gaps."
     | GlobalLeaks _ ->
         Some
-          "global_leaks(function1, ...): analyzes the transitive call graph for the given function \
-           and raises errors when global variables are mutated."
+          "global_leaks(function1, ...): analyzes the given function(s) and emits errors when \
+           global variables are mutated."
     | HoverInfoForPosition _ ->
         Some
           "hover_info_for_position(path='<absolute path>', line=<line>, character=<character>): \
@@ -790,10 +790,15 @@ let rec process_request ~type_environment ~build_system request =
           };
       }
     in
-    let setup_and_execute_model_queries ~taint_configuration model_queries =
+    let setup_and_execute_model_queries model_queries =
       let scheduler_wrapper scheduler =
         let cache =
-          Taint.Cache.load ~scheduler ~configuration ~taint_configuration ~enabled:false
+          Taint.Cache.try_load
+            ~scheduler
+            ~configuration
+            ~decorator_configuration:
+              Analysis.DecoratorPreprocessing.Configuration.disable_preprocessing
+            ~enabled:false
         in
         let initial_callables =
           Taint.Cache.initial_callables cache (fun () ->
@@ -1167,9 +1172,7 @@ let rec process_request ~type_environment ~build_system request =
                          query_name
                          (PyrePath.show path))
                   else
-                    let models_and_names, errors =
-                      setup_and_execute_model_queries ~taint_configuration rules
-                    in
+                    let models_and_names, errors = setup_and_execute_model_queries rules in
                     let to_json (callable, model) =
                       `Assoc
                         [
@@ -1474,7 +1477,7 @@ let rec process_request ~type_environment ~build_system request =
         in
         let model_query_errors =
           if verify_dsl then
-            setup_and_execute_model_queries ~taint_configuration model_queries |> snd
+            setup_and_execute_model_queries model_queries |> snd
           else
             []
         in

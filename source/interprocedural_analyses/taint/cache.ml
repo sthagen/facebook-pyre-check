@@ -16,7 +16,6 @@ module TypeEnvironment = Analysis.TypeEnvironment
 module AstEnvironment = Analysis.AstEnvironment
 module FetchCallables = Interprocedural.FetchCallables
 module ClassHierarchyGraph = Interprocedural.ClassHierarchyGraph
-module OverrideGraph = Interprocedural.OverrideGraph
 
 module InitialCallablesSharedMemory = Memory.Serializer (struct
   type t = FetchCallables.t
@@ -27,22 +26,6 @@ module InitialCallablesSharedMemory = Memory.Serializer (struct
     let prefix = Prefix.make ()
 
     let description = "Initial callables to analyze"
-  end
-
-  let serialize = Fn.id
-
-  let deserialize = Fn.id
-end)
-
-module OverrideGraphSharedMemory = Memory.Serializer (struct
-  type t = OverrideGraph.whole_program_overrides
-
-  module Serialized = struct
-    type t = OverrideGraph.whole_program_overrides
-
-    let prefix = Prefix.make ()
-
-    let description = "Cached override graph"
   end
 
   let serialize = Fn.id
@@ -70,6 +53,7 @@ type cached = { type_environment: TypeEnvironment.t }
 
 type error =
   | InvalidByCodeChange
+  | InvalidByDecoratorChange
   | LoadError
   | NotFound
   | Disabled
@@ -145,13 +129,32 @@ let load_type_environment ~scheduler ~configuration =
       Error InvalidByCodeChange
 
 
-let load ~scheduler ~configuration ~taint_configuration ~enabled =
+let check_decorator_invalidation ~decorator_configuration:current_configuration =
+  let open Analysis in
+  match DecoratorPreprocessing.get_configuration () with
+  | Some cached_configuration
+    when DecoratorPreprocessing.Configuration.equal cached_configuration current_configuration ->
+      Ok ()
+  | Some _ ->
+      (* We need to invalidate the cache since decorator modes (e.g, `@IgnoreDecorator` and
+         `@SkipDecoratorInlining`) are implemented as an AST preprocessing step. Any change could
+         lead to a change in the AST, which could lead to a different type environment and so on. *)
+      Log.warning "Changes to decorator modes detected, ignoring existing cache.";
+      Error InvalidByDecoratorChange
+  | None ->
+      Log.warning "Could not find cached decorator modes, ignoring existing cache.";
+      Error LoadError
+
+
+let try_load ~scheduler ~configuration ~decorator_configuration ~enabled =
   if not enabled then
     { cache = Error Disabled; save_cache = false; scheduler; configuration }
   else
     let open Result in
     let type_environment =
       initialize_shared_memory ~configuration
+      >>= fun () ->
+      check_decorator_invalidation ~decorator_configuration
       >>= fun () -> load_type_environment ~scheduler ~configuration
     in
     let cache =
@@ -160,11 +163,6 @@ let load ~scheduler ~configuration ~taint_configuration ~enabled =
       | Error error ->
           Memory.reset_shared_memory ();
           Error error
-    in
-    (* Re-write the original taint configuration in shared memory,
-     * in case it was overwritten when loading the cache. *)
-    let (_ : TaintConfiguration.SharedMemory.t) =
-      TaintConfiguration.SharedMemory.from_heap taint_configuration
     in
     { cache; save_cache = true; scheduler; configuration }
 
@@ -242,35 +240,6 @@ let initial_callables { cache; save_cache; _ } f =
       if save_cache then
         save_initial_callables ~initial_callables:callables |> ignore_result;
       callables
-
-
-let load_overrides () =
-  exception_to_error ~error:LoadError ~message:"loading overrides from cache" ~f:(fun () ->
-      Log.info "Loading overrides from cache...";
-      let override_graph = OverrideGraphSharedMemory.load () in
-      Log.info "Loaded overrides from cache.";
-      Ok override_graph)
-
-
-let save_overrides ~overrides =
-  exception_to_error ~error:() ~message:"saving overrides to cache" ~f:(fun () ->
-      OverrideGraphSharedMemory.store overrides;
-      Log.info "Saved overrides to cache shared memory.";
-      Ok ())
-
-
-let override_graph { cache; save_cache; _ } f =
-  let overrides =
-    match cache with
-    | Ok _ -> load_overrides () |> Result.ok
-    | _ -> None
-  in
-  match overrides with
-  | Some overrides -> overrides
-  | None ->
-      let overrides = f () in
-      if save_cache then save_overrides ~overrides |> ignore_result;
-      overrides
 
 
 let load_class_hierarchy_graph () =
