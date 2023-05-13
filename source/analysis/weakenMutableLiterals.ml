@@ -5,7 +5,22 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-(* TODO(T132410158) Add a module-level doc comment. *)
+(* Pyre usually infers the type of literals by looking at the expression alone. But when it comes to
+   mutable literals, such as lists or dictionaries, Pyre needs to take the expected type into
+   account. Otherwise, users would face noisy errors due to invariance.
+
+   For example, in `x: list[Base] = [Child()]`, if Pyre inferred the value's type to be
+   `list[Child]`, then it would emit an error that `list[Child]` is not compatible with
+   `list[Base]`, since `list` is invariant. While that is generally correct, it doesn't hold for
+   literals (or constructors, in general). There is no other reference to the child list that would
+   cause a runtime type error because of non-`Child`s being inserted in the list.
+
+   So, we "weaken" the literal's type using the expected type. In the above case, we infer that its
+   type is `list[Base]`.
+
+   The long-term solution to this is function-level inference (T84553937), which will propagate
+   expected types across a function. We don't yet have that, so we just use the immediate expected
+   type when assigning to a variable or passing to a function. *)
 
 open Core
 open Pyre
@@ -106,31 +121,54 @@ let rec weaken_mutable_literals
   let open Expression in
   match expression, resolved, expected with
   | _, _, Type.Union expected_types -> (
-      let weakened_types =
+      let weakened_and_expected_types =
         List.map
           ~f:(fun expected_type ->
-            weaken_mutable_literals
-              ~get_typed_dictionary
-              resolve
-              ~expression
-              ~resolved
-              ~expected:expected_type
-              ~resolve_items_individually
-              ~comparator:comparator_without_override)
+            ( weaken_mutable_literals
+                ~get_typed_dictionary
+                resolve
+                ~expression
+                ~resolved
+                ~expected:expected_type
+                ~resolve_items_individually
+                ~comparator:comparator_without_override,
+              expected_type ))
           expected_types
       in
-      match
-        List.exists2
-          ~f:(fun { resolved = left; _ } right -> comparator ~left ~right)
-          weakened_types
-          expected_types
-      with
-      | Ok true -> make_weakened_type expected
-      | Ok false ->
+      let best_weakened_and_expected_type_from_union =
+        let compare_by_number_of_undefined_field_errors
+            (left_weakened_type, _)
+            (right_weakened_type, _)
+          =
+          let is_undefined_field_error = function
+            | { Node.value = UndefinedField _; _ } -> true
+            | _ -> false
+          in
+          let number_of_undefined_field_errors weakened_type =
+            typed_dictionary_errors weakened_type |> List.count ~f:is_undefined_field_error
+          in
+          number_of_undefined_field_errors left_weakened_type
+          - number_of_undefined_field_errors right_weakened_type
+        in
+        let is_less_or_equal ({ resolved = weakened_type; _ }, expected_type) =
+          comparator ~left:weakened_type ~right:expected_type
+        in
+        weakened_and_expected_types
+        |> List.sort ~compare:compare_by_number_of_undefined_field_errors
+        |> List.find ~f:is_less_or_equal
+      in
+      match best_weakened_and_expected_type_from_union with
+      | Some (weakened_type, _) ->
           make_weakened_type
-            ~typed_dictionary_errors:(List.concat_map weakened_types ~f:typed_dictionary_errors)
-            resolved
-      | Unequal_lengths -> make_weakened_type resolved)
+            ~typed_dictionary_errors:(typed_dictionary_errors weakened_type)
+            expected
+      | None ->
+          let typed_dictionary_errors =
+            weakened_and_expected_types
+            |> List.map ~f:fst
+            |> List.concat_map ~f:typed_dictionary_errors
+          in
+          make_weakened_type ~typed_dictionary_errors resolved)
   | ( Some { Node.value = Expression.List items; _ },
       Type.Parametric { name = "list" as container_name; parameters = [Single actual_item_type] },
       Type.Parametric { name = "list"; parameters = [Single expected_item_type] } )

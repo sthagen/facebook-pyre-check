@@ -5,7 +5,10 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-TODO(T132414938) Add a module-level docstring
+Explore taint models interactively.
+
+This script can be used to debug false positives and false negatives in the
+taint analysis. See https://pyre-check.org/docs/pysa-explore/ for the documentation.
 """
 
 
@@ -244,8 +247,20 @@ def map_model(
 
 def model_remove_tito_positions(model: Dict[str, Any]) -> Dict[str, Any]:
     def local_taint_map(caller_port: str, local_taint: Dict[str, Any]) -> None:
-        if "tito" in local_taint:
-            del local_taint["tito"]
+        if "tito_positions" in local_taint:
+            del local_taint["tito_positions"]
+
+    return map_model(model, local_taint_map=local_taint_map)
+
+
+def model_remove_class_intervals(model: Dict[str, Any]) -> Dict[str, Any]:
+    def local_taint_map(caller_port: str, local_taint: Dict[str, Any]) -> None:
+        if "receiver_interval" in local_taint:
+            del local_taint["receiver_interval"]
+        if "caller_interval" in local_taint:
+            del local_taint["caller_interval"]
+        if "is_self_call" in local_taint:
+            del local_taint["is_self_call"]
 
     return map_model(model, local_taint_map=local_taint_map)
 
@@ -279,6 +294,7 @@ def get_model(
     remove_sinks: bool = False,
     remove_tito: bool = False,
     remove_tito_positions: bool = False,
+    remove_class_intervals: bool = False,
     remove_features: bool = False,
     remove_leaf_names: bool = False,
 ) -> Dict[str, Any]:
@@ -304,6 +320,8 @@ def get_model(
         model = filter_model_caller_port(model, caller_port)
     if remove_tito_positions:
         model = model_remove_tito_positions(model)
+    if remove_class_intervals:
+        model = model_remove_class_intervals(model)
     if remove_features:
         model = model_remove_features(model)
     if remove_leaf_names:
@@ -338,6 +356,7 @@ def print_model(
     remove_sinks: bool = False,
     remove_tito: bool = False,
     remove_tito_positions: bool = False,
+    remove_class_intervals: bool = False,
     remove_features: bool = False,
     remove_leaf_names: bool = False,
 ) -> None:
@@ -350,6 +369,7 @@ def print_model(
       remove_sinks=False
       remove_tito=False
       remove_tito_positions=True
+      remove_class_intervals=True
       remove_features=True
       remove_leaf_names=True
     """
@@ -362,6 +382,7 @@ def print_model(
             remove_sinks=remove_sinks,
             remove_tito=remove_tito,
             remove_tito_positions=remove_tito_positions,
+            remove_class_intervals=remove_class_intervals,
             remove_features=remove_features,
             remove_leaf_names=remove_leaf_names,
         )
@@ -397,6 +418,7 @@ def print_issues(callable: str) -> None:
 
 
 def print_help() -> None:
+    """Print this help message."""
     print("# Pysa Model Explorer")
     print("Available commands:")
     commands = [
@@ -408,6 +430,7 @@ def print_help() -> None:
         (get_issues, "get_issues('foo.bar')"),
         (print_issues, "print_issues('foo.bar')"),
         (print_json, "print_json({'a': 'b'})"),
+        (print_help, "print_help()"),
     ]
     max_width = max(len(command[1]) for command in commands)
     for command, example in commands:

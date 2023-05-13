@@ -1210,11 +1210,11 @@ module SignatureSelection = struct
     let open Type.Callable in
     let all_arguments = arguments in
     let rec consume
-        ({ ParameterArgumentMapping.parameter_argument_mapping; reasons = { arity; _ } as reasons }
-        as parameter_argument_mapping_with_reasons)
         ?index_into_starred_tuple
         ~arguments
         ~parameters
+        ({ ParameterArgumentMapping.parameter_argument_mapping; reasons = { arity; _ } as reasons }
+        as parameter_argument_mapping_with_reasons)
       =
       let consume_with_new_index ?index_into_starred_tuple = consume ?index_into_starred_tuple in
       let consume = consume ?index_into_starred_tuple in
@@ -1328,7 +1328,7 @@ module SignatureSelection = struct
           consume
             ~arguments:arguments_tail
             ~parameters:remaining_parameters
-            { parameter_argument_mapping_with_reasons with parameter_argument_mapping; reasons }
+            { parameter_argument_mapping; reasons }
       | ( ({ kind = DoubleStar; _ } as argument) :: arguments_tail,
           (Parameter.Keywords _ as parameter) :: _ ) ->
           let parameter_argument_mapping =

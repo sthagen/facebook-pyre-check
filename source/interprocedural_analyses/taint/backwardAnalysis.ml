@@ -1862,7 +1862,7 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
     let location_with_module =
       Location.with_module ~module_reference:FunctionContext.qualifier location
     in
-    let state = { state with taint = BackwardState.join state.taint triggered_taint } in
+    let state = { taint = BackwardState.join state.taint triggered_taint } in
     let taint =
       let literal_string_sinks =
         FunctionContext.taint_configuration.implicit_sinks.literal_string_sinks
@@ -2453,9 +2453,9 @@ let run
        function, the user-defined models of the function may no longer be applicable to the
        resultant function of the application (e.g., T132302522). *)
     let resolution = TypeEnvironment.ReadOnly.global_resolution environment in
-    Analysis.Annotated.Define.create define
-    |> Analysis.Annotated.Define.decorate ~resolution
-    |> Analysis.Annotated.Define.define
+    Analysis.AnnotatedDefine.create define
+    |> Analysis.AnnotatedDefine.decorate ~resolution
+    |> Analysis.AnnotatedDefine.define
   in
   let module FunctionContext = struct
     let qualifier = qualifier

@@ -133,9 +133,10 @@ let type_check ~scheduler ~configuration ~decorator_configuration ~cache =
         |> Analysis.ErrorsEnvironment.create
       in
       let type_environment = Analysis.ErrorsEnvironment.type_environment errors_environment in
+      let qualifiers = Analysis.ErrorsEnvironment.project_qualifiers errors_environment in
+      Log.info "Found %d modules" (List.length qualifiers);
       let () =
-        Analysis.ErrorsEnvironment.project_qualifiers errors_environment
-        |> Analysis.TypeEnvironment.populate_for_modules ~scheduler type_environment
+        Analysis.TypeEnvironment.populate_for_modules ~scheduler type_environment qualifiers
       in
       type_environment)
 
@@ -239,7 +240,12 @@ let initialize_models
       ~callables:(Some callables_hashset)
       ~stubs:stubs_hashset
   in
-  Statistics.performance ~name:"Parsed taint models" ~phase_name:"Parsing taint models" ~timer ();
+  Statistics.performance
+    ~name:"Parsed taint models"
+    ~phase_name:"Parsing taint models"
+    ~timer
+    ~integers:["models", Registry.size models; "queries", List.length queries]
+    ();
 
   let models, errors =
     match queries with
@@ -282,6 +288,7 @@ let initialize_models
           ~name:"Generated models from model queries"
           ~phase_name:"Generating models from model queries"
           ~timer
+          ~integers:["models", Registry.size models]
           ();
         models, errors
   in
@@ -355,11 +362,12 @@ let run_taint_analysis
 
   compact_ocaml_heap ~name:"after type check";
 
-  let qualifiers =
-    Analysis.TypeEnvironment.module_tracker environment
-    |> Analysis.ModuleTracker.read_only
-    |> Analysis.ModuleTracker.ReadOnly.tracked_explicit_modules
+  let module_tracker =
+    environment
+    |> Analysis.TypeEnvironment.read_only
+    |> Analysis.TypeEnvironment.ReadOnly.module_tracker
   in
+  let qualifiers = Analysis.ModuleTracker.ReadOnly.tracked_explicit_modules module_tracker in
 
   let read_only_environment = Analysis.TypeEnvironment.read_only environment in
 
@@ -412,6 +420,7 @@ let run_taint_analysis
           ~name:"Fetched initial callables to analyze"
           ~phase_name:"Fetching initial callables to analyze"
           ~timer
+          ~integers:(Interprocedural.FetchCallables.get_stats initial_callables)
           ();
         initial_callables)
   in
@@ -427,12 +436,6 @@ let run_taint_analysis
       ~class_hierarchy_graph
       ~environment:(Analysis.TypeEnvironment.read_only environment)
       ~initial_callables
-  in
-
-  let module_tracker =
-    environment
-    |> Analysis.TypeEnvironment.read_only
-    |> Analysis.TypeEnvironment.ReadOnly.module_tracker
   in
 
   Log.info "Computing overrides...";

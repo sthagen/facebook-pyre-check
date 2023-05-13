@@ -9,11 +9,9 @@
 
 module AccessPath = AccessPath
 module BackwardAnalysis = BackwardAnalysis
-module CallGraphBuilder = CallGraphBuilder
 module Rule = Rule
 module SourceSinkFilter = SourceSinkFilter
 module TaintConfiguration = TaintConfiguration
-module PartialSinkConverter = PartialSinkConverter
 module Domains = Domains
 module MultiSourcePostProcessing = MultiSourcePostProcessing
 module Sanitize = Sanitize
@@ -35,12 +33,10 @@ module ModelVerifier = ModelVerifier
 module ModelVerificationError = ModelVerificationError
 module AnnotationParser = AnnotationParser
 module ClassModels = ClassModels
-module Result = TaintResult
 module Reporting = TaintReporting
 module Sinks = Sinks
 module Sources = Sources
-module ExitStatus = ExitStatus
-module Fixpoint = Fixpoint
+module Fixpoint = TaintFixpoint
 module Registry = Registry
 module Cache = Cache
 module CallModel = CallModel

@@ -63,7 +63,7 @@ module Request = struct
         path: string option;
         verify_dsl: bool;
       }
-  [@@deriving sexp, compare]
+  [@@deriving equal, show]
 
   let inline_decorators ?(decorators_to_skip = []) function_reference =
     InlineDecorators { function_reference; decorators_to_skip }
@@ -74,7 +74,7 @@ module Response = struct
     type attribute_kind =
       | Regular
       | Property
-    [@@deriving sexp, compare, to_yojson]
+    [@@deriving equal, to_yojson]
 
     type attribute = {
       name: string;
@@ -82,93 +82,93 @@ module Response = struct
       kind: attribute_kind;
       final: bool;
     }
-    [@@deriving sexp, compare, to_yojson]
+    [@@deriving equal, to_yojson]
 
     type type_at_location = {
       location: Location.t;
       annotation: Type.t;
     }
-    [@@deriving sexp, compare, to_yojson]
+    [@@deriving equal, to_yojson]
 
     type types_at_path = {
       path: string;
       types: type_at_location list;
     }
-    [@@deriving sexp, compare, to_yojson]
+    [@@deriving equal, to_yojson]
 
     type hover_info = {
       value: string option;
       docstring: string option;
     }
-    [@@deriving sexp, compare, to_yojson]
+    [@@deriving equal, to_yojson]
 
     type coverage_at_path = {
       path: string;
       total_expressions: int;
       coverage_gaps: LocationBasedLookup.coverage_gap_by_location list;
     }
-    [@@deriving sexp, compare, to_yojson]
+    [@@deriving equal, to_yojson]
 
     type error_at_path = {
       path: string;
       error: string;
     }
-    [@@deriving sexp, compare, to_yojson, show]
+    [@@deriving equal, to_yojson, show]
 
     type coverage_response_at_path =
       | CoverageAtPath of coverage_at_path
       | ErrorAtPath of error_at_path
-    [@@deriving sexp, compare, to_yojson]
+    [@@deriving equal, to_yojson]
 
     type compatibility = {
       actual: Type.t;
       expected: Type.t;
       result: bool;
     }
-    [@@deriving sexp, compare]
+    [@@deriving equal]
 
     type callee_with_instantiated_locations = {
       callee: Analysis.Callgraph.callee;
       locations: Location.WithPath.t list;
     }
-    [@@deriving sexp, compare]
+    [@@deriving equal]
 
     type callees = {
       caller: Reference.t;
       callees: callee_with_instantiated_locations list;
     }
-    [@@deriving sexp, compare]
+    [@@deriving equal]
 
     type parameter_representation = {
       parameter_name: string;
       parameter_annotation: Expression.t option;
     }
-    [@@deriving sexp, compare]
+    [@@deriving equal]
 
     type define = {
       define_name: Reference.t;
       parameters: parameter_representation list;
       return_annotation: Expression.t option;
     }
-    [@@deriving sexp, compare]
+    [@@deriving equal]
 
     type superclasses_mapping = {
       class_name: Reference.t;
       superclasses: Reference.t list;
     }
-    [@@deriving sexp, compare, to_yojson]
+    [@@deriving equal, to_yojson]
 
     type position = {
       line: int;
       character: int;
     }
-    [@@deriving sexp, compare, to_yojson]
+    [@@deriving equal, to_yojson]
 
     type range = {
       start: position;
       end_: position;
     }
-    [@@deriving sexp, compare]
+    [@@deriving equal]
 
     let range_to_yojson { start; end_ } =
       `Assoc ["start", position_to_yojson start; "end", position_to_yojson end_]
@@ -178,13 +178,23 @@ module Response = struct
       path: string;
       range: range;
     }
-    [@@deriving sexp, compare, to_yojson]
+    [@@deriving equal, to_yojson]
 
     type global_leak_errors = {
       global_leaks: Analysis.AnalysisError.Instantiated.t list;
       query_errors: string list;
     }
-    [@@deriving sexp, compare, to_yojson]
+    [@@deriving equal, to_yojson]
+
+    type taint_model = {
+      callable: string;
+      model: Yojson.Safe.t;
+    }
+    [@@deriving equal]
+
+    let taint_model_to_yojson { callable; model } =
+      `Assoc ["callable", `String callable; "model", model]
+
 
     type t =
       | Boolean of bool
@@ -197,7 +207,7 @@ module Response = struct
       | FoundAttributes of attribute list
       | FoundDefines of define list
       | FoundLocationsOfDefinitions of code_location list
-      | FoundModels of string
+      | FoundModels of taint_model list
       | FoundModules of Reference.t list
       | FoundPath of string
       | FoundReferences of code_location list
@@ -211,7 +221,7 @@ module Response = struct
       | Superclasses of superclasses_mapping list
       | Type of Type.t
       | TypesByPath of types_at_path list
-    [@@deriving sexp, compare]
+    [@@deriving equal]
 
     let to_yojson response =
       let open Analysis in
@@ -304,7 +314,7 @@ module Response = struct
           `List (List.map defines ~f:define_to_yojson)
       | FoundLocationsOfDefinitions locations ->
           `List (List.map locations ~f:code_location_to_yojson)
-      | FoundModels models -> `String models
+      | FoundModels models -> `List (List.map ~f:taint_model_to_yojson models)
       | FoundModules references ->
           let reference_to_yojson reference = `String (Reference.show reference) in
           `List (List.map references ~f:reference_to_yojson)
@@ -336,7 +346,7 @@ module Response = struct
     | Single of Base.t
     | Batch of t list
     | Error of string
-  [@@deriving sexp, compare]
+  [@@deriving equal]
 
   let rec to_yojson = function
     | Single base_response -> `Assoc ["response", Base.to_yojson base_response]
@@ -792,36 +802,14 @@ let rec process_request ~type_environment ~build_system request =
     in
     let setup_and_execute_model_queries model_queries =
       let scheduler_wrapper scheduler =
-        let cache =
-          Taint.Cache.try_load
+        let qualifiers = ModuleTracker.ReadOnly.tracked_explicit_modules module_tracker in
+        let initial_callables =
+          Interprocedural.FetchCallables.from_qualifiers
             ~scheduler
             ~configuration
-            ~decorator_configuration:
-              Analysis.DecoratorPreprocessing.Configuration.disable_preprocessing
-            ~enabled:false
-        in
-        let initial_callables =
-          Taint.Cache.initial_callables cache (fun () ->
-              let timer = Timer.start () in
-              let qualifiers = ModuleTracker.ReadOnly.tracked_explicit_modules module_tracker in
-              let initial_callables =
-                Interprocedural.FetchCallables.from_qualifiers
-                  ~scheduler
-                  ~configuration
-                  ~environment:type_environment
-                  ~include_unit_tests:false
-                  ~qualifiers
-              in
-              Statistics.performance
-                ~name:"Fetched initial callables to analyze"
-                ~phase_name:"Fetching initial callables to analyze"
-                ~timer
-                ();
-              initial_callables)
-        in
-        let qualifiers =
-          Analysis.TypeEnvironment.ReadOnly.module_tracker type_environment
-          |> Analysis.ModuleTracker.ReadOnly.tracked_explicit_modules
+            ~environment:type_environment
+            ~include_unit_tests:false
+            ~qualifiers
         in
         let class_hierarchy_graph =
           Interprocedural.ClassHierarchyGraph.Heap.from_qualifiers
@@ -889,7 +877,7 @@ let rec process_request ~type_environment ~build_system request =
     match request with
     | Request.Attributes annotation ->
         let to_attribute attribute =
-          let name = Annotated.Attribute.name attribute in
+          let name = AnnotatedAttribute.name attribute in
           let instantiated_annotation =
             GlobalResolution.instantiate_attribute
               ~resolution:global_resolution
@@ -898,16 +886,16 @@ let rec process_request ~type_environment ~build_system request =
               attribute
           in
           let annotation =
-            instantiated_annotation |> Annotated.Attribute.annotation |> Annotation.annotation
+            instantiated_annotation |> AnnotatedAttribute.annotation |> Annotation.annotation
           in
-          let property = Annotated.Attribute.property attribute in
+          let property = AnnotatedAttribute.property attribute in
           let kind =
             if property then
               Base.Property
             else
               Base.Regular
           in
-          let final = Annotated.Attribute.is_final instantiated_annotation in
+          let final = AnnotatedAttribute.is_final instantiated_annotation in
           { Base.name; annotation; kind; final }
         in
         parse_and_validate (Expression.from_reference ~location:Location.any annotation)
@@ -1173,25 +1161,25 @@ let rec process_request ~type_environment ~build_system request =
                          (PyrePath.show path))
                   else
                     let models_and_names, errors = setup_and_execute_model_queries rules in
-                    let to_json (callable, model) =
-                      `Assoc
-                        [
-                          "callable", `String (Interprocedural.Target.external_name callable);
-                          ( "model",
-                            Taint.Model.to_json
-                              ~expand_overrides:None
-                              ~is_valid_callee:(fun ~port:_ ~path:_ ~callee:_ -> true)
-                              ~filename_lookup:None
-                              ~export_leaf_names:Taint.Domains.ExportLeafNames.Always
-                              callable
-                              model );
-                        ]
+                    let to_taint_model (callable, model) =
+                      {
+                        Base.callable = Interprocedural.Target.external_name callable;
+                        model =
+                          Taint.Model.to_json
+                            ~expand_overrides:None
+                            ~is_valid_callee:(fun ~port:_ ~path:_ ~callee:_ -> true)
+                            ~filename_lookup:None
+                            ~export_leaf_names:Taint.Domains.ExportLeafNames.Always
+                            callable
+                            model;
+                      }
                     in
                     let models =
                       models_and_names
                       |> Taint.ModelQueryExecution.ModelQueryRegistryMap.get_registry
                            ~model_join:Taint.Model.join_user_models
                       |> Taint.Registry.to_alist
+                      |> List.map ~f:to_taint_model
                     in
                     if List.is_empty models then
                       Error
@@ -1204,10 +1192,7 @@ let rec process_request ~type_environment ~build_system request =
                         (List.fold errors ~init:"" ~f:(fun accum error ->
                              accum ^ Taint.ModelVerificationError.display error))
                     else
-                      let models_string =
-                        `List (List.map models ~f:to_json) |> Yojson.Safe.to_string
-                      in
-                      Single (Base.FoundModels models_string)))
+                      Single (Base.FoundModels models)))
     | ModulesOfPath path ->
         Single
           (Base.FoundModules

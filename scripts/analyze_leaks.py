@@ -7,11 +7,12 @@ import json
 import keyword
 import os
 from dataclasses import dataclass
-from more_itertools import partition
 from pathlib import Path
 from typing import cast, Dict, List, TextIO, Tuple
 
 import click
+from more_itertools import partition
+
 
 from ..client import daemon_socket, find_directories, identifiers
 from ..client.commands import daemon_query
@@ -173,6 +174,13 @@ def find_issues(callees: List[str], search_start_path: Path) -> LeakAnalysisResu
         collected_results = collect_pyre_query_results(
             response.payload, invalid_callees
         )
+        for leak in collected_results.global_leaks:
+            leak["path"] = str(Path(cast(str, leak["path"])).relative_to(project_root.global_root))
+        collected_results = LeakAnalysisResult(
+            global_leaks=collected_results.global_leaks,
+            query_errors= collected_results.query_errors,
+            script_errors=collected_results.script_errors,
+        )
         return collected_results
     except connections.ConnectionFailure as e:
         raise RuntimeError(
@@ -221,6 +229,11 @@ def validate_json_list(json_list: JSON, from_file: str, level: str) -> None:
                     got: {type(value)}: {value}"
             )
 
+def find_issues_in_callables(callables_file: TextIO, project_path: str) -> LeakAnalysisResult:
+    callables = load_json_from_file(callables_file, "CALLABLES_FILE")
+    validate_json_list(callables, "CALLABLES_FILE", "top level")
+    issues = find_issues(cast(List[str], callables), Path(project_path))
+    return issues
 
 @click.group()
 def analyze() -> None:
@@ -258,9 +271,7 @@ def callable_leaks(
 
     Example usage: ./analyze_leaks.py -- callable-leaks <CALLABLES_FILE>
     """
-    callables = load_json_from_file(callables_file, "CALLABLES_FILE")
-    validate_json_list(callables, "CALLABLES_FILE", "top level")
-    issues = find_issues(cast(List[str], callables), Path(project_path))
+    issues = find_issues_in_callables(callables_file, project_path)
     print(issues.to_json())
 
 
