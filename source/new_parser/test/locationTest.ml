@@ -2853,6 +2853,28 @@ let test_string_locations _ =
                   ~stop:(4, 3)
                   (Expression.Constant (Constant.String (StringLiteral.create "\nAAA\nBBB\n")))));
           node ~start:(5, 0) ~stop:(5, 4) Statement.Pass;
+        ];
+    assert_parsed
+      "f\"\"\"\n{\"a\"}b\n\"\"\""
+      ~expected:
+        [
+          node
+            ~start:(1, 0)
+            ~stop:(3, 3)
+            (Statement.Expression
+               (node
+                  ~start:(1, 0)
+                  ~stop:(3, 3)
+                  (Expression.FormatString
+                     [
+                       Substring.Literal (node ~start:(1, 0) ~stop:(3, 3) "\n");
+                       Substring.Format
+                         (node
+                            ~start:(2, 1)
+                            ~stop:(2, 4)
+                            (Expression.Constant (Constant.String (StringLiteral.create "a"))));
+                       Substring.Literal (node ~start:(1, 0) ~stop:(3, 3) "b\n");
+                     ])));
         ]
   in
   PyreNewParser.with_context do_test
@@ -3078,6 +3100,7 @@ let test_try_locations _ =
                    ];
                  orelse = [];
                  finally = [];
+                 handles_exception_group = false;
                });
         ];
     assert_parsed
@@ -3119,6 +3142,7 @@ let test_try_locations _ =
                    ];
                  orelse = [];
                  finally = [];
+                 handles_exception_group = false;
                });
         ];
     assert_parsed
@@ -3172,6 +3196,7 @@ let test_try_locations _ =
                        (Statement.Expression
                           (node ~start:(8, 1) ~stop:(8, 2) (Expression.Name (Name.Identifier "d"))));
                    ];
+                 handles_exception_group = false;
                });
         ]
   in

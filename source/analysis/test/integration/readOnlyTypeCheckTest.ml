@@ -1243,6 +1243,73 @@ let test_typechecking_errors_are_prioritized context =
   ()
 
 
+let test_weaken_readonly_literals context =
+  let assert_type_errors = assert_type_errors ~context in
+  assert_type_errors
+    {|
+      from pyre_extensions import ReadOnly
+
+      def expect_readonly_list(x: ReadOnly[list[int]]) -> None: ...
+
+      def main(readonly_int: ReadOnly[int]) -> None:
+        expect_readonly_list([readonly_int, readonly_int])
+    |}
+    [];
+  assert_type_errors
+    {|
+      from pyre_extensions import ReadOnly
+
+      def expect_readonly_list(x: ReadOnly[list[list[int]]]) -> None: ...
+
+      def main(readonly_int: ReadOnly[int]) -> None:
+        expect_readonly_list([[readonly_int], [readonly_int]])
+    |}
+    [];
+  assert_type_errors
+    {|
+      from pyre_extensions import ReadOnly
+
+      def expect_readonly_set(x: ReadOnly[set[int]]) -> None: ...
+
+      def main(readonly_int: ReadOnly[int]) -> None:
+        expect_readonly_set({readonly_int, readonly_int})
+    |}
+    [];
+  assert_type_errors
+    {|
+      from pyre_extensions import ReadOnly
+
+      def expect_readonly_set(x: ReadOnly[set[set[int]]]) -> None: ...
+
+      def main(readonly_int: ReadOnly[int]) -> None:
+        expect_readonly_set({{readonly_int}, {readonly_int}})
+    |}
+    [];
+  assert_type_errors
+    {|
+      from pyre_extensions import ReadOnly
+
+      def expect_readonly_dict(x: ReadOnly[dict[str, int]]) -> None: ...
+
+      def main(readonly_int: ReadOnly[int], readonly_str: ReadOnly[str]) -> None:
+        expect_readonly_dict({ "foo": readonly_int, "bar": readonly_int})
+        expect_readonly_dict({ readonly_str: readonly_int, readonly_str: readonly_int})
+        expect_readonly_dict({ readonly_str: x for x in [readonly_int, readonly_int]})
+    |}
+    [];
+  assert_type_errors
+    {|
+      from pyre_extensions import ReadOnly
+
+      def expect_readonly_nested_dict(x: ReadOnly[dict[int, dict[str, int]]]) -> None: ...
+
+      def main(readonly_int: ReadOnly[int], readonly_str: ReadOnly[str]) -> None:
+        expect_readonly_nested_dict({ 42: { "foo": readonly_int }})
+    |}
+    [];
+  ()
+
+
 let () =
   "readOnly"
   >::: [
@@ -1261,5 +1328,6 @@ let () =
          "return_type" >:: test_return_type;
          "ignored_module" >:: test_ignored_module;
          "typechecking_errors_are_prioritized" >:: test_typechecking_errors_are_prioritized;
+         "weaken_readonly_literals" >:: test_weaken_readonly_literals;
        ]
   |> Test.run

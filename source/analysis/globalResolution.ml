@@ -345,7 +345,7 @@ let is_consistent_with ({ dependency; _ } as resolution) ~resolve left right ~ex
 
   let left =
     WeakenMutableLiterals.weaken_mutable_literals
-      resolve
+      ~resolve
       ~get_typed_dictionary:(get_typed_dictionary ~resolution)
       ~expression
       ~resolved:left
@@ -642,7 +642,7 @@ let overrides class_name ~resolution ~name =
       ~name
       parent
       ~resolution
-      ~instantiated:(Primitive class_name)
+      ~instantiated:(Type.Primitive class_name)
     >>= fun attribute -> Option.some_if (AnnotatedAttribute.defined attribute) attribute
   in
   successors class_name ~resolution |> List.find_map ~f:find_override
@@ -676,7 +676,7 @@ let refine ~global_resolution annotation refined_type =
   let solve_less_or_equal ~left ~right =
     ConstraintsSet.add
       ConstraintsSet.empty
-      ~new_constraint:(LessOrEqual { left; right })
+      ~new_constraint:(ConstraintsSet.LessOrEqual { left; right })
       ~global_resolution
     |> ConstraintsSet.solve ~global_resolution
     >>| fun solution -> ConstraintsSet.Solution.instantiate solution left

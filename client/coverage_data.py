@@ -478,32 +478,10 @@ def module_from_path(path: Path) -> Optional[libcst.MetadataWrapper]:
         return None
 
 
-def get_paths_to_collect(
-    paths: Optional[Sequence[Path]],
-    root: Path,
-) -> Iterable[Path]:
-    """
-    If `paths` is None, return the project root in a singleton list.
-
-    Otherwise, verify that every path in `paths` is a valid subpath
-    of the project, and return a deduplicated list of these paths (which
-    can be either directory or file paths).
-    """
-    if paths is None:
-        return [root]
-    else:
-        absolute_paths = set()
-        for path in paths:
-            absolute_path = path if path.is_absolute() else Path.cwd() / path
-            if root not in absolute_path.parents:
-                raise ValueError(
-                    f"`{path}` is not nested under the project at `{root}`",
-                )
-            absolute_paths.add(absolute_path)
-        return absolute_paths
-
-
-def _is_excluded(path: Path, excludes: Sequence[str]) -> bool:
+def _is_excluded(
+    path: Path,
+    excludes: Sequence[str],
+) -> bool:
     try:
         return any(
             [re.match(exclude_pattern, str(path)) for exclude_pattern in excludes]
@@ -513,7 +491,10 @@ def _is_excluded(path: Path, excludes: Sequence[str]) -> bool:
         return False
 
 
-def _should_ignore(path: Path, excludes: Sequence[str]) -> bool:
+def _should_ignore(
+    path: Path,
+    excludes: Sequence[str],
+) -> bool:
     return (
         path.suffix != ".py"
         or path.name.startswith("__")
@@ -522,7 +503,10 @@ def _should_ignore(path: Path, excludes: Sequence[str]) -> bool:
     )
 
 
-def find_module_paths(paths: Iterable[Path], excludes: Sequence[str]) -> Iterable[Path]:
+def find_module_paths(
+    paths: Iterable[Path],
+    excludes: Sequence[str],
+) -> List[Path]:
     """
     Given a set of paths (which can be file paths or directory paths)
     where we want to collect data, return an iterable of all the module
@@ -540,9 +524,13 @@ def find_module_paths(paths: Iterable[Path], excludes: Sequence[str]) -> Iterabl
             if not _should_ignore(path, excludes)
         )
 
-    return itertools.chain.from_iterable(
-        _get_paths_for_file(path)
-        if not path.is_dir()
-        else _get_paths_in_directory(path)
-        for path in paths
+    return sorted(
+        set(
+            itertools.chain.from_iterable(
+                _get_paths_for_file(path)
+                if not path.is_dir()
+                else _get_paths_in_directory(path)
+                for path in paths
+            )
+        )
     )

@@ -326,7 +326,7 @@ let assert_source_equal_with_locations expected actual =
           | If { If.body; orelse; _ }
           | While { While.body; orelse; _ } ->
               body @ orelse
-          | Try { Try.body; handlers; orelse; finally } ->
+          | Try { Try.body; handlers; orelse; finally; handles_exception_group = _ } ->
               let handlers =
                 let get_handler_body sofar { Try.Handler.body; _ } = body @ sofar in
                 List.fold ~init:[] ~f:get_handler_body handlers
@@ -503,7 +503,7 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
           SupportsIter, SupportsNext,
         )
         from pyre_extensions import Add, Multiply, Divide
-        from typing_extensions import Literal, LiteralString
+        from typing_extensions import Literal, LiteralString, Self
 
         _T = TypeVar('_T')
         _T_co = TypeVar('_T_co', covariant=True)
