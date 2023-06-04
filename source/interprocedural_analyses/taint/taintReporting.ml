@@ -83,7 +83,7 @@ let extract_errors ~scheduler ~taint_configuration ~callables ~fixpoint_state =
          ~preferred_chunk_size:2500
          ())
     ~initial:[]
-    ~map:(fun _ callables -> extract_errors callables)
+    ~map:extract_errors
     ~reduce:List.cons
     ~inputs:callables
     ()
@@ -120,22 +120,24 @@ let fetch_and_externalize
     ~fixpoint_state
     ~filename_lookup
     ~override_graph
-    callable
-  =
-  let model =
-    TaintFixpoint.get_model fixpoint_state callable |> Option.value ~default:Model.empty_model
-  in
-  let result =
-    TaintFixpoint.get_result fixpoint_state callable |> IssueHandle.SerializableMap.data
-  in
-  externalize
-    ~taint_configuration
-    ~fixpoint_state
-    ~filename_lookup
-    ~override_graph
-    callable
-    result
-    model
+    ~dump_override_models
+  = function
+  | Target.Override _ when not dump_override_models -> []
+  | callable ->
+      let model =
+        TaintFixpoint.get_model fixpoint_state callable |> Option.value ~default:Model.empty_model
+      in
+      let result =
+        TaintFixpoint.get_result fixpoint_state callable |> IssueHandle.SerializableMap.data
+      in
+      externalize
+        ~taint_configuration
+        ~fixpoint_state
+        ~filename_lookup
+        ~override_graph
+        callable
+        result
+        model
 
 
 let emit_externalization
@@ -151,6 +153,7 @@ let emit_externalization
     ~fixpoint_state
     ~filename_lookup
     ~override_graph
+    ~dump_override_models:false
     callable
   |> List.iter ~f:emitter
 
@@ -230,7 +233,7 @@ let save_results_to_directory
           scheduler
           ~policy:(Scheduler.Policy.legacy_fixed_chunk_size 1)
           ~initial:()
-          ~map:(fun () shards -> List.iter shards ~f:write_json_shard)
+          ~map:(List.iter ~f:write_json_shard)
           ~reduce:(fun () () -> ())
           ~inputs:shards
           ()

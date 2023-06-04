@@ -198,6 +198,7 @@ async def async_run_code_navigation_client(
         server_options_reader, remote_logging
     )
     stdin, stdout = await connections.create_async_stdin_stdout()
+    LOG.info("Waiting on LSP initialization request")
     initialize_result = await initialization.async_try_initialize_loop(
         stdin,
         stdout,
@@ -251,7 +252,7 @@ async def async_run_code_navigation_client(
                 client_type_error_handler=client_type_error_handler,
             )
         ),
-        api=pyre_language_server.PyreLanguageServerApi(
+        api=pyre_language_server.PyreLanguageServer(
             output_channel=stdout,
             server_state=server_state,
             querier=querier,

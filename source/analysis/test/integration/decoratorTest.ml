@@ -1494,6 +1494,100 @@ let test_classmethod_decorator context =
   ()
 
 
+let test_named_callable_against_decorator_factory context =
+  let assert_type_errors = assert_type_errors ~context in
+  assert_type_errors
+    {|
+      from pyre_extensions import ParameterSpecification
+      from typing import Callable, TypeVar, Protocol
+
+      P = ParameterSpecification("P")
+      R = TypeVar("R")
+
+      class MyDecorator(Protocol):
+          def __call__(self, f: Callable[P, R]) -> Callable[P, R]: ...
+
+      def expect_my_decorator(f: MyDecorator) -> None: ...
+
+      def some_decorator(f: Callable[P, R]) -> Callable[P, R]: ...
+
+      def main() -> None:
+          expect_my_decorator(some_decorator)
+    |}
+    [];
+  assert_type_errors
+    {|
+      from pyre_extensions import ParameterSpecification
+      from typing import Callable, TypeVar, Protocol
+
+      P = ParameterSpecification("P")
+      R = TypeVar("R")
+
+      class MyDecorator(Protocol):
+          def __call__(self, f: Callable[P, R]) -> Callable[P, R]: ...
+
+      def outer(name: str) -> MyDecorator:
+          def inner(f: Callable[P, R]) -> Callable[P, R]:
+            def _decorated( *args: P.args, **kwargs: P.kwargs) -> R:
+              return f( *args, **kwargs)
+
+            return _decorated
+
+          return inner
+    |}
+    [];
+  assert_type_errors
+    {|
+      from pyre_extensions import ParameterSpecification
+      from pyre_extensions.type_variable_operators import Concatenate
+      from typing import Awaitable, Callable, TypeVar, Protocol
+
+      P = ParameterSpecification("P")
+      R = TypeVar("R")
+
+      class MyDecorator(Protocol):
+          def __call__(
+            self, f: Callable[Concatenate[int, P], str]
+          ) -> Callable[Concatenate[int, P], str]: ...
+
+      def foo() -> MyDecorator:
+          def decorator(
+              f: Callable[Concatenate[int, P], str]
+          ) -> Callable[Concatenate[int, P], str]: ...
+
+          return decorator
+    |}
+    [];
+  assert_type_errors
+    {|
+      from pyre_extensions import ParameterSpecification
+      from pyre_extensions.type_variable_operators import Concatenate
+      from typing import Awaitable, Callable, TypeVar, Protocol
+
+      P = ParameterSpecification("P")
+      R = TypeVar("R")
+
+      class MyDecorator(Protocol):
+          def __call__(
+            self, f: Callable[Concatenate[int, str, P], str]
+          ) -> Callable[Concatenate[int, str, P], str]: ...
+
+      def foo() -> MyDecorator:
+          def decorator(
+              f: Callable[Concatenate[int, P], str]
+          ) -> Callable[Concatenate[int, P], str]: ...
+
+          return decorator
+    |}
+    [
+      "Incompatible return type [7]: Expected `MyDecorator` but got \
+       `typing.Callable($local_test?foo$decorator)[[Named(f, \
+       typing.Callable[pyre_extensions.type_variable_operators.Concatenate[int, test.P], str])], \
+       typing.Callable[pyre_extensions.type_variable_operators.Concatenate[int, test.P], str]]`.";
+    ];
+  ()
+
+
 let () =
   "decorator"
   >::: [
@@ -1510,5 +1604,7 @@ let () =
          "six_decorators" >:: test_six_decorators;
          "loosely_typed_decorators" >:: test_loosely_typed_decorators;
          "classmethod_decorator" >:: test_classmethod_decorator;
+         "named_callable_against_decorator_factory"
+         >:: test_named_callable_against_decorator_factory;
        ]
   |> Test.run
