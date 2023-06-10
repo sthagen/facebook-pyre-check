@@ -36,10 +36,10 @@ let initialize_configuration
         _;
       }
   =
-  Log.info "Verifying model syntax and configuration.";
+  Log.info "Verifying taint configuration.";
   let timer = Timer.start () in
+  let open Core.Result in
   let taint_configuration =
-    let open Core.Result in
     TaintConfiguration.from_taint_model_paths taint_model_paths
     >>= TaintConfiguration.with_command_line_options
           ~rule_filter
@@ -61,19 +61,33 @@ let initialize_configuration
           ~maximum_tito_depth
     |> TaintConfiguration.exception_on_error
   in
-  (* In order to save time, sanity check models before starting the analysis. *)
-  let () =
-    ModelParser.get_model_sources ~paths:taint_model_paths
-    |> List.iter ~f:(fun (path, source) -> ModelParser.verify_model_syntax ~path ~source)
-  in
   let () =
     Statistics.performance
-      ~name:"Verified model syntax and configuration"
-      ~phase_name:"Verifying model syntax and configuration"
+      ~name:"Verified taint configuration"
+      ~phase_name:"Verifying taint configuration"
       ~timer
       ()
   in
   taint_configuration
+
+
+let verify_model_syntax ~static_analysis_configuration =
+  Log.info "Verifying model syntax.";
+  let timer = Timer.start () in
+  let () =
+    ModelParser.get_model_sources
+      ~paths:
+        static_analysis_configuration.Configuration.StaticAnalysis.configuration.taint_model_paths
+    |> List.iter ~f:(fun (path, source) -> ModelParser.verify_model_syntax ~path ~source)
+  in
+  let () =
+    Statistics.performance
+      ~name:"Verified model syntax"
+      ~phase_name:"Verifying model syntax"
+      ~timer
+      ()
+  in
+  ()
 
 
 let parse_decorator_preprocessing_configuration
@@ -343,6 +357,9 @@ let run_taint_analysis
   =
   let taint_configuration = initialize_configuration ~static_analysis_configuration in
 
+  (* In order to save time, sanity check models before starting the analysis. *)
+  let () = verify_model_syntax ~static_analysis_configuration in
+
   (* Parse taint models to find decorators to inline or discard. This must be done early because
      inlining is a preprocessing phase of type-checking. *)
   let decorator_configuration =
@@ -354,13 +371,15 @@ let run_taint_analysis
   in
 
   (* We should NOT store anything in memory before calling `Cache.try_load` *)
-  let taint_configuration_shared_memory =
-    TaintConfiguration.SharedMemory.from_heap taint_configuration
-  in
-
   let environment = type_check ~scheduler ~configuration ~decorator_configuration ~cache in
 
   compact_ocaml_heap ~name:"after type check";
+
+  (* We must store the taint configuration into the shared memory after type checking, because type
+     checking may reset the shared memory. *)
+  let taint_configuration_shared_memory =
+    TaintConfiguration.SharedMemory.from_heap taint_configuration
+  in
 
   let module_tracker =
     environment
