@@ -23,7 +23,7 @@ from ...language_server.daemon_connection import DaemonConnectionFailure
 from ...language_server.features import LanguageServerFeatures, TypeCoverageAvailability
 
 from .. import start
-from ..daemon_querier import AbstractDaemonQuerier
+from ..daemon_querier import AbstractDaemonQuerier, GetDefinitionLocationsResponse
 from ..daemon_query import DaemonQueryFailure
 from ..persistent import ClientTypeErrorHandler
 
@@ -33,7 +33,7 @@ from ..pyre_language_server import (
     PyreLanguageServerDispatcher,
 )
 from ..pyre_server_options import PyreServerOptions, PyreServerOptionsReader
-from ..server_state import OpenedDocumentState, ServerState
+from ..server_state import ConnectionStatus, OpenedDocumentState, ServerState
 
 
 DEFAULT_BINARY = "/bin/pyre"
@@ -54,6 +54,8 @@ DEFAULT_EXCLUDES: Optional[Sequence[str]] = None
 DEFAULT_FLAVOR: identifiers.PyreFlavor = identifiers.PyreFlavor.CLASSIC
 DEFAULT_FILE_CONTENTS: str = "```\nfoo.Foo\n```"
 DEFAULT_USE_ERRPY_PARSER: bool = False
+DEFAULT_REQUEST_ID: int = 42
+DEFAULT_CONNECTION_STATUS: ConnectionStatus = ConnectionStatus.READY
 
 
 def create_server_options(
@@ -141,7 +143,7 @@ class MockDaemonQuerier(AbstractDaemonQuerier):
         mock_type_errors: Optional[List[error.Error]] = None,
         mock_type_coverage: Optional[lsp.TypeCoverageResponse] = None,
         mock_hover_response: Optional[lsp.LspHoverResponse] = None,
-        mock_definition_response: Optional[List[lsp.LspLocation]] = None,
+        mock_definition_response: Optional[GetDefinitionLocationsResponse] = None,
         mock_completion_response: Optional[List[lsp.CompletionItem]] = None,
         mock_references_response: Optional[List[lsp.LspLocation]] = None,
     ) -> None:
@@ -173,7 +175,7 @@ class MockDaemonQuerier(AbstractDaemonQuerier):
     ) -> Union[DaemonQueryFailure, lsp.LspHoverResponse]:
         self.requests.append({"path": path, "position": position})
         if self.mock_hover_response is None:
-            raise ValueError("You need to set hover response in the mock querier")
+            raise ValueError("You need to set the hover response in the mock querier")
         else:
             return self.mock_hover_response
 
@@ -181,10 +183,12 @@ class MockDaemonQuerier(AbstractDaemonQuerier):
         self,
         path: Path,
         position: lsp.PyrePosition,
-    ) -> Union[DaemonQueryFailure, List[lsp.LspLocation]]:
+    ) -> Union[DaemonQueryFailure, GetDefinitionLocationsResponse]:
         self.requests.append({"path": path, "position": position})
         if self.mock_definition_response is None:
-            raise ValueError("You need to set hover response in the mock querier")
+            raise ValueError(
+                "You need to set the get definition locations response in the mock querier"
+            )
         else:
             return self.mock_definition_response
 
@@ -195,7 +199,9 @@ class MockDaemonQuerier(AbstractDaemonQuerier):
     ) -> Union[DaemonQueryFailure, List[lsp.CompletionItem]]:
         self.requests.append({"path": path, "position": position})
         if self.mock_completion_response is None:
-            raise ValueError("You need to set hover response in the mock querier")
+            raise ValueError(
+                "You need to set the get completions response in the mock querier"
+            )
         else:
             return self.mock_completion_response
 
@@ -206,7 +212,9 @@ class MockDaemonQuerier(AbstractDaemonQuerier):
     ) -> Union[DaemonQueryFailure, List[lsp.LspLocation]]:
         self.requests.append({"path": path, "position": position})
         if self.mock_references_response is None:
-            raise ValueError("You need to set hover response in the mock querier")
+            raise ValueError(
+                "You need to set the get reference locations response in the mock querier"
+            )
         else:
             return self.mock_references_response
 
@@ -268,6 +276,7 @@ def create_pyre_language_server_api_and_output(
     opened_documents: Dict[Path, OpenedDocumentState],
     querier: MockDaemonQuerier,
     server_options: PyreServerOptions = mock_initial_server_options,
+    connection_status: ConnectionStatus = DEFAULT_CONNECTION_STATUS,
 ) -> Tuple[PyreLanguageServerApi, MemoryBytesWriter]:
     output_writer: MemoryBytesWriter = MemoryBytesWriter()
     output_channel = AsyncTextWriter(output_writer)
@@ -275,6 +284,7 @@ def create_pyre_language_server_api_and_output(
         server_options=server_options,
         opened_documents=opened_documents,
     )
+    server_state.status_tracker.set_status(connection_status)
     api = create_pyre_language_server_api(
         output_channel=output_channel,
         server_state=server_state,
@@ -334,9 +344,6 @@ async def create_input_channel_with_requests(
     for request in requests:
         await lsp.write_json_rpc(AsyncTextWriter(bytes_writer), request)
     return AsyncTextReader(MemoryBytesReader(b"\n".join(bytes_writer.items())))
-
-
-DEFAULT_REQUEST_ID: int = 42
 
 
 def success_response_json(

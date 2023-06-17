@@ -19,8 +19,13 @@ val try_load
 
 val save : t -> unit
 
-val type_environment : t -> (unit -> TypeEnvironment.t) -> TypeEnvironment.t
+val type_environment : t -> (unit -> TypeEnvironment.t) -> TypeEnvironment.t * t
 
-val class_hierarchy_graph : t -> (unit -> ClassHierarchyGraph.Heap.t) -> ClassHierarchyGraph.Heap.t
+val class_hierarchy_graph
+  :  t ->
+  (unit -> ClassHierarchyGraph.Heap.t) ->
+  ClassHierarchyGraph.Heap.t * t
 
-val initial_callables : t -> (unit -> FetchCallables.t) -> FetchCallables.t
+val initial_callables : t -> (unit -> FetchCallables.t) -> FetchCallables.t * t
+
+val metadata_to_json : t -> Yojson.Safe.t
