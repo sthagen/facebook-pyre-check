@@ -47,7 +47,7 @@ class HoverResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
 
 @dataclasses.dataclass(frozen=True)
 class DefinitionLocationResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
-    response: List[lsp.PyreDefinitionResponse]
+    response: List[lsp.DefinitionResponse]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -161,6 +161,14 @@ class AbstractDaemonQuerier(abc.ABC):
         path: Path,
         position: lsp.PyrePosition,
     ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.LspLocation]]:
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    async def get_call_hierarchy(
+        self,
+        path: Path,
+        position: lsp.PyrePosition,
+    ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.CallHierarchyItem]]:
         raise NotImplementedError()
 
     @abc.abstractmethod
@@ -325,7 +333,7 @@ class PersistentDaemonQuerier(AbstractDaemonQuerier):
         position: lsp.PyrePosition,
     ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.CompletionItem]]:
         return daemon_query.DaemonQueryFailure(
-            "Completions is not supporting in the pyre persistent client. Please use code-navigation. "
+            "Completions is not supported in the pyre persistent client. Please use code-navigation. "
         )
 
     async def get_reference_locations(
@@ -348,10 +356,19 @@ class PersistentDaemonQuerier(AbstractDaemonQuerier):
             return daemon_response
         else:
             result = [
-                response.to_lsp_definition_response()
+                response.to_lsp_references_response()
                 for response in daemon_response.response
             ]
             return result
+
+    async def get_call_hierarchy(
+        self,
+        path: Path,
+        position: lsp.PyrePosition,
+    ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.CallHierarchyItem]]:
+        return daemon_query.DaemonQueryFailure(
+            "Call hierarchy is not supported in the pyre persistent client. Please use code-navigation. "
+        )
 
     async def handle_file_opened(
         self,
@@ -505,6 +522,13 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
             self.socket_path, local_update
         )
 
+    async def get_call_hierarchy(
+        self,
+        path: Path,
+        position: lsp.PyrePosition,
+    ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.CallHierarchyItem]]:
+        return []
+
     async def handle_file_opened(
         self,
         path: Path,
@@ -585,6 +609,15 @@ class RemoteIndexBackedQuerier(AbstractDaemonQuerier):
         path: Path,
         position: lsp.PyrePosition,
     ) -> Union[daemon_query.DaemonQueryFailure, GetDefinitionLocationsResponse]:
+        # Return glean indexed result if Pyre client is not ready
+        if (
+            self.base_querier.server_state.status_tracker.get_status().connection_status
+            != state.ConnectionStatus.READY
+        ):
+            indexed_result = await self.index.definition(path, position)
+            return GetDefinitionLocationsResponse(
+                source=DaemonQuerierSource.GLEAN_INDEXER, data=indexed_result
+            )
         return await self.base_querier.get_definition_locations(path, position)
 
     async def get_completions(
@@ -600,6 +633,13 @@ class RemoteIndexBackedQuerier(AbstractDaemonQuerier):
         position: lsp.PyrePosition,
     ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.LspLocation]]:
         return await self.index.references(path, position)
+
+    async def get_call_hierarchy(
+        self,
+        path: Path,
+        position: lsp.PyrePosition,
+    ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.CallHierarchyItem]]:
+        return await self.index.call_hierarchy(path, position)
 
     async def handle_file_opened(
         self,

@@ -154,8 +154,10 @@ let errors_from_not_found
   | Mismatches mismatches ->
       let convert_to_error = function
         | SignatureSelectionTypes.Mismatch
-            { Node.value = { SignatureSelectionTypes.actual; expected; name; position }; location }
-          ->
+            {
+              Node.value = { SignatureSelectionTypes.actual; expected; name; position };
+              location = mismatch_location;
+            } ->
             let typed_dictionary_error
                 ~mismatch
                 ~method_name
@@ -228,14 +230,14 @@ let errors_from_not_found
                          { self_argument; self_argument_type; method_name }) )
               | _ ->
                   if Type.is_primitive_string actual && Type.is_literal_string expected then
-                    location, Error.NonLiteralString { name; position; callee }
+                    mismatch_location, Error.NonLiteralString { name; position; callee }
                   else if is_readonlyness_mismatch ~global_resolution ~actual ~expected then
-                    ( location,
+                    ( mismatch_location,
                       Error.ReadOnlynessMismatch
                         (IncompatibleParameterType
                            { keyword_argument_name = name; position; callee; mismatch }) )
                   else
-                    ( location,
+                    ( mismatch_location,
                       Error.IncompatibleParameterType
                         { keyword_argument_name = name; position; callee; mismatch } )
             in
@@ -249,13 +251,26 @@ let errors_from_not_found
                     else
                       callee_name |> inverse_operator >>= operator_name_to_symbol
                   in
-                  match operator_symbol, callee_expression >>| Node.value with
-                  | Some operator_name, Some (Expression.Name (Attribute { special = true; _ })) ->
+                  match operator_symbol, callee_expression with
+                  | ( Some operator_name,
+                      Some
+                        {
+                          Node.value = Expression.Name (Attribute { special = true; _ });
+                          location = callee_location;
+                        } ) ->
                       let left_operand, right_operand =
                         if is_uninverted then
                           self_annotation, actual
                         else
                           actual, self_annotation
+                      in
+                      let location =
+                        (* Avoid location being `any`, since that leads to errors having line and
+                           column as -1:-1, making the errors unsuppressable. *)
+                        if Location.equal mismatch_location Location.any then
+                          callee_location
+                        else
+                          mismatch_location
                       in
                       ( location,
                         Error.UnsupportedOperand
@@ -264,7 +279,7 @@ let errors_from_not_found
               | Some (Type.Primitive _ as annotation), Some method_name ->
                   GlobalResolution.get_typed_dictionary ~resolution:global_resolution annotation
                   >>= typed_dictionary_error ~mismatch ~method_name ~position
-                  >>| (fun kind -> location, kind)
+                  >>| (fun kind -> mismatch_location, kind)
                   |> Option.value ~default:default_location_and_error
               | _ -> default_location_and_error
             in
@@ -3421,20 +3436,23 @@ module State (Context : Context) = struct
       with
       | Some annotation, _ -> Some annotation
       | _, Name.Attribute { base = { Node.value = Name base; _ }; attribute; _ } -> (
-          let attribute =
-            existing_annotation base
-            >>| Annotation.annotation
-            >>= fun parent ->
-            Type.split parent
-            |> fst
-            |> Type.primitive_name
-            >>= GlobalResolution.attribute_from_class_name
-                  ~resolution:global_resolution
-                  ~name:attribute
-                  ~instantiated:parent
-                  ~transitive:true
+          let attribute_from_parent parent =
+            let get_attribute =
+              GlobalResolution.attribute_from_class_name
+                ~resolution:global_resolution
+                ~name:attribute
+                ~instantiated:parent
+                ~transitive:true
+            in
+            let parent_class = Type.split parent |> fst in
+            match parent_class |> Type.ReadOnly.unpack_readonly with
+            | Some class_wrapped_by_readonly ->
+                Type.primitive_name class_wrapped_by_readonly
+                >>= get_attribute ~accessed_through_readonly:true
+            | None ->
+                Type.primitive_name parent_class >>= get_attribute ~accessed_through_readonly:false
           in
-          match attribute with
+          match existing_annotation base >>| Annotation.annotation >>= attribute_from_parent with
           | Some attribute when AnnotatedAttribute.defined attribute ->
               Some (AnnotatedAttribute.annotation attribute)
           | _ -> None)
@@ -3844,7 +3862,11 @@ module State (Context : Context) = struct
         | Some { Annotation.annotation = Type.NoneType; _ } -> Unreachable
         | Some ({ Annotation.annotation = Type.Union parameters; _ } as annotation) ->
             let refined_annotation =
-              List.filter parameters ~f:(fun parameter -> not (Type.is_none parameter))
+              List.filter parameters ~f:(fun parameter ->
+                  let unpacked_readonly_type =
+                    Type.ReadOnly.unpack_readonly parameter |> Option.value ~default:parameter
+                  in
+                  not (Type.is_none unpacked_readonly_type))
             in
             let resolution =
               refine_local
@@ -7691,5 +7713,11 @@ let check_define_by_name
   let global_resolution = GlobalResolution.create global_environment ?dependency in
   (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
   let resolution = resolution global_resolution (module DummyContext) in
-  GlobalResolution.function_definition global_resolution name
-  >>| check_function_definition ~type_check_controls ~call_graph_builder ~resolution ~name
+  Alarm.with_alarm
+    ~max_time_in_seconds:60
+    ~event_name:"type check"
+    ~callable:(Reference.show name)
+    (fun () ->
+      GlobalResolution.function_definition global_resolution name
+      >>| check_function_definition ~type_check_controls ~call_graph_builder ~resolution ~name)
+    ()

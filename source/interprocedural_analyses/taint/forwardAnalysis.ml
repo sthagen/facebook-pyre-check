@@ -698,8 +698,14 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       tito_effects, state
     in
     let tito_effects, state =
-      CallModel.match_actuals_to_formals ~model:taint_model ~arguments
-      |> List.zip_exn arguments_taint
+      let captures_taint, captures =
+        CallModel.match_captures
+          ~model:taint_model
+          ~captures_taint:initial_state.taint
+          ~location:call_location
+      in
+      CallModel.match_actuals_to_formals ~model:taint_model ~arguments @ captures
+      |> List.zip_exn (arguments_taint @ captures_taint)
       |> List.fold
            ~f:compute_argument_tito_effect
            ~init:(TaintInTaintOutEffects.empty, initial_state)
@@ -3029,10 +3035,10 @@ let run
   let () = State.log "Processing CFG:@.%a" Cfg.pp cfg in
   let exit_state =
     TaintProfiler.track_duration ~profiler ~name:"Forward analysis - fixpoint" ~f:(fun () ->
-        Interprocedural.Metrics.with_alarm
+        Alarm.with_alarm
           ~max_time_in_seconds:60
           ~event_name:"forward taint analysis"
-          ~callable
+          ~callable:(Interprocedural.Target.show_pretty callable)
           (fun () -> Fixpoint.forward ~cfg ~initial |> Fixpoint.exit)
           ())
   in

@@ -3321,25 +3321,36 @@ class base class_metadata_environment dependency =
         ?instantiated
         ?(apply_descriptors = true)
         attribute =
+      let make_annotation_readonly = function
+        | UninstantiatedAnnotation.Attribute annotation ->
+            UninstantiatedAnnotation.Attribute (Type.ReadOnly.create annotation)
+        | Property { getter; setter } ->
+            let make_property_annotation_readonly { UninstantiatedAnnotation.self; value } =
+              {
+                UninstantiatedAnnotation.self = self >>| Type.ReadOnly.create;
+                value = value >>| Type.ReadOnly.create;
+              }
+            in
+            Property
+              {
+                getter = make_property_annotation_readonly getter;
+                setter = setter >>| make_property_annotation_readonly;
+              }
+      in
       let get_attribute = self#attribute in
       let class_name = AnnotatedAttribute.parent attribute in
       let attribute_name = AnnotatedAttribute.name attribute in
       let { UninstantiatedAnnotation.accessed_via_metaclass; kind = annotation } =
         AnnotatedAttribute.uninstantiated_annotation attribute
       in
-
       let accessed_through_class = accessed_through_class && not accessed_via_metaclass in
-
       let uninstantiated_annotation =
         match annotation with
         | Attribute annotation -> Some annotation
         | Property _ -> None
       in
       let annotation =
-        match annotation, accessed_through_readonly with
-        | Attribute annotation, true ->
-            UninstantiatedAnnotation.Attribute (Type.ReadOnly.create annotation)
-        | _ -> annotation
+        if accessed_through_readonly then make_annotation_readonly annotation else annotation
       in
       let annotation =
         match instantiated with
@@ -4638,10 +4649,12 @@ class base class_metadata_environment dependency =
             Ok (Type.Callable { callable with kind })
         | Result.Ok
             (Type.Parametric
-              { name = "typing.ClassMethod"; parameters = [Single (Type.Callable callable)] })
+              {
+                name = ("typing.ClassMethod" | "typing.StaticMethod") as parametric_name;
+                parameters = [Single (Type.Callable callable)];
+              })
           when Type.Callable.equal { callable with kind } undecorated_signature ->
-            Ok
-              (Type.parametric "typing.ClassMethod" [Single (Type.Callable { callable with kind })])
+            Ok (Type.parametric parametric_name [Single (Type.Callable { callable with kind })])
         | other -> other
       in
       { undecorated_signature; decorated = Result.bind decorators ~f:apply_decorators }

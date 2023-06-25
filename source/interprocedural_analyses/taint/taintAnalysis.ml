@@ -410,19 +410,23 @@ let run_taint_analysis
         class_hierarchy_graph)
   in
 
-  let class_interval_graph =
-    let timer = Timer.start () in
-    let () = Log.info "Computing class intervals..." in
-    let class_interval_graph =
-      Interprocedural.ClassIntervalSetGraph.Heap.from_class_hierarchy class_hierarchy_graph
-      |> Interprocedural.ClassIntervalSetGraph.SharedMemory.from_heap
-    in
-    Statistics.performance
-      ~name:"Computed class intervals"
-      ~phase_name:"Computing class intervals"
-      ~timer
-      ();
-    class_interval_graph
+  let class_interval_graph, cache =
+    Cache.class_interval_graph cache (fun () ->
+        let timer = Timer.start () in
+        let () = Log.info "Computing class intervals..." in
+        let class_interval_graph =
+          Interprocedural.ClassIntervalSetGraph.Heap.from_class_hierarchy class_hierarchy_graph
+        in
+        Statistics.performance
+          ~name:"Computed class intervals"
+          ~phase_name:"Computing class intervals"
+          ~timer
+          ();
+        class_interval_graph)
+  in
+
+  let class_interval_graph_shared_memory =
+    Interprocedural.ClassIntervalSetGraph.SharedMemory.from_heap class_interval_graph
   in
 
   let initial_callables, cache =
@@ -445,8 +449,6 @@ let run_taint_analysis
           ();
         initial_callables)
   in
-  (* Save the cache here, in case there is a model verification error. *)
-  let () = Cache.save cache in
 
   let { ModelParseResult.models = initial_models; errors = model_verification_errors; _ } =
     initialize_models
@@ -574,7 +576,7 @@ let run_taint_analysis
         {
           Taint.TaintFixpoint.Context.taint_configuration = taint_configuration_shared_memory;
           type_environment = Analysis.TypeEnvironment.read_only environment;
-          class_interval_graph;
+          class_interval_graph = class_interval_graph_shared_memory;
           define_call_graphs;
           global_constants;
         }

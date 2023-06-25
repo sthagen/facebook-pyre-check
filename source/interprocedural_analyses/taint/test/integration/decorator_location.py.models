@@ -1484,6 +1484,16 @@
     "callable": "decorator_location.identity.inner",
     "tito": [
       {
+        "port": "captured_variable($parameter$f)",
+        "taint": [
+          {
+            "kinds": [ { "return_paths": { "": 0 }, "kind": "LocalReturn" } ],
+            "local_features": [ { "always-via": "obscure:unknown-callee" } ],
+            "tito": null
+          }
+        ]
+      },
+      {
         "port": "formal(**kw)[*]",
         "taint": [
           {
