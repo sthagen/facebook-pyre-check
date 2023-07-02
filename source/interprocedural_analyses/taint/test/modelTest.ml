@@ -1767,6 +1767,17 @@ let test_sink_models context =
     ();
   assert_model
     ~model_source:
+      "def test.sink(parameter0: TaintSink[XSS, ParameterPath[_.all_static_fields()]]): ..."
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~sink_parameters:[{ name = "parameter0"; sinks = [Sinks.NamedSink "XSS"] }]
+          "test.sink";
+      ]
+    ();
+  assert_model
+    ~model_source:
       {|
         def test.sink(parameter: TaintSink[TestSinkWithSubkind[Subkind]]):
           ...
@@ -3605,7 +3616,7 @@ let test_invalid_models context =
     ~model_source:"def test.sink(parameter: TaintSink[Test, ParameterPath[_.unknown()]]): ..."
     ~expect:
       "`_.unknown()` is an invalid access path: unexpected method call `unknown` (allowed: `keys`, \
-       `all`)"
+       `all`, `all_static_fields`)"
     ();
   assert_invalid_model
     ~model_source:"def test.sink(parameter: TaintSink[Test, ReturnPath[_[0]]]): ..."
@@ -3682,6 +3693,24 @@ let test_invalid_models context =
   assert_invalid_model
     ~model_source:"def test.taint(x, y: TaintInTaintOut[Updates[x], ReturnPath[_[0]]]): ..."
     ~expect:"Invalid model for `test.taint`: Invalid ReturnPath annotation for Updates annotation"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.taint() -> TaintSource[Test, ReturnPath[_.all_static_fields()]]: ..."
+    ~expect:
+      "`TaintSource[(Test, ReturnPath[_.all_static_fields()])]` is an invalid taint annotation: \
+       `all_static_fields()` is not allowed within `ReturnPath[]`"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.taint(x: TaintInTaintOut[UpdatePath[_.all_static_fields()]]): ..."
+    ~expect:
+      "`TaintInTaintOut[UpdatePath[_.all_static_fields()]]` is an invalid taint annotation: \
+       `all_static_fields()` is not allowed within `UpdatePath[]`"
+    ();
+  assert_invalid_model
+    ~model_source:"def test.taint(x: TaintInTaintOut[ParameterPath[_.all_static_fields()]]): ..."
+    ~expect:
+      "Invalid model for `test.taint`: `all_static_fields()` is not allowed within \
+       `TaintInTaintOut[]`"
     ();
 
   (* Collapse depth specification. *)
@@ -7193,6 +7222,7 @@ let test_query_parsing context =
 
 let test_access_path _ =
   let module Label = Abstract.TreeDomain.Label in
+  let module TaintPath = ModelParseResult.TaintPath in
   let parse_access_path source =
     PyreParser.Parser.parse_exn [source]
     |> (function
@@ -7206,42 +7236,55 @@ let test_access_path _ =
         assert_bool
           (Format.asprintf "Unexpected access path error: %a" ModelVerificationError.pp error)
           false
-    | Ok path -> assert_equal ~printer:Label.show_path ~cmp:Label.equal_path expected path
+    | Ok path -> assert_equal ~printer:TaintPath.show ~cmp:TaintPath.equal expected path
   in
   let assert_invalid_path ~source ~expected =
     match parse_access_path source with
     | Error error -> assert_equal ~printer:ident expected (ModelVerificationError.display error)
     | Ok _ -> assert_bool (Format.sprintf "Unexpected valid access path for: %s" source) false
   in
-  assert_valid_path ~source:"_" ~expected:[];
-  assert_valid_path ~source:"_.foo" ~expected:[Label.Index "foo"];
-  assert_valid_path ~source:"_.foo.bar" ~expected:[Label.Index "foo"; Label.Index "bar"];
-  assert_valid_path ~source:"_['foo']" ~expected:[Label.Index "foo"];
-  assert_valid_path ~source:"_[\"foo\"]" ~expected:[Label.Index "foo"];
-  assert_valid_path ~source:"_[0]" ~expected:[Label.Index "0"];
-  assert_valid_path ~source:"_['foo']['bar']" ~expected:[Label.Index "foo"; Label.Index "bar"];
-  assert_valid_path ~source:"_['foo'].bar" ~expected:[Label.Index "foo"; Label.Index "bar"];
-  assert_valid_path ~source:"_.foo['bar']" ~expected:[Label.Index "foo"; Label.Index "bar"];
-  assert_valid_path ~source:"_.foo[0]" ~expected:[Label.Index "foo"; Label.Index "0"];
-  assert_valid_path ~source:"_.keys()" ~expected:[AccessPath.dictionary_keys];
-  assert_valid_path ~source:"_.all()" ~expected:[Label.AnyIndex];
+  assert_valid_path ~source:"_" ~expected:(TaintPath.Regular []);
+  assert_valid_path ~source:"_.foo" ~expected:(TaintPath.Regular [Label.Index "foo"]);
+  assert_valid_path
+    ~source:"_.foo.bar"
+    ~expected:(TaintPath.Regular [Label.Index "foo"; Label.Index "bar"]);
+  assert_valid_path ~source:"_['foo']" ~expected:(TaintPath.Regular [Label.Index "foo"]);
+  assert_valid_path ~source:"_[\"foo\"]" ~expected:(TaintPath.Regular [Label.Index "foo"]);
+  assert_valid_path ~source:"_[0]" ~expected:(TaintPath.Regular [Label.Index "0"]);
+  assert_valid_path
+    ~source:"_['foo']['bar']"
+    ~expected:(TaintPath.Regular [Label.Index "foo"; Label.Index "bar"]);
+  assert_valid_path
+    ~source:"_['foo'].bar"
+    ~expected:(TaintPath.Regular [Label.Index "foo"; Label.Index "bar"]);
+  assert_valid_path
+    ~source:"_.foo['bar']"
+    ~expected:(TaintPath.Regular [Label.Index "foo"; Label.Index "bar"]);
+  assert_valid_path
+    ~source:"_.foo[0]"
+    ~expected:(TaintPath.Regular [Label.Index "foo"; Label.Index "0"]);
+  assert_valid_path ~source:"_.keys()" ~expected:(TaintPath.Regular [AccessPath.dictionary_keys]);
+  assert_valid_path ~source:"_.all()" ~expected:(TaintPath.Regular [Label.AnyIndex]);
+  assert_valid_path ~source:"_.all_static_fields()" ~expected:TaintPath.AllStaticFields;
   assert_valid_path
     ~source:"_[0].keys().foo.all()"
-    ~expected:[Label.Index "0"; AccessPath.dictionary_keys; Label.Index "foo"; Label.AnyIndex];
+    ~expected:
+      (TaintPath.Regular
+         [Label.Index "0"; AccessPath.dictionary_keys; Label.Index "foo"; Label.AnyIndex]);
   assert_valid_path
     ~source:"_.all()['a'].bar"
-    ~expected:[Label.AnyIndex; Label.Index "a"; Label.Index "bar"];
+    ~expected:(TaintPath.Regular [Label.AnyIndex; Label.Index "a"; Label.Index "bar"]);
   assert_invalid_path
     ~source:"foo"
     ~expected:"`foo` is an invalid access path: access path must start with `_`";
   assert_invalid_path
     ~source:"foo.bar"
-    ~expected:"`foo` is an invalid access path: access path must start with `_`";
+    ~expected:"`foo.bar` is an invalid access path: access path must start with `_`";
   assert_invalid_path
     ~source:"_.a-b"
     ~expected:
       "`_.a.__sub__(b)` is an invalid access path: unexpected method call `__sub__` (allowed: \
-       `keys`, `all`)";
+       `keys`, `all`, `all_static_fields`)";
   assert_invalid_path
     ~source:"_[a]"
     ~expected:
@@ -7256,7 +7299,42 @@ let test_access_path _ =
     ~source:"_.keys().something()"
     ~expected:
       "`_.keys().something()` is an invalid access path: unexpected method call `something` \
-       (allowed: `keys`, `all`)";
+       (allowed: `keys`, `all`, `all_static_fields`)";
+  assert_invalid_path
+    ~source:"_.foo.all_static_fields()"
+    ~expected:
+      "`_.foo.all_static_fields()` is an invalid access path: `all_static_fields()` can only be \
+       used on `_`";
+  assert_invalid_path
+    ~source:"_['foo'].all_static_fields()"
+    ~expected:
+      "`_[\"foo\"].all_static_fields()` is an invalid access path: `all_static_fields()` can only \
+       be used on `_`";
+  assert_invalid_path
+    ~source:"_.all().all_static_fields()"
+    ~expected:
+      "`_.all().all_static_fields()` is an invalid access path: `all_static_fields()` can only be \
+       used on `_`";
+  assert_invalid_path
+    ~source:"_.keys().all_static_fields()"
+    ~expected:
+      "`_.keys().all_static_fields()` is an invalid access path: `all_static_fields()` can only be \
+       used on `_`";
+  assert_invalid_path
+    ~source:"_.all_static_fields().foo"
+    ~expected:
+      "`_.all_static_fields().foo` is an invalid access path: cannot access attributes or methods \
+       of `all_static_fields()`";
+  assert_invalid_path
+    ~source:"_.all_static_fields()['foo']"
+    ~expected:
+      "`_.all_static_fields()[\"foo\"]` is an invalid access path: cannot access attributes or \
+       methods of `all_static_fields()`";
+  assert_invalid_path
+    ~source:"_.all_static_fields().all_static_fields()"
+    ~expected:
+      "`_.all_static_fields().all_static_fields()` is an invalid access path: cannot access \
+       attributes or methods of `all_static_fields()`";
   ()
 
 

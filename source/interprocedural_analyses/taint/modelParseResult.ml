@@ -39,14 +39,28 @@ module CollapseDepth = struct
   let show = Format.asprintf "%a" pp
 end
 
+module TaintPath = struct
+  type t =
+    | Regular of AccessPath.Path.t
+    | AllStaticFields
+  [@@deriving equal]
+
+  let pp formatter = function
+    | Regular path -> AccessPath.Path.pp formatter path
+    | AllStaticFields -> Format.fprintf formatter ".all_static_fields()"
+
+
+  let show = Format.asprintf "%a" pp
+end
+
 module TaintFeatures = struct
   type t = {
     breadcrumbs: Features.Breadcrumb.t list;
     via_features: Features.ViaFeature.t list;
-    applies_to: Abstract.TreeDomain.Label.path option;
-    parameter_path: Abstract.TreeDomain.Label.path option;
-    return_path: Abstract.TreeDomain.Label.path option;
-    update_path: Abstract.TreeDomain.Label.path option;
+    applies_to: AccessPath.Path.t option;
+    parameter_path: TaintPath.t option;
+    return_path: AccessPath.Path.t option;
+    update_path: AccessPath.Path.t option;
     leaf_names: Features.LeafName.t list;
     leaf_name_provided: bool;
     trace_length: int option;
@@ -141,7 +155,7 @@ module TaintFeatures = struct
       | None -> features
     in
     let add_path_option ~name path features =
-      add_option ~name ~pp:Abstract.TreeDomain.Label.pp_path path features
+      add_option ~name ~pp:AccessPath.Path.pp path features
     in
     let add_collapse_depth features =
       match collapse_depth with
@@ -150,7 +164,7 @@ module TaintFeatures = struct
     in
     features
     |> add_path_option ~name:"AppliesTo" applies_to
-    |> add_path_option ~name:"ParameterPath" parameter_path
+    |> add_option ~name:"ParameterPath" ~pp:TaintPath.pp parameter_path
     |> add_path_option ~name:"ReturnPath" return_path
     |> add_path_option ~name:"UpdatePath" update_path
     |> add_option ~name:"TraceLength" ~pp:Int.pp trace_length

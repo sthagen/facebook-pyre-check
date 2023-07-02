@@ -103,7 +103,7 @@ let base_name expression =
   | _ -> None
 
 
-let rec parse_access_path ~path ~location expression =
+let parse_access_path ~path ~location expression =
   let module Label = Abstract.TreeDomain.Label in
   let open Core.Result in
   let annotation_error reason =
@@ -112,52 +112,75 @@ let rec parse_access_path ~path ~location expression =
       ~location
       (InvalidAccessPath { access_path = expression; reason })
   in
-  match Node.value expression with
-  | Expression.Name (Name.Identifier "_") -> Ok []
-  | Expression.Name (Name.Identifier _) ->
-      Error (annotation_error "access path must start with `_`")
-  | Expression.Name (Name.Attribute { base; attribute; _ }) ->
-      (* The analysis does not currently distinguish between fields and indices.
-       * Silently convert fields to indices to prevent confusion. *)
-      parse_access_path ~path ~location base
-      >>| fun base -> base @ [Label.create_name_index attribute]
-  | Expression.Call
-      {
-        callee = { Node.value = Name (Name.Attribute { base; attribute = "__getitem__"; _ }); _ };
-        arguments = [{ Call.Argument.value = argument; _ }];
-      } -> (
-      parse_access_path ~path ~location base
-      >>= fun base ->
-      match Node.value argument with
-      | Expression.Constant (Constant.Integer index) -> Ok (base @ [Label.create_int_index index])
-      | Expression.Constant (Constant.String { StringLiteral.value = key; _ }) ->
-          Ok (base @ [Label.create_name_index key])
-      | _ ->
-          Error
-            (annotation_error
-               (Format.sprintf
-                  "expected int or string literal argument for index access, got `%s`"
-                  (Expression.show argument))))
-  | Expression.Call
-      {
-        callee = { Node.value = Name (Name.Attribute { base; attribute = "keys"; _ }); _ };
-        arguments = [];
-      } ->
-      parse_access_path ~path ~location base >>| fun base -> base @ [AccessPath.dictionary_keys]
-  | Expression.Call
-      {
-        callee = { Node.value = Name (Name.Attribute { base; attribute = "all"; _ }); _ };
-        arguments = [];
-      } ->
-      parse_access_path ~path ~location base >>| fun base -> base @ [Label.AnyIndex]
-  | Expression.Call { callee = { Node.value = Name (Name.Attribute { base; attribute; _ }); _ }; _ }
-    ->
-      parse_access_path ~path ~location base
-      >>= fun _ ->
-      Error
-        (annotation_error
-           (Format.sprintf "unexpected method call `%s` (allowed: `keys`, `all`)" attribute))
-  | _ -> Error (annotation_error "unexpected expression")
+  let rec parse_expression expression =
+    match Node.value expression with
+    | Expression.Name (Name.Identifier "_") -> Ok (TaintPath.Regular [])
+    | Expression.Name (Name.Identifier _) ->
+        Error (annotation_error "access path must start with `_`")
+    | Expression.Name (Name.Attribute { base; attribute; _ }) ->
+        (* The analysis does not currently distinguish between fields and indices.
+         * Silently convert fields to indices to prevent confusion. *)
+        parse_regular_path base
+        >>| fun base -> TaintPath.Regular (base @ [Label.create_name_index attribute])
+    | Expression.Call
+        {
+          callee = { Node.value = Name (Name.Attribute { base; attribute = "__getitem__"; _ }); _ };
+          arguments = [{ Call.Argument.value = argument; _ }];
+        } -> (
+        parse_regular_path base
+        >>= fun base ->
+        match Node.value argument with
+        | Expression.Constant (Constant.Integer index) ->
+            Ok (TaintPath.Regular (base @ [Label.create_int_index index]))
+        | Expression.Constant (Constant.String { StringLiteral.value = key; _ }) ->
+            Ok (TaintPath.Regular (base @ [Label.create_name_index key]))
+        | _ ->
+            Error
+              (annotation_error
+                 (Format.sprintf
+                    "expected int or string literal argument for index access, got `%s`"
+                    (Expression.show argument))))
+    | Expression.Call
+        {
+          callee = { Node.value = Name (Name.Attribute { base; attribute = "keys"; _ }); _ };
+          arguments = [];
+        } ->
+        parse_regular_path base
+        >>| fun base -> TaintPath.Regular (base @ [AccessPath.dictionary_keys])
+    | Expression.Call
+        {
+          callee = { Node.value = Name (Name.Attribute { base; attribute = "all"; _ }); _ };
+          arguments = [];
+        } ->
+        parse_regular_path base >>| fun base -> TaintPath.Regular (base @ [Label.AnyIndex])
+    | Expression.Call
+        {
+          callee =
+            { Node.value = Name (Name.Attribute { base; attribute = "all_static_fields"; _ }); _ };
+          arguments = [];
+        } -> (
+        parse_regular_path base
+        >>= function
+        | [] -> Ok TaintPath.AllStaticFields
+        | _ -> Error (annotation_error "`all_static_fields()` can only be used on `_`"))
+    | Expression.Call
+        { callee = { Node.value = Name (Name.Attribute { base; attribute; _ }); _ }; _ } ->
+        parse_expression base
+        >>= fun _ ->
+        Error
+          (annotation_error
+             (Format.sprintf
+                "unexpected method call `%s` (allowed: `keys`, `all`, `all_static_fields`)"
+                attribute))
+    | _ -> Error (annotation_error "unexpected expression")
+  and parse_regular_path expression =
+    match parse_expression expression with
+    | Ok (TaintPath.Regular path) -> Ok path
+    | Ok TaintPath.AllStaticFields ->
+        Error (annotation_error "cannot access attributes or methods of `all_static_fields()`")
+    | Error _ as error -> error
+  in
+  parse_expression expression
 
 
 let rec parse_annotations
@@ -338,10 +361,20 @@ let rec parse_annotations
         | Some "ParameterPath" ->
             parse_access_path ~path ~location expression
             >>| TaintKindsWithFeatures.from_parameter_path
-        | Some "ReturnPath" ->
-            parse_access_path ~path ~location expression >>| TaintKindsWithFeatures.from_return_path
-        | Some "UpdatePath" ->
-            parse_access_path ~path ~location expression >>| TaintKindsWithFeatures.from_update_path
+        | Some "ReturnPath" -> (
+            parse_access_path ~path ~location expression
+            >>= function
+            | TaintPath.Regular path -> Ok (TaintKindsWithFeatures.from_return_path path)
+            | TaintPath.AllStaticFields ->
+                Error
+                  (annotation_error "`all_static_fields()` is not allowed within `ReturnPath[]`"))
+        | Some "UpdatePath" -> (
+            parse_access_path ~path ~location expression
+            >>= function
+            | TaintPath.Regular path -> Ok (TaintKindsWithFeatures.from_update_path path)
+            | TaintPath.AllStaticFields ->
+                Error
+                  (annotation_error "`all_static_fields()` is not allowed within `UpdatePath[]`"))
         | Some "CollapseDepth" ->
             extract_collapse_depth expression
             >>| fun depth -> TaintKindsWithFeatures.from_collapse_depth (CollapseDepth.Value depth)
@@ -823,8 +856,75 @@ let rec parse_annotations
   parse_annotation (Node.value annotation)
 
 
-let path_for_source_or_sink ~kind ~root ~features =
-  let path_for_parameter () =
+let rec class_names_from_annotation = function
+  | Type.Bottom
+  | Type.Top
+  | Type.Any
+  | Type.Literal _
+  | Type.Callable _
+  | Type.Tuple _
+  | Type.NoneType
+  | Type.TypeOperation _
+  | Type.Variable _
+  | Type.IntExpression _
+  | Type.RecursiveType _
+  | Type.ParameterVariadicComponent _ ->
+      []
+  | Type.Primitive class_name
+  | Type.Parametric { name = class_name; _ } ->
+      [class_name]
+  | Type.Union members ->
+      List.fold
+        ~init:[]
+        ~f:(fun sofar annotation -> List.rev_append (class_names_from_annotation annotation) sofar)
+        members
+  | Type.ReadOnly annotation -> class_names_from_annotation annotation
+
+
+let get_class_attributes ~resolution = function
+  | "object" -> Some []
+  | class_name ->
+      GlobalResolution.class_summary resolution (Type.Primitive class_name)
+      >>| Node.value
+      >>| fun class_summary ->
+      let attributes = ClassSummary.attributes ~include_generated_attributes:false class_summary in
+      let constructor_attributes = ClassSummary.constructor_attributes class_summary in
+      let all_attributes =
+        Identifier.SerializableMap.union (fun _ x _ -> Some x) attributes constructor_attributes
+      in
+      let get_attribute attribute_name attribute accumulator =
+        match Node.value attribute with
+        | { ClassSummary.Attribute.kind = Simple _; _ } -> attribute_name :: accumulator
+        | _ -> accumulator
+      in
+      Identifier.SerializableMap.fold get_attribute all_attributes []
+
+
+let get_class_attributes_transitive ~resolution class_name =
+  let successors =
+    GlobalResolution.class_metadata resolution (Type.Primitive class_name)
+    >>| (fun { ClassMetadataEnvironment.successors; _ } -> successors)
+    |> Option.value ~default:[]
+  in
+  class_name :: successors |> List.filter_map ~f:(get_class_attributes ~resolution) |> List.concat
+
+
+let paths_for_source_or_sink ~resolution ~kind ~root ~root_annotations ~features =
+  let all_static_field_paths () =
+    let attributes =
+      root_annotations
+      |> List.map ~f:class_names_from_annotation
+      |> List.concat
+      |> List.map ~f:(get_class_attributes_transitive ~resolution)
+      |> List.concat
+      |> List.dedup_and_sort ~compare:Identifier.compare
+    in
+    match attributes with
+    | [] -> (* no attributes found *) [AccessPath.Path.empty]
+    | attributes ->
+        List.map ~f:(fun attribute -> [Abstract.TreeDomain.Label.Index attribute]) attributes
+  in
+  let paths_for_parameter () =
     let kind =
       match kind with
       | "source" -> "parameter source"
@@ -832,13 +932,14 @@ let path_for_source_or_sink ~kind ~root ~features =
     in
     match features with
     | {
-     TaintFeatures.parameter_path = Some parameter_path;
+     TaintFeatures.parameter_path = Some (TaintPath.Regular parameter_path);
      applies_to = None;
      return_path = None;
      update_path = None;
      _;
     } ->
-        Ok parameter_path
+        Ok [parameter_path]
+    | { parameter_path = Some TaintPath.AllStaticFields; _ } -> Ok (all_static_field_paths ())
     | { return_path = Some _; _ } ->
         Error (Format.sprintf "Invalid ReturnPath annotation for %s" kind)
     | { update_path = Some _; _ } ->
@@ -846,7 +947,7 @@ let path_for_source_or_sink ~kind ~root ~features =
     | _ ->
         Error (Format.sprintf "Invalid mix of AppliesTo and ParameterPath annotation for %s" kind)
   in
-  let path_for_return () =
+  let paths_for_return () =
     let kind =
       match kind with
       | "sink" -> "return sink"
@@ -860,7 +961,7 @@ let path_for_source_or_sink ~kind ~root ~features =
      update_path = None;
      _;
     } ->
-        Ok return_path
+        Ok [return_path]
     | { parameter_path = Some _; _ } ->
         Error (Format.sprintf "Invalid ParameterPath annotation for %s" kind)
     | { update_path = Some _; _ } ->
@@ -872,13 +973,22 @@ let path_for_source_or_sink ~kind ~root ~features =
       { TaintFeatures.applies_to; parameter_path = None; return_path = None; update_path = None; _ }
     ) ->
       (* AppliesTo works for both parameter and return sources/sinks. *)
-      Ok (Option.value ~default:[] applies_to)
-  | AccessPath.Root.LocalResult, _ -> path_for_return ()
-  | _ -> path_for_parameter ()
+      Ok [Option.value ~default:[] applies_to]
+  | AccessPath.Root.LocalResult, _ -> paths_for_return ()
+  | _ -> paths_for_parameter ()
+
+
+let type_breadcrumbs_from_annotations ~resolution annotations =
+  List.fold annotations ~init:Features.BreadcrumbSet.bottom ~f:(fun sofar annotation ->
+      CallGraph.ReturnType.from_annotation ~resolution annotation
+      |> Features.type_breadcrumbs
+      |> Features.BreadcrumbSet.add_set ~to_add:sofar)
 
 
 let introduce_sink_taint
+    ~resolution
     ~root
+    ~root_annotations
     ~features:
       ({
          TaintFeatures.breadcrumbs;
@@ -892,7 +1002,6 @@ let introduce_sink_taint
          trace_length;
          collapse_depth = _;
        } as features)
-    ~signature_breadcrumbs
     ~source_sink_filter
     ({ Model.backward = { sink_taint; _ }; _ } as model)
     taint_sink_kind
@@ -926,12 +1035,13 @@ let introduce_sink_taint
     let leaf_names =
       leaf_names |> List.map ~f:Features.LeafNameInterned.intern |> Features.LeafNameSet.of_list
     in
+    let type_breadcrumbs = type_breadcrumbs_from_annotations ~resolution root_annotations in
     let breadcrumbs =
       breadcrumbs
       |> List.map ~f:Features.BreadcrumbInterned.intern
       |> List.map ~f:Features.BreadcrumbSet.inject
       |> Features.BreadcrumbSet.of_approximation
-      |> Features.BreadcrumbSet.add_set ~to_add:signature_breadcrumbs
+      |> Features.BreadcrumbSet.add_set ~to_add:type_breadcrumbs
     in
     let via_features = Features.ViaFeatureSet.of_list via_features in
     let leaf_taint =
@@ -944,16 +1054,22 @@ let introduce_sink_taint
       |> transform_call_information
       |> BackwardState.Tree.create_leaf
     in
-    path_for_source_or_sink ~kind:"sink" ~root ~features
-    >>| fun path ->
-    let sink_taint = BackwardState.assign ~weak:true ~root ~path leaf_taint sink_taint in
+    paths_for_source_or_sink ~resolution ~kind:"sink" ~root ~root_annotations ~features
+    >>| fun paths ->
+    let sink_taint =
+      List.fold paths ~init:sink_taint ~f:(fun sink_taint path ->
+          BackwardState.assign ~weak:true ~root ~path leaf_taint sink_taint)
+    in
     { model with backward = { model.backward with sink_taint } }
   else
     Ok model
 
 
 let introduce_taint_in_taint_out
+    ~resolution
     ~root
+    ~root_annotations
+    ~result_annotations
     ~features:
       ({
          TaintFeatures.breadcrumbs;
@@ -967,17 +1083,20 @@ let introduce_taint_in_taint_out
          trace_length = _;
          collapse_depth;
        } as features)
-    ~signature_breadcrumbs
     ({ Model.backward = { taint_in_taint_out; sink_taint }; _ } as model)
     taint_sink_kind
   =
   let open Core.Result in
+  (* For tito, both the parameter and the return type can provide type based breadcrumbs *)
+  let type_breadcrumbs =
+    List.append root_annotations result_annotations |> type_breadcrumbs_from_annotations ~resolution
+  in
   let breadcrumbs =
     breadcrumbs
     |> List.map ~f:Features.BreadcrumbInterned.intern
     |> List.map ~f:Features.BreadcrumbSet.inject
     |> Features.BreadcrumbSet.of_approximation
-    |> Features.BreadcrumbSet.add_set ~to_add:signature_breadcrumbs
+    |> Features.BreadcrumbSet.add_set ~to_add:type_breadcrumbs
   in
   let via_features = Features.ViaFeatureSet.of_list via_features in
   let collapse_depth =
@@ -990,7 +1109,10 @@ let introduce_taint_in_taint_out
   let input_path =
     match features with
     | { applies_to; parameter_path = None; _ } -> Ok (Option.value ~default:[] applies_to)
-    | { parameter_path = Some parameter_path; applies_to = None; _ } -> Ok parameter_path
+    | { parameter_path = Some (TaintPath.Regular parameter_path); applies_to = None; _ } ->
+        Ok parameter_path
+    | { parameter_path = Some TaintPath.AllStaticFields; _ } ->
+        Error "`all_static_fields()` is not allowed within `TaintInTaintOut[]`"
     | _ ->
         Error
           (Format.asprintf
@@ -1085,7 +1207,9 @@ let introduce_taint_in_taint_out
 
 
 let introduce_source_taint
+    ~resolution
     ~root
+    ~root_annotations
     ~features:
       ({
          TaintFeatures.breadcrumbs;
@@ -1099,7 +1223,6 @@ let introduce_source_taint
          trace_length;
          collapse_depth = _;
        } as features)
-    ~signature_breadcrumbs
     ~source_sink_filter
     ({ Model.forward = { source_taint }; _ } as model)
     taint_source_kind
@@ -1117,12 +1240,13 @@ let introduce_source_taint
            SourceSinkFilter.should_keep_source source_sink_filter taint_source_kind)
     |> Option.value ~default:true
   then
+    let type_breadcrumbs = type_breadcrumbs_from_annotations ~resolution root_annotations in
     let breadcrumbs =
       breadcrumbs
       |> List.map ~f:Features.BreadcrumbInterned.intern
       |> List.map ~f:Features.BreadcrumbSet.inject
       |> Features.BreadcrumbSet.of_approximation
-      |> Features.BreadcrumbSet.add_set ~to_add:signature_breadcrumbs
+      |> Features.BreadcrumbSet.add_set ~to_add:type_breadcrumbs
     in
     let via_features = Features.ViaFeatureSet.of_list via_features in
     let transform_call_information taint =
@@ -1155,9 +1279,12 @@ let introduce_source_taint
       |> transform_call_information
       |> ForwardState.Tree.create_leaf
     in
-    path_for_source_or_sink ~kind:"source" ~root ~features
-    >>| fun path ->
-    let source_taint = ForwardState.assign ~weak:true ~root ~path leaf_taint source_taint in
+    paths_for_source_or_sink ~resolution ~kind:"source" ~root ~root_annotations ~features
+    >>| fun paths ->
+    let source_taint =
+      List.fold paths ~init:source_taint ~f:(fun source_taint path ->
+          ForwardState.assign ~weak:true ~root ~path leaf_taint source_taint)
+    in
     { model with forward = { source_taint } }
   else
     Ok model
@@ -2049,22 +2176,18 @@ let parameters_of_callable_annotation { Type.Callable.implementation; overloads;
   @ (List.map overloads ~f:parameters_of_overload |> List.concat)
 
 
-let signature_based_breadcrumbs ~resolution root ~callable_annotation =
+(* Return all type annotations on the given port.
+ * Note that there could be multiple annotations because of type overloads. *)
+let port_annotations_from_signature ~root ~callable_annotation =
   match callable_annotation with
-  | None -> Features.BreadcrumbSet.empty
+  | None -> []
   | Some callable_annotation -> (
       match root with
       | AccessPath.Root.PositionalParameter { position; _ } ->
           parameters_of_callable_annotation callable_annotation
           |> List.filter_map ~f:(fun (parameter_position, parameter) ->
-                 Option.some_if (parameter_position = position) parameter)
-          |> List.fold ~init:Features.BreadcrumbSet.bottom ~f:(fun sofar parameter ->
-                 parameter
-                 |> Type.Callable.Parameter.annotation
-                 >>| CallGraph.ReturnType.from_annotation ~resolution
-                 |> Option.value ~default:CallGraph.ReturnType.none
-                 |> Features.type_breadcrumbs
-                 |> Features.BreadcrumbSet.add_set ~to_add:sofar)
+                 Option.some_if (Int.equal parameter_position position) parameter)
+          |> List.filter_map ~f:Type.Callable.Parameter.annotation
       | AccessPath.Root.NamedParameter { name; _ } ->
           parameters_of_callable_annotation callable_annotation
           |> List.filter_map ~f:(fun (_, parameter) ->
@@ -2076,21 +2199,13 @@ let signature_based_breadcrumbs ~resolution root ~callable_annotation =
                    when String.equal parameter_name name ->
                      Some parameter
                  | _ -> None)
-          |> List.fold ~init:Features.BreadcrumbSet.bottom ~f:(fun sofar parameter ->
-                 parameter
-                 |> Type.Callable.Parameter.annotation
-                 >>| CallGraph.ReturnType.from_annotation ~resolution
-                 |> Option.value ~default:CallGraph.ReturnType.none
-                 |> Features.type_breadcrumbs
-                 |> Features.BreadcrumbSet.add_set ~to_add:sofar)
+          |> List.filter_map ~f:Type.Callable.Parameter.annotation
       | AccessPath.Root.LocalResult ->
           let { Type.Callable.implementation = { Type.Callable.annotation; _ }; _ } =
             callable_annotation
           in
-          annotation
-          |> CallGraph.ReturnType.from_annotation ~resolution
-          |> Features.type_breadcrumbs
-      | _ -> Features.BreadcrumbSet.empty)
+          [annotation]
+      | _ -> [])
 
 
 let parse_parameter_taint
@@ -2139,19 +2254,23 @@ let add_taint_annotation_to_model
       let root = AccessPath.Root.LocalResult in
       match annotation with
       | TaintAnnotation.Sink { sink; features } ->
-          let signature_breadcrumbs =
-            signature_based_breadcrumbs ~resolution root ~callable_annotation
-          in
-          introduce_sink_taint ~root ~features ~signature_breadcrumbs ~source_sink_filter model sink
+          let root_annotations = port_annotations_from_signature ~root ~callable_annotation in
+          introduce_sink_taint
+            ~resolution
+            ~root
+            ~root_annotations
+            ~features
+            ~source_sink_filter
+            model
+            sink
           |> map_error ~f:invalid_model_for_taint
       | TaintAnnotation.Source { source; features } ->
-          let signature_breadcrumbs =
-            signature_based_breadcrumbs ~resolution root ~callable_annotation
-          in
+          let root_annotations = port_annotations_from_signature ~root ~callable_annotation in
           introduce_source_taint
+            ~resolution
             ~root
+            ~root_annotations
             ~features
-            ~signature_breadcrumbs
             ~source_sink_filter
             model
             source
@@ -2173,46 +2292,48 @@ let add_taint_annotation_to_model
   | ModelAnnotation.ParameterAnnotation (root, annotation) -> (
       match annotation with
       | TaintAnnotation.Sink { sink; features } ->
-          let signature_breadcrumbs =
-            signature_based_breadcrumbs ~resolution root ~callable_annotation
-          in
-          introduce_sink_taint ~root ~features ~signature_breadcrumbs ~source_sink_filter model sink
+          let root_annotations = port_annotations_from_signature ~root ~callable_annotation in
+          introduce_sink_taint
+            ~resolution
+            ~root
+            ~root_annotations
+            ~features
+            ~source_sink_filter
+            model
+            sink
           |> map_error ~f:invalid_model_for_taint
       | TaintAnnotation.Source { source; features } ->
-          let signature_breadcrumbs =
-            signature_based_breadcrumbs ~resolution root ~callable_annotation
-          in
+          let root_annotations = port_annotations_from_signature ~root ~callable_annotation in
           introduce_source_taint
+            ~resolution
             ~root
+            ~root_annotations
             ~features
-            ~signature_breadcrumbs
             ~source_sink_filter
             model
             source
           |> map_error ~f:invalid_model_for_taint
       | TaintAnnotation.Tito { tito; features } ->
-          (* For tito, both the parameter and the return type can provide type based breadcrumbs *)
-          let parameter_signature_breadcrumbs =
-            signature_based_breadcrumbs ~resolution root ~callable_annotation
+          let root_annotations = port_annotations_from_signature ~root ~callable_annotation in
+          let result_annotations =
+            port_annotations_from_signature ~root:AccessPath.Root.LocalResult ~callable_annotation
           in
-          let return_signature_breadcrumbs =
-            signature_based_breadcrumbs ~resolution AccessPath.Root.LocalResult ~callable_annotation
-          in
-          let signature_breadcrumbs =
-            Features.BreadcrumbSet.add_set
-              ~to_add:return_signature_breadcrumbs
-              parameter_signature_breadcrumbs
-          in
-          introduce_taint_in_taint_out ~root ~features ~signature_breadcrumbs model tito
+          introduce_taint_in_taint_out
+            ~resolution
+            ~root
+            ~root_annotations
+            ~result_annotations
+            ~features
+            model
+            tito
           |> map_error ~f:invalid_model_for_taint
       | TaintAnnotation.AddFeatureToArgument { features } ->
-          let signature_breadcrumbs =
-            signature_based_breadcrumbs ~resolution root ~callable_annotation
-          in
+          let root_annotations = port_annotations_from_signature ~root ~callable_annotation in
           introduce_sink_taint
+            ~resolution
             ~root
+            ~root_annotations
             ~features
-            ~signature_breadcrumbs
             ~source_sink_filter
             model
             Sinks.AddFeatureToArgument

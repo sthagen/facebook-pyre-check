@@ -109,6 +109,13 @@ def path_to_expression_coverage_response(
     )
 
 
+def should_fall_back_to_glean(server_state: state.ServerState) -> bool:
+    return (
+        server_state.status_tracker.get_status().connection_status
+        == state.ConnectionStatus.DISCONNECTED
+    )
+
+
 class AbstractDaemonQuerier(abc.ABC):
     def __init__(
         self,
@@ -164,10 +171,20 @@ class AbstractDaemonQuerier(abc.ABC):
         raise NotImplementedError()
 
     @abc.abstractmethod
-    async def get_call_hierarchy(
+    async def get_init_call_hierarchy(
         self,
         path: Path,
         position: lsp.PyrePosition,
+        relation_direction: lsp.PyreCallHierarchyRelationDirection,
+    ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.CallHierarchyItem]]:
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    async def get_call_hierarchy_from_item(
+        self,
+        path: Path,
+        call_hierarchy_item: lsp.CallHierarchyItem,
+        relation_direction: lsp.PyreCallHierarchyRelationDirection,
     ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.CallHierarchyItem]]:
         raise NotImplementedError()
 
@@ -361,13 +378,24 @@ class PersistentDaemonQuerier(AbstractDaemonQuerier):
             ]
             return result
 
-    async def get_call_hierarchy(
+    async def get_init_call_hierarchy(
         self,
         path: Path,
         position: lsp.PyrePosition,
+        relation_direction: lsp.PyreCallHierarchyRelationDirection,
     ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.CallHierarchyItem]]:
         return daemon_query.DaemonQueryFailure(
             "Call hierarchy is not supported in the pyre persistent client. Please use code-navigation. "
+        )
+
+    async def get_call_hierarchy_from_item(
+        self,
+        path: Path,
+        call_hierarchy_item: lsp.CallHierarchyItem,
+        relation_direction: lsp.PyreCallHierarchyRelationDirection,
+    ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.CallHierarchyItem]]:
+        return daemon_query.DaemonQueryFailure(
+            "Call hierarchy (from item) is not supported in the pyre persistent client. Please use code-navigation. "
         )
 
     async def handle_file_opened(
@@ -522,10 +550,19 @@ class CodeNavigationDaemonQuerier(AbstractDaemonQuerier):
             self.socket_path, local_update
         )
 
-    async def get_call_hierarchy(
+    async def get_init_call_hierarchy(
         self,
         path: Path,
         position: lsp.PyrePosition,
+        relation_direction: lsp.PyreCallHierarchyRelationDirection,
+    ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.CallHierarchyItem]]:
+        return []
+
+    async def get_call_hierarchy_from_item(
+        self,
+        path: Path,
+        call_hierarchy_item: lsp.CallHierarchyItem,
+        relation_direction: lsp.PyreCallHierarchyRelationDirection,
     ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.CallHierarchyItem]]:
         return []
 
@@ -609,11 +646,7 @@ class RemoteIndexBackedQuerier(AbstractDaemonQuerier):
         path: Path,
         position: lsp.PyrePosition,
     ) -> Union[daemon_query.DaemonQueryFailure, GetDefinitionLocationsResponse]:
-        # Return glean indexed result if Pyre client is not ready
-        if (
-            self.base_querier.server_state.status_tracker.get_status().connection_status
-            != state.ConnectionStatus.READY
-        ):
+        if should_fall_back_to_glean(self.base_querier.server_state):
             indexed_result = await self.index.definition(path, position)
             return GetDefinitionLocationsResponse(
                 source=DaemonQuerierSource.GLEAN_INDEXER, data=indexed_result
@@ -634,12 +667,25 @@ class RemoteIndexBackedQuerier(AbstractDaemonQuerier):
     ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.LspLocation]]:
         return await self.index.references(path, position)
 
-    async def get_call_hierarchy(
+    async def get_init_call_hierarchy(
         self,
         path: Path,
         position: lsp.PyrePosition,
+        relation_direction: lsp.PyreCallHierarchyRelationDirection,
     ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.CallHierarchyItem]]:
-        return await self.index.call_hierarchy(path, position)
+        return await self.index.prepare_call_hierarchy(
+            path, position, relation_direction
+        )
+
+    async def get_call_hierarchy_from_item(
+        self,
+        path: Path,
+        call_hierarchy_item: lsp.CallHierarchyItem,
+        relation_direction: lsp.PyreCallHierarchyRelationDirection,
+    ) -> Union[daemon_query.DaemonQueryFailure, List[lsp.CallHierarchyItem]]:
+        return await self.index.call_hierarchy_from_item(
+            path, call_hierarchy_item, relation_direction
+        )
 
     async def handle_file_opened(
         self,

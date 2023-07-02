@@ -33,15 +33,23 @@ module Root : sig
   module Set : Caml.Set.S with type elt = t
 end
 
+module Path : sig
+  type t = Abstract.TreeDomain.Label.t list [@@deriving compare, eq, show]
+
+  val empty : t
+
+  val is_prefix : prefix:t -> t -> bool
+end
+
 type t = {
   root: Root.t;
-  path: Abstract.TreeDomain.Label.path;
+  path: Path.t;
 }
 [@@deriving show, compare]
 
-val create : Root.t -> Abstract.TreeDomain.Label.path -> t
+val create : Root.t -> Path.t -> t
 
-val extend : t -> path:Abstract.TreeDomain.Label.path -> t
+val extend : t -> path:Path.t -> t
 
 val of_expression : Expression.t -> t option
 
@@ -51,8 +59,8 @@ val to_json : t -> Yojson.Safe.t
 
 type argument_match = {
   root: Root.t;
-  actual_path: Abstract.TreeDomain.Label.path;
-  formal_path: Abstract.TreeDomain.Label.path;
+  actual_path: Path.t;
+  formal_path: Path.t;
 }
 [@@deriving compare, show]
 

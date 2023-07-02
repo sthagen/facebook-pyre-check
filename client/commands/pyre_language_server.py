@@ -258,6 +258,24 @@ class PyreLanguageServerApi(abc.ABC):
         raise NotImplementedError()
 
     @abc.abstractmethod
+    async def process_call_hierarchy_incoming_call(
+        self,
+        parameters: lsp.CallHierarchyIncomingCallParameters,
+        request_id: Union[int, str, None],
+        activity_key: Optional[Dict[str, object]] = None,
+    ) -> None:
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    async def process_call_hierarchy_outgoing_call(
+        self,
+        parameters: lsp.CallHierarchyOutgoingCallParameters,
+        request_id: Union[int, str, None],
+        activity_key: Optional[Dict[str, object]] = None,
+    ) -> None:
+        raise NotImplementedError()
+
+    @abc.abstractmethod
     async def process_shutdown_request(self, request_id: Union[int, str, None]) -> None:
         raise NotImplementedError()
 
@@ -900,10 +918,13 @@ class PyreLanguageServer(PyreLanguageServerApi):
             raise json_rpc.InvalidRequestError(
                 f"Document URI is not a file: {parameters.text_document.uri}"
             )
+        daemon_status_before = self.server_state.status_tracker.get_status()
+        request_timer = timer.Timer()
 
-        call_hierarchy_response = await self.querier.get_call_hierarchy(
+        call_hierarchy_response = await self.querier.get_init_call_hierarchy(
             path=document_path,
             position=parameters.position.to_pyre_position(),
+            relation_direction=lsp.PyreCallHierarchyRelationDirection.PARENT,
         )
 
         error_message = None
@@ -918,16 +939,12 @@ class PyreLanguageServer(PyreLanguageServerApi):
             error_message = call_hierarchy_response.error_message
             call_hierarchy_response = []
 
-        raw_result = lsp.CallHierarchyItem.cached_schema().dump(
-            call_hierarchy_response,
-            many=True,
-        )
-        LOG.info(f"Call hierarchy response: {raw_result}")
-
         if error_message:
             LOG.error(
                 f"Error at `process_call_hierarchy_request` message: {error_message}"
             )
+
+        raw_result = [c.to_dict() for c in call_hierarchy_response]
 
         await lsp.write_json_rpc(
             self.output_channel,
@@ -936,6 +953,169 @@ class PyreLanguageServer(PyreLanguageServerApi):
                 activity_key=activity_key,
                 result=raw_result,
             ),
+        )
+        await self.write_telemetry(
+            {
+                "type": "LSP",
+                "operation": "prepare_call_hierarchy",
+                "filepath": str(document_path),
+                "non_empty": len(call_hierarchy_response) > 0,
+                "response": raw_result,
+                "duration_ms": request_timer.stop_in_millisecond(),
+                "server_state_open_documents_count": len(
+                    self.server_state.opened_documents
+                ),
+                "error_message": error_message,
+                "position": parameters.position.to_dict(),
+                **daemon_status_before.as_telemetry_dict(),
+            },
+            activity_key,
+        )
+
+    async def process_call_hierarchy_incoming_call(
+        self,
+        parameters: lsp.CallHierarchyIncomingCallParameters,
+        request_id: Union[int, str, None],
+        activity_key: Optional[Dict[str, object]] = None,
+    ) -> None:
+        LOG.info(f"Processing incoming call hierarchy call for {parameters}")
+
+        document_path = parameters.item.document_uri().to_file_path()
+        if document_path is None:
+            raise json_rpc.InvalidRequestError(
+                f"Document URI is not a file: {parameters.item.document_uri()}"
+            )
+        daemon_status_before = self.server_state.status_tracker.get_status()
+        request_timer = timer.Timer()
+
+        call_hierarchy_items = await self.querier.get_call_hierarchy_from_item(
+            path=document_path,
+            call_hierarchy_item=parameters.item,
+            relation_direction=lsp.PyreCallHierarchyRelationDirection.PARENT,
+        )
+
+        error_message = None
+        if isinstance(call_hierarchy_items, DaemonQueryFailure):
+            LOG.info(
+                daemon_failure_string(
+                    "call_hierarchy, incoming call",
+                    str(type(call_hierarchy_items)),
+                    call_hierarchy_items.error_message,
+                )
+            )
+            error_message = call_hierarchy_items.error_message
+            call_hierarchy_items = []
+
+        if error_message:
+            LOG.error(
+                f"Error at `process_call_hierarchy_incoming_call` message: {error_message}"
+            )
+
+        raw_result = [
+            lsp.CallHierarchyIncomingCall(
+                from_=call_hierarchy_item, from_ranges=[call_hierarchy_item.range]
+            ).to_dict()
+            for call_hierarchy_item in call_hierarchy_items
+        ]
+        LOG.info(f"Call hierarchy incoming call response: {raw_result}")
+
+        await lsp.write_json_rpc(
+            self.output_channel,
+            json_rpc.SuccessResponse(
+                id=request_id,
+                activity_key=activity_key,
+                result=raw_result,
+            ),
+        )
+        await self.write_telemetry(
+            {
+                "type": "LSP",
+                "operation": "call_hierarchy_incoming_call",
+                "filepath": str(document_path),
+                "non_empty": len(raw_result) > 0,
+                "response": raw_result,
+                "duration_ms": request_timer.stop_in_millisecond(),
+                "server_state_open_documents_count": len(
+                    self.server_state.opened_documents
+                ),
+                "error_message": error_message,
+                "call_hierarchy_items": parameters.item.to_dict(),
+                **daemon_status_before.as_telemetry_dict(),
+            },
+            activity_key,
+        )
+
+    async def process_call_hierarchy_outgoing_call(
+        self,
+        parameters: lsp.CallHierarchyOutgoingCallParameters,
+        request_id: Union[int, str, None],
+        activity_key: Optional[Dict[str, object]] = None,
+    ) -> None:
+        LOG.info(f"Processing outgoing call hierarchy call for {parameters}")
+
+        document_path = parameters.item.document_uri().to_file_path()
+        if document_path is None:
+            raise json_rpc.InvalidRequestError(
+                f"Document URI is not a file: {parameters.item.document_uri()}"
+            )
+        daemon_status_before = self.server_state.status_tracker.get_status()
+        request_timer = timer.Timer()
+
+        call_hierarchy_items = await self.querier.get_call_hierarchy_from_item(
+            path=document_path,
+            call_hierarchy_item=parameters.item,
+            relation_direction=lsp.PyreCallHierarchyRelationDirection.CHILD,
+        )
+
+        error_message = None
+        if isinstance(call_hierarchy_items, DaemonQueryFailure):
+            LOG.info(
+                daemon_failure_string(
+                    "call_hierarchy, outgoing call",
+                    str(type(call_hierarchy_items)),
+                    call_hierarchy_items.error_message,
+                )
+            )
+            error_message = call_hierarchy_items.error_message
+            call_hierarchy_items = []
+
+        if error_message:
+            LOG.error(
+                f"Error at `process_call_hierarchy_outgoing_call` message: {error_message}"
+            )
+
+        raw_result = [
+            lsp.CallHierarchyOutgoingCall(
+                to=call_hierarchy_item, from_ranges=[call_hierarchy_item.range]
+            ).to_dict()
+            for call_hierarchy_item in call_hierarchy_items
+        ]
+        LOG.info(f"Call hierarchy outgoing call response: {raw_result}")
+
+        await lsp.write_json_rpc(
+            self.output_channel,
+            json_rpc.SuccessResponse(
+                id=request_id,
+                activity_key=activity_key,
+                result=raw_result,
+            ),
+        )
+        await self.write_telemetry(
+            {
+                "type": "LSP",
+                "operation": "call_hierarchy_outgoing_call",
+                "filepath": str(document_path),
+                "non_empty": len(raw_result) > 0,
+                "response": raw_result,
+                "duration_ms": request_timer.stop_in_millisecond(),
+                "server_state_open_documents_count": len(
+                    self.server_state.opened_documents
+                ),
+                "error_message": error_message,
+                "call_hierarchy_items": parameters.item.to_dict(),
+                **daemon_status_before.as_telemetry_dict(),
+            },
+            activity_key,
         )
 
     async def process_shutdown_request(self, request_id: Union[int, str, None]) -> None:
@@ -1105,8 +1285,26 @@ class PyreLanguageServerDispatcher:
                 request.id,
                 request.activity_key,
             )
+        elif request.method == "callHierarchy/incomingCalls":
+            await self.api.process_call_hierarchy_incoming_call(
+                lsp.CallHierarchyIncomingCallParameters.from_json_rpc_parameters(
+                    request.extract_parameters()
+                ),
+                request.id,
+                request.activity_key,
+            )
+        elif request.method == "callHierarchy/outgoingCalls":
+            await self.api.process_call_hierarchy_outgoing_call(
+                lsp.CallHierarchyOutgoingCallParameters.from_json_rpc_parameters(
+                    request.extract_parameters()
+                ),
+                request.id,
+                request.activity_key,
+            )
         elif request.id is not None:
-            raise lsp.RequestCancelledError("Request not supported yet")
+            raise lsp.RequestCancelledError(
+                f"{request.method} Request not supported yet"
+            )
 
     async def dispatch_request(
         self, request: json_rpc.Request

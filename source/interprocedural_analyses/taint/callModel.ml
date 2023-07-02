@@ -80,6 +80,11 @@ let match_captures ~model ~captures_taint ~location =
         }) )
 
 
+let captures_as_arguments =
+  List.map ~f:(fun capture ->
+      { Call.Argument.name = None; value = capture.ArgumentMatches.argument })
+
+
 let match_actuals_to_formals ~model:{ Model.backward; sanitizers; _ } ~arguments =
   let sink_argument_matches =
     BackwardState.roots backward.sink_taint
@@ -340,8 +345,8 @@ module ExtraTraceForTransforms = struct
   let from_sink_trees ~argument_access_path ~named_transforms ~tito_roots ~sink_trees =
     let accumulate_extra_traces_from_sink_path (path, tip) so_far =
       let is_prefix =
-        Abstract.TreeDomain.Label.is_prefix ~prefix:path argument_access_path
-        || Abstract.TreeDomain.Label.is_prefix ~prefix:argument_access_path path
+        AccessPath.Path.is_prefix ~prefix:path argument_access_path
+        || AccessPath.Path.is_prefix ~prefix:argument_access_path path
       in
       if not is_prefix then
         so_far
@@ -367,8 +372,8 @@ module ExtraTraceForTransforms = struct
     let remove_sink (sink_path, sink_tip) =
       let find_tito (tito_path, _) so_far =
         so_far
-        || Abstract.TreeDomain.Label.is_prefix ~prefix:tito_path sink_path
-        || Abstract.TreeDomain.Label.is_prefix ~prefix:sink_path tito_path
+        || AccessPath.Path.is_prefix ~prefix:tito_path sink_path
+        || AccessPath.Path.is_prefix ~prefix:sink_path tito_path
       in
       let exist_tito =
         BackwardState.Tree.fold BackwardState.Tree.Path ~f:find_tito ~init:false tito_tree
