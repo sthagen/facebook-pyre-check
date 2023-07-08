@@ -44,7 +44,7 @@ from .daemon_query import DaemonQueryFailure
 from .server_state import OpenedDocumentState
 
 if TYPE_CHECKING:
-    from . import persistent
+    from .. import type_error_handler
 
 LOG: logging.Logger = logging.getLogger(__name__)
 CONSECUTIVE_START_ATTEMPT_THRESHOLD: int = 5
@@ -59,7 +59,7 @@ async def read_lsp_request(
             message = await lsp.read_json_rpc(input_channel)
             return message
         except json_rpc.JSONRPCException as json_rpc_error:
-            LOG.debug(f"Exception occurred while reading JSON RPC: {json_rpc_error}")
+            LOG.error(f"Exception occurred while reading JSON RPC: {json_rpc_error}")
             await lsp.write_json_rpc_ignore_connection_error(
                 output_channel,
                 json_rpc.ErrorResponse(
@@ -119,6 +119,23 @@ class SourceCodeContext:
             len(full_document_contents),
         )
         return "\n".join(full_document_contents[lower_line_number:higher_line_number])
+
+    @staticmethod
+    def character_at_position(
+        source: str,
+        position: lsp.LspPosition,
+    ) -> Optional[str]:
+        lines = source.splitlines()
+
+        if (
+            position.line >= len(lines)
+            or position.line < 0
+            or position.character < 0
+            or position.character >= len(lines[position.line])
+        ):
+            return None
+
+        return lines[position.line][position.character]
 
 
 QueryResultType = TypeVar("QueryResultType")
@@ -290,7 +307,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
     server_state: state.ServerState
 
     querier: daemon_querier.AbstractDaemonQuerier
-    client_type_error_handler: persistent.ClientTypeErrorHandler
+    client_type_error_handler: type_error_handler.ClientTypeErrorHandler
 
     async def write_telemetry(
         self,
@@ -607,10 +624,12 @@ class PyreLanguageServer(PyreLanguageServerApi):
                 daemon_failure_string("hover", str(type(result)), result.error_message)
             )
             error_message = result.error_message
-            result = lsp.LspHoverResponse.empty()
-        raw_result = lsp.LspHoverResponse.cached_schema().dump(
-            result,
-        )
+            raw_result = None
+        else:
+            raw_result = lsp.LspHoverResponse.cached_schema().dump(
+                result.data,
+            )
+
         await lsp.write_json_rpc(
             self.output_channel,
             json_rpc.SuccessResponse(
@@ -624,9 +643,12 @@ class PyreLanguageServer(PyreLanguageServerApi):
                 "type": "LSP",
                 "operation": "hover",
                 "filePath": str(document_path),
-                "nonEmpty": len(result.contents) > 0,
+                "nonEmpty": raw_result is not None,
                 "response": raw_result,
                 "duration_ms": hover_timer.stop_in_millisecond(),
+                "query_source": result.source
+                if not isinstance(result, DaemonQueryFailure)
+                else None,
                 "server_state_open_documents_count": len(
                     self.server_state.opened_documents
                 ),
@@ -738,6 +760,9 @@ class PyreLanguageServer(PyreLanguageServerApi):
             document_path,
             parameters.position,
         )
+        character_at_position = SourceCodeContext.character_at_position(
+            self.server_state.opened_documents[document_path].code, parameters.position
+        )
         await self.write_telemetry(
             {
                 "type": "LSP",
@@ -758,6 +783,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
                 "truncated_file_contents": source_code_if_sampled,
                 "position": parameters.position.to_dict(),
                 "using_errpy_parser": self.server_state.server_options.using_errpy_parser,
+                "character_at_position": character_at_position,
                 **daemon_status_before.as_telemetry_dict(),
             },
             activity_key,
@@ -1342,7 +1368,7 @@ class PyreLanguageServerDispatcher:
                 if return_code is not None:
                     return return_code
             except json_rpc.JSONRPCException as json_rpc_error:
-                LOG.debug(
+                LOG.error(
                     f"Exception occurred while processing request: {json_rpc_error}"
                 )
                 await lsp.write_json_rpc_ignore_connection_error(

@@ -19,19 +19,26 @@ import traceback
 
 from typing import Optional
 
-from .. import backend_arguments, background_tasks, log_lsp_event, timer, version
+from .. import (
+    backend_arguments,
+    background_tasks,
+    log_lsp_event,
+    status_message_handler,
+    timer,
+    type_error_handler,
+    version,
+)
 from ..language_server import connections, features, protocol as lsp, remote_index
-
 from . import (
     daemon_querier,
     initialization,
     launch_and_subscribe_handler,
-    persistent,
     pyre_language_server,
     pyre_server_options,
     server_state as state,
     subscription,
 )
+
 
 LOG: logging.Logger = logging.getLogger(__name__)
 
@@ -61,8 +68,8 @@ class PyreCodeNavigationDaemonLaunchAndSubscribeHandler(
         self,
         server_options_reader: pyre_server_options.PyreServerOptionsReader,
         server_state: state.ServerState,
-        client_status_message_handler: persistent.ClientStatusMessageHandler,
-        client_type_error_handler: persistent.ClientTypeErrorHandler,
+        client_status_message_handler: status_message_handler.ClientStatusMessageHandler,
+        client_type_error_handler: type_error_handler.ClientTypeErrorHandler,
         querier: daemon_querier.AbstractDaemonQuerier,
         remote_logging: Optional[backend_arguments.RemoteLogging] = None,
     ) -> None:
@@ -233,7 +240,7 @@ async def async_run_code_navigation_client(
         server_state=server_state
     )
     querier = daemon_querier.RemoteIndexBackedQuerier(codenav_querier, index)
-    client_type_error_handler = persistent.ClientTypeErrorHandler(
+    client_type_error_handler = type_error_handler.ClientTypeErrorHandler(
         stdout, server_state, remote_logging
     )
     server = pyre_language_server.PyreLanguageServerDispatcher(
@@ -245,7 +252,7 @@ async def async_run_code_navigation_client(
                 server_options_reader=server_options_reader,
                 remote_logging=remote_logging,
                 server_state=server_state,
-                client_status_message_handler=persistent.ClientStatusMessageHandler(
+                client_status_message_handler=status_message_handler.ClientStatusMessageHandler(
                     stdout, server_state
                 ),
                 querier=querier,

@@ -216,7 +216,9 @@ def create_raw_element(json: Union[str, Dict[str, object]]) -> RawElement:
 
 
 def process_raw_elements(
-    raw_elements: Iterable[RawElement], site_roots: Sequence[str]
+    raw_elements: Iterable[RawElement],
+    site_roots: Sequence[str],
+    required: bool = False,
 ) -> List[Element]:
     elements: List[Element] = []
 
@@ -227,24 +229,41 @@ def process_raw_elements(
         return False
 
     for raw_element in raw_elements:
-        for expanded_raw_element in raw_element.expand_glob():
+        expanded_raw_elements = raw_element.expand_glob()
+        if len(expanded_raw_elements) == 0 and required:
+            raise exceptions.InvalidConfiguration(
+                f"Invalid path {raw_element}: does not exist."
+            )
+        for expanded_raw_element in expanded_raw_elements:
             if isinstance(expanded_raw_element, SitePackageRawElement):
-                added = any(
-                    add_if_exists(expanded_raw_element.to_element(site_root))
-                    for site_root in site_roots
-                )
+                added = False
+                for site_root in site_roots:
+                    if added := add_if_exists(
+                        expanded_raw_element.to_element(site_root)
+                    ):
+                        break
                 if not added:
-                    LOG.warning(
-                        "Site package does not exist: "
-                        f"`{expanded_raw_element.package_name}`"
-                    )
+                    if required:
+                        raise exceptions.InvalidConfiguration(
+                            f"Invalid path {expanded_raw_element.package_name}: does not exist."
+                        )
+                    else:
+                        LOG.warning(
+                            "Site package does not exist: "
+                            f"`{expanded_raw_element.package_name}`"
+                        )
             elif isinstance(
                 expanded_raw_element, (SimpleRawElement, SubdirectoryRawElement)
             ):
                 element = expanded_raw_element.to_element()
                 added = add_if_exists(element)
                 if not added:
-                    LOG.warning(f"Path does not exist for search path: {element}")
+                    if required:
+                        raise exceptions.InvalidConfiguration(
+                            f"Path does not exist for search path: {element}"
+                        )
+                    else:
+                        LOG.warning(f"Path does not exist for search path: {element}")
             else:
                 raise RuntimeError(
                     f"Unhandled raw search path element type: {expanded_raw_element}"

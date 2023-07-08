@@ -170,6 +170,7 @@ class SearchPathTest(testslide.TestCase):
                         SitePackageRawElement(package_name="w"),
                     ],
                     site_roots=[str(root_path / "d/e"), str(root_path / "u/v")],
+                    required=False,
                 ),
                 [
                     SimpleElement(str(root_path / "a")),
@@ -201,4 +202,42 @@ class SearchPathTest(testslide.TestCase):
                         site_root=str(root_path / "user"), package_name="foo"
                     ),
                 ],
+            )
+
+    def test_process_required_raw_elements_nonexistence(self) -> None:
+        with self.assertRaises(InvalidConfiguration):
+            process_raw_elements(
+                [
+                    SimpleRawElement("/tmp/does-not-exist"),
+                ],
+                site_roots=[],
+                required=True,
+            )
+
+    def test_process_required_raw_elements_glob_nonexistence(self) -> None:
+        with self.assertRaises(InvalidConfiguration):
+            process_raw_elements(
+                [
+                    SimpleRawElement("/tmp/does-not-exist/*"),
+                ],
+                site_roots=[],
+                required=True,
+            )
+
+    def test_process_required_raw_elements_subdirectory_nonexistence(self) -> None:
+        with self.assertRaises(InvalidConfiguration):
+            process_raw_elements(
+                [
+                    SubdirectoryRawElement(root="/tmp", subdirectory="does-not-exist"),
+                ],
+                site_roots=[],
+                required=True,
+            )
+
+    def test_process_required_raw_elements_site_package_nonexistence(self) -> None:
+        with self.assertRaises(InvalidConfiguration):
+            process_raw_elements(
+                [SitePackageRawElement(package_name="f")],
+                site_roots=[],
+                required=True,
             )
