@@ -168,6 +168,45 @@ let test_check_implementation context =
           return 1
     |}
     [];
+
+  (* TODO(T65594835) Pyre should accept this, but does not recognize that if named-only arguments
+     appear with default values in the implementation, any of the named arguments appearing in an
+     overload is compatible. *)
+  assert_type_errors
+    {|
+      from typing import overload, Optional
+
+      @overload
+      def f(*, a: int) -> int: ...
+
+      def f(*, b: Optional[int] = None, a: Optional[int] = None) -> int:
+          return 5
+    |}
+    [
+      "Incompatible overload [43]: The implementation of `f` does not accept all possible \
+       arguments of overload defined on line `5`.";
+    ];
+  (* TODO(T65594835) Pyre should accept this, but does not recognize that a `**kwargs: Any` in the
+     implementation is compatible with any named-argument overload *)
+  assert_type_errors
+    {|
+      from typing import Any, overload
+
+      @overload
+      def f(*, a: int) -> int: ...
+
+      def f(**kwargs: Any) -> int:
+          return 5
+    |}
+    [
+      "Incompatible overload [43]: The implementation of `f` does not accept all possible \
+       arguments of overload defined on line `5`.";
+    ];
+  ()
+
+
+let test_check_inferred_return_type context =
+  let assert_type_errors = assert_type_errors ~context in
   assert_type_errors
     {|
       from typing import overload, Union
@@ -392,6 +431,7 @@ let () =
   "overload"
   >::: [
          "check_implementation" >:: test_check_implementation;
+         "check_inferred_return_type" >:: test_check_inferred_return_type;
          "decorated_overloads" >:: test_check_decorated_overloads;
          "typing_extensions_overloads" >:: test_typing_extensions_overloads;
        ]
