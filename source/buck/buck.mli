@@ -309,12 +309,23 @@ module Raw : sig
     }
   [@@deriving sexp_of]
 
-  (** Utility type to represent the argument and return type for common command-line Buck
-      interaction.
+  (** This module contains utility structure to interact with Buck on command-line. *)
+  module Command : sig
+    module Output : sig
+      (** Utility type to represent the result obtained via a Buck command invocation. *)
+      type t = {
+        stdout: string;
+        build_id: string option;
+      }
+    end
 
-      Note that mode and isolation prefix are intentionally required to be specified separately,
-      since Buck interpret them a bit differently from the rest of the arguments. *)
-  type buck_command = ?mode:string -> ?isolation_prefix:string -> string list -> string Lwt.t
+    (** Utility type to represent the argument and return type for common command-line Buck
+        interaction.
+
+        Note that mode and isolation prefix are intentionally required to be specified separately,
+        since Buck interpret them a bit differently from the rest of the arguments. *)
+    type t = ?mode:string -> ?isolation_prefix:string -> string list -> Output.t Lwt.t
+  end
 
   (** This module contains APIs specific to Buck1 *)
   module V1 : sig
@@ -326,15 +337,15 @@ module Raw : sig
     val create : ?additional_log_size:int -> unit -> t
 
     (** Create an instance of [t] from custom [query] and [build] behavior. Useful for unit testing. *)
-    val create_for_testing : query:buck_command -> build:buck_command -> unit -> t
+    val create_for_testing : query:Command.t -> build:Command.t -> unit -> t
 
     (** Shell out to `buck1 query` with the given cli arguments. Returns the content of stdout. If
         the return code is not 0, raise [BuckError]. *)
-    val query : t -> buck_command
+    val query : t -> Command.t
 
     (** Shell out to `buck1 build` with the given cli arguments. Returns the content of stdout. If
         the return code is not 0, raise [BuckError]. *)
-    val build : t -> buck_command
+    val build : t -> Command.t
   end
 
   (** This module contains APIs specific to Buck2 *)
@@ -347,11 +358,11 @@ module Raw : sig
     val create : ?additional_log_size:int -> unit -> t
 
     (** Create an instance of [t] from custom [bxl] behavior. Useful for unit testing. *)
-    val create_for_testing : bxl:buck_command -> unit -> t
+    val create_for_testing : bxl:Command.t -> unit -> t
 
     (** Shell out to `buck2 bxl` with the given cli arguments. Returns the content of stdout. If the
         return code is not 0, raise [BuckError]. *)
-    val bxl : t -> buck_command
+    val bxl : t -> Command.t
   end
 end
 
@@ -369,6 +380,17 @@ module Interface : sig
       build_map: BuildMap.t;
       targets: Target.t list;
     }
+  end
+
+  (** This module provides a utility type that attach a piece of metadata to an optional piece of
+      data. The metadata part is mostly useful for telemetry purpose. *)
+  module WithMetadata : sig
+    type ('data, 'metadata) t = {
+      data: 'data;
+      metadata: 'metadata option;
+    }
+
+    val create : ?metadata:'metadata -> 'data -> ('data, 'metadata) t
   end
 
   (** This module contains APIs specific to Buck1 *)
@@ -446,7 +468,10 @@ module Interface : sig
 
     (** Create an instance of [t] from custom [construct_build_map] behavior. Useful for unit
         testing. *)
-    val create_for_testing : construct_build_map:(string list -> BuildMap.t Lwt.t) -> unit -> t
+    val create_for_testing
+      :  construct_build_map:(string list -> (BuildMap.t, string) WithMetadata.t Lwt.t) ->
+      unit ->
+      t
 
     (** Given a list of Buck targets or target expressions, invoke [buck] to construct the link tree
         as well as source databases. It then loads all generated source databases, and merge all of
@@ -459,7 +484,7 @@ module Interface : sig
 
         May raise {!Raw.BuckError} when `buck` invocation fails, or {!JsonError} when `buck` itself
         succeeds but its output cannot be parsed. *)
-    val construct_build_map : t -> string list -> BuildMap.t Lwt.t
+    val construct_build_map : t -> string list -> (BuildMap.t, string) WithMetadata.t Lwt.t
   end
 
   (** This module contains APIs specific to lazy Buck building.
@@ -519,7 +544,7 @@ module Builder : sig
 
     (** {1 Build} *)
 
-    (** The return type for incremental builds. It contains a build map, a list of buck targets that
+    (** The result type for incremental builds. It contains a build map, a list of buck targets that
         are successfully included in the build, and a list of artifact files whose contents may be
         altered by the build . *)
     module IncrementalBuildResult : sig
@@ -529,6 +554,14 @@ module Builder : sig
         changed_artifacts: ArtifactPath.Event.t list;
       }
     end
+
+    (** A type representing the result of builds, along with some metadata about the build
+        (Buck2-only). *)
+    type build_result_t = (Interface.BuildResult.t, string) Interface.WithMetadata.t
+
+    (** A type representing the result of incremental builds, along with some metadata about the
+        build (Buck2-only). *)
+    type incremental_build_result_t = (IncrementalBuildResult.t, string) Interface.WithMetadata.t
 
     (** Given a list of buck target specificaitons to build, construct a build map for the targets
         and create a Python link tree at the given artifact root according to the build map. Return
@@ -553,7 +586,7 @@ module Builder : sig
         Note this API does not ensure the artifact root to be empty before the build starts. If
         cleaness of the artifact directory is desirable, it is expected that the caller would take
         care of that before its invocation. *)
-    val build : targets:string list -> t -> Interface.BuildResult.t Lwt.t
+    val build : targets:string list -> t -> build_result_t Lwt.t
 
     (** Given a build map, create the corresponding Python link tree at the given artifact root
         accordingly.
@@ -590,7 +623,7 @@ module Builder : sig
       :  old_build_map:BuildMap.t ->
       targets:string list ->
       t ->
-      IncrementalBuildResult.t Lwt.t
+      incremental_build_result_t Lwt.t
 
     (** Given a list of normalized targets to build, fully construct a new build map for the targets
         and incrementally update the Python link tree at the given artifact root according to how
@@ -608,7 +641,7 @@ module Builder : sig
       :  old_build_map:BuildMap.t ->
       targets:Target.t list ->
       t ->
-      IncrementalBuildResult.t Lwt.t
+      incremental_build_result_t Lwt.t
 
     (** Given a list of normalized targets and changed/removed files, incrementally construct a new
         build map for the targets and incrementally update the Python link tree at the given
@@ -628,7 +661,7 @@ module Builder : sig
       changed_paths:PyrePath.t list ->
       removed_paths:PyrePath.t list ->
       t ->
-      IncrementalBuildResult.t Lwt.t
+      incremental_build_result_t Lwt.t
 
     (** {1 Lookup} *)
 

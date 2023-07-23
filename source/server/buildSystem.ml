@@ -45,6 +45,7 @@ let create_for_testing
 
 
 module ClassicBuckBuilder = Buck.Builder.Classic
+module WithMetadata = Buck.Interface.WithMetadata
 
 module BuckBuildSystem = struct
   module State = struct
@@ -77,8 +78,13 @@ module BuckBuildSystem = struct
     let create_from_scratch ~builder ~targets () =
       let open Lwt.Infix in
       ClassicBuckBuilder.build builder ~targets
-      >>= fun { Buck.Interface.BuildResult.targets = normalized_targets; build_map } ->
-      Lwt.return (create ~targets ~builder ~normalized_targets ~build_map ())
+      >>= fun Buck.Interface.
+                {
+                  WithMetadata.data = { BuildResult.targets = normalized_targets; build_map };
+                  metadata;
+                } ->
+      Lwt.return
+        (create ~targets ~builder ~normalized_targets ~build_map () |> WithMetadata.create ?metadata)
 
 
     let create_from_saved_state ~builder ~targets ~normalized_targets ~build_map () =
@@ -92,7 +98,8 @@ module BuckBuildSystem = struct
          process another incremental update request to bring everything up-to-date again. If that
          incremental update is correctly handled, the dead links will be properly cleaned up. *)
       ClassicBuckBuilder.restore builder ~build_map
-      >>= fun () -> Lwt.return (create ~targets ~builder ~normalized_targets ~build_map ())
+      >>= fun () ->
+      Lwt.return (create ~targets ~builder ~normalized_targets ~build_map () |> WithMetadata.create)
   end
 
   (* This module defines how `State.t` will be preserved in the saved state. *)
@@ -127,11 +134,16 @@ module BuckBuildSystem = struct
       (fun () ->
         let start_timestamp = Core_unix.time () |> Int.of_float in
         f ()
-        >>= fun result ->
+        >>= fun { WithMetadata.data = result; metadata } ->
         let millisecond = Timer.stop_in_ms timer in
         let normals = ("version", Version.version ()) :: normals () in
         let integers =
           ("start time", start_timestamp) :: ("runtime", millisecond) :: integers result
+        in
+        let normals =
+          match metadata with
+          | None -> normals
+          | Some build_id -> ("buck uuid", build_id) :: normals
         in
         Statistics.buck_event ~normals ~integers ();
         Lwt.return result)
@@ -148,7 +160,7 @@ module BuckBuildSystem = struct
   module IncrementalBuilder = struct
     type t = {
       name: string;
-      run: unit -> ArtifactPath.Event.t list Lwt.t;
+      run: unit -> (ArtifactPath.Event.t list, string) WithMetadata.t Lwt.t;
     }
   end
 
@@ -176,12 +188,16 @@ module BuckBuildSystem = struct
         let rebuild_and_update_state rebuild () =
           rebuild state.builder
           >>= fun {
-                    ClassicBuckBuilder.IncrementalBuildResult.targets = normalized_targets;
-                    build_map;
-                    changed_artifacts;
+                    WithMetadata.data =
+                      {
+                        ClassicBuckBuilder.IncrementalBuildResult.targets = normalized_targets;
+                        build_map;
+                        changed_artifacts;
+                      };
+                    metadata;
                   } ->
           State.update ~normalized_targets ~build_map state;
-          Lwt.return changed_artifacts
+          Lwt.return (WithMetadata.create ?metadata changed_artifacts)
         in
         if should_renormalize source_path_events then
           {
@@ -203,7 +219,10 @@ module BuckBuildSystem = struct
             List.partition_map source_path_events ~f:categorize
           in
           if List.is_empty removed_paths && not (should_reconstruct_build_map changed_paths) then
-            { IncrementalBuilder.name = "skip_rebuild"; run = (fun () -> Lwt.return []) }
+            {
+              IncrementalBuilder.name = "skip_rebuild";
+              run = (fun () -> Lwt.return (WithMetadata.create []));
+            }
           else
             {
               IncrementalBuilder.name = "skip_renormalize_optimized";

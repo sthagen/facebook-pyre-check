@@ -489,12 +489,12 @@ module Heap = struct
   let default =
     let sources =
       List.map
-        ~f:(fun name -> { AnnotationParser.name; kind = Named })
+        ~f:(fun name -> { AnnotationParser.name; kind = Named; location = None })
         ["Demo"; "Test"; "UserControlled"; "PII"; "Secrets"; "Cookies"]
     in
     let sinks =
       List.map
-        ~f:(fun name -> { AnnotationParser.name; kind = Named })
+        ~f:(fun name -> { AnnotationParser.name; kind = Named; location = None })
         [
           "Demo";
           "FileSystem";
@@ -733,10 +733,17 @@ module Error = struct
         previous_location: JsonAst.LocationWithPath.t option;
       }
     | OptionDuplicate of string
-    | SourceDuplicate of string
+    | SourceDuplicate of {
+        name: string;
+        previous_location: JsonAst.LocationWithPath.t option;
+      }
     | SinkDuplicate of string
     | TransformDuplicate of string
     | FeatureDuplicate of string
+    | InvalidRegex of {
+        regex: string;
+        reason: string;
+      }
   [@@deriving equal, compare]
 
   type t = {
@@ -807,10 +814,22 @@ module Error = struct
           previous_location.location
     | OptionDuplicate name ->
         Format.fprintf formatter "Multiple values were passed in for option `%s`" name
-    | SourceDuplicate name -> Format.fprintf formatter "Duplicate entry for source: `%s`" name
+    | SourceDuplicate { name; previous_location = None } ->
+        Format.fprintf formatter "Duplicate entry for source: `%s`" name
+    | SourceDuplicate { name; previous_location = Some previous_location } ->
+        Format.fprintf
+          formatter
+          "Duplicate entry for source: `%s`, previous entry was at `%a:%a`"
+          name
+          PyrePath.pp
+          previous_location.path
+          JsonAst.Location.pp_start
+          previous_location.location
     | SinkDuplicate name -> Format.fprintf formatter "Duplicate entry for sink: `%s`" name
     | TransformDuplicate name -> Format.fprintf formatter "Duplicate entry for transform: `%s`" name
     | FeatureDuplicate name -> Format.fprintf formatter "Duplicate entry for feature: `%s`" name
+    | InvalidRegex { regex; reason } ->
+        Format.fprintf formatter "Invalid regex `%s`: `%s`" regex reason
 
 
   let code = function
@@ -834,6 +853,7 @@ module Error = struct
     | FeatureDuplicate _ -> 18
     | UnsupportedTransform _ -> 19
     | TransformDuplicate _ -> 20
+    | InvalidRegex _ -> 21
 
 
   let show_kind = Format.asprintf "%a" pp_kind
@@ -899,6 +919,13 @@ let from_json_list source_json_list =
     json_exception_to_error ~path ~section:key (fun () ->
         JsonAst.Json.Util.member_exn key value |> JsonAst.Json.Util.to_string_exn |> Result.return)
   in
+  let json_string_member_with_location ~path key value =
+    json_exception_to_error ~path ~section:key (fun () ->
+        let node = JsonAst.Json.Util.member_exn key value in
+        let value = JsonAst.Json.Util.to_string_exn node in
+        let location = JsonAst.Json.Util.to_location_exn node in
+        Result.return (value, location))
+  in
   let json_integer_member_with_location ~path key value =
     json_exception_to_error ~path ~section:key (fun () ->
         let node = JsonAst.Json.Util.member_exn key value in
@@ -961,8 +988,15 @@ let from_json_list source_json_list =
       ~current_keys:(JsonAst.Json.Util.keys json)
       ~valid_keys:["name"; "kind"; "comment"]
     >>= fun () ->
-    json_string_member ~path "name" json
-    >>= fun name -> parse_kind ~path json >>| fun kind -> { AnnotationParser.name; kind }
+    json_string_member_with_location ~path "name" json
+    >>= fun (name, location) ->
+    parse_kind ~path json
+    >>| fun kind ->
+    {
+      AnnotationParser.name;
+      kind;
+      location = Some (JsonAst.LocationWithPath.create ~path ~location);
+    }
   in
   let parse_source_annotations (path, json) =
     array_member ~path "sources" json
@@ -1298,6 +1332,17 @@ let from_json_list source_json_list =
           ~init:CombinedSourceRules.empty
           ~f:(parse_string_combine_rule ~path ~allowed_sources)
   in
+  let parse_regex ~path ~location pattern =
+    try Result.Ok (Re2.create_exn pattern) with
+    | Re2.Exceptions.Regex_compile_failed error ->
+        Result.Error
+          [
+            Error.create_with_location
+              ~path
+              ~location
+              ~kind:(Error.InvalidRegex { regex = pattern; reason = error });
+          ]
+  in
   let parse_implicit_sinks ~allowed_sinks (path, json) =
     match JsonAst.Json.Util.member "implicit_sinks" json with
     | { JsonAst.Node.value = `Null; _ } -> Result.Ok empty_implicit_sinks
@@ -1325,8 +1370,9 @@ let from_json_list source_json_list =
             parse_sink_reference ~path ~allowed_sinks sink
             |> Result.map_error ~f:(fun error -> [error])
             >>= fun sink_kind ->
-            json_string_member ~path "regexp" json
-            >>| fun pattern -> { sink_kind; pattern = Re2.create_exn pattern })
+            json_string_member_with_location ~path "regexp" json
+            >>= fun (raw_pattern, location) ->
+            parse_regex ~path ~location raw_pattern >>| fun pattern -> { sink_kind; pattern })
           literal_strings
         |> Result.combine_errors
         |> Result.map_error ~f:List.concat
@@ -1352,8 +1398,9 @@ let from_json_list source_json_list =
             parse_source_reference ~path ~allowed_sources source
             |> Result.map_error ~f:(fun error -> [error])
             >>= fun source_kind ->
-            json_string_member ~path "regexp" json
-            >>| fun pattern -> { source_kind; pattern = Re2.create_exn pattern })
+            json_string_member_with_location ~path "regexp" json
+            >>= fun (raw_pattern, location) ->
+            parse_regex ~path ~location raw_pattern >>| fun pattern -> { source_kind; pattern })
           literal_strings
         |> Result.combine_errors
         |> Result.map_error ~f:List.concat
@@ -1573,9 +1620,11 @@ let validate ({ Heap.sources; sinks; transforms; features; rules; _ } as configu
   in
   Result.combine_errors_unit
     [
-      ensure_list_unique
-        ~get_name:(fun { AnnotationParser.name; _ } -> name)
-        ~get_error:(fun name -> Error.SourceDuplicate name)
+      ensure_list_unique_with_location
+        ~get_key:(fun { AnnotationParser.name; _ } -> name)
+        ~get_location:(fun { AnnotationParser.location; _ } -> location)
+        ~get_error:(fun { AnnotationParser.name; _ } previous_location ->
+          Error.SourceDuplicate { name; previous_location })
         sources;
       ensure_list_unique
         ~get_name:(fun { AnnotationParser.name; _ } -> name)
