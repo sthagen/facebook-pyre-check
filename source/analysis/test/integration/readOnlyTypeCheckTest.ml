@@ -769,6 +769,41 @@ let test_function_call context =
        `test.Foo.mutable_method` may modify its object. Cannot call it on readonly expression \
        `self` of type `pyre_extensions.ReadOnly[Variable[_Self_test_Foo__ (bound to Foo)]]`.";
     ];
+  assert_type_errors_including_readonly
+    {|
+      from typing import Awaitable, TypeVar, Callable
+      from pyre_extensions import ParameterSpecification, ReadOnly
+      from readonly_stubs_for_testing import readonly_entrypoint
+
+      T = TypeVar("T")
+      P = ParameterSpecification("P")
+
+      def my_decorator(func: Callable[P, T]) -> Callable[P, T]: ...
+
+      class Foo:
+          @classmethod
+          @my_decorator
+          async def some_classmethod(cls, x: str) -> None: ...
+
+          @my_decorator
+          async def some_method(self, x: str) -> None: ...
+
+          async def outer_method(self) -> None:
+            @readonly_entrypoint
+            def inner() -> None:
+              await self.some_method(42)
+              await self.some_classmethod(42)
+    |}
+    [
+      "ReadOnly violation - Calling mutating method on readonly type [3005]: Method \
+       `test.Foo.some_method` may modify its object. Cannot call it on readonly expression `self` \
+       of type `pyre_extensions.ReadOnly[Foo]`.\n\
+       Note that this is a zone entrypoint and any captured variables are treated as readonly";
+      "Incompatible parameter type [6]: In call `Foo.some_method`, for 1st positional argument, \
+       expected `str` but got `int`.";
+      "Incompatible parameter type [6]: In call `Foo.some_classmethod`, for 1st positional \
+       argument, expected `str` but got `int`.";
+    ];
   ()
 
 
@@ -1217,8 +1252,7 @@ let test_captured_variable_for_specially_decorated_functions context =
     [
       "Missing annotation for captured variable [53]: Captured variable `local_variable` is not \
        annotated.";
-      "Revealed type [-1]: Revealed type for `local_variable` is \
-       `pyre_extensions.ReadOnly[typing.Any]`.";
+      "Revealed type [-1]: Revealed type for `local_variable` is `typing.Any`.";
     ];
   (* `self` captured in a nested entrypoint should be marked as readonly. *)
   assert_type_errors
@@ -1442,64 +1476,98 @@ let test_weaken_readonly_literals context =
     {|
       from pyre_extensions import ReadOnly
 
-      def expect_readonly_list(x: ReadOnly[list[int]]) -> None: ...
+      class Foo: ...
 
-      def main(readonly_int: ReadOnly[int]) -> None:
-        expect_readonly_list([readonly_int, readonly_int])
+      def expect_readonly_list(x: ReadOnly[list[Foo]]) -> None: ...
+
+      def main(readonly_foo: ReadOnly[Foo]) -> None:
+        expect_readonly_list([readonly_foo, readonly_foo])
     |}
     [];
   assert_type_errors
     {|
       from pyre_extensions import ReadOnly
 
-      def expect_readonly_list(x: ReadOnly[list[list[int]]]) -> None: ...
+      class Foo: ...
 
-      def main(readonly_int: ReadOnly[int]) -> None:
-        expect_readonly_list([[readonly_int], [readonly_int]])
+      def expect_readonly_list(x: ReadOnly[list[list[Foo]]]) -> None: ...
+
+      def main(readonly_foo: ReadOnly[Foo]) -> None:
+        expect_readonly_list([[readonly_foo], [readonly_foo]])
     |}
     [];
   assert_type_errors
     {|
       from pyre_extensions import ReadOnly
 
-      def expect_readonly_set(x: ReadOnly[set[int]]) -> None: ...
+      class Foo: ...
 
-      def main(readonly_int: ReadOnly[int]) -> None:
-        expect_readonly_set({readonly_int, readonly_int})
+      def expect_readonly_set(x: ReadOnly[set[Foo]]) -> None: ...
+
+      def main(readonly_foo: ReadOnly[Foo]) -> None:
+        expect_readonly_set({readonly_foo, readonly_foo})
     |}
     [];
   assert_type_errors
     {|
       from pyre_extensions import ReadOnly
 
-      def expect_readonly_set(x: ReadOnly[set[set[int]]]) -> None: ...
+      class Foo: ...
 
-      def main(readonly_int: ReadOnly[int]) -> None:
-        expect_readonly_set({{readonly_int}, {readonly_int}})
+      def expect_readonly_set(x: ReadOnly[set[set[Foo]]]) -> None: ...
+
+      def main(readonly_foo: ReadOnly[Foo]) -> None:
+        expect_readonly_set({{readonly_foo}, {readonly_foo}})
     |}
     [];
   assert_type_errors
     {|
       from pyre_extensions import ReadOnly
 
-      def expect_readonly_dict(x: ReadOnly[dict[str, int]]) -> None: ...
+      class Foo: ...
 
-      def main(readonly_int: ReadOnly[int], readonly_str: ReadOnly[str]) -> None:
-        expect_readonly_dict({ "foo": readonly_int, "bar": readonly_int})
-        expect_readonly_dict({ readonly_str: readonly_int, readonly_str: readonly_int})
-        expect_readonly_dict({ readonly_str: x for x in [readonly_int, readonly_int]})
+      def expect_readonly_dict(x: ReadOnly[dict[str, Foo]]) -> None: ...
+
+      def main(readonly_foo: ReadOnly[Foo], readonly_str: ReadOnly[str]) -> None:
+        expect_readonly_dict({ "foo": readonly_foo, "bar": readonly_foo})
+        expect_readonly_dict({ readonly_str: readonly_foo, readonly_str: readonly_foo})
+        expect_readonly_dict({ readonly_str: x for x in [readonly_foo, readonly_foo]})
     |}
     [];
   assert_type_errors
     {|
       from pyre_extensions import ReadOnly
 
-      def expect_readonly_nested_dict(x: ReadOnly[dict[int, dict[str, int]]]) -> None: ...
+      class Foo: ...
 
-      def main(readonly_int: ReadOnly[int], readonly_str: ReadOnly[str]) -> None:
-        expect_readonly_nested_dict({ 42: { "foo": readonly_int }})
+      def expect_readonly_nested_dict(x: ReadOnly[dict[Foo, dict[str, Foo]]]) -> None: ...
+
+      def main(readonly_foo: ReadOnly[Foo], readonly_str: ReadOnly[str]) -> None:
+        expect_readonly_nested_dict({ Foo(): { "foo": readonly_foo }})
     |}
     [];
+  assert_type_errors
+    {|
+      from pyre_extensions import ReadOnly
+
+      class Foo: ...
+
+      def main(readonly_foo: ReadOnly[Foo]) -> None:
+        xs = [readonly_foo, readonly_foo]
+        reveal_type(xs)
+    |}
+    ["Revealed type [-1]: Revealed type for `xs` is `pyre_extensions.ReadOnly[typing.List[Foo]]`."];
+  assert_type_errors
+    {|
+      from pyre_extensions import ReadOnly
+
+      class Foo: ...
+
+      def main(readonly_list: ReadOnly[list[Foo]]) -> None:
+        xs = [x for x in readonly_list]
+        reveal_type(xs)
+    |}
+    ["Revealed type [-1]: Revealed type for `xs` is `pyre_extensions.ReadOnly[typing.List[Foo]]`."];
   ()
 
 
@@ -1615,6 +1683,34 @@ let test_allowlisted_classes_are_not_readonly context =
       "Revealed type [-1]: Revealed type for `x` is `int`.";
       "Revealed type [-1]: Revealed type for `y` is `bool`.";
     ];
+  assert_type_errors
+    {|
+      from pyre_extensions import ReadOnly
+      from typing import TypeVar
+
+      T = TypeVar("T")
+
+      def lookup(d: ReadOnly[dict[str, T]], key: str) -> ReadOnly[T]: ...
+
+      def main(d: ReadOnly[dict[str, int]]) -> None:
+          x = lookup(d, "foo")
+          reveal_type(x)
+    |}
+    ["Revealed type [-1]: Revealed type for `x` is `int`."];
+  assert_type_errors
+    {|
+      from pyre_extensions import ReadOnly
+      from typing import Any, TypeVar
+
+      T = TypeVar("T")
+
+      def lookup(d: ReadOnly[dict[str, T]], key: str) -> ReadOnly[T]: ...
+
+      def main(d: ReadOnly[dict[str, Any]]) -> None:
+          x = lookup(d, "foo")
+          reveal_type(x)
+    |}
+    ["Revealed type [-1]: Revealed type for `x` is `typing.Any`."];
   ()
 
 

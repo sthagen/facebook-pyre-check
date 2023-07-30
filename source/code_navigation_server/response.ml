@@ -40,7 +40,24 @@ module DefinitionLocation = struct
 end
 
 module CompletionItem = struct
-  type t = { label: string } [@@deriving sexp, compare, yojson { strict = false }]
+  module CompletionItemKind = struct
+    type t =
+      | Simple
+      | Method
+      | Property
+    [@@deriving sexp, compare, yojson { strict = false }]
+
+    let to_yojson = function
+      | Simple -> `String "SIMPLE"
+      | Method -> `String "METHOD"
+      | Property -> `String "PROPERTY"
+  end
+
+  type t = {
+    label: string;
+    kind: CompletionItemKind.t;
+  }
+  [@@deriving sexp, compare, yojson { strict = false }]
 end
 
 module Status = struct

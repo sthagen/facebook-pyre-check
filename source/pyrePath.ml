@@ -11,28 +11,17 @@ open Core
 
 type path = string [@@deriving compare, show, sexp, hash]
 
-module AbsolutePath = struct
-  type t = path [@@deriving compare, show, sexp, hash]
-end
-
-module RelativePath = struct
-  type t = {
-    root: path;
-    relative: path;
-  }
-  [@@deriving compare, show, sexp, hash]
-
-  let relative { relative; _ } = relative
-end
-
 type t =
-  | Absolute of AbsolutePath.t
-  | Relative of RelativePath.t
+  | Absolute of path
+  | Relative of {
+      root: path;
+      relative: path;
+    }
 [@@deriving sexp, hash]
 
 let absolute = function
   | Absolute path -> path
-  | Relative { RelativePath.root; relative } -> root ^/ relative
+  | Relative { root; relative } -> root ^/ relative
 
 
 let create_absolute ?(follow_symbolic_links = false) path =
@@ -48,12 +37,10 @@ let create_relative ~root ~relative =
     if not (String.is_suffix ~suffix:"/" root) then root ^ "/" else root
   in
   let relative = String.chop_prefix ~prefix:root relative |> Option.value ~default:relative in
-  Relative { RelativePath.root; relative }
+  Relative { root; relative }
 
 
 let show = absolute
-
-let to_yojson path = `String (show path)
 
 let equal left right = String.equal (absolute left) (absolute right)
 
@@ -96,13 +83,13 @@ let current_working_directory () = create_absolute (Sys_unix.getcwd ())
 let append path ~element =
   match path with
   | Absolute path -> Absolute (path ^/ element)
-  | Relative { RelativePath.root; relative } ->
+  | Relative { root; relative } ->
       let relative =
         match relative with
         | "" -> element
         | _ -> relative ^/ element
       in
-      Relative { RelativePath.root; relative }
+      Relative { root; relative }
 
 
 let is_directory path =
@@ -117,7 +104,7 @@ let is_directory path =
 
 let get_suffix_path = function
   | Absolute path -> path
-  | Relative { RelativePath.relative; _ } -> relative
+  | Relative { relative; _ } -> relative
 
 
 let is_path_python_stub path = String.is_suffix ~suffix:".pyi" path
@@ -259,31 +246,10 @@ let remove_contents_of_directory path =
   | Sys_error message -> Result.Error message
 
 
-module Map = Map.Make (struct
-  type nonrec t = t
-
-  let compare left right = String.compare (absolute left) (absolute right)
-
-  let sexp_of_t = sexp_of_t
-
-  let t_of_sexp = t_of_sexp
-end)
-
-module Set = Set.Make (struct
-  type nonrec t = t
-
-  let compare left right = String.compare (absolute left) (absolute right)
-
-  let sexp_of_t = sexp_of_t
-
-  let t_of_sexp = t_of_sexp
-end)
-
 let with_suffix path ~suffix =
   match path with
   | Absolute prefix -> Absolute (prefix ^ suffix)
-  | Relative { RelativePath.root; relative } ->
-      Relative { RelativePath.root; relative = relative ^ suffix }
+  | Relative { root; relative } -> Relative { root; relative = relative ^ suffix }
 
 
 let get_matching_files_recursively ~suffix ~paths =

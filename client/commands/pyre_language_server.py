@@ -625,10 +625,12 @@ class PyreLanguageServer(PyreLanguageServerApi):
             )
             error_message = result.error_message
             raw_result = None
+            empty = True
         else:
             raw_result = lsp.LspHoverResponse.cached_schema().dump(
                 result.data,
             )
+            empty = len(result.data.contents) == 0
 
         await lsp.write_json_rpc(
             self.output_channel,
@@ -643,7 +645,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
                 "type": "LSP",
                 "operation": "hover",
                 "filePath": str(document_path),
-                "nonEmpty": raw_result is not None,
+                "nonEmpty": not empty,
                 "response": raw_result,
                 "duration_ms": hover_timer.stop_in_millisecond(),
                 "query_source": result.source
@@ -834,9 +836,11 @@ class PyreLanguageServer(PyreLanguageServerApi):
             )
             error_message = result.error_message
             result = []
-        raw_result = lsp.CompletionResponse.cached_schema().dump(
-            result,
-        )
+
+        raw_result = [completion_item.to_dict() for completion_item in result]
+
+        LOG.debug(f"raw_result: {raw_result}")
+
         await lsp.write_json_rpc(
             self.output_channel,
             json_rpc.SuccessResponse(
@@ -1156,6 +1160,7 @@ class PyreLanguageServer(PyreLanguageServerApi):
         )
 
 
+@dataclasses.dataclass(frozen=True)
 class CodeNavigationServerApi(PyreLanguageServer):
     pass
 
@@ -1235,6 +1240,7 @@ class PyreLanguageServerDispatcher:
             if not self.daemon_manager.is_task_running():
                 await self._try_restart_pyre_daemon()
         elif request.method == "textDocument/completion":
+            LOG.debug("Received 'textDocument/completion' request.")
             await self.api.process_completion_request(
                 lsp.CompletionParameters.from_json_rpc_parameters(
                     request.extract_parameters()

@@ -9,20 +9,23 @@
 
 
 module Std = struct
+  module SharedMemory = Hack_heap.SharedMemory
 
-  module SharedMemory = SharedMemory
+  module Prefix = Hack_heap.Prefix
 
-  module String_utils = String_utils
+  module MultiWorker = Hack_procs.MultiWorker
 
-  module MultiWorker = MultiWorker
+  module Worker = Hack_procs.Worker
 
-  module Worker = Worker
+  module WorkerCancel = Hack_heap.WorkerCancel
 
-  module Daemon = Daemon
+  module Bucket = Hack_procs.Hack_bucket
 
-  module Bucket = Hack_bucket
+  module Measure = Hack_utils.Measure
 
-  module Marshal_tools = Marshal_tools
+  module MyMap = Hack_collections.MyMap
 
-  module Measure = Measure
+  module PrintSignal = Hack_utils.PrintSignal
+
+  let daemon_check_entry_point = Hack_utils.Daemon.check_entry_point
 end

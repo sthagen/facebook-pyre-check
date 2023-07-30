@@ -574,18 +574,21 @@ module State (FunctionContext : FUNCTION_CONTEXT) = struct
       in
       taint :: arguments_taint, state
     in
+    let analyze_argument_matches argument_matches initial_state =
+      argument_matches |> List.rev |> List.fold ~f:analyze_argument ~init:([], initial_state)
+    in
     let _, captures =
       CallModel.match_captures
         ~model:taint_model
         ~captures_taint:ForwardState.empty
         ~location:call_location
     in
-    let captures_taint, _ = List.fold ~f:analyze_argument ~init:([], initial_state) captures in
+    let captures_taint, _ = analyze_argument_matches captures initial_state in
 
     let arguments_taint, state =
-      CallModel.match_actuals_to_formals ~model:taint_model ~arguments
-      |> List.rev
-      |> List.fold ~f:analyze_argument ~init:([], initial_state)
+      analyze_argument_matches
+        (CallModel.match_actuals_to_formals ~model:taint_model ~arguments)
+        initial_state
     in
     (* Extract the taint for self. *)
     let self_taint, callee_taint, arguments_taint =
@@ -2411,7 +2414,7 @@ let extract_tito_and_sink_models
     entry_taint
   =
   (* Simplify trees by keeping only essential structure and merging details back into that. *)
-  let simplify annotation tree =
+  let simplify ~breadcrumbs annotation tree =
     let type_breadcrumbs =
       annotation
       >>| GlobalResolution.parse_annotation resolution
@@ -2419,13 +2422,9 @@ let extract_tito_and_sink_models
     in
 
     tree
-    |> BackwardState.Tree.shape
-         ~mold_with_return_access_paths:is_constructor
-         ~breadcrumbs:(Features.widen_broadening_set ())
+    |> BackwardState.Tree.shape ~mold_with_return_access_paths:is_constructor ~breadcrumbs
     |> BackwardState.Tree.add_local_breadcrumbs type_breadcrumbs
-    |> BackwardState.Tree.limit_to
-         ~breadcrumbs:(Features.widen_broadening_set ())
-         ~width:maximum_model_sink_tree_width
+    |> BackwardState.Tree.limit_to ~breadcrumbs ~width:maximum_model_sink_tree_width
     |> BackwardState.Tree.transform_call_info
          CallInfo.Tito
          Features.ReturnAccessPathTree.Self
@@ -2448,7 +2447,7 @@ let extract_tito_and_sink_models
       let candidate_tree =
         Map.Poly.find partition Sinks.LocalReturn
         |> Option.value ~default:BackwardState.Tree.empty
-        |> simplify annotation
+        |> simplify ~breadcrumbs:(Features.model_tito_broadening_set ()) annotation
       in
       let candidate_tree =
         match maximum_tito_depth with
@@ -2462,7 +2461,7 @@ let extract_tito_and_sink_models
         |> BackwardState.Tree.add_via_features via_features_to_attach
       in
       BackwardState.Tree.limit_to
-        ~breadcrumbs:(Features.widen_broadening_set ())
+        ~breadcrumbs:(Features.model_tito_broadening_set ())
         ~width:maximum_model_tito_tree_width
         candidate_tree
     in
@@ -2481,7 +2480,9 @@ let extract_tito_and_sink_models
                   BackwardState.Tree.prune_maximum_length maximum_trace_length sink_tree
               | _ -> sink_tree
             in
-            let sink_tree = simplify annotation sink_tree in
+            let sink_tree =
+              simplify ~breadcrumbs:(Features.model_sink_broadening_set ()) annotation sink_tree
+            in
             let sink_tree =
               match Sinks.discard_transforms sink with
               | Sinks.ExtraTraceSink ->

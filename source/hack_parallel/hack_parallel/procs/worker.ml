@@ -8,7 +8,15 @@
 (* TODO(T132410158) Add a module-level doc comment. *)
 
 
-open Hack_core
+module List = Hack_core.Hack_core_list
+module Daemon = Hack_utils.Daemon
+module Fork = Hack_utils.Fork
+module Exit_status = Hack_utils.Exit_status
+module Measure = Hack_utils.Measure
+module PrintSignal = Hack_utils.PrintSignal
+module String_utils = Hack_utils.String_utils
+module Utils = Hack_utils.Utils
+open Hack_heap
 
 (*****************************************************************************
  * Module building workers

@@ -21,31 +21,13 @@ module Request : sig
         qualifiers: Reference.t list;
         parse_errors: string list;
       }
-    | Help of string
-    | HoverInfoForPosition of {
-        path: PyrePath.t;
-        position: Location.position;
-      }
-    | InlineDecorators of {
-        function_reference: Reference.t;
-        decorators_to_skip: Reference.t list;
-      }
-    | IsCompatibleWith of Expression.t * Expression.t
     | LessOrEqual of Expression.t * Expression.t
-    | LocationOfDefinition of {
-        path: PyrePath.t;
-        position: Location.position;
-      }
     | ModelQuery of {
         path: PyrePath.t;
         query_name: string;
       }
     | ModulesOfPath of PyrePath.t
     | PathOfModule of Reference.t
-    | FindReferences of {
-        path: PyrePath.t;
-        position: Location.position;
-      }
     | ReferencesUsedByFile of string
     | SaveServerState of PyrePath.t
     | Superclasses of Reference.t list
@@ -56,8 +38,6 @@ module Request : sig
         verify_dsl: bool;
       }
   [@@deriving equal, show]
-
-  val inline_decorators : ?decorators_to_skip:Reference.t list -> Reference.t -> t
 end
 
 module Response : sig
@@ -87,12 +67,6 @@ module Response : sig
     }
     [@@deriving equal, to_yojson]
 
-    type hover_info = {
-      value: string option;
-      docstring: string option;
-    }
-    [@@deriving equal, to_yojson]
-
     type coverage_at_path = {
       path: string;
       total_expressions: int;
@@ -110,13 +84,6 @@ module Response : sig
       | CoverageAtPath of coverage_at_path
       | ErrorAtPath of error_at_path
     [@@deriving equal, to_yojson]
-
-    type compatibility = {
-      actual: Type.t;
-      expected: Type.t;
-      result: bool;
-    }
-    [@@derving equal]
 
     type callee_with_instantiated_locations = {
       callee: Analysis.Callgraph.callee;
@@ -161,12 +128,6 @@ module Response : sig
     }
     [@@deriving equal, to_yojson]
 
-    type code_location = {
-      path: string;
-      range: range;
-    }
-    [@@deriving equal, to_yojson]
-
     type global_leak_errors = {
       global_leaks: Analysis.AnalysisError.Instantiated.t list;
       query_errors: string list;
@@ -184,20 +145,14 @@ module Response : sig
       | Callees of Analysis.Callgraph.callee list
       | CalleesWithLocation of callee_with_instantiated_locations list
       | Callgraph of callees list
-      | Compatibility of compatibility
       | Errors of Analysis.AnalysisError.Instantiated.t list
       | ExpressionLevelCoverageResponse of coverage_response_at_path list
       | FoundAttributes of attribute list
       | FoundDefines of define list
-      | FoundLocationsOfDefinitions of code_location list
       | FoundModels of taint_model list
       | FoundModules of Ast.Reference.t list
       | FoundPath of string
-      | FoundReferences of code_location list
-      | FunctionDefinition of Statement.Define.t
       | GlobalLeakErrors of global_leak_errors
-      | Help of string
-      | HoverInfoForPosition of hover_info
       | ModelVerificationErrors of Taint.ModelVerificationError.t list
       | ReferenceTypesInPath of types_at_path
       | Success of string
@@ -215,8 +170,6 @@ module Response : sig
 
   val create_type_at_location : Location.t * Type.t -> Base.type_at_location
 end
-
-val help : unit -> string
 
 val parse_request : string -> (Request.t, string) Core.Result.t
 

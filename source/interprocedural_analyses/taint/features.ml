@@ -30,7 +30,7 @@ struct
 
     let to_string = T.show
 
-    let prefix = Prefix.make ()
+    let prefix = Hack_parallel.Std.Prefix.make ()
 
     let description = T.name
   end
@@ -235,6 +235,10 @@ module Breadcrumb = struct
     | Broadening (* Taint tree was collapsed for various reasons *)
     | WidenBroadening (* Taint tree was collapsed during widening *)
     | TitoBroadening (* Taint tree was collapsed when applying tito *)
+    | ModelBroadening (* Taint tree was collapsed when simplifying the model *)
+    | ModelSourceBroadening (* Source tree was collapsed when simplifying the model *)
+    | ModelSinkBroadening (* Sink tree was collapsed when simplifying the model *)
+    | ModelTitoBroadening (* Tito tree was collapsed when simplifying the model *)
     | IssueBroadening (* Taint tree was collapsed when matching sources and sinks *)
     | Crtex (* Taint comes from the Cross Repository Taint EXchange *)
     | TransformTitoDepth of int
@@ -259,6 +263,10 @@ module Breadcrumb = struct
     | Broadening -> Format.fprintf formatter "Broadening"
     | WidenBroadening -> Format.fprintf formatter "WidenBroadening"
     | TitoBroadening -> Format.fprintf formatter "TitoBroadening"
+    | ModelBroadening -> Format.fprintf formatter "ModelBroadening"
+    | ModelSourceBroadening -> Format.fprintf formatter "ModelSourceBroadening"
+    | ModelSinkBroadening -> Format.fprintf formatter "ModelSinkBroadening"
+    | ModelTitoBroadening -> Format.fprintf formatter "ModelTitoBroadening"
     | IssueBroadening -> Format.fprintf formatter "IssueBroadening"
     | Crtex -> Format.fprintf formatter "Crtex"
     | TransformTitoDepth depth -> Format.fprintf formatter "TransformTitoDepth(%d)" depth
@@ -286,6 +294,10 @@ module Breadcrumb = struct
     | Broadening -> `Assoc [prefix ^ "via", `String "broadening"]
     | WidenBroadening -> `Assoc [prefix ^ "via", `String "widen-broadening"]
     | TitoBroadening -> `Assoc [prefix ^ "via", `String "tito-broadening"]
+    | ModelBroadening -> `Assoc [prefix ^ "via", `String "model-broadening"]
+    | ModelSourceBroadening -> `Assoc [prefix ^ "via", `String "model-source-broadening"]
+    | ModelSinkBroadening -> `Assoc [prefix ^ "via", `String "model-sink-broadening"]
+    | ModelTitoBroadening -> `Assoc [prefix ^ "via", `String "model-tito-broadening"]
     | IssueBroadening -> `Assoc [prefix ^ "via", `String "issue-broadening"]
     | Crtex -> `Assoc [prefix ^ "via", `String "crtex"]
     | TransformTitoDepth depth ->
@@ -537,6 +549,8 @@ let type_enumeration = memoize_breadcrumb_interned (Breadcrumb.Type "enumeration
 
 let broadening = memoize_breadcrumb_interned Breadcrumb.Broadening
 
+let widen_broadening = memoize_breadcrumb_interned Breadcrumb.WidenBroadening
+
 let issue_broadening = memoize_breadcrumb_interned Breadcrumb.IssueBroadening
 
 let string_concat_left_hand_side =
@@ -561,6 +575,25 @@ let widen_broadening_set =
 
 
 let tito_broadening_set = memoize_breadcrumb_set [Breadcrumb.Broadening; Breadcrumb.TitoBroadening]
+
+let model_broadening_set =
+  memoize_breadcrumb_set [Breadcrumb.Broadening; Breadcrumb.ModelBroadening]
+
+
+let model_source_broadening_set =
+  memoize_breadcrumb_set
+    [Breadcrumb.Broadening; Breadcrumb.ModelBroadening; Breadcrumb.ModelSourceBroadening]
+
+
+let model_sink_broadening_set =
+  memoize_breadcrumb_set
+    [Breadcrumb.Broadening; Breadcrumb.ModelBroadening; Breadcrumb.ModelSinkBroadening]
+
+
+let model_tito_broadening_set =
+  memoize_breadcrumb_set
+    [Breadcrumb.Broadening; Breadcrumb.ModelBroadening; Breadcrumb.ModelTitoBroadening]
+
 
 let issue_broadening_set =
   memoize_breadcrumb_set [Breadcrumb.Broadening; Breadcrumb.IssueBroadening]

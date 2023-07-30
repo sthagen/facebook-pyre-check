@@ -29,31 +29,13 @@ module Request = struct
         qualifiers: Reference.t list;
         parse_errors: string list;
       }
-    | Help of string
-    | HoverInfoForPosition of {
-        path: PyrePath.t;
-        position: Location.position;
-      }
-    | InlineDecorators of {
-        function_reference: Reference.t;
-        decorators_to_skip: Reference.t list;
-      }
-    | IsCompatibleWith of Expression.t * Expression.t
     | LessOrEqual of Expression.t * Expression.t
-    | LocationOfDefinition of {
-        path: PyrePath.t;
-        position: Location.position;
-      }
     | ModelQuery of {
         path: PyrePath.t;
         query_name: string;
       }
     | ModulesOfPath of PyrePath.t
     | PathOfModule of Reference.t
-    | FindReferences of {
-        path: PyrePath.t;
-        position: Location.position;
-      }
     | ReferencesUsedByFile of string
     | SaveServerState of PyrePath.t
     | Superclasses of Reference.t list
@@ -64,9 +46,6 @@ module Request = struct
         verify_dsl: bool;
       }
   [@@deriving equal, show]
-
-  let inline_decorators ?(decorators_to_skip = []) function_reference =
-    InlineDecorators { function_reference; decorators_to_skip }
 end
 
 module Response = struct
@@ -96,12 +75,6 @@ module Response = struct
     }
     [@@deriving equal, to_yojson]
 
-    type hover_info = {
-      value: string option;
-      docstring: string option;
-    }
-    [@@deriving equal, to_yojson]
-
     type coverage_at_path = {
       path: string;
       total_expressions: int;
@@ -119,13 +92,6 @@ module Response = struct
       | CoverageAtPath of coverage_at_path
       | ErrorAtPath of error_at_path
     [@@deriving equal, to_yojson]
-
-    type compatibility = {
-      actual: Type.t;
-      expected: Type.t;
-      result: bool;
-    }
-    [@@deriving equal]
 
     type callee_with_instantiated_locations = {
       callee: Analysis.Callgraph.callee;
@@ -174,12 +140,6 @@ module Response = struct
       `Assoc ["start", position_to_yojson start; "end", position_to_yojson end_]
 
 
-    type code_location = {
-      path: string;
-      range: range;
-    }
-    [@@deriving equal, to_yojson]
-
     type global_leak_errors = {
       global_leaks: Analysis.AnalysisError.Instantiated.t list;
       query_errors: string list;
@@ -201,20 +161,14 @@ module Response = struct
       | Callees of Analysis.Callgraph.callee list
       | CalleesWithLocation of callee_with_instantiated_locations list
       | Callgraph of callees list
-      | Compatibility of compatibility
       | Errors of Analysis.AnalysisError.Instantiated.t list
       | ExpressionLevelCoverageResponse of coverage_response_at_path list
       | FoundAttributes of attribute list
       | FoundDefines of define list
-      | FoundLocationsOfDefinitions of code_location list
       | FoundModels of taint_model list
       | FoundModules of Reference.t list
       | FoundPath of string
-      | FoundReferences of code_location list
-      | FunctionDefinition of Statement.Define.t
       | GlobalLeakErrors of global_leak_errors
-      | Help of string
-      | HoverInfoForPosition of hover_info
       | ModelVerificationErrors of Taint.ModelVerificationError.t list
       | ReferenceTypesInPath of types_at_path
       | Success of string
@@ -241,13 +195,6 @@ module Response = struct
           `Assoc
             (List.map callees ~f:(fun { caller; callees } ->
                  Reference.show caller, `List (List.map callees ~f:callee_to_yojson)))
-      | Compatibility { actual; expected; result } ->
-          `Assoc
-            [
-              "actual", Type.to_yojson actual;
-              "expected", Type.to_yojson expected;
-              "boolean", `Bool result;
-            ]
       | Errors errors ->
           `Assoc
             [
@@ -268,7 +215,6 @@ module Response = struct
                      ~f:(fun error -> AnalysisError.Instantiated.to_yojson error)
                      global_leaks) );
             ]
-      | Help string -> `Assoc ["help", `String string]
       | ModelVerificationErrors errors ->
           `Assoc ["errors", `List (List.map errors ~f:Taint.ModelVerificationError.to_json)]
       | FoundAttributes attributes ->
@@ -312,23 +258,11 @@ module Response = struct
               ]
           in
           `List (List.map defines ~f:define_to_yojson)
-      | FoundLocationsOfDefinitions locations ->
-          `List (List.map locations ~f:code_location_to_yojson)
       | FoundModels models -> `List (List.map ~f:taint_model_to_yojson models)
       | FoundModules references ->
           let reference_to_yojson reference = `String (Reference.show reference) in
           `List (List.map references ~f:reference_to_yojson)
       | FoundPath path -> `Assoc ["path", `String path]
-      | FoundReferences locations -> `List (List.map locations ~f:code_location_to_yojson)
-      | FunctionDefinition define ->
-          `Assoc
-            [
-              ( "definition",
-                `String
-                  (Statement.show
-                     (Statement.Statement.Define define |> Node.create_with_default_location)) );
-            ]
-      | HoverInfoForPosition hover_info -> hover_info_to_yojson hover_info
       | ReferenceTypesInPath referenceTypesInPath -> types_at_path_to_yojson referenceTypesInPath
       | Success message -> `Assoc ["message", `String message]
       | Superclasses class_to_superclasses_mapping ->
@@ -356,118 +290,6 @@ module Response = struct
 
   let create_type_at_location (location, annotation) = { Base.location; annotation }
 end
-
-let help () =
-  let open Request in
-  let open Expression in
-  let help = function
-    | Batch _ ->
-        Some
-          "batch(query1(arg), query2(arg)): Runs a batch of queries and returns a map of \
-           responses. List of given queries may include any combination of other valid queries \
-           except for `batch` itself."
-    | Attributes _ ->
-        Some
-          "attributes(class_name): Returns a list of attributes, including functions, for a class."
-    | Callees _ -> Some "callees(function): calls from a given function."
-    | CalleesWithLocation _ ->
-        Some
-          "callees_with_location(function): calls from a given function, including the locations \
-           at which they are called."
-    | Defines _ ->
-        Some
-          "defines(module_or_class_name): Returns a JSON with the signature of all defines for \
-           given module or class."
-    | DumpCallGraph ->
-        Some "dump_call_graph(): Returns a comprehensive JSON of caller -> list of callees."
-    | ExpressionLevelCoverage _ ->
-        Some
-          "expression_level_coverage(path='path') or expression_level_coverage('path1', 'path2', \
-           ...): Return JSON output containing the number of covered and uncovered expressions \
-           from above, along with a list of known coverage gaps."
-    | GlobalLeaks _ ->
-        Some
-          "global_leaks(function1, ...): analyzes the given function(s) and emits errors when \
-           global variables are mutated."
-    | HoverInfoForPosition _ ->
-        Some
-          "hover_info_for_position(path='<absolute path>', line=<line>, character=<character>): \
-           Return JSON output containing the type of the symbol at the given position."
-    | InlineDecorators _ ->
-        Some
-          "inline_decorators(qualified_function_name, optional decorators_to_skip=[decorator1, \
-           decorator2]): Shows the function definition after decorators have been inlined."
-    | IsCompatibleWith _ -> None
-    | LessOrEqual _ -> Some "less_or_equal(T1, T2): Returns whether T1 is a subtype of T2."
-    | LocationOfDefinition _ ->
-        Some
-          "location_of_definition(path='<absolute path>', line=<line>, character=<character>): \
-           Returns the location of the definition for the symbol at the given line and character."
-    | ModelQuery _ ->
-        Some
-          "model_query(path='<absolute path>', query_name=<model_query_name>): Returns in JSON a \
-           list of all models generated from the query with the name `query_name` in the directory \
-           `path`."
-    | ModulesOfPath _ ->
-        Some "modules_of_path(path): Returns the modules of a file pointed to by path."
-    | PathOfModule _ -> Some "path_of_module(module): Gives an absolute path for `module`."
-    | FindReferences _ ->
-        Some
-          "find_references(path='<absolute path>', line=<line>, character=<character>): Returns \
-           the locations of all references to the symbol at the given line and character."
-    | ReferencesUsedByFile _ ->
-        Some
-          "references_used_by_file(path='<absolute path>'): Similar to the `types` query, this \
-           query will return all the types of every symbol (for a given path). Unlike the `types` \
-           query response, types that are defined outside this project will be treated as valid \
-           types & also be included in the query response."
-    | SaveServerState _ ->
-        Some "save_server_state('path'): Saves Pyre's serialized state into `path`."
-    | Superclasses _ ->
-        Some
-          "superclasses(class_name1, class_name2, ...): Returns a mapping of class_name to the \
-           list of superclasses for `class_name`."
-    | Type _ -> Some "type(expression): Evaluates the type of `expression`."
-    | TypesInFiles _ ->
-        Some
-          "types(path='path') or types('path1', 'path2', ...): Returns a map from each given path \
-           to a list of all types for that path."
-    | ValidateTaintModels _ ->
-        Some
-          "validate_taint_models('optional path', verify_dsl=<bool>): Validates models and returns \
-           errors. Defaults to model path in configuration if no parameter is passed in, and \
-           verify_dsl=False. Pass in verify_dsl=True to validate ModelQueries as well."
-    | Help _ -> None
-  in
-  let path = PyrePath.current_working_directory () in
-  let empty = Expression.Name (Name.Identifier "") |> Node.create_with_default_location in
-  List.filter_map
-    ~f:help
-    [
-      Batch [];
-      Attributes (Reference.create "");
-      Callees (Reference.create "");
-      CalleesWithLocation (Reference.create "");
-      Defines [Reference.create ""];
-      DumpCallGraph;
-      ExpressionLevelCoverage [""];
-      HoverInfoForPosition { path; position = Location.any_position };
-      IsCompatibleWith (empty, empty);
-      LessOrEqual (empty, empty);
-      ModelQuery { path; query_name = "" };
-      ModulesOfPath path;
-      PathOfModule (Reference.create "");
-      SaveServerState path;
-      Superclasses [Reference.empty];
-      Type (Node.create_with_default_location (Expression.Constant Constant.True));
-      TypesInFiles [""];
-      ValidateTaintModels { path = None; verify_dsl = false };
-      Request.inline_decorators (Reference.create "");
-    ]
-  |> List.sort ~compare:String.compare
-  |> String.concat ~sep:"\n  "
-  |> Format.sprintf "Possible queries:\n  %s"
-
 
 let rec parse_request_exn query =
   let open Expression in
@@ -504,38 +326,6 @@ let rec parse_request_exn query =
           } ->
             value
         | _ -> raise (InvalidQuery "expected string")
-      in
-      let parse_inline_decorators arguments =
-        match arguments with
-        | [name] -> Request.inline_decorators (reference name)
-        | [
-         name;
-         {
-           Call.Argument.name = Some { Node.value = "decorators_to_skip"; _ };
-           value = { Node.value = Expression.List decorators; _ };
-         };
-        ] -> (
-            let decorator_to_reference = function
-              | { Node.value = Expression.Name name; _ } as decorator ->
-                  name_to_reference name |> Result.of_option ~error:decorator
-              | decorator -> Result.Error decorator
-            in
-            let valid_decorators, invalid_decorators =
-              List.map decorators ~f:decorator_to_reference |> List.partition_result
-            in
-            match valid_decorators, invalid_decorators with
-            | decorators_to_skip, [] ->
-                InlineDecorators { function_reference = reference name; decorators_to_skip }
-            | _, invalid_decorators ->
-                InvalidQuery
-                  (Format.asprintf
-                     "inline_decorators: invalid decorators `(%s)`"
-                     (List.map invalid_decorators ~f:Expression.show |> String.concat ~sep:", "))
-                |> raise)
-        | _ ->
-            raise
-              (InvalidQuery
-                 "inline_decorators expects qualified name and optional `decorators_to_skip=[...]`")
       in
       let string argument = argument |> expression |> string_of_expression in
       let boolean argument =
@@ -580,13 +370,6 @@ let rec parse_request_exn query =
         in
         Request.ValidateTaintModels { path; verify_dsl }
       in
-      let integer argument =
-        let integer_of_expression = function
-          | { Node.value = Expression.Constant (Constant.Integer value); _ } -> value
-          | _ -> raise (InvalidQuery "expected integer")
-        in
-        argument |> expression |> integer_of_expression
-      in
       match String.lowercase name, arguments with
       | "attributes", [name] -> Request.Attributes (reference name)
       | "batch", queries ->
@@ -624,33 +407,12 @@ let rec parse_request_exn query =
           List.map ~f:single_argument_to_reference arguments
           |> List.partition_result
           |> fun (qualifiers, parse_errors) -> Request.GlobalLeaks { qualifiers; parse_errors }
-      | "help", _ -> Request.Help (help ())
-      | "hover_info_for_position", [path; line; column] ->
-          Request.HoverInfoForPosition
-            {
-              path = PyrePath.create_absolute (string path);
-              position = { Location.line = integer line; column = integer column };
-            }
-      | "inline_decorators", arguments -> parse_inline_decorators arguments
-      | "is_compatible_with", [left; right] -> Request.IsCompatibleWith (access left, access right)
       | "less_or_equal", [left; right] -> Request.LessOrEqual (access left, access right)
-      | "location_of_definition", [path; line; column] ->
-          Request.LocationOfDefinition
-            {
-              path = PyrePath.create_absolute (string path);
-              position = { line = integer line; column = integer column };
-            }
       | "model_query", [path; model_query_name] ->
           Request.ModelQuery
             { path = PyrePath.create_absolute (string path); query_name = string model_query_name }
       | "modules_of_path", [path] -> Request.ModulesOfPath (PyrePath.create_absolute (string path))
       | "path_of_module", [module_access] -> Request.PathOfModule (reference module_access)
-      | "find_references", [path; line; column] ->
-          Request.FindReferences
-            {
-              path = PyrePath.create_absolute (string path);
-              position = { line = integer line; column = integer column };
-            }
       | "references_used_by_file", [path] -> Request.ReferencesUsedByFile (string path)
       | "save_server_state", [path] ->
           Request.SaveServerState (PyrePath.create_absolute (string path))
@@ -659,7 +421,6 @@ let rec parse_request_exn query =
       | "types", paths -> Request.TypesInFiles (List.map ~f:string paths)
       | "validate_taint_models", arguments -> parse_validate_taint_models arguments
       | _ -> raise (InvalidQuery "unexpected query"))
-  | Ok _ when String.equal query "help" -> Help (help ())
   | Ok _ -> raise (InvalidQuery "unexpected query")
   | Error _ -> raise (InvalidQuery "failed to parse query")
 
@@ -668,38 +429,6 @@ let parse_request query =
   try Result.Ok (parse_request_exn query) with
   | InvalidQuery reason -> Result.Error reason
 
-
-module InlineDecorators = struct
-  let inline_decorators ~type_environment ~decorators_to_skip function_reference =
-    let define =
-      GlobalResolution.define
-        (TypeEnvironment.ReadOnly.global_resolution type_environment)
-        function_reference
-    in
-    match define with
-    | Some define -> (
-        let get_source =
-          AstEnvironment.ReadOnly.get_processed_source
-            (TypeEnvironment.ReadOnly.ast_environment type_environment)
-        in
-        let define_with_inlining =
-          DecoratorPreprocessing.inline_decorators_for_define
-            ~get_source
-            ~get_decorator_action:(fun reference ->
-              if Set.mem decorators_to_skip reference then
-                Some DecoratorPreprocessing.Action.DoNotInline
-              else
-                None)
-            ~location:Location.any
-            define
-        in
-        match Statement.Statement.Define define_with_inlining |> Transform.sanitize_statement with
-        | Statement.Statement.Define define -> Response.Single (FunctionDefinition define)
-        | _ -> failwith "Expected define")
-    | None ->
-        Response.Error
-          (Format.asprintf "Could not find function `%s`" (Reference.show function_reference))
-end
 
 let rec process_request ~type_environment ~build_system request =
   let process_request () =
@@ -781,25 +510,6 @@ let rec process_request ~type_environment ~build_system request =
             (print_reason error_reason))
         errors
     in
-    let instantiate_range
-        Location.WithModule.
-          {
-            start = { line = start_line; column = start_column };
-            stop = { line = stop_line; column = stop_column };
-            module_reference;
-          }
-      =
-      PathLookup.instantiate_path_with_build_system ~build_system ~module_tracker module_reference
-      >>| fun path ->
-      {
-        Response.Base.path;
-        range =
-          {
-            start = { line = start_line; character = start_column };
-            end_ = { line = stop_line; character = stop_column };
-          };
-      }
-    in
     let setup_and_execute_model_queries model_queries =
       let scheduler_wrapper scheduler =
         let qualifiers = ModuleTracker.ReadOnly.tracked_explicit_modules module_tracker in
@@ -834,20 +544,6 @@ let rec process_request ~type_environment ~build_system request =
         ~configuration
         ~should_log_exception:(fun _ -> true)
         ~f:scheduler_wrapper
-    in
-    let module_of_path path =
-      let relative_path =
-        let { Configuration.Analysis.local_root = root; _ } = configuration in
-        PyrePath.create_relative ~root ~relative:(PyrePath.absolute path) |> SourcePath.create
-      in
-      match
-        PathLookup.modules_of_source_path_with_build_system
-          ~build_system
-          ~module_tracker
-          relative_path
-      with
-      | [found_module] -> Some found_module
-      | _ -> None
     in
     let open Response in
     let get_program_call_graph () =
@@ -1077,34 +773,6 @@ let rec process_request ~type_environment ~build_system request =
         List.map ~f:find_leak_errors_for_qualifier qualifiers
         |> List.partition_result
         |> construct_result
-    | Help help_list -> Single (Base.Help help_list)
-    | HoverInfoForPosition { path; position } ->
-        module_of_path path
-        >>| (fun module_reference ->
-              LocationBasedLookup.hover_info_for_position
-                ~type_environment
-                ~module_reference
-                position)
-        >>| (fun { value; docstring } -> Single (Base.HoverInfoForPosition { value; docstring }))
-        |> Option.value
-             ~default:(Error (Format.sprintf "No module found for path `%s`" (PyrePath.show path)))
-    | InlineDecorators { function_reference; decorators_to_skip } ->
-        InlineDecorators.inline_decorators
-          ~type_environment
-          ~decorators_to_skip:(Reference.Set.of_list decorators_to_skip)
-          function_reference
-    | IsCompatibleWith (left, right) ->
-        (* We need a special version of parse_and_validate to handle the "unknown" type that
-           Monkeycheck may send us *)
-        let left = parse_and_validate ~unknown_is_top:true left in
-        let right = parse_and_validate ~unknown_is_top:true right in
-        let right =
-          match Type.coroutine_value right with
-          | None -> right
-          | Some unwrapped -> unwrapped
-        in
-        GlobalResolution.is_compatible_with global_resolution ~left ~right
-        |> fun result -> Single (Base.Compatibility { actual = left; expected = right; result })
     | ModelQuery { path; query_name } -> (
         if not (PyrePath.file_exists path) then
           Error (Format.sprintf "File path `%s` does not exist" (PyrePath.show path))
@@ -1203,37 +871,6 @@ let rec process_request ~type_environment ~build_system request =
         let right = parse_and_validate right in
         GlobalResolution.less_or_equal global_resolution ~left ~right
         |> fun response -> Single (Base.Boolean response)
-    | LocationOfDefinition { path; position } -> (
-        let module_reference = module_of_path path in
-        match module_reference with
-        | Some module_reference -> (
-            (* Performing check on whether source contains parse error for telemetry purposes -
-               understanding whether the file was parsed correct to gauge the usefulness of an error
-               recoverable parser.
-
-               This can be removed when we either no longer need telemetry data or if we can
-               separate symbol resolution from location finding logic. *)
-            let raw_source =
-              AstEnvironment.ReadOnly.get_raw_source
-                (TypeEnvironment.ReadOnly.ast_environment type_environment)
-                module_reference
-            in
-            match raw_source with
-            | Some (Result.Error error) ->
-                Error
-                  (Format.sprintf
-                     "Parse error in location request. Location: %s, message: %s"
-                     (Location.show error.location)
-                     error.message)
-            | _ ->
-                LocationBasedLookup.location_of_definition
-                  ~type_environment
-                  ~module_reference
-                  position
-                >>= instantiate_range
-                |> Option.to_list
-                |> fun definitions -> Single (Base.FoundLocationsOfDefinitions definitions))
-        | None -> Single (Base.FoundLocationsOfDefinitions []))
     | PathOfModule module_name ->
         ModuleTracker.ReadOnly.lookup_module_path module_tracker module_name
         >>= (fun source_path ->
@@ -1246,79 +883,6 @@ let rec process_request ~type_environment ~build_system request =
         |> Option.value
              ~default:
                (Error (Format.sprintf "No path found for module `%s`" (Reference.show module_name)))
-    | FindReferences { path; position } -> (
-        let find_references_local ~reference ~define_name =
-          let is_match identifier =
-            let requested_name =
-              Reference.delocalize reference |> Reference.last |> Identifier.sanitized
-            in
-            let name = Identifier.sanitized identifier in
-            String.equal requested_name name
-          in
-          match GlobalResolution.function_definition global_resolution define_name with
-          | Some { FunctionDefinition.body = Some define; qualifier; _ } ->
-              let location_to_result location =
-                Location.with_module ~module_reference:qualifier location |> instantiate_range
-              in
-              let all_local_bindings =
-                Scope.Scope.of_define_exn define.value
-                |> UninitializedLocalCheck.local_bindings
-                |> Identifier.Map.filter_keys ~f:is_match
-                |> Identifier.Map.data
-                |> List.map ~f:(fun { Scope.Binding.location; _ } -> location)
-                |> Location.Set.of_list
-              in
-              let all_access_reads =
-                let { Statement.Define.body; _ } = Node.value define in
-                List.map ~f:UninitializedLocalCheck.extract_reads_in_statement body
-                |> List.concat
-                |> List.filter ~f:(fun { Node.value; _ } -> is_match value)
-                |> List.map ~f:Node.location
-                |> Location.Set.of_list
-              in
-              let all_local_references =
-                Set.union all_local_bindings all_access_reads
-                |> Location.Set.to_list
-                |> List.filter_map ~f:location_to_result
-              in
-              Single (Base.FoundReferences all_local_references)
-          | _ -> Single (Base.FoundReferences [])
-        in
-        let find_references_global ~reference =
-          (* TODO(T114362295): Support find all references. *)
-          let _ = reference in
-          Single (Base.FoundReferences [])
-        in
-        let symbol =
-          module_of_path path
-          >>= fun module_reference ->
-          LocationBasedLookup.find_narrowest_spanning_symbol
-            ~type_environment
-            ~module_reference
-            position
-        in
-        match symbol with
-        | Some
-            {
-              symbol_with_definition = Expression { Node.value = Name name; _ };
-              cfg_data = { define_name; _ };
-              _;
-            }
-        | Some
-            {
-              symbol_with_definition = TypeAnnotation { Node.value = Name name; _ };
-              cfg_data = { define_name; _ };
-              _;
-            }
-          when Expression.is_simple_name name ->
-            let reference = Expression.name_to_reference_exn name in
-            if Reference.is_local reference || Reference.is_parameter reference then
-              find_references_local ~reference ~define_name
-            else
-              find_references_global ~reference
-        | _ ->
-            (* Find-all-references is not supported for syntax, keywords, or literal values. *)
-            Single (Base.FoundReferences []))
     | ReferencesUsedByFile path ->
         if
           TypeEnvironment.ReadOnly.controls type_environment

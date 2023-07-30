@@ -10,6 +10,7 @@
 open Core
 module Gc = Caml.Gc
 module Set = Caml.Set
+module SharedMemory = Hack_parallel.Std.SharedMemory
 
 module type KeyType = SharedMemory.KeyType
 
@@ -118,8 +119,8 @@ let heap_size () =
 
 
 let report_statistics () =
-  Measure.print_stats ();
-  Measure.print_distributions ()
+  Hack_parallel.Std.Measure.print_stats ();
+  Hack_parallel.Std.Measure.print_distributions ()
 
 
 let is_initialized () = Option.is_some !configuration
@@ -280,5 +281,3 @@ module Interner (Value : InternerValueType) = struct
 
   let compare = Int.compare
 end
-
-module SharedMemory = Hack_parallel.Std.SharedMemory

@@ -1,0 +1,3 @@
+(library
+ (name hack_core)
+ (package hack_parallel))

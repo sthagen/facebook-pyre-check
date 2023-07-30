@@ -773,7 +773,7 @@ let resolve_definition_for_name ~resolution ~module_reference ~define_name ~stat
   let find_definition = find_definition ~resolution ~module_reference ~define_name ~statement_key in
   match Node.value expression with
   | Expression.Name (Name.Identifier identifier) -> find_definition (Reference.create identifier)
-  | Name (Name.Attribute { base; attribute; _ } as name) -> (
+  | Expression.Name (Name.Attribute { base; attribute; _ } as name) -> (
       let definition = name_to_reference name >>= find_definition in
       match definition with
       | Some definition -> Some definition
@@ -809,6 +809,34 @@ let resolve_definition_for_name ~resolution ~module_reference ~define_name ~stat
               >>| Node.location
               >>| Location.with_module ~module_reference:qualifier
           | None -> None))
+  | _ -> None
+
+
+let resolve_attributes_for_name ~resolution expression =
+  match Node.value expression with
+  | Expression.Name (Name.Attribute { base; attribute; _ }) -> (
+      (* Resolve prefix to check if this is a method. *)
+      let base_type =
+        match resolve ~resolution base with
+        | Some annotation when Type.is_meta annotation ->
+            (* If it is a call to a class method or static method, `Foo.my_class_method()`, the
+               resolved base type will be `Type[Foo]`. Extract the class type `Foo`. *)
+            Some (Type.single_parameter annotation)
+        | annotation -> annotation
+      in
+      let parent_class_summary =
+        base_type
+        >>= GlobalResolution.class_summary (Resolution.global_resolution resolution)
+        >>| Node.value
+      in
+      match parent_class_summary with
+      | Some base_class_summary ->
+          base_class_summary
+          |> ClassSummary.attributes
+          |> Identifier.SerializableMap.filter (fun attr_str _attr_value ->
+                 String.is_prefix ~prefix:attribute attr_str)
+          |> Option.some
+      | None -> None)
   | _ -> None
 
 
@@ -878,6 +906,47 @@ let location_of_definition ~type_environment ~module_reference position =
     ([%show: Location.position] position)
     ([%show: Location.WithModule.t option] location);
   location
+
+
+let resolve_completions_for_symbol
+    ~type_environment
+    { symbol_with_definition; cfg_data; use_postcondition_info }
+  =
+  let timer = Timer.start () in
+  let completions =
+    match symbol_with_definition with
+    | Expression expression
+    | TypeAnnotation expression ->
+        resolve_attributes_for_name
+          ~resolution:(resolution_from_cfg_data ~type_environment ~use_postcondition_info cfg_data)
+          expression
+  in
+  Log.log
+    ~section:`Performance
+    "locationBasedLookup: Resolve completion for symbol: %d ms"
+    (Timer.stop_in_ms timer);
+  completions
+
+
+let completion_info_for_position ~type_environment ~module_reference position =
+  let right_inclusive_cursor_position =
+    position
+    |> fun { Ast.Location.line; column } -> { Ast.Location.line; column = max 0 column - 1 }
+  in
+  let symbol_data =
+    find_narrowest_spanning_symbol
+      ~type_environment
+      ~module_reference
+      right_inclusive_cursor_position
+  in
+  let completions = symbol_data >>= resolve_completions_for_symbol ~type_environment in
+  Log.log
+    ~section:`Server
+    "Completions for symbol at position `%s:%s`: %s"
+    (Reference.show module_reference)
+    ([%show: Location.position] position)
+    ([%show: ClassSummary.Attribute.t Identifier.SerializableMap.t option] completions);
+  completions
 
 
 let classify_coverage_data { expression; type_ } =

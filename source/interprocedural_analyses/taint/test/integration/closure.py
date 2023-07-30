@@ -47,6 +47,24 @@ def higher_order_function(f, z):
     f(z)
 
 
+def parameter_order_swap(x, y, z):
+    def inner():
+        _test_sink(y)
+        _test_sink(x)
+        _test_sink(z)
+    inner()
+
+
+def parameter_order_swap_different_variable_names(x, y, z):
+    a, b, c = x, y, z
+
+    def inner():
+        _test_sink(b)
+        _test_sink(a)
+        _test_sink(c)
+    inner()
+
+
 class Object:
     pass
 

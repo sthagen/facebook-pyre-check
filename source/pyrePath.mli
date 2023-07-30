@@ -5,24 +5,9 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-open Core
-
 type path = string [@@deriving compare, show, sexp, hash]
 
-module AbsolutePath : sig
-  type t [@@deriving compare, show, sexp, hash]
-end
-
-module RelativePath : sig
-  type t [@@deriving compare, show, sexp, hash]
-
-  val relative : t -> path
-end
-
-type t =
-  | Absolute of AbsolutePath.t
-  | Relative of RelativePath.t
-[@@deriving compare, show, sexp, hash, to_yojson]
+type t [@@deriving compare, show, sexp, hash]
 
 val equal : t -> t -> bool
 
@@ -81,10 +66,6 @@ val remove_if_exists : t -> unit
 
 (* Remove every file under the given directory, but not the directory itself. *)
 val remove_contents_of_directory : t -> (unit, string) Result.t
-
-module Map : Map.S with type Key.t = t
-
-module Set : Set.S with type Elt.t = t
 
 val with_suffix : t -> suffix:string -> t
 
