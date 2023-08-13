@@ -100,7 +100,7 @@ let set_up_environment
       ~source
       ~taint_configuration
       ~source_sink_filter:(Some taint_configuration.source_sink_filter)
-      ~callables:None
+      ~definitions:None
       ~stubs:(Target.HashSet.create ())
       ~python_version:ModelParser.PythonVersion.default
       ()
@@ -205,7 +205,7 @@ let assert_invalid_model ?path ?source ?(sources = []) ~context ~model_source ~e
       ~source_sink_filter:None
       ?path
       ~source:(Test.trim_extra_indentation model_source)
-      ~callables:None
+      ~definitions:None
       ~stubs:(Target.HashSet.create ())
       ~python_version:ModelParser.PythonVersion.default
       ()
@@ -531,6 +531,7 @@ let test_models_with_if context =
 
 let test_source_models context =
   let assert_model = assert_model ~context in
+  let assert_invalid_model = assert_invalid_model ~context in
   assert_model
     ~model_source:"def test.taint() -> TaintSource[TestTest]: ..."
     ~expect:[outcome ~kind:`Function ~returns:[Sources.NamedSource "TestTest"] "test.taint"]
@@ -572,6 +573,33 @@ let test_source_models context =
   assert_model
     ~source:"def f(x: int): ..."
     ~model_source:"def test.f() -> TaintSource[Test, ViaValueOf[x]]: ..."
+    ~expect:[outcome ~kind:`Function ~returns:[Sources.NamedSource "Test"] "test.f"]
+    ();
+  assert_model
+    ~source:"def f(x: int): ..."
+    ~model_source:{|def test.f(x) -> TaintSource[Test, ViaValueOf[x, WithTag["tag"]]]: ...|}
+    ~expect:[outcome ~kind:`Function ~returns:[Sources.NamedSource "Test"] "test.f"]
+    ();
+  assert_invalid_model
+    ~source:"def f(x: int): ..."
+    ~model_source:{|def test.f(x) -> TaintSource[Test, ViaValueOf[WithTag["tag"]]]: ...|}
+    ~expect:
+      "`TaintSource[(Test, ViaValueOf[WithTag[\"tag\"]])]` is an invalid taint annotation: Missing \
+       parameter name for ViaValueOf or ViaTypeOf"
+    ();
+  assert_model
+    ~source:"def f(x: int): ..."
+    ~model_source:"def test.f(x) -> TaintSource[Test, ViaTypeOf[x]]: ..."
+    ~expect:[outcome ~kind:`Function ~returns:[Sources.NamedSource "Test"] "test.f"]
+    ();
+  assert_model
+    ~source:"def f(x: int): ..."
+    ~model_source:"def test.f() -> TaintSource[Test, ViaTypeOf[x]]: ..."
+    ~expect:[outcome ~kind:`Function ~returns:[Sources.NamedSource "Test"] "test.f"]
+    ();
+  assert_model
+    ~source:"def f(x: int): ..."
+    ~model_source:{|def test.f(x) -> TaintSource[Test, ViaTypeOf[x, WithTag["tag"]]]: ...|}
     ~expect:[outcome ~kind:`Function ~returns:[Sources.NamedSource "Test"] "test.f"]
     ();
   assert_model
@@ -1713,8 +1741,12 @@ let test_sink_models context =
     ();
   assert_model
     ~model_source:
-      "def test.sink(parameter0: TaintSink[Test], parameter1: TaintSink[Test, \
-       ViaValueOf[parameter0]]): ..."
+      {|
+      def test.sink(
+        parameter0: TaintSink[Test],
+        parameter1: TaintSink[Test, ViaValueOf[parameter0]]
+      ): ...
+    |}
     ~expect:
       [
         outcome
@@ -1724,6 +1756,54 @@ let test_sink_models context =
               { name = "parameter0"; sinks = [Sinks.NamedSink "Test"] };
               { name = "parameter1"; sinks = [Sinks.NamedSink "Test"] };
             ]
+          "test.sink";
+      ]
+    ();
+  assert_model
+    ~model_source:
+      {|
+      def test.sink(
+        parameter0,
+        parameter1: TaintSink[Test, ViaValueOf[parameter0, WithTag["tag"]]]
+      ): ...
+    |}
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~sink_parameters:[{ name = "parameter1"; sinks = [Sinks.NamedSink "Test"] }]
+          "test.sink";
+      ]
+    ();
+  assert_model
+    ~model_source:
+      {|
+      def test.sink(
+        parameter0,
+        parameter1: TaintSink[Test, ViaTypeOf[parameter0]]
+      ): ...
+    |}
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~sink_parameters:[{ name = "parameter1"; sinks = [Sinks.NamedSink "Test"] }]
+          "test.sink";
+      ]
+    ();
+  assert_model
+    ~model_source:
+      {|
+      def test.sink(
+        parameter0,
+        parameter1: TaintSink[Test, ViaTypeOf[parameter0, WithTag["tag"]]]
+      ): ...
+    |}
+    ~expect:
+      [
+        outcome
+          ~kind:`Function
+          ~sink_parameters:[{ name = "parameter1"; sinks = [Sinks.NamedSink "Test"] }]
           "test.sink";
       ]
     ();
@@ -2542,6 +2622,45 @@ let test_invalid_models context =
     ~expect:
       {|`TaintSource.foo(A)` is an invalid taint annotation: Failed to parse the given taint annotation.|}
     ();
+  assert_invalid_model
+    ~source:"def f(x: int): ..."
+    ~model_source:"def test.f(x) -> TaintSource[WithSubkind[X, Y, Z]]: ..."
+    ~expect:
+      "`TaintSource[WithSubkind[(X, Y, Z)]]` is an invalid taint annotation: Invalid expression \
+       for taint subkind: (X, Y, Z)"
+    ();
+  assert_invalid_model
+    ~source:"def f(x: int): ..."
+    ~model_source:"def test.f(x) -> TaintSource[Collapse[Subkind]]: ..."
+    ~expect:
+      "`TaintSource[Collapse[Subkind]]` is an invalid taint annotation: Unsupported taint source \
+       `Collapse`"
+    ();
+  assert_invalid_model
+    ~source:"def f(x: int): ..."
+    ~model_source:"def test.f(x) -> TaintSource[WithSubkind[A][B]]: ..."
+    ~expect:
+      "`TaintSource[WithSubkind[A][B]]` is an invalid taint annotation: Invalid expression for \
+       taint kind: WithSubkind[A][B]"
+    ();
+  assert_invalid_model
+    ~source:"def f(x: int): ..."
+    ~model_source:"def test.f(x) -> TaintSource[Test.attribute]: ..."
+    ~expect:
+      "`TaintSource[Test.attribute]` is an invalid taint annotation: Invalid expression for taint \
+       kind: Test.attribute"
+    ();
+  assert_invalid_model
+    ~source:{|
+      class C:
+        x: int = 0
+      |}
+    ~model_source:"test.C.x: ViaTypeOf[a.b] = ..."
+    ~expect:
+      "`ViaTypeOf[a.b]` is an invalid taint annotation: Invalid expression in ViaValueOf or \
+       ViaTypeOf declaration: a.b"
+    ();
+  ();
 
   (* Test invalid model queries. *)
   assert_invalid_model
@@ -4695,6 +4814,15 @@ Unexpected statement: `food(y)`
       |}
     ~model_source:{|
       test.C.x: TaintInTaintOut[ViaTypeOf] = ...
+    |}
+    ();
+  assert_valid_model
+    ~source:{|
+      class C:
+        x: int = 0
+      |}
+    ~model_source:{|
+      test.C.x: ViaTypeOf[WithTag["tag"]] = ...
     |}
     ();
   assert_valid_model

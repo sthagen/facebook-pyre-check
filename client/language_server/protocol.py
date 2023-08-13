@@ -21,7 +21,7 @@ import logging
 import urllib
 from dataclasses import field
 from pathlib import Path
-from typing import Iterable, List, Optional, Type, TypeVar
+from typing import Dict, Iterable, List, Optional, Type, TypeVar
 
 import dataclasses_json
 from pyre_extensions import override
@@ -427,6 +427,7 @@ class ServerCapabilities(json_mixins.CamlCaseAndExcludeJsonMixin):
     references_provider: Optional[bool] = None
     completion_provider: Optional[bool] = None
     call_hierarchy_provider: Optional[bool] = None
+    rename_provider: Optional[bool] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -563,8 +564,21 @@ class LspHoverResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
     contents: str
 
     @staticmethod
-    def empty() -> "LspHoverResponse":
-        return LspHoverResponse(contents="")
+    def from_pyre_hover_responses(
+        responses: List["PyreHoverResponse"],
+    ) -> Optional["LspHoverResponse"]:
+        lsp_hover_responses = [
+            lsp_response
+            for lsp_response in (hover.to_lsp_hover_response() for hover in responses)
+            if lsp_response is not None
+        ]
+        return (
+            None
+            if len(lsp_hover_responses) == 0
+            else LspHoverResponse(
+                "\n".join(response.contents for response in lsp_hover_responses)
+            )
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -573,12 +587,14 @@ class PyreHoverResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
     value: Optional[str] = None
     docstring: Optional[str] = None
 
-    def to_lsp_hover_response(self) -> LspHoverResponse:
+    def to_lsp_hover_response(self) -> Optional[LspHoverResponse]:
         lines = []
         if self.value:
             lines.append(f"```\n{self.value}\n```" if self.value else "")
         if self.docstring:
             lines.append(self.docstring)
+        if len(lines) == 0:
+            return None
         return LspHoverResponse("\n".join(lines))
 
 
@@ -797,3 +813,27 @@ class CompletionItem(json_mixins.CamlCaseAndExcludeJsonMixin):
 @dataclasses.dataclass(frozen=True)
 class CompletionResponse(json_mixins.CamlCaseAndExcludeJsonMixin):
     completions: List[CompletionItem]
+
+
+@dataclasses.dataclass(frozen=True)
+class TextEdit(json_mixins.CamlCaseAndExcludeJsonMixin):
+    range: LspRange
+    new_text: str
+
+
+@dataclasses.dataclass(frozen=True)
+class WorkspaceEdit(json_mixins.CamlCaseAndExcludeJsonMixin):
+    changes: Optional[Dict[str, List[TextEdit]]]
+
+
+@dataclasses.dataclass(frozen=True)
+class RenameParameters(json_mixins.CamlCaseAndExcludeJsonMixin):
+    text_document: TextDocumentIdentifier
+    position: LspPosition
+    new_name: str
+
+    @staticmethod
+    def from_json_rpc_parameters(
+        parameters: json_rpc.Parameters,
+    ) -> "RenameParameters":
+        return _parse_parameters(parameters, target=RenameParameters)

@@ -160,12 +160,12 @@ let parse_models_and_queries_from_sources
     ~scheduler
     ~resolution
     ~source_sink_filter
-    ~callables
+    ~definitions
     ~stubs
     ~python_version
     sources
   =
-  (* TODO(T117715045): Do not pass all callables and stubs explicitly to map_reduce,
+  (* TODO(T117715045): Do not pass all definitions and stubs explicitly to map_reduce,
    * since this will marshal-ed between processes and hence is costly. *)
   let map sources =
     let taint_configuration = TaintConfiguration.SharedMemory.get taint_configuration in
@@ -176,7 +176,7 @@ let parse_models_and_queries_from_sources
           ~source
           ~taint_configuration
           ~source_sink_filter:(Some source_sink_filter)
-          ~callables
+          ~definitions
           ~stubs
           ~python_version
           ()
@@ -203,7 +203,7 @@ let parse_models_and_queries_from_configuration
     ~taint_configuration
     ~resolution
     ~source_sink_filter
-    ~callables
+    ~definitions
     ~stubs
   =
   let python_version = ModelParser.PythonVersion.from_configuration configuration in
@@ -214,7 +214,7 @@ let parse_models_and_queries_from_configuration
          ~scheduler
          ~resolution
          ~source_sink_filter
-         ~callables
+         ~definitions
          ~stubs
          ~python_version
   in
@@ -236,10 +236,8 @@ let initialize_models
 
   Log.info "Parsing taint models...";
   let timer = Timer.start () in
-  let callables_hashset =
-    initial_callables
-    |> Interprocedural.FetchCallables.get_non_stub_callables
-    |> Target.HashSet.of_list
+  let definitions_hashset =
+    initial_callables |> Interprocedural.FetchCallables.get_definitions |> Target.HashSet.of_list
   in
   let stubs_hashset =
     initial_callables |> Interprocedural.FetchCallables.get_stubs |> Target.HashSet.of_list
@@ -251,7 +249,7 @@ let initialize_models
       ~taint_configuration:taint_configuration_shared_memory
       ~resolution
       ~source_sink_filter:taint_configuration.source_sink_filter
-      ~callables:(Some callables_hashset)
+      ~definitions:(Some definitions_hashset)
       ~stubs:stubs_hashset
   in
   Statistics.performance
@@ -275,8 +273,8 @@ let initialize_models
             ~class_hierarchy_graph
             ~verbose
             ~source_sink_filter:(Some taint_configuration.source_sink_filter)
-            ~callables_and_stubs:
-              (Interprocedural.FetchCallables.get_callables_and_stubs initial_callables)
+            ~definitions_and_stubs:
+              (Interprocedural.FetchCallables.get initial_callables ~definitions:true ~stubs:true)
             ~stubs:stubs_hashset
             queries
         in
@@ -460,6 +458,8 @@ let run_taint_analysis
       ~environment:(Analysis.TypeEnvironment.read_only environment)
       ~initial_callables
   in
+  let _, cache = Cache.InitialModelsSharedMemory.load cache in
+  let () = if use_cache then Cache.InitialModelsSharedMemory.save initial_models in
 
   Log.info "Computing overrides...";
   let timer = Timer.start () in
@@ -505,7 +505,7 @@ let run_taint_analysis
       ~store_shared_memory:true
       ~attribute_targets:(Registry.object_targets initial_models)
       ~skip_analysis_targets:(Registry.skip_analysis initial_models)
-      ~callables:(Interprocedural.FetchCallables.get_non_stub_callables initial_callables)
+      ~definitions:(Interprocedural.FetchCallables.get_definitions initial_callables)
   in
   Statistics.performance ~name:"Call graph built" ~phase_name:"Building call graph" ~timer ();
 
@@ -566,6 +566,13 @@ let run_taint_analysis
     (List.length override_targets)
     (List.length callables_kept);
   let fixpoint_timer = Timer.start () in
+  let shared_models =
+    TaintFixpoint.record_initial_models
+      ~initial_models
+      ~initial_callables:(Interprocedural.FetchCallables.get_definitions initial_callables)
+      ~stubs:(Interprocedural.FetchCallables.get_stubs initial_callables)
+      ~override_targets
+  in
   let fixpoint_state =
     Taint.TaintFixpoint.compute
       ~scheduler
@@ -580,13 +587,10 @@ let run_taint_analysis
           define_call_graphs;
           global_constants;
         }
-      ~initial_callables:(Interprocedural.FetchCallables.get_non_stub_callables initial_callables)
-      ~stubs:(Interprocedural.FetchCallables.get_stubs initial_callables)
-      ~override_targets
       ~callables_to_analyze
-      ~initial_models
       ~max_iterations:100
       ~epoch:Taint.TaintFixpoint.Epoch.initial
+      ~shared_models
   in
 
   let filename_lookup path_reference =

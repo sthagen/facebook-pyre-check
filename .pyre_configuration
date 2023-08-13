@@ -12,9 +12,6 @@
   ],
   "search_path": [
     {
-      "site-package": "async_generator"
-    },
-    {
       "site-package": "click"
     },
     {
@@ -42,15 +39,14 @@
       "site-package": "psutil"
     },
     {
-      "site-package": "pywatchman"
-    },
-    {
       "site-package": "testslide"
     },
     {
+      "is_toplevel_module": true,
       "site-package": "typing_extensions"
     },
     {
+      "is_toplevel_module": true,
       "site-package": "typing_inspect"
     }
   ],
@@ -58,5 +54,5 @@
     "."
   ],
   "strict": true,
-  "version": "0.0.101690283451"
+  "version": "0.0.101691492877"
 }
